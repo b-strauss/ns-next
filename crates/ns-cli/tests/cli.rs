@@ -312,7 +312,7 @@ fn run_corpus_malformed_whitelist_fails_with_error() {
 fn benchmark_reports_the_entry_sends_median() {
     let out = ns_next()
         .arg("bench")
-        .arg(common::golden("while_loop"))
+        .arg(common::golden("language/while_loop"))
         .arg("--iterations")
         .arg("3")
         .output()
@@ -334,7 +334,7 @@ fn benchmark_reports_the_entry_sends_median() {
 fn benchmark_rejects_zero_iterations() {
     let out = ns_next()
         .arg("bench")
-        .arg(common::golden("while_loop"))
+        .arg(common::golden("language/while_loop"))
         .arg("--iterations")
         .arg("0")
         .output()

@@ -10,7 +10,7 @@ fn build_writes_a_stateless_binary_that_inspect_recognizes() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
     ]);
     assert!(ok, "{error}");
@@ -29,7 +29,7 @@ fn build_refuses_an_entry_the_root_class_does_not_have() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
         "--entry".as_ref(),
         "noSuchSelector".as_ref(),
@@ -50,7 +50,7 @@ fn build_refuses_an_entry_only_a_builtin_answers() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
         "--entry".as_ref(),
         "printString".as_ref(),
@@ -66,7 +66,7 @@ fn build_refuses_an_entry_arity_the_cli_cannot_supply() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
         "--entry".as_ref(),
         "a:b:c:".as_ref(),
@@ -90,7 +90,7 @@ fn build_requires_an_entry_when_the_root_class_declares_no_main() {
 fn a_built_binary_runs_exactly_as_its_source_does() {
     let directory = ScratchDirectory::new("equivalence");
     let out = directory.join("app.nsb");
-    let source = golden("arithmetic");
+    let source = golden("language/arithmetic");
 
     let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
     assert!(ok, "{error}");
@@ -109,7 +109,7 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
     // initializers did not run on load the entry send would see nil slots.
     let directory = ScratchDirectory::new("init");
     let out = directory.join("app.nsb");
-    let source = golden("instance_init");
+    let source = golden("language/instance_init");
     let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
     assert!(ok, "{error}");
 
@@ -192,7 +192,7 @@ fn every_golden_runs_identically_from_source_and_from_a_binary() {
 #[test]
 fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
     let directory = ScratchDirectory::new("prefix");
-    let source = golden("arithmetic");
+    let source = golden("language/arithmetic");
     let binary = directory.join("app.nsb");
     let image = directory.join("world.img");
 

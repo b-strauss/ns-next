@@ -70,20 +70,27 @@ pub fn golden_sources() -> Vec<PathBuf> {
     golden_files("ns")
 }
 
-/// One golden's source by its bare name, for the few tests that need a
-/// particular program rather than all of them. Panics on a miss so that a
-/// renamed golden fails loudly here instead of silently skipping a test, and
-/// on an ambiguity so that two categories cannot quietly claim one name.
-pub fn golden(name: &str) -> PathBuf {
-    let matches: Vec<PathBuf> = golden_sources()
-        .into_iter()
-        .filter(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(name))
-        .collect();
-    match matches.len() {
-        1 => matches.into_iter().next().expect("one match"),
-        0 => panic!("no golden named {name}"),
-        _ => panic!("{} goldens named {name}", matches.len()),
-    }
+/// One golden's source by its path below `goldens/`, without the extension --
+/// `golden("language/arithmetic")`. Naming the category is what makes the
+/// answer unambiguous: two categories may hold the same name, and a caller
+/// that says which one it means cannot be surprised by a golden added later
+/// somewhere else. Panics on a miss, so a renamed or moved golden fails
+/// loudly here rather than silently skipping the test that wanted it.
+pub fn golden(path: &str) -> PathBuf {
+    let mut parts = path.split('/');
+    let category = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    assert!(
+        !category.is_empty() && !name.is_empty() && parts.next().is_none(),
+        "{path} is not `<category>/<name>` -- a golden lives one level below          goldens/, so its path has exactly one directory component"
+    );
+    let source = goldens_root().join(category).join(format!("{name}.ns"));
+    assert!(
+        source.is_file(),
+        "no golden at {} -- goldens/{path}.ns does not exist",
+        source.display()
+    );
+    source
 }
 
 /// A golden's recorded outcome. Every field defaults to the success case, so

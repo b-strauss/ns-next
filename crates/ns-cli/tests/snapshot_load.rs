@@ -9,7 +9,7 @@ use std::path::Path;
 fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
     let directory = ScratchDirectory::new("arithmetic");
     let image = directory.join("world.img");
-    let source = golden("arithmetic");
+    let source = golden("language/arithmetic");
     let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -40,7 +40,7 @@ fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
 fn a_loaded_world_does_not_rerun_its_instance_initializer() {
     let directory = ScratchDirectory::new("instance-init");
     let image = directory.join("world.img");
-    let source = golden("instance_init");
+    let source = golden("language/instance_init");
     let (ok, out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     assert!(out.starts_with("init ran\n"), "{out}");
@@ -68,8 +68,8 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
 fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
     let directory = ScratchDirectory::new("nested-outer-inherited");
     let image = directory.join("world.img");
-    let source = golden("nested_outer_inherited");
-    let expected = common::expectation_of(&golden("nested_outer_inherited")).stdout;
+    let source = golden("nesting/nested_outer_inherited");
+    let expected = common::expectation_of(&golden("nesting/nested_outer_inherited")).stdout;
     let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -95,7 +95,7 @@ fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
 fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
     let directory = ScratchDirectory::new("summary");
     let image = directory.join("world.img");
-    let source = golden("hello");
+    let source = golden("language/hello");
     let (ok, _out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     let (ok, out, _error) = ns_next(&["load".as_ref(), image.as_os_str()]);
@@ -236,7 +236,7 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
 fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
     let directory = ScratchDirectory::new("corruption");
     let image = directory.join("world.img");
-    let source = golden("blocks_and_return");
+    let source = golden("language/blocks_and_return");
     let (ok, _out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -284,7 +284,7 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 /// image can be exported back to `.ns` while no decompiler exists.
 #[test]
 fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
-    let source = golden("arithmetic");
+    let source = golden("language/arithmetic");
     let text = std::fs::read_to_string(&source).expect("read golden");
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail

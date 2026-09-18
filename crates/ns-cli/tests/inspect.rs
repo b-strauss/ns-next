@@ -9,7 +9,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
     let image = directory.join("world.img");
     let (ok, _, error) = ns_next(&[
         "snapshot".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         image.as_os_str(),
     ]);
     assert!(ok, "{error}");
@@ -43,7 +43,7 @@ fn inspect_reports_a_debug_variants_source_blob() {
     let image = directory.join("world.img");
     let (ok, _, error) = ns_next(&[
         "snapshot".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         image.as_os_str(),
         "--debug-source".as_ref(),
     ]);
@@ -78,7 +78,7 @@ fn inspect_names_every_body_in_the_code_table() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
     ]);
     assert!(ok, "{error}");
@@ -110,7 +110,7 @@ fn inspect_full_renders_every_mixin_and_every_body() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        golden("arithmetic").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
     ]);
     assert!(ok, "{error}");
