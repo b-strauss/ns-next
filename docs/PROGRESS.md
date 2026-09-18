@@ -366,6 +366,32 @@ but fails loudly.
   (`a_build_and_a_snapshot_agree_on_the_describing_sections`,
   `crates/ns-cli/tests/build_load.rs`). Pre-existing, untouched by this step;
   worth a small task (`crates/ns-cli/src/commands/build.rs`).
+- **Golden proposals the coverage audits raised and nobody built.** The two
+  audits of 2026-09-18 classified all 64 numbered sections and proposed more
+  goldens than were worth adding; nine were built and about a dozen judged
+  marginal, so that analysis survives only as a decision. Worth knowing
+  before anyone audits the specification a third time: what was left out was
+  §5.1.8's closure value rules, §5.1.5's doubled quote, §5.1.7's empty and
+  immutable tuples, §5.1.4's character literals (the section's
+  `Character codePoint:` equivalence is unimplementable -- no such selector),
+  §6.3.4's binary message pattern, §6.3.1's unmodified *method* being
+  protected, §4.3's inert metadata comments, §8.1's optional category string
+  and §8.4's `args:` list. Each is either pure syntax the corpus already
+  gates or a near-duplicate of a golden that exists. The sections judged
+  untestable -- actors, mirrors, types, object literals, pattern literals --
+  are untestable for reasons that will not change until those subsystems
+  exist.
+- **Three findings the review of the goldens branch carried.**
+  `spec_6_3_factory_is_a_class_side_member` is the one golden under
+  `goldens/spec/` with neither a rationale comment nor a citation.
+  `spec_6_3_2_simultaneous_slots_resolve_mutual_recursion` raises at exit 1
+  today, while the deviation it belongs to is described as answering wrongly
+  at exit status 0 -- the general claim holds, that one program just does not
+  demonstrate it, because its expression errors on the nil instead of
+  computing with it. And
+  `spec_6_3_3_a_lazy_slot_is_initialized_on_first_use.toml` records a
+  trailing space, which is correct and which an editor that strips trailing
+  whitespace would silently break.
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
 pushes, pops and resumes; `value`, the control-flow natives, `do:`,

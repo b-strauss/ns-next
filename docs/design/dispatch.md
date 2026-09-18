@@ -241,6 +241,18 @@ by the presence-only "defined for" relation instead: the first
 `doesNotUnderstand:` found walking the receiver's class chain, whatever its
 access modifier.
 
+**Deviation: a class side's own `doesNotUnderstand:` is unreachable.** An
+ordinary send to a class object searches the metaclass, so a class-side method
+answers; but the `doesNotUnderstand:` walk starts at `class_of(receiver)`,
+which for a class object is the bootstrap `Object` placeholder rather than the
+metaclass, so a `doesNotUnderstand:` declared on a class side is never
+invoked and the send raises the default error instead. §5.5 gives the handler
+no such exception: it is "the `#doesNotUnderstand:` method defined for the
+class of the receiver", and the class side is part of what a class object
+answers to. The asymmetry is the implementation's own -- class-side *methods*
+are reachable by the same receiver -- rather than a consequence of reifying no
+`Class`, though it disappears when §3.2's hierarchy is reified in step 6.
+
 **Deviation: the reified message is a two-element tuple.** §3.4 says a message
 "may be *reified* by the implementation by means of a *message mirror*", "an
 object obeying the protocol of class `MessageMirror` that provides access to

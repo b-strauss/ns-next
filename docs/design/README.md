@@ -226,6 +226,7 @@ output.
 | The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 | `doesNotUnderstand:`'s argument is a two-element tuple of the selector and the arguments, not an object obeying `MessageMirror`'s protocol | §3.4 | [dispatch.md](dispatch.md) |
+| A `doesNotUnderstand:` declared on a class side is never invoked: the handler walk starts at the class object's own class, the bootstrap `Object` placeholder, not at its metaclass | §5.5 | [dispatch.md](dispatch.md) |
 
 Five of these have a golden under `goldens/spec/`, recorded as `skipped`:
 the dropped local-slot initializer, the sequential simultaneous slot
