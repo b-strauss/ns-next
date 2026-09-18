@@ -1,7 +1,3 @@
-# A send's operands mutating each other's inputs: every operand keeps the
-# value it had when it was evaluated. One case per consumer -- keyword
-# arguments, a binary send's right operand mutating the left,
-# dynamic-array elements, and an inlined arm.
 stdout = '''
 1
 32

@@ -1,5 +1,3 @@
-# Raised where it is *evaluated*, not when the method is compiled:
-# everything before it still runs.
 status = 1
 stdout = '''
 before

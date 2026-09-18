@@ -1,5 +1,9 @@
 Newspeak3
 'T'
+(* `newspeak-spec.pdf` §6.3.1: "If no access modifier is declared, the
+   default is protected", and §6.3.2 gives the getter "the same"
+   accessibility as the slot -- so §5.5's `lookupPublic` finds a protected
+   method and answers "Undefined". *)
 class ProtectedSlot usingPlatform: platform = Object new (
 ) (
     class Holder = Object new (| w = 3. |) ()

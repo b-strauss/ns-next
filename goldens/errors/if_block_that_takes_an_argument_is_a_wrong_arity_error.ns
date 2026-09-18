@@ -1,5 +1,7 @@
 Newspeak3
 'T'
+(* A block with a parameter passed where the native activates it with none
+   is the ordinary wrong-arity error. *)
 class IfArity usingPlatform: platform = Object new (
 ) (
     public main: p args: a = (

@@ -1,5 +1,3 @@
-# An inlined selector's guard fails on a non-Boolean receiver, and the
-# fallback is a real send: `3` does not understand `ifTrue:ifFalse:`.
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #ifTrue:ifFalse:

@@ -1,5 +1,3 @@
-# A block with a parameter passed where the native activates it with none
-# is the ordinary wrong-arity error.
 status = 1
 stderr = '''
 Uncaught Newspeak error: wrong number of block arguments: block takes 1, got 0

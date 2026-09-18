@@ -1,5 +1,7 @@
 Newspeak3
 'T'
+(* Raised where it is *evaluated*, not when the method is compiled:
+   everything before it still runs. *)
 class DeferredSuper usingPlatform: platform = Object new (
 ) (
     unreached = ( ^super )

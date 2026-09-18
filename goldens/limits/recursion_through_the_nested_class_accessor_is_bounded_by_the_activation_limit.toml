@@ -1,11 +1,3 @@
-# The nested-class accessor runs a superclass clause as a trampoline step,
-# the first time a class is reached on each enclosing object. `Next`'s
-# clause, `self deeper`, reaches `Next` again on a fresh `Link`, so every
-# level is a new enclosing object -- no cyclic-definition error -- and two
-# more counted activations, the clause and `deeper`, until the activation
-# limit. `Link` has no slots, so its instantiation activates nothing. It used
-# to end at the limit on re-entries of the run loop from Rust, which no
-# longer exists (`docs/design/execution.md`, "No re-entry from Rust").
 status = 1
 stderr = '''
 Uncaught Newspeak error: stack overflow: recursion too deep

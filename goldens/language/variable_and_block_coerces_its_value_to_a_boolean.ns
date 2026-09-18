@@ -1,5 +1,7 @@
 Newspeak3
 'T'
+(* `and:`'s block value coerces by `truthy`'s rule when the block is a
+   variable, which takes the native: a non-Boolean is `false`. *)
 class AndVar usingPlatform: platform = Object new (
 ) (
     public main: p args: a = (

@@ -1,5 +1,3 @@
-# `and:`'s block value coerces by `truthy`'s rule when the block is a
-# variable, which takes the native: a non-Boolean is `false`.
 stdout = '''
 false
 true

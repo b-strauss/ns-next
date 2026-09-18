@@ -144,8 +144,10 @@ renamed, moved or re-extended. Deleting both halves together is not caught,
 and shows up in a diff as two deletions.
 
 A golden's rationale — why that outcome is the right one, and which
-specification section it comes from — lives in its `.toml` as `#` comments,
-because `Expectation` is `deny_unknown_fields` and so has no field for prose.
+specification section it comes from — is a `(* ... *)` comment at the top of
+the `.ns`, under the category string, so that it sits with the program it
+explains rather than beside it. The `.toml` holds the recorded answer and
+nothing else.
 
 ## Gates
 

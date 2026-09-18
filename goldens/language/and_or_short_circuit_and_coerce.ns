@@ -1,5 +1,7 @@
 Newspeak3
 'T'
+(* Only the non-short-circuited arms run, and a non-Boolean block value
+   coerces to `false`. *)
 class AndOr usingPlatform: platform = Object new (
     | log ::= ''. |
 ) (

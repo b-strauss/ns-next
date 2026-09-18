@@ -1,5 +1,3 @@
-# Only the non-short-circuited arms run, and a non-Boolean block value
-# coerces to `false`.
 stdout = '''
 true
 false

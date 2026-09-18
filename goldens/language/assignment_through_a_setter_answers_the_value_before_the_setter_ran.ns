@@ -1,5 +1,13 @@
 Newspeak3
 'T'
+(* `x := e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
+   sends"), even when the setter it sends writes the local `e` read, through a
+   closure built earlier. One case per position that reads an assignment's
+   value after its setter send has run: a `^`, a `^` inside a block, a block's
+   last statement, the last statement of an inlined branch, of an inlined
+   `and:` block and of an inlined loop condition, and a slot initializer. Each
+   line is the value `e` had before the setter ran: `1`, `true` for the
+   `and:`, and one loop iteration, since the second test finds `false`. *)
 class SetterValue usingPlatform: platform = Object new (
     | blk ::= nil. |
 ) (

@@ -1,7 +1,3 @@
-# `newspeak-spec.pdf` §6.3.1: "If no access modifier is declared, the
-# default is protected", and §6.3.2 gives the getter "the same"
-# accessibility as the slot -- so §5.5's `lookupPublic` finds a protected
-# method and answers "Undefined".
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #w

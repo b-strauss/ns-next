@@ -1,5 +1,8 @@
 Newspeak3
 'Test'
+(* The method-home counterpart: `stash` stores a block holding `^` and
+   returns normally; a later send invokes it after its home's frame was
+   divorced. *)
 class StoredBlockReturn usingPlatform: platform = Object new (
     | blk ::= nil. |
 ) (

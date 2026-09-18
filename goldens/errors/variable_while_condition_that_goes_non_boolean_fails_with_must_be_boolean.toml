@@ -1,5 +1,3 @@
-# A native loop whose condition goes non-Boolean after two rounds sends
-# `mustBeBoolean` to it, after exactly two bodies.
 status = 1
 stdout = '''
 1

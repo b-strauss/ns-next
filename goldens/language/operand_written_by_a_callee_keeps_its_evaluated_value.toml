@@ -1,6 +1,3 @@
-# The same invariant when the write happens inside a callee, through a
-# closure built in an earlier statement: a cascade receiver and an
-# assignment's value handed on through a setter send.
 stdout = '''
 1
 1
