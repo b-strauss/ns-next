@@ -975,9 +975,10 @@ fn encode_closure_record<'gc>(
 /// A metaclass can still reach here as a record of its own, through the one
 /// reference that names one: a class-side activation's `current_class`,
 /// captured in a frame. Such a metaclass applies the declaring class's own
-/// class side (`newspeak-spec.pdf` §3.2, "Class sides and metaclasses"),
-/// which is part of the module's declaration tree like any other mixin, so
-/// the id lookup below finds it. The other kind of metaclass mixin --
+/// class side (`newspeak-spec.pdf` §3.2; ns-next's own representation is
+/// `docs/design/object-model.md`, "Class sides and metaclasses"), which is
+/// part of the module's declaration tree like any other mixin, so the id
+/// lookup below finds it. The other kind of metaclass mixin --
 /// the otherwise empty one `metaclass_of` synthesizes for a class that
 /// declares no class side, so that §6.3's factory entry has somewhere to
 /// live -- is in no `mixin::preorder` walk and has no id. It cannot reach

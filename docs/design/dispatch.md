@@ -506,7 +506,7 @@ failed primitive continues. A `Resolved` is one of:
 - `NestedClass` — the mixin and its declaring class;
 - `Primitive` — the primitive and its level, where a failure continues;
 - `Factory` — §6.3's primary factory, an entry of the receiver's metaclass
-  mixin, with the class object §6.1 instantiates: the receiver, whichever
+  mixin, with the class object §6.3 instantiates: the receiver, whichever
   level of the metaclass chain held the entry. Found on one of the two
   class-side chains and nowhere else;
 - `Unhandled` — nothing handles the send, not even `doesNotUnderstand:`.
@@ -538,7 +538,7 @@ records with every handle taken out:
 - `Slot` — the absolute field index, the accessor's kind and its chain;
 - `NestedClass` — the mixin, its level and its chain;
 - `Primitive` — the primitive, its level and its chain;
-- `Factory` — its chain, and nothing else: §6.1 instantiates the receiver,
+- `Factory` — its chain, and nothing else: §6.3 instantiates the receiver,
   which the guard already names, so there is no level to count;
 
 and three states a site can be in, each guarded by `VACANT`: `Vacant`,

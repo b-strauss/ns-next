@@ -97,7 +97,7 @@ g Nested.                (* a subclass of String, not of Inner *)
 
 — so "all nested classes must be compiled as mixins, as the superclass cannot be
 reliably known at compilation time". And §6.2 names the sharing axis: "Any change
-made to the structure or code of a mixin affects all of its applications. [...]
+made to the structure or code of a mixin effects all of its applications. [...]
 they all share their code and structural definition with the mixin." That
 sentence is simultaneously the performance strategy and the edit-and-continue
 requirement.
@@ -290,7 +290,8 @@ factory is one of its members. Class-side declarations are kept and dispatched
 as metaclass behaviour rather than parsed and dropped.
 
 **The primary factory is an entry of that method table**, under the declared
-factory's selector (`new` for a declaration that writes none, §6.1), found by
+factory's selector (`new` for a declaration that writes none, §6's
+unnumbered introduction, before §6.1 begins), found by
 the ordinary lookups like any other member — as both references build it
 (Primordial Soup's `astForPrimaryFactory:`, SOMns's
 `MixinBuilder.assemblePrimaryFactoryMethod`). It carries no body: what it

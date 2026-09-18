@@ -97,7 +97,7 @@ impl DispatchIds {
 #[derive(Debug, Clone)]
 pub struct MixinMethod {
     pub selector: Symbol,
-    /// §5.2 accessibility, already defaulted through
+    /// §6.3.1 accessibility, already defaulted through
     /// `dispatch::effective_access`. Read by every lookup, so it is stored
     /// rather than re-derived from `declaration`, which a decoded mixin has
     /// none of.
@@ -193,7 +193,7 @@ pub struct SlotAccessor {
 }
 
 /// A native method of a builtin class (`docs/design/dispatch.md`,
-/// "Primitives"): the primitive it runs and its §5.2
+/// "Primitives"): the primitive it runs and its §6.3.1
 /// accessibility. Found by the same lookups as a compiled method; it runs no
 /// code and pushes no activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +232,7 @@ pub enum MethodEntry {
 }
 
 impl MethodEntry {
-    /// The entry's §5.2 accessibility, which every lookup reads.
+    /// The entry's §6.3.1 accessibility, which every lookup reads.
     pub fn access(&self) -> ast::AccessModifier {
         match self {
             MethodEntry::Compiled(method) => method.access,
