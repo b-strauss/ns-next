@@ -421,8 +421,8 @@ impl GlobalEntry {
 
 /// Every site's miss path, and the only cache a megamorphic site consults
 /// (`docs/design/dispatch.md`, "The global cache"): a fixed number of
-/// entries keyed by (dispatch id, selector, rule), whatever the program's
-/// size.
+/// entries keyed by (dispatch id, selector, rule, lexical), whatever the
+/// program's size.
 pub(crate) struct GlobalCache {
     entries: Vec<GlobalEntry>,
     mask: usize,
@@ -895,7 +895,9 @@ fn send_lexical_first<'gc>(
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
-    let lexical_id = lexical_dispatch_id(mutator, defining_class, depth);
+    let lexical_id = lexical_class.map_or(DispatchId::NONE, |class| {
+        mutator.heap.class_dispatch_ids(class).instances
+    });
     if lexical_id != DispatchId::NONE {
         let private_key = SendKey {
             guard: lexical_id,

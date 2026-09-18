@@ -578,10 +578,17 @@ site that is not inlined and sees both is bimorphic.
 #### The global cache
 
 The global cache (`GlobalCache`) has 1024 entries keyed by (dispatch id,
-selector, rule) — the rule `Public`, `Lexical`, `LexicalPrivate` or `Super`
-(`CacheRule`), since one id and selector resolve differently under §5.5,
-§5.9 and §5.10 — probed twice, at two hashes of the key, as Primordial Soup's
-`LookupCache` is. It is every site's miss path, probed before a lookup runs,
+selector, rule, lexical) — the rule `Public`, `Lexical`, `LexicalPrivate` or
+`Super` (`CacheRule`), since one id and selector resolve differently under
+§5.5, §5.9 and §5.10 — probed twice, at two hashes of the key, as Primordial
+Soup's `LookupCache` is. `lexical` is the key's fourth component, N's
+application (its `instances` dispatch id) for a `Lexical` entry and
+`DispatchId::NONE` for every other rule: §5.9's private rule is a function of
+N and the selector alone, never of `o`, so a `Lexical` entry recorded for one
+N is right to reuse only at a site whose own N matches, and this is what
+lets a still-vacant lexical site read the cache at all before it has
+resolved anything ("The private rule, decided once per site" below). It is
+every site's miss path, probed before a lookup runs,
 and the only cache a megamorphic site consults, as Cog's open PICs probe the
 method cache and Strongtalk's miss handler its `lookupCache`. A hit there
 moves the site's state on. An insertion writes the first probe if it is

@@ -443,9 +443,13 @@ fn a_second_site_fills_from_the_global_cache() {
 /// (`docs/design/dispatch.md`, "3b -- The caches"), so it is right for any
 /// site under the same N: two distinct lexical sites in different methods of
 /// the same class, both sending the same implicit-receiver selector to an
-/// enclosing object of the same application, share one global entry -- the
-/// second site's first send hits it directly rather than resolving
-/// independently.
+/// enclosing object of the same application, share one global entry rather
+/// than each filling its own. This does not by itself show the second site
+/// *read* that entry instead of resolving again and overwriting it -- both
+/// leave one entry behind, and `filled_global_entries` cannot tell them
+/// apart; `a_vacant_lexical_site_does_not_borrow_a_different_ns_entry` below
+/// is what actually depends on the fourth component, since it goes red the
+/// moment it is dropped.
 #[test]
 fn a_vacant_lexical_site_uses_the_global_cache() {
     let source = indoc! {"
@@ -458,14 +462,82 @@ fn a_vacant_lexical_site_uses_the_global_cache() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let instance1 = instantiate(&mut interpreter, &class);
-    let instance2 = instantiate(&mut interpreter, &class);
-    send(&mut interpreter, &instance1, "first", &[]);
-    send(&mut interpreter, &instance2, "second", &[]);
+    let first_instance = instantiate(&mut interpreter, &class);
+    let second_instance = instantiate(&mut interpreter, &class);
+    send(&mut interpreter, &first_instance, "first", &[]);
+    send(&mut interpreter, &second_instance, "second", &[]);
     let statistics = interpreter.cache_statistics();
     assert_eq!(
         statistics.filled_global_entries, 1,
         "both sites must share one global entry"
+    );
+}
+
+/// The behavioural pin the fourth key component exists for. `Derived`
+/// overrides `Base`'s private `helper` with a public one; `fromDerived`
+/// (N = `Derived`) fills the `Lexical` row under `(Derived`'s dispatch id,
+/// `#helper`, `Lexical`, `Derived`'s application)`. `fromBase`'s own site is
+/// then still vacant, and reaches the very same `o` -- the same `Derived`
+/// instance, so the same dispatch id -- under the same selector, but with
+/// N = `Base`, which declares `helper` private. Without N in the key, that
+/// still-vacant site would read `Derived`'s entry and answer with
+/// `Derived`'s public `helper` instead of running its own N's private one:
+/// §5.9's private rule silently skipped, wrong output, exit status 0. With
+/// N in the key the read misses (different fourth component), `fromBase`
+/// resolves independently and finds `Base`'s private `helper`, and the
+/// answer is `21`, not `22`.
+///
+/// I verified this test actually depends on the fourth component by
+/// temporarily neutralizing it -- `GlobalEntry::holds` ignoring `lexical`
+/// and `GlobalCache::probes` hashing only `(guard, selector, rule)` -- and
+/// confirming this test fails (`assertion failed: left == 22, right == 21`)
+/// while the rest of the workspace suite, including
+/// `a_vacant_lexical_site_uses_the_global_cache` above, stays green; then
+/// restored the real implementation and confirmed this test passes again.
+#[test]
+fn a_vacant_lexical_site_does_not_borrow_a_different_ns_entry() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Base = Object new () (
+            private helper = ( ^1 )
+            public fromBase = ( ^helper )
+          )
+          class Derived = Base new () (
+            public helper = ( ^2 )
+            public fromDerived = ( ^helper )
+          )
+          public baseClass = ( ^Base )
+          public run = (
+            | derived |
+            derived := Derived new.
+            ^(derived fromDerived) * 10 + (derived fromBase)
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(
+        small_integer(&mut interpreter, &answer),
+        21,
+        "fromBase must run Base's own private helper, not Derived's public override"
+    );
+    let base_class = send(&mut interpreter, &instance, "baseClass", &[]);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &base_class,
+            MethodSide::Instance,
+            "fromBase",
+            "helper"
+        ),
+        vec![CallSiteState::Monomorphic(CachedTarget {
+            kind: CachedTargetKind::Method(Symbol::intern("helper")),
+            private: true,
+        })],
+        "fromBase's site must have decided itself a private site"
     );
 }
 
