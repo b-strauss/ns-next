@@ -10,11 +10,57 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A file under `tests-fixtures/`, by name.
-pub fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-fixtures")
-        .join(name)
+/// The `goldens/` directory: every recorded program outcome lives under a
+/// category directory inside it.
+pub fn goldens_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../goldens")
+}
+
+/// Every golden's source, found by walking rather than from a list, so that
+/// adding one needs no edit anywhere. Sorted, so a failure names the same
+/// golden on every platform and run.
+pub fn golden_sources() -> Vec<PathBuf> {
+    let mut sources = Vec::new();
+    let root = goldens_root();
+    let categories =
+        std::fs::read_dir(&root).unwrap_or_else(|error| panic!("read {}: {error}", root.display()));
+    for category in categories {
+        let category = category.expect("goldens category entry").path();
+        if !category.is_dir() {
+            continue;
+        }
+        let entries = std::fs::read_dir(&category)
+            .unwrap_or_else(|error| panic!("read {}: {error}", category.display()));
+        for entry in entries {
+            let path = entry.expect("golden entry").path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("ns") {
+                sources.push(path);
+            }
+        }
+    }
+    sources.sort();
+    assert!(
+        !sources.is_empty(),
+        "no goldens found under {} -- the directory moved or the walk is wrong",
+        root.display()
+    );
+    sources
+}
+
+/// One golden's source by its bare name, for the few tests that need a
+/// particular program rather than all of them. Panics on a miss so that a
+/// renamed golden fails loudly here instead of silently skipping a test, and
+/// on an ambiguity so that two categories cannot quietly claim one name.
+pub fn golden(name: &str) -> PathBuf {
+    let matches: Vec<PathBuf> = golden_sources()
+        .into_iter()
+        .filter(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(name))
+        .collect();
+    match matches.len() {
+        1 => matches.into_iter().next().expect("one match"),
+        0 => panic!("no golden named {name}"),
+        _ => panic!("{} goldens named {name}", matches.len()),
+    }
 }
 
 /// A temporary directory that removes itself, under the repository's own

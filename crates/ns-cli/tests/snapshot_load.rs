@@ -2,14 +2,14 @@
 
 use indoc::indoc;
 mod common;
-use common::{fixture, ns_next, ScratchDirectory};
+use common::{golden, ns_next, ScratchDirectory};
 use std::path::Path;
 
 #[test]
 fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
     let directory = ScratchDirectory::new("arithmetic");
     let image = directory.join("world.img");
-    let source = fixture("arithmetic.ns");
+    let source = golden("arithmetic");
     let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -40,7 +40,7 @@ fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
 fn a_loaded_world_does_not_rerun_its_instance_initializer() {
     let directory = ScratchDirectory::new("instance-init");
     let image = directory.join("world.img");
-    let source = fixture("instance_init.ns");
+    let source = golden("instance_init");
     let (ok, out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     assert!(out.starts_with("init ran\n"), "{out}");
@@ -68,10 +68,11 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
 fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
     let directory = ScratchDirectory::new("nested-outer-inherited");
     let image = directory.join("world.img");
-    let source = fixture("nested_outer_inherited.ns");
-    let expected = std::fs::read_to_string(fixture("nested_outer_inherited.expected"))
-        .expect("read expected")
-        .replace("\r\n", "\n");
+    let source = golden("nested_outer_inherited");
+    let expected =
+        std::fs::read_to_string(golden("nested_outer_inherited").with_extension("expected"))
+            .expect("read expected")
+            .replace("\r\n", "\n");
     let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -97,7 +98,7 @@ fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
 fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
     let directory = ScratchDirectory::new("summary");
     let image = directory.join("world.img");
-    let source = fixture("hello.ns");
+    let source = golden("hello");
     let (ok, _out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     let (ok, out, _error) = ns_next(&["load".as_ref(), image.as_os_str()]);
@@ -170,13 +171,8 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
 /// -- and it is asserted per fixture rather than argued.
 #[test]
 fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
     let mut checked = 0;
-    for entry in std::fs::read_dir(&directory).expect("read tests-fixtures") {
-        let source = entry.expect("dir entry").path();
-        if source.extension().and_then(|extension| extension.to_str()) != Some("ns") {
-            continue;
-        }
+    for source in common::golden_sources() {
         let name = source
             .file_stem()
             .expect("stem")
@@ -190,7 +186,7 @@ fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
 }
 
 /// The failing direction of the same property, on an inline source rather
-/// than a fixture (every `tests-fixtures/*.ns` must exit zero, so a program
+/// than a fixture (every `goldens/**/*.ns` must exit zero, so a program
 /// that raises cannot live there). The uncaught-error line is written by
 /// the shared `report_entry_send` on both paths; this is what pins that it
 /// stays shared.
@@ -229,7 +225,7 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
 fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
     let directory = ScratchDirectory::new("corruption");
     let image = directory.join("world.img");
-    let source = fixture("blocks_and_return.ns");
+    let source = golden("blocks_and_return");
     let (ok, _out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -277,7 +273,7 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 /// image can be exported back to `.ns` while no decompiler exists.
 #[test]
 fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
-    let source = fixture("arithmetic.ns");
+    let source = golden("arithmetic");
     let text = std::fs::read_to_string(&source).expect("read fixture");
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail

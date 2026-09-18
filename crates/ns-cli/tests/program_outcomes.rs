@@ -70,7 +70,7 @@ fn a_does_not_understand_error() {
 /// side of its own; its superclass `Widget` does, but `SpecialWidget
 /// describe` must not reach it -- an ordinary `doesNotUnderstand:`, exiting
 /// non-zero, is the only fixture-shaped outcome this program has, which is
-/// why it is pinned here rather than as a `tests-fixtures/*.ns` fixture:
+/// why it is pinned here rather than as a `goldens/**/*.ns` fixture:
 /// `run_fixtures.rs` requires every one of those to succeed.
 #[test]
 fn a_class_side_is_not_inherited_by_a_subclass_with_none_of_its_own() {

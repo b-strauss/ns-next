@@ -1,5 +1,6 @@
-use std::path::Path;
 use std::process::Command;
+
+mod common;
 
 /// Normalizes line endings before comparison. The CLI always writes `\n`
 /// (via `println!`/`print!` on any platform, Rust does not translate
@@ -17,18 +18,12 @@ fn normalize_newlines(text: &str) -> String {
 /// reference lowering"). Each must produce the recorded answer.
 const LOWERINGS: [&str; 2] = ["optimized", "reference"];
 
-/// Every fixture succeeds, prints exactly its `.expected` stdout -- every
+/// Every golden succeeds, prints exactly its `.expected` stdout -- every
 /// byte, the final newline included -- and writes nothing to stderr, under
 /// both lowerings.
 #[test]
 fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
-    let mut checked = 0;
-    for entry in std::fs::read_dir(&directory).expect("read tests-fixtures") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("ns") {
-            continue;
-        }
+    for path in common::golden_sources() {
         let expected_path = path.with_extension("expected");
         let expected = std::fs::read_to_string(&expected_path)
             .unwrap_or_else(|_| panic!("missing {}", expected_path.display()));
@@ -60,17 +55,44 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
                 path.display()
             );
         }
-        checked += 1;
     }
-    // A floor rather than whatever the directory yields: a fixture that
-    // stops being discovered -- renamed, moved, its extension changed --
-    // loses its expected-output check without any test failing, so the
-    // floor tracks the actual count.
+}
+
+/// Every golden is a pair, checked in both directions. The floor this
+/// replaced counted what the walk found, which cannot detect the thing it
+/// was there to detect: a golden that stops being discovered because it was
+/// renamed, moved or given another extension. An orphan on either side is
+/// exactly that event, and it fails here.
+#[test]
+fn every_golden_is_a_complete_pair() {
+    let mut missing_expectation = Vec::new();
+    for source in common::golden_sources() {
+        let expectation = source.with_extension("expected");
+        if !expectation.exists() {
+            missing_expectation.push(source.display().to_string());
+        }
+    }
+    let mut orphaned_expectation = Vec::new();
+    let root = common::goldens_root();
+    for category in std::fs::read_dir(&root).expect("read goldens") {
+        let category = category.expect("category entry").path();
+        if !category.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&category).expect("read category") {
+            let path = entry.expect("golden entry").path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("expected") {
+                continue;
+            }
+            if !path.with_extension("ns").exists() {
+                orphaned_expectation.push(path.display().to_string());
+            }
+        }
+    }
     assert!(
-        checked >= 42,
-        "expected every one of the 42 tests-fixtures/*.ns fixtures to be \
-         compared against its .expected file, checked {checked} -- raise \
-         this floor when adding a fixture, never lower it"
+        missing_expectation.is_empty() && orphaned_expectation.is_empty(),
+        "goldens without an expectation: {missing_expectation:?}; \
+         expectations without a golden: {orphaned_expectation:?}"
     );
 }
 
@@ -80,12 +102,7 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
 #[cfg(debug_assertions)]
 #[test]
 fn every_fixture_answers_alike_with_a_two_entry_global_cache() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
-    for entry in std::fs::read_dir(&directory).expect("read tests-fixtures") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("ns") {
-            continue;
-        }
+    for path in common::golden_sources() {
         let expected = std::fs::read_to_string(path.with_extension("expected"))
             .expect("every fixture has its expected output");
         let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))

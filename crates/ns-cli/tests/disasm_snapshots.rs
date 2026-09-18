@@ -9,13 +9,16 @@ use indoc::indoc;
 mod common;
 use common::ScratchDirectory;
 
-use std::path::Path;
 use std::process::Command;
 
 fn disasm(file: &str, arguments: &[&str]) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-fixtures")
-        .join(file);
+    // `file` still carries its `.ns` extension for readability at each call
+    // site below, but `common::golden` takes the bare name and finds it
+    // under whichever category now holds it.
+    let name = file
+        .strip_suffix(".ns")
+        .unwrap_or_else(|| panic!("{file} does not end in .ns"));
+    let path = common::golden(name);
     let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
         .arg(&path)
@@ -78,7 +81,7 @@ fn disasm_control_flow_fallback_main_under_the_reference_lowering() {
 
 #[test]
 fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/hello.ns");
+    let path = common::golden("hello");
     let missing = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
         .arg(&path)
@@ -100,7 +103,7 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 
 /// `--class` addresses a nested class's own method and a class side's own
 /// method by mixin path, and reports a clean error (not a panic) for a
-/// path segment that names nothing in the tree. Not a `tests-fixtures/`
+/// path segment that names nothing in the tree. Not a `goldens/`
 /// fixture: this only exercises `disasm`'s addressing and never runs the
 /// module, while every fixture is run end to end and checked against its
 /// `.expected` file by `run_fixtures.rs`.
@@ -173,7 +176,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 /// these ever differ, the image's code table is not what the compiler emitted.
 #[test]
 fn disasm_of_an_image_matches_disasm_of_its_source() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let source = common::golden("arithmetic");
     let directory = ScratchDirectory::new("disasm-img");
     let image = directory.join("world.img");
 
@@ -216,7 +219,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
 /// image form never exercises) could have passed the image test above.
 #[test]
 fn disasm_of_a_binary_matches_disasm_of_its_source() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let source = common::golden("arithmetic");
     let directory = ScratchDirectory::new("disasm-bin");
     let binary = directory.join("app.nsb");
 
