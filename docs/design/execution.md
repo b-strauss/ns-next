@@ -2052,6 +2052,98 @@ least-recently-used groups folded it into the rule as
 measured cost either way. What the control measured is the cost of the key
 knowing N at all, in whichever of the two shapes it is carried.
 
+### What 3c moved
+
+3c moved the dispatch id a guard reads from the class object into the object
+header ([dispatch.md](dispatch.md), "3c — The dispatch id in the object
+header"). Two variants were measured on 2026-09-18 against `393311f`, the
+last commit before 3c that changed a send's path, and against `be3eb40`:
+**C2** (`681126d`), the id in the header, and **C2+** (`5d3aeff`), the id in
+the header with `ClassData` boxed out of `ObjectData`, which is what was
+kept. `fbd0bef`, the commit the step started from, ran beside them. The
+protocol is the one above: every binary, the current tree included, built
+with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
+the earlier commits in throwaway worktrees; no binary imports
+`VCRUNTIME140.dll`; every binary checked to print the expected answer for all
+eight sources first, `be3eb40` included; `ns-next bench <source>
+--iterations 30`, five rounds, the order of the five binaries rotating from
+round to round; two whole sittings, nothing else running.
+
+**C2+ is level with `393311f` on every source.** Change of the mean,
+sitting 1 / sitting 2, with the protocol's gate; the rounds are sitting 1's
+medians in ms:
+
+| Source | `393311f`, rounds 1–5 | mean | C2+, rounds 1–5 | mean | change | gate |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.59, 10.44, 10.58, 10.55, 10.66 | 10.563 | 10.57, 10.47, 10.34, 10.33, 10.35 | 10.413 | −1.41% / −2.00% | overlapping in both |
+| `bench_send.ns` | 11.58, 11.57, 11.58, 11.76, 11.72 | 11.641 | 11.51, 11.61, 11.56, 11.50, 11.59 | 11.554 | −0.75% / −2.78% | entirely below in the second |
+| `bench_block.ns` | 20.32, 20.16, 20.20, 20.25, 20.45 | 20.276 | 20.24, 20.39, 20.29, 20.25, 20.29 | 20.291 | +0.07% / +0.15% | overlapping in both |
+| `bench_do.ns` | 7.01, 7.04, 7.09, 7.31, 7.10 | 7.110 | 6.99, 7.15, 6.99, 7.04, 7.13 | 7.060 | −0.70% / −1.94% | overlapping in both |
+| `bench_new.ns` | 6.30, 6.21, 6.14, 6.22, 6.29 | 6.234 | 6.16, 6.16, 6.15, 6.16, 6.21 | 6.167 | −1.07% / −0.85% | overlapping in both |
+| `bench_new2.ns` | 7.17, 7.28, 7.17, 7.15, 7.26 | 7.207 | 7.19, 7.13, 7.26, 7.21, 7.12 | 7.181 | −0.36% / −0.97% | overlapping in both |
+| `bench_newarg.ns` | 9.20, 9.12, 9.13, 9.16, 9.20 | 9.161 | 9.10, 9.09, 9.19, 9.20, 9.06 | 9.127 | −0.37% / −2.09% | overlapping in both |
+| `bench_megamorphic.ns` | 16.94, 17.25, 17.26, 17.35, 17.12 | 17.183 | 16.67, 16.66, 16.75, 16.68, 16.94 | 16.740 | −2.58% / −1.62% | entirely below in the first |
+
+The means moved down in 14 of the 16 cells, by 0.4–2.8%, but **no source is
+entirely below `393311f` in both sittings**, which is what the protocol
+accepts as a real change; the two single-sitting results do not repeat in
+the other sitting. C2 is level too: −0.25% to −2.44% in 15 of 16 cells and
++0.30% on `bench_do.ns`'s first sitting, entirely below only on
+`bench_megamorphic.ns` in the first sitting. `fbd0bef` is level with
+`393311f` everywhere, −1.29% to +1.62%, every group overlapping.
+
+Means in ms, sitting 1 / sitting 2:
+
+| Source | `be3eb40` | `393311f` | `fbd0bef` | C2 | C2+ |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.461 / 11.436 | 10.563 / 10.575 | 10.685 / 10.561 | 10.488 / 10.428 | 10.413 / 10.363 |
+| `bench_send.ns` | 14.215 / 14.167 | 11.641 / 11.811 | 11.786 / 11.756 | 11.612 / 11.588 | 11.554 / 11.483 |
+| `bench_block.ns` | 23.915 / 23.901 | 20.276 / 20.221 | 20.450 / 20.549 | 20.020 / 19.970 | 20.291 / 20.252 |
+| `bench_do.ns` | 8.241 / 8.263 | 7.110 / 7.185 | 7.150 / 7.176 | 7.131 / 7.009 | 7.060 / 7.046 |
+| `bench_new.ns` | 7.651 / 7.653 | 6.234 / 6.252 | 6.247 / 6.231 | 6.193 / 6.133 | 6.167 / 6.199 |
+| `bench_new2.ns` | 8.620 / 8.542 | 7.207 / 7.221 | 7.223 / 7.289 | 7.161 / 7.149 | 7.181 / 7.151 |
+| `bench_newarg.ns` | 10.932 / 10.885 | 9.161 / 9.243 | 9.209 / 9.175 | 9.061 / 9.071 | 9.127 / 9.049 |
+| `bench_megamorphic.ns` | 18.408 / 18.292 | 17.183 / 17.059 | 16.962 / 17.031 | 16.794 / 16.775 | 16.740 / 16.783 |
+
+**Every source stays well below `be3eb40`**, every group entirely below in
+both sittings. C2+: `bench_loop.ns` −9.1% / −9.4%, `bench_send.ns` −18.7% /
+−19.0%, `bench_block.ns` −15.2% / −15.3%, `bench_do.ns` −14.3% / −14.7%,
+`bench_new.ns` −19.4% / −19.0%, `bench_new2.ns` −16.7% / −16.3%,
+`bench_newarg.ns` −16.5% / −16.9%, `bench_megamorphic.ns` −9.1% / −8.3%.
+
+**`vm::run`'s step is still inline.** `dumpbin /disasm` on release builds
+with debug information finds no `vm::run::closure` function in `393311f`, C2
+or C2+: `vm::run` is one function of 4,926 instructions at `393311f` (the
+count "What the step before 3c moved" recorded for the same commit), 4,863
+at C2 and 4,878 at C2+.
+
+**Sizes, and what they cost.** `size_of::<Object>()`, the amplification a
+crafted image can reach at the graph section ([memory.md](memory.md);
+record minima 6 and 18 bytes, a frame-arena entry 136 bytes in release and
+160 in debug, unchanged by 3c), and the peak working set (`PeakWorkingSet64`):
+
+| Binary | `Object`, release / debug | Amplification, release / debug | Peak working set, `run-corpus` | Peak working set, `bench_block.ns --iterations 30` |
+|---|---|---|---|---|
+| `393311f` | 56 B / 96 B | 16.9x / 24.9x | 4.598 MB | 454.699 MB |
+| C2 | 64 B / 104 B | 18.2x / 26.2x | 4.598 MB | 466.559 MB |
+| C2+ | 56 B / 80 B | 16.9x / 22.2x | 4.590 MB | 454.727 MB |
+
+C2 costs `bench_block.ns`, which allocates heavily, 11.9 MB (2.6%) at its
+peak, its 8 bytes an object; C2+ is within 0.03 MB of `393311f`. Boxing
+`ClassData` gave back exactly what the header's id took in release, and more
+than that in debug, where every handle `ClassData` held also carries its
+heap's id and a move epoch. `run-corpus` is too small to show either.
+
+**What the protocol cannot see.** The interpreter's guard is one step among
+the run loop's dispatch, decoding and bookkeeping, and a load more or less
+before the compare is lost in them. The difference the header makes is to a
+compiled guard: one compare against the receiver at a fixed offset, against
+two dependent loads, a check that the class is a class object and a branch
+for the class side — which is why the header was kept on a measurement that
+shows it level ([dispatch.md](dispatch.md), "3c — The dispatch id in the
+object header").
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the

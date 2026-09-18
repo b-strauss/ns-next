@@ -598,13 +598,15 @@ map holds `Rc`s to code, which hold no handle. The table lives in the step
 state, per heap, so nothing in it is ever reached from another heap, and a
 move leaves every entry valid. The numbers the caches add to traced records
 are not handles either, and their `Trace` impls say so: a stack entry's and a
-closure's `feedback_base` (`ClosureData.feedback_base`), and a class
-object's `ClassData.dispatch_id`. The ids a cache guards on are per heap and
-never serialized; a class object stores only the instances id, in padding
-`ClassData` already had, so an `Object` is still 56 bytes in a release
-build. Step 3c may move the id into the object header, where it would change
-`Object`'s size and so the amplification figures below, and would still not
-be a handle.
+closure's `feedback_base` (`ClosureData.feedback_base`), a class object's
+`ClassData.dispatch_id`, and the dispatch id every object carries in its
+header (`Object.dispatch_id`), which is what a guard reads
+([dispatch.md](dispatch.md), "The dispatch id"). The ids a cache guards on
+are per heap and never serialized. The header's id is a number, not a
+handle: the tracer does not visit it, and a move carries it along with the
+rest of the object. Its four bytes are paid for by boxing a class object's
+data (`ObjectData::Class(Box<ClassData>)`), so an `Object` is still 56 bytes
+in a release build and the amplification figures below did not move there.
 
 ### Checking the roots before a collector exists: the stress mode
 
@@ -848,11 +850,15 @@ its variables. After it, a surviving block holds exactly what it captured.
   |---|---|---|---|
   | Record minimum | 6 B | 18 B | — |
   | Release size | 56 B → 9.3x | 136 B → 7.6x | **~16.9x** |
-  | Debug size | 96 B → 16.0x | 160 B → 8.9x | ~24.9x |
+  | Debug size | 80 B → 13.3x | 160 B → 8.9x | ~22.2x |
 
   The release `Object` size is pinned by a release-build test
-  (`an_object_stays_the_size_the_amplification_figure_assumes`, `heap.rs`),
-  so a field that grows it fails there before this figure goes stale.
+  (`an_object_is_the_size_the_amplification_figure_assumes`, `heap.rs`),
+  so a field that grows it fails there before this figure goes stale. It is
+  56 bytes rather than 48 because `ClosureData` — two `Rc`s, two
+  `FrameReference`s and a `FeedbackBase`, 32 bytes — is `ObjectData`'s
+  largest payload now that a class object's data is boxed; a placeholder
+  record is an empty instance and allocates no box.
 
   A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
   152 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
