@@ -1,0 +1,14 @@
+Newspeak3
+'T'
+class SuperPrivate usingPlatform: platform = Object new (
+) (
+    class SuperBase = Object new () (
+        private p = ( ^10 )
+    )
+    class SuperChild = SuperBase new () (
+        public run = ( ^super p )
+    )
+    public main: pl args: a = (
+        SuperChild new run
+    )
+) : ()

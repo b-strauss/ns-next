@@ -1,0 +1,10 @@
+Newspeak3
+'T'
+class DeferredSuper usingPlatform: platform = Object new (
+) (
+    unreached = ( ^super )
+    public main: p args: a = (
+        p transcript show: 'before'; newLine.
+        ^self unreached
+    )
+) : ()

@@ -1,0 +1,11 @@
+Newspeak3
+'T'
+class PrivateNested usingPlatform: platform = Object new (
+) (
+    class Holder = Object new () (
+        private class Hidden = Object new () ()
+    )
+    public main: pl args: a = (
+        Holder new Hidden
+    )
+) : ()

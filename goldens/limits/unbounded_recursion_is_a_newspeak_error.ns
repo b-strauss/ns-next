@@ -1,0 +1,10 @@
+Newspeak3
+'T'
+class Unbounded usingPlatform: platform = Object new (
+) (
+    down: n = ( ^1 + (down: n + 1) )
+    public main: p args: a = (
+        p transcript show: 'start'; newLine.
+        down: 0
+    )
+) : ()

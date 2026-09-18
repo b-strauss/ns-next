@@ -1,0 +1,9 @@
+Newspeak3
+'T'
+class ProtectedSlot usingPlatform: platform = Object new (
+) (
+    class Holder = Object new (| w = 3. |) ()
+    public main: pl args: a = (
+        Holder new w
+    )
+) : ()

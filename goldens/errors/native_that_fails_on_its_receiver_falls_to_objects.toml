@@ -1,0 +1,12 @@
+status = 1
+stdout = '''
+true
+an Object
+an Object
+an Object
+an Object
+false
+'''
+stderr = '''
+Uncaught Newspeak error: an object does not understand #size
+'''

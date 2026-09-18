@@ -1,0 +1,14 @@
+Newspeak3
+'T'
+class InheritedPrivate usingPlatform: platform = Object new (
+) (
+    class Base2 = Object new () (
+        private p = ( ^10 )
+    )
+    class Child2 = Base2 new () (
+        public run = ( ^p )
+    )
+    public main: pl args: a = (
+        Child2 new run
+    )
+) : ()

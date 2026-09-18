@@ -1,0 +1,8 @@
+Newspeak3
+'T'
+class BareSuper usingPlatform: platform = Object new (
+) (
+    public main: p args: a = (
+        ^super
+    )
+) : ()

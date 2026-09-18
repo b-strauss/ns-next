@@ -1,0 +1,10 @@
+Newspeak3
+'Test'
+class InitBlockReturn usingPlatform: platform = Object new (
+    | blk = [ ^2 ]. |
+) (
+    public main: p args: a = (
+        blk value.
+        p transcript show: 'unreachable'; newLine
+    )
+) : ()

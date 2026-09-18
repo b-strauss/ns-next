@@ -1,0 +1,15 @@
+Newspeak3
+'Test'
+class StoredBlockReturn usingPlatform: platform = Object new (
+    | blk ::= nil. |
+) (
+    stash = (
+        blk := [^'too late'].
+        ^'stashed'
+    )
+    public main: p args: a = (
+        p transcript show: self stash; newLine.
+        blk value.
+        p transcript show: 'unreachable'; newLine
+    )
+) : ()

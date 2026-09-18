@@ -1,0 +1,10 @@
+Newspeak3
+'T'
+class Tower usingPlatform: platform = Object new (
+) (
+    public class Floor = Object new (
+        | above = Floor new. |
+    ) (
+    )
+    public main: p args: a = ( Floor new )
+) : ()

@@ -1,0 +1,13 @@
+Newspeak3
+'T'
+class Chain usingPlatform: platform = Object new (
+) (
+    public class Link = Object new (
+    ) (
+        public class Next = self deeper (
+        ) (
+        )
+        deeper = ( ^Link new Next )
+    )
+    public main: p args: a = ( Link new Next )
+) : ()

@@ -1,0 +1,35 @@
+Newspeak3
+'T'
+class SetterValue usingPlatform: platform = Object new (
+    | blk ::= nil. |
+) (
+    public class Init new: n = Object new (
+        | hook = [n := 99]. answer = (x := n). |
+    ) (
+        x: v = ( hook value )
+        public result = ( ^answer )
+    )
+    x: v = ( blk value )
+    returned = ( | y | y := 1. blk := [y := 99]. ^x := y )
+    returnedFromABlock = ( [ | z | z := 1. blk := [z := 99]. ^x := z ] value. ^0 )
+    blockValue = ( ^[ | z | z := 1. blk := [z := 99]. x := z ] value )
+    inlinedBranch: c = ( | y | y := 1. blk := [y := 99]. ^c ifTrue: [x := y] ifFalse: [0] )
+    inlinedAnd = ( | y | y := true. blk := [y := false]. ^true and: [x := y] )
+    inlinedCondition = (
+        | y count |
+        y := true.
+        count := 0.
+        blk := [y := false].
+        [x := y] whileTrue: [count := count + 1].
+        ^count
+    )
+    public main: p args: a = (
+        p transcript show: self returned printString; newLine.
+        p transcript show: self returnedFromABlock printString; newLine.
+        p transcript show: self blockValue printString; newLine.
+        p transcript show: (self inlinedBranch: true) printString; newLine.
+        p transcript show: self inlinedAnd printString; newLine.
+        p transcript show: self inlinedCondition printString; newLine.
+        p transcript show: (Init new: 1) result printString; newLine
+    )
+) : ()

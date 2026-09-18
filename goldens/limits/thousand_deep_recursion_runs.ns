@@ -1,0 +1,9 @@
+Newspeak3
+'T'
+class Deep usingPlatform: platform = Object new (
+) (
+    deepStack: n = ( ^0 = n ifTrue: [0] ifFalse: [n + (deepStack: n - 1) + n] )
+    public main: p args: a = (
+        p transcript show: (deepStack: 1000) printString; newLine
+    )
+) : ()

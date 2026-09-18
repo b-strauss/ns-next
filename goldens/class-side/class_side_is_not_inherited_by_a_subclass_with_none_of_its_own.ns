@@ -1,0 +1,13 @@
+Newspeak3
+'Test'
+class ClassSideNotInherited usingPlatform: platform = Object new (| transcript ::= platform transcript. |) (
+    public class Widget new = Object new () (
+    ) : (
+        public describe = ( ^'a widget class' )
+    )
+    public class SpecialWidget new = Widget new () (
+    )
+    public main: platform args: args = (
+        transcript show: SpecialWidget describe; newLine.
+    )
+) : ()

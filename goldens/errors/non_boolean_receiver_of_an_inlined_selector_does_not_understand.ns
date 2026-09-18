@@ -1,0 +1,8 @@
+Newspeak3
+'T'
+class IfDnu usingPlatform: platform = Object new (
+) (
+    public main: p args: a = (
+        3 ifTrue: ['a'] ifFalse: ['b']
+    )
+) : ()

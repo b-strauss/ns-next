@@ -1,0 +1,9 @@
+Newspeak3
+'T'
+class ImmutableSetter usingPlatform: platform = Object new (
+) (
+    class Holder = Object new (| public y = 1. |) ()
+    public main: pl args: a = (
+        Holder new y: 2
+    )
+) : ()

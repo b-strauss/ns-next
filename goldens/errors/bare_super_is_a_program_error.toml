@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: internal: unresolved identifier `super`
+'''

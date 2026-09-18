@@ -1,0 +1,21 @@
+Newspeak3
+'T'
+class Sub usingPlatform: platform = Object new (
+) (
+    class Text = String new () (
+        public viaSelf = ( ^self printString )
+        public viaSuper = ( ^super printString )
+        public viaLexical = ( ^printString )
+    )
+    public main: p args: a = (
+        | t |
+        t := Text new.
+        p transcript show: (t = t) printString; newLine.
+        p transcript show: t printString; newLine.
+        p transcript show: t viaSelf; newLine.
+        p transcript show: t viaSuper; newLine.
+        p transcript show: t viaLexical; newLine.
+        p transcript show: (p transcript = p transcript) printString; newLine.
+        p transcript show: t size printString; newLine
+    )
+) : ()

@@ -1,0 +1,17 @@
+status = 1
+stdout = '''
+true 'abc'
+true an Object
+true 'abc'
+true an Object
+true
+true
+true
+3
+2
+shown
+shown
+'''
+stderr = '''
+Uncaught Newspeak error: an object does not understand #show:
+'''
