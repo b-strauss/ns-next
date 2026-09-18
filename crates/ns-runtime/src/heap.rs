@@ -693,8 +693,9 @@ impl<'gc> Heap<'gc> {
         let handle = self.object_handle(index);
         // Its own class is itself, not yet in the arena to read, so the id
         // comes from `data` alone: its own class-side id when `data` is a
-        // class, `NONE` otherwise -- an object whose own class is not a class
-        // object could never be a class object either.
+        // class, `NONE` otherwise -- the object is not a class object and,
+        // being its own class, has no class that could supply an instances
+        // id.
         let dispatch_id = match &data {
             ObjectData::Class(own) => own.dispatch_id.class_side(),
             _ => DispatchId::NONE,
@@ -1405,6 +1406,10 @@ impl<'gc> Heap<'gc> {
     /// image makes an instance of one.
     fn header_dispatch_id(&self, class: ClassReference<'gc>, data: &ObjectData<'gc>) -> DispatchId {
         if let ObjectData::Class(own) = data {
+            // Goes once a class object's own class is its metaclass
+            // (`docs/design/object-model.md`, "Class sides and metaclasses";
+            // step 6, `docs/PROGRESS.md`) -- then its id is its class's
+            // instances id like any other object's.
             return own.dispatch_id.class_side();
         }
         self.check_object_origin(class);
@@ -1417,7 +1422,7 @@ impl<'gc> Heap<'gc> {
     /// The dispatch id an inline cache guards `value`'s send on
     /// (`docs/design/dispatch.md`, "The dispatch id"): an object's is in its
     /// header -- one arena load -- and an immediate's in a table. Nothing
-    /// outside this function knows where the id lives.
+    /// outside this file knows where the id lives.
     #[inline(always)]
     pub fn dispatch_id(&self, value: &Value<'gc>) -> DispatchId {
         let Value::Object(object) = value else {
