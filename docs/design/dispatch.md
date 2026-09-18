@@ -1056,7 +1056,7 @@ instance's guard cost two arena loads, a class object's one load and an add:
 
 **Neither variant is faster than `393311f` by the protocol's gate.** C2+'s
 means moved −0.4% to −2.8% in 14 of its 16 source-and-sitting cells, and
-`bench_block.ns` +0.1% in both sittings, but no source is entirely below
+`bench_block.ns` +0.1% / +0.2%, but no source is entirely below
 `393311f` in both sittings for either variant — only single-sitting results,
 which the protocol does not count. `vm::run`'s step stayed inline in both
 ([execution.md](execution.md), "What 3c moved", which has every number).

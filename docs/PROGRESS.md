@@ -116,11 +116,12 @@ and a parameter slot refusing a setter send (§3.6). Each has a golden under
 requires — `spec_5_7_a_member_set_is_per_declaration_not_per_name`,
 `spec_5_1_6_equal_symbols_are_one_object` and
 `spec_3_6_a_parameter_slot_is_immutable` — and a fix is done when its
-`skipped` line is deleted and the recorded answer holds. The plan goes under `docs/superpowers/plans/`, named by the
-convention in `CLAUDE.md`. The gaps are done together because at least two
-of them can move the measurement — the member-set fix is in the resolver,
-and interning symbol literals changes a value representation that selectors
-share — so they are measured once, not once per fix. The failure mode to
+`skipped` line is deleted and the recorded answer holds. The plan goes
+under `docs/superpowers/plans/`, named by the convention in `CLAUDE.md`.
+The gaps are done together because at least two of them can move the
+measurement — the member-set fix is in the resolver, and interning symbol
+literals changes a value representation that selectors share — so they are
+measured once, not once per fix. The failure mode to
 avoid is the tempting one: closing a gap here and there between measured
 steps, after which no number compares with any other.
 
@@ -149,12 +150,13 @@ in that document, not in the 2c plan.
 protocol's explicit flags through `RUSTFLAGS`** — `+crt-static` and the
 function-alignment pin, which no configuration carries — with two sittings
 for a whole step, compared against the baseline; every measurement through
-step 3 compared against `be3eb40` as well (the findings below). The latest measurement, and the template for
-the next, is [execution.md](design/execution.md), "What 3c moved". The
-member-set fix is in the resolver, ahead of the run loop, but interning
-symbol literals touches what a send's selector is, so the measurement should
-check with `dumpbin /disasm` that `vm::run`'s step is still inline before it
-times anything (the second finding below).
+step 3 compared against `be3eb40` as well (the findings below). The latest
+measurement, and the template for the next, is
+[execution.md](design/execution.md), "What 3c moved". The member-set fix
+is in the resolver, ahead of the run loop, but interning symbol literals
+touches what a send's selector is, so the measurement should check with
+`dumpbin /disasm` that `vm::run`'s step is still inline before it times
+anything (the second finding below).
 
 **Known gaps the step left**, each recorded where it applies:
 
@@ -287,7 +289,7 @@ but fails loudly.
   above in both sittings — and every source is still 6.7–18.2% below
   `be3eb40`, entirely below in both
   ([execution.md](design/execution.md), "What the step before 3c moved").
-  3c left every source 8.3–19.0% below `be3eb40`, entirely below in both
+  3c left every source 8.3–19.4% below `be3eb40`, entirely below in both
   sittings ([execution.md](design/execution.md), "What 3c moved"). None is
   slower. The rule as decided ran up to and including step 3, which is
   complete; whether the specification gaps' measurement still carries
@@ -2534,7 +2536,7 @@ the protocol's gate: the kept variant's means moved −0.4% to −2.8% in 14 of
 `Object` to 64 bytes, the release amplification to 18.2x and
 `bench_block.ns`'s peak working set by 2.6%; the boxed variant keeps 56 bytes
 and 16.9x, and takes the debug amplification from 24.9x to 22.2x. Every
-source is 8.3–19.0% below `be3eb40`. `vm::run` is still one function, 4,878
+source is 8.3–19.4% below `be3eb40`. `vm::run` is still one function, 4,878
 instructions against 4,926 at `393311f` ([execution.md](design/execution.md),
 "What 3c moved").
 
