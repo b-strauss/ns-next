@@ -2278,7 +2278,7 @@ pub fn decode_graph_section<'gc>(
                     object: index,
                     mixin,
                 });
-                ObjectData::Class(data)
+                ObjectData::Class(Box::new(data))
             }
             tag => {
                 return Err(DecodeError::InvalidTag {

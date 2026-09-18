@@ -2455,13 +2455,13 @@ mod tests {
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
         });
-        heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
+        heap.allocate_self_referential_class(ObjectData::Class(Box::new(ClassData::new(
             application,
             None,
             None,
             None,
             None,
-        )))
+        ))))
     }
 
     /// `describe`'s `ObjectData::Instance` arm is the one non-mechanical
@@ -3020,15 +3020,16 @@ mod tests {
 
     /// `CLAUDE.md`'s "An image is untrusted input" paragraph and
     /// `docs/design/memory.md` pin the decoder's placeholder-arena
-    /// amplification against this size. With the dispatch id copied into the
-    /// header (`docs/design/dispatch.md`, "3c"), `Object` grows from 56 to 64
-    /// bytes in a release build; Task 4 remeasures the figure and updates
-    /// both documents for whichever header-shape variant is chosen. This
-    /// test only pins the size that measurement assumes, so a future change
-    /// here is a deliberate, documented one rather than a silent drift.
+    /// amplification against this size. With `ClassData` boxed out of
+    /// `ObjectData` (`docs/design/dispatch.md`, "3c", C2+), `Object` shrinks
+    /// from 64 to 56 bytes in a release build -- not the 48 the design
+    /// expected, because `ClosureData`, not the now-boxed `ClassData`, is the
+    /// largest remaining payload. This test only pins the size CLAUDE.md's
+    /// and memory.md's amplification figure assumes; that figure itself is
+    /// settled once a header-shape variant is chosen, not by this test.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {
-        assert_eq!(std::mem::size_of::<Object>(), 64);
+        assert_eq!(std::mem::size_of::<Object>(), 56);
     }
 }

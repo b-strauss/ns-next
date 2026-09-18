@@ -56,7 +56,10 @@ pub enum ObjectData<'gc> {
     Symbol(Symbol),
     Array(Vec<Value<'gc>>),
     Closure(ClosureData<'gc>),
-    Class(ClassData<'gc>),
+    /// Boxed: a class object's data is what would otherwise set every
+    /// object's size, and class objects are few (`docs/design/dispatch.md`,
+    /// "3c", C2+).
+    Class(Box<ClassData<'gc>>),
 }
 
 /// A class object is *identity*; everything a class object can *do* lives
@@ -488,13 +491,13 @@ mod tests {
     /// ordinary safe Rust under the arena: the slot's index is known before
     /// the slot is filled.
     fn dummy_class<'gc>(heap: &mut crate::Heap<'gc>) -> ClassReference<'gc> {
-        heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
+        heap.allocate_self_referential_class(ObjectData::Class(Box::new(ClassData::new(
             empty_application("Object"),
             None,
             None,
             None,
             Some(BuiltinClass::Object),
-        )))
+        ))))
     }
 
     #[test]

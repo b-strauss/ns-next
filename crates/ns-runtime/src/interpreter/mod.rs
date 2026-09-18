@@ -1293,13 +1293,13 @@ impl<'gc> Mutator<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
         self.heap.allocate_object(
             class,
-            ObjectData::Class(ClassData::new(
+            ObjectData::Class(Box::new(ClassData::new(
                 application,
                 enclosing,
                 declaring_class,
                 superclass,
                 None,
-            )),
+            ))),
         )
     }
 
@@ -1474,13 +1474,13 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
         let application = mutator.apply_mixin(&builtin_mixin(kind), Some(&object_application));
         classes.push(mutator.heap.allocate_object(
             class_of_class,
-            ObjectData::Class(ClassData::new(
+            ObjectData::Class(Box::new(ClassData::new(
                 application,
                 None,
                 None,
                 Some(class_of_class),
                 Some(kind),
-            )),
+            ))),
         ));
     }
     classes
@@ -1507,13 +1507,13 @@ fn build_self_referential_object_class<'gc>(
     heap: &mut Heap<'gc>,
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassReference<'gc> {
-    heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
+    heap.allocate_self_referential_class(ObjectData::Class(Box::new(ClassData::new(
         application,
         None,
         None,
         None,
         Some(BuiltinClass::Object),
-    )))
+    ))))
 }
 
 #[cfg(test)]

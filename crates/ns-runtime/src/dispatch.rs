@@ -493,7 +493,13 @@ mod tests {
         let class_of_class = dummy_class(heap);
         heap.allocate_object(
             class_of_class,
-            ObjectData::Class(ClassData::new(application, None, None, superclass, None)),
+            ObjectData::Class(Box::new(ClassData::new(
+                application,
+                None,
+                None,
+                superclass,
+                None,
+            ))),
         )
     }
 
