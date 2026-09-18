@@ -448,8 +448,8 @@ fn a_second_site_fills_from_the_global_cache() {
 /// *read* that entry instead of resolving again and overwriting it -- both
 /// leave one entry behind, and `filled_global_entries` cannot tell them
 /// apart; `a_vacant_lexical_site_does_not_borrow_a_different_ns_entry` below
-/// is what actually depends on the fourth component, since it goes red the
-/// moment it is dropped.
+/// is what actually depends on N being part of the `Lexical` rule's payload,
+/// since it goes red the moment that payload is dropped from the comparison.
 #[test]
 fn a_vacant_lexical_site_uses_the_global_cache() {
     let source = indoc! {"
@@ -473,25 +473,26 @@ fn a_vacant_lexical_site_uses_the_global_cache() {
     );
 }
 
-/// The behavioural pin the fourth key component exists for. `Derived`
-/// overrides `Base`'s private `helper` with a public one; `fromDerived`
-/// (N = `Derived`) fills the `Lexical` row under `(Derived`'s dispatch id,
-/// `#helper`, `Lexical`, `Derived`'s application)`. `fromBase`'s own site is
-/// then still vacant, and reaches the very same `o` -- the same `Derived`
-/// instance, so the same dispatch id -- under the same selector, but with
-/// N = `Base`, which declares `helper` private. Without N in the key, that
-/// still-vacant site would read `Derived`'s entry and answer with
+/// The behavioural pin N's place in the `Lexical` rule's payload exists for.
+/// `Derived` overrides `Base`'s private `helper` with a public one;
+/// `fromDerived` (N = `Derived`) fills the `Lexical` row under `(Derived`'s
+/// dispatch id, `#helper`, `Lexical(Derived`'s application))`. `fromBase`'s
+/// own site is then still vacant, and reaches the very same `o` -- the same
+/// `Derived` instance, so the same dispatch id -- under the same selector,
+/// but with N = `Base`, which declares `helper` private. Without N in the
+/// key, that still-vacant site would read `Derived`'s entry and answer with
 /// `Derived`'s public `helper` instead of running its own N's private one:
 /// §5.9's private rule silently skipped, wrong output, exit status 0. With
-/// N in the key the read misses (different fourth component), `fromBase`
+/// N in the key the read misses (different `Lexical` payload), `fromBase`
 /// resolves independently and finds `Base`'s private `helper`, and the
 /// answer is `21`, not `22`.
 ///
-/// I verified this test actually depends on the fourth component by
-/// temporarily neutralizing it -- `GlobalEntry::holds` ignoring `lexical`
-/// and `GlobalCache::probes` hashing only `(guard, selector, rule)` -- and
-/// confirming this test fails (`assertion failed: left == 22, right == 21`)
-/// while the rest of the workspace suite, including
+/// I verified this test actually depends on N's payload by temporarily
+/// neutralizing it -- `GlobalCache::group` hashing every `Lexical(_)` as
+/// `Lexical(DispatchId::NONE)` and `GlobalEntry::holds` comparing rules the
+/// same stripped way, so two different N's hash to the same group and
+/// compare equal -- and confirming this test fails (`assertion failed: left
+/// == 22, right == 21`) while the rest of the workspace suite, including
 /// `a_vacant_lexical_site_uses_the_global_cache` above, stays green; then
 /// restored the real implementation and confirmed this test passes again.
 #[test]

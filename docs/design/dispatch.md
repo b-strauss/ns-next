@@ -597,26 +597,34 @@ there moves the site's state on.
 
 One hash picks a key's group — unlike 3a/3b's two independent probes
 anywhere in the table — and the group's two adjacent slots are one cache
-line's worth of probing. Strongtalk's `lookupCache`
-(`prior-art/strongtalk/vm/lookup/lookupCache.cpp`): a key already at the
-first slot is refreshed in place; found at the second slot, or found
-nowhere, the first slot's entry moves to the second, discarding whatever the
-second held, and the key is written into the first — the least recently
-used of the two goes, and a key found at the second slot is thereby promoted
-rather than evicted. A read (`get`) never reorders a group; only `insert`
-keeps the more recently used of two colliding keys, so a read costs no more
-than two comparisons. This replaces 3b's insertion, which evicted the first
-probe whatever its use. Rejected: writing both probes, as Primordial Soup's
-`InsertOrdinary` does (half the capacity); zapping the other probe on
-insert, as Cog does (discards other keys for a reason particular to Cog).
-Measured against 3b's insertion with `bench_megamorphic.ns`, whose `value`
-site sees five receiver classes in a loop and so is megamorphic on every
-send — none of the other measured sources reaches one. An entry is 32 bytes,
-so the cache is about 32 KB whatever the program's size. Its number of
-groups is a power of two, 512; a debug build takes a size in entries from
-`NS_NEXT_GLOBAL_CACHE_ENTRIES`, which the suite uses to run every fixture
-with a cache of one group, where every insertion contends for the same two
-slots.
+line's worth of probing. Strongtalk's `lookupCache`, `lookup_probe`/`lookup`
+(`prior-art/strongtalk/vm/lookup/lookupCache.cpp:188-205,231-242`): the read
+keeps the group least recently used, not the insert. A hit at the first
+slot answers in place; a hit at the second slot swaps the two before
+answering, promoting the key just used. A miss (`insert`) writes a key
+already at the first slot in place; otherwise — found at the second slot,
+or found nowhere — the first slot's entry moves to the second, discarding
+whatever the second held, and the key is written into the first. In normal
+operation `insert` runs only after a `get` for the same key has just missed
+both slots, so its own "found at the second slot" branch fires only when a
+`get` hit but the target could not be rebuilt for this receiver — a crafted
+image only. The two together keep the more recently *used*, not merely the
+more recently inserted, of two colliding keys — the property 3b's insertion
+did not have: it evicted the first probe whatever its use. Rejected: writing
+both probes, as Primordial Soup's `InsertOrdinary` does (half the capacity);
+zapping the other probe on insert, as Cog does (discards other keys for a
+reason particular to Cog). `bench_megamorphic.ns` measures the probe this
+buys — one hash and one cache line per send of a megamorphic site, instead
+of two hashes anywhere in the table — not the eviction rule: its `value`
+site fills only 27 of 1024 entries, so nothing in it ever collides or is
+evicted; an eviction-rule comparison needs cache pressure (a small
+`NS_NEXT_GLOBAL_CACHE_ENTRIES`, or many more hot keys than this fixture has)
+and is not what this fixture, or Task 7's measurement, settles. An entry is
+32 bytes, so the cache is about 32 KB whatever the program's size. Its
+number of groups is a power of two, 512; a debug build takes a size in
+entries from `NS_NEXT_GLOBAL_CACHE_ENTRIES`, which the suite uses to run
+every fixture with a cache of one group, where every insertion contends for
+the same two slots.
 
 #### Code families
 

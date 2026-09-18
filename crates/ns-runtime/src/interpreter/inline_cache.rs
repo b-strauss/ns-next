@@ -436,26 +436,36 @@ impl GlobalCache {
         (hash as usize & self.mask) * 2
     }
 
-    /// A pure read: whichever of the group's two slots holds the key, first
-    /// slot before second. Never reorders the group -- only `insert` keeps
-    /// the more recently used of two colliding keys, so a read costs no more
-    /// than the two comparisons (`docs/design/dispatch.md`, "3b -- The
-    /// caches").
-    fn get(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> Option<&Target> {
+    /// Strongtalk's `lookupCache`, `lookup_probe`/`lookup`
+    /// (`prior-art/strongtalk/vm/lookup/lookupCache.cpp:188-205,231-242`):
+    /// the read itself keeps the group least-recently-used. A hit at the
+    /// first slot answers in place; a hit at the second slot promotes it --
+    /// swaps the two -- before answering, so the key just used is the one a
+    /// colliding key evicts last. A read costs at most the two comparisons
+    /// plus, on a second-slot hit, one swap (`docs/design/dispatch.md`, "3b
+    /// -- The caches").
+    fn get(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> Option<&Target> {
         let first = self.group(guard, selector, rule);
-        [first, first + 1]
-            .into_iter()
-            .map(|index| &self.entries[index])
-            .find(|entry| entry.holds(guard, selector, rule))
-            .map(|entry| &entry.target)
+        if self.entries[first].holds(guard, selector, rule) {
+            return Some(&self.entries[first].target);
+        }
+        if self.entries[first + 1].holds(guard, selector, rule) {
+            self.entries.swap(first, first + 1);
+            return Some(&self.entries[first].target);
+        }
+        None
     }
 
-    /// Strongtalk's `lookupCache`: the key already at the first slot is
-    /// refreshed in place. Otherwise -- found at the second slot, or found
-    /// nowhere -- the first slot's entry moves to the second, discarding
-    /// whatever the second held, and the key is written into the first: the
-    /// least recently used of the two goes, and a key found at the second
-    /// slot is thereby promoted to the first rather than evicted
+    /// The key already at the first slot is refreshed in place. Otherwise --
+    /// found at the second slot, or found nowhere -- the first slot's entry
+    /// moves to the second, discarding whatever the second held, and the key
+    /// is written into the first. In normal operation this runs only after a
+    /// `get` for the same key has just missed both slots (`fill`'s callers),
+    /// so the "found at the second slot" branch fires only when a `get` hit
+    /// but could not be materialized for this receiver -- a crafted image
+    /// only -- and is otherwise unreachable; `get` is what keeps the group
+    /// least-recently-used, this is what makes a genuine miss evict the
+    /// slot `get`'s promotion left least recently used
     /// (`docs/design/dispatch.md`, "3b -- The caches"). This replaces 3b's
     /// rule, which evicted the first probe whatever its use.
     fn insert(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule, target: Target) {
@@ -746,6 +756,10 @@ pub(crate) fn send_public<'gc>(
         key,
         selector,
         arguments,
+        // `Public` carries no payload, so `miss` never calls this: a
+        // zero-sized closure `cached`/`miss` never invoke, kept because
+        // splitting them by send kind (an enum, a trait, or a duplicated
+        // `miss`) would cost more than this one line does.
         |_mutator| DispatchId::NONE,
         |mutator| mutator.resolve_public(receiver, selector),
     )
@@ -755,8 +769,8 @@ pub(crate) fn send_public<'gc>(
 /// was first filled, chooses the guard: N's application for a private site,
 /// `o`'s otherwise, so a non-private *hit* still never computes N -- `miss`
 /// only calls its `lexical_of` closure on an actual miss, once N is needed
-/// for the global key's fourth component (`docs/design/dispatch.md`, "3b --
-/// The caches").
+/// for the `Lexical` rule's payload (`docs/design/dispatch.md`, "3b -- The
+/// caches").
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(crate) fn send_lexical<'gc>(
@@ -840,8 +854,8 @@ pub(crate) fn send_lexical<'gc>(
 }
 
 /// N's application (`kth_lexical_class`'s class, by its `instances` dispatch
-/// id) for the `Lexical` global key's fourth component, `DispatchId::NONE`
-/// where the lexical chain does not reach that far.
+/// id) for the `Lexical` rule's payload, `DispatchId::NONE` where the
+/// lexical chain does not reach that far.
 #[inline(always)]
 fn lexical_dispatch_id<'gc>(
     mutator: &Mutator<'gc>,
@@ -856,9 +870,9 @@ fn lexical_dispatch_id<'gc>(
 
 /// A vacant lexical site's first send. Whether §5.9's private rule applies
 /// is not known until N is: §5.9's private rule depends only on N and the
-/// selector, never on `o`, so once N's application is in the global key's
-/// fourth component, a match there is right regardless of which site left it
-/// -- and the two rows this checks, `LexicalPrivate` keyed by N alone and
+/// selector, never on `o`, so once N's application is the `Lexical` rule's
+/// payload, a match there is right regardless of which site left it -- and
+/// the two rows this checks, `LexicalPrivate` keyed by N alone and
 /// `Lexical` keyed by (`o`, N), are the only ones N's decision could have
 /// filled. Only a genuine miss on both falls to resolving here, exactly as
 /// before the entries existed.
@@ -985,14 +999,16 @@ pub(crate) fn send_super<'gc>(
         key,
         selector,
         arguments,
+        // `Super` carries no payload either -- see `send_public`'s copy of
+        // this closure for why it stays rather than being split out.
         |_mutator| DispatchId::NONE,
         |mutator| mutator.resolve_super(superclass, selector),
     )
 }
 
 /// A monomorphic hit, or everything else out of line. `lexical_of` answers
-/// the global key's fourth component; it is never called here, only handed
-/// to `miss`, so a hit costs nothing for it.
+/// the `Lexical` rule's payload; it is never called here, only handed to
+/// `miss`, so a hit costs nothing for it.
 #[inline(always)]
 fn cached<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1327,7 +1343,7 @@ mod tests {
         let mut global = GlobalCache::with_groups(1);
         let selector = Symbol::NEW;
         let guards: Vec<DispatchId> = (0..3).map(DispatchId::from_counter).collect();
-        let chain_of = |global: &GlobalCache, guard: DispatchId, rule: CacheRule| match global
+        let chain_of = |global: &mut GlobalCache, guard: DispatchId, rule: CacheRule| match global
             .get(guard, selector, rule)
         {
             Some(Target::Factory { chain }) => Some(*chain),
@@ -1347,15 +1363,15 @@ mod tests {
             Target::Factory { chain: chains[1] },
         );
         assert_eq!(
-            chain_of(&global, guards[0], CacheRule::Public),
+            chain_of(&mut global, guards[0], CacheRule::Public),
             Some(chains[0])
         );
         assert_eq!(
-            chain_of(&global, guards[1], CacheRule::Public),
+            chain_of(&mut global, guards[1], CacheRule::Public),
             Some(chains[1])
         );
         assert_eq!(
-            chain_of(&global, guards[0], CacheRule::Super),
+            chain_of(&mut global, guards[0], CacheRule::Super),
             None,
             "the rule is part of the key"
         );
@@ -1366,16 +1382,16 @@ mod tests {
             Target::Factory { chain: chains[2] },
         );
         assert_eq!(
-            chain_of(&global, guards[0], CacheRule::Public),
+            chain_of(&mut global, guards[0], CacheRule::Public),
             None,
             "evicted"
         );
         assert_eq!(
-            chain_of(&global, guards[1], CacheRule::Public),
+            chain_of(&mut global, guards[1], CacheRule::Public),
             Some(chains[1])
         );
         assert_eq!(
-            chain_of(&global, guards[2], CacheRule::Public),
+            chain_of(&mut global, guards[2], CacheRule::Public),
             Some(chains[2])
         );
         global.clear();
@@ -1418,12 +1434,17 @@ mod tests {
         );
     }
 
-    /// Strongtalk's `lookupCache`: a miss moves the first slot's entry to
-    /// the second and writes the first; a hit at the second is what promotes
-    /// a key back to the first without evicting it (`insert`'s "found at the
-    /// second slot" branch -- `get` itself never reorders a group). 3b's
-    /// insert evicted the first probe whatever its use, so the older of two
-    /// colliding keys never survived a third.
+    /// Strongtalk's `lookupCache`, `lookup_probe`/`lookup`
+    /// (`prior-art/strongtalk/vm/lookup/lookupCache.cpp:188-205,231-242`): a
+    /// hit at the second slot promotes it to the first, so a colliding key a
+    /// later send reads survives a third key's insert even though it was
+    /// inserted first, while a key nothing reads again is the one that
+    /// insert evicts -- the group keeps the more recently *used* of two
+    /// colliding keys, not merely the more recently inserted (which is all
+    /// `insert` alone, without a promoting `get`, would give: 3b's insert
+    /// evicted the first probe whatever its use, and even a non-evicting
+    /// insert-only policy would still evict by insertion order, never by
+    /// use).
     #[test]
     fn a_group_keeps_the_more_recently_used_of_two_keys() {
         let mut cache = GlobalCache::with_groups(1);
@@ -1446,19 +1467,22 @@ mod tests {
             CacheRule::Public,
             target_for(Chain::Protected),
         );
+        // `first` sits at the group's second (least recently used) slot
+        // after `second`'s insert shifted it there; reading it here promotes
+        // it back to the first slot.
         assert!(
             cache.get(first, selector, CacheRule::Public).is_some(),
-            "the older key stays in the group"
+            "the older key is still found"
         );
-        // Reading `first` above did not move it back to the front: `insert`
-        // alone tracks recency, so `second` is still the more recently
-        // inserted of the two and `first` is the one a third key evicts.
         cache.insert(third, selector, CacheRule::Public, target_for(Chain::Super));
         assert!(
-            cache.get(first, selector, CacheRule::Public).is_none(),
-            "the least recently used goes"
+            cache.get(second, selector, CacheRule::Public).is_none(),
+            "the key nothing read again is the one a third key evicts"
         );
-        assert!(cache.get(second, selector, CacheRule::Public).is_some());
+        assert!(
+            cache.get(first, selector, CacheRule::Public).is_some(),
+            "the key a read promoted survives the third key's insert"
+        );
         assert!(cache.get(third, selector, CacheRule::Public).is_some());
     }
 
@@ -1527,5 +1551,10 @@ mod tests {
     fn an_entry_stays_the_size_the_caches_were_measured_at() {
         assert_eq!(std::mem::size_of::<Target>(), 16);
         assert_eq!(std::mem::size_of::<CacheEntry>(), 24);
+        // Pins the global cache's own entry: `CacheRule`'s `Lexical` payload
+        // is a `DispatchId`, which padding happens to absorb today -- add a
+        // second payload to any rule and this catches it silently doubling
+        // the cache's footprint instead of a passing test hiding it.
+        assert_eq!(std::mem::size_of::<GlobalEntry>(), 32);
     }
 }
