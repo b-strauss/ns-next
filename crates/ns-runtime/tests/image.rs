@@ -637,6 +637,36 @@ fn every_instruction_variant_round_trips() {
     });
 }
 
+/// `Instruction::call_site` and `call_site_mut` share one macro-defined
+/// variant list (`bytecode.rs`), but the macro only proves the two *cannot*
+/// enumerate the four send variants with different tokens -- it does not by
+/// itself prove the two accessors answer alike on real data (a typo inside
+/// the shared pattern, for instance, would still compile and still affect
+/// both, but should still be caught here). `every_instruction_once` already
+/// covers every `Instruction` variant once (`every_instruction_variant_round_trips`
+/// above pins that claim), so walking it is a direct check that the two
+/// accessors agree on which instructions carry a call site and, where they
+/// do, name the same one -- rather than trusting that a future edit to
+/// either function keeps them looking at the same field.
+#[test]
+fn call_site_and_call_site_mut_agree_on_every_instruction_variant() {
+    let code = every_instruction_once();
+    let mut saw_a_call_site = false;
+    for instruction in &code.instructions {
+        let immutable = instruction.call_site();
+        let mutable = instruction.clone().call_site_mut().copied();
+        assert_eq!(
+            immutable, mutable,
+            "call_site and call_site_mut disagree for {instruction:?}"
+        );
+        saw_a_call_site |= immutable.is_some();
+    }
+    assert!(
+        saw_a_call_site,
+        "every_instruction_once must still include at least one send for this test to mean anything"
+    );
+}
+
 #[test]
 fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents() {
     let (mut interpreter, class) = load(RICH);
