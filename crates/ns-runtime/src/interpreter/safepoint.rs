@@ -61,7 +61,7 @@ pub(crate) fn stress_caches_from_env() -> bool {
 
 /// A global-cache size the environment asks for, for the fixture run with
 /// a cache small enough that every insert contends for the same group
-/// (`run_fixtures.rs`). Debug builds only.
+/// (`run_goldens.rs`). Debug builds only.
 #[cfg(debug_assertions)]
 pub(crate) fn global_cache_entries_from_env() -> Option<usize> {
     std::env::var("NS_NEXT_GLOBAL_CACHE_ENTRIES")

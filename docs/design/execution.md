@@ -37,7 +37,7 @@ under both.
 
 Behaviour is protected by recorded answers, which both lowerings must produce:
 every `goldens/<category>/*.ns` against the exit status, stdout and stderr
-recorded in the `.toml` beside it (`crates/ns-cli/tests/run_fixtures.rs`), and
+recorded in the `.toml` beside it (`crates/ns-cli/tests/run_goldens.rs`), and
 `run-corpus` over the runnable corpus. The answers recorded before the
 retirement are verdicts the oracle and the VM agreed on. A change that alters
 one is a behaviour change, to be justified as one — never recorded because the

@@ -42,7 +42,7 @@ cargo build --workspace
 cargo test --workspace
 # the goldens alone; --show-output prints "N goldens ran, M skipped" and names
 # each skipped one with the reason it is not run yet
-cargo test -p ns-cli --test run_fixtures -- --show-output
+cargo test -p ns-cli --test run_goldens -- --show-output
 # formatting
 cargo fmt --all
 # lints, must be warning-free

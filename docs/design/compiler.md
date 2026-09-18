@@ -502,7 +502,7 @@ covered by handing the switch to the same `source::bootstrap` call.
 
 ### The harness
 
-- `crates/ns-cli/tests/run_fixtures.rs` and `build_load.rs` run every golden
+- `crates/ns-cli/tests/run_goldens.rs` and `build_load.rs` run every golden
   under both lowerings against the same recorded answer. Under the reference
   lowering `build_load.rs` also takes the encoder and decoder over code with
   no jumps and many registers.
