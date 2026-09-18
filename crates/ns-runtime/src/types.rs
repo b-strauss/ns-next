@@ -58,7 +58,7 @@ pub enum ObjectData<'gc> {
     Closure(ClosureData<'gc>),
     /// Boxed: a class object's data is what would otherwise set every
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
-    /// "3c", C2+).
+    /// "The dispatch id").
     Class(Box<ClassData<'gc>>),
 }
 
@@ -113,10 +113,10 @@ pub struct ClassData<'gc> {
     /// `None` for every class object until its first class-side send -- which
     /// `X new` is, since the factory is one of the metaclass's members.
     pub metaclass: Option<ClassReference<'gc>>,
-    /// A copy of `application.dispatch_ids.instances`. A cache's guard no
-    /// longer reads it here (`Object::dispatch_id` in the header is what
-    /// `Heap::dispatch_id` answers now) -- this is where allocating an
-    /// instance of this class, `Heap::class_dispatch_ids` and restamping
+    /// A copy of `application.dispatch_ids.instances`. A cache's guard does
+    /// not read it (it reads `Object::dispatch_id` in the header, through
+    /// `Heap::dispatch_id`); this is where allocating an instance of this
+    /// class, `Heap::class_dispatch_ids` and restamping
     /// (`Heap::header_dispatch_id`) read the instances id from. Kept equal to
     /// the application's by `ClassData::new` and
     /// `Heap::install_class_application`, the only ways either changes. The

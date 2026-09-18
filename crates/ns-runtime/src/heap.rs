@@ -1228,9 +1228,10 @@ impl<'gc> Heap<'gc> {
     /// object already reachable from `roots` -- and it silently replaces
     /// that object's already-verified invariants with unverified ones: no
     /// error, and no way for verification to notice, because verification
-    /// has already finished. The object it installs answers `NONE` from
-    /// `dispatch_id` until `stamp_dispatch_ids` runs -- `filled`'s class may
-    /// itself be a still-placeholder record with no application yet.
+    /// has already finished. The object it installs carries `NONE` in its
+    /// header until `stamp_dispatch_ids` runs -- `filled`'s class may itself
+    /// be a still-placeholder record with no application yet -- and must not
+    /// be dispatched on before then.
     pub fn replace_object(&mut self, object: ObjectReference<'gc>, filled: Object<'gc>) {
         self.check_object_origin(object);
         self.objects[object.index as usize] = filled;
@@ -1501,8 +1502,7 @@ impl<'gc> Heap<'gc> {
     /// which installs one application per class record, calls
     /// `install_class_application` instead and stamps once afterwards
     /// (`stamp_dispatch_ids`). Answers whether the write happened, mirroring
-    /// `array_set` and `set_instance_field`. The decoder calls
-    /// `install_class_application`, not this; this one's callers are all
+    /// `array_set` and `set_instance_field`. This one's callers are all
     /// tests, editing an already-live class (`install_mixin` in
     /// `tests/image.rs`, `tests/instantiate.rs`, `ns-cli`'s
     /// `disasm_snapshots.rs`) -- a wrong-shape `class` there is a test bug,
@@ -3018,15 +3018,14 @@ mod tests {
         });
     }
 
-    /// `CLAUDE.md`'s "An image is untrusted input" paragraph and
-    /// `docs/design/memory.md` pin the decoder's placeholder-arena
-    /// amplification against this size. With `ClassData` boxed out of
-    /// `ObjectData` (`docs/design/dispatch.md`, "3c", C2+), `Object` shrinks
-    /// from 64 to 56 bytes in a release build -- not the 48 the design
-    /// expected, because `ClosureData`, not the now-boxed `ClassData`, is the
-    /// largest remaining payload. This test only pins the size CLAUDE.md's
-    /// and memory.md's amplification figure assumes; that figure itself is
-    /// settled once a header-shape variant is chosen, not by this test.
+    /// Pins the release-build size that `CLAUDE.md`'s "An image is untrusted
+    /// input" paragraph and `docs/design/memory.md` compute the decoder's
+    /// placeholder-arena amplification from, so a change to `Object` that
+    /// moves it fails here rather than leaving that figure silently wrong.
+    /// The header's dispatch id is paid for by boxing `ClassData`, and the
+    /// size stays at 56 rather than 48 because `ClosureData` -- two `Rc`s,
+    /// two `FrameReference`s and a `FeedbackBase`, 32 bytes -- is now
+    /// `ObjectData`'s largest payload.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {
