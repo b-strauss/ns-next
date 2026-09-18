@@ -270,3 +270,23 @@ fn a_class_side_method_under_another_selector_resolves() {
     "});
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// The check reads the factory pattern through `method_name`, the same
+/// selector-rendering `declared_members` uses for an ordinary method, so it
+/// is not unary-only: a keyword factory's selector is refused exactly the
+/// same way.
+#[test]
+fn a_class_side_may_not_declare_a_keyword_factory_selector() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Boxed with: contents = Object new () (
+        ) : (
+            public with: contents = ( ^'the class side' )
+        )
+    "});
+    assert_eq!(
+        errors,
+        ["class `Boxed` has multiple definitions of `with:`"]
+    );
+}

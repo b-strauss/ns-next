@@ -83,12 +83,20 @@ pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<S
 }
 
 /// The declaration's factory selector: the selector its own message pattern
-/// spells out, or `new` when it writes none (`newspeak-spec.pdf` §6.1's "a
-/// class definition need not include ... a message pattern", defaulted the
-/// same way `interpreter::instantiate::build_mixin` defaults the mixin's
-/// `Factory`). One implementation, so the resolver's notion of "the factory
-/// selector" cannot drift from the one the metaclass mixin is actually built
-/// with.
+/// spells out, or `new` when it writes none. `newspeak-spec.pdf` §6's
+/// unnumbered introduction, before §6.1 begins: "The identifier may be
+/// followed by a method signature for the *primary factory* method of the
+/// class. If the signature is omitted it defaults to `new`." (§6.1's own
+/// default-to-`new` is a different rule, about the *inheritance clause*'s
+/// trailing message, not the factory signature.)
+///
+/// This mirrors `interpreter::instantiate::build_mixin`'s `factory` default
+/// by hand, in a second block that also calls `method_name` and also
+/// hardcodes `Symbol::NEW` -- they agree today because both transcribe the
+/// same rule, not because one calls the other. Change what a class defaults
+/// its factory to in one and the other must follow, or this check and the
+/// metaclass mixin's actual factory disagree on what the reserved selector
+/// is.
 fn factory_selector_of(declaration: &ast::ClassDeclaration) -> Symbol {
     match &declaration.factory {
         Some(pattern) => Symbol::intern(&crate::interpreter::instantiate::method_name(pattern)),
