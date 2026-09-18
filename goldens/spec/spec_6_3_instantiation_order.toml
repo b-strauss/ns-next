@@ -1,0 +1,8 @@
+stdout = '''
+superclass argument
+base slot sees the superclass argument
+base statement
+derived slot
+derived statement
+the factory answered
+'''

@@ -1,0 +1,29 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.5: "If no explicit return statement (7.2) is
+   executed, the value returned is o (the current binding of self)" -- so a
+   body whose last statement is an expression answers the receiver and not
+   that expression's value, and an empty body answers the receiver and not
+   nil. 6.3.2's setter rule ("It returns the receiver of the message") is
+   the same rule applied to a generated method; this pins it for a written
+   one, and for one reached by inheritance, where o is the receiver rather
+   than an instance of the declaring class.
+
+   The complement of 5.1.8, where a closure's fall-through value is "the
+   value of the last statement in the closure body" -- the one place a
+   body's value differs between a method and a closure. *)
+class Spec35MethodWithoutAReturn usingPlatform: p = Object new (| t = p transcript. |) (
+    class Base = Object new () (
+        public store: value = ( )
+    ) : ()
+    class Derived = Base new () () : ()
+    computes = ( 1 + 1 )
+    empty = ( )
+    public main: platform args: arguments = (
+        | derived |
+        t show: (self computes == self) printString; newLine.
+        t show: (self empty == self) printString; newLine.
+        derived:: Derived new.
+        t show: ((derived store: 1) == derived) printString; newLine.
+    )
+) : ()
