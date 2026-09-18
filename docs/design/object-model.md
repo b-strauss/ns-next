@@ -327,7 +327,7 @@ class side declares it, and a class-side `super` send looks in `Class`. Since
 ns-next reifies no `Class` (below), a metaclass's superclass is `Object`'s
 behaviour, which is where the class-side chain already falls through.
 
-`Interpreter::metaclass_of` builds exactly this: one application, for the
+`Mutator::metaclass_of` builds exactly this: one application, for the
 class's own metaclass mixin, with no superclass application — so an ordinary
 class-side send that misses on the metaclass never continues onto an
 ancestor's, which is what "not inherited" means for the lookup that finds

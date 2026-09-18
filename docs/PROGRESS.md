@@ -108,14 +108,26 @@ immediately before the reflection work that cannot be done without them
 **The next piece is 3c: the dispatch id's place.** Its plan goes under
 `docs/superpowers/plans/`, written against
 [dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
-header", and measured against the head of this step (`393311f`). Performance is measured, not
-assumed: the protocol and the seven sources of "What removing the re-entries
-moved" ([execution.md](design/execution.md); `bench_do.ns` is written out in
-the [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
-"Measurement protocol", and `bench_new.ns`, `bench_new2.ns` and
-`bench_newarg.ns`, whose slots had to be renamed, in "What spec-conformant
-lookup moved" there), plus `tests-fixtures/bench_megamorphic.ns`, the eighth
-source and the only one that drives a megamorphic site, **every compared
+header", and measured against the head of this step (`393311f`).
+Performance is measured, not assumed: the protocol and the seven sources of
+"What removing the re-entries moved"
+([execution.md](design/execution.md)), plus
+`tests-fixtures/bench_megamorphic.ns`, the eighth source and the only one
+that drives a megamorphic site.
+
+**Four of the eight sources are not fixtures and must be written out from the
+text the documents give, never reconstructed from their prose descriptions.**
+A reconstruction runs and prints the right answer while measuring something
+else, and older comparison binaries may not run it at all. `bench_do.ns` is
+written out in the
+[2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
+"Measurement protocol"; `bench_new.ns`, `bench_new2.ns` and
+`bench_newarg.ns`, whose slots had to be renamed when accessors became
+method-table entries, are written out in
+[execution.md](design/execution.md), "What spec-conformant lookup moved" —
+in that document, not in the 2c plan.
+
+Then: **every compared
 binary, the current tree included,
 built with the protocol's explicit flags through `RUSTFLAGS`** —
 `+crt-static` and the function-alignment pin, which no configuration
@@ -237,20 +249,33 @@ below).
   ([execution.md](design/execution.md), "What the step before 3c moved"). If
   a source is slower than `be3eb40` once 3c has landed, the shift is chased
   then. None is slower now.
-- **The step before 3c cost the send benchmarks 2–3.6%, and what moved it is
-  not isolated.** The lexical global-cache key is the change it attributes to
-  — `bench_loop.ns` +2.1% / +3.3% and `bench_send.ns` +2.3% / +2.7% against
-  its parent — but the two global-cache probes it adds run once per site, at
-  a still-vacant lexical site, and no measured source fills more than sixteen
-  sites, so they cannot be the cost. What changed is the shape of the code
-  `vm::run`'s step inlines: `CacheRule` grew from a fieldless enum to one
-  carrying a `DispatchId`, and the step grew by 18 instructions while staying
-  inline. `bench_do.ns` shows the same pattern in the other direction, 2.8% /
-  3.3% slower on the flat-metaclass and factory change, which neither
-  instantiates nor sends to a class object in its loop, and most of it back
-  on the least-recently-used groups. This is the uniform-shift-on-unchanged-code
-  finding again, which the function-alignment pin does not remove
-  ([execution.md](design/execution.md), "What the step before 3c moved").
+- **A send's hit path pays about 2% for every component its key gains.** The
+  step before 3c cost `bench_loop.ns` and `bench_send.ns` 2.1–3.3% and
+  `bench_megamorphic.ns` about 1%, all of it on the lexical global-cache
+  key's commit. A control binary — that commit with
+  `send_lexical_first`'s two probes cut out and everything else kept, whose
+  `vm::run` is instruction for instruction the commit's — settled which half:
+  the control alone reproduces the loss, and adding the probes on top of it
+  moves no source beyond the noise. So it is not work done per send; it is
+  the eighteen instructions the key's fourth component adds to the step,
+  which every send executes. Entry size is not it either — `GlobalEntry`
+  stayed 32 bytes and `CacheEntry` 24 throughout. **The bearing on 3c:** 3c
+  changes what every guard *reads*, not what the key carries, so this cost
+  does not recur by itself; but it is the going rate for widening a send's
+  hit path, and it says that a variant which adds a load per send should be
+  expected to show, not assumed to be free
+  ([execution.md](design/execution.md), "Which half of the lexical key costs
+  the send benchmarks").
+- **`bench_do.ns` moves without a cause, twice in one step.** 2.8% / 3.3%
+  slower on the flat-metaclass and factory change, entirely above in both
+  sittings, and most of it back on the least-recently-used groups — and it
+  neither instantiates, nor sends to a class object, nor reaches a
+  megamorphic site in its loop. This is the fourth recorded instance of a
+  uniform shift on code a change does not execute, and the
+  function-alignment pin, which removes a 64-byte phase shift, does not
+  remove it. A fifth instance is worth one focused investigation rather than
+  another footnote ([execution.md](design/execution.md), "What the step
+  before 3c moved").
 - **A decoded image's last initializer is not held to answering `self`**, so
   `new` answers whatever it answers — wrong but safe, no panic.
   `image::decode::verify_mixins` could refuse such an initializer, which would
@@ -2305,10 +2330,12 @@ inherited factory reachable.
    that already reports a name declared twice on one side, as Primordial
    Soup's `checkNameConflictsForFactory:` does.
 4. **The global cache's lexical key carries N's application** (`341ab02`,
-   `0631dfd`, `da8beed`), `CacheRule::Lexical(DispatchId)`, so a still-vacant
-   lexical site may read the global cache — which 3b's rule forbade — by
-   probing N's `LexicalPrivate` row and then the `Lexical` row keyed by
-   `(o, N)`.
+   `0631dfd`, `da8beed`), as a fourth component beside the guard, the
+   selector and the rule, so a still-vacant lexical site may read the global
+   cache — which 3b's rule forbade — by probing N's `LexicalPrivate` row and
+   then the `Lexical` row keyed by `(o, N)`. The component became
+   `CacheRule::Lexical(DispatchId)` at step 6 below, which gave `GlobalEntry`
+   its separate field back.
 5. **Call-site numbers are off the wire** (`518686a`, `c72482e`, `76d9284`,
    `c9097d1`): the decoder assigns every family's numbers in the compiler's
    emission order once the whole code table is read, so a number is a
@@ -2323,31 +2350,52 @@ inherited factory reachable.
    group, a hit at the second slot swaps the two, and a miss moves the first
    slot's entry to the second. `tests-fixtures/bench_megamorphic.ns` was
    added for the comparison.
-7. **The measurement of the step, and the documents** — this section, and
-   [execution.md](design/execution.md), "What the step before 3c moved".
+7. **The measurement of the step, the control binary that bisected its one
+   regression, and the documents** — this section, and
+   [execution.md](design/execution.md), "What the step before 3c moved" and
+   "Which half of the lexical key costs the send benchmarks". The control
+   binary was a throwaway, on no commit of this branch.
 
 **Measurement.** Whole and one change at a time, against the commit the step
 started from (`f99a29f`) and against `be3eb40`, in two sittings by the
 protocol, with `tests-fixtures/bench_megamorphic.ns` as an eighth source. The
-three instantiation sources are 2.1–4.1% faster, entirely below in both
-sittings — `X new` is an ordinary cached send now — and the other five are
-0.2–3.6% slower, `bench_loop.ns` and `bench_send.ns` entirely above in both.
+three instantiation sources are 2.1–4.1% faster — `X new` is an ordinary
+cached send now — entirely below in both sittings for `bench_new.ns` and
+`bench_newarg.ns` and in the second for `bench_new2.ns`; and the other five
+are 0.2–3.6% slower, `bench_loop.ns` and `bench_send.ns` entirely above in
+both.
 Every source is 6.7–18.2% below `be3eb40`, entirely below in both sittings.
-Attributed: the conformance changes bought instantiation 3.3–4.6%; the
-lexical key cost `bench_loop.ns` and `bench_send.ns` 2.1–3.3%, which the two
-probes it adds cannot explain, since they run once per still-vacant lexical
-site; call-site numbering and the cache groups moved nothing beyond noise.
+Attributed: the conformance changes bought instantiation 3.3–4.6% and cost
+`bench_do.ns` 2.8–3.3%; the lexical key cost `bench_loop.ns` and
+`bench_send.ns` 2.1–3.3%, which a control binary put on the widened key
+rather than on the two probes it adds; call-site numbering and the cache
+groups moved nothing beyond noise.
 `vm::run` is still one function with no `vm::run::closure` out of line, 4,926
 instructions against 4,910 before the step, checked with `dumpbin /disasm`
 at every checkpoint.
 
+**The control binary.** The lexical key's commit does two separable things:
+it widens the global key by a fourth component, N's application, which
+`vm::run`'s step inlines, and it has `send_lexical_first` probe two
+global-cache rows, which the wider key makes safe. A throwaway binary with
+the probes cut out and everything else kept — `vm::run` instruction for
+instruction the commit's, since `send_lexical_first` is `#[inline(never)]` —
+separates them across two sittings: the control alone carries the loss
+(`bench_send.ns` +2.25% / +1.66% and `bench_megamorphic.ns` +1.00% / +1.54%
+against the parent, entirely above in both sittings), and adding the probes
+moves no source beyond the noise. **The widened key costs it; the probes cost
+nothing**, which is what the site counts had only argued. The binary was not
+merged ([execution.md](design/execution.md), "Which half of the lexical key
+costs the send benchmarks").
+
 **What the benchmark for the cache groups settles, and what it does not.**
 `bench_megamorphic.ns` fills 27 of 1024 global slots, five of them at the one
-megamorphic site it drives, so across 512 groups its hot keys share no group:
-every hit is at the first slot and nothing is ever evicted. It measures the
-probe path and cannot measure the replacement rule, which therefore stands on
-Strongtalk's precedent rather than on numbers of this runtime's own (the
-open finding above).
+megamorphic site it drives; 27 keys over 512 groups collide less than once on
+average and eviction needs three in a group, so on the hot path every read
+answers at the first slot and the replacement rule never runs. It measures
+the probe path and cannot measure the replacement rule, which therefore
+stands on Strongtalk's precedent rather than on numbers of this runtime's own
+(the open finding above).
 
 Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
 warning-free; `cargo test --workspace`, 777 tests passing with one ignored;

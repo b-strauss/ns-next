@@ -7,6 +7,8 @@
 > `act`, which runs what a lookup found), `interpreter/inline_cache.rs` (the
 > caches), `interpreter/mod.rs` (`decide_send`, the uncached explicit-receiver
 > send), `interpreter/sends.rs` (the uncached lexical and super sends),
+> `interpreter/instantiate.rs` (`decide_factory`, the action of a factory
+> entry and the per-send read a cache key does not cover),
 > `mixin.rs` (`DispatchId`), `heap.rs` (`Heap::dispatch_id`),
 > `builtins/primitive.rs` (the enumerated primitive and each builtin class's
 > method table).
@@ -594,8 +596,9 @@ probe the method cache and Strongtalk's miss handler its `lookupCache`. A hit
 there moves the site's state on.
 
 One hash picks a key's group — unlike 3b's two independent probes, at the
-two halves of one hash, anywhere in the table — and the group's two adjacent slots are one cache
-line's worth of probing. Strongtalk's `lookupCache`, `lookup_probe`/`lookup`
+two halves of one hash, anywhere in the table — and the group's two
+adjacent slots are one cache line's worth of probing. Strongtalk's
+`lookupCache`, `lookup_probe`/`lookup`
 (`prior-art/strongtalk/vm/lookup/lookupCache.cpp:188-205,231-242`): the read
 keeps the group least recently used, not the insert. A hit at the first
 slot answers in place; a hit at the second slot swaps the two before
@@ -613,11 +616,13 @@ both probes, as Primordial Soup's `InsertOrdinary` does (half the capacity);
 zapping the other probe on insert, as Cog does (discards other keys for a
 reason particular to Cog). `bench_megamorphic.ns` measures the probe this
 buys — one hash and one cache line per send of a megamorphic site, instead
-of two hashes anywhere in the table — not the eviction rule: its `value`
-site fills only 27 of 1024 entries, so nothing in it ever collides or is
-evicted; an eviction-rule comparison needs cache pressure (a small
-`NS_NEXT_GLOBAL_CACHE_ENTRIES`, or many more hot keys than this fixture has),
-and no measurement has supplied it, so the rule rests on Strongtalk's
+of two hashes anywhere in the table — not the eviction rule: the whole
+program fills 27 of 1024 entries, five of them its megamorphic `value`
+site's own, and 27 keys over 512 groups collide less than once on average
+while eviction needs three keys in one group, so on the hot path nothing is
+evicted. An eviction-rule comparison needs cache pressure (a small
+`NS_NEXT_GLOBAL_CACHE_ENTRIES`, or many more hot keys than this fixture
+has), and no measurement has supplied it, so the rule rests on Strongtalk's
 precedent rather than on numbers of this runtime's own
 ([execution.md](execution.md), "What the step before 3c moved"). An entry is
 32 bytes, so the cache is about 32 KB whatever the program's size. Its
@@ -1086,15 +1091,19 @@ by that measurement. The user decides on the numbers.
     replaces 3b's rule that a vacant lexical site skips the global cache.
     Rejected: a compile-time private flag (adding or removing a private
     member live would need its senders recompiled); probing N's table on a
-    global hit (about the cost of the lookup it saves). Built. It is the one
-    of the five that costs a benchmark: `bench_loop.ns` and `bench_send.ns`
-    came out 2.1–3.3% slower than the commit before it, each entirely above
-    in one of two sittings, which the two probes do not explain — they run
-    once per site, at a site still vacant, and no measured source fills more
-    than sixteen sites. What moved is the shape of the code `vm::run`'s step
-    inlines: `CacheRule` grew from a fieldless enum to one carrying a
-    `DispatchId` ([execution.md](execution.md), "What the step before 3c
-    moved").
+    global hit (about the cost of the lookup it saves). Built, and it costs
+    the send benchmarks: `bench_loop.ns` and `bench_send.ns` came out
+    2.1–3.3% slower than the commit before it, each entirely above in one of
+    two sittings, and `bench_megamorphic.ns` 0.9–1.5%. A control binary — the
+    commit with the two probes cut out and everything else kept, whose
+    `vm::run` is instruction for instruction the commit's — puts the cost on
+    **the widened key, not the probes**: the control alone reproduces it, and
+    adding the probes on top moves no source beyond the noise, which confirms
+    by measurement that a probe running once per still-vacant site cannot be
+    it. The mechanism is the eighteen instructions the key's fourth component
+    adds to the step every send runs, not work done per send; it is not entry
+    size, which is unchanged ([execution.md](execution.md), "Which half of
+    the lexical key costs the send benchmarks").
   - **The primary factory is a method of the class side** (§6.3: "The class
     side, together with the primary factory method, defines the mixin for
     the metaclass"), an entry of the metaclass mixin's method table, found by
@@ -1122,7 +1131,12 @@ by that measurement. The user decides on the numbers.
     metaclasses it landed with, the three instantiation sources came out
     3.3–4.6% faster, entirely below in both sittings, since `X new` is now an
     ordinary cached send rather than a special case tested ahead of every
-    lookup ([execution.md](execution.md), "What the step before 3c moved").
+    lookup. The same commit cost `bench_do.ns` 2.8–3.3%, entirely above in
+    both sittings, and that has no mechanism: it neither instantiates nor
+    sends to a class object in its loop. It is this repository's recurring
+    uniform shift on code a change does not execute, which the
+    function-alignment pin does not remove
+    ([execution.md](execution.md), "What the step before 3c moved").
   - **A class side may not declare the primary factory's selector**: the
     resolver refuses it, in the check that already reports a name declared
     twice on one side (`resolver::classes::duplicate_member_names`), since
@@ -1210,9 +1224,10 @@ by that measurement. The user decides on the numbers.
     two hashes anywhere in the table — and on that the change moved no source
     beyond the noise: `bench_megamorphic.ns` +1.16% / +0.41%, every group
     overlapping in both sittings ([execution.md](execution.md), "What the
-    step before 3c moved"). A benchmark that crowds one group — more live keys than 1024,
-    or a deliberately colliding set — is what would decide the rule against
-    3b's insert on numbers rather than on Strongtalk's precedent.
+    step before 3c moved"). A benchmark that crowds one group — more live
+    keys than 1024, or a deliberately colliding set — is what would decide
+    the rule against 3b's insert on numbers rather than on Strongtalk's
+    precedent.
 - **An entry holds an `Rc` and is 24 bytes** (2026-09-16, the user's
   decision): the 16-byte variant with an index into side tables measured no
   faster and grows those tables with misses ("Considered, not adopted: a
