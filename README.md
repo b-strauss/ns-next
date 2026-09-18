@@ -40,9 +40,11 @@ other tooling is needed; the project has no external runtime dependencies.
 cargo build --workspace
 # the full suite, including every golden under both lowerings
 cargo test --workspace
-# the goldens alone; --show-output prints "N goldens ran, M skipped" and names
-# each skipped one with the reason it is not run yet
-cargo test -p ns-cli --test run_goldens -- --show-output
+# the goldens alone; --nocapture prints "N goldens ran, M skipped" and names
+# each skipped one with the reason it is not run yet. --nocapture rather than
+# --show-output, which does the same but which an IDE's test button often
+# already passes -- and libtest refuses that option twice
+cargo test -p ns-cli --test run_goldens -- --nocapture
 # formatting
 cargo fmt --all
 # lints, must be warning-free

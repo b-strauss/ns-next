@@ -131,7 +131,7 @@ cannot switch a half-written golden past discovery. The other three keys
 still record what the program *should* answer, which is the point: a gap
 gets its golden the day it is found, stating the whole expectation, and
 closing the gap is deleting one line. A reason is required, and a blank
-one fails. `cargo test -- --show-output` prints the count and the list,
+one fails. `cargo test -- --nocapture` prints the count and the list,
 since the harness keeps a passing test quiet.
 
 | Directory | What belongs in it |

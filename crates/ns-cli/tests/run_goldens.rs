@@ -59,7 +59,7 @@ fn every_golden_matches_its_recorded_expectation() {
         }
     }
     // Printed rather than asserted: a skipped golden is a recorded
-    // intention, not a failure. `cargo test -- --show-output` is where
+    // intention, not a failure. `cargo test -- --nocapture` is where
     // this line surfaces, since the harness keeps a passing test quiet.
     println!("{ran} goldens ran, {} skipped", skipped.len());
     for entry in &skipped {
