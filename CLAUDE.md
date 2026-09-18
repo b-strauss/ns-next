@@ -210,8 +210,10 @@ handle — a guard id, `Rc`s and numbers; the defining class is recomputed per h
 it survives a move and cannot reach another heap. Anything the key does not cover is
 read afresh in `act` on every send, never trusted from the entry; today that is
 `ClassData.builtin`, which `instantiate::decide_factory` reads off the receiver to
-tell `Array` and `OrderedCollection` from an ordinary instance, and a primitive's
-payload check, which `builtins::execute` re-runs. Add such a read and its per-send
+tell `Array` and `OrderedCollection` from an ordinary instance, a primitive's
+payload check, which `builtins::execute` re-runs, and a class object's own
+`class` field, which `resolve_public` and `act_above` re-read to fall through
+to `Object`'s primitives after a metaclass miss. Add such a read and its per-send
 re-check goes with it. The reference lowering runs every send uncached, so it
 is the oracle a cache defect shows against (`docs/design/dispatch.md`, "3b — The
 caches").

@@ -108,7 +108,13 @@ surface is.
   rebuilt as class objects decode. This removes a section, a verification pass,
   and the possibility of loading an image whose stored layout disagrees with its
   mixins. It is also what proves two instances that shared an application before
-  a snapshot still share one after it.
+  a snapshot still share one after it. A **metaclass** is the one record the
+  rebuild does not read a superclass for: it is written as an ordinary class
+  record whose superclass is `Object`'s class object, and rebuilding it from
+  that link would chain its application and un-flatten it (§3.2). The decoder
+  recognizes a record whose mixin is some declaration's class side and applies
+  it with no superclass application, the shape `Mutator::metaclass_of` mints
+  ([object-model.md](object-model.md), "Class sides and metaclasses").
 - **Inline-cache state and dispatch ids.** No cache entry, polymorphic block,
   global-cache entry or code family's range is written, and no activation's or
   closure's `feedback_base`: a decoded closure carries "not assigned" and is

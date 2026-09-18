@@ -62,13 +62,14 @@ tags; the reference lowering runs uncached as the oracle; and
 its own. Measured whole, every source is 4.3–11.3% faster than 3a's head and
 9.4–19.7% faster than `be3eb40`; see "M4 — Inline caches" below.
 
-- **3c — the dispatch id's place**, still ahead: measured against 3b in two
+- **3c — the dispatch id's place**, still ahead: measured against `393311f`
+  in two
   variants, the id in the object header (64-byte objects) or in the header
-  with `ClassData` boxed (about 48), against 3b's id on the class object
+  with `ClassData` boxed (about 48), against the id on the class object
   (`ClassData.dispatch_id`, the instances id, the class side derived as the
   next id; 56-byte objects). The proposed rule is that the faster wins and,
   within noise, the smaller, and that the id stays on the class object if
-  neither beats 3b; **the user decides on the numbers**
+  neither beats that baseline; **the user decides on the numbers**
   ([dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
   header").
 
@@ -88,7 +89,10 @@ inherited at all.
   metaclasses the factory's special cases went with nothing in their place:
   a factory entry sits only on the receiver's own metaclass, which the
   class-side guard determines, so neither re-check survives. A class side may
-  not declare the factory's selector; the resolver refuses it.
+  not declare the factory's selector; the resolver refuses it. The factory
+  selector is a member of the class side for §5.7's depth search too, so an
+  implicit `new` inside a class-side method reaches the class that declares
+  it rather than an enclosing class's member of the same name.
 - **The global cache's lexical key includes N's application**, so a vacant
   lexical site may use it.
 - **Call-site numbers are no longer serialized**; the decoder numbers each
@@ -108,7 +112,8 @@ immediately before the reflection work that cannot be done without them
 **The next piece is 3c: the dispatch id's place.** Its plan goes under
 `docs/superpowers/plans/`, written against
 [dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
-header", and measured against the head of this step (`393311f`).
+header", and measured against `393311f` — the last commit of this step that
+changed a send's path, and so the baseline whatever lands after it.
 Performance is measured, not assumed: the protocol and the seven sources of
 "What removing the re-entries moved"
 ([execution.md](design/execution.md)), plus

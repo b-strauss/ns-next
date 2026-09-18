@@ -456,18 +456,23 @@ impl GlobalCache {
         None
     }
 
-    /// The key already at the first slot is refreshed in place. Otherwise --
-    /// found at the second slot, or found nowhere -- the first slot's entry
-    /// moves to the second, discarding whatever the second held, and the key
-    /// is written into the first. In normal operation this runs only after a
-    /// `get` for the same key has just missed both slots (`fill`'s callers),
-    /// so the "found at the second slot" branch fires only when a `get` hit
-    /// but could not be materialized for this receiver -- a crafted image
-    /// only -- and is otherwise unreachable; `get` is what keeps the group
-    /// least-recently-used, this is what makes a genuine miss evict the
-    /// slot `get`'s promotion left least recently used
+    /// The key already at the first slot is refreshed in place. Otherwise
+    /// the first slot's entry moves to the second, discarding whatever the
+    /// second held, and the key is written into the first. `get` is what
+    /// keeps the group least-recently-used; this is what makes a genuine
+    /// miss evict the slot `get`'s promotion left least recently used
     /// (`docs/design/dispatch.md`, "3b -- The caches"). This replaces 3b's
     /// rule, which evicted the first probe whatever its use.
+    ///
+    /// The second slot is never where the key is found: every caller runs a
+    /// `get` for this same key first (`fill`'s two callers, `miss` and
+    /// `send_lexical_first`, and nothing between the two writes the cache),
+    /// and a `get` that hit the second slot promoted it. So the `else` arm
+    /// always means "not in this group at all". It is written as one arm
+    /// rather than three because it is also correct if the key *were* at the
+    /// second slot -- the displaced first entry overwrites it, so no group
+    /// can come to hold one key twice -- and a case that cannot arise is
+    /// better handled than asserted against on the send path.
     fn insert(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule, target: Target) {
         let first = self.group(guard, selector, rule);
         let second = first + 1;

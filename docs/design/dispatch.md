@@ -82,6 +82,16 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    immutable slot `x` beside a method `x:` is not a collision: §6.3.2,
    "defining a setter will not impact such an initialization".
 
+   The member set also holds the declaration's **primary factory selector** —
+   the one its own message pattern spells out, or `new` when it writes none.
+   §6.3 makes the factory a member of the metaclass mixin the class side
+   becomes, so §5.7's search must find it on the declaring class: without it
+   an implicit `new` inside a class-side method bound to an *enclosing*
+   class's member `new` and answered that member instead of an instance,
+   silently and at exit status 0. It is the same selector a class-side method
+   may not redeclare (`classes::duplicate_member_names`), so the two
+   agree on what the class side holds.
+
    **Open: the class side's scope.** Both sides of a class declaration
    contribute to one member set. The specification is silent on whether an
    instance-side method sees class-side declarations lexically; the canonical
@@ -603,25 +613,26 @@ adjacent slots are one cache line's worth of probing. Strongtalk's
 keeps the group least recently used, not the insert. A hit at the first
 slot answers in place; a hit at the second slot swaps the two before
 answering, promoting the key just used. A miss (`insert`) writes a key
-already at the first slot in place; otherwise — found at the second slot,
-or found nowhere — the first slot's entry moves to the second, discarding
-whatever the second held, and the key is written into the first. In normal
-operation `insert` runs only after a `get` for the same key has just missed
-both slots, so its own "found at the second slot" branch fires only when a
-`get` hit but the target could not be rebuilt for this receiver — a crafted
-image only. The two together keep the more recently *used*, not merely the
-more recently inserted, of two colliding keys — the property 3b's insertion
-did not have: it evicted the first probe whatever its use. Rejected: writing
-both probes, as Primordial Soup's `InsertOrdinary` does (half the capacity);
-zapping the other probe on insert, as Cog does (discards other keys for a
-reason particular to Cog). `bench_megamorphic.ns` measures the probe this
-buys — one hash and one cache line per send of a megamorphic site, instead
-of two hashes anywhere in the table — not the eviction rule: the whole
-program fills 27 of 1024 entries, five of them its megamorphic `value`
-site's own, and 27 keys over 512 groups collide less than once on average
-while eviction needs three keys in one group, so on the hot path almost
-certainly nothing is evicted. An eviction-rule comparison needs cache
-pressure (a small
+already at the first slot in place; otherwise the first slot's entry moves
+to the second, discarding whatever the second held, and the key is written
+into the first. That "otherwise" always means "not in this group at all":
+every caller runs a `get` for the same key first, and a `get` that hit the
+second slot promoted it, so `insert` can never find the key there. The arm
+is written to handle it regardless — the displaced first entry overwrites
+the second, so no group can come to hold one key twice — rather than
+asserted against on the send path. The two together keep the more recently
+*used*, not merely the more recently inserted, of two colliding keys — the
+property 3b's insertion did not have: it evicted the first probe whatever
+its use. Rejected: writing both probes, as Primordial Soup's
+`InsertOrdinary` does (half the capacity); zapping the other probe on
+insert, as Cog does (discards other keys for a reason particular to Cog).
+`bench_megamorphic.ns` measures the probe this buys — one hash and one
+cache line per send of a megamorphic site, instead of two hashes anywhere
+in the table — not the eviction rule: the whole program fills 27 of 1024
+entries, five of them its megamorphic `value` site's own, and 27 keys over
+512 groups collide less than once on average while eviction needs three
+keys in one group, so on the hot path almost certainly nothing is evicted.
+An eviction-rule comparison needs cache pressure (a small
 `NS_NEXT_GLOBAL_CACHE_ENTRIES`, or many more hot keys than this fixture
 has), and no measurement has supplied it, so the rule rests on Strongtalk's
 precedent rather than on numbers of this runtime's own
@@ -947,8 +958,10 @@ one per instruction ("Decisions" below).
 
 **Planned.** `Heap::dispatch_id` stops reaching the id through the class
 object; 3c changes that one function's representation and measures two
-variants against 3b. What 3b built is the baseline: the id lives on the class
-object, `ClassData.dispatch_id` holding the instances id in padding the
+variants against `393311f`, the last commit on the step after 3b that
+changed a send's path — the baseline [PROGRESS.md](../PROGRESS.md) names,
+not 3b's own head. That baseline is: the id lives on the class object,
+`ClassData.dispatch_id` holding the instances id in padding the
 struct already had and the class side derived from it as the next id, so an
 instance's guard costs two arena loads, a class object's one load and an add,
 and a release `Object` is still 56 bytes ("The dispatch id" above). The
@@ -978,11 +991,11 @@ only where `Heap::dispatch_id` reads the id does.
   `metaclass_of`, the miss path, instantiation — and an allocation per class
   object.
 
-Each is measured against 3b in two sittings, with `be3eb40`, together with the
-object sizes, the amplification and the memory after `run-corpus`. The
-proposed rule: the faster wins; within noise, the smaller; if neither beats
-3b, the id stays on the class object and the question is recorded as closed
-by that measurement. The user decides on the numbers.
+Each is measured against `393311f` in two sittings, with `be3eb40`, together
+with the object sizes, the amplification and the memory after `run-corpus`.
+The proposed rule: the faster wins; within noise, the smaller; if neither
+beats `393311f`, the id stays on the class object and the question is
+recorded as closed by that measurement. The user decides on the numbers.
 
 ### Considered and rejected
 

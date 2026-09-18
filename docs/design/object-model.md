@@ -141,7 +141,7 @@ behaviour.
 
 **Identity-keyed tables hash with `hash::IdentityMap`.** A mixin's `methods`, an
 application's `nested_slot` and the interpreter's `applications` and
-`empty_class_sides` are keyed by an identity the runtime assigned — an interned
+`metaclass_mixins` are keyed by an identity the runtime assigned — an interned
 symbol's index, a mixin's or application's address — which no input chooses, so
 SipHash's resistance to chosen keys buys nothing there. They hash with one
 multiply per word and a rotation that brings the mixed high bits down to the
@@ -338,6 +338,13 @@ behaviour: §5.10 makes S the superclass of the activation's current class,
 which §3.2 makes `Class` for a metaclass, and `Object`'s behaviour is what
 stands in for `Class` here — so a class-side `super new` no longer
 instantiates, because `Object` declares no factory for it to find.
+
+A metaclass that reaches an image — as a class-side activation's
+`current_class`, captured in a frame — is rebuilt with the same asymmetry:
+its record names the superclass `Object`'s class object like any other, and
+`image::decode::rebuild_applications` recognizes a record whose mixin is some
+declaration's class side and applies it with no superclass application
+([image-format.md](image-format.md), "What is *not* serialized").
 
 Every class object has a metaclass, a class that declares no class side
 included: the factory lives on it. The synthesized mixin such a class gets is
