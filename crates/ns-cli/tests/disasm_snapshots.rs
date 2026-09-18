@@ -100,7 +100,7 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 /// path segment that names nothing in the tree. Not a golden: this only
 /// exercises `disasm`'s addressing and never runs the module, while every
 /// golden is run end to end and checked against the outcome recorded in its
-/// `.toml` by `run_fixtures.rs`.
+/// `.toml` by `run_goldens.rs`.
 #[test]
 fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     let directory = ScratchDirectory::new("disasm-nested-path");

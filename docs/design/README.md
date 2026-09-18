@@ -118,7 +118,7 @@ and a `.toml` beside it holding the outcome that program must produce:
 `status`, `stdout` and `stderr`, each defaulting to the success case (`0`,
 empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
-for byte and exit status included (`crates/ns-cli/tests/run_fixtures.rs`).
+for byte and exit status included (`crates/ns-cli/tests/run_goldens.rs`).
 Every golden that is not skipped, the ones recorded as raising included, also
 goes through the snapshot and the build/load round trip, which hold an image's
 and a binary's three streams against what `run` answers on the source.

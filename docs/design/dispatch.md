@@ -910,7 +910,7 @@ under the gate. Targeted tests pin, through a test view of a site's state
 (`Interpreter::call_site_states`), in
 `crates/ns-runtime/tests/inline_caches.rs`, `stress.rs`, `image.rs` and
 `opcode_tags.rs`, `inline_cache.rs`'s unit tests and
-`crates/ns-cli/tests/run_fixtures.rs`:
+`crates/ns-cli/tests/run_goldens.rs`:
 
 - two `Inner` instances from two `Outer` instances sharing one monomorphic
   entry — the requirement "How other systems cache sends" ends with;

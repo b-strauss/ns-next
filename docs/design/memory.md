@@ -660,7 +660,7 @@ either way (2026-09-14, after step 2c). Almost
 half of that is `crates/ns-runtime/tests/trampoline.rs`, 90.8 s against 3.1 s,
 nearly all of it in `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`;
 most of the rest is the three CLI test binaries that spawn `ns-next` per
-fixture or golden — `build_load.rs` 48.3 s against 3.5 s, `run_fixtures.rs`
+golden — `build_load.rs` 48.3 s against 3.5 s, `run_goldens.rs`
 24.5 s against 1.6 s, `snapshot_load.rs` 20.7 s against 1.7 s — so
 `cargo test -p ns-cli` alone takes about 97 s against 7.5 s. `run-corpus`,
 whose six modules are small, takes about a third of a second either way.
