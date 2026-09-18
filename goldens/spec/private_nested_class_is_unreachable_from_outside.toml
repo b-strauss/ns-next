@@ -1,3 +1,7 @@
+# `newspeak-spec.pdf` §6: a nested class declaration "implicitly defines a
+# method with the same name and accessibility" in its enclosing class, so a
+# `private class Hidden` defines a private accessor, which §5.5's
+# `lookupPublic` never answers.
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #Hidden

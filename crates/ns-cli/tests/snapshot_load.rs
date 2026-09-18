@@ -189,10 +189,14 @@ fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
 }
 
 /// The failing direction of the same property, on an inline source rather
-/// than a fixture (every `goldens/**/*.ns` must exit zero, so a program
-/// that raises cannot live there). The uncaught-error line is written by
-/// the shared `report_entry_send` on both paths; this is what pins that it
-/// stays shared.
+/// than a golden. `a_snapshot_and_a_load_reproduce_exactly_what_run_prints`,
+/// above, skips every golden whose recorded `status` is non-zero
+/// (`Expectation::succeeds`): a program that raises leaves no image behind
+/// for `snapshot` to write, so round-tripping one proves nothing. This test
+/// covers that direction directly, on a source built to raise, rather than
+/// relying on one of the goldens recorded as failing. The uncaught-error
+/// line is written by the shared `report_entry_send` on both paths; this is
+/// what pins that it stays shared.
 #[test]
 fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
     let directory = ScratchDirectory::new("raises");

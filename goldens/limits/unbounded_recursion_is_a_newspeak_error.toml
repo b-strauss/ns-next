@@ -1,3 +1,5 @@
+# Unbounded recursion is an ordinary Newspeak error, not a process abort,
+# and the same one under both lowerings.
 status = 1
 stdout = '''
 start

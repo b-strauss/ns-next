@@ -1,3 +1,9 @@
+# A primitive that fails where its entry was recorded: `=` and
+# `printString` on a user subclass of `String`, whose instances carry no
+# string, fall to `Object`'s; `show:` answers two transcript streams and
+# fails on the platform object, which shares their class, so the third send
+# at the same site -- the same dispatch id -- ends in `doesNotUnderstand:`
+# (`docs/design/dispatch.md`, "A primitive can fail").
 status = 1
 stdout = '''
 true 'abc'

@@ -1,3 +1,13 @@
+# A user subclass of a builtin inherits the builtin's natives, but its
+# instances carry no payload of the builtin's kind, so every such native
+# fails on them and the send falls to `Object`'s: `=` answers identity and
+# `printString` the generic default, through an explicit receiver, a `self`
+# send, an implicit-receiver send and a `super` send alike, while `size`,
+# which `Object` does not have, ends in `doesNotUnderstand:`. The
+# `transcript` stream shares the `Platform` class with the platform
+# singleton and has no `=` of its own, so `=` is `Object`'s identity, false
+# for two fresh streams. Step 3a keeps every one of these outcomes
+# (`docs/design/dispatch.md`, "A primitive can fail").
 status = 1
 stdout = '''
 true

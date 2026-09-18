@@ -1,3 +1,6 @@
+# `newspeak-spec.pdf` §6.3.2: an immutable slot "may be accessed exclusively
+# by invoking a getter method" -- "There is no setter method associated with
+# the slot", however public the slot is.
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #y:
