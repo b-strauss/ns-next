@@ -589,6 +589,16 @@ nothing for at all. On purpose: see `root_class_answers` in
 `crates/ns-cli/src/commands/build.rs` for why only this narrower set keeps the
 byte-identity guarantee above sound.
 
+**Deviation: `args:` receives `nil`.** §8.4 gives `main:args:` "a platform
+object (8.3) as its first parameter, and a list of any environment-specific
+(e.g., command line) arguments as its second". `crates/ns-cli/src/entry.rs`'s
+`entry_arguments` — the one place any command that sends an entry builds its
+arguments — supplies the platform and then `Value::Nil`, because there is no
+command-line-argument passthrough into Newspeak. A program that inspects `args`
+sees `nil` where the specification promises an empty list. The deviation is the
+CLI's, not the format's: the encoded entry is a selector, and nothing about it
+records what the arguments are.
+
 **Loading.** `load` reads the header and branches. A stateful image is unchanged.
 A stateless binary decodes symbols → code → mixins → root class → entry id, with
 no graph section, then verifies the decoded declarations against their code and

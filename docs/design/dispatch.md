@@ -241,6 +241,18 @@ by the presence-only "defined for" relation instead: the first
 `doesNotUnderstand:` found walking the receiver's class chain, whatever its
 access modifier.
 
+**Deviation: the reified message is a two-element tuple.** §3.4 says a message
+"may be *reified* by the implementation by means of a *message mirror*", "an
+object obeying the protocol of class `MessageMirror` that provides access to
+*µ*'s selector and arguments". There are no mirrors
+([liveness-and-reflection.md](liveness-and-reflection.md)), so
+`resolve.rs`'s `handler_message` hands the handler `{selector. arguments}` — a
+two-element `Array` whose first element is the selector symbol and whose second
+is an `Array` of the arguments. A handler therefore reads `message at: 1` and
+`message at: 2` rather than sending a mirror protocol, which
+`goldens/cache/does_not_understand_site_with_three_kinds_of_handler.ns`
+records. The shape changes when mirrors arrive.
+
 **Unmarked access defaults to `protected`** (§6.3.1). This is binding rather than
 cosmetic: it decides whether a member participates in `lookupPublic` at all. A
 top-level class's own access is always public regardless of what is written on

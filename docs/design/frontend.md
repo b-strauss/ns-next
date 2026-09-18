@@ -37,7 +37,13 @@ The productions are transcribed from `NewspeakGrammar.ns`, a combinator grammar
 in the official repository, vendored into `corpus/reference/` so the parser can
 be checked against it. The load-bearing ones:
 
-- `compilationUnit = languageId , classCategory , classDecl , eoi`
+- `compilationUnit = languageId , classCategory , classDecl , eoi`. The
+  category string is optional in the grammar (`corpus/reference/NewspeakGrammar.ns`
+  line 202, `classCategory = string opt.`) and in §8.1
+  (`classCategory → [string]`); the parser requires one and refuses a file
+  without it with "expected a category string". An over-rejection, and a
+  loud one: every corpus module and every golden carries a category, so
+  nothing exercises the optional form.
 - `classHeader = accessModifier? , classReservedWord , classId ,
   messagePattern? , '=' , superclassClause? , '(' , classComment? ,
   slotDecls? , initExprs , ')'`

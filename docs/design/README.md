@@ -198,10 +198,11 @@ Places where the implementation differs from
 rather than an oversight -- and, for the last row, so that a defect nobody has
 had time to fix is at least not a surprise.
 
-Most rows only under-reject or narrow what can be expressed. Four do worse:
+Most rows only under-reject or narrow what can be expressed. Six do worse:
 the dropped local-slot initializer, the sequential simultaneous slot clauses,
-the synchronous asynchronous send and the name-keyed member set each answer a
-**correct** program **wrongly, at exit status 0**. Read those four before
+the eager lazy slot, the binary float behind a non-integral literal, the
+synchronous asynchronous send and the name-keyed member set each answer a
+**correct** program **wrongly, at exit status 0**. Read those six before
 trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
@@ -209,7 +210,8 @@ trusting a program's output.
 | No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the bootstrap `Object` placeholder; scheduled for step 6, the core library in Newspeak | §3.2 | [object-model.md](object-model.md) |
 | No formal "value object" notion, because there are no actors to need it | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
-| Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
+| Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
+| A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
 | A local slot's initializer is dropped: `\| x = expression. \|` in a method or block body declares the slot but leaves it **nil** | §3.6, §6.3.2 | [frontend.md](frontend.md) |
@@ -217,16 +219,27 @@ trusting a program's output.
 | Mixin application `Base <: Trait` does not parse | §6.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | A §5.7 member set is keyed by a class's simple name, so two same-named classes in one module share one set. A defect, not a decision: it answers wrongly at exit status 0 | §5.7 | [dispatch.md](dispatch.md) |
+| The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
+| `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
+| `doesNotUnderstand:`'s argument is a two-element tuple of the selector and the arguments, not an object obeying `MessageMirror`'s protocol | §3.4 | [dispatch.md](dispatch.md) |
 
-Four of these have a golden under `goldens/spec/`, recorded as `skipped`:
+Five of these have a golden under `goldens/spec/`, recorded as `skipped`:
 the dropped local-slot initializer, the sequential simultaneous slot
-clauses, the name-keyed member set and the unparsed mixin application. Each
-states what the specification requires the program to answer, so closing
-the gap is deleting the `skipped` line, and the expectation written the day
-the gap was found is what then has to hold. The asynchronous send has none:
-§5.6 says the result is "a promise that is immediately returned to the
-sender", and with no promise to observe there is no answer to record that
-would not be invented.
+clauses, the eager lazy slot, the name-keyed member set and the unparsed
+mixin application. Each states what the specification requires the program
+to answer, so closing the gap is deleting the `skipped` line, and the
+expectation written the day the gap was found is what then has to hold. The
+asynchronous send has none: §5.6 says the result is "a promise that is
+immediately returned to the sender", and with no promise to observe there
+is no answer to record that would not be invented.
+
+A `skipped` golden is not always a row here. `goldens/spec/` also records
+rules the runtime simply does not implement yet, rather than places where a
+decision was taken to differ: equal symbols are not one object (§5.1.6), a
+parameter slot accepts a setter send (§3.6), `nil` does not answer `isNil`
+(§5.1.3), and a parameter and a local of the same name compile (§3.6). Each
+carries its own `skipped` reason, and the first two answer wrongly at exit
+status 0.
 
 ## What lives elsewhere
 
