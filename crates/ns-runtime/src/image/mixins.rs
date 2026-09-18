@@ -557,15 +557,23 @@ fn check_ids(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// No row declares one member twice -- the rule the resolver applies to
 /// source (`resolver::classes::duplicate_member_names`), over the members a
 /// row declares: its methods, its slots' accessors (a getter under the
-/// slot's name, a mutable slot's setter under the name with `:`, §6.3.2)
-/// and its nested classes' accessors (§6). A row that broke it would build
-/// a method table that silently keeps one of two members, or a nested class
-/// no send can reach. The encoder writes only what the resolver accepted,
-/// so this is only reachable from a crafted image.
+/// slot's name, a mutable slot's setter under the name with `:`, §6.3.2),
+/// its nested classes' accessors (§6) and, for a row that is some
+/// declaration's class side, the primary factory §6.3 puts on the metaclass
+/// mixin. A row that broke it would build a method table that silently keeps
+/// one of two members: a nested class no send can reach, or a class that no
+/// longer instantiates because a class-side method took the factory's
+/// selector. The encoder writes only what the resolver accepted, so this is
+/// only reachable from a crafted image.
 ///
 /// Runs after `check_ids`, which is what lets it read a nested row's name.
 fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
-    for row in raw {
+    let factory_entries = metaclass_factory_entries(raw);
+    for (index, row) in raw.iter().enumerate() {
+        let factory = factory_entries[index]
+            .as_ref()
+            .map(|(selector, _)| *selector)
+            .into_iter();
         let setters = row
             .slots
             .iter()
@@ -577,7 +585,8 @@ fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
             .map(|slot| slot.name)
             .chain(setters)
             .chain(row.methods.iter().map(|&(selector, ..)| selector))
-            .chain(row.nested.iter().map(|id| raw[*id as usize].name));
+            .chain(row.nested.iter().map(|id| raw[*id as usize].name))
+            .chain(factory);
         let mut seen = std::collections::HashSet::new();
         for member in members {
             if !seen.insert(member) {
@@ -631,6 +640,31 @@ fn check_preorder(raw: &[RawRow]) -> Result<(), DecodeError> {
     Ok(())
 }
 
+/// The factory entry each row holds as a *metaclass* mixin: for a row some
+/// other row names as its class side, the entry that other row's own factory
+/// defines (`newspeak-spec.pdf` §6.3, "The class side, together with the
+/// primary factory method, defines the mixin for the metaclass"); `None` for
+/// every other row, which is not a metaclass mixin and must not answer a
+/// factory selector.
+///
+/// The entry is derived rather than written to the image, exactly as a
+/// slot's accessors are (§6.3.2): it carries no body and everything it needs
+/// is already in the parent row's factory field, so writing it would be a
+/// second copy of the format's own answer, free to disagree with it.
+///
+/// `check_preorder` has established that every row is reached exactly once,
+/// so no row is the class side of two declarations and the answer is unique.
+/// Runs after `check_ids`, which is what lets this index `raw`.
+fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)>> {
+    let mut entries: Vec<Option<(Symbol, MethodEntry)>> = vec![None; raw.len()];
+    for row in raw {
+        if let Some(class_side) = row.class_side {
+            entries[class_side as usize] = Some(crate::mixin::factory_entry(row.factory));
+        }
+    }
+    entries
+}
+
 /// Builds the `Rc<Mixin>`s back to front. `check_preorder` established that
 /// every child's row id is greater than its parent's, so a row's children
 /// are already built by the time the loop reaches it.
@@ -642,6 +676,7 @@ fn check_preorder(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// still display an artifact whose halves disagree.
 fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
     let code_at = |id: u32| codes[id as usize].clone();
+    let mut factory_entries = metaclass_factory_entries(&raw);
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
     let mut code: Vec<Option<MixinCode>> = (0..raw.len()).map(|_| None).collect();
     for (index, row) in raw.into_iter().enumerate().rev() {
@@ -658,6 +693,11 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
         // `check_member_names` proved no compiled method shares a selector
         // with an accessor, so neither overwrites the other.
         let accessors = slot_accessors(&slots);
+        // §6.3: a row another row names as its class side is a metaclass
+        // mixin, and carries that declaration's primary factory as an entry
+        // of its method table. `check_member_names` proved the row declares
+        // nothing under that selector, so nothing is overwritten.
+        let factory_entry = factory_entries[index].take();
         let compiled = row
             .methods
             .iter()
@@ -677,7 +717,11 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
                     })),
                 )
             });
-        let methods = accessors.into_iter().chain(compiled).collect();
+        let methods = accessors
+            .into_iter()
+            .chain(compiled)
+            .chain(factory_entry)
+            .collect();
         code[index] = Some(MixinCode {
             methods: row
                 .methods

@@ -86,6 +86,6 @@ pub(crate) fn decide_super_send<'gc>(
         }));
     };
     let self_value = mutator.heap.activation_receiver(activation);
-    let resolved = mutator.resolve_super(self_value, superclass, selector);
+    let resolved = mutator.resolve_super(superclass, selector);
     mutator.act(resolved, self_value, Some(superclass), selector, arguments)
 }

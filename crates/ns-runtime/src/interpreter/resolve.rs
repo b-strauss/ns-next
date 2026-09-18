@@ -13,7 +13,6 @@ use crate::mixin::{AccessorKind, Mixin, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
 
-use super::instantiate::is_factory_send;
 use super::{nested, FeedbackBase, Mutator, Signal, Step, StepArguments};
 
 /// Which lookup found a target -- and so which class object its levels are
@@ -64,9 +63,15 @@ pub(crate) enum Resolved<'gc> {
         level: ClassReference<'gc>,
         chain: Chain,
     },
-    /// `try_factory_send` answers the send (§6.1); `chain` is `Public` or
-    /// `SuperDoesNotUnderstand`.
-    Factory { chain: Chain },
+    /// §6.3's primary factory, found on `level`'s metaclass; `level` is the
+    /// class object §6.1 instantiates, which is the send's receiver. `chain`
+    /// is `PublicClassSide` or `ProtectedClassSide`: a factory entry lives
+    /// on a metaclass and metaclasses are flat (§3.2), so no other chain
+    /// reaches one.
+    Factory {
+        level: ClassReference<'gc>,
+        chain: Chain,
+    },
     /// Nothing handles it, not even `doesNotUnderstand:`. Never recorded.
     Unhandled,
 }
@@ -79,7 +84,7 @@ impl Resolved<'_> {
             | Resolved::Slot { chain, .. }
             | Resolved::NestedClass { chain, .. }
             | Resolved::Primitive { chain, .. }
-            | Resolved::Factory { chain } => Some(*chain),
+            | Resolved::Factory { chain, .. } => Some(*chain),
             Resolved::Unhandled => None,
         }
     }
@@ -87,18 +92,12 @@ impl Resolved<'_> {
 
 impl<'gc> Mutator<'gc> {
     /// §5.5, the explicit-receiver send's lookup, which `decide_send` acts
-    /// on: the factory check first (§6.1, `try_factory_send`'s condition),
-    /// then a class object's class side (§6.3), then `lookupPublic` on the
-    /// class, then `doesNotUnderstand:`.
+    /// on: a class object's class side first (§6.3), then `lookupPublic` on
+    /// the class, then `doesNotUnderstand:`.
     ///
-    /// The factory check comes before any lookup because `ClassName new` (or
-    /// a class's own non-default factory selector) never has a real method
-    /// to find: every class object's own `.class` is a shared placeholder
-    /// whose method table holds only `Object`'s primitives, none of them a
-    /// factory, so an ordinary `lookup_public` would fall through to
-    /// `doesNotUnderstand:` every time. Only a class object has a factory
-    /// selector (`primary_factory_selector`), so asking `is_class` first
-    /// changes no answer.
+    /// `ClassName new` needs no case ahead of the lookup: §6.3 makes the
+    /// primary factory an entry of the metaclass mixin, so the class-side
+    /// lookup below finds it like any other member.
     ///
     /// §6.3: a class object's class-side methods are reached through its
     /// metaclass, consulted before the class object's own (ordinary,
@@ -113,11 +112,6 @@ impl<'gc> Mutator<'gc> {
     ) -> Resolved<'gc> {
         if let Value::Object(object) = receiver {
             if self.heap.is_class(object) {
-                if is_factory_send(&self.heap, &receiver, selector) {
-                    return Resolved::Factory {
-                        chain: Chain::Public,
-                    };
-                }
                 if let Some(resolved) =
                     self.resolve_class_side(object, selector, Chain::PublicClassSide)
                 {
@@ -181,7 +175,11 @@ impl<'gc> Mutator<'gc> {
             // only a real declaration stops the search, so a primitive there
             // would be passed over to reach the class-object chain anyway.
             Lookup::Primitive(..) if chain == Chain::ProtectedClassSide => None,
-            found => Some(resolved(found, chain)),
+            found => Some(resolved_on_class_side(
+                found,
+                Value::Object(class_object),
+                chain,
+            )),
         }
     }
 
@@ -229,19 +227,20 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// §5.10's lookup, once `decide_super_send` or `send_super` has ruled
-    /// out its two errors:
-    /// lookupProtected from S; nothing found is the factory check on `self`,
-    /// then the `doesNotUnderstand:` defined for S.
+    /// out its two errors: lookupProtected from S; nothing found is the
+    /// `doesNotUnderstand:` defined for S.
+    ///
+    /// The receiver is not a parameter: §5.10 invokes what it finds on `o`,
+    /// but only `act` needs `o` for that. The lookup itself reads S alone --
+    /// it used to take the receiver for the factory check that stood ahead
+    /// of the handler, which §6.3's factory entry has replaced.
     pub(crate) fn resolve_super(
         &mut self,
-        self_value: Value<'gc>,
         superclass: ClassReference<'gc>,
         selector: Symbol,
     ) -> Resolved<'gc> {
         match dispatch::lookup_protected(&self.heap, superclass, selector) {
-            Lookup::NotFound => {
-                self.resolve_super_does_not_understand(self_value, superclass, selector)
-            }
+            Lookup::NotFound => self.resolve_super_does_not_understand(superclass),
             found => resolved(found, Chain::Super),
         }
     }
@@ -249,31 +248,23 @@ impl<'gc> Mutator<'gc> {
     /// §5.10's failure: "Otherwise, the #doesNotUnderstand: method defined
     /// for S is invoked" -- looked up from `superclass`, S, rather than from
     /// the receiver's own class, so a subclass's own `doesNotUnderstand:`
-    /// does not answer a `super` send that its superclass cannot. A class
-    /// object's `super` send of its own factory selector still instantiates
-    /// (`try_factory_send`), exactly as the same send to it does.
+    /// does not answer a `super` send that its superclass cannot.
     ///
-    /// `#[cold]`, although this is not purely a failure path: a `super new`
-    /// that does instantiate -- a class overriding `new` and delegating to
-    /// `super` -- passes through here too. That is accepted because
-    /// instantiation's own allocations (the instance, its factory's levels,
-    /// every initializer activation) dwarf what marking this cold costs a
-    /// codegen decision that runs once per `super`-prefixed factory send in
-    /// the whole program, where an ordinary `super` failure runs on every
-    /// miss.
+    /// Nothing is checked ahead of the handler any more. A `super` send of a
+    /// factory selector used to instantiate from here, because a class side
+    /// was inherited and so an inherited class-side method's `super new`
+    /// could be the only way to reach the receiver's own factory. §3.2 makes
+    /// a metaclass flat, so a factory entry is reachable only on the
+    /// receiver's own metaclass, never on S -- and S, for a class-side
+    /// method, is `Object`'s behaviour.
+    ///
+    /// `#[cold]`: it is what a `super` send does when nothing answered it.
     #[cold]
     #[inline(never)]
     fn resolve_super_does_not_understand(
         &mut self,
-        self_value: Value<'gc>,
         superclass: ClassReference<'gc>,
-        selector: Symbol,
     ) -> Resolved<'gc> {
-        if is_factory_send(&self.heap, &self_value, selector) {
-            return Resolved::Factory {
-                chain: Chain::SuperDoesNotUnderstand,
-            };
-        }
         self.resolve_handler(superclass, Chain::SuperDoesNotUnderstand)
     }
 
@@ -333,7 +324,38 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
             level,
             chain,
         },
+        // §6.3's factory is a member of a metaclass mixin, and the only
+        // lookups that search a metaclass hand their answer to
+        // `resolved_on_class_side` below, which maps it. Reaching here means
+        // an instance mixin's method table holds a factory entry, which only
+        // a crafted image can arrange (`image::mixins::decode` derives one
+        // for a class-side row alone): refused, rather than instantiating
+        // whatever object happened to receive the send.
+        Lookup::Factory => Resolved::Unhandled,
         Lookup::NotFound => unreachable!("internal: the caller resolves what nothing found"),
+    }
+}
+
+/// A found `Lookup` as a resolution on one of the two metaclass chains
+/// (§6.3), where `receiver` is the class object whose metaclass was
+/// searched.
+///
+/// §6.1 instantiates the class object the primary factory message was
+/// *sent to*, whichever level of the metaclass chain held the entry -- and
+/// §3.2's flat metaclass leaves only the one level anyway. So the factory
+/// resolution names the receiver, and no level is counted or recorded.
+#[inline(always)]
+fn resolved_on_class_side<'gc>(
+    lookup: Lookup<'gc>,
+    receiver: Value<'gc>,
+    chain: Chain,
+) -> Resolved<'gc> {
+    match (lookup, receiver) {
+        (Lookup::Factory, Value::Object(class_object)) => Resolved::Factory {
+            level: class_object,
+            chain,
+        },
+        (found, _) => resolved(found, chain),
     }
 }
 
@@ -388,15 +410,9 @@ impl<'gc> Mutator<'gc> {
                 defining_class,
                 chain,
             } => match chain {
-                Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => self
-                    .act_handler_method(
-                        method,
-                        defining_class,
-                        chain,
-                        receiver,
-                        selector,
-                        arguments,
-                    ),
+                Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
+                    self.act_handler_method(method, defining_class, receiver, selector, arguments)
+                }
                 _ => Ok(Step::Method {
                     receiver,
                     method,
@@ -407,7 +423,7 @@ impl<'gc> Mutator<'gc> {
             },
             Resolved::Slot { kind, field, chain } => match chain {
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
-                    self.act_handler_slot(kind, field, chain, receiver, selector, arguments)
+                    self.act_handler_slot(kind, field, receiver, selector, arguments)
                 }
                 // §6.3.2: a slot's accessors answer a send exactly when a
                 // method with the slot's accessibility would; `super x`
@@ -436,17 +452,20 @@ impl<'gc> Mutator<'gc> {
                 level,
                 chain,
             } => match chain {
-                Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => self
-                    .act_handler_primitive(primitive, level, chain, receiver, selector, arguments),
+                Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
+                    self.act_handler_primitive(primitive, level, receiver, selector, arguments)
+                }
                 _ => match crate::builtins::execute(self, primitive, receiver, selector, arguments)
                 {
                     Some(result) => result,
                     None => self.act_above(level, chain, receiver, superclass, selector, arguments),
                 },
             },
-            Resolved::Factory { chain } => {
-                self.act_factory(chain, receiver, superclass, selector, arguments)
-            }
+            // §6.3's factory entry, run with no re-check: the lookup found
+            // it on the receiver's own metaclass, and the class-side
+            // dispatch id a cache entry is guarded by determines that
+            // metaclass, so a hit reaches the class a miss would.
+            Resolved::Factory { level, .. } => self.decide_factory(level, arguments),
             Resolved::Unhandled => Err(unhandled_error(receiver, selector)),
         }
     }
@@ -493,7 +512,7 @@ impl<'gc> Mutator<'gc> {
                         let lookup = dispatch::lookup_public(&self.heap, class, selector);
                         self.resolved_public(lookup, receiver)
                     }
-                    found => resolved(found, Chain::PublicClassSide),
+                    found => resolved_on_class_side(found, receiver, Chain::PublicClassSide),
                 }
             }
             Chain::Protected | Chain::Private => {
@@ -526,55 +545,20 @@ impl<'gc> Mutator<'gc> {
                             found => resolved(found, Chain::Protected),
                         }
                     }
-                    found => resolved(found, Chain::ProtectedClassSide),
+                    found => resolved_on_class_side(found, receiver, Chain::ProtectedClassSide),
                 }
             }
             Chain::Super => {
                 // Only a `super` send builds this chain, and it passes S.
                 let superclass = superclass.expect("internal: a super chain carries S");
                 match dispatch::lookup_above(&self.heap, Rule::Protected, level, selector) {
-                    Lookup::NotFound => {
-                        self.resolve_super_does_not_understand(receiver, superclass, selector)
-                    }
+                    Lookup::NotFound => self.resolve_super_does_not_understand(superclass),
                     found => resolved(found, Chain::Super),
                 }
             }
             Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
                 unreachable!("internal: a handler's primitive fails in act_handler_primitive")
             }
-        };
-        self.act(resolved, receiver, superclass, selector, arguments)
-    }
-
-    /// §6.1's instantiation, re-checked here rather than trusted from the
-    /// resolution (`docs/design/dispatch.md`, "Resolve, then act"): a
-    /// resolution rebuilt from a cache entry was decided for another
-    /// receiver with the same guard. A receiver that is not the factory send
-    /// after all continues where its chain would have without it -- the
-    /// public lookup, which cannot answer `Factory` again since it asks the
-    /// same condition, or the `doesNotUnderstand:` defined for S.
-    ///
-    /// `#[inline(never)]`: it recurses into `act`, and an instantiation's
-    /// own work dwarfs the call.
-    #[inline(never)]
-    fn act_factory(
-        &mut self,
-        chain: Chain,
-        receiver: Value<'gc>,
-        superclass: Option<ClassReference<'gc>>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        if let Some(result) = self.try_factory_send(&receiver, selector, arguments) {
-            return result;
-        }
-        let resolved = match chain {
-            Chain::SuperDoesNotUnderstand => {
-                // Only a `super` send builds this chain, and it passes S.
-                let superclass = superclass.expect("internal: a super chain carries S");
-                self.resolve_handler(superclass, Chain::SuperDoesNotUnderstand)
-            }
-            _ => self.resolve_public(receiver, selector),
         };
         self.act(resolved, receiver, superclass, selector, arguments)
     }
@@ -587,15 +571,11 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         method: Rc<MixinMethod>,
         defining_class: ClassReference<'gc>,
-        chain: Chain,
         receiver: Value<'gc>,
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        let message = match self.handler_message(chain, receiver, selector, arguments) {
-            Ok(message) => message,
-            Err(answered) => return answered,
-        };
+        let message = self.handler_message(selector, arguments);
         Ok(handler_method_step(
             receiver,
             method,
@@ -614,15 +594,11 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         kind: AccessorKind,
         field: usize,
-        chain: Chain,
         receiver: Value<'gc>,
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        let message = match self.handler_message(chain, receiver, selector, arguments) {
-            Ok(message) => message,
-            Err(answered) => return answered,
-        };
+        let message = self.handler_message(selector, arguments);
         self.decide_slot_accessor(
             receiver,
             kind,
@@ -644,15 +620,11 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         primitive: Primitive,
         level: ClassReference<'gc>,
-        chain: Chain,
         receiver: Value<'gc>,
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        let message = match self.handler_message(chain, receiver, selector, arguments) {
-            Ok(message) => message,
-            Err(answered) => return answered,
-        };
+        let message = self.handler_message(selector, arguments);
         let mut primitive = primitive;
         let mut level = level;
         loop {
@@ -692,21 +664,25 @@ impl<'gc> Mutator<'gc> {
                     primitive = above;
                     level = above_level;
                 }
-                // As in `resolve_handler`: a nested declaration is never the
-                // handler.
-                Lookup::NotFound | Lookup::NestedClass(..) => {
+                // As in `resolve_handler`: a nested declaration is never
+                // the handler, and neither is §6.3's factory, whose entry
+                // lives on a metaclass while this walks the receiver's own
+                // class chain.
+                Lookup::NotFound | Lookup::NestedClass(..) | Lookup::Factory => {
                     return Err(unhandled_error(receiver, selector));
                 }
             }
         }
     }
 
-    /// The message every `doesNotUnderstand:` handler takes -- or, on
-    /// §5.10's chain, the instantiation that answers the send instead. The
-    /// factory check comes first there, before any handler runs, as §5.10's
-    /// failure path starts with it; a resolution rebuilt from a cache entry
-    /// keyed on S does not cover it, since two class objects inheriting one
-    /// class-side method can have different factory selectors.
+    /// The message every `doesNotUnderstand:` handler takes.
+    ///
+    /// Nothing is checked ahead of it any more: §5.10's failure path used to
+    /// try the factory on `self` first, because an inherited class-side
+    /// method's `super` send could be the only way to reach the receiver's
+    /// own factory. §6.3 makes the factory an entry of the metaclass mixin
+    /// and §3.2 makes the metaclass flat, so a factory is reached by the
+    /// ordinary class-side lookup or not at all.
     ///
     /// The message is a minimal message-mirror-shaped value: an Array
     /// `{selector. arguments}` rather than a real MessageMirror object, since
@@ -715,23 +691,10 @@ impl<'gc> Mutator<'gc> {
     /// `MessageMirror` API are out of scope. It is built once the handler is
     /// found; allocation order is unobservable, identity hashes being drawn
     /// lazily.
-    fn handler_message(
-        &mut self,
-        chain: Chain,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Value<'gc>, Result<Step<'gc>, Signal<'gc>>> {
-        if chain == Chain::SuperDoesNotUnderstand {
-            if let Some(answered) = self.try_factory_send(&receiver, selector, arguments) {
-                return Err(answered);
-            }
-        }
+    fn handler_message(&mut self, selector: Symbol, arguments: &[Value<'gc>]) -> Value<'gc> {
         let selector_value = self.new_symbol(selector);
         let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
-        Ok(Value::Object(
-            self.new_array(vec![selector_value, arguments_value]),
-        ))
+        Value::Object(self.new_array(vec![selector_value, arguments_value]))
     }
 }
 
@@ -824,10 +787,13 @@ mod tests {
                     ..
                 }
             ));
+            // §6.3: the factory is an entry of the metaclass mixin, so the
+            // class-side lookup is what finds it -- not a case ahead of it.
             assert!(matches!(
                 mutator.resolve_public(class_object, Symbol::NEW),
                 Resolved::Factory {
-                    chain: Chain::Public
+                    chain: Chain::PublicClassSide,
+                    ..
                 }
             ));
             assert!(matches!(

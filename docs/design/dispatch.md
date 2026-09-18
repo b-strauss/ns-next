@@ -419,7 +419,10 @@ also sharpened five points of the design as first written: a private lexical
 site is guarded, a vacant lexical site skips the global cache, a `super`
 send's handler target re-checks the factory, a block's family size is its
 own subtree's, and the decoder requires dense call-site numbers. Each is
-described below where it applies.
+described below where it applies. The third of those is gone again: §6.3's
+factory entry and §3.2's flat metaclass together leave a factory reachable
+only on the receiver's own metaclass, which the class-side guard determines,
+so there is nothing left for a `super` send's handler target to re-check.
 
 #### The state lives per heap
 
@@ -459,7 +462,8 @@ The id (`mixin::DispatchId`) is a dense `u32`, minted per heap by a
 counter in the `Mutator` when `apply_mixin` creates an application — two per
 application, one for its instances and one for its class objects' class side,
 since every class object shares one placeholder class and its behaviour
-(factory, metaclass, `Object`'s own) depends on its application alone. The
+(its metaclass, the factory among its members, then `Object`'s own) depends
+on its application alone. The
 two are minted consecutively, so the class side's is always the instances id
 plus one (`DispatchId::class_side`), and a class object stores only the
 instances id (`ClassData.dispatch_id`), in padding `ClassData` already had: a
@@ -498,8 +502,10 @@ failed primitive continues. A `Resolved` is one of:
   the lookup walked;
 - `NestedClass` — the mixin and its declaring class;
 - `Primitive` — the primitive and its level, where a failure continues;
-- `Factory` — the receiver is a class object and the selector its factory
-  selector (§6.1), found on the public chain or on `super`'s handler chain;
+- `Factory` — §6.3's primary factory, an entry of the receiver's metaclass
+  mixin, with the class object §6.1 instantiates: the receiver, whichever
+  level of the metaclass chain held the entry. Found on one of the two
+  class-side chains and nowhere else;
 - `Unhandled` — nothing handles the send, not even `doesNotUnderstand:`.
 
 A `doesNotUnderstand:` handler is a `Method`, `Slot` or `Primitive` on a
@@ -511,13 +517,13 @@ from an entry, so there is one place that executes a target, and a hit
 cannot do anything a miss would not. **A cache records what the lookup
 decided; it never decides.** Every detour a lookup takes ends in a resolution
 too: a lexical send whose `lookupProtected` finds nothing falls to
-`resolve_public`, factory check and `doesNotUnderstand:` included, and what it
+`resolve_public`, class side and `doesNotUnderstand:` included, and what it
 ends in is what is recorded. That is what makes the uncached reference
 lowering a valid oracle for the cached one ("Verification" below). A release
 `Resolved` is 16 bytes, pinned. `act` is `#[inline(always)]` into its
-callers, and its continuations — `act_above`, `act_factory` and the three
-handler arms — are out of line, `#[cold]` where they are failure paths, so
-only the hot half is duplicated into the sends.
+callers, and its continuations — `act_above` and the three handler arms —
+are out of line, `#[cold]` where they are failure paths, so only the hot half
+is duplicated into the sends.
 
 #### An entry
 
@@ -529,7 +535,8 @@ records with every handle taken out:
 - `Slot` — the absolute field index, the accessor's kind and its chain;
 - `NestedClass` — the mixin, its level and its chain;
 - `Primitive` — the primitive, its level and its chain;
-- `Factory` — its chain;
+- `Factory` — its chain, and nothing else: §6.1 instantiates the receiver,
+  which the guard already names, so there is no level to count;
 
 and three states a site can be in, each guarded by `VACANT`: `Vacant`,
 `Polymorphic` (a block in the pool below) and `Megamorphic`. An entry holds
@@ -639,8 +646,8 @@ so it gains no dispatch logic:
 
 1. The site's index; none means the uncached send.
 2. The key (`SendKey`). `SendPublic`: `dispatch_id(receiver)`; for a class
-   object that is its class side, which covers the order of factory,
-   metaclass, then `Object`'s behaviour. `SendLexical`:
+   object that is its class side, which covers the order of metaclass —
+   class-side members and the factory alike — then `Object`'s behaviour. `SendLexical`:
    `o = kth_enclosing_object(...)`, then `dispatch_id(o)`, or N's instances
    id at a private site (below). `SendSuper`: the instances id of
    `current_class`'s application; the receiver stays `self`, and a send with
@@ -665,23 +672,22 @@ reads or writes the field without an activation (`decide_slot_accessor`).
 one still runs its clause as a step. `Primitive` calls `builtins::execute`; a
 failure continues the lookup above the primitive's level, uncached, as 3a
 defines it, and the entry stays, as Cog keeps a method whose primitive
-failed. `Factory` is `try_factory_send`'s action, and `act_factory`
-re-checks that the selector is the receiver's factory selector, continuing
-uncached if it is not. A handler target builds the message array per send
-and calls the handler; on `super`'s handler chain it first re-checks the
-factory on `self` (`handler_message`), because §5.10's failure path starts
-with that check and the key, which names `current_class`'s application, does
-not cover it: two class objects inheriting one class-side method can have
-different factory selectors.
+failed. `Factory` instantiates the receiver (`instantiate::decide_factory`),
+with no re-check: §3.2's flat metaclass leaves the entry reachable only on
+the receiver's own metaclass, which the class-side guard determines. A
+handler target builds the message array per send and calls the handler, and
+nothing is checked ahead of it.
 
 #### Every target is a function of its key and its site
 
 That is the property the entries rest on, and a lookup that also reads something
-the key does not cover re-checks it in `act`, as the factory checks do. The plan
-audited every read `resolve` and its callees make: the only ones the key does
-not cover are a class object's factory selector and `ClassData.builtin`, which
-`act` re-reads on every send (`try_factory_send`), and a primitive's payload
-check, which `builtins::execute` re-runs on every send.
+the key does not cover re-checks it in `act`. The plan audited every read
+`resolve` and its callees make: the only ones the key does not cover are
+`ClassData.builtin`, which `decide_factory` re-reads on every send off the
+receiver rather than trusting an entry, and a primitive's payload check,
+which `builtins::execute` re-runs on every send. A class object's factory
+selector is no longer among them: §6.3 makes it the selector the entry is
+filed under in the metaclass's method table, which the guard covers.
 
 The audit also covers the class-side fall-through: once the metaclass lookup
 finds nothing, `resolve_public` and `act_above`'s `PublicClassSide` arm both
@@ -804,9 +810,6 @@ under the gate. Targeted tests pin, through a test view of a site's state
 - a private lexical site with a changing `o`;
 - class objects: a factory send, a class-side method and `Object`'s
   behaviour, at one site that also sees instances;
-- a `super` send in an inherited class-side method that misses and reaches
-  the factory check, from two class objects with different factory
-  selectors, in both orders;
 - `doesNotUnderstand:` with the native handler, a user handler, and the
   setter of a slot named `doesNotUnderstand`;
 - a cached primitive that fails;

@@ -177,30 +177,32 @@ impl<'gc> Mutator<'gc> {
             .iter()
             .map(|nested| self.build_mixin(nested, bindings))
             .collect();
+        // §6.1: a class written without a factory pattern is instantiated by
+        // `new`, which is also what an omitted superclass-clause *message*
+        // defaults to -- the two halves of the same rule, so
+        // `class C = (...)` inherits from `Object` through `new`. Resolved
+        // before the class side is built, because §6.3 makes the factory a
+        // member of the metaclass mixin the class side becomes.
+        let factory = match &declaration.factory {
+            Some(pattern) => Factory {
+                selector: Symbol::intern(&method_name(pattern)),
+                argument_count: pattern_parameter_count(pattern),
+            },
+            None => Factory {
+                selector: Symbol::NEW,
+                argument_count: 0,
+            },
+        };
         let class_side = declaration
             .class_side
             .as_ref()
-            .map(|side| self.build_class_side(side, bindings));
+            .map(|side| self.build_class_side(side, factory, bindings));
         let mut mixin = Mixin {
             name: Symbol::intern(&declaration.name.name),
             access: crate::dispatch::effective_access(declaration.access),
             methods,
             slots,
-            // §6.1: a class written without a factory pattern is
-            // instantiated by `new`, which is also what an omitted
-            // superclass-clause *message* defaults to -- the two halves of
-            // the same rule, so `class C = (...)` inherits from `Object`
-            // through `new`.
-            factory: Some(match &declaration.factory {
-                Some(pattern) => Factory {
-                    selector: Symbol::intern(&method_name(pattern)),
-                    argument_count: pattern_parameter_count(pattern),
-                },
-                None => Factory {
-                    selector: Symbol::NEW,
-                    argument_count: 0,
-                },
-            }),
+            factory: Some(factory),
             superclass: declaration.superclass.as_ref().map(superclass_clause_of),
             has_initializer_expressions: !declaration
                 .instance_side
@@ -222,22 +224,32 @@ impl<'gc> Mutator<'gc> {
         Rc::new(mixin)
     }
 
-    /// A class side's own methods, as a `Mixin`. Kept separate from
-    /// `build_mixin` and deliberately small: a class side has no factory
-    /// pattern of its own (its metaclass carries class-side behaviour and
-    /// nothing more -- `docs/design/object-model.md`, "Class sides and
-    /// metaclasses") and no nested classes of its own to load -- only its
-    /// instance side's `nested_classes` recurse. `declaration` is `None`
-    /// because a `ClassBody` is not itself an `ast::ClassDeclaration`; there is
-    /// no single declaration node to keep as provenance for it.
+    /// The metaclass mixin a class side becomes: `newspeak-spec.pdf` §6.3's
+    /// "the class side, together with the primary factory method". So
+    /// `factory` -- the enclosing declaration's, since a class side declares
+    /// no factory pattern of its own -- joins the class side's own members as
+    /// an entry of this method table, found by the ordinary lookups like any
+    /// other. Before that it was a case ahead of the lookup, which cost every
+    /// send to a class object a factory-selector compare and needed a
+    /// re-check wherever a cache could record the decision.
+    ///
+    /// Kept separate from `build_mixin` and deliberately small: a class side
+    /// has no nested classes of its own to load -- only its instance side's
+    /// `nested_classes` recurse. `declaration` is `None` because a
+    /// `ClassBody` is not itself an `ast::ClassDeclaration`; there is no
+    /// single declaration node to keep as provenance for it.
     fn build_class_side(
         &mut self,
         side: &ast::ClassBody,
+        factory: Factory,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Rc<Mixin> {
         let slots = build_slots(side);
+        let mut methods = build_methods(side, &slots, bindings, self.lowering);
+        let (selector, entry) = crate::mixin::factory_entry(Some(factory));
+        methods.insert(selector, entry);
         let mut mixin = Mixin {
-            methods: build_methods(side, &slots, bindings, self.lowering),
+            methods,
             slots,
             has_initializer_expressions: !side.initializer_expressions.is_empty(),
             initializer_expressions: side.initializer_expressions.clone(),
@@ -248,69 +260,46 @@ impl<'gc> Mutator<'gc> {
         Rc::new(mixin)
     }
 
-    /// Intercepts an ordinary explicit-receiver send (`Interpreter::send`'s
-    /// call site, above -- checked *before* `dispatch::lookup_public`) when
-    /// `receiver` is a class object and `selector` is that class's own
-    /// factory selector: the class's mixin `factory` pattern if the class
-    /// declared one (every user-defined class does -- `build_mixin` above
-    /// always fills this in, defaulting to a bare `new` pattern when the
-    /// source class declaration left it out), or a bare `new` selector for a
-    /// builtin (`factory` is always `None` there, per
-    /// `build_builtin_classes`). Returns `None` for anything else --
-    /// including a `new`-selector send to a *non*-class object, or a
-    /// class object receiving some other selector -- letting the caller
-    /// fall through to ordinary dispatch.
+    /// §6.3's instantiation, the action of a factory entry: a fresh instance
+    /// of `class`, then its instance initializer (`newspeak-spec.pdf` §6.1).
     ///
-    /// No user-overridable `new` method is ever registered anywhere to
-    /// find (a `BuiltinClass`-tagged class's method table holds only its
-    /// primitives, none of them `new`, and a user class's own `.class` is
-    /// the shared `Object`-tagged placeholder -- there is no reified
-    /// metaclass hierarchy, see `docs/design/object-model.md`, "Class sides
-    /// and metaclasses"), so
-    /// without this check `ClassName new` would unconditionally end in
-    /// `doesNotUnderstand:`, for every class, every time.
+    /// No re-check of what the lookup decided: the entry was found on the
+    /// receiver's own metaclass, whose dispatch id is the class-side guard a
+    /// cache entry is keyed by, so a hit and a miss reach the same class
+    /// (§3.2 makes a metaclass flat, so there is no inherited class side an
+    /// entry could have come from). `class` is the receiver itself, read per
+    /// send rather than carried in an entry.
     ///
     /// No double-dispatch risk against the superclass clause's own factory
-    /// message (e.g. `Object new` in `class Foo = Object new (...)`). That
-    /// message is *evaluated* (`climb_levels` below), but it is
-    /// never *sent*: §6.2 has the subclass's initializer invoke the
-    /// superclass's instance initializer directly on the same object, so
-    /// `climb_levels` runs it level by level and never calls
-    /// `Mutator::decide_send` -- and therefore never reaches this method,
-    /// which would otherwise allocate a second, discarded instance per level.
-    pub(super) fn try_factory_send(
+    /// message (`Object new` in `class Foo = Object new (...)`). That message
+    /// is *evaluated* (`climb_levels` below), but never *sent*: §6.2 has the
+    /// subclass's initializer invoke the superclass's instance initializer
+    /// directly on the same object, so `climb_levels` runs it level by level
+    /// and never decides a send -- and so never reaches here, which would
+    /// otherwise allocate a second, discarded instance per level.
+    pub(super) fn decide_factory(
         &mut self,
-        receiver: &Value<'gc>,
-        selector: Symbol,
+        class: ClassReference<'gc>,
         arguments: &[Value<'gc>],
-    ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-        let Value::Object(object) = receiver else {
-            return None;
-        };
-        if !is_factory_send(&self.heap, receiver, selector) {
-            return None;
-        }
-        let builtin = self.heap.class_builtin(*object);
-        let class_reference = *object;
-        Some(match builtin {
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        match self.heap.class_builtin(class) {
             // `Array`/`OrderedCollection`'s representation is
-            // `ObjectData::Array`, not the generic `instantiate()`'s
+            // `ObjectData::Array`, not `decide_instantiation`'s
             // `ObjectData::Instance` -- `builtins::collections`' primitives
-            // pattern-match on `ObjectData::Array`
-            // directly, so handing them a generic instance payload would
-            // leave every native method on the result silently unable to
-            // find its data (falling straight through to
-            // `doesNotUnderstand:` on the very next send). Built directly
-            // with `new_instance_object`, tagged with `class_reference` itself
-            // (the receiver's own class -- *not* `Mutator::new_array`,
+            // pattern-match on `ObjectData::Array` directly, so handing them
+            // a generic instance payload would leave every native method on
+            // the result silently unable to find its data (falling straight
+            // through to `doesNotUnderstand:` on the very next send). Built
+            // directly with `new_instance_object`, tagged with `class`
+            // itself (the receiver's own class -- *not* `Mutator::new_array`,
             // which unconditionally tags its result `BuiltinClass::Array`;
-            // using that here would make `OrderedCollection new`'s result
-            // an `Array`, whose method table has no `add:`).
+            // using that here would make `OrderedCollection new`'s result an
+            // `Array`, whose method table has no `add:`).
             Some(BuiltinClass::OrderedCollection) | Some(BuiltinClass::Array) => Ok(Step::Value(
-                Value::Object(self.new_instance_object(class_reference, ObjectData::Array(vec![]))),
+                Value::Object(self.new_instance_object(class, ObjectData::Array(vec![]))),
             )),
-            _ => self.decide_instantiation(class_reference, arguments.to_vec()),
-        })
+            _ => self.decide_instantiation(class, arguments.to_vec()),
+        }
     }
 
     fn resolve_superclass_receiver(
@@ -656,10 +645,11 @@ impl<'gc> Mutator<'gc> {
 /// declares a factory pattern for, or `new` for a builtin, which declares
 /// none. `None` for a non-class object.
 ///
-/// One definition, shared by `try_factory_send` (which decides whether an
-/// incoming send *is* the factory message) and `clause_message_body`
-/// (which decides whether a superclass clause names it) -- `newspeak-spec.pdf`
-/// §6.1 makes those the same question asked from two sides.
+/// Read only by `clause_message_body`, which decides whether a superclass
+/// clause names it (§6.1). The other side of that question -- whether an
+/// incoming send *is* the factory message -- is no longer asked: §6.3 makes
+/// the factory an entry of the metaclass mixin, so the ordinary lookup
+/// answers it (`mixin::factory_entry`).
 pub(crate) fn primary_factory_selector<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
@@ -669,20 +659,6 @@ pub(crate) fn primary_factory_selector<'gc>(
             Some(factory) => factory.selector,
             None => Symbol::NEW,
         })
-}
-
-/// Whether `selector` sent to `receiver` is §6.1's instantiation: the
-/// receiver is a class object and the selector its primary factory selector.
-/// The one condition `try_factory_send` acts on, asked without acting.
-pub(crate) fn is_factory_send<'gc>(
-    heap: &Heap<'gc>,
-    receiver: &Value<'gc>,
-    selector: Symbol,
-) -> bool {
-    match receiver {
-        Value::Object(object) => primary_factory_selector(heap, *object) == Some(selector),
-        _ => false,
-    }
 }
 
 fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {

@@ -572,3 +572,73 @@ fn a_failing_primitive_keeps_its_entry() {
         vec![primitive.clone(), primitive]
     );
 }
+
+const TWO_FACTORIES: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Subject = Object new () (
+      class Alpha = Object new () ( public describe = ( ^1 ) )
+      class Gamma = Object new () ( public describe = ( ^3 ) )
+      class Beta with: seed = Object new () ( public describe = ( ^2 ) )
+      public makeAll: order = (
+        | sum |
+        sum := 0.
+        order do: [:each | sum := sum * 10 + each new describe].
+        ^sum
+      )
+      public alphaThenGamma = ( ^self makeAll: {Alpha. Gamma. Alpha} )
+      public alphaThenBeta = ( ^self makeAll: {Alpha. Beta} )
+    ) : ()
+"};
+
+/// A `Factory` entry records the chain and nothing else, because
+/// `newspeak-spec.pdf` §6.1 instantiates the *receiver*. So a site that
+/// recorded one for `Alpha` must instantiate `Gamma` when `Gamma` receives
+/// the send, not hand back another `Alpha` -- the answer says which, since
+/// each class's `describe` differs. Two entries, one per guard.
+#[test]
+fn a_cached_factory_instantiates_the_receiver_it_is_sent_to() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load_with(TWO_FACTORIES, lowering);
+        let instance = instantiate(&mut interpreter, &class);
+        let answer = send(&mut interpreter, &instance, "alphaThenGamma", &[]);
+        assert_eq!(small_integer(&mut interpreter, &answer), 131);
+        if lowering == Lowering::Optimized {
+            assert_eq!(
+                states(
+                    &mut interpreter,
+                    &class,
+                    MethodSide::Instance,
+                    "makeAll:",
+                    "new"
+                ),
+                vec![CallSiteState::Polymorphic(vec![
+                    public(CachedTargetKind::Factory),
+                    public(CachedTargetKind::Factory),
+                ])]
+            );
+        }
+    }
+}
+
+/// The guard is the receiver's class-side dispatch id, so a `Factory` entry
+/// recorded for a class whose factory selector is `new` cannot answer for
+/// `Beta`, whose factory is `with:`. §3.2's flat metaclass is what makes the
+/// entry safe without a re-check: `new` is not a member of `Beta`'s
+/// metaclass, and no class side is inherited for it to come from.
+#[test]
+fn a_cached_factory_does_not_answer_a_class_with_another_factory_selector() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load_with(TWO_FACTORIES, lowering);
+        let instance = instantiate(&mut interpreter, &class);
+        match interpreter.send(&instance, Symbol::intern("alphaThenBeta"), &[]) {
+            Err(HostSignal::Error(error)) => assert_eq!(error.selector, Symbol::NEW),
+            Ok(value) => {
+                let got =
+                    interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+                panic!("expected doesNotUnderstand: new, got Ok({got})")
+            }
+            Err(HostSignal::Return) => panic!("expected doesNotUnderstand: new, got a return"),
+        }
+    }
+}

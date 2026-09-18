@@ -202,15 +202,32 @@ pub struct PrimitiveMethod {
     pub access: ast::AccessModifier,
 }
 
+/// The primary factory as a member of the metaclass mixin
+/// (`newspeak-spec.pdf` §6.3: "The class side, together with the primary
+/// factory method, defines the mixin for the metaclass"). It carries no
+/// body: what it does is instantiate the class object the send was addressed
+/// to, which `interpreter::resolve::act` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactoryMethod {
+    pub selector: Symbol,
+    /// The factory pattern's parameter count (§6.1), carried so that an
+    /// entry answers everything a lookup's caller can ask of a method
+    /// without reaching back to the declaration -- a decoded mixin has none.
+    pub argument_count: usize,
+    pub access: ast::AccessModifier,
+}
+
 /// One entry of a mixin's method table (§3.5): a compiled method, one of the
-/// accessors a slot declaration defines, or a builtin's primitive -- methods
-/// on the same footing, found by the same lookup and overridden the same way
+/// accessors a slot declaration defines, a builtin's primitive, or -- on a
+/// metaclass mixin, and only there -- the primary factory. Methods on the
+/// same footing, found by the same lookup and overridden the same way
 /// (`docs/design/dispatch.md`, "Slot accessors").
 #[derive(Debug, Clone)]
 pub enum MethodEntry {
     Compiled(Rc<MixinMethod>),
     SlotAccessor(SlotAccessor),
     Primitive(PrimitiveMethod),
+    Factory(FactoryMethod),
 }
 
 impl MethodEntry {
@@ -220,6 +237,7 @@ impl MethodEntry {
             MethodEntry::Compiled(method) => method.access,
             MethodEntry::SlotAccessor(accessor) => accessor.access,
             MethodEntry::Primitive(method) => method.access,
+            MethodEntry::Factory(factory) => factory.access,
         }
     }
 
@@ -227,9 +245,37 @@ impl MethodEntry {
     pub fn compiled(&self) -> Option<&Rc<MixinMethod>> {
         match self {
             MethodEntry::Compiled(method) => Some(method),
-            MethodEntry::SlotAccessor(_) | MethodEntry::Primitive(_) => None,
+            MethodEntry::SlotAccessor(_) | MethodEntry::Primitive(_) | MethodEntry::Factory(_) => {
+                None
+            }
         }
     }
+}
+
+/// The one entry a metaclass mixin holds beyond the class side's own
+/// members: §6.3's primary factory method, under the selector §6.1
+/// instantiates the class by -- the declared factory pattern's, or `new` for
+/// a declaration that writes none and for a builtin, which declares none.
+///
+/// One definition, called from every place a metaclass mixin is assembled
+/// -- from a declared class side, for the empty one a class without a class
+/// side still needs, and on the way out of an image -- so that the three
+/// cannot disagree about which selector instantiates a class.
+///
+/// A factory is public, although §6.3.1 defaults an unmarked member to
+/// protected: a factory that could not be sent from outside would leave no
+/// class instantiable, and the specification's own examples send one across
+/// module boundaries.
+pub fn factory_entry(factory: Option<Factory>) -> (Symbol, MethodEntry) {
+    let selector = factory.map_or(Symbol::NEW, |factory| factory.selector);
+    (
+        selector,
+        MethodEntry::Factory(FactoryMethod {
+            selector,
+            argument_count: factory.map_or(0, |factory| factory.argument_count),
+            access: ast::AccessModifier::Public,
+        }),
+    )
 }
 
 /// The accessor entries `slots` define, in declaration order (§6.3.2): each

@@ -68,6 +68,9 @@ pub(crate) enum Target {
         level: u16,
         chain: Chain,
     },
+    /// §6.3's primary factory. It carries no level, unlike every other
+    /// target: §6.1 instantiates the *receiver*, which the guard already
+    /// names.
     Factory {
         chain: Chain,
     },
@@ -666,7 +669,22 @@ fn materialize<'gc>(
                 FeedbackBase::NOT_ASSIGNED,
             )
         }
-        Target::Factory { chain } => (Resolved::Factory { chain }, FeedbackBase::NOT_ASSIGNED),
+        // §6.1 instantiates the class object the factory message was sent
+        // to, so the entry records no level: the class a hit instantiates is
+        // the receiver, which the guard -- that class object's class-side
+        // dispatch id -- already determines. A factory entry is reachable
+        // only on the receiver's own metaclass (§3.2), so no chain walk can
+        // have reached one from another class object's.
+        Target::Factory { chain } => match key.receiver {
+            Value::Object(class_object) => (
+                Resolved::Factory {
+                    level: class_object,
+                    chain,
+                },
+                FeedbackBase::NOT_ASSIGNED,
+            ),
+            _ => return None,
+        },
         // Site states are guarded by `VACANT`, which no receiver has, so a
         // guard that matched never names one.
         Target::Vacant | Target::Polymorphic { .. } | Target::Megamorphic { .. } => return None,
@@ -837,7 +855,7 @@ pub(crate) fn send_super<'gc>(
         superclass: Some(superclass),
     };
     cached(mutator, index, key, selector, arguments, |mutator| {
-        mutator.resolve_super(self_value, superclass, selector)
+        mutator.resolve_super(superclass, selector)
     })
 }
 

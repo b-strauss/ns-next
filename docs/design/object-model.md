@@ -282,10 +282,37 @@ which §6.2 does not permit.
 
 ## Class sides and metaclasses
 
-A class side is the mixin for the class's metaclass (§6.3). The metaclass is
-created lazily, on the first class-side send or reflective access, so a class
-with no class side costs nothing. Class-side declarations are kept and dispatched
+The metaclass mixin is the class side *together with the primary factory
+method* (§6.3: "The class side, together with the primary factory method,
+defines the mixin for the metaclass"). The metaclass is created lazily, on
+the first class-side send or reflective access — `X new` is one, since the
+factory is one of its members. Class-side declarations are kept and dispatched
 as metaclass behaviour rather than parsed and dropped.
+
+**The primary factory is an entry of that method table**, under the declared
+factory's selector (`new` for a declaration that writes none, §6.1), found by
+the ordinary lookups like any other member — as both references build it
+(Primordial Soup's `astForPrimaryFactory:`, SOMns's
+`MixinBuilder.assemblePrimaryFactoryMethod`). It carries no body: what it
+does is instantiate the class object the message was sent to, which
+`interpreter::resolve::act` runs through `instantiate::decide_factory`. The
+three special cases that existed while it was not an entry are gone with
+nothing in their place — the factory check ahead of the lookup, the `Factory`
+target's re-check, and the re-check ahead of a `super` send's
+`doesNotUnderstand:` target — because a flat metaclass puts a factory entry
+on the receiver's own metaclass and nowhere else, which the class-side
+dispatch id determines. `primary_factory_selector` survives only where §6.1
+still needs it, in the superclass clause's check.
+
+The entry is derived, never stored twice: `instantiate::build_class_side`
+inserts it as a class side is built from source, `image::mixins::decode`
+derives it for a row another row names as its class side, and
+`Mutator::metaclass_of` puts it in the otherwise empty mixin a class that
+declares no class side gets. One definition of what it is
+(`mixin::factory_entry`), so the three cannot disagree about which selector
+instantiates a class. Nothing about it reaches the image: like a slot's
+accessors (§6.3.2), it is rebuilt on the way out from the factory the mixin
+table already carries.
 
 **A metaclass is flat: a class side is not inherited.** §3.2 states it and says
 what it is not — "All metaclasses are instances of class Metaclass, and are
@@ -299,21 +326,23 @@ class side declares it, and a class-side `super` send looks in `Class`. Since
 ns-next reifies no `Class` (below), a metaclass's superclass is `Object`'s
 behaviour, which is where the class-side chain already falls through.
 
-`Interpreter::metaclass_of` builds exactly this: at most one application, for
-the class's own class side, with no superclass application -- so an ordinary
+`Interpreter::metaclass_of` builds exactly this: one application, for the
+class's own metaclass mixin, with no superclass application — so an ordinary
 class-side send that misses on the metaclass never continues onto an
 ancestor's, which is what "not inherited" means for the lookup that finds
-members. The metaclass's own *class-object* superclass link, read only by a
-`super` send, still points at `Object`'s behaviour, so a class-side `super`
-finds exactly what §5.10 says S = `Object` should hold. A class with no class
-side of its own gets no metaclass at all: `metaclass_of` returns `None`, and
-its class-side sends fall straight through to its own behaviour, the same
-answer §5's ordinary lookup already gives.
+members. A miss falls through to the class object's own behaviour, the same
+answer §5's ordinary lookup already gives. The metaclass's own *class-object*
+superclass link, read only by a `super` send, still points at `Object`'s
+behaviour, so a class-side `super` finds exactly what §5.10 says S = `Object`
+should hold — and a class-side `super new` therefore no longer instantiates,
+because `Object` declares no factory for it to find.
 
-The primary factory is not yet an entry of the metaclass mixin's method
-table -- that, and removing the special cases that exist only while a
-factory can be reached through an inherited class side, is the step after
-this one ([dispatch.md](dispatch.md), "Decisions").
+Every class object has a metaclass, a class that declares no class side
+included: the factory lives on it. The synthesized mixin such a class gets is
+memoized per class mixin, for the reason the application cache is keyed by the
+superclass's application (§6.2) — a fresh mixin per class object would give
+every enclosing instance its own behaviour and send every `X new` site
+megamorphic.
 
 **Deviation from §3.2, scheduled for step 6.** The specification also makes
 every class formally an instance of its metaclass, which is in turn an instance

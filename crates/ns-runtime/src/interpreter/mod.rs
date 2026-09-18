@@ -213,6 +213,21 @@ pub struct Mutator<'gc> {
     /// instance, so a class-object key would never hit and every instance
     /// would get its own behaviour.
     pub(crate) applications: IdentityMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    /// class mixin identity -> the metaclass mixin `metaclass_of` synthesized
+    /// for a class that declares no class side of its own. §6.3 makes the
+    /// metaclass mixin "the class side, together with the primary factory
+    /// method", so such a class still needs one -- an otherwise empty mixin
+    /// holding the factory entry.
+    ///
+    /// Memoized rather than built per class object for the reason
+    /// `applications` is keyed the way it is: a class object is per enclosing
+    /// instance, and a fresh `Rc<Mixin>` each time would give every one of
+    /// them its own application and its own dispatch id, so no two instances
+    /// would share behaviour and every `X new` site would go megamorphic.
+    /// Keyed by the class mixin's identity, which the application holding it
+    /// keeps alive in `applications` for as long as any class object can
+    /// reach this.
+    pub(crate) metaclass_mixins: IdentityMap<usize, Rc<crate::mixin::Mixin>>,
     /// How many nested classes are marked as being created
     /// (`nested::begin_creation`), for `run_from_host`'s check that none
     /// outlives the run that began it. The mark itself lives in the class's
@@ -696,7 +711,7 @@ impl<'gc> Mutator<'gc> {
     /// decides an instantiation (`decide_instantiation`) rather than
     /// entering the host entry `instantiate`, which would enter the run loop
     /// from inside it -- the re-entry `run_from_host` refuses. See
-    /// `try_factory_send`'s own doc comment for why this can never
+    /// `instantiate::decide_factory`'s own doc comment for why this can never
     /// double-fire against the superclass clause's own deferred factory
     /// message (`climb_levels` never decides a send).
     pub(crate) fn decide_send(
@@ -1074,12 +1089,18 @@ impl<'gc> Mutator<'gc> {
     /// of "a metaclass that is the application of the metaclass mixin defined
     /// by the class' class side to the class Class".
     ///
-    /// So a class side is *not* inherited: a class object with no class side
-    /// of its own has no metaclass at all, and its class-side sends fall
-    /// straight through to its own behaviour. ns-next reifies no `Class`, so
-    /// the application has no superclass application and the fall-through is
-    /// what a class-side chain already ends in
+    /// So a class side is *not* inherited: an ordinary class-side send that
+    /// misses here never continues onto an ancestor's class side. ns-next
+    /// reifies no `Class`, so the application has no superclass application
+    /// and a miss falls through to the class object's own behaviour, which
+    /// is what a class-side chain already ends in
     /// (`docs/design/object-model.md`, "Class sides and metaclasses").
+    ///
+    /// Every class object has a metaclass, including one whose declaration
+    /// writes no class side: §6.3 makes the metaclass mixin the class side
+    /// *together with the primary factory method*, so `X new` is an entry of
+    /// this mixin's method table and a class without one would not be
+    /// instantiable. The empty case is `metaclass_mixin` below.
     ///
     /// The metaclass's own *class-object* superclass link is not `None`,
     /// though: §5.10 says a `super` send inside a class-side method starts
@@ -1103,7 +1124,7 @@ impl<'gc> Mutator<'gc> {
             return Some(cached);
         }
         let application = self.heap.class_application(class)?;
-        let class_side_mixin = application.mixin.class_side.clone()?;
+        let class_side_mixin = self.metaclass_mixin(&application.mixin);
         let enclosing = self.heap.class_enclosing(class);
         let declaring_class = self.heap.class_declaring(class);
         let metaclass_application = self.apply_mixin(&class_side_mixin, None);
@@ -1122,6 +1143,32 @@ impl<'gc> Mutator<'gc> {
             unreachable!("is_class was checked above");
         }
         Some(metaclass)
+    }
+
+    /// The mixin `metaclass_of` applies for `mixin`'s class objects: §6.3's
+    /// "the class side, together with the primary factory method".
+    ///
+    /// A declared class side already carries the factory entry -- it is
+    /// inserted where the class side is built, from source
+    /// (`instantiate::build_class_side`) and on the way out of an image
+    /// (`image::mixins::decode`) alike. A class that declares none still
+    /// needs a metaclass to hold that one entry, and gets an otherwise empty
+    /// mixin here: the case that covers every builtin, whose behaviour is
+    /// native and whose factory is `new` (§6.1's default).
+    fn metaclass_mixin(&mut self, mixin: &Rc<crate::mixin::Mixin>) -> Rc<crate::mixin::Mixin> {
+        if let Some(class_side) = &mixin.class_side {
+            return class_side.clone();
+        }
+        let key = crate::mixin::mixin_key(mixin);
+        if let Some(existing) = self.metaclass_mixins.get(&key) {
+            return existing.clone();
+        }
+        let synthesized = Rc::new(crate::mixin::Mixin {
+            methods: std::iter::once(crate::mixin::factory_entry(mixin.factory)).collect(),
+            ..crate::mixin::Mixin::empty(Symbol::CLASS_SIDE)
+        });
+        self.metaclass_mixins.insert(key, synthesized.clone());
+        synthesized
     }
 
     fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
