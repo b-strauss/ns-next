@@ -2992,6 +2992,69 @@ fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
     });
 }
 
+/// Exercises the ordering the previous test's comment relies on but never
+/// pins: an object's own record can name a class whose record the table
+/// carries later. `GraphTable::build` (`image/encode.rs`) always gives a
+/// visited object its table id before it recurses into that object's own
+/// class (`visit_value` pushes the class reference onto the traversal stack
+/// right after registering the object, ahead of the object's fields), so a
+/// root that is the *only* path to its class's record is always written
+/// before it: passing `alpha`, an instance of the nested class `Alpha`, as
+/// the sole snapshot root -- with `Root` itself, the tagged root class, kept
+/// out of the roots list -- guarantees `Alpha`'s own record cannot be
+/// discovered by any earlier path than `alpha`'s. `Beta`, the second nested
+/// class, is never touched by the graph at all, showing the ordering holds
+/// with more than one candidate class in scope.
+#[test]
+fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new (
+        ) (
+          public class Alpha = Object new (
+            | value ::= 0. |
+          ) ()
+          public class Beta = Object new () ()
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let root = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Root");
+    let alpha_class = expect_ok(
+        interpreter.send(&root, Symbol::intern("Alpha"), &[]),
+        "Alpha",
+    );
+    let alpha = expect_ok(
+        interpreter.send(&alpha_class, Symbol::NEW, &[]),
+        "Alpha new",
+    );
+
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let alpha = mutator.fetch(&alpha);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[alpha],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&loaded.roots[0]);
+        let decoded_alpha_class = mutator.heap().class_of_object(*object(&instance));
+        let ids = mutator.heap().class_dispatch_ids(decoded_alpha_class);
+        assert_ne!(ids.instances, DispatchId::NONE);
+        assert_eq!(mutator.heap().dispatch_id(&instance), ids.instances);
+    });
+}
+
 #[test]
 fn bytes_after_the_last_section_are_refused_not_ignored() {
     let source = indoc! {"
