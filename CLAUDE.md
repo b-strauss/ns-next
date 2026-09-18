@@ -33,8 +33,8 @@ repository; the reasoning behind them is in the design documents under
 **Program outcomes are pinned, not re-derived.** The reference lowering
 (`docs/design/compiler.md`, "The reference lowering") is a second way to run
 every program, and both are held to recorded answers: every
-`goldens/**/*.ns` against the `status`, `stdout` and `stderr` recorded in the `.toml`
-beside it (`docs/design/README.md`, "The goldens"), and `run-corpus`.
+`goldens/<category>/*.ns` against the `status`, `stdout` and `stderr` recorded in
+the `.toml` beside it (`docs/design/README.md`, "The goldens"), and `run-corpus`.
 A change that alters one is a behaviour change: establish that the new output is right
 before updating the golden, never update it because the code now produces it.
 
