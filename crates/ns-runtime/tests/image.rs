@@ -5938,9 +5938,12 @@ fn instance_chain_graph(levels: u32) -> Vec<u8> {
 #[test]
 fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     // `Interpreter::send` consults `metaclass_of` for every class-object
-    // receiver, and `metaclass_of` walks the whole superclass chain looking
-    // for a class side to relay. Recursing on it would abort here, on a
-    // chain a four-megabyte image describes.
+    // receiver; `metaclass_of` itself is O(1) now that metaclasses are flat
+    // (`newspeak-spec.pdf` §3.2), but the ordinary lookup that follows a
+    // metaclass miss still walks this graph's whole class-object chain
+    // (`dispatch::walk`), iteratively over an explicit stack, on a chain a
+    // four-megabyte image describes. Recursing on either walk would abort
+    // here.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();

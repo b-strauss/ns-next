@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use ns_runtime::dispatch::{self, Lookup};
 use ns_runtime::mixin::{mixin_key, AccessorKind, Mixin};
-use ns_runtime::{Interpreter, Mutator, Root, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Mutator, Root, Symbol, Value};
 use ns_syntax::{ast, span::Span};
 
 fn slot_declaration(name: &str) -> ns_runtime::mixin::MixinSlot {
@@ -123,6 +123,29 @@ fn object<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ns_runtime::ObjectReferen
     match mutator.fetch(root) {
         Value::Object(object) => object,
         _ => panic!("expected an object"),
+    }
+}
+
+/// `HostSignal` carries no `Debug` impl, so `Result::expect` isn't usable on
+/// a `HostResult` -- unwrap by hand, naming which variant leaked. Copied
+/// from `tests/nested_classes.rs`, which this file's send-based tests share
+/// the shape of.
+fn expect_ok(result: HostResult, what: &str) -> Root {
+    match result {
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
+    }
+}
+
+/// See `expect_ok`: copied from `tests/nested_classes.rs` for the same reason.
+fn expect_error(result: HostResult, what: &str) -> String {
+    match result {
+        Ok(_) => panic!("{what}: expected a Newspeak error"),
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(error)) => error.message,
     }
 }
 
@@ -320,5 +343,46 @@ fn a_redeclared_nested_class_gets_its_own_cache_slot() {
     assert_eq!(
         subclass_application.nested_slot[&mixin_key(&subclass_inner)],
         1
+    );
+}
+
+/// `newspeak-spec.pdf` §3.2: "All metaclasses are instances of class
+/// Metaclass, and are direct subclasses of Class. Metaclasses may not be
+/// subclassed." A subclass therefore answers a class-side message only if
+/// its own class side declares it -- `Derived`'s class side is empty, so
+/// `describe` must fall through to the ordinary `doesNotUnderstand:` rather
+/// than reach `Base`'s class-side `describe`.
+#[test]
+fn a_class_side_is_not_inherited() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class FlatMetaclass usingPlatform: platform = Object new () (
+            class Base = Object new () (
+            ) : (
+                public describe = ( ^'base class side' )
+            )
+            class Derived = Base new () (
+            )
+            public derivedClass = ( ^Derived )
+        )
+    "};
+    let (mut interpreter, class, _resolved) = load(source);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate FlatMetaclass",
+    );
+    let derived = expect_ok(
+        interpreter.send(&instance, Symbol::intern("derivedClass"), &[]),
+        "derivedClass",
+    );
+    let message = expect_error(
+        interpreter.send(&derived, Symbol::intern("describe"), &[]),
+        "Derived describe",
+    );
+    assert!(
+        message.contains("does not understand"),
+        "a class side must not be inherited, message was: {message}"
     );
 }

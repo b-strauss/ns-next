@@ -336,9 +336,9 @@ pub struct Mixin {
     pub declaration: Option<Rc<ast::ClassDeclaration>>,
     /// The instance initializer: this mixin's own slot initializers, then its
     /// own `initExpr`s. Every mixin built from source has one, a class side
-    /// included. `None` for a builtin's mixin and `metaclass_of`'s
-    /// placeholder, which run no code, and for a decoded row that names none
-    /// -- `image::decode::verify_mixins` refuses that when the mixin needs one.
+    /// included. `None` for a builtin's mixin, which runs no code, and for a
+    /// decoded row that names none -- `image::decode::verify_mixins` refuses
+    /// that when the mixin needs one.
     pub initializer_code: Option<Rc<CompiledCode>>,
     /// The superclass clause's receiver expression (§6.1's `ec`), which the
     /// nested-class accessor runs once per enclosing object. `None` when the
@@ -351,10 +351,9 @@ pub struct Mixin {
 
 impl Mixin {
     /// A mixin with a name and nothing else: the shape every synthesized
-    /// mixin starts from -- a builtin's, `metaclass_of`'s class-side
-    /// placeholder -- and the base the image decoder fills in field by
-    /// field. One definition, so adding a field to `Mixin` cannot silently
-    /// leave one of them holding a stale default.
+    /// mixin starts from -- a builtin's -- and the base the image decoder
+    /// fills in field by field. One definition, so adding a field to `Mixin`
+    /// cannot silently leave one of them holding a stale default.
     pub fn empty(name: Symbol) -> Mixin {
         Mixin {
             name,

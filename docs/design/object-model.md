@@ -299,12 +299,21 @@ class side declares it, and a class-side `super` send looks in `Class`. Since
 ns-next reifies no `Class` (below), a metaclass's superclass is `Object`'s
 behaviour, which is where the class-side chain already falls through.
 
-*Today:* `Interpreter::metaclass_of` chains a metaclass under the superclass's
-metaclass, Smalltalk-style, so class sides are inherited. It is
-corrected in the step before 3c, together with making the primary factory an
-entry of the metaclass mixin's method table, because that factory's remaining
-special cases exist only while a class side is inherited
-([dispatch.md](dispatch.md), "Decisions").
+`Interpreter::metaclass_of` builds exactly this: at most one application, for
+the class's own class side, with no superclass application -- so an ordinary
+class-side send that misses on the metaclass never continues onto an
+ancestor's, which is what "not inherited" means for the lookup that finds
+members. The metaclass's own *class-object* superclass link, read only by a
+`super` send, still points at `Object`'s behaviour, so a class-side `super`
+finds exactly what §5.10 says S = `Object` should hold. A class with no class
+side of its own gets no metaclass at all: `metaclass_of` returns `None`, and
+its class-side sends fall straight through to its own behaviour, the same
+answer §5's ordinary lookup already gives.
+
+The primary factory is not yet an entry of the metaclass mixin's method
+table -- that, and removing the special cases that exist only while a
+factory can be reached through an inherited class side, is the step after
+this one ([dispatch.md](dispatch.md), "Decisions").
 
 **Deviation from §3.2, scheduled for step 6.** The specification also makes
 every class formally an instance of its metaclass, which is in turn an instance

@@ -369,59 +369,6 @@ fn class_objects_and_instances_share_a_site() {
     );
 }
 
-const SUPER_FACTORY: &str = indoc! {"
-    Newspeak3
-    'T'
-    class Subject = Object new () (
-      class Base = Object new () () : ( public doesNotUnderstand: message = ( ^0 ) )
-      class Simple = Base new () ( public value = ( ^1 ) ) : ( public build = ( ^super new ) )
-      class Keyed with: seed = Simple new () ()
-      public simple = ( ^Simple )
-      public run: order = (
-        | sum |
-        sum := 0.
-        order do: [:each | | built |
-          built := each build.
-          sum := sum * 10 + ((built == 0) ifTrue: [0] ifFalse: [built value])].
-        ^sum
-      )
-      public simpleFirst = ( ^self run: {Simple. Keyed. Simple. Keyed} )
-      public keyedFirst = ( ^self run: {Keyed. Simple. Keyed. Simple} )
-    ) : ()
-"};
-
-/// The `super new` in `Simple`'s inherited class-side `build` misses and
-/// reaches the factory check on `self`: `Simple` instantiates, `Keyed`
-/// (factory `with:`) reaches the handler defined for S. Whichever the site
-/// records first, the other receiver must still get its own answer, under
-/// both lowerings.
-#[test]
-fn a_super_factory_entry_is_rechecked_against_self() {
-    for (entry, expected, first) in [
-        ("simpleFirst", 1010, CachedTargetKind::Factory),
-        ("keyedFirst", 101, CachedTargetKind::DoesNotUnderstand),
-    ] {
-        for lowering in [Lowering::Optimized, Lowering::Reference] {
-            let (mut interpreter, class) = load_with(SUPER_FACTORY, lowering);
-            let instance = instantiate(&mut interpreter, &class);
-            let answer = send(&mut interpreter, &instance, entry, &[]);
-            assert_eq!(
-                small_integer(&mut interpreter, &answer),
-                expected,
-                "{entry}"
-            );
-            if lowering == Lowering::Optimized {
-                let simple = send(&mut interpreter, &instance, "simple", &[]);
-                assert_eq!(
-                    states(&mut interpreter, &simple, MethodSide::Class, "build", "new"),
-                    vec![CallSiteState::Monomorphic(public(first.clone()))],
-                    "{entry}"
-                );
-            }
-        }
-    }
-}
-
 /// `doesNotUnderstand:` with a user handler and with a slot setter named
 /// `doesNotUnderstand` (§6.3.2) at one site: two entries.
 #[test]

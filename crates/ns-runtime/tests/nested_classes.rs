@@ -516,13 +516,14 @@ const CLASS_SIDE_INHERITANCE_SOURCE: &str = indoc! {"
     )
 "};
 
-/// A class side is inherited down the ordinary subclass chain like any
-/// other mixin member (plain single inheritance -- not a reification of
-/// §3.2's metaclass hierarchy): `SpecialWidget` declares no class side of
-/// its own, but its superclass `Widget` does, so `SpecialWidget describe`
-/// must answer exactly what `Widget describe` does.
+/// `newspeak-spec.pdf` §3.2: metaclasses are flat, so a class side is not
+/// inherited down the subclass chain the way any other mixin member is.
+/// `SpecialWidget` declares no class side of its own; its superclass
+/// `Widget` does, but that class side answers only on `Widget` itself --
+/// `SpecialWidget describe` falls straight through to the ordinary
+/// `doesNotUnderstand:`.
 #[test]
-fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
+fn a_subclass_with_no_class_side_of_its_own_does_not_inherit_one() {
     let (mut interpreter, class) = load(CLASS_SIDE_INHERITANCE_SOURCE);
     let platform = interpreter.platform();
     let outer = expect_ok(
@@ -533,16 +534,14 @@ fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
         interpreter.send(&outer, Symbol::intern("SpecialWidget"), &[]),
         "SpecialWidget accessor",
     );
-    let described = expect_ok(
+    let message = expect_error(
         interpreter.send(&special_widget, Symbol::intern("describe"), &[]),
-        "inherited class-side send",
+        "SpecialWidget describe",
     );
-    interpreter.enter(|mutator| {
-        assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&described)),
-            "a widget class"
-        );
-    });
+    assert!(
+        message.contains("does not understand"),
+        "a class side must not be inherited, message was: {message}"
+    );
 }
 
 /// The class object a nested declaration's accessor answers for `enclosing`.
@@ -568,26 +567,27 @@ fn application_of<'gc>(
 /// a call site that went monomorphic on the application would split as soon
 /// as a second enclosing instance appeared.
 ///
-/// `SpecialWidget` in `tests-fixtures/class_side.ns` is the case that makes
-/// this bite: it inherits its class side instead of declaring one, so its
-/// metaclass is built from a synthetic empty mixin -- which has to have one
-/// identity per mixin, not one per class object.
+/// `Widget` is nested inside `Outer` and reached from two different `Outer`
+/// instances: §6.2 gives each enclosing instance its own `Widget` class
+/// object, but both apply the same declaration, so `apply_mixin`'s (mixin
+/// identity, superclass) cache must answer the same metaclass application
+/// for both -- flat metaclasses key that application on the mixin alone
+/// (`Mutator::metaclass_of` applies it with no superclass application),
+/// which is what keeps this from splitting a second time.
 #[test]
-fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/class_side.ns");
-    let source = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
-    let (mut interpreter, class) = load(&source);
+fn two_class_objects_sharing_an_application_share_their_class_sides_application() {
+    let (mut interpreter, class) = load(CLASS_SIDE_INHERITANCE_SOURCE);
     let platform = interpreter.platform();
     let one = expect_ok(
         interpreter.instantiate(&class, std::slice::from_ref(&platform)),
-        "instantiate first ClassSide",
+        "instantiate first Outer",
     );
     let two = expect_ok(
         interpreter.instantiate(&class, &[platform]),
-        "instantiate second ClassSide",
+        "instantiate second Outer",
     );
-    let first_widget = nested_class_object(&mut interpreter, &one, "SpecialWidget");
-    let second_widget = nested_class_object(&mut interpreter, &two, "SpecialWidget");
+    let first_widget = nested_class_object(&mut interpreter, &one, "Widget");
+    let second_widget = nested_class_object(&mut interpreter, &two, "Widget");
     // Both are read after the last run; everything below -- reading the
     // class objects, building their metaclasses, and comparing applications
     // -- runs nothing, so it all happens in one entry.
@@ -595,7 +595,7 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
         let (Value::Object(first_widget), Value::Object(second_widget)) =
             (mutator.fetch(&first_widget), mutator.fetch(&second_widget))
         else {
-            panic!("SpecialWidget answers a class object")
+            panic!("Widget answers a class object")
         };
         assert!(
             !first_widget.same(second_widget),
@@ -610,25 +610,26 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
         );
         let first_metaclass = mutator
             .metaclass_of(first_widget)
-            .expect("SpecialWidget inherits Widget's class side");
+            .expect("Widget declares its own class side");
         let second_metaclass = mutator
             .metaclass_of(second_widget)
-            .expect("SpecialWidget inherits Widget's class side");
+            .expect("Widget declares its own class side");
         assert!(
             Rc::ptr_eq(
                 &application_of(mutator.heap(), first_metaclass),
                 &application_of(mutator.heap(), second_metaclass)
             ),
-            "spec 6.2: an inherited class side must share one metaclass application too"
+            "spec 6.2: a class side's application is shared across enclosing instances too"
         );
     });
 }
 
-/// A class that declares its own class-side method of the same name still
-/// overrides the inherited one -- ordinary shadowing, exactly as on the
-/// instance side.
+/// A class that declares its own class side answers from it, regardless of
+/// what its superclass's class side declares under the same name -- flat
+/// metaclasses mean there is no inherited method here to fall back to in
+/// the first place, only `OverridingWidget`'s own.
 #[test]
-fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
+fn a_class_sides_own_method_is_found_before_falling_through_to_object() {
     let (mut interpreter, class) = load(CLASS_SIDE_INHERITANCE_SOURCE);
     let platform = interpreter.platform();
     let outer = expect_ok(

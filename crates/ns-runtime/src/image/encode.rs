@@ -970,13 +970,14 @@ fn encode_closure_record<'gc>(
 ///
 /// `builtin` is not written either -- a record only ever describes a user
 /// class, since a builtin is a class *tag* -- and neither is `metaclass`,
-/// a lazy cache `Mutator::metaclass_of` rebuilds on the first
-/// class-side send. A metaclass could not be written even if it were
-/// wanted: when a class declares no class side of its own but an ancestor
-/// does, `metaclass_of` applies a *synthetic* mixin that has no
-/// mixin-table row, so this function's own id lookup below refuses such a
-/// world -- the residual case where a snapshot is still an error rather
-/// than an image.
+/// a lazy cache `Mutator::metaclass_of` rebuilds on the first class-side
+/// send. Nothing here has to special-case one, unlike before metaclasses
+/// were flat: a metaclass's mixin is now always the class's own declared
+/// class side (`newspeak-spec.pdf` §3.2, "Class sides and metaclasses"),
+/// which is part of the module's declaration tree like any other mixin, so
+/// this function's own id lookup below always finds it if a metaclass
+/// itself ever reaches here as a record (a class-side activation's
+/// `current_class`, captured in a frame).
 fn encode_class_record<'gc>(
     writer: &mut Writer,
     data: &ClassData<'gc>,

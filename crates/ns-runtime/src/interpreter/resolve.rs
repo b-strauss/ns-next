@@ -158,11 +158,11 @@ impl<'gc> Mutator<'gc> {
     /// object reaches it.
     ///
     /// A metaclass primitive on the public chain is resolved like any
-    /// member; its failure continues on the metaclass chain and then falls
-    /// through, in `act`. No metaclass chain holds a primitive -- a
-    /// metaclass's mixins are class sides or empty stand-ins, never a
-    /// builtin's instance mixin -- so that is reached only in principle; it
-    /// is written out so that nothing here depends on it.
+    /// member; its failure falls through to the class object's own
+    /// behaviour, in `act`. No metaclass holds a primitive -- a metaclass's
+    /// mixin is always a class side, never a builtin's instance mixin -- so
+    /// that is reached only in principle; it is written out so that nothing
+    /// here depends on it.
     #[inline(never)]
     fn resolve_class_side(
         &mut self,
