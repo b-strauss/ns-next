@@ -948,6 +948,15 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
 /// the numbered clone afterwards, so `Rc::as_ptr` identity -- what
 /// `code_index`, `lexical_parents` and `verify_closure` all key on -- still
 /// agrees with what a decoded closure or frame points to later.
+///
+/// **Precondition, unenforced by the type system**: `table` must not have
+/// been handed to anything that clones a code out of it (`mixins::decode`,
+/// today's only such caller) before this runs. Both production callers
+/// (`image::load`, `image::inspect::inspect`) call this immediately after
+/// `decode_code_table`, before `mixins::decode`, which is what makes the
+/// `Rc::get_mut` below never fail; nothing here checks it, since a `Cell`
+/// or a runtime check would cost every call for a precondition its only two
+/// callers already satisfy by construction.
 pub fn number_call_site_families(table: &mut DecodedCodeTable) -> Result<(), DecodeError> {
     let parents = lexical_parents(table)?;
     let index_of = code_index(table);
@@ -959,7 +968,7 @@ pub fn number_call_site_families(table: &mut DecodedCodeTable) -> Result<(), Dec
         .map(|(index, _)| index)
     {
         let root = Rc::get_mut(&mut table.codes[index]).expect(
-            "a root's own table slot is its only reference before the mixin table clones it",
+            "internal: a root's own table slot is its only reference before the mixin table clones it",
         );
         let mut next = 0;
         number_call_sites(root, &mut next, &index_of, &mut writeback)?;
@@ -989,28 +998,26 @@ fn number_call_sites(
     writeback: &mut Vec<(usize, Rc<CompiledCode>)>,
 ) -> Result<(), DecodeError> {
     for instruction in &mut code.instructions {
-        match instruction {
-            Instruction::MakeClosure { code: block, .. } => {
-                // Captured before `Rc::make_mut` can move the block to a
-                // fresh allocation: `index_of` was built from the table's
-                // original pointers, and `lexical_parents` already proved
-                // this one names exactly one table entry.
-                let block_index = *index_of
-                    .get(&(Rc::as_ptr(block) as usize))
-                    .ok_or(DecodeError::CodeNotInTable)?;
-                number_call_sites(Rc::make_mut(block), next, index_of, writeback)?;
-                writeback.push((block_index, block.clone()));
-            }
-            Instruction::SendLexical { call_site, .. }
-            | Instruction::SendPublic { call_site, .. }
-            | Instruction::SendInlinable { call_site, .. }
-            | Instruction::SendSuper { call_site, .. }
-                if *call_site != CallSite::UNCACHED =>
-            {
+        if let Instruction::MakeClosure { code: block, .. } = instruction {
+            // Captured before `Rc::make_mut` can move the block to a fresh
+            // allocation: `index_of` was built from the table's original
+            // pointers, and `lexical_parents` already proved this one names
+            // exactly one table entry.
+            let block_index = *index_of
+                .get(&(Rc::as_ptr(block) as usize))
+                .ok_or(DecodeError::CodeNotInTable)?;
+            number_call_sites(Rc::make_mut(block), next, index_of, writeback)?;
+            writeback.push((block_index, block.clone()));
+            continue;
+        }
+        // `call_site_mut` is the same variant list `call_site` reads
+        // through everywhere else, so a call-site-carrying instruction this
+        // arm does not know about is not a risk this function can introduce.
+        if let Some(call_site) = instruction.call_site_mut() {
+            if *call_site != CallSite::UNCACHED {
                 *call_site = CallSite { number: *next };
                 *next += 1;
             }
-            _ => {}
         }
     }
     code.family_size = crate::bytecode::family_size_of(&code.instructions);

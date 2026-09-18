@@ -271,6 +271,28 @@ impl Instruction {
             _ => None,
         }
     }
+
+    /// `call_site`'s mutable twin, for the one place that assigns a call
+    /// site rather than reads one (`image::decode::number_call_sites`).
+    /// Before this existed, that call site hand-listed the four send
+    /// variants a second time, independently of `call_site`'s own list --
+    /// two enumerations of "which instructions carry a call site" that a
+    /// fifth send variant could update one of and not the other, silently:
+    /// `family_size_of` (which reads through `call_site`) would count the
+    /// new variant's sends, but `number_call_sites` would never assign them
+    /// a number, decoding every one of them as `{ number: 0 }` forever. The
+    /// two accessors below sit next to each other, matching the same
+    /// pattern, so the two lists cannot drift apart unnoticed the way one
+    /// list here and one buried in `image::decode` could.
+    pub fn call_site_mut(&mut self) -> Option<&mut CallSite> {
+        match self {
+            Instruction::SendLexical { call_site, .. }
+            | Instruction::SendPublic { call_site, .. }
+            | Instruction::SendInlinable { call_site, .. }
+            | Instruction::SendSuper { call_site, .. } => Some(call_site),
+            _ => None,
+        }
+    }
 }
 
 /// One past the highest call-site number among `instructions`' sends and

@@ -908,43 +908,33 @@ fn write_return(writer: &mut encode::Writer) {
     writer.write_u16(1);
 }
 
-/// A body written with the retired `SendPublic` tag -- a stale artifact from
-/// before the call sites were widened -- is refused, not misread.
+/// A body written with any retired send tag -- a stale artifact from before
+/// call sites were widened (7-10) or before a number stopped being
+/// serialized at all (21-24) -- is refused, not misread.
 #[test]
 fn a_retired_send_tag_is_refused() {
-    let bytes = one_method_code_table(false, 2, |writer| {
-        write_unary_send(writer, 8);
-        write_return(writer);
-    });
-    let mut reader = decode::Reader::new(&bytes);
-    assert_eq!(
-        decode::decode_code_table(&mut reader, &table_with(&["size"])),
-        Err(decode::DecodeError::InvalidTag {
-            what: "instruction",
-            tag: 8
-        })
-    );
-}
-
-/// A body written with 21 -- `OPCODE_SEND_LEXICAL`'s number before a call
-/// site's number stopped being part of the artifact -- is refused rather
-/// than misread as today's `OPCODE_SEND_LEXICAL` (25): the whole point of
-/// retiring 21-24 instead of reassigning them is that a stale artifact from
-/// before this change meets an unknown tag, not a differently-shaped `Send`.
-#[test]
-fn a_send_tag_retired_by_the_call_site_removal_is_refused() {
-    let bytes = one_method_code_table(false, 2, |writer| {
-        write_unary_send(writer, 21);
-        write_return(writer);
-    });
-    let mut reader = decode::Reader::new(&bytes);
-    assert_eq!(
-        decode::decode_code_table(&mut reader, &table_with(&["size"])),
-        Err(decode::DecodeError::InvalidTag {
-            what: "instruction",
-            tag: 21
-        })
-    );
+    // Every retired number, not just one representative: 7-10 while a call
+    // site was a `u16` instruction index, 21-24 while it was serialized as a
+    // `u32` at all -- a stale artifact from either era meets an unknown tag,
+    // not a differently-shaped `Send` misread as today's 25-28. Looping over
+    // `RETIRED_OPCODES` itself, rather than restating the numbers, is what
+    // keeps this test saying exactly what the invariant says: a decoder
+    // change that resurrects any one of these eight numbers fails here.
+    for tag in RETIRED_OPCODES {
+        let bytes = one_method_code_table(false, 2, |writer| {
+            write_unary_send(writer, tag);
+            write_return(writer);
+        });
+        let mut reader = decode::Reader::new(&bytes);
+        assert_eq!(
+            decode::decode_code_table(&mut reader, &table_with(&["size"])),
+            Err(decode::DecodeError::InvalidTag {
+                what: "instruction",
+                tag
+            }),
+            "retired tag {tag}"
+        );
+    }
 }
 
 #[test]
@@ -3378,6 +3368,56 @@ fn a_block_body_created_by_two_make_closures_is_refused() {
     assert_eq!(
         decode::verify_code_table(&table),
         Err(decode::DecodeError::SharedBlockBody)
+    );
+}
+
+/// `inspect` calls `number_call_site_families` on its own -- a weaker
+/// precondition than `verify_code_table`'s -- precisely so a file whose
+/// `MakeClosure` relation is malformed but otherwise decodes still gets a
+/// report instead of nothing (`image/inspect.rs`, the "code" section's
+/// detail). That fallback only makes sense if a refused table is left
+/// exactly as decoded, not partially numbered: `lexical_parents` runs to
+/// completion before any send is touched, so a family that never starts
+/// numbering never mutates anything.
+#[test]
+fn number_call_site_families_leaves_the_table_untouched_when_it_fails() {
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        1,
+        vec![Instruction::ImplicitReturn { register: 0 }],
+    );
+    let make = |destination| Instruction::MakeClosure {
+        destination,
+        parameters: Rc::new(vec![]),
+        code: block.clone(),
+    };
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        2,
+        vec![
+            Instruction::SendPublic {
+                selector: Symbol::intern("foo"),
+                receiver_register: 0,
+                argument_registers: vec![],
+                destination: 1,
+                call_site: CallSite { number: 0 },
+            },
+            make(0),
+            make(1),
+            Instruction::Return { register: 0 },
+        ],
+    );
+    let mut table = table_of(vec![block, parent]);
+    let before = table.codes.clone();
+    assert_eq!(
+        decode::number_call_site_families(&mut table),
+        Err(decode::DecodeError::SharedBlockBody)
+    );
+    assert_eq!(
+        table.codes, before,
+        "a table `lexical_parents` refuses must be left exactly as it was"
     );
 }
 

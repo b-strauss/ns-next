@@ -404,21 +404,33 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 
     let mut table =
         decode::decode_code_table(&mut reader, &symbol_table).map_err(|error| error.to_string())?;
+    // A call-site number is no longer in the artifact at all, so without this
+    // the `full` disassembly below would show every send's number as the
+    // same decode-time placeholder rather than what the compiler actually
+    // numbered it. `number_call_site_families` needs only `lexical_parents`
+    // to succeed, a strictly weaker precondition than the rest of
+    // `verify_code_table` -- but it is still a precondition a hostile file
+    // can fail (`SharedBlockBody`, `ClosureArityMismatch`, `WrongCodeKind`),
+    // and `inspect` exists to report on exactly the files that fail
+    // verification. So a numbering failure is caught here, not propagated:
+    // the rest of the report (mixins, graph, every other section) still
+    // renders, the bodies below still disassemble with their placeholder
+    // call sites, and the code section's own detail says plainly that the
+    // numbers are not real and why -- unnumbered output beats no output.
+    let numbering_error = decode::number_call_site_families(&mut table).err();
     sections.push(Section {
         name: "code",
         start: offset,
         end: reader.position(),
-        detail: format!("{} bodies", table.codes.len()),
+        detail: match &numbering_error {
+            None => format!("{} bodies", table.codes.len()),
+            Some(error) => format!(
+                "{} bodies (call-site numbers not assigned: {error})",
+                table.codes.len()
+            ),
+        },
     });
     offset = reader.position();
-    // A call-site number is no longer in the artifact at all, so without
-    // this the `full` disassembly below would show every send's number as
-    // the same placeholder rather than what the compiler actually numbered
-    // it -- `number_call_site_families` is safe to call on its own (it needs
-    // only `lexical_parents`, not the rest of `verify_code_table`), which is
-    // what lets `inspect` keep showing a body from a file that would fail
-    // full verification.
-    decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
 
     let decoded = mixins::decode(&mut reader, &symbol_table, &table.codes)
         .map_err(|error| error.to_string())?;
