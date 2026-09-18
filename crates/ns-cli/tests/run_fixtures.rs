@@ -4,7 +4,7 @@ mod common;
 
 /// Normalizes line endings before comparison. The CLI always writes `\n`
 /// (via `println!`/`print!` on any platform, Rust does not translate
-/// this), but the checked-in `.expected` fixture files can be checked out
+/// this), but the checked-in `.toml` expectation files can be checked out
 /// as `\r\n` on Windows when `core.autocrlf` is enabled -- a git checkout
 /// artifact, not a difference in program behavior. Comparing raw strings
 /// would make this test flaky across platforms/git configs; normalize
@@ -18,41 +18,38 @@ fn normalize_newlines(text: &str) -> String {
 /// reference lowering"). Each must produce the recorded answer.
 const LOWERINGS: [&str; 2] = ["optimized", "reference"];
 
-/// Every golden succeeds, prints exactly its `.expected` stdout -- every
-/// byte, the final newline included -- and writes nothing to stderr, under
+/// Every golden's exit status, stdout and stderr match its recorded
+/// `Expectation` exactly -- every byte, the final newline included -- under
 /// both lowerings.
 #[test]
-fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
-    for path in common::golden_sources() {
-        let expected_path = path.with_extension("expected");
-        let expected = std::fs::read_to_string(&expected_path)
-            .unwrap_or_else(|_| panic!("missing {}", expected_path.display()));
+fn every_golden_matches_its_recorded_expectation() {
+    for source in common::golden_sources() {
+        let expectation = common::expectation_of(&source);
         for lowering in LOWERINGS {
             let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
                 .arg("run")
-                .arg(&path)
+                .arg(&source)
                 .arg("--lowering")
                 .arg(lowering)
                 .output()
                 .expect("run ns-next");
-            assert!(
-                output.status.success(),
-                "{} exited non-zero under the {lowering} lowering: {}",
-                path.display(),
-                String::from_utf8_lossy(&output.stderr)
+            assert_eq!(
+                output.status.code(),
+                Some(expectation.status),
+                "{} exit status under the {lowering} lowering",
+                source.display()
             );
             assert_eq!(
-                String::from_utf8_lossy(&output.stderr),
-                "",
-                "{} wrote to stderr under the {lowering} lowering",
-                path.display()
+                normalize_newlines(&String::from_utf8_lossy(&output.stdout)),
+                normalize_newlines(&expectation.stdout),
+                "{} stdout under the {lowering} lowering",
+                source.display()
             );
-            let stdout = String::from_utf8_lossy(&output.stdout);
             assert_eq!(
-                normalize_newlines(&stdout),
-                normalize_newlines(&expected),
-                "{} produced unexpected stdout under the {lowering} lowering",
-                path.display()
+                normalize_newlines(&String::from_utf8_lossy(&output.stderr)),
+                normalize_newlines(&expectation.stderr),
+                "{} stderr under the {lowering} lowering",
+                source.display()
             );
         }
     }
@@ -67,7 +64,7 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
 fn every_golden_is_a_complete_pair() {
     let mut missing_expectation = Vec::new();
     for source in common::golden_sources() {
-        let expectation = source.with_extension("expected");
+        let expectation = source.with_extension("toml");
         if !expectation.exists() {
             missing_expectation.push(source.display().to_string());
         }
@@ -81,7 +78,7 @@ fn every_golden_is_a_complete_pair() {
         }
         for entry in std::fs::read_dir(&category).expect("read category") {
             let path = entry.expect("golden entry").path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("expected") {
+            if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
                 continue;
             }
             if !path.with_extension("ns").exists() {
@@ -102,21 +99,31 @@ fn every_golden_is_a_complete_pair() {
 #[cfg(debug_assertions)]
 #[test]
 fn every_fixture_answers_alike_with_a_two_entry_global_cache() {
-    for path in common::golden_sources() {
-        let expected = std::fs::read_to_string(path.with_extension("expected"))
-            .expect("every fixture has its expected output");
+    for source in common::golden_sources() {
+        let expectation = common::expectation_of(&source);
         let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
             .arg("run")
-            .arg(&path)
+            .arg(&source)
             .env("NS_NEXT_GLOBAL_CACHE_ENTRIES", "2")
             .output()
             .expect("run ns-next");
-        assert!(output.status.success(), "{} failed", path.display());
+        assert_eq!(
+            output.status.code(),
+            Some(expectation.status),
+            "{} exit status with a two-entry global cache",
+            source.display()
+        );
         assert_eq!(
             normalize_newlines(&String::from_utf8_lossy(&output.stdout)),
-            normalize_newlines(&expected),
-            "{} with a two-entry global cache",
-            path.display()
+            normalize_newlines(&expectation.stdout),
+            "{} stdout with a two-entry global cache",
+            source.display()
+        );
+        assert_eq!(
+            normalize_newlines(&String::from_utf8_lossy(&output.stderr)),
+            normalize_newlines(&expectation.stderr),
+            "{} stderr with a two-entry global cache",
+            source.display()
         );
     }
 }

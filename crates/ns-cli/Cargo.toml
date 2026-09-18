@@ -19,6 +19,8 @@ serde = { version = "1", features = ["derive"] }
 [dev-dependencies]
 indoc.workspace = true
 insta.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml.workspace = true
 
 [lints]
 workspace = true

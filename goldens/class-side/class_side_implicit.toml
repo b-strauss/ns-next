@@ -1,0 +1,4 @@
+stdout = '''
+widget, protected class side, private class side
+the Widget class
+'''

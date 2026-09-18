@@ -35,12 +35,7 @@ fn a_fixture_runs_under_the_reference_lowering() {
         "reference".as_ref(),
     ]);
     assert!(ok, "{error}");
-    assert_eq!(
-        out,
-        std::fs::read_to_string(golden("while_loop").with_extension("expected"))
-            .expect("read expected")
-            .replace("\r\n", "\n")
-    );
+    assert_eq!(out, common::expectation_of(&golden("while_loop")).stdout);
 }
 
 /// Whether an artifact's code table holds a branch, which only control-flow

@@ -131,6 +131,12 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
     let mut checked = 0;
 
     for path in common::golden_sources() {
+        // A golden that is recorded as failing has nothing to round trip:
+        // this sweep asserts that a built binary answers what the source
+        // answered, and a program that raises answers nothing.
+        if !common::expectation_of(&path).succeeds() {
+            continue;
+        }
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         for lowering in ["optimized", "reference"] {
             let out = directory.join(&format!("{stem}.{lowering}.nsb"));

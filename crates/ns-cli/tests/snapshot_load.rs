@@ -69,10 +69,7 @@ fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
     let directory = ScratchDirectory::new("nested-outer-inherited");
     let image = directory.join("world.img");
     let source = golden("nested_outer_inherited");
-    let expected =
-        std::fs::read_to_string(golden("nested_outer_inherited").with_extension("expected"))
-            .expect("read expected")
-            .replace("\r\n", "\n");
+    let expected = common::expectation_of(&golden("nested_outer_inherited")).stdout;
     let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -173,6 +170,12 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
 fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
     let mut checked = 0;
     for source in common::golden_sources() {
+        // A golden that is recorded as failing has nothing to round trip:
+        // this sweep asserts that a snapshot answers what the source
+        // answered, and a program that raises answers nothing.
+        if !common::expectation_of(&source).succeeds() {
+            continue;
+        }
         let name = source
             .file_stem()
             .expect("stem")

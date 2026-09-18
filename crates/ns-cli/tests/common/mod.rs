@@ -63,6 +63,38 @@ pub fn golden(name: &str) -> PathBuf {
     }
 }
 
+/// A golden's recorded outcome. Every field defaults to the success case, so
+/// an ordinary golden's file is just its `stdout` and a failing one's is its
+/// `status` and `stderr`. `deny_unknown_fields` turns a misspelled key into a
+/// failure instead of an expectation that silently stops being checked.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Expectation {
+    #[serde(default)]
+    pub status: i32,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+}
+
+impl Expectation {
+    /// Whether the golden is expected to exit zero. The snapshot and
+    /// build/load round trips only apply to a program that runs to
+    /// completion, so they use this to skip the rest.
+    pub fn succeeds(&self) -> bool {
+        self.status == 0
+    }
+}
+
+/// The recorded outcome beside `source`.
+pub fn expectation_of(source: &Path) -> Expectation {
+    let path = source.with_extension("toml");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
+}
+
 /// A temporary directory that removes itself, under the repository's own
 /// `.temp/` (git-ignored) rather than the system temporary folder.
 ///
