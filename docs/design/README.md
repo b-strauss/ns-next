@@ -132,7 +132,7 @@ three streams against what `run` answers on the source.
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
 | `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
 | `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
-| `spec/` | one named rule of `newspeak-spec.pdf`, most with its section in the file name |
+| `spec/` | one named rule of `newspeak-spec.pdf`, its section in the file name |
 
 A golden lives in a category directory, one level down, and the set is found
 by reading `goldens/` and then each category — no list, no count, so adding
