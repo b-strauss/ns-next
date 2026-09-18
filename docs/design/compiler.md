@@ -503,8 +503,9 @@ covered by handing the switch to the same `source::bootstrap` call.
 ### The harness
 
 - `crates/ns-cli/tests/run_fixtures.rs` and `build_load.rs` run every golden
-  under both lowerings against the same recorded answer. Under the reference lowering `build_load.rs` also takes the
-  encoder and decoder over code with no jumps and many registers.
+  under both lowerings against the same recorded answer. Under the reference
+  lowering `build_load.rs` also takes the encoder and decoder over code with
+  no jumps and many registers.
 - `run-corpus` runs every row four ways — from source and as a built binary,
   under each lowering — with no switch, because a gate must not be optional. A
   row fails if any of the four differs, and the report names which. The gate's
