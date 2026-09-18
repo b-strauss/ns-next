@@ -34,7 +34,7 @@ that cannot name its code is describing an intention, and should say so.
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
-| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) and per-heap caches with a global cache behind them (3b) | the dispatch id's place (3c) |
+| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a), per-heap caches with a global cache behind them (3b), and the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups | the dispatch id's place (3c) |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family | — |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, and its sends go through the inline caches | closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots, the stress mode and the lifetime brand are built; nothing reclaims an arena slot | a collector |
@@ -151,12 +151,10 @@ rather than an oversight.
 | Deviation | Spec | Where it is explained |
 |---|---|---|
 | No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the bootstrap `Object` placeholder; scheduled for step 6, the core library in Newspeak | §3.2 | [object-model.md](object-model.md) |
-| A class side is inherited: a metaclass is applied to the superclass's metaclass, Smalltalk-style, rather than to `Class`, so a subclass answers class-side messages its own class side never declared; to be fixed before 3c | §3.2, §6 | [dispatch.md](dispatch.md), "Decisions" |
 | No formal "value object" notion, because there are no actors to need it | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
-| The primary factory is a special case ahead of lookup, not an entry of the metaclass mixin's method table; to be fixed before 3c, with the metaclasses above | §6.3 | [dispatch.md](dispatch.md), "Decisions" |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
 
 ## What lives elsewhere

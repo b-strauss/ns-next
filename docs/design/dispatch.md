@@ -413,22 +413,20 @@ See "Primitives" above.
 
 Every send the optimized lowering compiles probes a cache at its own call
 site; a miss probes a global cache; only a miss there runs the lookup
-(`interpreter/inline_cache.rs`). Built on 2026-09-16, by the
-[plan](../superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md) that
-also sharpened five points of the design as first written: a private lexical
-site is guarded, a vacant lexical site skips the global cache, a `super`
-send's handler target re-checks the factory, a block's family size is its
-own subtree's, and the decoder requires dense call-site numbers. Each is
-described below where it applies. The third of those is gone again: §6.3's
-factory entry and §3.2's flat metaclass together leave a factory reachable
-only on the receiver's own metaclass, which the class-side guard determines,
-so there is nothing left for a `super` send's handler target to re-check.
-The second is gone too, superseded by 2026-09-18's decision below: the
-global cache's `Lexical` key now carries N's application as a fourth
-component, so a vacant lexical site may read it after all. The fifth is
-superseded too, by 2026-09-18's "Call-site numbers are not serialized"
-below: the decoder assigns a family's numbers instead of checking density,
-so there is no longer a wire-level dense-numbering requirement to keep.
+(`interpreter/inline_cache.rs`). Built on 2026-09-16 by its
+[plan](../superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), and
+refined by the step before 3c ("Decisions" below). Two rules of the design as
+built here still hold and are described where they apply: a private lexical
+site is guarded on N's application ("The private rule, decided once per
+site"), and a block's family size is its own subtree's ("Code families").
+Three others the plan settled no longer exist, and a reader of that plan
+should not look for them: a vacant lexical site *may* read the global cache,
+since its `Lexical` key carries N's application ("The global cache"); a
+`super` send's handler target re-checks no factory, since §6.3's factory
+entry and §3.2's flat metaclass leave a factory reachable only on the
+receiver's own metaclass, which the class-side guard determines; and the
+decoder requires no dense call-site numbering on the wire, because it assigns
+a family's numbers itself ("Bytecode and image").
 
 #### The state lives per heap
 
@@ -595,8 +593,8 @@ runs, and the only cache a megamorphic site consults, as Cog's open PICs
 probe the method cache and Strongtalk's miss handler its `lookupCache`. A hit
 there moves the site's state on.
 
-One hash picks a key's group — unlike 3a/3b's two independent probes
-anywhere in the table — and the group's two adjacent slots are one cache
+One hash picks a key's group — unlike 3b's two independent probes, at the
+two halves of one hash, anywhere in the table — and the group's two adjacent slots are one cache
 line's worth of probing. Strongtalk's `lookupCache`, `lookup_probe`/`lookup`
 (`prior-art/strongtalk/vm/lookup/lookupCache.cpp:188-205,231-242`): the read
 keeps the group least recently used, not the insert. A hit at the first
@@ -618,8 +616,10 @@ buys — one hash and one cache line per send of a megamorphic site, instead
 of two hashes anywhere in the table — not the eviction rule: its `value`
 site fills only 27 of 1024 entries, so nothing in it ever collides or is
 evicted; an eviction-rule comparison needs cache pressure (a small
-`NS_NEXT_GLOBAL_CACHE_ENTRIES`, or many more hot keys than this fixture has)
-and is not what this fixture, or Task 7's measurement, settles. An entry is
+`NS_NEXT_GLOBAL_CACHE_ENTRIES`, or many more hot keys than this fixture has),
+and no measurement has supplied it, so the rule rests on Strongtalk's
+precedent rather than on numbers of this runtime's own
+([execution.md](execution.md), "What the step before 3c moved"). An entry is
 32 bytes, so the cache is about 32 KB whatever the program's size. Its
 number of groups is a power of two, 512; a debug build takes a size in
 entries from `NS_NEXT_GLOBAL_CACHE_ENTRIES`, which the suite uses to run
@@ -713,8 +713,12 @@ one still runs its clause as a step. `Primitive` calls `builtins::execute`; a
 failure continues the lookup above the primitive's level, uncached, as 3a
 defines it, and the entry stays, as Cog keeps a method whose primitive
 failed. `Factory` instantiates the receiver (`instantiate::decide_factory`),
-with no re-check: §3.2's flat metaclass leaves the entry reachable only on
-the receiver's own metaclass, which the class-side guard determines. A
+re-checking nothing the lookup decided — §3.2's flat metaclass leaves the
+entry reachable only on the receiver's own metaclass, which the class-side
+guard determines — but reading `ClassData.builtin` off the receiver on every
+send, because `Array` and `OrderedCollection` need an `ObjectData::Array`
+payload and no entry carries which kind of instance to build ("Every target is
+a function of its key and its site" below). A
 handler target builds the message array per send and calls the handler, and
 nothing is checked ahead of it.
 
@@ -759,21 +763,20 @@ resolution whose privacy is not the site's, so a crafted site gets wrong but
 safe behaviour, never a panic. `image::decode::verify_mixins` therefore needs
 no check that code and N agree: nothing assumes a relation between them.
 
-As first built, a vacant lexical site skipped the global cache entirely for
-this reason: an entry there under `o`'s id alone might have been filled by a
-site whose N declares nothing private, wrong for a site whose own N does.
-2026-09-18 added N's application as the `Lexical` rule's payload
+**A still-vacant lexical site may read the global cache**, and what makes that
+safe is N's application, carried as the `Lexical` rule's payload
 (`CacheRule::Lexical(DispatchId)`, `DispatchId::NONE` where it is not yet
-known; every other rule needs none) precisely so a still-vacant site can
-tell the two apart: a hit under `(o, selector, Lexical(N))` is right
-regardless of which site left it, since
+known; every other rule needs none). Without it an entry keyed by `o`'s id
+alone could have been left by a site whose N declares nothing private, and be
+wrong for a site whose own N does. With it, a hit under
+`(o, selector, Lexical(N))` is right regardless of which site left it, since
 §5.9's private rule is a function of N and the selector alone, never of `o`.
-`send_lexical_first` now probes two rows before resolving anything -- N's own
+So `send_lexical_first` probes two rows before resolving anything — N's own
 `LexicalPrivate` row, keyed by N alone, then the `Lexical` row keyed by `(o,
-N)` -- and only resolves independently, exactly as before this change, when
-both miss. A monomorphic *hit* at an already-decided non-private site still
-never computes N: `cached` hands `miss` a `lexical_of` closure that computes
-it lazily, called at most once, only once a miss is certain.
+N)` — and resolves independently only when both miss. A monomorphic *hit* at
+an already-decided non-private site still never computes N: `cached` hands
+`miss` a `lexical_of` closure that computes it lazily, called at most once,
+only once a miss is certain.
 
 #### No new error text
 
@@ -896,6 +899,13 @@ below. After the benchmarks the table holds 12–16 sites and the global cache
 9–13 entries; after each `run-corpus` module, at most 2 of each; no site went
 polymorphic in any of them. That measurement closes the open finding that a
 lexical send's decision is sensitive to codegen ([PROGRESS.md](../PROGRESS.md)).
+
+The five refinements that followed ("Decisions" below) were measured the same
+way, whole and one change at a time, in [execution.md](execution.md), "What
+the step before 3c moved": the three instantiation sources 2.1–4.1% faster
+than the step's base, the other five 0.2–3.6% slower, every source 6.7–18.2%
+below `be3eb40`, and `vm::run` still one function with no `vm::run::closure`
+out of line.
 
 #### Considered, not adopted: a 16-byte entry
 
@@ -1059,10 +1069,13 @@ by that measurement. The user decides on the numbers.
     per instruction, so that no per-instruction boundary exists at all — to
     be looked at before a send's hit path grows further, and at the latest
     with the JIT tiers.
-- **Decided by the user (2026-09-17, extended 2026-09-18), to be built
-  before 3c:** the factory, the name conflict it can raise and the flat
+- **Decided by the user (2026-09-17, extended 2026-09-18), built before 3c
+  (2026-09-18):** the factory, the name conflict it can raise and the flat
   metaclasses came out of one piece of design work on 2026-09-18, which §3.2
-  settled from a section the earlier reading had not reached.
+  settled from a section the earlier reading had not reached. All five are
+  built; what the step measured is in
+  [execution.md](execution.md), "What the step before 3c moved", and
+  summarized under each decision below.
   - **The global cache's lexical key includes N's application**:
     `(o's id, selector, lexical, N's application id)`; private entries stay
     keyed by N's application alone. Whether §5.9's private rule applies
@@ -1073,7 +1086,15 @@ by that measurement. The user decides on the numbers.
     replaces 3b's rule that a vacant lexical site skips the global cache.
     Rejected: a compile-time private flag (adding or removing a private
     member live would need its senders recompiled); probing N's table on a
-    global hit (about the cost of the lookup it saves).
+    global hit (about the cost of the lookup it saves). Built. It is the one
+    of the five that costs a benchmark: `bench_loop.ns` and `bench_send.ns`
+    came out 2.1–3.3% slower than the commit before it, each entirely above
+    in one of two sittings, which the two probes do not explain — they run
+    once per site, at a site still vacant, and no measured source fills more
+    than sixteen sites. What moved is the shape of the code `vm::run`'s step
+    inlines: `CacheRule` grew from a fieldless enum to one carrying a
+    `DispatchId` ([execution.md](execution.md), "What the step before 3c
+    moved").
   - **The primary factory is a method of the class side** (§6.3: "The class
     side, together with the primary factory method, defines the mixin for
     the metaclass"), an entry of the metaclass mixin's method table, found by
@@ -1088,12 +1109,20 @@ by that measurement. The user decides on the numbers.
     this one): a factory entry is then reachable only on the receiver's own
     metaclass, which the class-side guard — that metaclass's dispatch id —
     determines, and never on a `super` chain or through inheritance. The
-    builtin branch of `try_factory_send` goes into the entry, since `Array`
-    and `OrderedCollection` need an `ObjectData::Array` payload rather than a
-    generic instance; that removes `ClassData.builtin` from the reads a key
-    does not cover ("Every target is a function of its key and its site"
-    above). `primary_factory_selector` stays only where §6.1 needs it, in the
-    superclass clause's check, which does not change.
+    builtin branch of 3b's pre-lookup factory check goes into the entry's action, since
+    `Array` and `OrderedCollection` need an `ObjectData::Array` payload rather
+    than a generic instance. It does **not** leave the reads a key does not
+    cover, as the decision expected it would: `decide_factory` reads
+    `ClassData.builtin` off the receiver on every send, which is what keeps
+    the entry safe rather than the key covering it ("Every target is a
+    function of its key and its site" above). What did leave that list is a
+    class object's factory *selector*, which is now the selector the entry is
+    filed under. `primary_factory_selector` stays only where §6.1 needs it, in
+    the superclass clause's check, which does not change. Built; with the flat
+    metaclasses it landed with, the three instantiation sources came out
+    3.3–4.6% faster, entirely below in both sittings, since `X new` is now an
+    ordinary cached send rather than a special case tested ahead of every
+    lookup ([execution.md](execution.md), "What the step before 3c moved").
   - **A class side may not declare the primary factory's selector**: the
     resolver refuses it, in the check that already reports a name declared
     twice on one side (`resolver::classes::duplicate_member_names`), since
@@ -1104,17 +1133,18 @@ by that measurement. The user decides on the numbers.
     method wins and the factory is filed under an unreachable name
     (`MixinBuilder.addFactoryMethod`, the `isPrimary` branch, deliberately,
     so that `ValueArray` can delegate to a primitive) — the class then no
-    longer instantiates and nothing says so.
+    longer instantiates and nothing says so. Built; a resolver check costs no
+    send anything at run time.
   - **Metaclasses are flat**, so **a class side is not inherited**. §3.2:
     "All metaclasses are instances of class Metaclass, and are direct
     subclasses of Class. Metaclasses may not be subclassed. […] The metaclass
     hierarchy in Newspeak is deliberately kept very flat"; §6: a class is an
     instance of "a metaclass that is the application of the metaclass mixin
-    defined by the class' class side to the class Class". ns-next applies a
-    class side to the *superclass's metaclass* instead, Smalltalk-style
-    (`Interpreter::metaclass_of`), and that deviation is what makes an
-    inherited factory reachable at all — the reason this is decided together
-    with the factory rather than after it. All three Newspeak
+    defined by the class' class side to the class Class". ns-next applied a
+    class side to the *superclass's metaclass*, Smalltalk-style, until this
+    step; that deviation is what made an inherited factory reachable at all,
+    which is why this was decided together with the factory rather than after
+    it. All three Newspeak
     implementations build it flat: Primordial Soup's `superclassOf:
     newMetaclass put: Class` (`KernelForPrimordialSoup.ns`, the rule spelled
     out at its `Mixin` comment), SOMns's class side over `new SClass[]
@@ -1125,13 +1155,19 @@ by that measurement. The user decides on the numbers.
     fall-through the class-side chain already ends in, reached directly
     instead of after a walk. A class-side chain then finds a member on the
     receiver's own metaclass or not at all, and §5.10 in a class-side method
-    looks in `Object`'s behaviour. Two recorded outcomes pin the inheritance
-    today and are re-cut to pin the conforming rule instead:
-    `tests-fixtures/class_side.ns`, whose `SpecialWidget describe` answers an
-    inherited class-side method, and
-    `tests-fixtures/cache_super_send_reaches_the_factory_check.ns`, whose
-    whole shape rests on a class-side `doesNotUnderstand:` declared by a
-    superclass. The rest of §3.2 — the reified instance-of relation and the
+    looks in `Object`'s behaviour. Built; the two recorded outcomes that
+    pinned the inheritance were re-cut to pin the conforming rule instead.
+    `tests-fixtures/class_side.ns` sent `SpecialWidget describe` for an
+    inherited class-side method; its subclass now declares its own
+    `describe`, since a class side that declares none answers nothing.
+    `tests-fixtures/cache_super_send_reaches_the_factory_check.ns` rested on
+    a class-side `doesNotUnderstand:` declared by a superclass, which a flat
+    metaclass makes unreachable; it is replaced by
+    `tests-fixtures/class_side_super_reaches_object.ns`, whose class-side
+    `super printString` answers `Object`'s: §5.10 makes S the superclass of
+    the running activation's current class, which §3.2 makes `Class` for a
+    metaclass, and `Object`'s behaviour is what stands in for `Class` here.
+    The rest of §3.2 — the reified instance-of relation and the
     `Class`, `Behavior` and `Metaclass` kernel classes — is scheduled for
     step 6, the core library in Newspeak ([object-model.md](object-model.md),
     "Class sides and metaclasses").
@@ -1147,10 +1183,14 @@ by that measurement. The user decides on the numbers.
     test pins that decoded numbering equals the compiler's, the golden image
     round trip included. The code record's empty call-site list, whose only
     job was to refuse a stale body, can go, since the retired send tags do
-    that; the plan settles it. Rejected alternatives to the refusal 3b
-    built: per-family hash tables (a hash per hit, and shared numbers stay
-    unsafe); the selector in every entry (a compare per hit, and an
-    oversized number still needs bounding).
+    that; the plan settled it, and the list is gone. Rejected alternatives to
+    the refusal 3b built: per-family hash tables (a hash per hit, and shared
+    numbers stay unsafe); the selector in every entry (a compare per hit, and
+    an oversized number still needs bounding). Built, and the one change of
+    the five a run from source never touches: it moved no source beyond the
+    noise, −1.2% to +1.0%, and left `vm::run` the same size to the
+    instruction ([execution.md](execution.md), "What the step before 3c
+    moved").
   - **The global cache is set-associative with two slots a group, least
     recently used out** (Strongtalk's `lookupCache`,
     `prior-art/strongtalk/vm/lookup/lookupCache.cpp`): 512 groups of two
@@ -1159,8 +1199,20 @@ by that measurement. The user decides on the numbers.
     insert, which evicts the first probe whatever its use. Rejected: writing
     both probes (Primordial Soup; half the capacity); zapping the other
     probes on insert (Cog; discards other keys for a reason particular to
-    Cog). Measured against 3b's insert with a benchmark whose site is
-    megamorphic, since none of the existing sources reaches one.
+    Cog). Built, and measured against 3b's insert with
+    `tests-fixtures/bench_megamorphic.ns`, added for it because none of the
+    existing sources reaches a megamorphic site. **The replacement rule
+    itself is unmeasured, and that benchmark cannot measure it.** It fills 27
+    of the 1024 slots, five of them at the one megamorphic site it drives, so
+    across 512 groups its hot keys share no group: every hit lands in the
+    first slot, the second is never read, and nothing is ever evicted. What
+    it measures is the probe path — one hash and one cache line against 3b's
+    two hashes anywhere in the table — and on that the change moved no source
+    beyond the noise: `bench_megamorphic.ns` +1.16% / +0.41%, every group
+    overlapping in both sittings ([execution.md](execution.md), "What the
+    step before 3c moved"). A benchmark that crowds one group — more live keys than 1024,
+    or a deliberately colliding set — is what would decide the rule against
+    3b's insert on numbers rather than on Strongtalk's precedent.
 - **An entry holds an `Rc` and is 24 bytes** (2026-09-16, the user's
   decision): the 16-byte variant with an index into side tables measured no
   faster and grows those tables with misses ("Considered, not adopted: a

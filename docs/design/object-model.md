@@ -334,9 +334,10 @@ ancestor's, which is what "not inherited" means for the lookup that finds
 members. A miss falls through to the class object's own behaviour, the same
 answer §5's ordinary lookup already gives. The metaclass's own *class-object*
 superclass link, read only by a `super` send, still points at `Object`'s
-behaviour, so a class-side `super` finds exactly what §5.10 says S = `Object`
-should hold — and a class-side `super new` therefore no longer instantiates,
-because `Object` declares no factory for it to find.
+behaviour: §5.10 makes S the superclass of the activation's current class,
+which §3.2 makes `Class` for a metaclass, and `Object`'s behaviour is what
+stands in for `Class` here — so a class-side `super new` no longer
+instantiates, because `Object` declares no factory for it to find.
 
 Every class object has a metaclass, a class that declares no class side
 included: the factory lives on it. The synthesized mixin such a class gets is

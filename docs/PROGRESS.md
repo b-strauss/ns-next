@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -52,7 +52,8 @@ method-table entries" below. **3b, the caches, is done** (2026-09-16): every
 send the optimized lowering compiles probes a cache at its call site, per
 heap, indexed from the activation's `feedback_base`; a site goes
 monomorphic, then a polymorphic cache of 4, then megamorphic, with a global
-cache of 1024 entries behind every site; the guard is a dense per-application
+cache of 1024 entries — 512 two-slot groups since the step below — behind
+every site; the guard is a dense per-application
 dispatch id reached through the class object; a send's decision is
 `resolve` then `act`, so a cache records what the lookup decided and never
 decides; call sites are numbered per code family as `u32`s behind new send
@@ -71,32 +72,32 @@ its own. Measured whole, every source is 4.3–11.3% faster than 3a's head and
   ([dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
   header").
 
-**The next piece is a step before 3c: five changes the user decided on
-2026-09-17 and 2026-09-18** ([dispatch.md](design/dispatch.md), "Decisions",
-"Decided by the user … to be built before 3c"), planned and measured
-together. Designing the factory change is what added the first two: §3.2
-settles, from a section the earlier reading had not reached, that a class side
-is not inherited at all.
-- **Metaclasses become flat** (§3.2, §6): a class side is applied to `Class` —
+**The step before 3c is done** (2026-09-18): five changes the user decided on
+2026-09-17 and 2026-09-18 ([dispatch.md](design/dispatch.md), "Decisions",
+"Decided by the user … built before 3c"), planned and measured together;
+see "M4 — Flat metaclasses, the factory and the cache refinements" below.
+Designing the factory change is what added the first two: §3.2 settles, from
+a section the earlier reading had not reached, that a class side is not
+inherited at all.
+- **Metaclasses are flat** (§3.2, §6): a class side is applied to `Class` —
   to `Object`'s behaviour here, since ns-next reifies no `Class` — instead of
   to the superclass's metaclass, so a class side is not inherited and a
   class-side `super` send looks in `Object`'s behaviour.
-  `tests-fixtures/class_side.ns` and
-  `cache_super_send_reaches_the_factory_check.ns` pin the inheritance today
-  and are re-cut to pin the conforming rule.
 - **The primary factory is a class-side method** (§6.3), an entry of the
   metaclass mixin's method table found by the ordinary lookups. With flat
-  metaclasses the factory's special cases go with nothing in their place:
+  metaclasses the factory's special cases went with nothing in their place:
   a factory entry sits only on the receiver's own metaclass, which the
   class-side guard determines, so neither re-check survives. A class side may
   not declare the factory's selector; the resolver refuses it.
 - **The global cache's lexical key includes N's application**, so a vacant
   lexical site may use it.
 - **Call-site numbers are no longer serialized**; the decoder numbers each
-  family, with a flag for a family compiled uncached; the send tags retire
-  again.
-- **The global cache becomes two-slot least-recently-used groups**, measured
-  against 3b's insert with a benchmark whose site is megamorphic.
+  family, with a flag for a family compiled uncached, and the send tags
+  retired again, to 25–28.
+- **The global cache is 512 two-slot least-recently-used groups**, measured
+  against 3b's insert with `tests-fixtures/bench_megamorphic.ns` — which
+  measures the probe path only, so the replacement rule itself is still
+  unmeasured (the finding below).
 
 The rest of §3.2 — the reified instance-of relation and the `Class`,
 `Behavior` and `Metaclass` kernel classes — is **scheduled for step 6, the
@@ -104,21 +105,25 @@ core library in Newspeak**, where both references declare them and which sits
 immediately before the reflection work that cannot be done without them
 ([object-model.md](design/object-model.md), "Class sides and metaclasses").
 
-**Then 3c's plan**, under `docs/superpowers/plans/`, written against
+**The next piece is 3c: the dispatch id's place.** Its plan goes under
+`docs/superpowers/plans/`, written against
 [dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
-header", and measured against the head of that step. Performance is measured, not
+header", and measured against the head of this step (`393311f`). Performance is measured, not
 assumed: the protocol and the seven sources of "What removing the re-entries
 moved" ([execution.md](design/execution.md); `bench_do.ns` is written out in
 the [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
 "Measurement protocol", and `bench_new.ns`, `bench_new2.ns` and
 `bench_newarg.ns`, whose slots had to be renamed, in "What spec-conformant
-lookup moved" there), **every compared binary, the current tree included,
+lookup moved" there), plus `tests-fixtures/bench_megamorphic.ns`, the eighth
+source and the only one that drives a megamorphic site, **every compared
+binary, the current tree included,
 built with the protocol's explicit flags through `RUSTFLAGS`** —
 `+crt-static` and the function-alignment pin, which no configuration
 carries — two sittings for a whole step, and a comparison against `be3eb40`
 as well as against the commit the step starts from (the findings below).
 3b's measurement, the template for 3c's, is in
-[execution.md](design/execution.md), "What the inline caches moved". 3c
+[execution.md](design/execution.md), "What the inline caches moved", and this
+step's, which follows it, in "What the step before 3c moved". 3c
 changes what every cached guard reads, which is on the hot path the run
 loop's step inlines, so its measurement should check with `dumpbin /disasm`
 that the step is still inline before it times anything (the first finding
@@ -139,6 +144,20 @@ below).
 
 **Open findings**, for whoever plans next to weigh:
 
+- **The global cache's replacement rule is unmeasured.** The cache is 512
+  two-slot groups with the least recently *used* evicted, Strongtalk's
+  `lookupCache` rule, and it replaced 3b's insert on that precedent, not on
+  numbers of this runtime's own. `tests-fixtures/bench_megamorphic.ns`, added
+  for the comparison, cannot supply them: it fills 27 of 1024 slots, five of
+  them at the one megamorphic site it drives, so across 512 groups no hot key
+  shares a group with another — every hit is at the first slot, the second is
+  never read and nothing is evicted. What it measured is the probe path, one
+  hash and one cache line against 3b's two hashes anywhere in the table, and
+  there the change moved no source beyond noise. Deciding the rule on numbers
+  needs cache pressure: many more hot keys than any fixture has, or a debug
+  build's small `NS_NEXT_GLOBAL_CACHE_ENTRIES`
+  ([dispatch.md](design/dispatch.md), "The global cache";
+  [execution.md](design/execution.md), "What the step before 3c moved").
 - **The run loop's step sits near LLVM's inlining limit.** A send's
   decision is sensitive to the shape it travels through, not only to what it
   looks up: 3a's first shape returned a 64-byte settled enum on every send
@@ -210,9 +229,28 @@ below).
   ([execution.md](design/execution.md), "What primitives as method-table
   entries moved"). 3b left every source 9.4–19.7% below `be3eb40`,
   `bench_loop.ns` included, entirely below in both sittings
-  ([execution.md](design/execution.md), "What the inline caches moved"). If
+  ([execution.md](design/execution.md), "What the inline caches moved"). The
+  step before 3c gave some of that back — `bench_loop.ns` and
+  `bench_send.ns` 2.2–3.6% slower than the commit it started from, entirely
+  above in both sittings — and every source is still 6.7–18.2% below
+  `be3eb40`, entirely below in both
+  ([execution.md](design/execution.md), "What the step before 3c moved"). If
   a source is slower than `be3eb40` once 3c has landed, the shift is chased
   then. None is slower now.
+- **The step before 3c cost the send benchmarks 2–3.6%, and what moved it is
+  not isolated.** The lexical global-cache key is the change it attributes to
+  — `bench_loop.ns` +2.1% / +3.3% and `bench_send.ns` +2.3% / +2.7% against
+  its parent — but the two global-cache probes it adds run once per site, at
+  a still-vacant lexical site, and no measured source fills more than sixteen
+  sites, so they cannot be the cost. What changed is the shape of the code
+  `vm::run`'s step inlines: `CacheRule` grew from a fieldless enum to one
+  carrying a `DispatchId`, and the step grew by 18 instructions while staying
+  inline. `bench_do.ns` shows the same pattern in the other direction, 2.8% /
+  3.3% slower on the flat-metaclass and factory change, which neither
+  instantiates nor sends to a class object in its loop, and most of it back
+  on the least-recently-used groups. This is the uniform-shift-on-unchanged-code
+  finding again, which the function-alignment pin does not remove
+  ([execution.md](design/execution.md), "What the step before 3c moved").
 - **A decoded image's last initializer is not held to answering `self`**, so
   `new` answers whatever it answers — wrong but safe, no panic.
   `image::decode::verify_mixins` could refuse such an initializer, which would
@@ -2228,6 +2266,96 @@ in about 12 s with the test binaries built; the same tests passing under
 `NS_NEXT_STRESS_CACHES=1` (about 1 min 5 s); `parse-corpus` at
 **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under both stress
 modes. No recorded outcome moved.
+
+## M4 — Flat metaclasses, the factory and the cache refinements (2026-09-18)
+
+Plan: [ns-next-flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md).
+
+The step between 3b and 3c: five changes the user decided on 2026-09-17 and
+2026-09-18, three of them conformance corrections and two cache refinements
+([dispatch.md](design/dispatch.md), "Decisions"). Designing the factory
+change is what produced the first two — §3.2 settles, in a passage about
+metaclasses rather than about instantiation, that a class side is not
+inherited at all, and an inherited class side is exactly what made an
+inherited factory reachable.
+
+**What changed**, in the order it landed:
+
+1. **Metaclasses are flat** (`1fe05e3`, `cf97de9`). A metaclass's application
+   has no superclass application, so a class-side chain finds a member on the
+   receiver's own metaclass or not at all; the class object's superclass link
+   still points at `Object`'s behaviour, which stands in for the `Class` §3.2
+   makes a metaclass's superclass, so a class-side `super` reaches `Object`
+   and a class-side `super new` no longer instantiates. Two recorded outcomes
+   were re-cut: `tests-fixtures/class_side.ns`, whose subclass now declares
+   its own `describe`, and `cache_super_send_reaches_the_factory_check.ns`,
+   which rested on an inherited class-side `doesNotUnderstand:` and is
+   replaced by `tests-fixtures/class_side_super_reaches_object.ns`.
+2. **The primary factory is an entry of the metaclass mixin's method table**
+   (`599cc09`, `c04e22c`), `MethodEntry::Factory(FactoryMethod { selector,
+   argument_count, access })`, found by the ordinary lookups. 3b's three
+   special cases went with nothing in their place: the factory check ahead of
+   lookup, the `Factory` target's re-check, and the re-check ahead of a
+   `super` send's `doesNotUnderstand:` target. `decide_factory` still reads
+   `ClassData.builtin` off the receiver on every send, because `Array` and
+   `OrderedCollection` need an `ObjectData::Array` payload, so that read stays
+   on the list of reads a cache key does not cover.
+3. **A class side may not declare the primary factory's selector**
+   (`562d06a`, `369e72a`, `a466c5d`): the resolver refuses it in the check
+   that already reports a name declared twice on one side, as Primordial
+   Soup's `checkNameConflictsForFactory:` does.
+4. **The global cache's lexical key carries N's application** (`341ab02`,
+   `0631dfd`, `da8beed`), `CacheRule::Lexical(DispatchId)`, so a still-vacant
+   lexical site may read the global cache — which 3b's rule forbade — by
+   probing N's `LexicalPrivate` row and then the `Lexical` row keyed by
+   `(o, N)`.
+5. **Call-site numbers are off the wire** (`518686a`, `c72482e`, `76d9284`,
+   `c9097d1`): the decoder assigns every family's numbers in the compiler's
+   emission order once the whole code table is read, so a number is a
+   property of the code and never read from an artifact. The send tags 21–24
+   retired for 25–28, `RETIRED_OPCODES` is `[7, 8, 9, 10, 21, 22, 23, 24]`,
+   and the code record's call-site list and the `CallSitesNotDense` check went
+   with them; a code record carries a flag for a family the reference
+   lowering compiled uncached. The golden image shrank from 1235 to 1154
+   bytes.
+6. **The global cache is 512 two-slot least-recently-used groups**
+   (`569fdda`, `393311f`), Strongtalk's `lookupCache` rule: one hash picks a
+   group, a hit at the second slot swaps the two, and a miss moves the first
+   slot's entry to the second. `tests-fixtures/bench_megamorphic.ns` was
+   added for the comparison.
+7. **The measurement of the step, and the documents** — this section, and
+   [execution.md](design/execution.md), "What the step before 3c moved".
+
+**Measurement.** Whole and one change at a time, against the commit the step
+started from (`f99a29f`) and against `be3eb40`, in two sittings by the
+protocol, with `tests-fixtures/bench_megamorphic.ns` as an eighth source. The
+three instantiation sources are 2.1–4.1% faster, entirely below in both
+sittings — `X new` is an ordinary cached send now — and the other five are
+0.2–3.6% slower, `bench_loop.ns` and `bench_send.ns` entirely above in both.
+Every source is 6.7–18.2% below `be3eb40`, entirely below in both sittings.
+Attributed: the conformance changes bought instantiation 3.3–4.6%; the
+lexical key cost `bench_loop.ns` and `bench_send.ns` 2.1–3.3%, which the two
+probes it adds cannot explain, since they run once per still-vacant lexical
+site; call-site numbering and the cache groups moved nothing beyond noise.
+`vm::run` is still one function with no `vm::run::closure` out of line, 4,926
+instructions against 4,910 before the step, checked with `dumpbin /disasm`
+at every checkpoint.
+
+**What the benchmark for the cache groups settles, and what it does not.**
+`bench_megamorphic.ns` fills 27 of 1024 global slots, five of them at the one
+megamorphic site it drives, so across 512 groups its hot keys share no group:
+every hit is at the first slot and nothing is ever evicted. It measures the
+probe path and cannot measure the replacement rule, which therefore stands on
+Strongtalk's precedent rather than on numbers of this runtime's own (the
+open finding above).
+
+Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
+warning-free; `cargo test --workspace`, 777 tests passing with one ignored;
+the same under `NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`;
+`parse-corpus` at **210/0/1/0** and `run-corpus` at **6/0/205**, plain and
+under both stress modes. Two recorded outcomes moved, both deliberately:
+`class_side.ns`, and `cache_super_send_reaches_the_factory_check.ns`, which
+pinned a class-side inheritance §3.2 forbids and was replaced.
 
 ## Notes
 
