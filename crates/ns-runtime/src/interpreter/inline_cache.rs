@@ -379,6 +379,14 @@ struct GlobalEntry {
     guard: DispatchId,
     selector: Symbol,
     rule: CacheRule,
+    /// N's application for a `Lexical` entry -- `DispatchId::NONE` for every
+    /// other rule, including `LexicalPrivate`, whose `guard` is already N's
+    /// application alone. A `Lexical` entry's actual resolution depends only
+    /// on `guard` (the receiver's class), never on N; this field exists so a
+    /// *read* at a still-vacant site, which does not yet know its own N,
+    /// never answers from an entry a different N happened to leave behind
+    /// (`docs/design/dispatch.md`, "3b -- The caches").
+    lexical: DispatchId,
     target: Target,
 }
 
@@ -388,12 +396,22 @@ impl GlobalEntry {
             guard: DispatchId::VACANT,
             selector: Symbol::NEW,
             rule: CacheRule::Public,
+            lexical: DispatchId::NONE,
             target: Target::Vacant,
         }
     }
 
-    fn holds(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> bool {
-        self.guard == guard && self.selector == selector && self.rule == rule
+    fn holds(
+        &self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        lexical: DispatchId,
+    ) -> bool {
+        self.guard == guard
+            && self.selector == selector
+            && self.rule == rule
+            && self.lexical == lexical
     }
 
     fn is_vacant(&self) -> bool {
@@ -413,16 +431,29 @@ pub(crate) struct GlobalCache {
 impl GlobalCache {
     /// Two probes at two hashes of the key, as Primordial Soup's
     /// `LookupCache` probes (`prior-art/primordialsoup/vm/lookup_cache.h`).
-    fn probes(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> [usize; 2] {
-        let hash = crate::hash::IdentityBuildHasher::default().hash_one((guard, selector, rule));
+    fn probes(
+        &self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        lexical: DispatchId,
+    ) -> [usize; 2] {
+        let hash =
+            crate::hash::IdentityBuildHasher::default().hash_one((guard, selector, rule, lexical));
         [hash as usize & self.mask, (hash >> 32) as usize & self.mask]
     }
 
-    fn get(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> Option<&Target> {
-        self.probes(guard, selector, rule)
+    fn get(
+        &self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        lexical: DispatchId,
+    ) -> Option<&Target> {
+        self.probes(guard, selector, rule, lexical)
             .into_iter()
             .map(|probe| &self.entries[probe])
-            .find(|entry| entry.holds(guard, selector, rule))
+            .find(|entry| entry.holds(guard, selector, rule, lexical))
             .map(|entry| &entry.target)
     }
 
@@ -432,14 +463,21 @@ impl GlobalCache {
     /// probes the same two places but writes the key into both; writing one
     /// keeps whatever the other held, so two keys whose first probes collide
     /// both stay cached while the second probe of one is free.
-    fn insert(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule, target: Target) {
-        let [first, second] = self.probes(guard, selector, rule);
+    fn insert(
+        &mut self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        lexical: DispatchId,
+        target: Target,
+    ) {
+        let [first, second] = self.probes(guard, selector, rule, lexical);
         let slot = if self.entries[first].is_vacant()
-            || self.entries[first].holds(guard, selector, rule)
+            || self.entries[first].holds(guard, selector, rule, lexical)
         {
             first
         } else if self.entries[second].is_vacant()
-            || self.entries[second].holds(guard, selector, rule)
+            || self.entries[second].holds(guard, selector, rule, lexical)
         {
             second
         } else {
@@ -449,6 +487,7 @@ impl GlobalCache {
             guard,
             selector,
             rule,
+            lexical,
             target,
         };
     }
@@ -473,13 +512,17 @@ impl GlobalCache {
 }
 
 /// What a cached send carries besides its site: the guard, the rule the
-/// global cache files it under, and what `materialize` and `act` need --
-/// the receiver (`o` for a lexical send, `self` for `super`), N for a
-/// private lexical site, S for `super`.
+/// global cache files it under, `lexical` -- the global key's fourth
+/// component, N's application for a `Lexical` send and `DispatchId::NONE`
+/// for every other rule (`docs/design/dispatch.md`, "3b -- The caches") --
+/// and what `materialize` and `act` need: the receiver (`o` for a lexical
+/// send, `self` for `super`), N's class for a private lexical site, S for
+/// `super`.
 #[derive(Clone, Copy)]
 struct SendKey<'gc> {
     guard: DispatchId,
     rule: CacheRule,
+    lexical: DispatchId,
     receiver: Value<'gc>,
     lexical_class: Option<ClassReference<'gc>>,
     superclass: Option<ClassReference<'gc>>,
@@ -709,18 +752,28 @@ pub(crate) fn send_public<'gc>(
     let key = SendKey {
         guard: mutator.heap.dispatch_id(&receiver),
         rule: CacheRule::Public,
+        lexical: DispatchId::NONE,
         receiver,
         lexical_class: None,
         superclass: None,
     };
-    cached(mutator, index, key, selector, arguments, |mutator| {
-        mutator.resolve_public(receiver, selector)
-    })
+    cached(
+        mutator,
+        index,
+        key,
+        selector,
+        arguments,
+        |_mutator| DispatchId::NONE,
+        |mutator| mutator.resolve_public(receiver, selector),
+    )
 }
 
 /// A lexical send (§5.7-§5.9), cached. The site's privacy, decided when it
 /// was first filled, chooses the guard: N's application for a private site,
-/// `o`'s otherwise, so a non-private hit never computes N.
+/// `o`'s otherwise, so a non-private *hit* still never computes N -- `miss`
+/// only calls its `lexical_of` closure on an actual miss, once N is needed
+/// for the global key's fourth component (`docs/design/dispatch.md`, "3b --
+/// The caches").
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(crate) fn send_lexical<'gc>(
@@ -768,6 +821,9 @@ pub(crate) fn send_lexical<'gc>(
                 mutator.heap.class_dispatch_ids(class).instances
             }),
             rule: CacheRule::LexicalPrivate,
+            // Already N's application alone (the guard above): a second copy
+            // of it in the fourth component would distinguish nothing.
+            lexical: DispatchId::NONE,
             receiver: enclosing,
             lexical_class,
             superclass: None,
@@ -776,21 +832,58 @@ pub(crate) fn send_lexical<'gc>(
         SendKey {
             guard: mutator.heap.dispatch_id(&enclosing),
             rule: CacheRule::Lexical,
+            // A placeholder: `miss` fills this in only on a genuine miss, so
+            // a monomorphic hit still never computes N (as before this key
+            // grew a fourth component).
+            lexical: DispatchId::NONE,
             receiver: enclosing,
             lexical_class: None,
             superclass: None,
         }
     };
-    cached(mutator, index, key, selector, arguments, |mutator| {
-        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
-        mutator.resolve_lexical(enclosing, lexical_class, selector)
-    })
+    cached(
+        mutator,
+        index,
+        key,
+        selector,
+        arguments,
+        move |mutator| {
+            if private {
+                DispatchId::NONE
+            } else {
+                lexical_dispatch_id(mutator, defining_class, depth)
+            }
+        },
+        |mutator| {
+            let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+            mutator.resolve_lexical(enclosing, lexical_class, selector)
+        },
+    )
 }
 
-/// A vacant lexical site's first send: whether §5.9's private rule applies
-/// is not known until it is resolved, so it skips the global cache, whose
-/// entry for `o` may come from a site whose N declares nothing private
-/// (refinement 2 of the plan that built this).
+/// N's application (`kth_lexical_class`'s class, by its `instances` dispatch
+/// id) for the `Lexical` global key's fourth component, `DispatchId::NONE`
+/// where the lexical chain does not reach that far.
+#[inline(always)]
+fn lexical_dispatch_id<'gc>(
+    mutator: &Mutator<'gc>,
+    defining_class: Option<ClassReference<'gc>>,
+    depth: u16,
+) -> DispatchId {
+    dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
+        .map_or(DispatchId::NONE, |class| {
+            mutator.heap.class_dispatch_ids(class).instances
+        })
+}
+
+/// A vacant lexical site's first send. Whether §5.9's private rule applies
+/// is not known until N is: §5.9's private rule depends only on N and the
+/// selector, never on `o`, so once N's application is in the global key's
+/// fourth component, a match there is right regardless of which site left it
+/// -- and the two rows this checks, `LexicalPrivate` keyed by N alone and
+/// `Lexical` keyed by (`o`, N), are the only ones N's decision could have
+/// filled. Only a genuine miss on both falls to resolving here, exactly as
+/// before the entries existed.
 #[inline(never)]
 fn send_lexical_first<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -802,25 +895,80 @@ fn send_lexical_first<'gc>(
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+    let lexical_id = lexical_dispatch_id(mutator, defining_class, depth);
+    if lexical_id != DispatchId::NONE {
+        let private_key = SendKey {
+            guard: lexical_id,
+            rule: CacheRule::LexicalPrivate,
+            lexical: DispatchId::NONE,
+            receiver: enclosing,
+            lexical_class,
+            superclass: None,
+        };
+        if let Some(step) = global_hit(mutator, index, private_key, selector, arguments) {
+            return step;
+        }
+    }
+    let guard = mutator.heap.dispatch_id(&enclosing);
+    if guard != DispatchId::NONE {
+        let public_key = SendKey {
+            guard,
+            rule: CacheRule::Lexical,
+            lexical: lexical_id,
+            receiver: enclosing,
+            lexical_class: None,
+            superclass: None,
+        };
+        if let Some(step) = global_hit(mutator, index, public_key, selector, arguments) {
+            return step;
+        }
+    }
     let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
     let private = resolved.chain() == Some(Chain::Private);
-    let (guard, rule) = if private {
-        let guard = lexical_class.map_or(DispatchId::NONE, |class| {
-            mutator.heap.class_dispatch_ids(class).instances
-        });
-        (guard, CacheRule::LexicalPrivate)
+    let (guard, rule, lexical) = if private {
+        (lexical_id, CacheRule::LexicalPrivate, DispatchId::NONE)
     } else {
-        (mutator.heap.dispatch_id(&enclosing), CacheRule::Lexical)
+        (guard, CacheRule::Lexical, lexical_id)
     };
     let key = SendKey {
         guard,
         rule,
+        lexical,
         receiver: enclosing,
         lexical_class,
         superclass: None,
     };
     fill(mutator, index, key, selector, &resolved);
     mutator.act(resolved, enclosing, None, selector, arguments)
+}
+
+/// `key`'s global-cache row, materialized and acted on, if it already holds
+/// an answer -- advancing the still-vacant site `index` to it. `None` on a
+/// miss, which leaves the site untouched for the caller to resolve instead.
+fn global_hit<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    key: SendKey<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    let target = mutator
+        .caches
+        .global
+        .get(key.guard, selector, key.rule, key.lexical)
+        .cloned()?;
+    let (resolved, base) = materialize(mutator, target.clone(), key)?;
+    mutator
+        .caches
+        .advance(index, key.guard, target, key.private());
+    Some(mutator.act_with_base(
+        resolved,
+        base,
+        key.receiver,
+        key.superclass,
+        selector,
+        arguments,
+    ))
 }
 
 /// A `super` send (§5.10), cached, keyed by the running method's
@@ -850,16 +998,25 @@ pub(crate) fn send_super<'gc>(
     let key = SendKey {
         guard: mutator.heap.class_dispatch_ids(current_class).instances,
         rule: CacheRule::Super,
+        lexical: DispatchId::NONE,
         receiver: self_value,
         lexical_class: None,
         superclass: Some(superclass),
     };
-    cached(mutator, index, key, selector, arguments, |mutator| {
-        mutator.resolve_super(superclass, selector)
-    })
+    cached(
+        mutator,
+        index,
+        key,
+        selector,
+        arguments,
+        |_mutator| DispatchId::NONE,
+        |mutator| mutator.resolve_super(superclass, selector),
+    )
 }
 
-/// A monomorphic hit, or everything else out of line.
+/// A monomorphic hit, or everything else out of line. `lexical_of` answers
+/// the global key's fourth component; it is never called here, only handed
+/// to `miss`, so a hit costs nothing for it.
 #[inline(always)]
 fn cached<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -867,6 +1024,7 @@ fn cached<'gc>(
     key: SendKey<'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
+    lexical_of: impl FnOnce(&Mutator<'gc>) -> DispatchId,
     resolve: impl FnOnce(&mut Mutator<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     if let Some(entry) = mutator.caches.sites.get(index) {
@@ -884,20 +1042,25 @@ fn cached<'gc>(
             }
         }
     }
-    miss(mutator, index, key, selector, arguments, resolve)
+    miss(
+        mutator, index, key, selector, arguments, lexical_of, resolve,
+    )
 }
 
 /// The site's polymorphic block, then the global cache, then `resolve`,
 /// whose answer is recorded in both before it is acted on. Out of line so
 /// that a monomorphic hit keeps its registers; not `#[cold]`, since a
-/// polymorphic hit comes through here.
+/// polymorphic hit comes through here. `lexical_of` is called at most once,
+/// only once a miss is certain and the global key's fourth component is
+/// actually needed.
 #[inline(never)]
 fn miss<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    key: SendKey<'gc>,
+    mut key: SendKey<'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
+    lexical_of: impl FnOnce(&Mutator<'gc>) -> DispatchId,
     resolve: impl FnOnce(&mut Mutator<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     if key.guard != DispatchId::NONE {
@@ -913,10 +1076,11 @@ fn miss<'gc>(
                 );
             }
         }
+        key.lexical = lexical_of(mutator);
         let global = mutator
             .caches
             .global
-            .get(key.guard, selector, key.rule)
+            .get(key.guard, selector, key.rule, key.lexical)
             .cloned();
         if let Some(target) = global {
             if let Some((resolved, base)) = materialize(mutator, target.clone(), key) {
@@ -942,7 +1106,9 @@ fn miss<'gc>(
 /// Records `resolved` in the global cache and at the site -- unless the key
 /// has no id, or the resolution's privacy is not the site's (only a crafted
 /// image makes a site's N change; refinement 1). Before `act`, which may run
-/// code.
+/// code. `key.lexical` must already be the global key's fourth component --
+/// `miss` sets it before falling through here; `send_lexical_first` sets it
+/// directly, since it never goes through `miss`.
 fn fill<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
@@ -960,7 +1126,7 @@ fn fill<'gc>(
         mutator
             .caches
             .global
-            .insert(key.guard, selector, key.rule, target.clone());
+            .insert(key.guard, selector, key.rule, key.lexical, target.clone());
         mutator
             .caches
             .advance(index, key.guard, target, key.private());
@@ -1182,13 +1348,18 @@ mod tests {
         let selector = Symbol::NEW;
         let guards: Vec<DispatchId> = (0..1000)
             .map(DispatchId::from_counter)
-            .filter(|guard| global.probes(*guard, selector, CacheRule::Public) == [0, 1])
+            .filter(|guard| {
+                global.probes(*guard, selector, CacheRule::Public, DispatchId::NONE) == [0, 1]
+            })
             .take(3)
             .collect();
         assert_eq!(guards.len(), 3, "the hash spreads keys over both orders");
-        let chain_of = |global: &GlobalCache, guard: DispatchId, rule: CacheRule| match global
-            .get(guard, selector, rule)
-        {
+        let chain_of = |global: &GlobalCache, guard: DispatchId, rule: CacheRule| match global.get(
+            guard,
+            selector,
+            rule,
+            DispatchId::NONE,
+        ) {
             Some(Target::Factory { chain }) => Some(*chain),
             _ => None,
         };
@@ -1197,12 +1368,14 @@ mod tests {
             guards[0],
             selector,
             CacheRule::Public,
+            DispatchId::NONE,
             Target::Factory { chain: chains[0] },
         );
         global.insert(
             guards[1],
             selector,
             CacheRule::Public,
+            DispatchId::NONE,
             Target::Factory { chain: chains[1] },
         );
         assert_eq!(
@@ -1222,6 +1395,7 @@ mod tests {
             guards[2],
             selector,
             CacheRule::Public,
+            DispatchId::NONE,
             Target::Factory { chain: chains[2] },
         );
         assert_eq!(
@@ -1238,9 +1412,45 @@ mod tests {
             Some(chains[2])
         );
         global.clear();
-        assert!(guards
-            .iter()
-            .all(|guard| global.get(*guard, selector, CacheRule::Public).is_none()));
+        assert!(guards.iter().all(|guard| global
+            .get(*guard, selector, CacheRule::Public, DispatchId::NONE)
+            .is_none()));
+    }
+
+    /// Two entries that agree on guard, selector and rule but differ in the
+    /// fourth component -- N's application for a `Lexical` entry -- answer
+    /// independently: a read under one N never sees what a different N left
+    /// behind, which is what lets a vacant lexical site trust a hit without
+    /// having resolved its own N yet (`docs/design/dispatch.md`, "3b -- The
+    /// caches").
+    #[test]
+    fn a_global_cache_keys_a_lexical_entry_by_its_lexical_application_too() {
+        let mut global = GlobalCache::with_entries(4);
+        let selector = Symbol::NEW;
+        let guard = DispatchId::from_counter(0);
+        let (first_lexical, second_lexical) =
+            (DispatchId::from_counter(1), DispatchId::from_counter(2));
+        global.insert(
+            guard,
+            selector,
+            CacheRule::Lexical,
+            first_lexical,
+            Target::Factory {
+                chain: Chain::Protected,
+            },
+        );
+        assert!(matches!(
+            global.get(guard, selector, CacheRule::Lexical, first_lexical),
+            Some(Target::Factory {
+                chain: Chain::Protected
+            })
+        ));
+        assert!(
+            global
+                .get(guard, selector, CacheRule::Lexical, second_lexical)
+                .is_none(),
+            "a different N never answers from another N's entry"
+        );
     }
 
     /// A site moves vacant, monomorphic, polymorphic in the order first

@@ -439,6 +439,36 @@ fn a_second_site_fills_from_the_global_cache() {
     );
 }
 
+/// A `Lexical` entry's key covers N's application too
+/// (`docs/design/dispatch.md`, "3b -- The caches"), so it is right for any
+/// site under the same N: two distinct lexical sites in different methods of
+/// the same class, both sending the same implicit-receiver selector to an
+/// enclosing object of the same application, share one global entry -- the
+/// second site's first send hits it directly rather than resolving
+/// independently.
+#[test]
+fn a_vacant_lexical_site_uses_the_global_cache() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          public helper = ( ^1 )
+          public first = ( ^helper )
+          public second = ( ^helper )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance1 = instantiate(&mut interpreter, &class);
+    let instance2 = instantiate(&mut interpreter, &class);
+    send(&mut interpreter, &instance1, "first", &[]);
+    send(&mut interpreter, &instance2, "second", &[]);
+    let statistics = interpreter.cache_statistics();
+    assert_eq!(
+        statistics.filled_global_entries, 1,
+        "both sites must share one global entry"
+    );
+}
+
 /// An invalidation vacates every site, every polymorphic block and the
 /// global cache, and keeps every family's range, since running activations
 /// keep their bases; the next run fills the sites again and answers the same

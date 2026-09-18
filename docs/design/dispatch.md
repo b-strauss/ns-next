@@ -423,6 +423,9 @@ described below where it applies. The third of those is gone again: §6.3's
 factory entry and §3.2's flat metaclass together leave a factory reachable
 only on the receiver's own metaclass, which the class-side guard determines,
 so there is nothing left for a `super` send's handler target to re-check.
+The second is gone too, superseded by 2026-09-18's decision below: the
+global cache's `Lexical` key now carries N's application as a fourth
+component, so a vacant lexical site may read it after all.
 
 #### The state lives per heap
 
@@ -653,12 +656,19 @@ so it gains no dispatch logic:
    `current_class`'s application; the receiver stays `self`, and a send with
    no `current_class` or no superclass runs uncached, which is where its two
    errors are raised. `SendInlinable` is emitted only by the reference
-   lowering and runs uncached (`decide_send`).
+   lowering and runs uncached (`decide_send`). The global cache's key adds a
+   fourth component, `lexical`: N's instances id for a non-private lexical
+   send, `DispatchId::NONE` for every other rule -- computed lazily, only
+   once a miss is certain (`miss`'s `lexical_of` closure), so a hit never
+   pays for it.
 3. The site's entry: if its guard matches, the target is rebuilt
    (`materialize`) and acted on. That is the monomorphic hit, inline in
    `vm::run`; everything after it is `miss`, out of line.
 4. `Polymorphic`: the block's entries, in order.
 5. The global cache; a hit there is acted on, and the site's state moves on.
+   A still-vacant lexical site reaches this too (`send_lexical_first`), by
+   probing the two rows N's decision could have filled, before it resolves
+   anything ("The private rule, decided once per site" above).
 6. `resolve`; its resolution is recorded in the global cache and at the site
    (`fill`), then acted on. A key whose id is `NONE` is never recorded.
 
@@ -703,24 +713,36 @@ a panic, because the level walk from there runs through the same
 #### The private rule, decided once per site
 
 Whether §5.9's private rule applies depends on N alone, the class declaration
-`k` levels out from the running method's class, and it is not known until the
-site is first resolved. So a vacant lexical site skips the global cache — an
-entry there under `o`'s id may have been filled by a site whose N declares
-nothing private — and runs `resolve_lexical` (`send_lexical_first`). What that
-first resolution finds decides the site for good: a `Private` resolution makes
-it a private site, anything else a non-private one, and its transitions keep the
-decision. A non-private site is guarded on `o`'s id, and a hit never computes N.
-A private site is guarded on N's instances id, under the `LexicalPrivate` rule,
-and computes `o` and N (`kth_lexical_class`) on every send. It is guarded rather
-than fixed because one mixin applied under two superclasses gives N two
-applications with different inherited slots, so a private slot accessor's
-absolute field differs between them; such a site goes polymorphic on N's
-applications, however many classes `o` has. The guard is also what makes a
-crafted image safe: a site whose N changed simply misses, and `fill` refuses to
-record a resolution whose privacy is not the site's, so a crafted site gets
-wrong but safe behaviour, never a panic. `image::decode::verify_mixins`
-therefore needs no check that code and N agree: nothing assumes a relation
-between them.
+`k` levels out from the running method's class, and it is not known at a
+still-vacant site until N is. What a first resolution finds decides the site
+for good: a `Private` resolution makes it a private site, anything else a
+non-private one, and its transitions keep the decision. A non-private site is
+guarded on `o`'s id, and a hit never computes N. A private site is guarded on
+N's instances id, under the `LexicalPrivate` rule, and computes `o` and N
+(`kth_lexical_class`) on every send. It is guarded rather than fixed because
+one mixin applied under two superclasses gives N two applications with
+different inherited slots, so a private slot accessor's absolute field
+differs between them; such a site goes polymorphic on N's applications,
+however many classes `o` has. The guard is also what makes a crafted image
+safe: a site whose N changed simply misses, and `fill` refuses to record a
+resolution whose privacy is not the site's, so a crafted site gets wrong but
+safe behaviour, never a panic. `image::decode::verify_mixins` therefore needs
+no check that code and N agree: nothing assumes a relation between them.
+
+As first built, a vacant lexical site skipped the global cache entirely for
+this reason: an entry there under `o`'s id alone might have been filled by a
+site whose N declares nothing private, wrong for a site whose own N does.
+2026-09-18 added N's application as the `Lexical` key's fourth component
+(`GlobalEntry.lexical`, `DispatchId::NONE` for every rule that does not need
+it) precisely so a still-vacant site can tell the two apart: a hit under
+`(o, selector, Lexical, N)` is right regardless of which site left it, since
+§5.9's private rule is a function of N and the selector alone, never of `o`.
+`send_lexical_first` now probes two rows before resolving anything -- N's own
+`LexicalPrivate` row, keyed by N alone, then the `Lexical` row keyed by `(o,
+N)` -- and only resolves independently, exactly as before this change, when
+both miss. A monomorphic *hit* at an already-decided non-private site still
+never computes N: `cached` hands `miss` a `lexical_of` closure that computes
+it lazily, called at most once, only once a miss is certain.
 
 #### No new error text
 
@@ -813,7 +835,9 @@ under the gate. Targeted tests pin, through a test view of a site's state
 - `doesNotUnderstand:` with the native handler, a user handler, and the
   setter of a slot named `doesNotUnderstand`;
 - a cached primitive that fails;
-- a second site filled from the global cache;
+- a second site filled from the global cache, and, for a lexical send whose
+  own site was still vacant, sharing one entry under N's application rather
+  than each resolving independently;
 - invalidation at every safepoint of a run, with the answer unchanged;
 - a snapshot taken with the caches full loading with them empty, and a
   decoded closure getting its base;
