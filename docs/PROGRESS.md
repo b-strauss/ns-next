@@ -99,7 +99,7 @@ inherited at all.
   family, with a flag for a family compiled uncached, and the send tags
   retired again, to 25–28.
 - **The global cache is 512 two-slot least-recently-used groups**, measured
-  against 3b's insert with `tests-fixtures/bench_megamorphic.ns` — which
+  against 3b's insert with `goldens/bench/bench_megamorphic.ns` — which
   measures the probe path only, so the replacement rule itself is still
   unmeasured (the finding below).
 
@@ -117,11 +117,12 @@ changed a send's path, and so the baseline whatever lands after it.
 Performance is measured, not assumed: the protocol and the seven sources of
 "What removing the re-entries moved"
 ([execution.md](design/execution.md)), plus
-`tests-fixtures/bench_megamorphic.ns`, the eighth source and the only one
+`goldens/bench/bench_megamorphic.ns`, the eighth source and the only one
 that drives a megamorphic site.
 
-**Four of the eight sources are not fixtures and must be written out from the
-text the documents give, never reconstructed from their prose descriptions.**
+**Four of the eight sources are goldens, under `goldens/bench/`. The other
+four are not in the tree at all and must be written out from the text the
+documents give, never reconstructed from their prose descriptions.**
 A reconstruction runs and prints the right answer while measuring something
 else, and older comparison binaries may not run it at all. `bench_do.ns` is
 written out in the
@@ -179,7 +180,7 @@ loudly.
 - **The global cache's replacement rule is unmeasured.** The cache is 512
   two-slot groups with the least recently *used* evicted, Strongtalk's
   `lookupCache` rule, and it replaced 3b's insert on that precedent, not on
-  numbers of this runtime's own. `tests-fixtures/bench_megamorphic.ns`, added
+  numbers of this runtime's own. `goldens/bench/bench_megamorphic.ns`, added
   for the comparison, cannot supply them: it fills 27 of 1024 slots, five of
   them at the one megamorphic site it drives, so across 512 groups its hot keys
   almost certainly share no group — almost every hit is at the first slot, the

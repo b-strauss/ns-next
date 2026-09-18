@@ -33,8 +33,8 @@ repository; the reasoning behind them is in the design documents under
 **Program outcomes are pinned, not re-derived.** The reference lowering
 (`docs/design/compiler.md`, "The reference lowering") is a second way to run
 every program, and both are held to recorded answers: every
-`tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr, the golden exit
-status, stdout and stderr in `crates/ns-cli/tests/program_outcomes.rs`, and `run-corpus`.
+`goldens/**/*.ns` against the `status`, `stdout` and `stderr` recorded in the `.toml`
+beside it (`docs/design/README.md`, "The goldens"), and `run-corpus`.
 A change that alters one is a behaviour change: establish that the new output is right
 before updating the golden, never update it because the code now produces it.
 
@@ -223,7 +223,7 @@ caches").
 ```bash
 # build every crate
 cargo build --workspace
-# the full suite, including the golden program outcomes
+# the full suite, including every golden under both lowerings
 cargo test --workspace
 # the same suite with every object moved at the run loop's safepoints
 # (debug builds only; Git Bash syntax)

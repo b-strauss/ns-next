@@ -280,10 +280,10 @@ the common case: a non-Boolean receiver must still produce the identical
 must produce the identical `mustBeBoolean` error.
 
 Those paths are pinned by recorded answers, which both lowerings must produce:
-`crates/ns-cli/tests/program_outcomes.rs` holds the exit
-status, stdout and stderr of the non-Boolean receiver, the non-Boolean loop
-condition, a block held in a variable that takes the native loop and a `^` out
-of an inlined loop body; `tests-fixtures/control_flow_fallback.ns` runs a user
+`goldens/errors/` holds the non-Boolean receiver and the non-Boolean loop
+condition, and `goldens/language/` a block held in a variable that takes the
+native loop and a `^` out of an inlined loop body;
+`goldens/language/control_flow_fallback.ns` runs a user
 `ifTrue:ifFalse:`; and the compiler's own tests (`compiler/lower.rs`,
 `crates/ns-runtime/tests/compiler.rs`) pin the guarded shape the gate emits.
 
@@ -502,9 +502,8 @@ covered by handing the switch to the same `source::bootstrap` call.
 
 ### The harness
 
-- `crates/ns-cli/tests/run_fixtures.rs`, `program_outcomes.rs` and
-  `build_load.rs` run every program under both lowerings against the same
-  recorded answer. Under the reference lowering `build_load.rs` also takes the
+- `crates/ns-cli/tests/run_fixtures.rs` and `build_load.rs` run every golden
+  under both lowerings against the same recorded answer. Under the reference lowering `build_load.rs` also takes the
   encoder and decoder over code with no jumps and many registers.
 - `run-corpus` runs every row four ways — from source and as a built binary,
   under each lowering — with no switch, because a gate must not be optional. A
@@ -644,11 +643,11 @@ captured-frame condition counts — whether or not the sending block's own
 activation is reified, so the condition cannot be weakened to "the sender has
 a frame". The control-flow natives sent from Rust, where their continuation
 runs at the floor of the run, answer what they should and leave both depths at
-0. The golden
-outcomes `deep-stack` and `unbounded-recursion`
-(`crates/ns-cli/tests/program_outcomes.rs`) pin a thousand-deep recursion
-through an `ifFalse:` block and the overflow's output, exit status and error
-text, under both lowerings.
+0. The goldens
+`goldens/limits/thousand_deep_recursion_runs.ns` and
+`goldens/limits/unbounded_recursion_is_a_newspeak_error.ns` pin a thousand-deep
+recursion through an `ifFalse:` block and the overflow's output, exit status and
+error text, under both lowerings.
 
 `SendInlinable`, wire tag 20, arrived with the trampoline, together with the
 counter that is its only consumer: without the counter it would mean exactly

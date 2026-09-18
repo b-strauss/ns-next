@@ -147,8 +147,8 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
     );
     // stderr too: `report_entry_send` is shared, so an `Uncaught Newspeak
     // error:` line must come out identical on both paths -- comparing only
-    // stdout would let the two diverge on exactly the messages
-    // `program_outcomes.rs` pins byte for byte.
+    // stdout would let the two diverge on exactly the messages the goldens'
+    // recorded `stderr` pins byte for byte.
     assert_eq!(
         format!("{snapshot_error}{load_error}"),
         run_error,

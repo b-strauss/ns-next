@@ -22,8 +22,9 @@ pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
     );
 }
 
-/// Renders the entry send's outcome -- `program_outcomes.rs` pins these
-/// strings byte for byte, so they live here once and are never duplicated.
+/// Renders the entry send's outcome -- the goldens' recorded `stderr` pins
+/// these strings byte for byte, so they live here once and are never
+/// duplicated.
 pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,

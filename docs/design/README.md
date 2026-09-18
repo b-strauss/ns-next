@@ -111,13 +111,60 @@ end needs ([execution.md](execution.md), "The depth limit"); loading a source
 file, and instantiating the root class and sending the entry, which several
 commands share, live in `source.rs` and `entry.rs`.
 
+## The goldens
+
+`goldens/` is this runtime's recorded behaviour. A golden is a `.ns` program
+and a `.toml` beside it holding the outcome that program must produce:
+`status`, `stdout` and `stderr`, each defaulting to the success case (`0`,
+empty, empty), so an ordinary golden's file is just its `stdout` and one that
+raises writes its `status` and `stderr`. Both lowerings must produce it, byte
+for byte and exit status included (`crates/ns-cli/tests/run_fixtures.rs`). The
+snapshot and the build/load round trips run only the goldens whose recorded
+status is zero, because a round trip settles nothing about a program that ends
+in an error.
+
+Eight categories, 75 goldens, 25 of which record a non-zero status:
+
+| Directory | What belongs in it |
+|---|---|
+| `bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
+| `cache/` | an outcome an inline cache could change, each added before any cache existed |
+| `class-side/` | class sides: an implicit one, `outer` from one, class-side `super` |
+| `errors/` | a program that raises, where the error text and the exit status are the point |
+| `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
+| `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
+| `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
+| `spec/` | one named rule of `newspeak-spec.pdf`, most with its section in the file name |
+
+The set is discovered by walking `goldens/`, so adding one needs no edit
+anywhere: no list, no count. What that gives up is the floor a hardcoded count
+used to provide, and `every_golden_is_a_complete_pair` is what replaces it. It
+catches the event the floor was there to catch — a golden that stops being
+discovered, because renaming, moving or re-extending one half leaves an orphan
+on the other side. It cannot catch both halves being deleted together. That is
+the deliberate trade: an accidental half-move leaves a trace, while deleting
+both halves shows up in a diff as two deletions.
+
+A golden's rationale — why that outcome is the right one, and which
+specification section it comes from — lives in its `.toml` as `#` comments,
+because `Expectation` is `deny_unknown_fields` and so has no field for prose.
+
+Two tests — one in `crates/ns-cli/tests/lowering.rs`, one in
+`snapshot_load.rs` — read a recorded `stdout` directly instead of through
+`run_fixtures.rs`'s comparison, and neither normalizes line endings. Neither
+needs to. `.gitattributes` covers only `corpus/**` and `core.autocrlf` is true,
+so a fresh Windows checkout really does write a CRLF `.toml` — but TOML
+normalizes the newlines inside a multi-line string as it parses, so the value
+handed back never carries `\r\n`. The format does for free what the
+`.expected` sidecar it replaced needed explicit code for.
+
 ## Gates
 
 These are non-regression gates, not suggestions. Each has caught a real
 regression.
 
 ```bash
-cargo test --workspace          # includes the golden program outcomes
+cargo test --workspace          # includes every golden, under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace   # the same, moving everything at the run loop's safepoints
 NS_NEXT_STRESS_CACHES=1 cargo test --workspace  # the same, vacating every inline cache at every safepoint
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included

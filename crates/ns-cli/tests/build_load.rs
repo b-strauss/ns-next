@@ -121,8 +121,9 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 /// `build` then `load` must be indistinguishable from `run` on the same
 /// source -- exit status, stdout and stderr -- under both lowerings. A binary
 /// carries no source, so comparing it against `run` is how a binary is checked
-/// at all; `run_fixtures.rs` pins the same fixtures' output against their
-/// `.expected` files, so equality here also holds against a recorded answer.
+/// at all; `run_fixtures.rs` pins the same goldens' status, stdout and stderr
+/// against their `.toml` files, so equality here also holds against a
+/// recorded answer.
 /// Under the reference lowering this also takes the encoder and decoder over
 /// code with no jumps and many registers.
 #[test]
