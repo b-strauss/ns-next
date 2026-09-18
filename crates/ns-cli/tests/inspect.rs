@@ -139,4 +139,15 @@ fn inspect_full_renders_every_mixin_and_every_body() {
         full.len() > brief.len() * 2,
         "full should be substantially longer"
     );
+
+    // `main:args:` sends four times in one family (`p transcript`, `result
+    // printString`, the `show:` and `newLine` cascade sends), so a real
+    // per-family numbering shows more than one distinct call site. Without
+    // `inspect`'s own call to `number_call_site_families`, every send here
+    // would decode with the same `@0` placeholder instead -- silently, since
+    // nothing else in this dump depends on the numbers being real.
+    assert!(
+        full.contains("@1"),
+        "a family with more than one send must show more than one call-site number:\n{full}"
+    );
 }

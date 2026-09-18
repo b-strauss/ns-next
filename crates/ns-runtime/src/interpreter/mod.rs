@@ -213,16 +213,21 @@ pub struct Mutator<'gc> {
     /// instance, so a class-object key would never hit and every instance
     /// would get its own behaviour.
     pub(crate) applications: IdentityMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
-    /// mixin identity -> the synthetic empty class side `metaclass_of`
-    /// stands in for that mixin's own level when it declares none.
+    /// class mixin identity -> the metaclass mixin `metaclass_of` synthesized
+    /// for a class that declares no class side of its own. §6.3 makes the
+    /// metaclass mixin "the class side, together with the primary factory
+    /// method", so such a class still needs one -- an otherwise empty mixin
+    /// holding the factory entry.
     ///
-    /// Cached, not minted per call, because the mixin's `Rc` identity is
-    /// what `applications` keys on: a fresh one per call would give two
-    /// class objects that share an instance-side application two *different*
-    /// metaclass applications, and the shared-application property is
-    /// exactly what the inline caches will guard on. It would
-    /// also grow `applications` without bound.
-    pub(crate) empty_class_sides: IdentityMap<usize, Rc<crate::mixin::Mixin>>,
+    /// Memoized rather than built per class object for the reason
+    /// `applications` is keyed the way it is: a class object is per enclosing
+    /// instance, and a fresh `Rc<Mixin>` each time would give every one of
+    /// them its own application and its own dispatch id, so no two instances
+    /// would share behaviour and every `X new` site would go megamorphic.
+    /// Keyed by the class mixin's identity, which the application holding it
+    /// keeps alive in `applications` for as long as any class object can
+    /// reach this.
+    pub(crate) metaclass_mixins: IdentityMap<usize, Rc<crate::mixin::Mixin>>,
     /// How many nested classes are marked as being created
     /// (`nested::begin_creation`), for `run_from_host`'s check that none
     /// outlives the run that began it. The mark itself lives in the class's
@@ -309,10 +314,10 @@ impl Interpreter {
         {
             let stress_enabled = interpreter.stress.is_some() || interpreter.stress_caches;
             interpreter.world.set_safepoint_requested(stress_enabled);
-            // A fixture run small enough that every insert evicts
-            // (`run_fixtures.rs`); anything not a decimal power of two is
-            // ignored rather than refused, since this reads the ambient
-            // environment rather than an explicit host call.
+            // A fixture run small enough that every insert contends for the
+            // same group (`run_fixtures.rs`); anything not twice a decimal
+            // power of two is ignored rather than refused, since this reads
+            // the ambient environment rather than an explicit host call.
             if let Some(entries) = safepoint::global_cache_entries_from_env() {
                 interpreter.set_global_cache_size(entries);
             }
@@ -537,11 +542,11 @@ impl Interpreter {
         self.world.cache_statistics()
     }
 
-    /// Replaces the global cache with a fresh one of `entries`, vacating
-    /// whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
+    /// Replaces the global cache with a fresh one sized for `entries`,
+    /// vacating whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
     /// `run_fixtures.rs`), not an input path a program can reach: `entries`
-    /// must be a power of two, and a host that gets this wrong panics rather
-    /// than the cache rounding it silently.
+    /// must be twice a power of two -- two per group -- and a host that gets
+    /// this wrong panics rather than the cache rounding it silently.
     pub fn set_global_cache_size(&mut self, entries: usize) {
         self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
     }
@@ -706,7 +711,7 @@ impl<'gc> Mutator<'gc> {
     /// decides an instantiation (`decide_instantiation`) rather than
     /// entering the host entry `instantiate`, which would enter the run loop
     /// from inside it -- the re-entry `run_from_host` refuses. See
-    /// `try_factory_send`'s own doc comment for why this can never
+    /// `instantiate::decide_factory`'s own doc comment for why this can never
     /// double-fire against the superclass clause's own deferred factory
     /// message (`climb_levels` never decides a send).
     pub(crate) fn decide_send(
@@ -1075,122 +1080,96 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    /// The metaclass carrying `class`'s class side (§6.3), created on first
-    /// use and cached on `class` itself (`ClassData::metaclass`) -- not in a
-    /// side table, and not in an instance slot the way a nested class's
-    /// cache is: a class object's payload is `ObjectData::Class`, never
-    /// `Instance`, so it has no slot vector for `nested_slot` to index into.
-    /// Caching on the class object directly also gives every send against
-    /// the same class object the same metaclass identity, which the inline
-    /// caches will need.
+    /// The class object's metaclass, built on first use.
     ///
-    /// Returns `None` only when neither `class`'s own mixin nor any
-    /// ancestor's declares a class side -- a class side is inherited down
-    /// the ordinary subclass chain exactly like any other mixin member,
-    /// single inheritance and nothing more. What stays out of scope is
-    /// §3.2's *reification* of that fact: no `Class` superclass object, and
-    /// no per-instance metaclass uniqueness (every class here still shares
-    /// one metaclass, the way every application of a mixin shares one
-    /// `MixinApplication`). Whether a class side is inherited at all is a
-    /// different, much narrower question than how far the reified model
-    /// goes, and the answer to it is the same answer §5's ordinary lookup
-    /// already gives for a method.
+    /// `newspeak-spec.pdf` §3.2: "All metaclasses are instances of class
+    /// Metaclass, and are direct subclasses of Class. Metaclasses may not be
+    /// subclassed. [...] The metaclass hierarchy in Newspeak is deliberately
+    /// kept very flat." §6 gives the construction: the class is an instance
+    /// of "a metaclass that is the application of the metaclass mixin defined
+    /// by the class' class side to the class Class".
     ///
-    /// When `class`'s own mixin declares no class side but an ancestor's
-    /// does, an empty synthetic mixin (`empty_class_side_mixin`) stands in
-    /// for `class`'s own level -- synthesized, as `builtin_mixin` below
-    /// synthesizes a builtin's, since no declaration exists to build it
-    /// from. It contributes no methods, only relays the superclass's metaclass
-    /// application onward, so `class`'s metaclass answers exactly what the
-    /// nearest class-side-declaring ancestor's metaclass would.
+    /// So a class side is *not* inherited: an ordinary class-side send that
+    /// misses here never continues onto an ancestor's class side. ns-next
+    /// reifies no `Class`, so the application has no superclass application
+    /// and a miss falls through to the class object's own behaviour, which
+    /// is what a class-side chain already ends in
+    /// (`docs/design/object-model.md`, "Class sides and metaclasses").
     ///
-    /// Either way, the metaclass's superclass is the superclass's
-    /// metaclass, recursively, and the metaclass application chain stays
-    /// linked to the metaclass class-object chain exactly as
-    /// `dispatch::next_level` requires for the ordinary one.
-    /// Iterative, over an explicit stack, for the same reason
-    /// `dispatch::walk` is: the superclass chain's length is the *image's*
-    /// to choose (`image::decode` builds one link per class record, at
-    /// under twenty bytes apiece), and every send to a class object enters
-    /// here. Recursing on it would overflow the stack on a chain a ten-
-    /// megabyte image can describe -- an abort, not a diagnosable failure.
+    /// Every class object has a metaclass, including one whose declaration
+    /// writes no class side: §6.3 makes the metaclass mixin the class side
+    /// *together with the primary factory method*, so `X new` is an entry of
+    /// this mixin's method table and a class without one would not be
+    /// instantiable. The empty case is `metaclass_mixin` below.
     ///
-    /// The chain is finite: `image::decode::rebuild_applications` refuses a
-    /// decoded graph whose superclass links form a cycle, and no other
-    /// construction site can build one (a superclass is fixed before the
-    /// class object that inherits it exists).
+    /// The metaclass's own *class-object* superclass link is not `None`,
+    /// though: §5.10 says a `super` send inside a class-side method starts
+    /// its lookup at S, the superclass of `current_class`, and §6 makes
+    /// that superclass `Class` -- approximated, since ns-next reifies no
+    /// `Class`, as `Object`'s behaviour (the same fall-through above). That
+    /// link is read only by a `super` send (`decide_super_send`,
+    /// `inline_cache::send_super`), never by the ordinary lookup `walk`,
+    /// which requires the *application* chain to agree before it steps
+    /// (`dispatch::next_level`) -- and the metaclass's application names no
+    /// superclass application above, so an ordinary class-side send still
+    /// stops at this one level, exactly as "not inherited" requires.
+    ///
+    /// No walk, no stack: the chain this used to climb was the reason the
+    /// function was iterative.
     pub fn metaclass_of(&mut self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
-        // Walk out to the first level that already answers -- a cached
-        // metaclass, a non-class object, or the end of the chain -- pushing
-        // each level that still has to be built. `chain` is nearest-first,
-        // so the build below runs it in reverse.
-        let mut chain: Vec<ClassReference> = Vec::new();
-        let mut super_metaclass: Option<ClassReference> = None;
-        let mut level = class;
-        loop {
-            // Not a class object: it has no metaclass, and nothing below it
-            // can inherit one through this level.
-            if !self.heap.is_class(level) {
-                break;
-            }
-            let cached = self.heap.class_metaclass(level);
-            let superclass = self.heap.class_superclass(level);
-            if cached.is_some() {
-                super_metaclass = cached;
-                break;
-            }
-            chain.push(level);
-            let Some(superclass) = superclass else { break };
-            level = superclass;
+        if !self.heap.is_class(class) {
+            return None;
         }
-        for level in chain.iter().rev() {
-            let own_application = self
-                .heap
-                .class_application(*level)
-                .expect("only class objects are pushed onto the chain");
-            let own_mixin = own_application.mixin.clone();
-            let enclosing = self.heap.class_enclosing(*level);
-            let declaring_class = self.heap.class_declaring(*level);
-            let class_side = own_mixin.class_side.clone();
-            let class_side_mixin = match class_side {
-                Some(mixin) => mixin,
-                // No class side of its own to apply -- only worth building a
-                // metaclass at all if an ancestor's class side needs relaying
-                // through it. `super_metaclass.is_none()` here means neither
-                // this level nor any ancestor declares a class side, which is
-                // the ordinary "costs nothing" case: this level gets no
-                // metaclass, nothing is cached for it, and the next level in
-                // still gets its own chance to declare one.
-                None => {
-                    if super_metaclass.is_none() {
-                        continue;
-                    }
-                    self.empty_class_side_mixin(&own_mixin)
-                }
-            };
-            let super_application = super_metaclass
-                .as_ref()
-                .and_then(|metaclass| self.heap.class_application(*metaclass));
-            let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
-            // §6.3.1: a class side is written inside the same class
-            // declaration its instance side is, and `resolver::resolve_class`
-            // resolves both against the same lexical chain -- so a class-side
-            // method's `outer` must reach exactly the objects an
-            // instance-side method's does. The metaclass therefore borrows
-            // the class's own place in the declaration chain rather than
-            // starting a new, empty one.
-            let metaclass =
-                self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-            if !self.heap.set_class_metaclass(*level, metaclass) {
-                unreachable!("only class objects are pushed onto the chain");
-            }
-            super_metaclass = Some(metaclass);
+        if let Some(cached) = self.heap.class_metaclass(class) {
+            return Some(cached);
         }
-        // The last level built is `chain[0]`, which is `class` itself; an
-        // empty chain means the walk stopped on the first step, and
-        // `super_metaclass` is then either `class`'s own cached metaclass or
-        // `None` because it is not a class object at all.
-        super_metaclass
+        let application = self.heap.class_application(class)?;
+        let class_side_mixin = self.metaclass_mixin(&application.mixin);
+        let enclosing = self.heap.class_enclosing(class);
+        let declaring_class = self.heap.class_declaring(class);
+        let metaclass_application = self.apply_mixin(&class_side_mixin, None);
+        let object_class = self.builtin_class(BuiltinClass::Object);
+        // §6.3: a class side is written inside the same class declaration
+        // its instance side is, so a class-side method's `outer` must reach
+        // exactly the objects an instance-side method's does. The metaclass
+        // borrows the class's own place in the declaration chain.
+        let metaclass = self.new_class_object(
+            metaclass_application,
+            enclosing,
+            declaring_class,
+            Some(object_class),
+        );
+        if !self.heap.set_class_metaclass(class, metaclass) {
+            unreachable!("is_class was checked above");
+        }
+        Some(metaclass)
+    }
+
+    /// The mixin `metaclass_of` applies for `mixin`'s class objects: §6.3's
+    /// "the class side, together with the primary factory method".
+    ///
+    /// A declared class side already carries the factory entry -- it is
+    /// inserted where the class side is built, from source
+    /// (`instantiate::build_class_side`) and on the way out of an image
+    /// (`image::mixins::decode`) alike. A class that declares none still
+    /// needs a metaclass to hold that one entry, and gets an otherwise empty
+    /// mixin here: the case that covers every builtin, whose behaviour is
+    /// native and whose factory is `new` -- the default §6's unnumbered
+    /// introduction gives an omitted factory signature, before §6.1 begins.
+    fn metaclass_mixin(&mut self, mixin: &Rc<crate::mixin::Mixin>) -> Rc<crate::mixin::Mixin> {
+        if let Some(class_side) = &mixin.class_side {
+            return class_side.clone();
+        }
+        let key = crate::mixin::mixin_key(mixin);
+        if let Some(existing) = self.metaclass_mixins.get(&key) {
+            return existing.clone();
+        }
+        let synthesized = Rc::new(crate::mixin::Mixin {
+            methods: std::iter::once(crate::mixin::factory_entry(mixin.factory)).collect(),
+            ..crate::mixin::Mixin::empty(Symbol::CLASS_SIDE)
+        });
+        self.metaclass_mixins.insert(key, synthesized.clone());
+        synthesized
     }
 
     fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
@@ -1232,11 +1211,12 @@ impl<'gc> Mutator<'gc> {
         // There is no dedicated Character payload variant on
         // ObjectData -- represent a character as a one-`char` Rust String
         // wrapped the same way String literals are (String), consistent with
-        // how the language spec itself treats characters as "a special
-        // case of string literals" going forward (`newspeak-spec.pdf`
-        // §2.2.3). `builtins::text` tags the *class* as
-        // `BuiltinClass::Character` so dispatch still lands on the right
-        // native methods; only the payload representation is shared.
+        // how the language spec itself anticipates going forward: §2.2.3
+        // expects to "make all string literals act as symbols, and represent
+        // characters as a special case of these" (`newspeak-spec.pdf`).
+        // `builtins::text` tags the *class* as `BuiltinClass::Character` so
+        // dispatch still lands on the right native methods; only the payload
+        // representation is shared.
         let class = self.builtin_class(BuiltinClass::Character);
         self.new_instance_object(class, ObjectData::String(character.to_string()))
     }
@@ -1282,12 +1262,20 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil, Value::Nil]))
     }
 
-    /// A class object around an already-computed application. The one place
-    /// the three-way invariant is established: a class object's `superclass`
-    /// is linked exactly when its application's `superclass` is (callers
-    /// derive `application` from `superclass` through `apply_mixin`), which
-    /// is what `dispatch::next_level` relies on when it steps both chains
-    /// together.
+    /// A class object around an already-computed application. For an
+    /// ordinary class object, this is where the invariant `dispatch::next_level`
+    /// relies on is established: `superclass` is linked exactly when
+    /// `application`'s own `superclass` is (callers derive `application`
+    /// from `superclass` through `apply_mixin`), so the two chains it steps
+    /// together stay the same length.
+    ///
+    /// `Mutator::metaclass_of` is the one deliberate exception: it passes a
+    /// `superclass` of `Object` (so a `super` send inside a class-side
+    /// method reaches `Object`'s behaviour, `newspeak-spec.pdf` §5.10) but
+    /// an `application` whose own `superclass` is `None` (§3.2: a class
+    /// side is not inherited, so the metaclass's application has nothing
+    /// above it to apply against). See `dispatch::next_level`'s doc comment
+    /// for why that mismatch is safe rather than a defect.
     ///
     /// `class` is the shared `Object` placeholder: a class object's own
     /// `.class` field never points at its metaclass. `metaclass_of` reaches
@@ -1358,42 +1346,6 @@ impl<'gc> Mutator<'gc> {
         });
         self.applications.insert(key, application.clone());
         application
-    }
-
-    /// The empty mixin `metaclass_of` applies for a class that declares no
-    /// class side of its own but inherits one from an ancestor -- one `Rc`
-    /// per owning mixin, as `builtin_mixin` below makes one per builtin, so
-    /// the application cache keys each such level apart from its siblings.
-    /// Contributes no methods or slots of its own; its only job
-    /// is to give `apply_mixin` something to link the ancestor's metaclass
-    /// application through.
-    ///
-    /// One per *mixin*, not one per call and not one per class object: a
-    /// nested class has one class object per enclosing instance but a
-    /// single mixin, and §6.2's "all applications of a mixin share code and
-    /// structure" has to hold for the metaclass side too -- otherwise two
-    /// class objects that share an instance-side application answer a
-    /// class-side send out of two distinct metaclass applications, which is
-    /// the property the inline caches will guard on.
-    ///
-    /// Keying the cache by `owner`'s address is safe for the same reason
-    /// `applications` is: every mixin that reaches here is held for the
-    /// interpreter's life by an entry in `applications`, so its address is
-    /// never reused.
-    fn empty_class_side_mixin(
-        &mut self,
-        owner: &Rc<crate::mixin::Mixin>,
-    ) -> Rc<crate::mixin::Mixin> {
-        let name = owner.name;
-        self.empty_class_sides
-            .entry(crate::mixin::mixin_key(owner))
-            .or_insert_with(|| {
-                Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
-                    "{} class",
-                    name.as_str()
-                ))))
-            })
-            .clone()
     }
 }
 

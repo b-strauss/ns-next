@@ -65,6 +65,38 @@ fn a_does_not_understand_error() {
     );
 }
 
+/// `newspeak-spec.pdf` §3.2: metaclasses are flat, so a class side is not
+/// inherited down the subclass chain. `SpecialWidget` declares no class
+/// side of its own; its superclass `Widget` does, but `SpecialWidget
+/// describe` must not reach it -- an ordinary `doesNotUnderstand:`, exiting
+/// non-zero, is the only fixture-shaped outcome this program has, which is
+/// why it is pinned here rather than as a `tests-fixtures/*.ns` fixture:
+/// `run_fixtures.rs` requires every one of those to succeed.
+#[test]
+fn a_class_side_is_not_inherited_by_a_subclass_with_none_of_its_own() {
+    assert_outcome(
+        "class_side_not_inherited",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class ClassSideNotInherited usingPlatform: platform = Object new (| transcript ::= platform transcript. |) (
+                public class Widget new = Object new () (
+                ) : (
+                    public describe = ( ^'a widget class' )
+                )
+                public class SpecialWidget new = Widget new () (
+                )
+                public main: platform args: args = (
+                    transcript show: SpecialWidget describe; newLine.
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #describe\n",
+    );
+}
+
 /// A block created while its class initializes, whose `^` runs after the
 /// initializer has returned: its home is dead, so this is §7.2's
 /// `cannotReturn`.
@@ -425,8 +457,9 @@ fn a_bare_super_raises_only_when_it_is_reached() {
     );
 }
 
-/// §6.1: "It is a run time error if the message determined by the
-/// inheritance clause is not the primary factory message of C."
+/// §6.1: "It is a run time error if the message selector specified by the
+/// inheritance clause is not the selector of the primary factory of the
+/// class *C*."
 #[test]
 fn a_superclass_clause_naming_the_wrong_factory_fails() {
     assert_outcome(

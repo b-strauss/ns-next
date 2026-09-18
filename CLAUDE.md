@@ -207,10 +207,14 @@ enclosing object.
 found; an inline-cache hit is `act` on the resolution `resolve` answered for the same
 key, rebuilt from the entry, so it can do nothing a miss would not. An entry holds no
 handle — a guard id, `Rc`s and numbers; the defining class is recomputed per hit — so
-it survives a move and cannot reach another heap. Anything `resolve` reads that the
-key does not cover (a class object's factory selector, a primitive's payload check)
-is re-checked in `act` on every send, never trusted from the entry; add such a read
-and its re-check goes with it. The reference lowering runs every send uncached, so it
+it survives a move and cannot reach another heap. Anything the key does not cover is
+read afresh in `act` on every send, never trusted from the entry; today that is
+`ClassData.builtin`, which `instantiate::decide_factory` reads off the receiver to
+tell `Array` and `OrderedCollection` from an ordinary instance, a primitive's
+payload check, which `builtins::execute` re-runs, and a class object's own
+`class` field, which `resolve_public` and `act_above` re-read to fall through
+to `Object`'s primitives after a metaclass miss. Add such a read and its per-send
+re-check goes with it. The reference lowering runs every send uncached, so it
 is the oracle a cache defect shows against (`docs/design/dispatch.md`, "3b — The
 caches").
 

@@ -97,7 +97,7 @@ g Nested.                (* a subclass of String, not of Inner *)
 
 — so "all nested classes must be compiled as mixins, as the superclass cannot be
 reliably known at compilation time". And §6.2 names the sharing axis: "Any change
-made to the structure or code of a mixin affects all of its applications. [...]
+made to the structure or code of a mixin effects all of its applications. [...]
 they all share their code and structural definition with the mixin." That
 sentence is simultaneously the performance strategy and the edit-and-continue
 requirement.
@@ -141,7 +141,7 @@ behaviour.
 
 **Identity-keyed tables hash with `hash::IdentityMap`.** A mixin's `methods`, an
 application's `nested_slot` and the interpreter's `applications` and
-`empty_class_sides` are keyed by an identity the runtime assigned — an interned
+`metaclass_mixins` are keyed by an identity the runtime assigned — an interned
 symbol's index, a mixin's or application's address — which no input chooses, so
 SipHash's resistance to chosen keys buys nothing there. They hash with one
 multiply per word and a rotation that brings the mixed high bits down to the
@@ -282,10 +282,38 @@ which §6.2 does not permit.
 
 ## Class sides and metaclasses
 
-A class side is the mixin for the class's metaclass (§6.3). The metaclass is
-created lazily, on the first class-side send or reflective access, so a class
-with no class side costs nothing. Class-side declarations are kept and dispatched
+The metaclass mixin is the class side *together with the primary factory
+method* (§6.3: "The class side, together with the primary factory method,
+defines the mixin for the metaclass"). The metaclass is created lazily, on
+the first class-side send or reflective access — `X new` is one, since the
+factory is one of its members. Class-side declarations are kept and dispatched
 as metaclass behaviour rather than parsed and dropped.
+
+**The primary factory is an entry of that method table**, under the declared
+factory's selector (`new` for a declaration that writes none, §6's
+unnumbered introduction, before §6.1 begins), found by
+the ordinary lookups like any other member — as both references build it
+(Primordial Soup's `astForPrimaryFactory:`, SOMns's
+`MixinBuilder.assemblePrimaryFactoryMethod`). It carries no body: what it
+does is instantiate the class object the message was sent to, which
+`interpreter::resolve::act` runs through `instantiate::decide_factory`. The
+three special cases that existed while it was not an entry are gone with
+nothing in their place — the factory check ahead of the lookup, the `Factory`
+target's re-check, and the re-check ahead of a `super` send's
+`doesNotUnderstand:` target — because a flat metaclass puts a factory entry
+on the receiver's own metaclass and nowhere else, which the class-side
+dispatch id determines. `primary_factory_selector` survives only where §6.1
+still needs it, in the superclass clause's check.
+
+The entry is derived, never stored twice: `instantiate::build_class_side`
+inserts it as a class side is built from source, `image::mixins::decode`
+derives it for a row another row names as its class side, and
+`Mutator::metaclass_of` puts it in the otherwise empty mixin a class that
+declares no class side gets. One definition of what it is
+(`mixin::factory_entry`), so the three cannot disagree about which selector
+instantiates a class. Nothing about it reaches the image: like a slot's
+accessors (§6.3.2), it is rebuilt on the way out from the factory the mixin
+table already carries.
 
 **A metaclass is flat: a class side is not inherited.** §3.2 states it and says
 what it is not — "All metaclasses are instances of class Metaclass, and are
@@ -299,12 +327,31 @@ class side declares it, and a class-side `super` send looks in `Class`. Since
 ns-next reifies no `Class` (below), a metaclass's superclass is `Object`'s
 behaviour, which is where the class-side chain already falls through.
 
-*Today:* `Interpreter::metaclass_of` chains a metaclass under the superclass's
-metaclass, Smalltalk-style, so class sides are inherited. It is
-corrected in the step before 3c, together with making the primary factory an
-entry of the metaclass mixin's method table, because that factory's remaining
-special cases exist only while a class side is inherited
-([dispatch.md](dispatch.md), "Decisions").
+`Mutator::metaclass_of` builds exactly this: one application, for the
+class's own metaclass mixin, with no superclass application — so an ordinary
+class-side send that misses on the metaclass never continues onto an
+ancestor's, which is what "not inherited" means for the lookup that finds
+members. A miss falls through to the class object's own behaviour, the same
+answer §5's ordinary lookup already gives. The metaclass's own *class-object*
+superclass link, read only by a `super` send, still points at `Object`'s
+behaviour: §5.10 makes S the superclass of the activation's current class,
+which §3.2 makes `Class` for a metaclass, and `Object`'s behaviour is what
+stands in for `Class` here — so a class-side `super new` no longer
+instantiates, because `Object` declares no factory for it to find.
+
+A metaclass that reaches an image — as a class-side activation's
+`current_class`, captured in a frame — is rebuilt with the same asymmetry:
+its record names the superclass `Object`'s class object like any other, and
+`image::decode::rebuild_applications` recognizes a record whose mixin is some
+declaration's class side and applies it with no superclass application
+([image-format.md](image-format.md), "What is *not* serialized").
+
+Every class object has a metaclass, a class that declares no class side
+included: the factory lives on it. The synthesized mixin such a class gets is
+memoized per class mixin, for the reason the application cache is keyed by the
+superclass's application (§6.2) — a fresh mixin per class object would give
+every enclosing instance its own behaviour and send every `X new` site
+megamorphic.
 
 **Deviation from §3.2, scheduled for step 6.** The specification also makes
 every class formally an instance of its metaclass, which is in turn an instance

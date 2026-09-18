@@ -216,3 +216,123 @@ fn a_nested_class_and_a_method_of_one_name_are_a_resolve_error() {
     "});
     assert_eq!(errors, ["class `Foo` has multiple definitions of `Inner`"]);
 }
+
+/// §6.3 makes the primary factory a member of the metaclass mixin the class
+/// side becomes, so a method table has one entry per selector to give it --
+/// the same rule as a slot and a method of one name, extended to the
+/// factory. Primordial Soup refuses it too (`Intermediates.ns`,
+/// `checkNameConflictsForFactory:`).
+#[test]
+fn a_class_side_may_not_declare_the_factory_selector() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Conflict usingPlatform: platform = Object new () (
+            class Widget new = Object new () (
+            ) : (
+                public new = ( ^'not a widget' )
+            )
+        ) : ()
+    "});
+    assert_eq!(errors, ["class `Widget` has multiple definitions of `new`"]);
+}
+
+/// A class written with no factory pattern defaults to `new` (§6's
+/// unnumbered introduction, before §6.1 begins), so the collision is refused
+/// even when nothing in the source spells the selector out.
+#[test]
+fn a_class_side_may_not_declare_the_default_factory_selector() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Conflict usingPlatform: platform = Object new () (
+            class Widget = Object new () (
+            ) : (
+                public new = ( ^'not a widget' )
+            )
+        ) : ()
+    "});
+    assert_eq!(errors, ["class `Widget` has multiple definitions of `new`"]);
+}
+
+/// A class side under a different selector than the factory's is
+/// legitimate -- the check must refuse only the method under the factory's
+/// own selector, not every class-side method.
+#[test]
+fn a_class_side_method_under_another_selector_resolves() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Widget new = Object new () (
+        ) : (
+            public make = ( ^'not a widget' )
+        )
+    "});
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// The check reads the factory pattern through `method_name`, the same
+/// selector-rendering `declared_members` uses for an ordinary method, so it
+/// is not unary-only: a keyword factory's selector is refused exactly the
+/// same way.
+#[test]
+fn a_class_side_may_not_declare_a_keyword_factory_selector() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Boxed with: contents = Object new () (
+        ) : (
+            public with: contents = ( ^'the class side' )
+        )
+    "});
+    assert_eq!(
+        errors,
+        ["class `Boxed` has multiple definitions of `with:`"]
+    );
+}
+
+/// The primary factory selector is a member of the class side
+/// (`newspeak-spec.pdf` §6.3: "The class side, together with the primary
+/// factory method, defines the mixin for the metaclass"), so §5.7's depth
+/// search must find it on the declaring class. Before it did, an implicit
+/// `new` written inside a class-side method bound to an *enclosing* class's
+/// member `new` at depth 1 and answered that member's value instead of an
+/// instance -- silently, at exit status 0. Pinned at the exact span of the
+/// `new` identifier, because a depth-0 binding somewhere in the module says
+/// nothing about this one.
+#[test]
+fn an_implicit_factory_send_binds_to_the_declaring_class_not_an_enclosing_member() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+        ) (
+          class Inner = Object new (
+          ) (
+          ) : (
+            make = ( ^new )
+          )
+          public new = ( ^'the enclosing new' )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = resolve_source(source);
+
+    let inner = &module.root_class.instance_side.nested_classes[0];
+    let class_side = inner
+        .class_side
+        .as_ref()
+        .expect("Inner declares a class side");
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Identifier(factory_send)) =
+        &class_side.methods[0].body.statements[0]
+    else {
+        panic!("expected the class-side method's only statement to be `^new`");
+    };
+    assert_eq!(factory_send.name, "new");
+    assert_eq!(
+        resolved.bindings.get(&factory_send.span),
+        Some(&Binding::LexicalSend { depth: 0 }),
+        "an implicit send of the factory selector must bind to the class that \
+         declares the factory, not to the enclosing class's member `new`"
+    );
+}

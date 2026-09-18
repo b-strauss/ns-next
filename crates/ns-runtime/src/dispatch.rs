@@ -30,6 +30,11 @@ pub enum Lookup<'gc> {
     /// method table holds it: a primitive that fails passes that level over,
     /// and the lookup continues from its superclass (`lookup_above`).
     Primitive(Primitive, ClassReference<'gc>),
+    /// §6.3's primary factory, found on the receiver's metaclass. It carries
+    /// no level: §6.3 instantiates the *receiver* of the factory message,
+    /// whichever level of the metaclass mixin's chain the entry was found at
+    /// -- and with a flat metaclass (§3.2) there is only ever the one.
+    Factory,
     NotFound,
 }
 
@@ -351,8 +356,9 @@ fn walk<'gc>(
 /// compiled method with that level as its defining class, a slot accessor
 /// with its field resolved against that level's application -- the level
 /// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
-/// `InitializeSlot` places a slot's initial value) -- or a primitive with
-/// that level, which its failure passes over.
+/// `InitializeSlot` places a slot's initial value) -- a primitive with
+/// that level, which its failure passes over, or the primary factory, which
+/// needs no level at all because §6.3 instantiates the receiver.
 fn found_entry<'gc>(
     entry: &MethodEntry,
     application: &MixinApplication,
@@ -365,6 +371,7 @@ fn found_entry<'gc>(
             application.own_slot_base + accessor.own_index as usize,
         ),
         MethodEntry::Primitive(method) => Lookup::Primitive(method.primitive, level_class),
+        MethodEntry::Factory(_) => Lookup::Factory,
     }
 }
 
@@ -380,12 +387,28 @@ fn level_of<'gc>(
         .map(|application| (class, application))
 }
 
-/// Steps both chains together. Every construction site (`load_module`,
-/// `build_builtin_classes`) links a class object's superclass exactly when
-/// it links its application's superclass, so the two chains have the same
-/// length; requiring both halves here means a hierarchy that somehow lost
-/// one of them ends the search instead of reporting a `Lookup::Method`
-/// whose class object comes from a different level than its code.
+/// Steps both chains together. For an ordinary class object, every
+/// construction site (`load_module`, `build_builtin_classes`) links its
+/// superclass exactly when it links its application's superclass, so the
+/// two chains have the same length; requiring both halves here means a
+/// hierarchy that somehow lost one of them ends the search instead of
+/// reporting a `Lookup::Method` whose class object comes from a different
+/// level than its code.
+///
+/// A metaclass is the one deliberate exception, built by
+/// `Mutator::metaclass_of`: its class-object `superclass` is `Object` (so a
+/// `super` send inside a class-side method finds `Object`'s behaviour,
+/// `newspeak-spec.pdf` §5.10), but its application's own `superclass` is
+/// `None` -- no metaclass application has a superclass application, because
+/// §3.2 makes a class side flat, not inherited, so there is nothing above
+/// it to apply against. The mismatch is exactly what this function needs to
+/// get right rather than assume away: requiring *both* halves before
+/// stepping means an ordinary lookup that misses on a metaclass stops right
+/// there, instead of reading the class-object half alone and continuing
+/// onto `Object`'s own methods -- which would silently un-flatten the
+/// metaclass this function's caller (`walk`) is searching. A `debug_assert!`
+/// written against "the two chains always agree" would be wrong to add
+/// here; this asymmetry is the metaclass's, not a bug in either chain.
 fn next_level<'gc>(
     superclass: Option<ClassReference<'gc>>,
     application: &Rc<MixinApplication>,

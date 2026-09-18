@@ -71,7 +71,17 @@ fn declared_members(body: &ast::ClassBody) -> Vec<Symbol> {
 
 /// The members one class declaration declares, both sides together
 /// (`docs/design/dispatch.md`, "Resolution": the class side's own scope is an
-/// open question the specification does not settle).
+/// open question the specification does not settle), plus the primary
+/// factory selector.
+///
+/// The factory belongs here because `newspeak-spec.pdf` §6.3 makes it a
+/// member of the metaclass mixin the class side becomes -- a member this
+/// declaration declares, and therefore one §5.7's depth search must see.
+/// Leaving it out bound an implicit `new` written inside a class-side method
+/// to an *enclosing* class's member `new`, silently answering that enclosing
+/// member instead of an instance of this class; `duplicate_member_names`
+/// below already treats it as a class-side member, and the two must agree on
+/// what the class side holds.
 pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<Symbol> {
     let mut names: HashSet<Symbol> = declared_members(&declaration.instance_side)
         .into_iter()
@@ -79,21 +89,66 @@ pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<S
     if let Some(class_side) = &declaration.class_side {
         names.extend(declared_members(class_side));
     }
+    names.insert(factory_selector_of(declaration));
     names
 }
 
+/// The declaration's factory selector: the selector its own message pattern
+/// spells out, or `new` when it writes none. `newspeak-spec.pdf` §6's
+/// unnumbered introduction, before §6.1 begins: "The identifier may be
+/// followed by a method signature for the *primary factory* method of the
+/// class. If the signature is omitted it defaults to `new`." (§6.1's own
+/// default-to-`new` is a different rule, about the *inheritance clause*'s
+/// trailing message, not the factory signature.)
+///
+/// This mirrors `interpreter::instantiate::build_mixin`'s `factory` default
+/// by hand, in a second block that also calls `method_name` and also
+/// hardcodes `Symbol::NEW` -- they agree today because both transcribe the
+/// same rule, not because one calls the other. Change what a class defaults
+/// its factory to in one and the other must follow, or this check and the
+/// metaclass mixin's actual factory disagree on what the reserved selector
+/// is.
+fn factory_selector_of(declaration: &ast::ClassDeclaration) -> Symbol {
+    match &declaration.factory {
+        Some(pattern) => Symbol::intern(&crate::interpreter::instantiate::method_name(pattern)),
+        None => Symbol::NEW,
+    }
+}
+
 /// The names one side of `declaration` declares more than once, each once.
-/// The specification states no rule; the canonical compiler refuses them
+/// The specification states no rule for two ordinary members of one name;
+/// the canonical compiler refuses them
 /// (`prior-art/newspeak/Newspeak2SqueakCompilation.ns`,
 /// `checkForDuplicateNames:`), and a mixin's method table cannot hold two
 /// members under one selector. Each side is its own table, so a name the
 /// instance side and the class side both declare is not a duplicate.
+///
+/// The class side's table is not only what it declares, though: §6.3 makes
+/// the primary factory a member of the metaclass mixin the class side
+/// becomes, so a class-side method under the factory's own selector is a
+/// second entry for that one name -- refused here the same way, by seeding
+/// the class side's `seen` set with it before walking its declared members.
+/// The image side (`image::mixins::check_member_names`) checks the same
+/// collision on a decoded class-side row, against the mixin's own encoded
+/// `Factory` -- populated, when the mixin was built, by this same
+/// `method_name` computation -- so a source-level refusal here and an
+/// image-level refusal there agree on exactly the same programs. Primordial
+/// Soup refuses it too (`prior-art/primordialsoup/newspeak/Intermediates.ns`,
+/// `checkNameConflictsForFactory:`); SOMns lets the declared method win and
+/// files the factory under an unreachable name, after which the class no
+/// longer instantiates and nothing says so.
 pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec<Symbol> {
     let mut duplicates = Vec::new();
-    let sides = std::iter::once(&declaration.instance_side).chain(declaration.class_side.as_ref());
-    for side in sides {
+    let mut seen = HashSet::new();
+    for member in declared_members(&declaration.instance_side) {
+        if !seen.insert(member) && !duplicates.contains(&member) {
+            duplicates.push(member);
+        }
+    }
+    if let Some(class_side) = declaration.class_side.as_ref() {
         let mut seen = HashSet::new();
-        for member in declared_members(side) {
+        seen.insert(factory_selector_of(declaration));
+        for member in declared_members(class_side) {
             if !seen.insert(member) && !duplicates.contains(&member) {
                 duplicates.push(member);
             }

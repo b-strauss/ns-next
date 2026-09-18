@@ -390,7 +390,6 @@ fn every_instruction_once() -> CompiledCode {
         family_size: 0,
         source: Span::new(1, 2),
     });
-    let call_site = CallSite { number: 7 };
     CompiledCode {
         kind: CodeKind::Initializer,
         instructions: vec![
@@ -433,27 +432,27 @@ fn every_instruction_once() -> CompiledCode {
                 selector: Symbol::intern("foo:"),
                 argument_registers: vec![1, 2],
                 destination: 5,
-                call_site,
+                call_site: CallSite { number: 0 },
             },
             Instruction::SendPublic {
                 selector: Symbol::intern("+"),
                 receiver_register: 1,
                 argument_registers: vec![2],
                 destination: 6,
-                call_site,
+                call_site: CallSite { number: 1 },
             },
             Instruction::SendInlinable {
                 selector: Symbol::intern("+"),
                 receiver_register: 1,
                 argument_registers: vec![2],
                 destination: 6,
-                call_site,
+                call_site: CallSite { number: 2 },
             },
             Instruction::SendSuper {
                 selector: Symbol::intern("bar"),
                 argument_registers: vec![],
                 destination: 7,
-                call_site,
+                call_site: CallSite { number: 3 },
             },
             Instruction::MakeClosure {
                 destination: 8,
@@ -488,12 +487,12 @@ fn every_instruction_once() -> CompiledCode {
         argument_count: 2,
         register_count: 10,
         statement_program_counter: vec![(0, 0..3), (1, 3..20)],
-        // One past the highest number among its own sends (all four share
-        // `call_site` here, so this is not a dense family; nothing in this
-        // round trip runs `verify_code_table`) and the block's `family_size`
-        // (0) -- see `bytecode::family_size_of`, which the decoder recomputes
-        // the same way, so the round trip must agree.
-        family_size: 8,
+        // One past the highest number among its own sends (0..=3, in
+        // emission order -- what `number_call_site_families` assigns on the
+        // decoded side too) and the block's `family_size` (0): the same
+        // `bytecode::family_size_of` the decoder recomputes with, so the
+        // round trip must agree.
+        family_size: 4,
         source: Span::new(10, 20),
     }
 }
@@ -597,7 +596,12 @@ fn round_trip_code_table<'gc>(
     let mixin_bytes = mixin_writer.into_bytes();
     let table = symbols.build();
     let mut reader = decode::Reader::new(&bytes);
-    let codes = decode::decode_code_table(&mut reader, &table).expect("decode code table");
+    let mut codes = decode::decode_code_table(&mut reader, &table).expect("decode code table");
+    // `image::load` numbers a family once its bodies are read and structurally
+    // verified; this helper skips the verification (some callers deliberately
+    // craft bodies that would fail it) but still needs the real numbers for a
+    // caller that compares a decoded body against the compiler's own output.
+    decode::number_call_site_families(&mut codes).expect("number call sites");
     let mut mixin_reader = decode::Reader::new(&mixin_bytes);
     let decoded_mixins =
         mixins::decode(&mut mixin_reader, &table, &codes.codes).expect("decode mixin table");
@@ -631,6 +635,36 @@ fn every_instruction_variant_round_trips() {
             root.initializer.expect("initializer id")
         );
     });
+}
+
+/// `Instruction::call_site` and `call_site_mut` share one macro-defined
+/// variant list (`bytecode.rs`), but the macro only proves the two *cannot*
+/// enumerate the four send variants with different tokens -- it does not by
+/// itself prove the two accessors answer alike on real data (a typo inside
+/// the shared pattern, for instance, would still compile and still affect
+/// both, but should still be caught here). `every_instruction_once` already
+/// covers every `Instruction` variant once (`every_instruction_variant_round_trips`
+/// above pins that claim), so walking it is a direct check that the two
+/// accessors agree on which instructions carry a call site and, where they
+/// do, name the same one -- rather than trusting that a future edit to
+/// either function keeps them looking at the same field.
+#[test]
+fn call_site_and_call_site_mut_agree_on_every_instruction_variant() {
+    let code = every_instruction_once();
+    let mut saw_a_call_site = false;
+    for instruction in &code.instructions {
+        let immutable = instruction.call_site();
+        let mutable = instruction.clone().call_site_mut().copied();
+        assert_eq!(
+            immutable, mutable,
+            "call_site and call_site_mut disagree for {instruction:?}"
+        );
+        saw_a_call_site |= immutable.is_some();
+    }
+    assert!(
+        saw_a_call_site,
+        "every_instruction_once must still include at least one send for this test to mean anything"
+    );
 }
 
 #[test]
@@ -673,6 +707,65 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
             *mixin_of(mutator.heap(), class)
                 .initializer_code
                 .expect("an initializer")
+        );
+    });
+}
+
+/// `code`'s call-site numbers in the order `compiler::lower` and
+/// `decode::number_call_sites` both walk a family: a body's own sends in
+/// instruction order, recursing into a nested block at its `MakeClosure`
+/// rather than after the sends around it -- so this is the *sequence* one
+/// shared counter produces, not merely the *set* `family_size` bounds.
+/// `UNCACHED` carries no number at all and is left out, matching
+/// `bytecode::family_size_of`.
+fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
+    let mut numbers = Vec::new();
+    for instruction in &code.instructions {
+        if let Instruction::MakeClosure { code: block, .. } = instruction {
+            numbers.extend(call_site_numbers(block));
+        } else if let Some(site) = instruction.call_site() {
+            if site != CallSite::UNCACHED {
+                numbers.push(site.number);
+            }
+        }
+    }
+    numbers
+}
+
+/// The decoder must reproduce the compiler's own numbering, not merely a
+/// dense one: two nested blocks, each with a send of its own, so a family
+/// whose blocks share no number with each other or with the root only
+/// happens to look right if the decoder replays the same emission order the
+/// compiler used, rather than, say, numbering block by block after the root.
+#[test]
+fn a_decoded_family_is_numbered_as_the_compiler_numbered_it() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public run = (
+            self alpha.
+            ^[:a | self beta. [:b | self gamma] value: a] value: 1
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let (table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let compiled = method_code(mutator.heap(), class, "run");
+        let root = &decoded_mixins.code[0];
+        let (_, id) = root
+            .methods
+            .iter()
+            .find(|(selector, _)| selector.as_str() == "run")
+            .expect("the run method");
+        let decoded = &table.codes[*id as usize];
+        assert_eq!(
+            call_site_numbers(decoded),
+            call_site_numbers(&compiled),
+            "the decoder must number a family in the compiler's order"
         );
     });
 }
@@ -727,7 +820,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
-    writer.write_u32(0); // no call sites
+    writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
     writer.write_u8(OPCODE_MAKE_CLOSURE);
     writer.write_u16(0); // destination
@@ -753,7 +846,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
-    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
     writer.write_u8(OPCODE_MAKE_CLOSURE);
     writer.write_u16(0); // destination
@@ -793,25 +886,25 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
-    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(25); // ... one past the last real tag
+    writer.write_u8(29); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 25
+            tag: 29
         })
     );
 }
 
-/// One Method body's code table: no statements, `site_count` call-site
-/// entries (the retired list), and `instruction_count` instructions that
-/// `write_instructions` writes.
+/// One Method body's code table: no statements, `uncached` compiled-uncached
+/// flag, and `instruction_count` instructions that `write_instructions`
+/// writes.
 fn one_method_code_table(
-    site_count: u32,
+    uncached: bool,
     instruction_count: u32,
     write_instructions: impl FnOnce(&mut encode::Writer),
 ) -> Vec<u8> {
@@ -823,23 +916,21 @@ fn one_method_code_table(
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
-    writer.write_u32(site_count);
-    for _ in 0..site_count {
-        writer.write_u32(0);
-    }
+    writer.write_boolean(uncached);
     writer.write_u32(instruction_count);
     write_instructions(&mut writer);
     writer.into_bytes()
 }
 
-/// A unary send of symbol 0 from register 0 into register 1, under `tag`.
-fn write_unary_send(writer: &mut encode::Writer, tag: u8, number: u32) {
+/// A unary send of symbol 0 from register 0 into register 1, under `tag`. No
+/// call-site number follows: the artifact no longer carries one for any send,
+/// retired or current.
+fn write_unary_send(writer: &mut encode::Writer, tag: u8) {
     writer.write_u8(tag);
     writer.write_u32(0); // selector: symbol 0
     writer.write_u16(0); // receiver register
     writer.write_u16(0); // no argument registers
     writer.write_u16(1); // destination
-    writer.write_u32(number);
 }
 
 fn write_return(writer: &mut encode::Writer) {
@@ -847,89 +938,33 @@ fn write_return(writer: &mut encode::Writer) {
     writer.write_u16(1);
 }
 
-/// A body written with the retired `SendPublic` tag -- a stale artifact from
-/// before the call sites were widened -- is refused, not misread.
+/// A body written with any retired send tag -- a stale artifact from before
+/// call sites were widened (7-10) or before a number stopped being
+/// serialized at all (21-24) -- is refused, not misread.
 #[test]
 fn a_retired_send_tag_is_refused() {
-    let bytes = one_method_code_table(0, 2, |writer| {
-        write_unary_send(writer, 8, 0);
-        write_return(writer);
-    });
-    let mut reader = decode::Reader::new(&bytes);
-    assert_eq!(
-        decode::decode_code_table(&mut reader, &table_with(&["size"])),
-        Err(decode::DecodeError::InvalidTag {
-            what: "instruction",
-            tag: 8
-        })
-    );
-}
-
-/// A code record whose call-site list is not empty was written before the
-/// list was retired; it is refused before its instructions are read.
-#[test]
-fn a_code_record_with_a_call_site_list_is_refused() {
-    let bytes = one_method_code_table(1, 1, write_return);
-    let mut reader = decode::Reader::new(&bytes);
-    assert_eq!(
-        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
-        Err(decode::DecodeError::CallSiteListNotEmpty)
-    );
-}
-
-/// Two sends of one family with one number would share a cache entry, and
-/// a number past the family's count would let a crafted family allocate a
-/// range its bytes do not pay for.
-#[test]
-fn a_family_whose_call_sites_are_not_dense_is_refused() {
-    let shared = one_method_code_table(0, 3, |writer| {
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
-        write_return(writer);
-    });
-    let sparse = one_method_code_table(0, 2, |writer| {
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 5);
-        write_return(writer);
-    });
-    // `shared` and `sparse` both miss the count check before `seen` is ever
-    // consulted: `family_size_of` derives `family_size` from the highest
-    // call-site number decoded, not from the wire's instruction count, so
-    // `shared`'s two sends both numbered 0 count 2 against a `family_size` of
-    // 1, and `sparse`'s one send numbered 5 counts 1 against 6. Neither
-    // reaches the `seen[number]` branch. This body numbers three sends 0, 2,
-    // 2: `family_size_of` answers 3 (the highest number plus one), so the
-    // count of 3 matches and the walk proceeds only to find 2 seen twice.
-    let duplicate_within_family_size = one_method_code_table(0, 4, |writer| {
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 2);
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 2);
-        write_return(writer);
-    });
-    for bytes in [shared, sparse, duplicate_within_family_size] {
+    // Every retired number, not just one representative: 7-10 while a call
+    // site was a `u16` instruction index, 21-24 while it was serialized as a
+    // `u32` at all -- a stale artifact from either era meets an unknown tag,
+    // not a differently-shaped `Send` misread as today's 25-28. Looping over
+    // `RETIRED_OPCODES` itself, rather than restating the numbers, is what
+    // keeps this test saying exactly what the invariant says: a decoder
+    // change that resurrects any one of these eight numbers fails here.
+    for tag in RETIRED_OPCODES {
+        let bytes = one_method_code_table(false, 2, |writer| {
+            write_unary_send(writer, tag);
+            write_return(writer);
+        });
         let mut reader = decode::Reader::new(&bytes);
-        let table = decode::decode_code_table(&mut reader, &table_with(&["size"]))
-            .expect("each body decodes on its own");
         assert_eq!(
-            decode::verify_code_table(&table),
-            Err(decode::DecodeError::CallSitesNotDense)
+            decode::decode_code_table(&mut reader, &table_with(&["size"])),
+            Err(decode::DecodeError::InvalidTag {
+                what: "instruction",
+                tag
+            }),
+            "retired tag {tag}"
         );
     }
-}
-
-/// The same body numbered densely is accepted: the check refuses the
-/// defect, not the shape.
-#[test]
-fn a_family_numbered_densely_is_accepted() {
-    let bytes = one_method_code_table(0, 3, |writer| {
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 1);
-        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
-        write_return(writer);
-    });
-    let mut reader = decode::Reader::new(&bytes);
-    let table =
-        decode::decode_code_table(&mut reader, &table_with(&["size"])).expect("the body decodes");
-    assert_eq!(table.codes[0].family_size, 2);
-    assert_eq!(decode::verify_code_table(&table), Ok(()));
 }
 
 #[test]
@@ -946,7 +981,7 @@ fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
         writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(0);
-        writer.write_u32(0);
+        writer.write_boolean(false); // not compiled uncached
         writer.write_u32(1); // one instruction ...
         writer.write_u8(OPCODE_LOAD_LITERAL);
         writer.write_u16(0); // destination
@@ -971,7 +1006,7 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
-    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
     writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
     writer.write_u16(0); // destination
@@ -1090,7 +1125,7 @@ fn code_table_with_nested_literal_array(depth: usize) -> Vec<u8> {
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
-    writer.write_u32(0); // no call sites
+    writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
     writer.write_u8(OPCODE_LOAD_LITERAL); // ... a LoadLiteral
     writer.write_u16(0); // destination
@@ -1153,7 +1188,7 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
 /// Body 0 is the innermost block, each later body creates the one before it,
 /// and the last is the method -- the order the encoder writes, every block
 /// before the code that creates it. The innermost block sits `levels`
-/// `MakeClosure` hops below the method. Each level is 37 bytes, so the file
+/// `MakeClosure` hops below the method. Each level is 34 bytes, so the file
 /// grows linearly with the nesting it asks for.
 fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
     let body = |writer: &mut encode::Writer, kind: u8, creates: Option<usize>| {
@@ -1163,7 +1198,7 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
         writer.write_u32(0); // source.start
         writer.write_u32(0); // source.end
         writer.write_u32(0); // no statement_program_counter entries
-        writer.write_u32(0); // no call sites
+        writer.write_boolean(false); // not compiled uncached
         match creates {
             Some(block) => {
                 writer.write_u32(2); // two instructions ...
@@ -3068,10 +3103,9 @@ fn code_with(
         argument_count,
         register_count,
         statement_program_counter: vec![],
-        // None of these crafted bodies is exercised for its call-site
-        // numbering: every one either carries no send or is refused by an
-        // earlier check (`verify_body`) before `verify_call_site_numbering`
-        // runs.
+        // `verify_code_table` never looks at `family_size` -- numbering a
+        // family is `number_call_site_families`'s job, and none of these
+        // tests calls it -- so an arbitrary value is fine here.
         family_size: 0,
         source: Span::new(0, 0),
     })
@@ -3364,6 +3398,56 @@ fn a_block_body_created_by_two_make_closures_is_refused() {
     assert_eq!(
         decode::verify_code_table(&table),
         Err(decode::DecodeError::SharedBlockBody)
+    );
+}
+
+/// `inspect` calls `number_call_site_families` on its own -- a weaker
+/// precondition than `verify_code_table`'s -- precisely so a file whose
+/// `MakeClosure` relation is malformed but otherwise decodes still gets a
+/// report instead of nothing (`image/inspect.rs`, the "code" section's
+/// detail). That fallback only makes sense if a refused table is left
+/// exactly as decoded, not partially numbered: `lexical_parents` runs to
+/// completion before any send is touched, so a family that never starts
+/// numbering never mutates anything.
+#[test]
+fn number_call_site_families_leaves_the_table_untouched_when_it_fails() {
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        1,
+        vec![Instruction::ImplicitReturn { register: 0 }],
+    );
+    let make = |destination| Instruction::MakeClosure {
+        destination,
+        parameters: Rc::new(vec![]),
+        code: block.clone(),
+    };
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        2,
+        vec![
+            Instruction::SendPublic {
+                selector: Symbol::intern("foo"),
+                receiver_register: 0,
+                argument_registers: vec![],
+                destination: 1,
+                call_site: CallSite { number: 0 },
+            },
+            make(0),
+            make(1),
+            Instruction::Return { register: 0 },
+        ],
+    );
+    let mut table = table_of(vec![block, parent]);
+    let before = table.codes.clone();
+    assert_eq!(
+        decode::number_call_site_families(&mut table),
+        Err(decode::DecodeError::SharedBlockBody)
+    );
+    assert_eq!(
+        table.codes, before,
+        "a table `lexical_parents` refuses must be left exactly as it was"
     );
 }
 
@@ -5938,9 +6022,12 @@ fn instance_chain_graph(levels: u32) -> Vec<u8> {
 #[test]
 fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     // `Interpreter::send` consults `metaclass_of` for every class-object
-    // receiver, and `metaclass_of` walks the whole superclass chain looking
-    // for a class side to relay. Recursing on it would abort here, on a
-    // chain a four-megabyte image describes.
+    // receiver; `metaclass_of` itself is O(1) now that metaclasses are flat
+    // (`newspeak-spec.pdf` §3.2), but the ordinary lookup that follows a
+    // metaclass miss still walks this graph's whole class-object chain
+    // (`dispatch::walk`), iteratively over an explicit stack, on a chain a
+    // four-megabyte image describes. Recursing on either walk would abort
+    // here.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
@@ -7190,4 +7277,92 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
         });
     assert_eq!(second_answer, 2);
     assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
+}
+
+/// A metaclass that reaches the graph is rebuilt **flat**: its application
+/// names no superclass application, exactly as the live
+/// `Mutator::metaclass_of` mints it (`newspeak-spec.pdf` §3.2, a metaclass
+/// is a direct subclass of `Class`).
+///
+/// A metaclass is written as an ordinary class record -- naming the class
+/// side's mixin row and the superclass `Object` -- so the generic rule
+/// `rebuild_applications` applies to every other record would chain it onto
+/// `Object`'s application. Nothing walks from a decoded metaclass today, so
+/// the difference is silent; `dispatch::next_level`'s whole flat rule rests
+/// on the asymmetry between the class-object link (`Object`) and the
+/// application link (none), which is why it is pinned here rather than left
+/// to the first lookup that starts from one.
+///
+/// A class-side method that answers a block the module keeps is what puts
+/// the metaclass in the graph: the closure's captured frame is the
+/// class-side activation, whose `current_class` is the metaclass.
+#[test]
+fn a_decoded_metaclass_is_rebuilt_with_no_superclass_application() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | held ::= nil. |
+        ) (
+          public class Widget = Object new (
+          ) (
+          ) : (
+            public makeBlock = ( ^[ 'from the class side' ] )
+          )
+          public keep = ( held := Widget makeBlock. ^held )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("keep"), &[]),
+        "keep",
+    );
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let root_0 = mutator.fetch(&loaded.roots[0]);
+        let held = mutator
+            .heap()
+            .instance_field(*object(&root_0), 0)
+            .expect("expected an instance");
+        let captured = mutator
+            .heap()
+            .closure_data(*object(&held))
+            .expect("the slot holds the class side's block")
+            .captured_frame;
+        let metaclass = mutator
+            .heap()
+            .frame_current_class(captured)
+            .expect("a class-side method activation carries its metaclass");
+        let application = mutator
+            .heap()
+            .class_application(metaclass)
+            .expect("the decoded metaclass has an application");
+        assert!(
+            application.superclass.is_none(),
+            "a decoded metaclass must be applied flat -- a superclass \
+             application here lets an ordinary lookup step into Object's own \
+             methods and un-flattens the metaclass"
+        );
+        assert!(
+            mutator.heap().class_superclass(metaclass).is_some(),
+            "the class-object superclass link stays: it is the asymmetry \
+             dispatch::next_level rests on, not an oversight"
+        );
+    });
 }

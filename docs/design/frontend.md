@@ -100,7 +100,51 @@ Typed-Newspeak declaration syntax parses and is discarded, because there is no
 type AST: `<Type>` annotations on parameters and slots, `^<Type>` return
 annotations, `[T]` type parameters on class names and selectors, and
 `where { ... }` constraint clauses. The eventual-send operator `<-:` is likewise
-accepted and dropped.
+accepted and dropped, which makes an asynchronous send (§5.6) run as an
+ordinary synchronous one and answer the value where the specification gives a
+promise. Nothing in the runtime implements actors, so there is no promise to
+answer with; the alternative would be to refuse the operator outright.
+
+Three of the things dropped here change what a correct program answers, rather
+than only what an incorrect one is allowed to say. Each has a row in
+[README.md](README.md)'s deviations table; this section is what those rows
+point at.
+
+## Deviation: a local slot's initializer is dropped
+
+A code body's temporary list has the full slot-declaration form
+(`corpus/reference/NewspeakGrammar.ns:148-150`, `temporaries = slotDecls`), so
+`| x = expression. |` and `| x ::= expression. |` inside a method or block body
+declare initialized local slots. `parse_temporaries` keeps only the names and
+discards the initializer. §3.6 requires the opposite -- local slots "are
+initialized in the context of *a*, according to their declarations" -- so the
+slot keeps the **nil** every slot starts with, and `| x = 'v'. | ^x` answers
+**nil** rather than `'v'`.
+
+This is worse than the other drops: it is silent wrong output at exit status 0,
+not an under-rejection, and no gate catches it because the reference lowering
+makes the same mistake -- the initializer is gone before either lowering sees
+the body. Only an explicit assignment afterwards gives such a slot a value,
+which is why the corpus modules that use the form mostly still work.
+
+## Deviation: simultaneous slot clauses initialize sequentially
+
+§6.3.2's `|| ... ||` declares slot clauses that are evaluated simultaneously,
+resolving well-founded mutual recursion between them. The parser computes the
+`simultaneous` flag only to choose the closing delimiter and then discards it,
+so the clauses initialize in declaration order like ordinary ones: in
+`|| first = second + 1. second = 2. ||`, `second` is still **nil** when `first`
+is computed. Where the expressions do not raise, this too is silent wrong
+output at exit status 0.
+
+## Deviation: mixin application is not implemented
+
+§6.2's mixin application, `class C = Base <: Trait (...)(...)`, does not parse.
+This one fails loudly -- a parse error naming the position -- so it cannot
+produce a wrong answer. No corpus module writes `<:` in a superclass clause;
+the eleven files that contain the operator use it inside `where { ... }` type
+constraints, which are parsed and dropped, so `parse-corpus` does not exercise
+the form either way.
 
 ## Deviation: the six reserved words are not lexer-reserved
 

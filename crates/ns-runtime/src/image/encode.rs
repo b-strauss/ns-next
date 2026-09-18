@@ -356,18 +356,32 @@ fn encode_code(
         writer.write_u32(u32_field("statement program counter", range.start));
         writer.write_u32(u32_field("statement program counter", range.end));
     }
-    // The call-site list is retired; the count stays in the record, written
-    // empty, so that a stale body with sends is refused before its
-    // instructions are read.
-    writer.write_u32(0);
+    // A call-site number is no longer part of the artifact -- the decoder
+    // derives it from a family's emission order once every body is read
+    // (`decode::number_call_site_families`). What the wire still has to say
+    // is whether this body's sends run uncached at all: the reference
+    // lowering marks every send `CallSite::UNCACHED` and never numbers any
+    // of them, and that is a whole-body property the decoder cannot recover
+    // from the instructions alone once their numbers are gone.
+    writer.write_boolean(compiled_uncached(code));
     writer.write_u32(u32_field("instruction count", code.instructions.len()));
     for instruction in &code.instructions {
         encode_instruction(writer, instruction, ids, symbols);
     }
 }
 
-fn encode_call_site(writer: &mut Writer, site: CallSite) {
-    writer.write_u32(site.number);
+/// Whether `code`'s own sends are `CallSite::UNCACHED` -- true exactly for a
+/// body the reference lowering compiled, which numbers no send at all
+/// (`compiler::reference`). The optimized lowering numbers every send in a
+/// body uniformly, so one send (if `code` has any) tells the whole body's
+/// story; a body with no sends of its own needs no flag, since
+/// `decode_instruction` never reads it without a send to build.
+fn compiled_uncached(code: &CompiledCode) -> bool {
+    code.instructions
+        .iter()
+        .filter_map(Instruction::call_site)
+        .next()
+        .is_some_and(|site| site == CallSite::UNCACHED)
 }
 
 fn encode_registers(writer: &mut Writer, registers: &[u16]) {
@@ -439,54 +453,50 @@ fn encode_instruction(
             selector,
             argument_registers,
             destination,
-            call_site,
+            ..
         } => {
             writer.write_u8(OPCODE_SEND_LEXICAL);
             writer.write_u16(*depth);
             writer.write_u32(symbols.intern(selector.as_str()));
             encode_registers(writer, argument_registers);
             writer.write_u16(*destination);
-            encode_call_site(writer, *call_site);
         }
         Instruction::SendPublic {
             selector,
             receiver_register,
             argument_registers,
             destination,
-            call_site,
+            ..
         } => {
             writer.write_u8(OPCODE_SEND_PUBLIC);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
             encode_registers(writer, argument_registers);
             writer.write_u16(*destination);
-            encode_call_site(writer, *call_site);
         }
         Instruction::SendInlinable {
             selector,
             receiver_register,
             argument_registers,
             destination,
-            call_site,
+            ..
         } => {
             writer.write_u8(OPCODE_SEND_INLINABLE);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
             encode_registers(writer, argument_registers);
             writer.write_u16(*destination);
-            encode_call_site(writer, *call_site);
         }
         Instruction::SendSuper {
             selector,
             argument_registers,
             destination,
-            call_site,
+            ..
         } => {
             writer.write_u8(OPCODE_SEND_SUPER);
             writer.write_u32(symbols.intern(selector.as_str()));
             encode_registers(writer, argument_registers);
             writer.write_u16(*destination);
-            encode_call_site(writer, *call_site);
         }
         Instruction::MakeClosure {
             destination,
@@ -969,14 +979,30 @@ fn encode_closure_record<'gc>(
 /// megamorphic.
 ///
 /// `builtin` is not written either -- a record only ever describes a user
-/// class, since a builtin is a class *tag* -- and neither is `metaclass`,
-/// a lazy cache `Mutator::metaclass_of` rebuilds on the first
-/// class-side send. A metaclass could not be written even if it were
-/// wanted: when a class declares no class side of its own but an ancestor
-/// does, `metaclass_of` applies a *synthetic* mixin that has no
-/// mixin-table row, so this function's own id lookup below refuses such a
-/// world -- the residual case where a snapshot is still an error rather
-/// than an image.
+/// class, since a builtin is a class *tag* -- and neither is `metaclass`, a
+/// lazy cache `Mutator::metaclass_of` rebuilds on the first class-side send.
+///
+/// A metaclass can still reach here as a record of its own, through the one
+/// reference that names one: a class-side activation's `current_class`,
+/// captured in a frame. Such a metaclass applies the declaring class's own
+/// class side (`newspeak-spec.pdf` §3.2; ns-next's own representation is
+/// `docs/design/object-model.md`, "Class sides and metaclasses"), which is
+/// part of the module's declaration tree like any other mixin, so the id
+/// lookup below finds it. The superclass written for it is `Object`'s class
+/// object, the link `metaclass_of` gives a metaclass; the *application* it
+/// is rebuilt with is flat all the same, because
+/// `decode::rebuild_applications` recognizes a record whose mixin is some
+/// row's class side and applies it with no superclass application. The other
+/// kind of metaclass mixin --
+/// the otherwise empty one `metaclass_of` synthesizes for a class that
+/// declares no class side, so that §6.3's factory entry has somewhere to
+/// live -- is in no `mixin::preorder` walk and has no id. It cannot reach
+/// here: its method table holds the factory and nothing else, a factory
+/// entry pushes no activation, and so no frame can ever name it as a
+/// `current_class`. Should some later reference to a metaclass make one
+/// reachable, this answers the ordinary "not part of the declaration tree"
+/// error rather than writing a wrong id -- a refusal to snapshot, not a
+/// corrupt image.
 fn encode_class_record<'gc>(
     writer: &mut Writer,
     data: &ClassData<'gc>,

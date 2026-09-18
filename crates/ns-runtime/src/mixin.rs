@@ -97,7 +97,7 @@ impl DispatchIds {
 #[derive(Debug, Clone)]
 pub struct MixinMethod {
     pub selector: Symbol,
-    /// §5.2 accessibility, already defaulted through
+    /// §6.3.1 accessibility, already defaulted through
     /// `dispatch::effective_access`. Read by every lookup, so it is stored
     /// rather than re-derived from `declaration`, which a decoded mixin has
     /// none of.
@@ -193,7 +193,7 @@ pub struct SlotAccessor {
 }
 
 /// A native method of a builtin class (`docs/design/dispatch.md`,
-/// "Primitives"): the primitive it runs and its §5.2
+/// "Primitives"): the primitive it runs and its §6.3.1
 /// accessibility. Found by the same lookups as a compiled method; it runs no
 /// code and pushes no activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,24 +202,43 @@ pub struct PrimitiveMethod {
     pub access: ast::AccessModifier,
 }
 
+/// The primary factory as a member of the metaclass mixin
+/// (`newspeak-spec.pdf` §6.3: "The class side, together with the primary
+/// factory method, defines the mixin for the metaclass"). It carries no
+/// body: what it does is instantiate the class object the send was addressed
+/// to, which `interpreter::resolve::act` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactoryMethod {
+    pub selector: Symbol,
+    /// The primary factory signature's parameter count (§6's unnumbered
+    /// introduction, before §6.1 begins), carried so that an entry answers
+    /// everything a lookup's caller can ask of a method without reaching
+    /// back to the declaration -- a decoded mixin has none.
+    pub argument_count: usize,
+    pub access: ast::AccessModifier,
+}
+
 /// One entry of a mixin's method table (§3.5): a compiled method, one of the
-/// accessors a slot declaration defines, or a builtin's primitive -- methods
-/// on the same footing, found by the same lookup and overridden the same way
+/// accessors a slot declaration defines, a builtin's primitive, or -- on a
+/// metaclass mixin, and only there -- the primary factory. Methods on the
+/// same footing, found by the same lookup and overridden the same way
 /// (`docs/design/dispatch.md`, "Slot accessors").
 #[derive(Debug, Clone)]
 pub enum MethodEntry {
     Compiled(Rc<MixinMethod>),
     SlotAccessor(SlotAccessor),
     Primitive(PrimitiveMethod),
+    Factory(FactoryMethod),
 }
 
 impl MethodEntry {
-    /// The entry's §5.2 accessibility, which every lookup reads.
+    /// The entry's §6.3.1 accessibility, which every lookup reads.
     pub fn access(&self) -> ast::AccessModifier {
         match self {
             MethodEntry::Compiled(method) => method.access,
             MethodEntry::SlotAccessor(accessor) => accessor.access,
             MethodEntry::Primitive(method) => method.access,
+            MethodEntry::Factory(factory) => factory.access,
         }
     }
 
@@ -227,9 +246,40 @@ impl MethodEntry {
     pub fn compiled(&self) -> Option<&Rc<MixinMethod>> {
         match self {
             MethodEntry::Compiled(method) => Some(method),
-            MethodEntry::SlotAccessor(_) | MethodEntry::Primitive(_) => None,
+            MethodEntry::SlotAccessor(_) | MethodEntry::Primitive(_) | MethodEntry::Factory(_) => {
+                None
+            }
         }
     }
+}
+
+/// The one entry a metaclass mixin holds beyond the class side's own
+/// members: §6.3's primary factory method, under the selector that
+/// instantiates the class -- "when a class object receives a message ...
+/// whose selector is the name of its primary factory method, the instance
+/// initializer is invoked" (§6.3) -- the declared factory pattern's, or
+/// `new` for a declaration that writes none and for a builtin, which
+/// declares none.
+///
+/// One definition, called from every place a metaclass mixin is assembled
+/// -- from a declared class side, for the empty one a class without a class
+/// side still needs, and on the way out of an image -- so that the three
+/// cannot disagree about which selector instantiates a class.
+///
+/// A factory is public, although §6.3.1 defaults an unmarked member to
+/// protected: a factory that could not be sent from outside would leave no
+/// class instantiable, and the specification's own examples send one across
+/// module boundaries.
+pub fn factory_entry(factory: Option<Factory>) -> (Symbol, MethodEntry) {
+    let selector = factory.map_or(Symbol::NEW, |factory| factory.selector);
+    (
+        selector,
+        MethodEntry::Factory(FactoryMethod {
+            selector,
+            argument_count: factory.map_or(0, |factory| factory.argument_count),
+            access: ast::AccessModifier::Public,
+        }),
+    )
 }
 
 /// The accessor entries `slots` define, in declaration order (§6.3.2): each
@@ -266,9 +316,11 @@ pub fn slot_accessors(slots: &[MixinSlot]) -> Vec<(Symbol, MethodEntry)> {
 }
 
 /// A mixin's primary factory message, reduced to the two things the run
-/// time asks of it: which selector instantiates it (`newspeak-spec.pdf`
-/// §6.1) and how many arguments that selector takes. `None` for a mixin
-/// with no factory of its own -- a builtin's, and a class side's.
+/// time asks of it: which selector instantiates it and how many arguments
+/// that selector takes -- the signature §6's unnumbered introduction, before
+/// §6.1 begins, allows right after the class name, defaulting to `new` when
+/// omitted. `None` for a mixin with no factory of its own -- a builtin's,
+/// and a class side's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Factory {
     pub selector: Symbol,
@@ -336,9 +388,9 @@ pub struct Mixin {
     pub declaration: Option<Rc<ast::ClassDeclaration>>,
     /// The instance initializer: this mixin's own slot initializers, then its
     /// own `initExpr`s. Every mixin built from source has one, a class side
-    /// included. `None` for a builtin's mixin and `metaclass_of`'s
-    /// placeholder, which run no code, and for a decoded row that names none
-    /// -- `image::decode::verify_mixins` refuses that when the mixin needs one.
+    /// included. `None` for a builtin's mixin, which runs no code, and for a
+    /// decoded row that names none -- `image::decode::verify_mixins` refuses
+    /// that when the mixin needs one.
     pub initializer_code: Option<Rc<CompiledCode>>,
     /// The superclass clause's receiver expression (§6.1's `ec`), which the
     /// nested-class accessor runs once per enclosing object. `None` when the
@@ -351,10 +403,9 @@ pub struct Mixin {
 
 impl Mixin {
     /// A mixin with a name and nothing else: the shape every synthesized
-    /// mixin starts from -- a builtin's, `metaclass_of`'s class-side
-    /// placeholder -- and the base the image decoder fills in field by
-    /// field. One definition, so adding a field to `Mixin` cannot silently
-    /// leave one of them holding a stale default.
+    /// mixin starts from -- a builtin's -- and the base the image decoder
+    /// fills in field by field. One definition, so adding a field to `Mixin`
+    /// cannot silently leave one of them holding a stale default.
     pub fn empty(name: Symbol) -> Mixin {
         Mixin {
             name,

@@ -1,0 +1,15 @@
+Newspeak3
+'Test'
+class ClassSideSuperReachesObject usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+	class Base = Object new () (
+	) : (
+	)
+	class Simple = Base new () (
+		public printString = ( ^'a simple' )
+	) : (
+		public build = ( ^super printString )
+	)
+	public main: platform args: args = (
+		transcript show: Simple build; newLine.
+	)
+) : ()

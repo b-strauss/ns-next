@@ -260,14 +260,52 @@ pub struct CompiledCode {
     pub source: Span,
 }
 
+/// The OR-pattern naming every instruction variant that carries a call
+/// site, parameterized on the binding name so it expands identically inside
+/// a `&self` match (binding a `&CallSite`) and a `&mut self` one (binding a
+/// `&mut CallSite`) -- Rust's default binding modes pick the right one from
+/// the match subject's own mutability. Declared once so `call_site` and
+/// `call_site_mut` cannot enumerate the four send variants differently from
+/// each other: before this existed, `image::decode`'s numbering pass
+/// hand-listed the same four variants a second time, independently of
+/// `call_site`'s list, and a fifth call-site-carrying variant added to one
+/// list and not the other would decode silently wrong -- `family_size_of`
+/// (which reads through `call_site`) would count its sends, but the
+/// numbering pass would never assign them a number, so two such sends could
+/// share a cache entry and run each other's targets at exit status 0.
+macro_rules! call_site_variants {
+    ($binding:ident) => {
+        Instruction::SendLexical {
+            call_site: $binding,
+            ..
+        } | Instruction::SendPublic {
+            call_site: $binding,
+            ..
+        } | Instruction::SendInlinable {
+            call_site: $binding,
+            ..
+        } | Instruction::SendSuper {
+            call_site: $binding,
+            ..
+        }
+    };
+}
+
 impl Instruction {
     /// A send's call site; `None` for every other instruction.
     pub fn call_site(&self) -> Option<CallSite> {
         match self {
-            Instruction::SendLexical { call_site, .. }
-            | Instruction::SendPublic { call_site, .. }
-            | Instruction::SendInlinable { call_site, .. }
-            | Instruction::SendSuper { call_site, .. } => Some(*call_site),
+            call_site_variants!(site) => Some(*site),
+            _ => None,
+        }
+    }
+
+    /// `call_site`'s mutable twin, for the one place that assigns a call
+    /// site rather than reads one (`image::decode::number_call_sites`).
+    /// Shares `call_site_variants!` with `call_site` above.
+    pub fn call_site_mut(&mut self) -> Option<&mut CallSite> {
+        match self {
+            call_site_variants!(site) => Some(site),
             _ => None,
         }
     }

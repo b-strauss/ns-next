@@ -69,7 +69,7 @@ pub struct ClassData<'gc> {
     /// this class's declaration -- `Lookup::NestedClass`'s `ClassReference`,
     /// the level `interpreter::nested` evaluated the declaration at. `None` for
     /// a class that no declaration encloses: the module's root class, and a
-    /// builtin. A metaclass copies the class it belongs to (§6.3.1 puts a class
+    /// builtin. A metaclass copies the class it belongs to (§6.3 puts a class
     /// side in the same declaration as its instance side), so a class-side
     /// `outer` walks the same chain.
     ///
@@ -87,21 +87,20 @@ pub struct ClassData<'gc> {
     pub superclass: Option<ClassReference<'gc>>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// core-library classes `builtins/` implements natively, for the image's
-    /// class tags and for `try_factory_send`, which instantiates `Array` and
+    /// class tags and for `decide_factory`, which instantiates `Array` and
     /// `OrderedCollection` with their own payload. Lookup does not read it:
     /// a builtin's primitives are entries of its mixin's method table.
     pub builtin: Option<BuiltinClass>,
-    /// The metaclass built from this class's mixin's `class_side`, created
-    /// on first use and cached here (`Mutator::metaclass_of`) so a
-    /// repeated class-side send does not rebuild it and so metaclass
-    /// identity stays stable (the inline caches will key on it).
-    /// Lives on `ClassData`, not as a slot on an *instance*: a class
-    /// object's own payload is `ObjectData::Class`, never `Instance`, so it
-    /// cannot share the nested-class hidden-slot mechanism (`nested_slot`),
-    /// which stores its cache in an instance's field vector. `None` for
-    /// every class object until its first class-side send, permanently for
-    /// one whose mixin declares no class side at all -- §6.3's "no
-    /// metaclass" case costs nothing.
+    /// The metaclass built from this class's mixin's `class_side` together
+    /// with its primary factory (§6.3), created on first use and cached here
+    /// (`Mutator::metaclass_of`) so a repeated class-side send does not
+    /// rebuild it and so metaclass identity stays stable (the inline caches
+    /// key on it). Lives on `ClassData`, not as a slot on an *instance*: a
+    /// class object's own payload is `ObjectData::Class`, never `Instance`,
+    /// so it cannot share the nested-class hidden-slot mechanism
+    /// (`nested_slot`), which stores its cache in an instance's field vector.
+    /// `None` for every class object until its first class-side send -- which
+    /// `X new` is, since the factory is one of the metaclass's members.
     pub metaclass: Option<ClassReference<'gc>>,
     /// A copy of `application.dispatch_ids.instances`, so that a cache's
     /// guard reads it from the class object without following the `Rc`

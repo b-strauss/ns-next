@@ -369,59 +369,6 @@ fn class_objects_and_instances_share_a_site() {
     );
 }
 
-const SUPER_FACTORY: &str = indoc! {"
-    Newspeak3
-    'T'
-    class Subject = Object new () (
-      class Base = Object new () () : ( public doesNotUnderstand: message = ( ^0 ) )
-      class Simple = Base new () ( public value = ( ^1 ) ) : ( public build = ( ^super new ) )
-      class Keyed with: seed = Simple new () ()
-      public simple = ( ^Simple )
-      public run: order = (
-        | sum |
-        sum := 0.
-        order do: [:each | | built |
-          built := each build.
-          sum := sum * 10 + ((built == 0) ifTrue: [0] ifFalse: [built value])].
-        ^sum
-      )
-      public simpleFirst = ( ^self run: {Simple. Keyed. Simple. Keyed} )
-      public keyedFirst = ( ^self run: {Keyed. Simple. Keyed. Simple} )
-    ) : ()
-"};
-
-/// The `super new` in `Simple`'s inherited class-side `build` misses and
-/// reaches the factory check on `self`: `Simple` instantiates, `Keyed`
-/// (factory `with:`) reaches the handler defined for S. Whichever the site
-/// records first, the other receiver must still get its own answer, under
-/// both lowerings.
-#[test]
-fn a_super_factory_entry_is_rechecked_against_self() {
-    for (entry, expected, first) in [
-        ("simpleFirst", 1010, CachedTargetKind::Factory),
-        ("keyedFirst", 101, CachedTargetKind::DoesNotUnderstand),
-    ] {
-        for lowering in [Lowering::Optimized, Lowering::Reference] {
-            let (mut interpreter, class) = load_with(SUPER_FACTORY, lowering);
-            let instance = instantiate(&mut interpreter, &class);
-            let answer = send(&mut interpreter, &instance, entry, &[]);
-            assert_eq!(
-                small_integer(&mut interpreter, &answer),
-                expected,
-                "{entry}"
-            );
-            if lowering == Lowering::Optimized {
-                let simple = send(&mut interpreter, &instance, "simple", &[]);
-                assert_eq!(
-                    states(&mut interpreter, &simple, MethodSide::Class, "build", "new"),
-                    vec![CallSiteState::Monomorphic(public(first.clone()))],
-                    "{entry}"
-                );
-            }
-        }
-    }
-}
-
 /// `doesNotUnderstand:` with a user handler and with a slot setter named
 /// `doesNotUnderstand` (§6.3.2) at one site: two entries.
 #[test]
@@ -492,6 +439,109 @@ fn a_second_site_fills_from_the_global_cache() {
     );
 }
 
+/// A `Lexical` entry's key covers N's application too
+/// (`docs/design/dispatch.md`, "3b -- The caches"), so it is right for any
+/// site under the same N: two distinct lexical sites in different methods of
+/// the same class, both sending the same implicit-receiver selector to an
+/// enclosing object of the same application, share one global entry rather
+/// than each filling its own. This does not by itself show the second site
+/// *read* that entry instead of resolving again and overwriting it -- both
+/// leave one entry behind, and `filled_global_entries` cannot tell them
+/// apart; `a_vacant_lexical_site_does_not_borrow_a_different_ns_entry` below
+/// is what actually depends on N being part of the `Lexical` rule's payload,
+/// since it goes red the moment that payload is dropped from the comparison.
+#[test]
+fn a_vacant_lexical_site_uses_the_global_cache() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          public helper = ( ^1 )
+          public first = ( ^helper )
+          public second = ( ^helper )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let first_instance = instantiate(&mut interpreter, &class);
+    let second_instance = instantiate(&mut interpreter, &class);
+    send(&mut interpreter, &first_instance, "first", &[]);
+    send(&mut interpreter, &second_instance, "second", &[]);
+    let statistics = interpreter.cache_statistics();
+    assert_eq!(
+        statistics.filled_global_entries, 1,
+        "both sites must share one global entry"
+    );
+}
+
+/// The behavioural pin N's place in the `Lexical` rule's payload exists for.
+/// `Derived` overrides `Base`'s private `helper` with a public one;
+/// `fromDerived` (N = `Derived`) fills the `Lexical` row under `(Derived`'s
+/// dispatch id, `#helper`, `Lexical(Derived`'s application))`. `fromBase`'s
+/// own site is then still vacant, and reaches the very same `o` -- the same
+/// `Derived` instance, so the same dispatch id -- under the same selector,
+/// but with N = `Base`, which declares `helper` private. Without N in the
+/// key, that still-vacant site would read `Derived`'s entry and answer with
+/// `Derived`'s public `helper` instead of running its own N's private one:
+/// §5.9's private rule silently skipped, wrong output, exit status 0. With
+/// N in the key the read misses (different `Lexical` payload), `fromBase`
+/// resolves independently and finds `Base`'s private `helper`, and the
+/// answer is `21`, not `22`.
+///
+/// I verified this test actually depends on N's payload by temporarily
+/// neutralizing it -- `GlobalCache::group` hashing every `Lexical(_)` as
+/// `Lexical(DispatchId::NONE)` and `GlobalEntry::holds` comparing rules the
+/// same stripped way, so two different N's hash to the same group and
+/// compare equal -- and confirming this test fails (`assertion failed: left
+/// == 22, right == 21`) while the rest of the workspace suite, including
+/// `a_vacant_lexical_site_uses_the_global_cache` above, stays green; then
+/// restored the real implementation and confirmed this test passes again.
+#[test]
+fn a_vacant_lexical_site_does_not_borrow_a_different_ns_entry() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Base = Object new () (
+            private helper = ( ^1 )
+            public fromBase = ( ^helper )
+          )
+          class Derived = Base new () (
+            public helper = ( ^2 )
+            public fromDerived = ( ^helper )
+          )
+          public baseClass = ( ^Base )
+          public run = (
+            | derived |
+            derived := Derived new.
+            ^(derived fromDerived) * 10 + (derived fromBase)
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(
+        small_integer(&mut interpreter, &answer),
+        21,
+        "fromBase must run Base's own private helper, not Derived's public override"
+    );
+    let base_class = send(&mut interpreter, &instance, "baseClass", &[]);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &base_class,
+            MethodSide::Instance,
+            "fromBase",
+            "helper"
+        ),
+        vec![CallSiteState::Monomorphic(CachedTarget {
+            kind: CachedTargetKind::Method(Symbol::intern("helper")),
+            private: true,
+        })],
+        "fromBase's site must have decided itself a private site"
+    );
+}
+
 /// An invalidation vacates every site, every polymorphic block and the
 /// global cache, and keeps every family's range, since running activations
 /// keep their bases; the next run fills the sites again and answers the same
@@ -540,12 +590,12 @@ fn an_invalidation_vacates_every_site_and_keeps_the_ranges() {
     );
 }
 
-/// A global cache of one or two entries, where inserts evict each other,
-/// answers what a full one answers: the megamorphic `value` site resolves
-/// through it on every send.
+/// A global cache of one or two groups, where every insert contends for the
+/// same two-slot group, answers what a full one answers: the megamorphic
+/// `value` site resolves through it on every send.
 #[test]
 fn a_tiny_global_cache_answers_like_a_full_one() {
-    for entries in [1, 2] {
+    for entries in [2, 4] {
         let (mut interpreter, class) = load(FIVE_KINDS);
         interpreter.set_global_cache_size(entries);
         let instance = instantiate(&mut interpreter, &class);
@@ -624,4 +674,96 @@ fn a_failing_primitive_keeps_its_entry() {
         ),
         vec![primitive.clone(), primitive]
     );
+}
+
+const TWO_FACTORIES: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Subject = Object new () (
+      class Alpha = Object new () ( public describe = ( ^1 ) )
+      class Beta with: seed = Object new () ( public describe = ( ^2 ) )
+      public makeAll: order = (
+        | sum |
+        sum := 0.
+        order do: [:each | sum := sum * 10 + each new describe].
+        ^sum
+      )
+      public alphaThenBeta = ( ^self makeAll: {Alpha. Beta} )
+    ) : ()
+"};
+
+/// A `Factory` entry records the chain and nothing else, because
+/// `newspeak-spec.pdf` §6.3 instantiates the *receiver*; a hit reads the
+/// class out of the send's key rather than out of the entry.
+///
+/// The case that says so is **one guard, two receivers**, which two
+/// declarations could never give: a nested class has one class object per
+/// enclosing instance (§6) and they all share one application, so the second
+/// and third sends here are monomorphic *hits* on the entry the first filled.
+/// Each `Item`'s `describe` reads its own enclosing `Holder`'s slot, so the
+/// answer is 121 when each hit instantiates the class object it was sent to
+/// and 111 if a hit ever handed back the class object the entry was recorded
+/// for. The site stays monomorphic, which is what proves the two later sends
+/// were hits and not misses that re-ran the lookup.
+#[test]
+fn a_cached_factory_instantiates_the_receiver_it_is_sent_to() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Holder seed: value = Object new (| seed = value. |) (
+            class Item = Object new () ( public describe = ( ^seed ) )
+            public item = ( ^Item )
+          )
+          public run = (
+            | first second sum |
+            first := Holder seed: 1.
+            second := Holder seed: 2.
+            sum := 0.
+            {first item. second item. first item}
+              do: [:each | sum := sum * 10 + each new describe].
+            ^sum
+          )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load_with(source, lowering);
+        let instance = instantiate(&mut interpreter, &class);
+        let answer = send(&mut interpreter, &instance, "run", &[]);
+        assert_eq!(
+            small_integer(&mut interpreter, &answer),
+            121,
+            "{lowering:?}"
+        );
+        if lowering == Lowering::Optimized {
+            assert_eq!(
+                states(&mut interpreter, &class, MethodSide::Instance, "run", "new"),
+                vec![CallSiteState::Monomorphic(public(
+                    CachedTargetKind::Factory
+                ))]
+            );
+        }
+    }
+}
+
+/// The guard is the receiver's class-side dispatch id, so a `Factory` entry
+/// recorded for a class whose factory selector is `new` cannot answer for
+/// `Beta`, whose factory is `with:`. §3.2's flat metaclass is what makes the
+/// entry safe without a re-check: `new` is not a member of `Beta`'s
+/// metaclass, and no class side is inherited for it to come from.
+#[test]
+fn a_cached_factory_does_not_answer_a_class_with_another_factory_selector() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load_with(TWO_FACTORIES, lowering);
+        let instance = instantiate(&mut interpreter, &class);
+        match interpreter.send(&instance, Symbol::intern("alphaThenBeta"), &[]) {
+            Err(HostSignal::Error(error)) => assert_eq!(error.selector, Symbol::NEW),
+            Ok(value) => {
+                let got =
+                    interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+                panic!("expected doesNotUnderstand: new, got Ok({got})")
+            }
+            Err(HostSignal::Return) => panic!("expected doesNotUnderstand: new, got a return"),
+        }
+    }
 }

@@ -1865,6 +1865,194 @@ modes: about 3 min 9 s under `NS_NEXT_STRESS_MOVES=1` and about 1 min 5 s
 under `NS_NEXT_STRESS_CACHES=1`, which invalidates at every safepoint but
 moves nothing.
 
+### What the step before 3c moved
+
+The five refinements the user decided after 3b ([dispatch.md](dispatch.md),
+"Decisions", "Decided by the user … built before 3c") landed together, and
+were measured together and one at a time, on 2026-09-18, against the commit
+the step starts from (`f99a29f`) and against `be3eb40`. The protocol is the
+one above: every binary, the current tree included, built with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
+the earlier commits in throwaway worktrees; no binary imports
+`VCRUNTIME140.dll`; every binary checked to print the expected answer for
+every source first; `ns-next bench <source> --iterations 30`, five rounds,
+the order of the six binaries rotating from round to round; two whole
+sittings, nothing else running. An eighth source joins the seven:
+`tests-fixtures/bench_megamorphic.ns`, added with the least-recently-used
+groups, whose `value` site sees five receiver classes in turn and is the only
+source that drives a megamorphic site — 50,000 iterations, the count the
+other fixtures use.
+
+**The step is 2.1–4.1% faster on the three instantiation sources and
+0.2–3.6% slower on the other five.** Change of the mean against `f99a29f`,
+sitting 1 / sitting 2, with the protocol's gate:
+
+| Source | `f99a29f`, rounds 1–5 | mean | after, rounds 1–5 | mean | change | gate |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 9.91, 9.99, 9.93, 10.05, 9.89 | 9.955 | 10.13, 10.28, 10.29, 10.58, 10.30 | 10.317 | **+3.64% / +0.79%** | entirely above in both |
+| `bench_send.ns` | 11.12, 11.01, 11.10, 11.06, 11.16 | 11.090 | 11.22, 11.25, 11.27, 11.28, 11.64 | 11.334 | **+2.20% / +2.37%** | entirely above in both |
+| `bench_block.ns` | 19.19, 19.22, 19.43, 19.53, 19.44 | 19.362 | 19.44, 20.16, 19.48, 19.41, 19.83 | 19.664 | +1.56% / +1.61% | entirely above in the second |
+| `bench_do.ns` | 6.89, 6.92, 6.84, 6.85, 6.81 | 6.862 | 6.88, 6.92, 7.25, 6.89, 6.92 | 6.973 | +1.62% / +0.19% | overlapping in both |
+| `bench_new.ns` | 6.27, 6.25, 6.26, 6.25, 6.23 | 6.252 | 6.17, 6.19, 6.03, 6.03, 6.08 | 6.097 | **−2.49% / −2.05%** | entirely below in both |
+| `bench_new2.ns` | 7.23, 7.16, 7.35, 7.24, 7.17 | 7.229 | 7.11, 7.04, 7.00, 7.18, 6.97 | 7.062 | **−2.31% / −2.40%** | entirely below in the second |
+| `bench_newarg.ns` | 9.12, 9.26, 9.18, 9.22, 9.17 | 9.190 | 8.94, 8.85, 8.84, 8.93, 9.10 | 8.932 | **−2.81% / −4.10%** | entirely below in both |
+| `bench_megamorphic.ns` | 16.51, 16.15, 16.19, 16.18, 16.25 | 16.254 | 16.37, 16.80, 16.82, 16.39, 16.77 | 16.628 | +2.30% / +1.78% | overlapping in both |
+
+**Every source stays well below `be3eb40`**, the comparison carried through
+every measurement up to step 3: `bench_loop.ns` −6.7% / −8.5%,
+`bench_send.ns` −18.2% / −17.6%, `bench_block.ns` −15.4% / −16.1%,
+`bench_do.ns` −13.0% / −14.0%, `bench_new.ns` −17.6% / −17.3%,
+`bench_new2.ns` −15.5% / −15.1%, `bench_newarg.ns` −15.2% / −15.2%,
+`bench_megamorphic.ns` −7.1% / −7.8%, every group entirely below in both
+sittings.
+
+**`vm::run`'s step is still inline.** `dumpbin /disasm` on a release build
+with debug information, on all five binaries — the base, the three
+intermediate checkpoints and the head — finds no `vm::run::closure` function
+in any of them: `vm::run` is one function of 4,910 instructions at
+`f99a29f`, then 4,860, 4,878, 4,878 and 4,926. It gained 16 instructions
+across the whole step and never approached the cliff that splitting
+`resolve` from `act` hit ("A standing hazard" in
+[dispatch.md](dispatch.md)).
+
+Each change was measured against its parent in the same two sittings, which
+is what attributes the movement. Means in ms, sitting 1 / sitting 2:
+
+| Source | `be3eb40` | `f99a29f` | after 1–3 | after 4 | after 5 | after 6 |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.060 / 11.123 | 9.955 / 10.093 | 9.972 / 9.973 | 10.181 / 10.304 | 10.201 / 10.176 | 10.317 / 10.173 |
+| `bench_send.ns` | 13.855 / 13.753 | 11.090 / 11.072 | 11.164 / 11.062 | 11.415 / 11.358 | 11.301 / 11.363 | 11.334 / 11.334 |
+| `bench_block.ns` | 23.247 / 23.356 | 19.362 / 19.297 | 19.440 / 19.399 | 19.492 / 19.570 | 19.678 / 19.564 | 19.664 / 19.607 |
+| `bench_do.ns` | 8.013 / 8.012 | 6.862 / 6.879 | 7.053 / 7.107 | 7.174 / 7.126 | 7.140 / 7.153 | 6.973 / 6.893 |
+| `bench_new.ns` | 7.400 / 7.375 | 6.252 / 6.228 | 6.001 / 6.022 | 6.007 / 6.059 | 6.042 / 6.026 | 6.097 / 6.100 |
+| `bench_new2.ns` | 8.354 / 8.311 | 7.229 / 7.230 | 6.984 / 6.955 | 7.073 / 7.032 | 7.031 / 6.991 | 7.062 / 7.056 |
+| `bench_newarg.ns` | 10.526 / 10.510 | 9.190 / 9.297 | 8.873 / 8.872 | 8.954 / 8.935 | 8.881 / 8.897 | 8.932 / 8.915 |
+| `bench_megamorphic.ns` | 17.897 / 17.891 | 16.254 / 16.209 | 16.196 / 16.248 | 16.441 / 16.395 | 16.438 / 16.431 | 16.628 / 16.498 |
+
+- **Flat metaclasses, the primary factory as an entry of the metaclass
+  mixin's method table, and the resolver's class-side name check** (`a466c5d`,
+  against `f99a29f`). **Instantiation is 3.3–4.6% faster**: `bench_new.ns`
+  −4.02% / −3.31%, `bench_new2.ns` −3.40% / −3.80%, `bench_newarg.ns`
+  −3.45% / −4.57%, all three entirely below in both sittings. `X new` is now
+  an ordinary cached send of an entry found by the ordinary lookup, where it
+  was a special case tested ahead of every lookup. Of the five sources that
+  instantiate nothing in their loop, four are level — `bench_loop.ns`,
+  `bench_send.ns`, `bench_block.ns` and `bench_megamorphic.ns`, −1.19% to
+  +0.67%, one group entirely below. The fifth, `bench_do.ns`, is **2.78% /
+  3.31% slower, entirely above in both sittings**, which nothing on its path
+  explains: it neither instantiates nor sends to a class object in its loop.
+  It is the uniform shift on unchanged executed code that this repository has
+  recorded three times ("What 2c moved" and the two findings in "What
+  removing the re-entries moved", both above), and the function-alignment
+  pin, which removes a 64-byte phase shift, does not remove it.
+- **The lexical global-cache key** (`da8beed`, against `a466c5d`). **This is
+  the change that costs the send benchmarks**: `bench_loop.ns` +2.10% /
+  +3.32% and `bench_send.ns` +2.25% / +2.68%, each entirely above in the
+  second sitting; `bench_megamorphic.ns` +1.51% / +0.91%, entirely above in
+  the second; the other five overlapping, +0.10% to +1.71%, none below. A
+  control binary bisected it into its two halves; see "Which half of the
+  lexical key costs the send benchmarks" below.
+- **Call-site numbers off the wire** (`c9097d1`, against `da8beed`). Nothing
+  beyond noise anywhere, −1.24% to +0.95%, every group overlapping except
+  `bench_loop.ns` entirely below in the second sitting and `bench_newarg.ns`
+  entirely below in the first. That is the expected answer: the change is in
+  the encoder, the decoder and the opcode table, and a run from source
+  touches none of it. The step's instruction count did not change at all,
+  4,878 before and after.
+- **The least-recently-used groups** (`393311f`, against `c9097d1`). Nothing
+  beyond noise either, −0.25% to +1.23% on seven sources, every group
+  overlapping; `bench_do.ns` is −2.34% / −3.65%, entirely below in the second
+  sitting, which nothing on its path explains and which gives back most of
+  what the flat-metaclass and factory change cost it. On
+  `bench_megamorphic.ns`, the source added for this comparison, +1.16% /
+  +0.41%, overlapping in both.
+
+  **What that source can and cannot settle.** Its megamorphic site sends
+  every hit to the global cache, so it measures the *probe*: one hash and one
+  cache line, against 3b's two hashes at two independent places in the table.
+  It cannot measure the *replacement* rule. `--cache-statistics` after a run
+  reports 29 sites, 26 filled, one megamorphic, and 27 of 1024 global slots
+  used, five of them the megamorphic site's own. With 27 keys over 512
+  groups the expected number of collisions is under one, and a group would
+  have to hold three keys before anything is evicted at all, so on the hot
+  path every read almost certainly answers at the first slot and the
+  replacement rule almost certainly never runs. Deciding least-recently-used
+  against 3b's insert on numbers needs cache pressure — many more hot keys
+  than any fixture has, or
+  a debug build's small `NS_NEXT_GLOBAL_CACHE_ENTRIES` — and no measurement
+  has supplied it, so the rule stands on Strongtalk's precedent
+  ([dispatch.md](dispatch.md), "The global cache").
+
+**What the caches hold** (`--cache-statistics`, the release build of the
+step's head). Unchanged from 3b on the seven sources — 12–16 sites, 9–13
+global entries, no site polymorphic or megamorphic — and, for the eighth:
+
+| Source | Sites (filled) | Polymorphic blocks | Megamorphic sites | Global entries filled |
+|---|---|---|---|---|
+| `bench_megamorphic.ns` | 29 (26) | 0 of 1 allocated | 1 | 27 of 1024 |
+
+The one block was allocated when the site went polymorphic and given back
+when it went megamorphic, which is why the table holds one and uses none.
+
+#### Which half of the lexical key costs the send benchmarks
+
+The lexical key's commit does two separable things. **The key's shape**: the
+global key gains a fourth component, N's application, so `GlobalEntry` and
+`SendKey` each carry a `DispatchId` more, `probes`, `holds`, `get` and
+`insert` each take an argument more, and `cached` and `miss` take a
+`lexical_of` closure that answers it — all of which `vm::run`'s step inlines.
+**The two probes**: `send_lexical_first` reads two global-cache rows before
+it resolves, which is what the wider key makes safe, and which is the point
+of the change.
+
+A control binary separates them: the commit with the two probes cut out of
+`send_lexical_first` and everything else kept. `send_lexical_first` is
+`#[inline(never)]`, so the cut cannot touch the step — and does not:
+`vm::run` is 4,878 instructions in the control and in the commit, and the two
+functions' instruction streams are identical once relocated addresses are
+normalized, against 4,860 in the parent. Anything the control measures
+against the commit is therefore the probes and code placement; anything it
+measures against the parent is the 18 instructions the step gained. Two
+sittings, all three binaries in each, the same protocol.
+
+| Source | control vs parent (the key's shape) | commit vs control (the two probes) | commit vs parent (both) |
+|---|---|---|---|
+| `bench_loop.ns` | **+1.89% / +1.48%**, above in the second | −0.07% / +0.04%, overlapping in both | +1.82% / +1.52% |
+| `bench_send.ns` | **+2.25% / +1.66%**, above in both | +0.41% / +0.57%, overlapping in both | +2.67% / +2.23% |
+| `bench_block.ns` | +0.10% / +0.21%, overlapping | +1.23% / +0.49%, overlapping in both | +1.33% / +0.70% |
+| `bench_do.ns` | −2.18% / +0.34% | +3.45% above / +1.45% overlapping | +1.20% / +1.80% |
+| `bench_new.ns` | +1.31% / +0.39%, overlapping | +0.47% / +1.38%, overlapping in both | +1.78% / +1.77% |
+| `bench_new2.ns` | +0.34% / +0.44%, overlapping | −0.08% / −0.30%, overlapping in both | +0.26% / +0.13% |
+| `bench_newarg.ns` | +0.46% / −0.00%, overlapping | +0.24% / +0.46%, overlapping in both | +0.70% / +0.45% |
+| `bench_megamorphic.ns` | **+1.00% / +1.54%**, above in both | +0.52% / −0.38%, overlapping in both | +1.52% / +1.16% |
+
+**The key's shape carries the cost; the probes carry none of it.** The
+control alone reproduces the whole of `bench_loop.ns`'s loss and most of
+`bench_send.ns`'s and `bench_megamorphic.ns`'s, and adding the probes on top
+of it moves no source beyond the noise. That confirms by measurement what the
+site counts only argued: the probes run once per still-vacant lexical site,
+and no source fills more than sixteen sites in a 50,000-iteration run.
+
+So the mechanism is the widened key inside the inlined step, not work
+executed per send — the step's 18 extra instructions, on a path every send
+runs. It is not entry size: `GlobalEntry` is 32 bytes and `CacheEntry` 24 at
+the parent, at the control and at the commit alike, the fourth component
+having fitted in padding the struct already had. Two limits worth stating.
+The control also deletes a cold function, `global_hit`, which no longer has a
+caller, so code placement differs between the control and the commit as well
+as the probes; the conclusion rests on that pair measuring *null*, which a
+placement effect could in principle have cancelled, and on the parent
+comparison measuring positive where the step demonstrably differs. And
+"the widened key" is still four things at once — the wider entry, the wider
+key, the extra arguments and the extra closure parameter — which no further
+binary separates.
+
+The step's head no longer has the fourth component as a separate field: the
+least-recently-used groups folded it into the rule as
+`CacheRule::Lexical(DispatchId)` and gave `GlobalEntry` its field back, at no
+measured cost either way. What the control measured is the cost of the key
+knowing N at all, in whichever of the two shapes it is carried.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -2159,9 +2347,10 @@ when these paths ran in nested runs of the loop.
   not held to that: `new` then answers whatever that code answers, which is
   wrong but safe — no panic, the image's own program running. An instantiation
   with no code at all answers the instance as a `Step::Value`.
-  `try_factory_send` makes a factory send an ordinary decision,
-  `decide_instantiation`; `Interpreter::instantiate` is the host entry, shaped
-  like `send`.
+  A factory send is an ordinary decision: the lookup finds the metaclass
+  mixin's `MethodEntry::Factory` and `act` runs `decide_factory`, which
+  reaches `decide_instantiation` ([dispatch.md](dispatch.md), "Resolve, then
+  act"). `Interpreter::instantiate` is the host entry, shaped like `send`.
 
   The state is always boxed, and the box is reused: the walk runs in a box
   taken from the interpreter's spares (`walk_state`), and when the walk ends —

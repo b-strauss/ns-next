@@ -82,8 +82,8 @@ references declare exactly these three in their kernel source
 them twice, and the reflection work right after this step cannot start without
 them — a mirror's test for a metaclass is `Metaclass = classOf: reflectee`,
 which needs the instance-of relation reified. The flat metaclass hierarchy that
-§3.2 also requires does *not* wait for this step: it is corrected before 3c,
-because the primary factory's special cases depend on it
+§3.2 also requires did *not* wait for this step: it was corrected ahead of 3c,
+because the primary factory's special cases depended on it
 ([object-model.md](object-model.md), "Class sides and metaclasses").
 
 What is decided is *where a builtin may live*, and it is a constraint on future

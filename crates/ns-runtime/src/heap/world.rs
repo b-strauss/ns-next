@@ -28,7 +28,7 @@ impl World {
                 builtin_classes: Vec::new(),
                 platform_singleton: None,
                 applications: IdentityMap::default(),
-                empty_class_sides: IdentityMap::default(),
+                metaclass_mixins: IdentityMap::default(),
                 #[cfg(debug_assertions)]
                 creations_in_progress: 0,
                 spare_walks: Vec::new(),

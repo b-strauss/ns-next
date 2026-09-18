@@ -222,7 +222,7 @@ pub(crate) fn after_clause<'gc>(
 /// know the declaration (an internal inconsistency) or because its payload
 /// is not an `Instance` at all, which a user class inheriting a builtin's
 /// representation (`OrderedCollection`, `Array`) really is:
-/// `try_factory_send` gives those an `ObjectData::Array` payload with no
+/// `decide_factory` gives those an `ObjectData::Array` payload with no
 /// fields to cache into. Handing back the handle, not just the index,
 /// means every caller downstream already holds proof that `receiver` is an
 /// object instead of re-deriving it from `receiver` a second time --

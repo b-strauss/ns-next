@@ -314,8 +314,10 @@ Each `CompiledCode` records its `family_size`, one past the highest number
 among its own sends and its nested blocks' sizes, 0 when there is none
 (`bytecode::family_size_of`). A block is finished before the root that
 contains it, so a block's size is its own subtree's, and the root's is the
-family's. The decoder derives the size with the same function, never reads
-it, and refuses a family whose numbers are not dense
+family's. Neither the number nor the size is on the wire: the decoder
+assigns every family's numbers itself, in this same emission order, once the
+whole code table is read, and derives the size from them with the same
+function, so a family is dense by construction rather than checked for it
 ([image-format.md](image-format.md), "Verification").
 
 The number indexes the running heap's cache table from the activation's

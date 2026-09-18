@@ -47,7 +47,7 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
 
 /// Builds a bare `OrderedCollection` instance directly: an
 /// `ObjectData::Array` payload tagged with the `OrderedCollection` class,
-/// the shape `try_factory_send` gives `OrderedCollection new`. Constructing
+/// the shape `decide_factory` gives `OrderedCollection new`. Constructing
 /// it without a send is sufficient to exercise `collections::execute`.
 fn new_ordered_collection(interpreter: &mut Interpreter) -> Root {
     interpreter.enter(|mutator| {

@@ -34,7 +34,7 @@ that cannot name its code is describing an intention, and should say so.
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
-| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) and per-heap caches with a global cache behind them (3b) | the dispatch id's place (3c) |
+| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a), per-heap caches with a global cache behind them (3b), and the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups | the dispatch id's place (3c) |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family | — |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, and its sends go through the inline caches | closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots, the stress mode and the lifetime brand are built; nothing reclaims an arena slot | a collector |
@@ -144,20 +144,30 @@ the re-entries moved", the protocol).
 
 ## Deviations from the language specification
 
-Places where the implementation deliberately differs from
+Places where the implementation differs from
 `docs/references/newspeak-spec.pdf`. Recorded so a deviation is a decision
-rather than an oversight.
+rather than an oversight -- and, for the last row, so that a defect nobody has
+had time to fix is at least not a surprise.
+
+Most rows only under-reject or narrow what can be expressed. Four do worse:
+the dropped local-slot initializer, the sequential simultaneous slot clauses,
+the synchronous asynchronous send and the name-keyed member set each answer a
+**correct** program **wrongly, at exit status 0**. Read those four before
+trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
 | No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the bootstrap `Object` placeholder; scheduled for step 6, the core library in Newspeak | §3.2 | [object-model.md](object-model.md) |
-| A class side is inherited: a metaclass is applied to the superclass's metaclass, Smalltalk-style, rather than to `Class`, so a subclass answers class-side messages its own class side never declared; to be fixed before 3c | §3.2, §6 | [dispatch.md](dispatch.md), "Decisions" |
 | No formal "value object" notion, because there are no actors to need it | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
-| The primary factory is a special case ahead of lookup, not an entry of the metaclass mixin's method table; to be fixed before 3c, with the metaclasses above | §6.3 | [dispatch.md](dispatch.md), "Decisions" |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
+| A local slot's initializer is dropped: `\| x = expression. \|` in a method or block body declares the slot but leaves it **nil** | §3.6, §6.3.2 | [frontend.md](frontend.md) |
+| Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
+| Mixin application `Base <: Trait` does not parse | §6.2 | [frontend.md](frontend.md) |
+| An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
+| A §5.7 member set is keyed by a class's simple name, so two same-named classes in one module share one set. A defect, not a decision: it answers wrongly at exit status 0 | §5.7 | [dispatch.md](dispatch.md) |
 
 ## What lives elsewhere
 
