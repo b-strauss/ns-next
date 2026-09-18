@@ -667,9 +667,11 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         data: ObjectData<'gc>,
     ) -> ObjectReference<'gc> {
+        let dispatch_id = self.header_dispatch_id(class, &data);
         self.push_object(Object {
             class,
             identity_hash: 0,
+            dispatch_id,
             data,
         })
     }
@@ -689,9 +691,18 @@ impl<'gc> Heap<'gc> {
     ) -> ObjectReference<'gc> {
         let index = self.next_object_index();
         let handle = self.object_handle(index);
+        // Its own class is itself, not yet in the arena to read, so the id
+        // comes from `data` alone: its own class-side id when `data` is a
+        // class, `NONE` otherwise -- an object whose own class is not a class
+        // object could never be a class object either.
+        let dispatch_id = match &data {
+            ObjectData::Class(own) => own.dispatch_id.class_side(),
+            _ => DispatchId::NONE,
+        };
         self.objects.push(Object {
             class: handle,
             identity_hash: 0,
+            dispatch_id,
             data,
         });
         handle
@@ -1217,7 +1228,9 @@ impl<'gc> Heap<'gc> {
     /// object already reachable from `roots` -- and it silently replaces
     /// that object's already-verified invariants with unverified ones: no
     /// error, and no way for verification to notice, because verification
-    /// has already finished.
+    /// has already finished. The object it installs answers `NONE` from
+    /// `dispatch_id` until `stamp_dispatch_ids` runs -- `filled`'s class may
+    /// itself be a still-placeholder record with no application yet.
     pub fn replace_object(&mut self, object: ObjectReference<'gc>, filled: Object<'gc>) {
         self.check_object_origin(object);
         self.objects[object.index as usize] = filled;
@@ -1385,11 +1398,25 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// The id `dispatch_id` answers for an object of `class` holding `data`:
+    /// a class object's own class-side id, an instance's class's instances
+    /// id, `NONE` when the class is not a class object -- only a crafted
+    /// image makes an instance of one.
+    fn header_dispatch_id(&self, class: ClassReference<'gc>, data: &ObjectData<'gc>) -> DispatchId {
+        if let ObjectData::Class(own) = data {
+            return own.dispatch_id.class_side();
+        }
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(class_data) => class_data.dispatch_id,
+            _ => DispatchId::NONE,
+        }
+    }
+
     /// The dispatch id an inline cache guards `value`'s send on
-    /// (`docs/design/dispatch.md`, "The dispatch id"): an instance's class's
-    /// instance id -- two arena loads -- a class object's own class-side id,
-    /// and an immediate's from a table. Nothing outside this function knows
-    /// where the id lives, which is what lets step 3c move it.
+    /// (`docs/design/dispatch.md`, "The dispatch id"): an object's is in its
+    /// header -- one arena load -- and an immediate's in a table. Nothing
+    /// outside this function knows where the id lives.
     #[inline(always)]
     pub fn dispatch_id(&self, value: &Value<'gc>) -> DispatchId {
         let Value::Object(object) = value else {
@@ -1397,14 +1424,13 @@ impl<'gc> Heap<'gc> {
         };
         self.check_object_origin(*object);
         let entry = &self.objects[object.index as usize];
-        if let ObjectData::Class(data) = &entry.data {
-            return data.dispatch_id.class_side();
-        }
-        self.check_object_origin(entry.class);
-        match &self.objects[entry.class.index as usize].data {
-            ObjectData::Class(data) => data.dispatch_id,
-            _ => DispatchId::NONE,
-        }
+        debug_assert_eq!(
+            entry.dispatch_id,
+            self.header_dispatch_id(entry.class, &entry.data),
+            "an object's dispatch id went stale: something changed its class's \
+             application without restamping it"
+        );
+        entry.dispatch_id
     }
 
     /// `class`'s ids, or `NONE` when it is not a class object: the key of a
@@ -1470,26 +1496,67 @@ impl<'gc> Heap<'gc> {
         false
     }
 
-    /// Answers whether the write happened, mirroring `array_set` and
-    /// `set_instance_field`. `image::decode::rebuild_applications` is the
-    /// only caller in the runtime, and it only ever calls this on an object
-    /// it filled in as a class record two lines above -- a wrong-shape
-    /// `class` here would be a decoder bug, not an untrusted-input case, so
-    /// that caller turns a `false` into an `unreachable!` rather than a
-    /// `DecodeError`. Tests also call it, to swap a doctored mixin onto a
-    /// live class (`install_mixin` in `tests/image.rs`).
+    /// Gives `class` a new application and moves every live object of that
+    /// class to its ids -- a walk of the arena, which is why the decoder,
+    /// which installs one application per class record, calls
+    /// `install_class_application` instead and stamps once afterwards
+    /// (`stamp_dispatch_ids`). Answers whether the write happened, mirroring
+    /// `array_set` and `set_instance_field`. The decoder calls
+    /// `install_class_application`, not this; this one's callers are all
+    /// tests, editing an already-live class (`install_mixin` in
+    /// `tests/image.rs`, `tests/instantiate.rs`, `ns-cli`'s
+    /// `disasm_snapshots.rs`) -- a wrong-shape `class` there is a test bug,
+    /// not an untrusted-input case.
     pub fn set_class_application(
         &mut self,
         class: ClassReference<'gc>,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
+        if !self.install_class_application(class, application) {
+            return false;
+        }
+        for index in 0..self.objects.len() {
+            let entry_class = self.objects[index].class;
+            if entry_class.index == class.index {
+                let dispatch_id = self.header_dispatch_id(entry_class, &self.objects[index].data);
+                self.objects[index].dispatch_id = dispatch_id;
+            }
+        }
+        true
+    }
+
+    /// `set_class_application` without the walk: `class`'s own header is
+    /// restamped, its instances' are not. The decoder's
+    /// `rebuild_applications` uses this to install one application per
+    /// decoded class record -- walking the arena on every one of those would
+    /// be quadratic in a count the image controls -- and stamps every
+    /// decoded object once afterwards, with `stamp_dispatch_ids`.
+    pub(crate) fn install_class_application(
+        &mut self,
+        class: ClassReference<'gc>,
+        application: std::rc::Rc<crate::mixin::MixinApplication>,
+    ) -> bool {
         self.check_object_origin(class);
-        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
+        let entry = &mut self.objects[class.index as usize];
+        if let ObjectData::Class(data) = &mut entry.data {
             data.dispatch_id = application.dispatch_ids.instances;
             data.application = application;
+            entry.dispatch_id = data.dispatch_id.class_side();
             return true;
         }
         false
+    }
+
+    /// Stamps each of `objects` with the id its class now answers. The
+    /// decoder's one pass, after `rebuild_applications` has given every
+    /// decoded class its application.
+    pub(crate) fn stamp_dispatch_ids(&mut self, objects: &[ObjectReference<'gc>]) {
+        for object in objects {
+            self.check_object_origin(*object);
+            let entry = &self.objects[object.index as usize];
+            let dispatch_id = self.header_dispatch_id(entry.class, &entry.data);
+            self.objects[object.index as usize].dispatch_id = dispatch_id;
+        }
     }
 
     // ---------- Frame accessors ----------
@@ -2951,17 +3018,17 @@ mod tests {
         });
     }
 
-    /// `CLAUDE.md`'s "An image is untrusted input" paragraph pins the
-    /// decoder's placeholder-arena amplification at "about 16.9x in a
-    /// release build (an `Object` is 56 bytes against a 6-byte minimum
-    /// record...)". That figure holds only while `Object` itself stays 56
-    /// bytes; `ClassData` stores just the one 4-byte `dispatch_id`, deriving
-    /// the class-side id instead of also storing it (`DispatchId::class_side`),
-    /// which is what keeps `ObjectData::Class` from growing past `Object`'s
-    /// other variants and widening the struct.
+    /// `CLAUDE.md`'s "An image is untrusted input" paragraph and
+    /// `docs/design/memory.md` pin the decoder's placeholder-arena
+    /// amplification against this size. With the dispatch id copied into the
+    /// header (`docs/design/dispatch.md`, "3c"), `Object` grows from 56 to 64
+    /// bytes in a release build; Task 4 remeasures the figure and updates
+    /// both documents for whichever header-shape variant is chosen. This
+    /// test only pins the size that measurement assumes, so a future change
+    /// here is a deliberate, documented one rather than a silent drift.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
-    fn an_object_stays_the_size_the_amplification_figure_assumes() {
-        assert_eq!(std::mem::size_of::<Object>(), 56);
+    fn an_object_is_the_size_the_amplification_figure_assumes() {
+        assert_eq!(std::mem::size_of::<Object>(), 64);
     }
 }

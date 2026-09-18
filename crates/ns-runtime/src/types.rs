@@ -38,6 +38,14 @@ pub struct Object<'gc> {
     /// collector or `become:` would change (liveness spec's stable-identity
     /// constraint).
     pub identity_hash: u32,
+    /// The id an inline cache guards this object's sends on
+    /// (`docs/design/dispatch.md`, "The dispatch id"): an instance's class's
+    /// instances id, a class object's own class-side id. A copy, so that a
+    /// guard is one load and one compare rather than a walk to the class --
+    /// which makes every place a class's application changes responsible for
+    /// restamping it (`Heap::set_class_application`,
+    /// `Heap::stamp_dispatch_ids`). Not a handle; a move carries it along.
+    pub(crate) dispatch_id: crate::mixin::DispatchId,
     pub data: ObjectData<'gc>,
 }
 
@@ -102,16 +110,16 @@ pub struct ClassData<'gc> {
     /// `None` for every class object until its first class-side send -- which
     /// `X new` is, since the factory is one of the metaclass's members.
     pub metaclass: Option<ClassReference<'gc>>,
-    /// A copy of `application.dispatch_ids.instances`, so that a cache's
-    /// guard reads it from the class object without following the `Rc`
-    /// (`Heap::dispatch_id`). Kept equal to the application's by
-    /// `ClassData::new` and `Heap::set_class_application`, the only ways
-    /// either changes. The class-side id is not stored beside it: it is
-    /// derived on demand (`DispatchId::class_side`) from the invariant that
-    /// `mint_dispatch_ids` mints the pair consecutively, which is what keeps
-    /// a class object the size `CLAUDE.md`'s image-amplification paragraph
-    /// assumes rather than paying for a second 4-byte id nothing but that
-    /// derivation needs.
+    /// A copy of `application.dispatch_ids.instances`. A cache's guard no
+    /// longer reads it here (`Object::dispatch_id` in the header is what
+    /// `Heap::dispatch_id` answers now) -- this is where allocating an
+    /// instance of this class, `Heap::class_dispatch_ids` and restamping
+    /// (`Heap::header_dispatch_id`) read the instances id from. Kept equal to
+    /// the application's by `ClassData::new` and
+    /// `Heap::install_class_application`, the only ways either changes. The
+    /// class-side id is not stored beside it: it is derived on demand
+    /// (`DispatchId::class_side`) from the invariant that `mint_dispatch_ids`
+    /// mints the pair consecutively.
     pub dispatch_id: crate::mixin::DispatchId,
 }
 

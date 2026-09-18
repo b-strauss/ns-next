@@ -47,6 +47,7 @@ impl Trace for Object<'_> {
         let Object {
             class,
             identity_hash: _,
+            dispatch_id: _,
             data,
         } = self;
         tracer.object(class);
