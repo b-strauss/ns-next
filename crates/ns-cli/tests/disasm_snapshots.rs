@@ -103,10 +103,10 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 
 /// `--class` addresses a nested class's own method and a class side's own
 /// method by mixin path, and reports a clean error (not a panic) for a
-/// path segment that names nothing in the tree. Not a `goldens/`
-/// fixture: this only exercises `disasm`'s addressing and never runs the
-/// module, while every golden is run end to end and checked against the
-/// outcome recorded in its `.toml` by `run_fixtures.rs`.
+/// path segment that names nothing in the tree. Not a golden: this only
+/// exercises `disasm`'s addressing and never runs the module, while every
+/// golden is run end to end and checked against the outcome recorded in its
+/// `.toml` by `run_fixtures.rs`.
 #[test]
 fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     let directory = ScratchDirectory::new("disasm-nested-path");
@@ -125,7 +125,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
             )
         "},
     )
-    .expect("write temp fixture");
+    .expect("write temp source");
 
     let inner = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")

@@ -27,7 +27,7 @@ fn the_reference_lowering_inlines_nothing() {
 }
 
 #[test]
-fn a_fixture_runs_under_the_reference_lowering() {
+fn a_golden_runs_under_the_reference_lowering() {
     let (ok, out, error) = ns_next(&[
         "run".as_ref(),
         golden("while_loop").as_os_str(),

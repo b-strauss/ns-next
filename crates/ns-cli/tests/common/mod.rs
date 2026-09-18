@@ -2,8 +2,8 @@
 //!
 //! Each test binary that needs these declares `mod common;`, so this file is
 //! compiled once per binary rather than linked once -- which is why the
-//! allow below is here: a binary that uses only two of the three helpers
-//! would otherwise warn about the third.
+//! allow below is here: a binary that uses only some of the helpers would
+//! otherwise warn about the rest.
 
 #![allow(dead_code)]
 
@@ -16,35 +16,58 @@ pub fn goldens_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../goldens")
 }
 
-/// Every golden's source, found by walking rather than from a list, so that
-/// adding one needs no edit anywhere. Sorted, so a failure names the same
-/// golden on every platform and run.
-pub fn golden_sources() -> Vec<PathBuf> {
-    let mut sources = Vec::new();
+/// Every golden file with `extension`, found by walking rather than from a
+/// list, so that adding one needs no edit anywhere. Sorted, so a failure names
+/// the same golden on every platform and run.
+///
+/// The layout is exactly two levels -- `goldens/<category>/<name>.<extension>`
+/// -- and anything else is refused rather than skipped. A golden the walk does
+/// not accept but silently drops is not a golden at all: no sweep runs it and
+/// the pairing check cannot see it, so a wrong recorded answer would pass
+/// unnoticed. The category is the organizing principle, so a file outside one
+/// is a mistake to report, not a layout to support.
+pub fn golden_files(extension: &str) -> Vec<PathBuf> {
+    let mut files = Vec::new();
     let root = goldens_root();
     let categories =
         std::fs::read_dir(&root).unwrap_or_else(|error| panic!("read {}: {error}", root.display()));
     for category in categories {
         let category = category.expect("goldens category entry").path();
-        if !category.is_dir() {
-            continue;
-        }
+        assert!(
+            category.is_dir(),
+            "{} is a file at the root of {} -- every golden belongs in a category directory",
+            category.display(),
+            root.display()
+        );
         let entries = std::fs::read_dir(&category)
             .unwrap_or_else(|error| panic!("read {}: {error}", category.display()));
         for entry in entries {
             let path = entry.expect("golden entry").path();
-            if path.extension().and_then(|extension| extension.to_str()) == Some("ns") {
-                sources.push(path);
+            assert!(
+                !path.is_dir(),
+                "{} is a directory inside the category {} -- a golden lives one level \
+                 below {}, never deeper",
+                path.display(),
+                category.display(),
+                root.display()
+            );
+            if path.extension().and_then(|found| found.to_str()) == Some(extension) {
+                files.push(path);
             }
         }
     }
-    sources.sort();
+    files.sort();
     assert!(
-        !sources.is_empty(),
-        "no goldens found under {} -- the directory moved or the walk is wrong",
+        !files.is_empty(),
+        "no .{extension} files found under {} -- the directory moved or the walk is wrong",
         root.display()
     );
-    sources
+    files
+}
+
+/// Every golden's source.
+pub fn golden_sources() -> Vec<PathBuf> {
+    golden_files("ns")
 }
 
 /// One golden's source by its bare name, for the few tests that need a
@@ -79,20 +102,34 @@ pub struct Expectation {
 }
 
 impl Expectation {
-    /// Whether the golden is expected to exit zero. The snapshot and
-    /// build/load round trips only apply to a program that runs to
-    /// completion, so they use this to skip the rest.
+    /// Whether the golden is expected to exit zero -- the recorded answer to
+    /// "does this program run to completion", which a sweep asserts against
+    /// rather than assuming.
     pub fn succeeds(&self) -> bool {
         self.status == 0
     }
 }
 
-/// The recorded outcome beside `source`.
+/// The recorded outcome beside `source`, with its line endings normalized.
+///
+/// `.gitattributes` covers only `corpus/**` and `core.autocrlf` is true, so a
+/// fresh Windows checkout really does write a CRLF `.toml`, while the CLI
+/// always writes `\n`. TOML's multi-line literal string is specified as taken
+/// as-is, so nothing in the format promises the `\r` is dropped -- today's
+/// parser drops it, but that is its choice, not the format's. Normalizing here
+/// makes every reader of a recorded answer right by construction instead of by
+/// a dependency's behaviour.
 pub fn expectation_of(source: &Path) -> Expectation {
     let path = source.with_extension("toml");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
+    let recorded: Expectation =
+        toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+    Expectation {
+        status: recorded.status,
+        stdout: recorded.stdout.replace("\r\n", "\n"),
+        stderr: recorded.stderr.replace("\r\n", "\n"),
+    }
 }
 
 /// A temporary directory that removes itself, under the repository's own
@@ -107,7 +144,7 @@ pub fn expectation_of(source: &Path) -> Expectation {
 ///
 /// The name carries the process id and a counter as well as the test's own
 /// name because cargo runs a binary's tests as threads of one process: two
-/// tests naming the same fixture would otherwise share a directory and delete
+/// tests naming the same golden would otherwise share a directory and delete
 /// each other's files.
 pub struct ScratchDirectory {
     path: PathBuf,

@@ -128,9 +128,10 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
             "main:args:".as_ref(),
         ])
     } else {
-        // `snapshot` failed the same way `run` did (the entry send raised),
-        // so there is no image and nothing further to compare: its own
-        // streams carry the whole outcome.
+        // `snapshot` sends no entry, so it fails only where `run` already
+        // failed before its own entry send -- while instantiating the root
+        // class. There is then no image and nothing further to compare: its
+        // own streams carry the whole outcome.
         (snapshot_ok, String::new(), String::new())
     };
     // `snapshot`'s own last line ("wrote <path>") is the command's report,
@@ -162,41 +163,44 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
     (run_ok, run_out, run_error)
 }
 
-/// Every fixture, snapshotted and reloaded. That is the strongest property
+/// Every golden, snapshotted and reloaded. That is the strongest property
 /// the image has -- the image's own bytecode, its own object graph,
 /// and a freshly bootstrapped world reproduce a plain `run` byte for byte
-/// -- and it is asserted per fixture rather than argued.
+/// -- and it is asserted per golden rather than argued.
+///
+/// The goldens recorded as failing are swept too. `snapshot` without `--send`
+/// only instantiates, so a program that raises in its entry still yields an
+/// image, and the raise happens on the `load` that runs it: that is where the
+/// image's own code is pinned to report the uncaught error exactly as `run`
+/// does.
 #[test]
 fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
     let mut checked = 0;
     for source in common::golden_sources() {
-        // A golden that is recorded as failing has nothing to round trip:
-        // this sweep asserts that a snapshot answers what the source
-        // answered, and a program that raises answers nothing.
-        if !common::expectation_of(&source).succeeds() {
-            continue;
-        }
         let name = source
             .file_stem()
             .expect("stem")
             .to_string_lossy()
             .to_string();
         let (ok, _out, error) = assert_snapshot_load_matches_run(&name, &source);
-        assert!(ok, "run {name} exited non-zero: {error}");
+        // Not "the run succeeded" -- a golden recorded as failing is swept
+        // too, and the recorded answer is what says which it is.
+        assert_eq!(
+            ok,
+            common::expectation_of(&source).succeeds(),
+            "run {name} did not end as its recorded status says: {error}"
+        );
         checked += 1;
     }
-    assert!(checked >= 3, "expected at least three fixtures");
+    assert!(checked >= 3, "expected at least three goldens");
 }
 
-/// The failing direction of the same property, on an inline source rather
-/// than a golden. `a_snapshot_and_a_load_reproduce_exactly_what_run_prints`,
-/// above, skips every golden whose recorded `status` is non-zero
-/// (`Expectation::succeeds`): a program that raises leaves no image behind
-/// for `snapshot` to write, so round-tripping one proves nothing. This test
-/// covers that direction directly, on a source built to raise, rather than
-/// relying on one of the goldens recorded as failing. The uncaught-error
-/// line is written by the shared `report_entry_send` on both paths; this is
-/// what pins that it stays shared.
+/// The failing direction, on an inline source rather than a golden, and
+/// asserted on rather than merely swept: that `run` writes nothing to stdout
+/// and that stderr opens with the uncaught-error line. The sweep above proves
+/// the two paths agree; this proves what they agree *on*, so a change that
+/// made both report nothing could not pass. The line is written by the shared
+/// `report_entry_send` on both paths; this is what pins that it stays shared.
 #[test]
 fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
     let directory = ScratchDirectory::new("raises");
@@ -281,7 +285,7 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 #[test]
 fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
     let source = golden("arithmetic");
-    let text = std::fs::read_to_string(&source).expect("read fixture");
+    let text = std::fs::read_to_string(&source).expect("read golden");
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail
     // this too. Lines under 12 characters are structural punctuation --
@@ -296,7 +300,7 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
         .map(str::trim)
         .filter(|line| line.len() >= 12)
         .collect();
-    assert!(lines.len() >= 4, "the fixture must have text to look for");
+    assert!(lines.len() >= 4, "the golden must have text to look for");
 
     let plain_directory = ScratchDirectory::new("source-free");
     let plain = plain_directory.join("world.img");

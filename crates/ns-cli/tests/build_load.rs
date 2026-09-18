@@ -126,18 +126,18 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 /// recorded answer.
 /// Under the reference lowering this also takes the encoder and decoder over
 /// code with no jumps and many registers.
+///
+/// A golden recorded as failing is swept too, and deliberately: `build` never
+/// instantiates, so a program that raises still builds, and the `load` that
+/// runs it is where the deployment artifact's *error* path -- the shared
+/// uncaught-error report, read out of a binary rather than a source -- is
+/// pinned against `run`.
 #[test]
-fn every_fixture_runs_identically_from_source_and_from_a_binary() {
-    let directory = ScratchDirectory::new("all-fixtures");
+fn every_golden_runs_identically_from_source_and_from_a_binary() {
+    let directory = ScratchDirectory::new("all-goldens");
     let mut checked = 0;
 
     for path in common::golden_sources() {
-        // A golden that is recorded as failing has nothing to round trip:
-        // this sweep asserts that a built binary answers what the source
-        // answered, and a program that raises answers nothing.
-        if !common::expectation_of(&path).succeeds() {
-            continue;
-        }
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         for lowering in ["optimized", "reference"] {
             let out = directory.join(&format!("{stem}.{lowering}.nsb"));
@@ -149,7 +149,7 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
                 lowering.as_ref(),
             ]);
             if !built {
-                // A fixture whose root class declares no `main:args:` and
+                // A golden whose root class declares no `main:args:` and
                 // needs an explicit entry is not a failure of this property.
                 // Anything else is, so the reason is asserted rather than
                 // assumed.
@@ -178,7 +178,7 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
 
     assert!(
         checked >= 10,
-        "expected several fixtures to be covered under both lowerings, got {checked}"
+        "expected several goldens to be covered under both lowerings, got {checked}"
     );
 }
 
