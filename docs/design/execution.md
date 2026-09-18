@@ -1907,12 +1907,13 @@ every measurement up to step 3: `bench_loop.ns` −6.7% / −8.5%,
 sittings.
 
 **`vm::run`'s step is still inline.** `dumpbin /disasm` on a release build
-with debug information, at each of the four checkpoints below and at the
-step's head, finds no `vm::run::closure` function at all: `vm::run` is one
-function of 4,910 instructions at `f99a29f`, 4,860, 4,878 and 4,878 at the
-three checkpoints, and 4,926 at the head. The step gained 16 instructions
-over the whole step and never approached the cliff that splitting `resolve`
-from `act` hit ("A standing hazard" in [dispatch.md](dispatch.md)).
+with debug information, on all five binaries — the base, the three
+intermediate checkpoints and the head — finds no `vm::run::closure` function
+in any of them: `vm::run` is one function of 4,910 instructions at
+`f99a29f`, then 4,860, 4,878, 4,878 and 4,926. It gained 16 instructions
+across the whole step and never approached the cliff that splitting
+`resolve` from `act` hit ("A standing hazard" in
+[dispatch.md](dispatch.md)).
 
 Each change was measured against its parent in the same two sittings, which
 is what attributes the movement. Means in ms, sitting 1 / sitting 2:
@@ -1948,14 +1949,9 @@ is what attributes the movement. Means in ms, sitting 1 / sitting 2:
   the change that costs the send benchmarks**: `bench_loop.ns` +2.10% /
   +3.32% and `bench_send.ns` +2.25% / +2.68%, each entirely above in the
   second sitting; `bench_megamorphic.ns` +1.51% / +0.91%, entirely above in
-  the second; the other five overlapping, +0.10% to +1.71%, none below. The
-  two extra global-cache probes it adds do not explain it — they run only at
-  a still-vacant lexical site, once per site, and no source fills more than
-  sixteen — so what moved is the shape of the code the step inlines, not work
-  executed per send. `CacheRule` grew from a fieldless enum to one carrying a
-  `DispatchId`, which every key's hash and every site's fill passes through;
-  `CacheEntry` stayed 24 bytes and `GlobalEntry` 32, and the step grew by 18
-  instructions. Not bisected further.
+  the second; the other five overlapping, +0.10% to +1.71%, none below. A
+  control binary bisected it into its two halves; see "Which half of the
+  lexical key costs the send benchmarks" below.
 - **Call-site numbers off the wire** (`c9097d1`, against `da8beed`). Nothing
   beyond noise anywhere, −1.24% to +0.95%, every group overlapping except
   `bench_loop.ns` entirely below in the second sitting and `bench_newarg.ns`
@@ -1976,10 +1972,13 @@ is what attributes the movement. Means in ms, sitting 1 / sitting 2:
   cache line, against 3b's two hashes at two independent places in the table.
   It cannot measure the *replacement* rule. `--cache-statistics` after a run
   reports 29 sites, 26 filled, one megamorphic, and 27 of 1024 global slots
-  used; 27 keys across 512 groups means the five hot ones share no group, so
-  every hit is at the first slot, the second slot is never read, and nothing
-  is ever evicted. Deciding least-recently-used against 3b's insert on
-  numbers needs cache pressure — many more hot keys than any fixture has, or
+  used, five of them the megamorphic site's own. With 27 keys over 512
+  groups the expected number of collisions is under one, and a group would
+  have to hold three keys before anything is evicted at all, so on the hot
+  path every read almost certainly answers at the first slot and the
+  replacement rule almost certainly never runs. Deciding least-recently-used
+  against 3b's insert on numbers needs cache pressure — many more hot keys
+  than any fixture has, or
   a debug build's small `NS_NEXT_GLOBAL_CACHE_ENTRIES` — and no measurement
   has supplied it, so the rule stands on Strongtalk's precedent
   ([dispatch.md](dispatch.md), "The global cache").
@@ -1994,6 +1993,65 @@ global entries, no site polymorphic or megamorphic — and, for the eighth:
 
 The one block was allocated when the site went polymorphic and given back
 when it went megamorphic, which is why the table holds one and uses none.
+
+#### Which half of the lexical key costs the send benchmarks
+
+The lexical key's commit does two separable things. **The key's shape**: the
+global key gains a fourth component, N's application, so `GlobalEntry` and
+`SendKey` each carry a `DispatchId` more, `probes`, `holds`, `get` and
+`insert` each take an argument more, and `cached` and `miss` take a
+`lexical_of` closure that answers it — all of which `vm::run`'s step inlines.
+**The two probes**: `send_lexical_first` reads two global-cache rows before
+it resolves, which is what the wider key makes safe, and which is the point
+of the change.
+
+A control binary separates them: the commit with the two probes cut out of
+`send_lexical_first` and everything else kept. `send_lexical_first` is
+`#[inline(never)]`, so the cut cannot touch the step — and does not:
+`vm::run` is 4,878 instructions in the control and in the commit, and the two
+functions' instruction streams are identical once relocated addresses are
+normalized, against 4,860 in the parent. Anything the control measures
+against the commit is therefore the probes and code placement; anything it
+measures against the parent is the 18 instructions the step gained. Two
+sittings, all three binaries in each, the same protocol.
+
+| Source | control vs parent (the key's shape) | commit vs control (the two probes) | commit vs parent (both) |
+|---|---|---|---|
+| `bench_loop.ns` | **+1.89% / +1.48%**, above in the second | −0.07% / +0.04%, overlapping in both | +1.82% / +1.52% |
+| `bench_send.ns` | **+2.25% / +1.66%**, above in both | +0.41% / +0.57%, overlapping in both | +2.67% / +2.23% |
+| `bench_block.ns` | +0.10% / +0.21%, overlapping | +1.23% / +0.49%, overlapping in both | +1.33% / +0.70% |
+| `bench_do.ns` | −2.18% / +0.34% | +3.45% above / +1.45% overlapping | +1.20% / +1.80% |
+| `bench_new.ns` | +1.31% / +0.39%, overlapping | +0.47% / +1.38%, overlapping in both | +1.78% / +1.77% |
+| `bench_new2.ns` | +0.34% / +0.44%, overlapping | −0.08% / −0.30%, overlapping in both | +0.26% / +0.13% |
+| `bench_newarg.ns` | +0.46% / −0.00%, overlapping | +0.24% / +0.46%, overlapping in both | +0.70% / +0.45% |
+| `bench_megamorphic.ns` | **+1.00% / +1.54%**, above in both | +0.52% / −0.38%, overlapping in both | +1.52% / +1.16% |
+
+**The key's shape carries the cost; the probes carry none of it.** The
+control alone reproduces the whole of `bench_loop.ns`'s loss and most of
+`bench_send.ns`'s and `bench_megamorphic.ns`'s, and adding the probes on top
+of it moves no source beyond the noise. That confirms by measurement what the
+site counts only argued: the probes run once per still-vacant lexical site,
+and no source fills more than sixteen sites in a 50,000-iteration run.
+
+So the mechanism is the widened key inside the inlined step, not work
+executed per send — the step's 18 extra instructions, on a path every send
+runs. It is not entry size: `GlobalEntry` is 32 bytes and `CacheEntry` 24 at
+the parent, at the control and at the commit alike, the fourth component
+having fitted in padding the struct already had. Two limits worth stating.
+The control also deletes a cold function, `global_hit`, which no longer has a
+caller, so code placement differs between the control and the commit as well
+as the probes; the conclusion rests on that pair measuring *null*, which a
+placement effect could in principle have cancelled, and on the parent
+comparison measuring positive where the step demonstrably differs. And
+"the widened key" is still four things at once — the wider entry, the wider
+key, the extra arguments and the extra closure parameter — which no further
+binary separates.
+
+The step's head no longer has the fourth component as a separate field: the
+least-recently-used groups folded it into the rule as
+`CacheRule::Lexical(DispatchId)` and gave `GlobalEntry` its field back, at no
+measured cost either way. What the control measured is the cost of the key
+knowing N at all, in whichever of the two shapes it is carried.
 
 ## The trampoline
 
