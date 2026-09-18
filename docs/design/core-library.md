@@ -78,7 +78,7 @@ when a whitelisted module demands it" still governs what gets added.
 hand-built in Rust, and a class object's own class becomes its metaclass. Both
 references declare exactly these three in their kernel source
 (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
-`prior-art/newspeak/KernelForJS.ns`), building them earlier would mean building
+`prior-art/newspeak/KernelForJS.ns`); building them earlier would mean building
 them twice, and the reflection work right after this step cannot start without
 them — a mirror's test for a metaclass is `Metaclass = classOf: reflectee`,
 which needs the instance-of relation reified. The flat metaclass hierarchy that

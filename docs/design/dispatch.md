@@ -998,9 +998,9 @@ by that measurement. The user decides on the numbers.
     be looked at before a send's hit path grows further, and at the latest
     with the JIT tiers.
 - **Decided by the user (2026-09-17, extended 2026-09-18), to be built
-  before 3c:** the last three came out of designing the factory change, which
-  §3.2 turned out to settle from a section the earlier reading had not
-  reached.
+  before 3c:** the factory, the name conflict it can raise and the flat
+  metaclasses came out of one piece of design work on 2026-09-18, which §3.2
+  settled from a section the earlier reading had not reached.
   - **The global cache's lexical key includes N's application**:
     `(o's id, selector, lexical, N's application id)`; private entries stay
     keyed by N's application alone. Whether §5.9's private rule applies

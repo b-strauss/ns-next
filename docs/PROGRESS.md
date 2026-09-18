@@ -74,7 +74,7 @@ its own. Measured whole, every source is 4.3–11.3% faster than 3a's head and
 **The next piece is a step before 3c: five changes the user decided on
 2026-09-17 and 2026-09-18** ([dispatch.md](design/dispatch.md), "Decisions",
 "Decided by the user … to be built before 3c"), planned and measured
-together. Designing the factory change is what added the last two: §3.2
+together. Designing the factory change is what added the first two: §3.2
 settles, from a section the earlier reading had not reached, that a class side
 is not inherited at all.
 - **Metaclasses become flat** (§3.2, §6): a class side is applied to `Class` —

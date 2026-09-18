@@ -38,8 +38,8 @@ their publishers grant.
   at the same content — section numbers can shift between spec versions.
 - **`newspeak-spec.md`** — the same document as Markdown, so that a question about the
   language can be answered by searching the *whole* specification in one step. That is
-  what it is for: the answer to a question is regularly in a section whose heading does
-  not look related, and reading only the section that seems topical is how a rule gets
+  what it is for: the answer to a question is often in a section whose heading does not
+  look related, and reading only the section that seems topical is how a rule gets
   missed. Before stating that the specification says nothing about something, search
   this file.
 
@@ -53,7 +53,7 @@ their publishers grant.
   every word the typesetter broke across two lines was rejoined, each decision checked
   by hand.
 
-  Three classes of defect had to be found and fixed, and they are worth knowing about,
+  Four classes of defect had to be found and fixed, and they are worth knowing about,
   because each is invisible to an ordinary text extraction and the first was reported by
   a reader rather than caught by a check:
 
@@ -82,8 +82,8 @@ their publishers grant.
     bold line sharing a baseline with the text it opens, which a paragraph merely
     beginning with a bold word is not.
 
-  It was then compared word by word against an independent `pdftotext` extraction: 99.0%
-  of the words match exactly, and every difference was reviewed. They fall into four
+  It was then compared word by word against an independent `pdftotext` extraction: about
+  99% of the words match exactly, and every difference was reviewed. They fall into four
   groups — the labels drawn inside the figures, which this file leaves out along with
   the figures themselves; places where the two extractions read the page in a different
   order, such as the bibliography's labels; places where `pdftotext` is wrong and this
@@ -93,6 +93,17 @@ their publishers grant.
   extractions read the same text layer, so it is blind to anything that is not in it,
   which is how the underscores survived it. What caught the rest was rendering pages as
   images and reading them.
+
+  **The source's own mistakes are reproduced, not corrected.** The specification is a
+  draft and says so, and it carries the slips of one: doubled words ("in order to to
+  define", "the the execution of the send", "a class body is is defined", "via a a
+  mirror"), misspellings ("faciliate", "flexiblility", "instantation", "we coud give
+  warnings"), a missing word ("A method defines an action be executed"), a number that
+  does not agree ("A top level expressions is executed"), an "it's" for an "its", and one
+  grammar production written with `::` where every other uses an arrow. They are all in
+  the PDF, and finding them here is evidence the transcription is faithful rather than
+  that it is careless. Correcting them would make this file say something the
+  specification does not.
 
   **The PDF remains the authority.** Cite sections as before (`newspeak-spec.pdf` §6.3);
   this file is how to find them, not a second source. If the two ever disagree, the PDF

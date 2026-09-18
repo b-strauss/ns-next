@@ -299,8 +299,8 @@ class side declares it, and a class-side `super` send looks in `Class`. Since
 ns-next reifies no `Class` (below), a metaclass's superclass is `Object`'s
 behaviour, which is where the class-side chain already falls through.
 
-*Being built:* `Interpreter::metaclass_of` chains a metaclass under the
-superclass's metaclass, Smalltalk-style, which inherits class sides. It is
+*Today:* `Interpreter::metaclass_of` chains a metaclass under the superclass's
+metaclass, Smalltalk-style, so class sides are inherited. It is
 corrected in the step before 3c, together with making the primary factory an
 entry of the metaclass mixin's method table, because that factory's remaining
 special cases exist only while a class side is inherited
@@ -319,9 +319,9 @@ Rust — both references declare them exactly there
 `prior-art/newspeak/KernelForJS.ns`) — and which sits immediately before the
 reflection work that cannot be done without them: a mirror's test for a
 metaclass is `Metaclass = classOf: reflectee`, which needs the instance-of
-relation reified. Pulling it earlier costs a metaclass eagerly per class object,
-where it is lazy today, and a change to the decoder's placeholder scheme
-(below), and nothing before step 6 depends on it; see
+relation reified. Pulling it earlier would cost a metaclass per class object,
+built eagerly where it is lazy today, and a change to the decoder's placeholder
+scheme (below); nothing before step 6 depends on it. See
 [liveness-and-reflection.md](liveness-and-reflection.md).
 
 One consequence is load-bearing elsewhere: `Object::class` is not an

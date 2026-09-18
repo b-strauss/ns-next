@@ -6,13 +6,13 @@ Version 0.106 · Gilad Bracha · May 30, 2026
 > it so that the whole specification can be searched in one step rather
 > than a section at a time. The wording is the PDF's, taken from its text
 > spans and checked word by word against a second, independent extraction.
-> Quotation marks and apostrophes are the plain ones and ligatures are
+> Quotation marks and apostrophes are the plain ones, and ligatures are
 > written out, so that a search finds them.
 > **The PDF remains the authority**: where the two disagree, it wins.
 >
 > `<!-- page N -->` marks where page N of the PDF begins, so a citation can
 > still name a page. The marker sits at the nearest block boundary, so a
-> paragraph that spans a page break carries it ahead of the paragraph.
+> paragraph that spans a page break carries the marker ahead of it.
 > Newspeak code is fenced as `newspeak` and grammar productions are fenced
 > without a language. The figures are diagrams; each is noted where it
 > occurs rather than reproduced, and the labels drawn inside them are left

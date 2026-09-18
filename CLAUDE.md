@@ -274,9 +274,9 @@ is hand-rolled on purpose.
 
 **Search the whole specification before concluding it is silent.**
 `docs/references/newspeak-spec.md` is the specification transcribed from
-`newspeak-spec.pdf` for exactly this: a rule is regularly stated in a section whose
+`newspeak-spec.pdf` for exactly this: a rule is often stated in a section whose
 heading looks unrelated — §3.2 decides how the primary factory is found, from a page
-about metaclasses — and reading only the topical section is how one gets missed. The
+about metaclasses — and reading only the topical section is how a rule gets missed. The
 PDF stays the authority and is what a citation names; the Markdown is how to find the
 passage (`docs/references/PROVENANCE.md`).
 
