@@ -123,6 +123,17 @@ Every golden, the ones recorded as raising included, also goes through the
 snapshot and the build/load round trip, which hold an image's and a binary's
 three streams against what `run` answers on the source.
 
+A fifth key, `skipped`, carries why the runtime does not answer this one
+yet -- `skipped = "not implemented yet: §3.6 requires a local slot's
+initializer to run"`. The sweeps pass it over and count it; everything
+else about it still holds, including the pairing check, so a `skipped`
+cannot switch a half-written golden past discovery. The other three keys
+still record what the program *should* answer, which is the point: a gap
+gets its golden the day it is found, stating the whole expectation, and
+closing the gap is deleting one line. A reason is required, and a blank
+one fails. `cargo test -- --show-output` prints the count and the list,
+since the harness keeps a passing test quiet.
+
 | Directory | What belongs in it |
 |---|---|
 | `bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |

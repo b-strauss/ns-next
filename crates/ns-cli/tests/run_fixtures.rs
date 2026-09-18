@@ -21,8 +21,15 @@ const LOWERINGS: [&str; 2] = ["optimized", "reference"];
 /// both lowerings.
 #[test]
 fn every_golden_matches_its_recorded_expectation() {
+    let mut ran = 0;
+    let mut skipped: Vec<String> = Vec::new();
     for source in common::golden_sources() {
         let expectation = common::expectation_of(&source);
+        if let Some(reason) = expectation.skipped() {
+            skipped.push(format!("{} -- {reason}", source.display()));
+            continue;
+        }
+        ran += 1;
         for lowering in LOWERINGS {
             let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
                 .arg("run")
@@ -50,6 +57,13 @@ fn every_golden_matches_its_recorded_expectation() {
                 source.display()
             );
         }
+    }
+    // Printed rather than asserted: a skipped golden is a recorded
+    // intention, not a failure. `cargo test -- --show-output` is where
+    // this line surfaces, since the harness keeps a passing test quiet.
+    println!("{ran} goldens ran, {} skipped", skipped.len());
+    for entry in &skipped {
+        println!("  skipped: {entry}");
     }
 }
 
@@ -88,6 +102,9 @@ fn every_golden_is_a_complete_pair() {
 fn every_golden_answers_alike_with_a_two_entry_global_cache() {
     for source in common::golden_sources() {
         let expectation = common::expectation_of(&source);
+        if expectation.skipped().is_some() {
+            continue;
+        }
         let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
             .arg("run")
             .arg(&source)

@@ -97,6 +97,12 @@ pub fn golden(path: &str) -> PathBuf {
 /// an ordinary golden's file is just its `stdout` and a failing one's is its
 /// `status` and `stderr`. `deny_unknown_fields` turns a misspelled key into a
 /// failure instead of an expectation that silently stops being checked.
+///
+/// `skipped` carries why the runtime does not answer this yet. The other
+/// three fields still record what it *should* answer, so a golden written
+/// for a known gap states the whole expectation up front, and closing the
+/// gap is deleting one line rather than rediscovering months later what
+/// the answer was meant to be.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Expectation {
@@ -106,6 +112,8 @@ pub struct Expectation {
     pub stdout: String,
     #[serde(default)]
     pub stderr: String,
+    #[serde(default)]
+    pub skipped: Option<String>,
 }
 
 impl Expectation {
@@ -114,6 +122,14 @@ impl Expectation {
     /// rather than assuming.
     pub fn succeeds(&self) -> bool {
         self.status == 0
+    }
+
+    /// Why this golden is not run, if it is not. A sweep skips it and
+    /// counts it; the pairing check still holds it to being a complete
+    /// pair, so `skipped` cannot smuggle a half-written golden past
+    /// discovery.
+    pub fn skipped(&self) -> Option<&str> {
+        self.skipped.as_deref()
     }
 }
 
@@ -132,10 +148,22 @@ pub fn expectation_of(source: &Path) -> Expectation {
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let recorded: Expectation =
         toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+    if let Some(reason) = &recorded.skipped {
+        // A blank reason is the whole failure mode this field could
+        // introduce: a golden switched off in a hurry, with nothing left
+        // saying what would switch it back on.
+        assert!(
+            !reason.trim().is_empty(),
+            "{} has an empty `skipped` -- a golden is skipped only with a \
+             reason that says what would let it run",
+            path.display()
+        );
+    }
     Expectation {
         status: recorded.status,
         stdout: recorded.stdout.replace("\r\n", "\n"),
         stderr: recorded.stderr.replace("\r\n", "\n"),
+        skipped: recorded.skipped,
     }
 }
 

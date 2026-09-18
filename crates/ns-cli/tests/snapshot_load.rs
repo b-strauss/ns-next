@@ -177,6 +177,9 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
 fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
     let mut checked = 0;
     for source in common::golden_sources() {
+        if common::expectation_of(&source).skipped().is_some() {
+            continue;
+        }
         let name = source
             .file_stem()
             .expect("stem")

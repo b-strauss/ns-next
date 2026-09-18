@@ -138,6 +138,9 @@ fn every_golden_runs_identically_from_source_and_from_a_binary() {
     let mut checked = 0;
 
     for path in common::golden_sources() {
+        if common::expectation_of(&path).skipped().is_some() {
+            continue;
+        }
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         for lowering in ["optimized", "reference"] {
             let out = directory.join(&format!("{stem}.{lowering}.nsb"));
