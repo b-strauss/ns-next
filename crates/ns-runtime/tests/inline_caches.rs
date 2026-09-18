@@ -578,7 +578,6 @@ const TWO_FACTORIES: &str = indoc! {"
     'T'
     class Subject = Object new () (
       class Alpha = Object new () ( public describe = ( ^1 ) )
-      class Gamma = Object new () ( public describe = ( ^3 ) )
       class Beta with: seed = Object new () ( public describe = ( ^2 ) )
       public makeAll: order = (
         | sum |
@@ -586,36 +585,59 @@ const TWO_FACTORIES: &str = indoc! {"
         order do: [:each | sum := sum * 10 + each new describe].
         ^sum
       )
-      public alphaThenGamma = ( ^self makeAll: {Alpha. Gamma. Alpha} )
       public alphaThenBeta = ( ^self makeAll: {Alpha. Beta} )
     ) : ()
 "};
 
 /// A `Factory` entry records the chain and nothing else, because
-/// `newspeak-spec.pdf` §6.1 instantiates the *receiver*. So a site that
-/// recorded one for `Alpha` must instantiate `Gamma` when `Gamma` receives
-/// the send, not hand back another `Alpha` -- the answer says which, since
-/// each class's `describe` differs. Two entries, one per guard.
+/// `newspeak-spec.pdf` §6.1 instantiates the *receiver*; a hit reads the
+/// class out of the send's key rather than out of the entry.
+///
+/// The case that says so is **one guard, two receivers**, which two
+/// declarations could never give: a nested class has one class object per
+/// enclosing instance (§6) and they all share one application, so the second
+/// and third sends here are monomorphic *hits* on the entry the first filled.
+/// Each `Item`'s `describe` reads its own enclosing `Holder`'s slot, so the
+/// answer is 121 when each hit instantiates the class object it was sent to
+/// and 111 if a hit ever handed back the class object the entry was recorded
+/// for. The site stays monomorphic, which is what proves the two later sends
+/// were hits and not misses that re-ran the lookup.
 #[test]
 fn a_cached_factory_instantiates_the_receiver_it_is_sent_to() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Holder seed: value = Object new (| seed = value. |) (
+            class Item = Object new () ( public describe = ( ^seed ) )
+            public item = ( ^Item )
+          )
+          public run = (
+            | first second sum |
+            first := Holder seed: 1.
+            second := Holder seed: 2.
+            sum := 0.
+            {first item. second item. first item}
+              do: [:each | sum := sum * 10 + each new describe].
+            ^sum
+          )
+        ) : ()
+    "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interpreter, class) = load_with(TWO_FACTORIES, lowering);
+        let (mut interpreter, class) = load_with(source, lowering);
         let instance = instantiate(&mut interpreter, &class);
-        let answer = send(&mut interpreter, &instance, "alphaThenGamma", &[]);
-        assert_eq!(small_integer(&mut interpreter, &answer), 131);
+        let answer = send(&mut interpreter, &instance, "run", &[]);
+        assert_eq!(
+            small_integer(&mut interpreter, &answer),
+            121,
+            "{lowering:?}"
+        );
         if lowering == Lowering::Optimized {
             assert_eq!(
-                states(
-                    &mut interpreter,
-                    &class,
-                    MethodSide::Instance,
-                    "makeAll:",
-                    "new"
-                ),
-                vec![CallSiteState::Polymorphic(vec![
-                    public(CachedTargetKind::Factory),
-                    public(CachedTargetKind::Factory),
-                ])]
+                states(&mut interpreter, &class, MethodSide::Instance, "run", "new"),
+                vec![CallSiteState::Monomorphic(public(
+                    CachedTargetKind::Factory
+                ))]
             );
         }
     }

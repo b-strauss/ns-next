@@ -7,11 +7,12 @@
 use indoc::indoc;
 use ns_runtime::mixin::MethodEntry;
 use ns_runtime::{
-    BuiltinClass, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value,
+    BuiltinClass, HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
 };
 
-/// The module's root class object, loaded and rooted.
-fn load(source: &str) -> (Interpreter, Root) {
+/// The module's root class object, loaded and rooted, compiled with
+/// `lowering`.
+fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -19,9 +20,36 @@ fn load(source: &str) -> (Interpreter, Root) {
         SourceOrigin::File("factory_send.ns".into()),
     )
     .expect("resolve");
-    let mut interpreter = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
+}
+
+fn load(source: &str) -> (Interpreter, Root) {
+    load_with(source, Lowering::Optimized)
+}
+
+/// Asserts that sending `sent` to `receiver` raises a Newspeak error naming
+/// `unhandled` -- which is `sent` itself when the send is the one that was
+/// not understood, and the inner selector when the failure happens further
+/// in.
+fn expect_unhandled(
+    interpreter: &mut Interpreter,
+    receiver: &Root,
+    sent: Symbol,
+    unhandled: Symbol,
+    what: &str,
+) {
+    match interpreter.send(receiver, sent, &[]) {
+        Err(HostSignal::Error(error)) => assert_eq!(error.selector, unhandled, "{what}"),
+        Ok(value) => {
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            panic!("{what}: expected doesNotUnderstand: {unhandled}, got Ok({got})")
+        }
+        Err(HostSignal::Return) => {
+            panic!("{what}: expected doesNotUnderstand: {unhandled}, got HostSignal::Return")
+        }
+    }
 }
 
 /// Which kind of entry `class`'s metaclass mixin holds under `selector`, as
@@ -413,4 +441,60 @@ fn a_superclasss_factory_selector_is_not_understood() {
         "simple",
     );
     expect_ok(interpreter.send(&simple, Symbol::NEW, &[]), "Simple new");
+}
+
+/// A class-side `super new` is not an instantiation. §5.10 starts the lookup
+/// at S, the superclass of the running activation's `current_class`, which
+/// for a class-side method is the metaclass; §3.2's flat metaclass makes
+/// that `Object`'s behaviour, and `Object` declares no factory, so the send
+/// reaches `doesNotUnderstand:`.
+///
+/// It did instantiate until §6.3's factory became an entry of the metaclass
+/// mixin: a class side was inherited then, so an inherited class-side
+/// method's `super new` could be the only way to reach the receiver's own
+/// factory, and §5.10's failure path checked for it before running any
+/// handler. The fixture that pinned the old answer was re-cut when
+/// metaclasses went flat, so this pins the answer that replaced it.
+#[test]
+fn a_class_side_super_new_does_not_instantiate() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class SuperFactory = Object new () (
+            class Simple = Object new () (
+                public label = ( ^'a simple' )
+            ) : (
+                public build = ( ^super new )
+            )
+            public simple = ( ^Simple )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load_with(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let simple = expect_ok(
+            interpreter.send(&instance, Symbol::intern("simple"), &[]),
+            "simple",
+        );
+        // The unhandled selector is `new`, the `super` send inside `build`:
+        // `build` itself is found on `Simple`'s own metaclass.
+        expect_unhandled(
+            &mut interpreter,
+            &simple,
+            Symbol::intern("build"),
+            Symbol::NEW,
+            &format!("Simple build under {lowering:?}"),
+        );
+        // The class's own factory, on its own metaclass, still instantiates:
+        // what `super` cannot reach is not what the class object cannot do.
+        let built = expect_ok(interpreter.send(&simple, Symbol::NEW, &[]), "Simple new");
+        let label = expect_ok(
+            interpreter.send(&built, Symbol::intern("label"), &[]),
+            "Simple new label",
+        );
+        interpreter.enter(|mutator| {
+            let value = mutator.fetch(&label);
+            assert_eq!(mutator.heap().describe(&value), "the String \"a simple\"");
+        });
+    }
 }

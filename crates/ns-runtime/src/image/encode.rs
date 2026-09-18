@@ -969,15 +969,24 @@ fn encode_closure_record<'gc>(
 /// megamorphic.
 ///
 /// `builtin` is not written either -- a record only ever describes a user
-/// class, since a builtin is a class *tag* -- and neither is `metaclass`,
-/// a lazy cache `Mutator::metaclass_of` rebuilds on the first class-side
-/// send. Nothing here has to special-case one, unlike before metaclasses
-/// were flat: a metaclass's mixin is now always the class's own declared
+/// class, since a builtin is a class *tag* -- and neither is `metaclass`, a
+/// lazy cache `Mutator::metaclass_of` rebuilds on the first class-side send.
+///
+/// A metaclass can still reach here as a record of its own, through the one
+/// reference that names one: a class-side activation's `current_class`,
+/// captured in a frame. Such a metaclass applies the declaring class's own
 /// class side (`newspeak-spec.pdf` §3.2, "Class sides and metaclasses"),
 /// which is part of the module's declaration tree like any other mixin, so
-/// this function's own id lookup below always finds it if a metaclass
-/// itself ever reaches here as a record (a class-side activation's
-/// `current_class`, captured in a frame).
+/// the id lookup below finds it. The other kind of metaclass mixin --
+/// the otherwise empty one `metaclass_of` synthesizes for a class that
+/// declares no class side, so that §6.3's factory entry has somewhere to
+/// live -- is in no `mixin::preorder` walk and has no id. It cannot reach
+/// here: its method table holds the factory and nothing else, a factory
+/// entry pushes no activation, and so no frame can ever name it as a
+/// `current_class`. Should some later reference to a metaclass make one
+/// reachable, this answers the ordinary "not part of the declaration tree"
+/// error rather than writing a wrong id -- a refusal to snapshot, not a
+/// corrupt image.
 fn encode_class_record<'gc>(
     writer: &mut Writer,
     data: &ClassData<'gc>,
