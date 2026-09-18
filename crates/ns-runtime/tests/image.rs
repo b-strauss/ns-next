@@ -13,8 +13,8 @@ use ns_runtime::image::opcodes::*;
 use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    BuiltinClass, ClassData, ClassReference, FrameKind, Heap, HostResult, HostSignal, Interpreter,
-    Mixin, MixinApplication, Mutator, ObjectData, Root, SourceOrigin, Symbol, Value,
+    BuiltinClass, ClassData, ClassReference, DispatchId, FrameKind, Heap, HostResult, HostSignal,
+    Interpreter, Mixin, MixinApplication, Mutator, ObjectData, Root, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
@@ -2941,6 +2941,53 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         assert!(
             mutator.heap_mut().ensure_identity_hash(fresh) > max_hash,
             "no hash collision with loaded objects"
+        );
+    });
+}
+
+/// A decoded object answers the id of the application its class was given
+/// while loading, never one read from the bytes (ids are per heap and not
+/// serialized), and never the placeholder's: the decoder fills a record
+/// before the class it names has its application, so the id is stamped only
+/// once every class has one (`docs/design/dispatch.md`, "3c").
+#[test]
+fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Counter = Object new (
+          | count ::= 0. |
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &loaded.root_class);
+        let ids = mutator.heap().class_dispatch_ids(root_class);
+        assert_ne!(ids.instances, DispatchId::NONE);
+        let instance = mutator.fetch(&loaded.roots[0]);
+        assert_eq!(mutator.heap().dispatch_id(&instance), ids.instances);
+        assert_eq!(
+            mutator.heap().dispatch_id(&Value::Object(root_class)),
+            ids.class_side
         );
     });
 }
