@@ -97,35 +97,33 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    member already has, and the direction the open question below would have to
    settle for all of them at once.
 
-   **Defect: a member set is keyed by the class's simple name.**
-   `resolver::build_member_sets` maps a class's *name* to its own members, so
-   two classes with the same simple name anywhere in one module share one
-   entry and the last one collected wins. A member declared by the loser is
-   then invisible to §5.7's search, which walks out to an enclosing
-   declaration instead -- or finds nothing and raises
-   `doesNotUnderstand:`. Renaming the unrelated class fixes it, which is the
-   signature of the defect: two programs differing only in the name of an
-   empty class in a sibling subtree answer differently, at exit status 0.
-   A textual count finds eighteen of the 211 corpus modules declaring two
-   classes under one simple name -- a lower bound, since it only scans source
-   text -- and none of the six on `corpus/runnable.toml` is among them, so no
-   gate sees it. The
-   reference lowering is no help either -- the mistake is made in the
-   resolver, above both lowerings, so they agree on the wrong answer.
-
-   **Decided (2026-09-19), planned with the other specification gaps: a
-   member set belongs to its declaration.** The name-keyed map goes away.
+   **A member set belongs to its declaration, borrowed down the walk.**
    `resolve_class` computes `classes::own_member_names` for the declaration
    it is entering, keeps it in its own stack frame, and hands the chain down
    as `&[EnclosingClass]`, each level borrowing the set of *its own*
-   declaration -- no set is copied, and none can be looked up by name, so
-   two same-named classes can no longer meet. The superclass clause resolves
-   against the same chain without the declaration's own level, as now.
-   `EnclosingClass.name` stays for `outer N` alone, where §5.9 does mean a
-   name and the innermost enclosing class of that name is the one.
-   `spec_5_7_a_member_set_is_per_declaration_not_per_name` pins the fix, and
-   a second golden with the empty namesake collected *first* pins that the
-   answer does not depend on collection order.
+   declaration -- no set is copied, and none can be looked up by name, so two
+   classes with the same simple name anywhere in one module can never meet.
+   The superclass clause resolves against the same chain without the
+   declaration's own level. `EnclosingClass.name` stays for `outer N` alone,
+   where §5.9 does mean a name and the innermost enclosing class of that name
+   is the one. This replaced a resolver that mapped a class's *name* to its
+   own members (`resolver::build_member_sets`), under which two same-named
+   classes shared one entry and the last one collected won -- a member
+   declared by the loser was invisible to §5.7's search, which walked out to
+   an enclosing declaration instead, or found nothing and raised
+   `doesNotUnderstand:`, silently and at exit status 0. Renaming the
+   unrelated class changed the answer, which was the signature of the
+   defect. A textual count found eighteen of the 211 corpus modules declaring
+   two classes under one simple name -- a lower bound, since it only scans
+   source text -- and none of the six on `corpus/runnable.toml` was among
+   them, so no gate saw it; the reference lowering agreed with the wrong
+   answer too, since the mistake was made in the resolver, above both
+   lowerings. `spec_5_7_a_member_set_is_per_declaration_not_per_name` pins
+   the fix with the empty namesake collected *after* the one whose member the
+   search must find, and `spec_5_7_a_namesakes_members_are_not_in_reach`
+   pins its mirror image, the empty-of-the-relevant-member namesake collected
+   *before* it -- together showing the answer depends on neither the name
+   nor the collection order.
 
    **Open: the class side's scope.** Both sides of a class declaration
    contribute to one member set. The specification is silent on whether an
@@ -1169,11 +1167,11 @@ dispatches on one.
 - **Only declared members are lexically visible** (§5.7, §2.3.1). Counting
   inherited ones is the "comb" semantics Newspeak was designed against.
 - **Decided by the user (2026-09-19), planned with the other specification
-  gaps:** a member set belongs to its declaration, not to a name ("Defect: a
-  member set is keyed by the class's simple name" above); and a setter send
-  passes by every local that declares no setter -- parameters and immutable
-  locals -- as the canonical compiler does, rather than refusing at compile
-  time as SOMns does ("Setter sends" above).
+  gaps:** a member set belongs to its declaration, not to a name (**built**;
+  see "A member set belongs to its declaration, borrowed down the walk"
+  above); and a setter send passes by every local that declares no setter --
+  parameters and immutable locals -- as the canonical compiler does, rather
+  than refusing at compile time as SOMns does ("Setter sends" above).
 - **A slot's accessors are methods** (§6.3.2), in the method table, answered
   without an activation.
 - **`doesNotUnderstand:` bypasses access control**, because `Object`'s own

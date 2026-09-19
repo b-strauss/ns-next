@@ -1,0 +1,32 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 5.7: the receiver of an implicit send is "the
+   innermost lexically enclosing construct in which a method, slot or class
+   named s is declared". Beta's Dup declares no marker, so the marker in
+   reach is Beta's own; Alpha's Dup declares one, but Alpha's Dup encloses
+   nothing here.
+
+   The mirror image of spec_5_7_a_member_set_is_per_declaration_not_per_name:
+   there a member of the right class went missing, here a member of an
+   unrelated namesake appears. With member sets keyed by the simple name,
+   Alpha's Dup -- collected last -- lends its set to Beta's Dup, the search
+   stops at Dup itself, and the send answers doesNotUnderstand:. Together
+   the two goldens pin that the answer depends on neither the name nor the
+   order the declarations are collected in. *)
+class Spec57NamesakesMembersAreNotInReach usingPlatform: p = Object new (| t = p transcript. |) (
+    class Beta = Object new () (
+        marker = ( ^'Beta''s marker' )
+        class Dup = Object new () (
+            public reach = ( ^marker )
+        ) : ()
+        public probe = ( ^Dup new reach )
+    ) : ()
+    class Alpha = Object new () (
+        class Dup = Object new () (
+            marker = ( ^'Alpha''s Dup''s marker' )
+        ) : ()
+    ) : ()
+    public main: platform args: arguments = (
+        t show: Beta new probe; newLine
+    )
+) : ()

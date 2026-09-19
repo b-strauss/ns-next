@@ -5,14 +5,13 @@ Newspeak3
    named s is declared". Alpha's Dup declares marker itself, so the marker
    in reach is Dup's own, whatever any enclosing class declares.
 
-   The resolver keys a declaration's member set by the class's simple name
-   (docs/design/dispatch.md, "Defect: a member set is keyed by the class's
-   simple name"), so Beta's Dup -- collected later, declaring nothing --
-   overwrites Alpha's Dup's set and reach walks out to Alpha's marker
-   instead. Renaming the unrelated Beta.Dup makes this answer correctly,
-   which is the shape of the defect: a program's meaning depends on the
-   name of a class it never mentions. Skipped until a member set is keyed
-   by a class identity rather than a name. *)
+   A member set keyed by the class's simple name would have Beta's Dup --
+   collected later, declaring nothing -- overwrite Alpha's Dup's set, so
+   reach would walk out to Alpha's marker instead. Renaming the unrelated
+   Beta.Dup would then make this answer correctly, which is the shape of
+   that defect: a program's meaning depending on the name of a class it
+   never mentions. A member set belongs to its declaration instead
+   (docs/design/dispatch.md, "Resolution"), so the two Dups never meet. *)
 class Spec57MemberSetPerDeclaration usingPlatform: p = Object new (| t = p transcript. |) (
     class Alpha = Object new () (
         marker = ( ^'an enclosing marker' )

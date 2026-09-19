@@ -198,15 +198,15 @@ Places where the implementation differs from
 rather than an oversight -- and, where a row says so, to keep a defect nobody
 has had time to fix from being a surprise.
 
-Most rows only under-reject or narrow what can be expressed. Six do worse:
+Most rows only under-reject or narrow what can be expressed. Five do worse:
 the dropped local-slot initializer, the sequential simultaneous slot
 clauses, the eager lazy slot, the binary float behind a non-integral
-literal, the synchronous asynchronous send and the name-keyed member set
-each answer a **correct** program **wrongly, at exit status 0**. Two more
+literal and the synchronous asynchronous send each answer a **correct**
+program **wrongly, at exit status 0**. Two more
 behave that way without being rows here, because they are rules not
 implemented yet rather than decisions to differ -- equal symbols are not
 one object, and a parameter slot accepts a setter send; the closing
-paragraph below names them. Read all eight before trusting a program's
+paragraph below names them. Read all seven before trusting a program's
 output.
 
 | Deviation | Spec | Where it is explained |
@@ -222,16 +222,15 @@ output.
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
 | Mixin application `Base <: Trait` does not parse | §6.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
-| A §5.7 member set is keyed by a class's simple name, so two same-named classes in one module share one set. A defect, not a decision: it answers wrongly at exit status 0 | §5.7 | [dispatch.md](dispatch.md) |
 | The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 | `doesNotUnderstand:`'s argument is a two-element tuple of the selector and the arguments, not an object obeying `MessageMirror`'s protocol | §3.4 | [dispatch.md](dispatch.md) |
 | A `doesNotUnderstand:` declared on a class side is never invoked: the handler walk starts at the class object's own class, the bootstrap `Object` placeholder, not at its metaclass | §5.5 | [dispatch.md](dispatch.md) |
 
-Five of these have a golden under `goldens/spec/`, recorded as `skipped`:
+Four of these have a golden under `goldens/spec/`, recorded as `skipped`:
 the dropped local-slot initializer, the sequential simultaneous slot
-clauses, the eager lazy slot, the name-keyed member set and the unparsed
-mixin application. Each states what the specification requires the program
+clauses, the eager lazy slot and the unparsed mixin application. Each
+states what the specification requires the program
 to answer, so closing the gap is deleting the `skipped` line, and the
 expectation written the day the gap was found is what then has to hold. The
 asynchronous send has none: §5.6 says the result is "a promise that is

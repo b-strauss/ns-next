@@ -11,6 +11,7 @@ use crate::Symbol;
 /// declaration itself declares, under full selectors
 /// (`classes::own_member_names`) -- never what it inherits
 /// (`newspeak-spec.pdf` §5.7).
+#[derive(Clone, Copy)]
 pub(super) struct EnclosingClass<'a> {
     pub name: Symbol,
     pub members: &'a std::collections::HashSet<Symbol>,

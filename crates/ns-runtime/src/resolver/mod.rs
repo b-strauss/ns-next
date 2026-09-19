@@ -5,7 +5,7 @@ mod classes;
 mod scope;
 mod sends;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast::{self, Expression, Statement};
@@ -26,8 +26,7 @@ pub fn resolve(
         bindings: HashMap::new(),
         errors: Vec::new(),
     };
-    let member_sets = build_member_sets(&module.root_class);
-    resolver.resolve_class(&module.root_class, &[], &member_sets);
+    resolver.resolve_class(&module.root_class, &[]);
     if resolver.errors.is_empty() {
         Ok(ResolvedModule {
             module: Rc::new(module),
@@ -40,70 +39,24 @@ pub fn resolve(
     }
 }
 
-/// Each class declaration's *own* declared members
-/// (`classes::own_member_names`), keyed by the class's own name, which
-/// assumes no module declares two same-named classes at different nesting
-/// depths that would collide within one compile; revisit with a real
-/// `ClassId` if that ever bites.
-///
-/// Nothing inherited goes in: `newspeak-spec.pdf` §5.7 looks for the
-/// innermost lexically enclosing construct in which a member "is
-/// declared", and §2.3.1 proceeds "up the inheritance chain of self" only
-/// once no lexically visible declaration matches -- which is dispatch's job
-/// at run time, over the real class chain.
-fn build_member_sets(root: &ast::ClassDeclaration) -> HashMap<Symbol, HashSet<Symbol>> {
-    let mut sets = HashMap::new();
-    collect_member_sets(root, &mut sets);
-    sets
-}
-
-fn collect_member_sets(
-    declaration: &ast::ClassDeclaration,
-    sets: &mut HashMap<Symbol, HashSet<Symbol>>,
-) {
-    let name = Symbol::intern(&declaration.name.name);
-    sets.insert(name, classes::own_member_names(declaration));
-    for nested in &declaration.instance_side.nested_classes {
-        collect_member_sets(nested, sets);
-    }
-    if let Some(class_side) = &declaration.class_side {
-        for nested in &class_side.nested_classes {
-            collect_member_sets(nested, sets);
-        }
-    }
-}
-
-/// Builds an innermost-first `EnclosingClass` chain from `names`
-/// (outer-to-inner order, as accumulated while walking down nested class
-/// declarations).
-fn class_chain_from<'a>(
-    names: &[Symbol],
-    member_sets: &'a HashMap<Symbol, HashSet<Symbol>>,
-) -> Vec<EnclosingClass<'a>> {
-    names
-        .iter()
-        .rev()
-        .map(|&name| EnclosingClass {
-            name,
-            members: member_sets.get(&name).unwrap_or_else(|| {
-                static EMPTY: std::sync::OnceLock<HashSet<Symbol>> = std::sync::OnceLock::new();
-                EMPTY.get_or_init(HashSet::new)
-            }),
-        })
-        .collect()
-}
-
 struct Resolver {
     bindings: HashMap<Span, Binding>,
     errors: Vec<ResolveError>,
 }
 
 impl Resolver {
+    /// `enclosing` is the chain of declarations around this one, innermost
+    /// first. Each level borrows the member set of *its own* declaration,
+    /// computed here as the walk enters it, so two classes of one simple name
+    /// can never share or overwrite a set (`docs/design/dispatch.md`,
+    /// "Resolution"). Nothing inherited goes in: §5.7 looks for the innermost
+    /// lexically enclosing construct in which a member "is declared", and
+    /// §2.3.1 proceeds "up the inheritance chain of self" only once no
+    /// lexically visible declaration matches -- dispatch's job at run time.
     fn resolve_class(
         &mut self,
         declaration: &ast::ClassDeclaration,
-        enclosing: &[Symbol],
-        member_sets: &HashMap<Symbol, HashSet<Symbol>>,
+        enclosing: &[EnclosingClass<'_>],
     ) {
         let name = Symbol::intern(&declaration.name.name);
         for duplicate in classes::duplicate_member_names(declaration) {
@@ -112,10 +65,16 @@ impl Resolver {
                 message: format!("class `{name}` has multiple definitions of `{duplicate}`"),
             });
         }
-        let mut chain: Vec<Symbol> = enclosing.to_vec();
-        chain.push(name);
-        // Innermost first for the chain we hand to `sends::depth_search`.
-        let class_chain = class_chain_from(&chain, member_sets);
+        let own_members = classes::own_member_names(declaration);
+        let class_chain: Vec<EnclosingClass<'_>> = std::iter::once(EnclosingClass {
+            name,
+            members: &own_members,
+        })
+        .chain(enclosing.iter().map(|class| EnclosingClass {
+            name: class.name,
+            members: class.members,
+        }))
+        .collect();
 
         // The superclass clause's receiver (e.g. `Object` in `Object new`)
         // is evaluated "as if it occurred inside an instance method of the
@@ -124,8 +83,7 @@ impl Resolver {
         // chain of classes *enclosing* this declaration, not against this
         // class's own not-yet-existing member set.
         if let Some(clause) = &declaration.superclass {
-            let enclosing_chain = class_chain_from(enclosing, member_sets);
-            self.resolve_superclass_clause(clause, &enclosing_chain);
+            self.resolve_superclass_clause(clause, enclosing);
         }
 
         for method in &declaration.instance_side.methods {
@@ -186,11 +144,11 @@ impl Resolver {
         }
 
         for nested in &declaration.instance_side.nested_classes {
-            self.resolve_class(nested, &chain, member_sets);
+            self.resolve_class(nested, &class_chain);
         }
         if let Some(class_side) = &declaration.class_side {
             for nested in &class_side.nested_classes {
-                self.resolve_class(nested, &chain, member_sets);
+                self.resolve_class(nested, &class_chain);
             }
         }
     }
