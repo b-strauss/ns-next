@@ -106,9 +106,9 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    The superclass clause resolves against the same chain without the
    declaration's own level. `EnclosingClass.name` stays for `outer N` alone,
    where §5.9 does mean a name and the innermost enclosing class of that name
-   is the one. This replaced a resolver that mapped a class's *name* to its
-   own members (`resolver::build_member_sets`), under which two same-named
-   classes shared one entry and the last one collected won -- a member
+   is the one. The resolver used to map a class's simple name to its own
+   members, under which two same-named classes shared one entry and the
+   last one collected won -- a member
    declared by the loser was invisible to §5.7's search, which walked out to
    an enclosing declaration instead, or found nothing and raised
    `doesNotUnderstand:`, silently and at exit status 0. Renaming the
