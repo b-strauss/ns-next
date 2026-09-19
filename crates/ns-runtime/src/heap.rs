@@ -425,6 +425,14 @@ pub struct Heap<'gc> {
     /// Every object, addressed by an `ObjectReference`'s index. Nothing is ever
     /// removed, for the same reason as `frames`.
     objects: Vec<Object<'gc>>,
+    /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
+    /// equal symbols are one object; `docs/design/object-model.md`,
+    /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
+    /// way to make a symbol, and by the image decoder. Per heap, because a
+    /// handle means nothing against another heap. A root the tracer
+    /// forwards; a strong one until the collector makes it weak
+    /// (`docs/design/memory.md`, "What the collector traces").
+    canonical_symbols: Vec<Option<ObjectReference<'gc>>>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
@@ -478,6 +486,7 @@ impl std::fmt::Debug for Heap<'_> {
             .field("frames.len()", &self.frames.len())
             .field("activations", &self.stack.entries.len())
             .field("objects.len()", &self.objects.len())
+            .field("canonical_symbols.len()", &self.canonical_symbols.len())
             .field("host roots", host_roots)
             .finish()
     }
@@ -616,6 +625,7 @@ impl<'gc> Heap<'gc> {
             frames: Vec::new(),
             stack: ActivationStack::default(),
             objects: Vec::new(),
+            canonical_symbols: Vec::new(),
             host_roots: std::cell::RefCell::new(HostRoots {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
@@ -1095,6 +1105,25 @@ impl<'gc> Heap<'gc> {
             ObjectData::Symbol(symbol) => Some(*symbol),
             _ => None,
         }
+    }
+
+    /// The one object `symbol` already is in this heap, if anything has
+    /// asked for it yet (§5.1.6).
+    pub(crate) fn canonical_symbol(&self, symbol: Symbol) -> Option<ObjectReference<'gc>> {
+        self.canonical_symbols
+            .get(symbol.index())
+            .copied()
+            .flatten()
+    }
+
+    /// Records `object` as the one object `symbol` is in this heap, from
+    /// now on.
+    pub(crate) fn record_canonical_symbol(&mut self, symbol: Symbol, object: ObjectReference<'gc>) {
+        let index = symbol.index();
+        if self.canonical_symbols.len() <= index {
+            self.canonical_symbols.resize(index + 1, None);
+        }
+        self.canonical_symbols[index] = Some(object);
     }
 
     /// Closure `object`'s payload, borrowed, or `None` when `object` is not a
@@ -2114,14 +2143,15 @@ impl<'gc> Heap<'gc> {
     }
 
     /// How much a move has to rewrite: both arenas, the activation stack's
-    /// entries and registers, and the host roots. The stress mode paces its
-    /// moves by it.
+    /// entries and registers, the canonical symbol table, and the host
+    /// roots. The stress mode paces its moves by it.
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.objects.len()
             + self.frames.len()
             + self.stack.entries.len()
             + self.stack.values.len()
+            + self.canonical_symbols.len()
             + self.host_roots.borrow().slots.len()
     }
 
@@ -2176,6 +2206,9 @@ impl<'gc> Heap<'gc> {
         }
         for value in &mut self.stack.values {
             forwarder.value(value);
+        }
+        for object in self.canonical_symbols.iter_mut().flatten() {
+            forwarder.object(object);
         }
         let roots = self.host_roots.get_mut();
         roots.sweep();

@@ -1202,9 +1202,16 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::String(string))
     }
 
+    /// The one object `symbol` is in this heap, allocated the first time
+    /// anything asks for it.
     pub fn new_symbol(&mut self, symbol: Symbol) -> Value<'gc> {
+        if let Some(object) = self.heap.canonical_symbol(symbol) {
+            return Value::Object(object);
+        }
         let class = self.builtin_class(BuiltinClass::Symbol);
-        Value::Object(self.new_instance_object(class, ObjectData::Symbol(symbol)))
+        let object = self.new_instance_object(class, ObjectData::Symbol(symbol));
+        self.heap.record_canonical_symbol(symbol, object);
+        Value::Object(object)
     }
 
     pub fn new_character(&mut self, character: char) -> ObjectReference<'gc> {

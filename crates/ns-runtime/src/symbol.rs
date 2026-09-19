@@ -84,6 +84,12 @@ thread_local! {
 }
 
 impl Symbol {
+    /// The interned number, dense from 0 in interning order, so a table
+    /// indexed by it has one slot per symbol ever interned and no hashing.
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+
     pub fn intern(text: &str) -> Symbol {
         INTERNER.with_borrow_mut(|interner| {
             if let Some(&symbol) = interner.lookup.get(text) {

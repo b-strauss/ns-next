@@ -26,27 +26,24 @@ id").
 objects, which is why nothing resembling an object store is needed to name them
 in a serialized image.
 
-**A symbol is a heap object, and today not a canonical one**: every
-evaluation of a symbol literal, every `asSymbol` and every selector
-`doesNotUnderstand:` hands over allocates a fresh `ObjectData::Symbol`
-wrapper through `Mutator::new_symbol`, so `#foo == #foo` answers false where
-§5.1.6 and §3.1.1 make two equal symbols one object.
-**Decided (2026-09-19), planned with the other specification gaps:** each
-`Heap` keeps a canonical table, `Vec<Option<ObjectReference>>` indexed by the
-number inside a `Symbol` -- which the interner assigns densely -- and
-`new_symbol` answers the table's object, allocating it only the first time.
-It stays the one way to make a symbol, so all three producers are covered at
-once. The table is per heap because a handle means nothing against another
-heap. It is a strong root until the collector, which makes it weak
-([memory.md](memory.md), "What the collector traces"). This is what every
-reference does -- Primordial Soup's weak `symbolTable`
-(`KernelForPrimordialSoup.ns`), SOMns's `Symbols.symbolFor`, Squeak's symbol
-table -- and it keeps a symbol an indexable object for step 6's kernel, where
-`Symbol` is a subclass of `String`. Rejected: a symbol as an immediate
-`Value` variant, which no reference does and which every string primitive,
-and later the Newspeak kernel, would have to accept as a non-object. An
-image carries a symbol as a record, as now; the decoder enters each into the
-table and refuses a second record of the same text
+**A symbol is a heap object, and a canonical one**: each `Heap` keeps a
+canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside
+a `Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
+answers the table's object, allocating it only the first time. It is the one
+way to make a symbol, so a symbol literal, `asSymbol` and every selector
+handed to `doesNotUnderstand:` all reach the same object for the same text,
+which is what §5.1.6 and §3.1.1 make two equal symbols. The table is per heap
+because a handle means nothing against another heap. It is a strong root
+until the collector, which makes it weak ([memory.md](memory.md), "What the
+collector traces"). This is what every reference does -- Primordial Soup's
+weak `symbolTable` (`KernelForPrimordialSoup.ns`), SOMns's
+`Symbols.symbolFor`, Squeak's symbol table -- and it keeps a symbol an
+indexable object for step 6's kernel, where `Symbol` is a subclass of
+`String`. Rejected: a symbol as an immediate `Value` variant, which no
+reference does and which every string primitive, and later the Newspeak
+kernel, would have to accept as a non-object. An image carries a symbol as a
+record, as now; the decoder does not yet enter one into the table or refuse a
+second record of the same text -- that is next
 ([image-format.md](image-format.md), "Verification").
 
 **An `ObjectReference` is an index, not a pointer.** Every `Object` lives in one
