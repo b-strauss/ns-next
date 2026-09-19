@@ -125,9 +125,8 @@ measured once, not once per fix. The failure mode to
 avoid is the tempting one: closing a gap here and there between measured
 steps, after which no number compares with any other.
 
-**The baseline is fresh**: the head of `master` once
-`feature/dispatch-id-in-header` is merged, whose last change to a send's path
-is `5d3aeff`. `393311f`, 3c's baseline, is superseded. Performance is
+**The baseline is fresh**: `22a56f7`, the merge of 3c into `master`,
+whose last change to a send's path is `5d3aeff`. `393311f`, 3c's baseline, is superseded. Performance is
 measured, not assumed: the protocol and the seven sources of "What removing
 the re-entries moved" ([execution.md](design/execution.md)), plus
 `goldens/bench/bench_megamorphic.ns`, the eighth source and the only one
