@@ -2755,6 +2755,11 @@ but their initialization writes them (§3.6). A mutable local (`| x |`,
    of a `whileTrue:` or `whileFalse:` the compiler inlines — that also contains
    the reading block literal, even when the write is textually before it: the
    next iteration's write happens after this iteration's block was created.
+4. its own scope writes it inside a block of an inlined `ifTrue:`, `ifFalse:`,
+   `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` or `or:` — outside any real
+   block — and a real block reads it anywhere in the scope: such a write
+   counts as after every capture, whatever its position ("Fallback blocks",
+   below).
 
 Rules 1 and 2 are Primordial Soup's (`ClosureRewriter1`'s comment and
 `localWriteNode:`). Rule 3 is what ns-next's inlining adds: its inlined blocks
@@ -2764,6 +2769,35 @@ writes is its method's, and textual order alone would let
 first block answering the first `x` instead of the last. Every other captured
 mutable local is copied — the common "declare, set once, then capture" pattern
 costs no vector.
+
+### Fallback blocks
+
+An inlined `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:`
+or `or:` keeps a run-time guard whose failure path sends the real message with
+real closures (`emit_guarded_branch`, whose `on_fallback` lowers the block
+literals through `lower_block_literal`), so that inlining stays a pure
+optimization (`goldens/language/control_flow_fallback.ns`). The same block
+literal is lowered twice: inlined on the common path, a real closure on the
+fallback path. An inlined `whileTrue:` or `whileFalse:` is not affected: its
+fallback is `mustBeBoolean`, with no closure.
+
+A fallback closure can outlive the statement that made it — a non-Boolean
+receiver's `ifTrue:` may keep the block and run it later — so treating it as a
+converted block would put every variable written in any `ifTrue:` branch into a
+vector (rule 1), captured or not. Instead **a fallback closure, and every block
+nested in it, keeps the by-reference model**: it reads and writes through
+`LoadOuterLocal`/`StoreOuterLocal`, reaching the registers of the frame whose
+common path it stands in for — that frame's own locals, its copied-value
+registers, and, for a vector variable, its vector register followed by
+`LoadVector`/`StoreVector`. Because such a closure can write a local of that
+frame at any later time, rule 4 counts its writes as after every capture: a
+variable written in an inlinable branch goes into the vector only when a real
+block also captures it. The common path pays nothing; the fallback pays only
+when it runs.
+
+Rejected: converting fallback closures like any other block (a vector for every
+variable any branch writes), and sending `mustBeBoolean` on the fallback path
+as Cog does, which would change recorded outcomes and make inlining observable.
 
 ### Representation
 
@@ -2799,8 +2833,9 @@ register then simply stays `nil`, so every `Binding` stays valid.
 - `MakeClosure` gains `copied: Vec<u16>`, the registers whose values go into
   the closure. The reference lowering always emits an empty list.
 
-The optimized lowering stops emitting `LoadOuterLocal` and `StoreOuterLocal`;
-they remain the reference lowering's.
+The optimized lowering emits `LoadOuterLocal` and `StoreOuterLocal` only inside
+fallback closures ("Fallback blocks"); everywhere else they remain the
+reference lowering's.
 
 **Activating a block** writes the closure's copied values into the registers
 after its parameters, as Cog and Primordial Soup do ("Copied values are included
@@ -2820,11 +2855,19 @@ the captured frame itself when it is a method's or an initializer's, that
 frame's own `home` when it is a block's. The trace impl names `copied`, which
 the compiler enforces.
 
-**The divorce.** `CompiledCode` gains a flag that is set when the body or a
-block nested in it contains `LoadOuterLocal` or `StoreOuterLocal`, which only
-the reference lowering emits. It is computed when the code is built, by the
-compiler and by the decoder alike, and is not on the wire. `pop_activation`
-copies a reified frame's registers out only when its code has the flag.
+**The divorce.** Whether a returning frame keeps its registers is decided per
+activation, at run time. `CompiledCode` gains a flag, `reaches_by_reference`,
+set when the body or a block nested in it contains `LoadOuterLocal` or
+`StoreOuterLocal` — every block of the reference lowering, and every fallback
+closure of the optimized one. It is computed when the code is built, by the
+compiler and by the decoder alike, and is not on the wire. A `MakeClosure`
+whose block has the flag marks the creating activation's stack entry, and
+`pop_activation` copies a reified frame's registers out only when its entry is
+marked. The chain holds by induction: a by-reference closure reaching two
+frames out was created by a by-reference closure's activation, which its own
+creation marked. Under the reference lowering every activation that creates a
+closure is marked, as every frame is divorced today; under the optimized one
+only an activation whose fallback path actually ran.
 
 **An untrusted image** can put any value where code expects a vector.
 `LoadVector` and `StoreVector` check the value's kind and the index and raise a
@@ -2866,16 +2909,20 @@ register when something lowered before its consumer may write it, and
 `may_clobber_locals` treats **every send** as such a write, because the code it
 runs could write the local through a closure (`CLAUDE.md`, "An expression's
 value register must still hold that value"). Under the optimized lowering,
-after conversion, no closure writes a register of another activation: a
-captured written variable lives in a vector, and a vector read lands in a
-scratch register as a snapshot; a copied register is read-only. A local's
-register can only be written by an assignment in its own body, including inside
-an inlined block, never inside a real one.
+after conversion, a converted closure writes no register of another
+activation: a captured written variable lives in a vector, and a vector read
+lands in a scratch register as a snapshot; a copied register is read-only. The
+one exception is a fallback closure ("Fallback blocks"), which writes by
+reference exactly the locals its inlinable branch assigns. A local's register
+can therefore be written only by an assignment in its own body, including inside
+an inlined block, or — for a local some inlinable branch of the body assigns —
+by a fallback closure that any send may run.
 
 So under the optimized lowering an expression may clobber a local only when it
 contains — without looking into real blocks — an assignment to a local of the
-body being lowered, and an assignment through a setter no longer copies its
-value for the same reason. `lower_assign`'s `debug_assert!`s stay. The
+body being lowered, or a send, cascade or implicit send while the local is one
+an inlinable branch of the body assigns. An assignment through a setter copies
+its value only under the same condition. `lower_assign`'s `debug_assert!`s stay. The
 invariant in `CLAUDE.md` and [compiler.md](compiler.md) keeps its statement and
 gets its new justification. The reference lowering is unaffected. A mistake here
 is silent wrong output with exit status 0; the reference lowering is the oracle
@@ -2897,8 +2944,10 @@ copied and vector variables; a write before capture, after it, inside a
 blocks three deep that carry a variable through a middle block; a variable read
 only in an inlined `ifTrue:`; a vector variable with an initializer; an
 initializer body and a slot initializer creating blocks; `^` from a block whose
-home has captured variables; a closure surviving its method; and the
-protective-copy cases above. Each recorded output is checked against the
+home has captured variables; a closure surviving its method; a non-Boolean
+receiver whose `ifTrue:` keeps its fallback closure and runs it later — reading
+and writing a variable another block captured, from inside a method, a block
+and an outer block that has returned; and the protective-copy cases above. Each recorded output is checked against the
 semantics by hand before it is taken.
 
 ### Cost
@@ -3012,3 +3061,9 @@ binds it is that no native code may ever enter an image.
   oracle** (decided 2026-09-19): it is to be removed at some point, and from
   then on the recorded golden outcomes are how closure conversion, and
   everything else, is tested.
+- **A fallback closure keeps the by-reference model** (decided 2026-09-19,
+  "Fallback blocks"): the real closure an inlined `ifTrue:`, `and:` or `or:`
+  sends when its receiver is not a Boolean reads and writes its frame's
+  registers by reference, its writes count as after every capture, and the
+  divorce copy is decided per activation by whether it created such a
+  closure — so the common path pays nothing and inlining stays unobservable.
