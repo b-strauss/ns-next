@@ -1204,38 +1204,41 @@ impl<'gc> Heap<'gc> {
     /// file: `decode`'s `CopiedCountOutOfRange` keeps a decoded closure's
     /// list inside its body's registers, and this is what keeps a future gap
     /// there from becoming a panic on an untrusted image.
+    ///
+    /// `Step::Block` runs this on every block activation, so it allocates
+    /// nothing: the two arenas are borrowed field by field rather than
+    /// through `closure`, which borrows the whole `Heap`, so each value goes
+    /// straight from the object arena into its register with no intermediate
+    /// buffer.
     pub(crate) fn fill_copied_values(
         &mut self,
         activation: ActivationReference,
         object: ObjectReference<'gc>,
     ) {
         self.check_activation(activation);
-        let Some(closure) = self.closure(object) else {
+        self.check_object_origin(object);
+        let Heap { objects, stack, .. } = self;
+        let ObjectData::Closure(closure) = &objects[object.index as usize].data else {
             return;
         };
         if closure.copied.is_empty() {
             return;
         }
-        // Copied out first: the write below needs the stack mutably, and
-        // `closure` borrows the object arena of the same heap.
-        let copied: Vec<Value<'gc>> = closure.copied.to_vec();
-        let entry = &self.stack.entries[activation.index as usize];
-        let base = entry.base as usize;
-        let argument_count = entry.argument_count as usize;
+        let entry = &stack.entries[activation.index as usize];
+        let first = entry.base as usize + entry.argument_count as usize;
         // The activation's own window, so a list longer than its register
         // file stops at the end of it rather than writing into whatever
         // sits above.
-        let end = self
-            .stack
+        let end = stack
             .entries
             .get(activation.index as usize + 1)
-            .map_or(self.stack.values.len(), |above| above.base as usize);
-        for (position, value) in copied.into_iter().enumerate() {
-            let slot = base + argument_count + position;
+            .map_or(stack.values.len(), |above| above.base as usize);
+        for (position, value) in closure.copied.iter().enumerate() {
+            let slot = first + position;
             if slot >= end {
                 break;
             }
-            self.stack.values[slot] = value;
+            stack.values[slot] = *value;
         }
     }
 
