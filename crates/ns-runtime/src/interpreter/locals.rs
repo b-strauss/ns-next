@@ -3,6 +3,9 @@
 
 use crate::heap::{ActivationReference, Heap};
 use crate::types::*;
+use crate::Symbol;
+
+use super::{EvaluationResult, Signal};
 
 pub(crate) fn read_local<'gc>(
     heap: &Heap<'gc>,
@@ -77,6 +80,60 @@ pub(crate) fn write_outer_local<'gc>(
         OuterFrame::Own(own) => heap.activation_set_local(own, index, value),
         OuterFrame::Captured(frame) => heap.frame_set_local(frame, index, value),
     }
+}
+
+/// The VM's `LoadVector`. A value that is not the `Array` the compiler put
+/// there, or an index past its end, can only come from a crafted image
+/// (`CLAUDE.md`, "An image is untrusted input"), so this reports rather than
+/// indexes.
+pub(crate) fn load_vector<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    vector: u16,
+    index: u16,
+) -> EvaluationResult<'gc> {
+    let value = heap.activation_local(activation, vector);
+    match value {
+        Value::Object(object) => match heap.array_at(object, index as usize) {
+            Some(element) => Ok(element),
+            None => Err(vector_error(value)),
+        },
+        _ => Err(vector_error(value)),
+    }
+}
+
+/// The VM's `StoreVector`; the mirror of `load_vector` through
+/// `Heap::array_set`.
+pub(crate) fn store_vector<'gc>(
+    heap: &mut Heap<'gc>,
+    activation: ActivationReference,
+    vector: u16,
+    index: u16,
+    source: u16,
+) -> Result<(), Signal<'gc>> {
+    let value = heap.activation_local(activation, vector);
+    let written = match value {
+        Value::Object(object) => {
+            let source_value = heap.activation_local(activation, source);
+            heap.array_set(object, index as usize, source_value)
+        }
+        _ => false,
+    };
+    if written {
+        Ok(())
+    } else {
+        Err(vector_error(value))
+    }
+}
+
+/// The error both `load_vector` and `store_vector` raise. Built here, never
+/// in `vm.rs`: error text lives in `interpreter/`.
+fn vector_error<'gc>(vector: Value<'gc>) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern("indirectionVector"),
+        receiver: vector,
+        message: "internal: an indirection vector is not the Array its code expects".to_string(),
+    })
 }
 
 /// Writes `value` into instance field `index` on `instance`'s

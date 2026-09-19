@@ -469,6 +469,20 @@ fn every_instruction_once() -> CompiledCode {
                 destination: 9,
                 element_registers: vec![0, 1],
             },
+            Instruction::MakeVector {
+                destination: 10,
+                size: 2,
+            },
+            Instruction::LoadVector {
+                destination: 11,
+                vector: 10,
+                index: 0,
+            },
+            Instruction::StoreVector {
+                vector: 10,
+                index: 0,
+                source: 1,
+            },
             Instruction::InitializeSlot {
                 source: 9,
                 own_index: 3,
@@ -491,8 +505,8 @@ fn every_instruction_once() -> CompiledCode {
             },
         ],
         argument_count: 2,
-        register_count: 10,
-        statement_program_counter: vec![(0, 0..3), (1, 3..20)],
+        register_count: 12,
+        statement_program_counter: vec![(0, 0..3), (1, 3..24)],
         // One past the highest number among its own sends (0..=3, in
         // emission order -- what `number_call_site_families` assigns on the
         // decoded side too) and the block's `family_size` (0): the same
@@ -902,14 +916,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(30); // ... one past the last real tag
+    writer.write_u8(33); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 30
+            tag: 33
         })
     );
 }

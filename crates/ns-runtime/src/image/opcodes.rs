@@ -27,7 +27,7 @@
 // retired at 11 and reassigned to 29 for the same reason: closure
 // conversion gave it a list of copied registers, so its old bytes describe
 // a different instruction.
-// Next free number: 30.
+// Next free number: 33.
 
 /// Loads a literal into a register; a string, symbol, character or array
 /// literal allocates a fresh object every time it runs.
@@ -88,6 +88,14 @@ pub const OPCODE_SEND_SUPER: u8 = 28;
 /// Creates a block closure over a compiled block body, capturing the running
 /// activation and copying the values of a list of registers into it.
 pub const OPCODE_MAKE_CLOSURE: u8 = 29;
+/// Builds a scope's indirection vector: an `Array` of `size` `nil` slots that
+/// every block needing one of the scope's captured-and-written locals is
+/// handed a reference to.
+pub const OPCODE_MAKE_VECTOR: u8 = 30;
+/// Reads one slot of an indirection vector.
+pub const OPCODE_LOAD_VECTOR: u8 = 31;
+/// Writes one slot of an indirection vector.
+pub const OPCODE_STORE_VECTOR: u8 = 32;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction

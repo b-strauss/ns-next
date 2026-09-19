@@ -1208,6 +1208,16 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             registers.push(*destination);
             registers
         }
+        Instruction::MakeVector { destination, .. } => vec![*destination],
+        // `index` is a slot of the vector `Array`, not a register of this
+        // frame -- checked at run time against the vector's actual length,
+        // since a vector's size is a run-time value.
+        Instruction::LoadVector {
+            destination,
+            vector,
+            ..
+        } => vec![*destination, *vector],
+        Instruction::StoreVector { vector, source, .. } => vec![*vector, *source],
         Instruction::InitializeSlot { source, .. } => vec![*source],
         Instruction::Return { register }
         | Instruction::ImplicitReturn { register }
@@ -1241,6 +1251,9 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::SendSuper { .. }
         | Instruction::MakeClosure { .. }
         | Instruction::MakeArray { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::LoadVector { .. }
+        | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
@@ -1542,6 +1555,31 @@ fn decode_instruction(
             Instruction::MakeArray {
                 destination,
                 element_registers: decode_registers(reader)?,
+            }
+        }
+        OPCODE_MAKE_VECTOR => {
+            let destination = reader.read_u16()?;
+            Instruction::MakeVector {
+                destination,
+                size: reader.read_u16()?,
+            }
+        }
+        OPCODE_LOAD_VECTOR => {
+            let destination = reader.read_u16()?;
+            let vector = reader.read_u16()?;
+            Instruction::LoadVector {
+                destination,
+                vector,
+                index: reader.read_u16()?,
+            }
+        }
+        OPCODE_STORE_VECTOR => {
+            let vector = reader.read_u16()?;
+            let index = reader.read_u16()?;
+            Instruction::StoreVector {
+                vector,
+                index,
+                source: reader.read_u16()?,
             }
         }
         OPCODE_INITIALIZE_SLOT => {

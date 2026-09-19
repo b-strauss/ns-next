@@ -4,9 +4,12 @@ use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
 use ns_runtime::{
-    Heap, HostError, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value,
+    ClassReference, Heap, HostError, HostResult, HostSignal, Interpreter, Mixin, Mutator, Root,
+    SourceOrigin, Symbol, Value,
 };
+use ns_syntax::Span;
 
 fn load(source: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
@@ -70,6 +73,57 @@ fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
         Value::SmallInteger(integer) => *integer,
         _ => panic!("expected a SmallInteger"),
     }
+}
+
+/// The class object `root` holds, for the heap accessors that take one.
+/// Fetched where it is used: a run may move it. Follows the same pattern as
+/// `tests/image.rs`'s helper of the same name.
+fn class_reference<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ClassReference<'gc> {
+    match mutator.fetch(root) {
+        Value::Object(class) => class,
+        _ => panic!("expected a class object"),
+    }
+}
+
+/// `class`'s own mixin as a value a test can edit. The clone is shallow: its
+/// methods, nested declarations and class side are the same `Rc`s.
+fn mixin_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Mixin {
+    (*heap.class_application(class).expect("a class object").mixin).clone()
+}
+
+/// Replaces `class`'s mixin with `mixin`, applied to the same superclass
+/// application -- the shape an edit to a live class takes, and how a test
+/// puts a hand-built body in front of the running interpreter. Takes
+/// `&mut Mutator` and is called from inside an entry.
+fn install_mixin<'gc>(mutator: &mut Mutator<'gc>, class: ClassReference<'gc>, mixin: Mixin) {
+    let super_application = mutator
+        .heap()
+        .class_application(class)
+        .expect("a class object")
+        .superclass
+        .clone();
+    let application = mutator.apply_mixin(&Rc::new(mixin), super_application.as_ref());
+    assert!(
+        mutator.heap_mut().set_class_application(class, application),
+        "a class object"
+    );
+}
+
+/// `mixin` with method `selector`'s body replaced by `code`.
+fn with_method_code(mut mixin: Mixin, selector: &str, code: Rc<CompiledCode>) -> Mixin {
+    let selector = Symbol::intern(selector);
+    let method = mixin
+        .compiled_method(selector)
+        .expect("the mixin declares the method")
+        .clone();
+    mixin.methods.insert(
+        selector,
+        ns_runtime::mixin::MethodEntry::Compiled(Rc::new(ns_runtime::mixin::MixinMethod {
+            code,
+            ..(*method).clone()
+        })),
+    );
+    mixin
 }
 
 #[test]
@@ -533,5 +587,181 @@ fn a_wrong_arity_send_is_refused() {
     assert_eq!(
         error.message,
         "wrong number of arguments: `probe` takes 0, got 2"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The indirection vector's three instructions (`MakeVector`, `LoadVector`,
+// `StoreVector`) -- closure conversion's own storage, hand-built here since
+// nothing compiles them yet (Task 5 emits them).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_vector_round_trips_a_value_through_its_slot() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public compute = ( ^0 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // MakeVector r0, size 1; LoadLiteral r1 <- 42; StoreVector r0[0] <- r1;
+        // LoadVector r2 <- r0[0]; Return r2  =>  42
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::MakeVector {
+                    destination: 0,
+                    size: 1,
+                },
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: Literal::SmallInteger(42),
+                },
+                Instruction::StoreVector {
+                    vector: 0,
+                    index: 0,
+                    source: 1,
+                },
+                Instruction::LoadVector {
+                    destination: 2,
+                    vector: 0,
+                    index: 0,
+                },
+                Instruction::Return { register: 2 },
+            ],
+            argument_count: 0,
+            register_count: 3,
+            statement_program_counter: vec![(0, 0..5)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "compute", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let result = expect_ok(send(&mut interpreter, &instance, "compute", &[]), "compute");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        42
+    );
+}
+
+#[test]
+fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public bad = ( ^0 )
+          public good = ( ^1 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // LoadLiteral r0 <- 7 (not an Array); LoadVector r1 <- r0[0]; Return r1
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: Literal::SmallInteger(7),
+                },
+                Instruction::LoadVector {
+                    destination: 1,
+                    vector: 0,
+                    index: 0,
+                },
+                Instruction::Return { register: 1 },
+            ],
+            argument_count: 0,
+            register_count: 2,
+            statement_program_counter: vec![(0, 0..3)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let result = send(&mut interpreter, &instance, "bad", &[]);
+    let error = expect_error(&mut interpreter, result, "bad");
+    assert!(
+        error.message.contains("indirection vector"),
+        "{}",
+        error.message
+    );
+    // The activation stack unwound to a clean floor rather than aborting the
+    // process: the same interpreter, on the same instance, still answers an
+    // unrelated send.
+    let result = expect_ok(send(&mut interpreter, &instance, "good", &[]), "good");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        1
+    );
+}
+
+/// The case a crafted image most plausibly produces: a real `Array`, just
+/// too short for the index the body addresses. `Heap::array_at`/`array_set`
+/// answer `None`/`false` rather than panicking, and `load_vector`/
+/// `store_vector` turn that into the same Newspeak error as a
+/// completely-wrong-shaped vector.
+#[test]
+fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public bad = ( ^0 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // MakeVector r0, size 1 (one slot); LoadVector r1 <- r0[5] (out of
+        // range); Return r1
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::MakeVector {
+                    destination: 0,
+                    size: 1,
+                },
+                Instruction::LoadVector {
+                    destination: 1,
+                    vector: 0,
+                    index: 5,
+                },
+                Instruction::Return { register: 1 },
+            ],
+            argument_count: 0,
+            register_count: 2,
+            statement_program_counter: vec![(0, 0..3)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let result = send(&mut interpreter, &instance, "bad", &[]);
+    let error = expect_error(&mut interpreter, result, "bad");
+    assert!(
+        error.message.contains("indirection vector"),
+        "{}",
+        error.message
     );
 }

@@ -525,6 +525,31 @@ fn encode_instruction(
             writer.write_u16(*destination);
             encode_registers(writer, element_registers);
         }
+        Instruction::MakeVector { destination, size } => {
+            writer.write_u8(OPCODE_MAKE_VECTOR);
+            writer.write_u16(*destination);
+            writer.write_u16(*size);
+        }
+        Instruction::LoadVector {
+            destination,
+            vector,
+            index,
+        } => {
+            writer.write_u8(OPCODE_LOAD_VECTOR);
+            writer.write_u16(*destination);
+            writer.write_u16(*vector);
+            writer.write_u16(*index);
+        }
+        Instruction::StoreVector {
+            vector,
+            index,
+            source,
+        } => {
+            writer.write_u8(OPCODE_STORE_VECTOR);
+            writer.write_u16(*vector);
+            writer.write_u16(*index);
+            writer.write_u16(*source);
+        }
         Instruction::InitializeSlot { source, own_index } => {
             writer.write_u8(OPCODE_INITIALIZE_SLOT);
             writer.write_u16(*source);

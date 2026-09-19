@@ -20,7 +20,8 @@ use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
-    read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
+    load_vector, read_local, read_outer_local, store_instance_field, store_vector, write_local,
+    write_outer_local,
 };
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
@@ -365,6 +366,30 @@ fn execute<'gc>(
             write_local(&mut mutator.heap, activation, *destination, value);
             Flow::Next
         }
+        Instruction::MakeVector { destination, size } => {
+            let value = Value::Object(mutator.new_array(vec![Value::Nil; *size as usize]));
+            write_local(&mut mutator.heap, activation, *destination, value);
+            Flow::Next
+        }
+        Instruction::LoadVector {
+            destination,
+            vector,
+            index,
+        } => match load_vector(&mutator.heap, activation, *vector, *index) {
+            Ok(value) => {
+                write_local(&mut mutator.heap, activation, *destination, value);
+                Flow::Next
+            }
+            Err(signal) => unwind(mutator, signal, floor),
+        },
+        Instruction::StoreVector {
+            vector,
+            index,
+            source,
+        } => match store_vector(&mut mutator.heap, activation, *vector, *index, *source) {
+            Ok(()) => Flow::Next,
+            Err(signal) => unwind(mutator, signal, floor),
+        },
         Instruction::InitializeSlot { source, own_index } => {
             // `own_index` is relative to the executing mixin's own slots; the
             // activation's `slot_base`, set when this level's activation was

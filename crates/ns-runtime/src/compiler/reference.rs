@@ -593,11 +593,18 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         Instruction::MakeArray {
             element_registers, ..
         } => element_registers.clone(),
+        // Unreachable in reference-lowered code: closure conversion, which
+        // is what emits these, does not run under the reference lowering.
+        // Named here anyway, so a real fifth-instruction addition still has
+        // to say what it reads.
+        Instruction::LoadVector { vector, .. } => vec![*vector],
+        Instruction::StoreVector { vector, source, .. } => vec![*vector, *source],
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
         | Instruction::LoadBuiltinClass { .. }
         | Instruction::LoadOuterLocal { .. }
         | Instruction::MakeClosure { .. }
+        | Instruction::MakeVector { .. }
         | Instruction::Jump { .. } => vec![],
     }
 }
@@ -616,9 +623,12 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::SendInlinable { destination, .. }
         | Instruction::SendSuper { destination, .. }
         | Instruction::MakeClosure { destination, .. }
-        | Instruction::MakeArray { destination, .. } => Some(*destination),
+        | Instruction::MakeArray { destination, .. }
+        | Instruction::MakeVector { destination, .. }
+        | Instruction::LoadVector { destination, .. } => Some(*destination),
         Instruction::StoreLocal { .. }
         | Instruction::StoreOuterLocal { .. }
+        | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }

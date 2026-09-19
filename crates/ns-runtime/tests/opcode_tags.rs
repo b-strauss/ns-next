@@ -39,6 +39,9 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_SEND_INLINABLE, 27);
     assert_eq!(OPCODE_SEND_SUPER, 28);
     assert_eq!(OPCODE_MAKE_CLOSURE, 29);
+    assert_eq!(OPCODE_MAKE_VECTOR, 30);
+    assert_eq!(OPCODE_LOAD_VECTOR, 31);
+    assert_eq!(OPCODE_STORE_VECTOR, 32);
 }
 
 #[test]
@@ -75,6 +78,9 @@ fn no_two_tags_share_a_number() {
         OPCODE_SEND_SUPER,
         OPCODE_MAKE_CLOSURE,
         OPCODE_MAKE_ARRAY,
+        OPCODE_MAKE_VECTOR,
+        OPCODE_LOAD_VECTOR,
+        OPCODE_STORE_VECTOR,
         OPCODE_INITIALIZE_SLOT,
         OPCODE_RETURN,
         OPCODE_IMPLICIT_RETURN,
@@ -132,6 +138,9 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_SEND_SUPER,
         OPCODE_MAKE_CLOSURE,
         OPCODE_MAKE_ARRAY,
+        OPCODE_MAKE_VECTOR,
+        OPCODE_LOAD_VECTOR,
+        OPCODE_STORE_VECTOR,
         OPCODE_INITIALIZE_SLOT,
         OPCODE_RETURN,
         OPCODE_IMPLICIT_RETURN,

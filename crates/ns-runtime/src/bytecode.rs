@@ -155,6 +155,32 @@ pub enum Instruction {
         destination: u16,
         element_registers: Vec<u16>,
     },
+    /// Builds this body's indirection vector: the `Array` its own
+    /// captured-and-written locals live in, and which every block that needs
+    /// one of them is handed a reference to
+    /// (`docs/design/execution.md`, "Representation"). Emitted once, before
+    /// the body's first statement, because a local slot's own initializer
+    /// already writes through it.
+    MakeVector {
+        destination: u16,
+        size: u16,
+    },
+    /// Reads one slot of an indirection vector built by `MakeVector`.
+    /// `vector` must hold the `Array` the compiler built it as -- checked at
+    /// run time, since a vector's size is a run-time value
+    /// (`interpreter::locals::load_vector`).
+    LoadVector {
+        destination: u16,
+        vector: u16,
+        index: u16,
+    },
+    /// Writes one slot of an indirection vector; the mirror of `LoadVector`
+    /// (`interpreter::locals::store_vector`).
+    StoreVector {
+        vector: u16,
+        index: u16,
+        source: u16,
+    },
     /// Writes `self`'s instance field at `frame.slot_base + own_index` --
     /// emitted only by instance-initializer compilation for a slot's own
     /// initializer expression. `own_index` is the slot's position among the
@@ -521,6 +547,19 @@ fn format_instruction(instruction: &Instruction) -> String {
             "MakeArray r{destination}, ({})",
             registers(element_registers)
         ),
+        Instruction::MakeVector { destination, size } => {
+            format!("MakeVector r{destination}, size {size}")
+        }
+        Instruction::LoadVector {
+            destination,
+            vector,
+            index,
+        } => format!("LoadVector r{destination} <- r{vector}[{index}]"),
+        Instruction::StoreVector {
+            vector,
+            index,
+            source,
+        } => format!("StoreVector r{vector}[{index}] <- r{source}"),
         Instruction::InitializeSlot { source, own_index } => {
             format!("InitSlot own {own_index} <- r{source}")
         }
