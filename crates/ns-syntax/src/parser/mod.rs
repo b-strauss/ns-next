@@ -409,13 +409,23 @@ mod tests {
     }
 
     #[test]
-    fn assignment_right_associative() {
-        let expression = parse_expression("x := y := 1");
-        let Expression::Assign { target, value, .. } = expression else {
-            panic!()
+    fn a_module_spelling_colon_equals_does_not_parse() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'X'
+            class C = () (
+                public m = ( | t | t := 1. ^t )
+            ) : ()
+        "};
+        let Err(diagnostics) = crate::parse(source) else {
+            panic!("`:=` parsed");
         };
-        assert_eq!(target.name, "x");
-        assert!(matches!(*value, Expression::Assign { .. }));
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .starts_with("`:=` is not Newspeak syntax")),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -488,7 +498,7 @@ mod tests {
 
     #[test]
     fn block_with_parameters_and_temporaries() {
-        let expression = parse_expression("[:x :y | | t | t := x. t + y ]");
+        let expression = parse_expression("[:x :y | | t | t:: x. t + y ]");
         let Expression::Block(block) = expression else {
             panic!()
         };

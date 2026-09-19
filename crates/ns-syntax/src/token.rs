@@ -25,7 +25,6 @@ pub enum TokenKind {
     Dot,
     Semicolon,
     Colon,
-    Assign,
     Equals,
     ColonColonEquals,
     Pound,

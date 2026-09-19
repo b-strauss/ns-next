@@ -116,7 +116,7 @@ pub enum Expression {
     Send(Box<Send>),
     /// `receiver msg1; msg2; msg3`
     Cascade(Box<Cascade>),
-    /// `lhs := rhs`  (lhs is always an Identifier in Newspeak)
+    /// `name:: value`, a setter send at an expression's head (§5.4.3)
     Assign {
         target: Identifier,
         value: Box<Expression>,
