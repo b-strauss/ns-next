@@ -59,7 +59,16 @@ A named local's register is live storage. `lower_operand` copies it when anythin
 afterwards can write it. An assignment through a setter copies it too, even when the very
 next instruction reads the assignment's value: the setter send runs user code first, and
 that code can write the local through a closure. `lower_expression_for` skips that copy only
-where its caller states that nothing reads the value (`ValueUse::Discarded`). Getting this
+where its caller states that nothing reads the value (`ValueUse::Discarded`). A parameter's
+or an immutable local's register is never copied, whatever else is lowered afterwards: no
+assignment can bind to one (§3.6), so nothing but its own initialization ever writes it. This
+rests entirely on the resolver passing a setter send by every parameter and every immutable
+local (`ScopeStack::resolve_setter`); `lower_assign`'s `debug_assert!`s check every write
+into a named local, whether it is the current frame's own register (`Binding::Local`, and
+`Binding::OuterLocal` at `hops == 0`) or an enclosing frame's (`StoreOuterLocal`,
+`hops != 0` -- the write-through-a-closure case the copy protected against, checked
+against the target frame's own `read_only_locals` table, which `lower_block_literal`
+hands each nested `Lowerer` alongside its scope stack). Getting this
 wrong is silent wrong output with exit status 0, not a crash.
 
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:

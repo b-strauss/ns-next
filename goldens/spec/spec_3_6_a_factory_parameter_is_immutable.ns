@@ -1,0 +1,17 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.6: "Parameter slots are immutable (6.3.2)". A
+   class's primary factory parameters are the parameters of the instance
+   initializer's activation, where the slot initializers and initExprs run
+   (6.3), so `initial:: 9` there is the self send initial:, which nothing
+   answers. (The parameter is not named after the factory selector's
+   keyword, so the refusal cannot be mistaken for one about the factory,
+   which is a class-side member.) *)
+class Spec36AFactoryParameterIsImmutable usingPlatform: p = Object new (| t = p transcript. |) (
+    class Holder seed: initial = Object new (| stored ::= 0. | initial:: 9. stored:: initial ) (
+        public contents = ( ^stored )
+    ) : ()
+    public main: platform args: arguments = (
+        t show: (Holder seed: 1) contents printString; newLine.
+    )
+) : ()

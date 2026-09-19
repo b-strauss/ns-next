@@ -108,6 +108,14 @@ A method body, a block body and an instance initializer all compile to the same
 shape; `kind` tags which. An activation of it is pushed with
 `register_count - argument_count` temporaries.
 
+A method's or a block's own statements are its local slot initializers first,
+one per declared local that has one, each `initializer_expression; StoreLocal`
+into the slot's own register, in declaration order (§3.6), then its
+`CodeBody.statements` -- the same order an instance initializer's own slot
+initializers precede its `initExprs` ("One body per mixin" below). A local
+with no initializer is skipped: its register keeps the **nil** every register
+starts with.
+
 A compiled body lives on the declaration it belongs to. A method's is on its
 `MixinMethod` (`code`); a mixin's instance initializer and its superclass clause's
 two bodies are on the `Mixin` (`initializer_code`, `superclass_clause_code`,
@@ -199,6 +207,30 @@ initializer, which fall off their end answering `self`, and an initializer's
 top-level `^`, which returns nothing. Getting this wrong is silent wrong
 output with exit status 0, not a crash — which is why it is an invariant in
 `CLAUDE.md` rather than a comment.
+
+**A read-only local is never copied.** A setter send passes by every local
+that declares no setter ([dispatch.md](dispatch.md), "Setter sends"), so a
+parameter's register and an immutable local's are written by their
+initialization and by nothing after it -- no assignment binds to them, in
+this activation or through a closure. The copy guards against a write that
+can then no longer happen, so `materialize` skips it for such a register,
+whatever `rest` holds; parameters are the commonest operands there are.
+`Lowerer` tracks which registers are read-only (`read_only_locals`, built in
+`Lowerer::new` from the argument count and each temporary's
+`SlotMutability`). `lower_assign`'s `debug_assert!`s cover every write into a
+named local, this frame's own or an enclosing one's: the two `StoreLocal`
+branches check a write into the *current* frame's own registers
+(`Binding::Local`, and `Binding::OuterLocal` at `hops == 0`), and the
+`StoreOuterLocal` branch (`hops != 0`) checks a write from a nested block
+into an *enclosing* frame's register the same way, against that frame's own
+`read_only_locals` table. `lower_block_literal` hands each nested `Lowerer`
+the `read_only_locals` of every `Frame` scope enclosing it
+(`enclosing_read_only_locals`, innermost last) alongside the scope stack it
+already passed down, so a `StoreOuterLocal` at any depth can check the same
+precondition the same-frame case always could. In every case the resolver
+never binds an assignment to a parameter or an immutable local, so the only
+write to a read-only local's register is its own initialization, a statement
+of its own that no expression's `rest` can contain.
 
 ## Control-flow inlining
 

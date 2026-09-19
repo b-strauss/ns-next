@@ -111,27 +111,16 @@ ordinary synchronous one and answer the value where the specification gives a
 promise. Nothing in the runtime implements actors, so there is no promise to
 answer with; the alternative would be to refuse the operator outright.
 
-Three of the things dropped here change what a correct program answers, rather
+Two of the things dropped here change what a correct program answers, rather
 than only what an incorrect one is allowed to say. Each has a row in
 [README.md](README.md)'s deviations table; this section is what those rows
 point at.
 
-## Deviation: a local slot's initializer is dropped
-
 A code body's temporary list has the full slot-declaration form
 (`corpus/reference/NewspeakGrammar.ns:148-150`, `temporaries = slotDecls`), so
 `| x = expression. |` and `| x ::= expression. |` inside a method or block body
-declare initialized local slots. `parse_temporaries` keeps only the names and
-discards the initializer. §3.6 requires the opposite -- local slots "are
-initialized in the context of *a*, according to their declarations" -- so the
-slot keeps the **nil** every slot starts with, and `| x = 'v'. | ^x` answers
-**nil** rather than `'v'`.
-
-This is worse than the other drops: it is silent wrong output at exit status 0,
-not an under-rejection, and no gate catches it because the reference lowering
-makes the same mistake -- the initializer is gone before either lowering sees
-the body. Only an explicit assignment afterwards gives such a slot a value,
-which is why the corpus modules that use the form mostly still work.
+declare initialized local slots, and `CodeBody.temporaries` keeps the full
+declaration -- name, mutability and initializer -- not just the name.
 
 ## Deviation: simultaneous slot clauses initialize sequentially
 
@@ -165,6 +154,28 @@ heavily.
 This only under-rejects programs that illegally use one of the six as an
 ordinary identifier. It cannot affect a correct program, and no corpus file
 exercises the illegal form.
+
+## Deviation: `:=` is accepted as a synonym for a setter send
+
+§5.4.3 gives Newspeak exactly one assignment form, the setter send `id:: e`
+(desugaring to `id: e`, "Setter Sends"). The lexer also recognizes `:=`
+(`TokenKind::Assign`) and `parse_expression` accepts `identifier := expression`
+as a second spelling of the same thing, producing the same `Expression::Assign`
+node and so resolved and lowered exactly as `id:: e` is
+([dispatch.md](dispatch.md), "Setter sends"). Nothing in the specification
+grammar, the canonical grammar
+(`corpus/reference/NewspeakGrammar.ns`), Primordial Soup or SOMns accepts
+`:=` -- all four know only the setter-send form -- so this is Smalltalk
+syntax carried over rather than a reading of Newspeak's own grammar. It only
+over-accepts: a program written with `id:: e` behaves exactly as the
+specification requires, so no correct program is affected, but a program
+that writes `id := e` instead -- which the specification does not accept at
+all -- parses and runs anyway. Several goldens and tests use `:=`, since
+nothing before this step distinguished it from `::`.
+Decided with the user (2026-09-19) as the next piece of work after the
+specification gaps, ahead of closure conversion: remove `:=` from the lexer
+and parser, and convert every golden and test that uses it to `::`
+([PROGRESS.md](../PROGRESS.md), "Where the next session starts").
 
 ## The corpus as a parser gate
 

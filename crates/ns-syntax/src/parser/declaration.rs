@@ -47,13 +47,13 @@ impl<'a> Parser<'a> {
     /// `codeBody` temporaries. Per the grammar
     /// (`corpus/reference/NewspeakGrammar.ns:148-150`), `temporaries =
     /// slotDecls`, i.e. a temporary list has the full slot-declaration form,
-    /// including initialized locals `| x = expression. |`. Milestone 1's
-    /// `CodeBody::temporaries` keeps only the names: a local initializer is
-    /// parsed (so the rest of the body stays in sync) but then dropped, the
-    /// same way `lazy` is dropped elsewhere. A code body never legitimately
-    /// starts with a binary `|` send (there is no left operand), so a leading
-    /// `Bar` / `DoubleBar` is unambiguously a temporary section.
-    fn parse_temporaries(&mut self) -> Vec<Identifier> {
+    /// including initialized locals `| x = expression. |`. `CodeBody::temporaries`
+    /// keeps the full declaration, so the runtime can initialize each slot in
+    /// declaration order (§3.6) and tell an immutable one from a mutable one;
+    /// `lazy` is still dropped, as it is for class slots. A code body never
+    /// legitimately starts with a binary `|` send (there is no left operand),
+    /// so a leading `Bar` / `DoubleBar` is unambiguously a temporary section.
+    fn parse_temporaries(&mut self) -> Vec<SlotDeclaration> {
         // The lexer emits `||` as one `DoubleBar` token. In code-body position
         // that lone token is the degenerate empty simultaneous temporary list —
         // short-circuit it before the `parse_slot_declarations` handoff, which
@@ -67,9 +67,6 @@ impl<'a> Parser<'a> {
             return Vec::new();
         }
         self.parse_slot_declarations()
-            .into_iter()
-            .map(|slot| slot.name)
-            .collect()
     }
 
     pub(crate) fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
@@ -1412,7 +1409,7 @@ mod method_tests {
                 .body
                 .temporaries
                 .iter()
-                .map(|temporary| temporary.name.as_str())
+                .map(|temporary| temporary.name.name.as_str())
                 .collect::<Vec<_>>(),
             ["x"]
         );
@@ -1430,7 +1427,7 @@ mod method_tests {
                 .body
                 .temporaries
                 .iter()
-                .map(|temporary| temporary.name.as_str())
+                .map(|temporary| temporary.name.name.as_str())
                 .collect::<Vec<_>>(),
             ["a", "b"]
         );
@@ -1438,15 +1435,15 @@ mod method_tests {
 
     #[test]
     fn initialized_local_slot_temporaries() {
-        // The `| x = expression. |` full slot-declaration form: initializer is parsed
-        // (body stays in sync) but only the name is retained in Milestone 1.
+        // The `| x = expression. |` full slot-declaration form: the initializer
+        // is kept, along with the name.
         let method = method("foo = ( | x = 5. y ::= bar baz. | ^ x )");
         assert_eq!(
             method
                 .body
                 .temporaries
                 .iter()
-                .map(|temporary| temporary.name.as_str())
+                .map(|temporary| temporary.name.name.as_str())
                 .collect::<Vec<_>>(),
             ["x", "y"]
         );
@@ -1454,5 +1451,30 @@ mod method_tests {
             method.body.statements.as_slice(),
             [Statement::Return(_)]
         ));
+    }
+
+    #[test]
+    fn temporaries_keep_their_full_declaration_including_mutability() {
+        // `| x = 1. y ::= 2. z |`: three declarations, their mutabilities and
+        // initializers kept, not just their names -- Task 3 reads `mutability`
+        // to tell a setter-bearing local from one that declares no setter.
+        let method = method("foo = ( | x = 1. y ::= 2. z | ^ x )");
+        assert_eq!(
+            method
+                .body
+                .temporaries
+                .iter()
+                .map(|temporary| (
+                    temporary.name.name.as_str(),
+                    temporary.mutability,
+                    temporary.initializer.is_some()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("x", SlotMutability::Immutable, true),
+                ("y", SlotMutability::MutableInitialized, true),
+                ("z", SlotMutability::MutableBare, false),
+            ]
+        );
     }
 }

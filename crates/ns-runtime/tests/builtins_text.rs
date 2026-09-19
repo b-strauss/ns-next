@@ -2,6 +2,7 @@
 //! methods, found as primitives by the ordinary lookup via
 //! `Interpreter::send`.
 
+use indoc::indoc;
 use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
@@ -29,6 +30,102 @@ fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
             .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
         other => panic!("expected Value::Object, got {}", heap.describe(other)),
     }
+}
+
+/// A module loaded and ready to instantiate, the way `heap.rs`'s own `load`
+/// helper does it.
+fn load(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
+}
+
+/// `class usingPlatform: platform`, then `instance selector`, answering the
+/// send's result.
+fn instantiate_and_send(interpreter: &mut Interpreter, class: &Root, selector: &str) -> Root {
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.send(class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern(selector), &[]),
+        selector,
+    )
+}
+
+fn as_boolean<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> bool {
+    match value {
+        Value::Boolean(boolean) => *boolean,
+        other => panic!("expected Value::Boolean, got {}", heap.describe(other)),
+    }
+}
+
+/// §5.1.6: two symbols equal by `=` are the same object, whether one comes
+/// from a literal and the other from `asSymbol`, or both from `asSymbol` --
+/// pinned alongside `goldens/spec/spec_5_1_6_equal_symbols_are_one_object`.
+#[test]
+fn equal_symbols_are_identical() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Symbols usingPlatform: p = Object new () (
+            public literalAndDerived = ( ^#foo == 'foo' asSymbol )
+            public twoDerived = ( ^'bar' asSymbol == 'bar' asSymbol )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+
+    let literal_and_derived = instantiate_and_send(&mut interpreter, &class, "literalAndDerived");
+    interpreter.enter(|mutator| {
+        assert!(
+            as_boolean(mutator.heap(), &mutator.fetch(&literal_and_derived)),
+            "#foo == 'foo' asSymbol must be true: a symbol literal and its \
+             derived equivalent are one object"
+        );
+    });
+
+    let two_derived = instantiate_and_send(&mut interpreter, &class, "twoDerived");
+    interpreter.enter(|mutator| {
+        assert!(
+            as_boolean(mutator.heap(), &mutator.fetch(&two_derived)),
+            "'bar' asSymbol == 'bar' asSymbol must be true: two derivations \
+             of the same text are one object"
+        );
+    });
+}
+
+/// §5.1.6, through `doesNotUnderstand:`: the selector that `handler_message`
+/// (`interpreter/resolve.rs`) hands to the handler must be the same object
+/// as a symbol literal spelling the same selector, since it too goes
+/// through `Mutator::new_symbol`.
+#[test]
+fn does_not_understand_hands_the_literals_selector_object() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Selectors usingPlatform: p = Object new () (
+            public doesNotUnderstand: message = ( ^(message at: 1) == #frobnicate )
+            public probe = ( ^self frobnicate )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+
+    let probe = instantiate_and_send(&mut interpreter, &class, "probe");
+    interpreter.enter(|mutator| {
+        assert!(
+            as_boolean(mutator.heap(), &mutator.fetch(&probe)),
+            "the doesNotUnderstand: message's selector must be the same \
+             object as the #frobnicate literal"
+        );
+    });
 }
 
 #[test]

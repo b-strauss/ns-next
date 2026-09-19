@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md), [specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -106,29 +106,27 @@ measurement would have kept it there; the user chose the header for a JIT
 tier's guard and step 6's uniform stamping; see "M4 — The dispatch id's
 place" below.
 
-**The next piece is the specification gaps, in one plan** (the order the
-user decided on 2026-09-18: 3c first, then the gaps together). Its core is
-the member-set fix — a §5.7 member set keyed by a real class identity in
-place of a class's simple name ("Older than this step", below) — and the two
-cheap fixes ride along with it: equal symbol literals as one object (§5.1.6),
-and a parameter slot refusing a setter send (§3.6). Each has a golden under
-`goldens/spec/` recorded as `skipped` with the answer the specification
-requires — `spec_5_7_a_member_set_is_per_declaration_not_per_name`,
-`spec_5_1_6_equal_symbols_are_one_object` and
-`spec_3_6_a_parameter_slot_is_immutable` — and a fix is done when its
-`skipped` line is deleted and the recorded answer holds. The plan goes
-under `docs/superpowers/plans/`, named by the convention in `CLAUDE.md`.
-The gaps are done together because at least two of them can move the
-measurement — the member-set fix is in the resolver, and interning symbol
-literals changes a value representation that selectors share — so they are
-measured once, not once per fix. The failure mode to
-avoid is the tempting one: closing a gap here and there between measured
-steps, after which no number compares with any other.
+**The specification gaps are done** (2026-09-19): the worst deviation the two
+specification audits found — a §5.7 member set keyed by a class's simple
+name, so two same-named classes in one module shared one set, silently
+wrong for eighteen corpus modules and invisible to the reference lowering
+because the mistake was in the resolver, above both — and the two cheap
+fixes the second audit found alongside it — equal symbol literals not one
+object (§5.1.6) and a parameter slot accepting a setter send (§3.6) — plus
+two changes the design work surfaced along the way — a local slot's
+declaration kept and its initializer run (§3.6), and a parameter's or an
+immutable local's register never copied. All five decided with the user on
+2026-09-19 and built in one plan
+([specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md)).
+See "M4 — The specification gaps" below for what changed, commit by commit,
+and the decisions behind each.
 
-**The baseline is fresh**: `22a56f7`, the merge of 3c into `master`,
-whose last change to a send's path is `5d3aeff`. `393311f`, 3c's baseline, is superseded. Performance is
-measured, not assumed: the protocol and the seven sources of "What removing
-the re-entries moved" ([execution.md](design/execution.md)), plus
+**The baseline was `22a56f7`**, the merge of 3c into `master`, whose last
+change to a send's path is `5d3aeff`; `393311f`, 3c's own baseline, stayed
+superseded; `be3eb40` was carried beside it, as every measurement since
+step 2. Performance is measured, not assumed: the protocol and the seven
+sources of "What removing the re-entries moved"
+([execution.md](design/execution.md)), plus
 `goldens/bench/bench_megamorphic.ns`, the eighth source and the only one
 that drives a megamorphic site.
 
@@ -145,17 +143,18 @@ method-table entries, are written out in
 [execution.md](design/execution.md), "What spec-conformant lookup moved" —
 in that document, not in the 2c plan.
 
-**Every compared binary, the current tree included, is built with the
+**Every compared binary, the current tree included, was built with the
 protocol's explicit flags through `RUSTFLAGS`** — `+crt-static` and the
-function-alignment pin, which no configuration carries — with two sittings
-for a whole step, compared against the baseline; every measurement through
-step 3 compared against `be3eb40` as well (the findings below). The latest
-measurement, and the template for the next, is
-[execution.md](design/execution.md), "What 3c moved". The member-set fix
-is in the resolver, ahead of the run loop, but interning symbol literals
-touches what a send's selector is, so the measurement should check with
-`dumpbin /disasm` that `vm::run`'s step is still inline before it times
-anything (the second finding below).
+function-alignment pin, which no configuration carries — two sittings,
+compared against the baseline and against `be3eb40`. The head is level with
+`22a56f7` on every source, no source entirely above in both sittings, and
+7.6–18.2% below `be3eb40`. The member-set fix is in the resolver, ahead of
+the run loop, but interning symbol literals touches what a send's selector
+is, so the measurement checked with `dumpbin /disasm` that `vm::run`'s step
+was still inline before timing anything: 4,878 instructions in both the
+baseline and the head, no split closure. The measurement, and the template
+for the next, is [execution.md](design/execution.md), "What the
+specification gaps moved".
 
 **Known gaps the step left**, each recorded where it applies:
 
@@ -169,30 +168,29 @@ anything (the second finding below).
   builtin names resolve statically rather than as sends to the accessors
   §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
   class name is loaded, not sent").
+- **`:=` is accepted but is not Newspeak syntax** (§5.4.3): only `id:: e` is
+  the specification's setter send; the lexer and parser also accept `:=`,
+  Smalltalk syntax, as a synonym for it, and some goldens and tests use it
+  ([frontend.md](design/frontend.md), "Deviation: `:=` is accepted as a
+  synonym for a setter send"). **This is the next piece of work**, decided
+  with the user on 2026-09-19: its own small step, removing `:=` from the
+  lexer and parser and converting every golden and test that uses it to
+  `::`, before closure conversion (item 4 of the order of work below).
+- **`nil printString` answers `'an Object'`**: `Object>>printString` is a
+  stub (`crates/ns-runtime/src/builtins/object_class.rs`, `an Object` for
+  every receiver); no golden pins the correct answer yet.
 
-**Older than this step**, found by two specification audits and recorded in
-[README.md](design/README.md)'s deviations table rather than here, because
-none of them is this step's doing. **Eight answer a correct program wrongly at
-exit status 0** -- the class of defect the rest of this repository's invariants
-exist to prevent -- so they are worth a plan of their own.
-
-**Nine of them have a golden**, under `goldens/spec/`, recorded as `skipped`
-with what the specification requires the program to answer. That list is the
-work item, and it is executable rather than descriptive: closing a gap is
-deleting the golden's `skipped` line and making the recorded answer hold.
-`grep -l '^skipped' goldens/*/*.toml` enumerates it; each golden's
-`(* ... *)` comment carries the rule and its section.
-
-The worst of them is that a §5.7 member set is keyed by a class's simple
-name, so two same-named classes in one module share one set. It makes a
-program's meaning depend on the name of an unrelated class elsewhere in the
-module; eighteen corpus modules have the shape; and the reference lowering
-agrees with the optimized one, because the mistake is made in the resolver,
-above both, so the oracle cannot catch it. The fix is a real class identity in
-place of a name. Two were found only by the second audit and are cheap by
-comparison: equal symbol literals are not one object (§5.1.6) and a parameter
-slot accepts a setter send (§3.6). Mixin application (§6.2) is unimplemented
-but fails loudly.
+**The two specification audits' other findings are closed**, in "M4 — The
+specification gaps" below: the member-set fix, the symbol-identity fix and
+the parameter-setter fix. Mixin application (§6.2) is the one finding left
+open, and it fails loudly — a parse error — rather than answering wrongly,
+so it is not the same class of defect. **Five goldens are still `skipped`**
+(`grep -l '^skipped' goldens/*/*.toml`): the parameter-and-a-local-of-the-
+same-name compile check (§3.6), `nil isNil` (§5.1.3), mixin application
+(§6.2), the sequential simultaneous slot clauses (§6.3.2) and the eager lazy
+slot (§6.3.3) — the last two also rows in [README.md](design/README.md)'s
+deviations table, answering a **correct** program **wrongly, at exit status
+0**, and worth reading before trusting a program's output.
 
 **Open findings**, for whoever plans next to weigh:
 
@@ -290,9 +288,11 @@ but fails loudly.
   ([execution.md](design/execution.md), "What the step before 3c moved").
   3c left every source 8.3–19.4% below `be3eb40`, entirely below in both
   sittings ([execution.md](design/execution.md), "What 3c moved"). None is
-  slower. The rule as decided ran up to and including step 3, which is
-  complete; whether the specification gaps' measurement still carries
-  `be3eb40` is for its plan to say — it costs one binary more.
+  slower. The specification gaps' plan carried `be3eb40` too, one binary
+  more, and left every source 7.6–18.2% below it, entirely below in both
+  sittings ([execution.md](design/execution.md), "What the specification
+  gaps moved"). Whether a measurement past step 3 still carries `be3eb40` is
+  for its own plan to say.
 - **A send's hit path pays about 2% for every component its key gains.** The
   step before 3c cost `bench_loop.ns` and `bench_send.ns` 2.1–3.3% and
   `bench_megamorphic.ns` about 1%, all of it on the lexical global-cache
@@ -479,7 +479,8 @@ one multiply; `bench_send.ns` is 12.5% faster for it.
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
 and all three done, 1b done, 2 done in all three parts, the spec-conformant
 lookup inserted ahead of 3 and done, 3 done in all three parts, the
-specification gaps next, everything from 4 on still ahead — and it is
+specification gaps done, removing `:=` next as its own small step ahead of
+4, everything from 4 on still ahead — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -573,8 +574,9 @@ so nothing is lost by it going second.
    object, whose obvious key would never hit on a nested class; see "M4 —
    Inline caches" below. **3c, the dispatch id's place, is done**: a guard
    reads the id from the object header; see "M4 — The dispatch id's place"
-   below. **The specification gaps come next**, before step 4, in one plan
-   and one measurement ("Where the next session starts" above).
+   below. **The specification gaps are done**, one plan and one measurement;
+   see "M4 — The specification gaps" below. **Removing `:=`** is next, its
+   own small step, before step 4 ("Where the next session starts" above).
 4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
    variables they only read and share a box for the ones they write, instead of
    reaching them through their method's frame. That ends 1a's divorce copy and
@@ -2559,6 +2561,139 @@ and the release suite with the size test; the same under
 `NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`; `parse-corpus` at
 **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under both stress
 modes. No recorded outcome moved.
+
+## M4 — The specification gaps (2026-09-19)
+
+Plan: [ns-next-specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md),
+committed on the branch ahead of Task 1 (`4ea0571`), over the design decided
+with the user on 2026-09-19 (`56e2c1f`). Branch `feature/specification-gaps`,
+started from `6873f09`, on the checked-out tree throughout — no worktree for
+the work itself.
+
+**Decisions**, each taken with the user on 2026-09-19:
+
+- **A canonical symbol table per heap, over an immediate symbol.** Each
+  `Heap` keeps one, indexed by `Symbol::index` and filled lazily by
+  `Mutator::new_symbol`, so a symbol literal, `asSymbol` and a
+  `doesNotUnderstand:` handler's selector all reach the same object for the
+  same text (§5.1.6, §3.1.1).
+- **A duplicate symbol record is refused, not merged.** Decoding an image
+  that already carries two records for the same text is a decode error
+  rather than a silent merge into one object.
+- **The canonical compiler's reading of a setter send, over SOMns's.** Only
+  a local that declares a setter answers `id:` — the canonical compiler's
+  rule (`prior-art/newspeak/NewspeakCompilation.ns`), not SOMns's
+  compile-time refusal of an assignment to an argument, which its own `TODO`
+  doubts and which also lets an immutable local be written freely
+  ([dispatch.md](design/dispatch.md), "Setter sends").
+- **The local-slot declaration taken into this step** (option A): a code
+  body's `| x = e. |` and `| x ::= e. |` keep their initializer and run it,
+  rather than being left for a later step, although nothing under
+  `ns-syntax` was expected to change for runtime work.
+- **The operand-copy elision taken into this step**, riding on the
+  setter-send fix: a parameter's or an immutable local's register is never
+  copied, since the resolver now guarantees nothing but its own
+  initialization ever writes one.
+
+**What changed**, commit by commit:
+
+- `df0f347` — a §5.7 member set is keyed by a real class identity
+  (`EnclosingClass`) instead of a class's simple name, closing the worst
+  deviation the specification audits found: two same-named classes in one
+  module no longer share one member set.
+- `80b3ff9` — self-review correction to the member-set change's design text.
+- `717300a` — a code body's local-slot declaration is kept and its
+  initializer runs in declaration order, instead of the parser discarding
+  everything but the name.
+- `73921e1` — a setter send is passed by a parameter or an immutable local
+  (§3.6): only a local that declares a setter answers `id:`.
+- `ff1657d` — a parameter's or an immutable local's register is never
+  copied, since nothing lowered after its initialization can write it.
+- `652e6c5` — pins that a block parameter, not only a method parameter,
+  needs no copy; corrects `CLAUDE.md` and `compiler.md`'s description of
+  `lower_assign`'s `debug_assert!` scope.
+- `7135854` — equal symbol literals are one object per heap (§5.1.6), through
+  the canonical symbol table.
+- `bc52d0b` — fixes a garbled test doc comment from the symbol-identity task.
+- `67ba5c0` — `Heap::record_canonical_symbol` checks the stored object's
+  handle origin, matching every other write accessor.
+- `abd9bb4` — a decoded image enters its symbols into the heap's table and
+  refuses a repeat record, instead of decoding one object per occurrence.
+- `687c7b4` — records the step as built and measured: "What the
+  specification gaps moved" in [execution.md](design/execution.md), this
+  section, "Where the next session starts" rewritten to say the gaps are
+  done, and the `:=` deviation documented in
+  [README.md](design/README.md) and [frontend.md](design/frontend.md).
+- `e48c8a4` — rewords [README.md](design/README.md)'s status-cell setter-send
+  clause, found reading as a cut-off sentence on review, although
+  grammatical.
+
+**The final whole-branch review** (on Fable) found nothing Critical or
+Important and agreed with both rulings below; four more commits close what
+its minors and recommendations found:
+
+- `36c4d34` — [dispatch.md](design/dispatch.md)'s member-set paragraph
+  reworded to drop `resolver::build_member_sets`, a function that no longer
+  exists in the codebase — docs describe the current state, and the history
+  belongs in git.
+- `71e1eb2` — `resolve_class`'s chain built via `EnclosingClass`'s `Copy`
+  impl (`.copied()`) instead of rebuilding each field by hand.
+- `bfe9cea` — `lower_assign`'s `StoreOuterLocal` branch (a write from a
+  nested block into an enclosing frame's local) now `debug_assert!`s the
+  value-register invariant too, so every write into a named local is
+  asserted, not only the two `StoreLocal` branches; `CLAUDE.md` and
+  [compiler.md](design/compiler.md) updated to say so.
+- `7bf39e6` — the decoder refuses a decoded symbol record whose class is not
+  the builtin `Symbol` class (`DecodeError::SymbolOfWrongClass`), since the
+  canonical table would otherwise hand that object to every later literal of
+  its text.
+
+**Two rulings**, both recorded in the SDD ledger as the controller's:
+
+1. `goldens/language/assignment_through_a_setter_answers_the_value_before_the_setter_ran`
+   lost its `Init` case: the program wrote a factory parameter through a
+   closure built in a slot initializer, which §3.6 now forbids outright (it
+   raises `doesNotUnderstand: #n:`), and an initializer activation's only
+   named locals are its factory parameters, which nothing can write any
+   more — the hazard that case pinned, a slot initializer's value clobbered
+   by its own setter, can no longer arise at all. The program relied on the
+   bug the fix closed.
+2. The new local-slot golden checks nil-ness with `== nil` rather than
+   `printString`, because `nil printString` answers `'an Object'`
+   (`Object>>printString` is a pre-existing stub, out of scope here) and
+   `nil isNil` is itself a skipped gap.
+
+**Measurement.** The head (`abd9bb4`) against `22a56f7`, the merge of 3c,
+with `be3eb40` carried as the reference, two sittings by the protocol, eight
+sources. **Level with `22a56f7` on every source** — no source entirely above
+in both sittings — and 7.6–18.2% below `be3eb40`. `vm::run` stayed one
+function, 4,878 instructions in both `22a56f7` and the head, no
+`vm::run::closure` split out. The copy elision measured no gain on these
+eight sources: none of them declares a local slot with an initializer or
+writes a parameter, so it never fires on any of them. See
+[execution.md](design/execution.md), "What the specification gaps moved".
+
+Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
+warning-free; `cargo test --workspace`, 764 tests passing with one ignored;
+the same under `NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`;
+`parse-corpus` at **210/0/1/0** and `run-corpus` at **6/0/205**, plain and
+under both stress modes. One recorded outcome moved, deliberately (the first
+ruling above): the `Init` case of
+`assignment_through_a_setter_answers_the_value_before_the_setter_ran`.
+
+**Left, none affecting an outcome:** the golden comment "order collected"
+and dispatch.md's "what a namesake declares" name the member-set fix's
+second axis differently (Task 1); README.md's forward-reference paragraph
+also had its count corrected, beyond the brief's literal wording, signed off
+by the controller (Task 3); the image round-trip test's `storedSymbol` name
+collides with its own held accessors, explained in its own comment (Task 6);
+`Heap::traced_size` counts the canonical symbol table's empty slots too —
+its length follows the process-wide interner, not this heap's own symbols —
+irrelevant to the stress mode's pacing, which only needs an upper bound, and
+worth revisiting only if many heaps live in one process (actors). `nil
+printString` answering `'an Object'` and `:=` not being Newspeak syntax are
+open findings, not follow-ups of this step's own code; both are recorded in
+"Where the next session starts" above.
 
 ## Notes
 

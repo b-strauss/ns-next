@@ -2118,6 +2118,59 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
+#[test]
+fn a_symbol_recorded_twice_is_refused() {
+    // A canonical heap never encodes two records of one symbol, so a graph
+    // that holds two is crafted or corrupt; merging them would mean
+    // rewriting every reference to the second.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 2, 0);
+    for identity_hash in [1, 2] {
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Symbol));
+        writer.write_u32(identity_hash);
+        writer.write_u8(OBJECT_SYMBOL);
+        writer.write_u32(0); // symbol-table id 0: "foo"
+    }
+    writer.write_u32(0); // no roots
+    let mut fixture = GraphFixture::new();
+    fixture.symbols = table_with(&["foo"]);
+    let error = fixture.decode_error(&writer.into_bytes());
+    assert_eq!(
+        error,
+        decode::DecodeError::DuplicateSymbol("foo".to_string())
+    );
+    assert_eq!(error.to_string(), "symbol #foo is recorded twice");
+}
+
+#[test]
+fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
+    // `decode_graph_section` enters every `OBJECT_SYMBOL` record into the
+    // heap's canonical symbol table as it decodes it, before anything else
+    // runs -- so a record whose class tag names something other than
+    // `Symbol` would still answer every later literal of that text if it
+    // were let through.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1, 0);
+    writer.write_u8(CLASS_BUILTIN);
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_SYMBOL);
+    writer.write_u32(0); // symbol-table id 0: "foo"
+    writer.write_u32(0); // no roots
+    let mut fixture = GraphFixture::new();
+    fixture.symbols = table_with(&["foo"]);
+    let error = fixture.decode_error(&writer.into_bytes());
+    assert_eq!(
+        error,
+        decode::DecodeError::SymbolOfWrongClass("foo".to_string())
+    );
+    assert_eq!(
+        error.to_string(),
+        "symbol #foo is recorded with a class other than Symbol"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Class records. A class object is an ordinary object-table entry, so every
 // id it names -- its mixin, its superclass, its enclosing object, its
@@ -4011,6 +4064,61 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         assert!(
             matches!(mutator.fetch(&value), Value::SmallInteger(7)),
             "the loaded closure reads its captured local"
+        );
+    });
+}
+
+#[test]
+fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
+    // A loaded world's code literals reach `#foo` through `Mutator::new_symbol`
+    // too, so a symbol decoded out of the graph section has to land in the
+    // same table -- not a second object that merely spells the same text --
+    // or the two would answer `false` to `==` and `identityHash` where a
+    // heap with one canonical symbol per text never could.
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | storedSymbol ::= nil. |
+        ) (
+          public keep = ( storedSymbol := #foo. ^storedSymbol )
+          public held = ( ^storedSymbol )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("keep"), &[]),
+        "keep",
+    );
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let held = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("held"), &[]),
+        "held",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let held = mutator.fetch(&held);
+        let expected = mutator.new_symbol(Symbol::intern("foo"));
+        assert!(
+            object(&held).same(*object(&expected)),
+            "the decoded symbol is the loaded world's canonical `#foo`"
         );
     });
 }

@@ -97,23 +97,37 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    member already has, and the direction the open question below would have to
    settle for all of them at once.
 
-   **Defect: a member set is keyed by the class's simple name.**
-   `resolver::build_member_sets` maps a class's *name* to its own members, so
-   two classes with the same simple name anywhere in one module share one
-   entry and the last one collected wins. A member declared by the loser is
-   then invisible to §5.7's search, which walks out to an enclosing
-   declaration instead -- or finds nothing and raises
-   `doesNotUnderstand:`. Renaming the unrelated class fixes it, which is the
-   signature of the defect: two programs differing only in the name of an
-   empty class in a sibling subtree answer differently, at exit status 0.
-   A textual count finds eighteen of the 211 corpus modules declaring two
-   classes under one simple name -- a lower bound, since it only scans source
-   text -- and none of the six on `corpus/runnable.toml` is among them, so no
-   gate sees it. The
-   reference lowering is no help either -- the mistake is made in the
-   resolver, above both lowerings, so they agree on the wrong answer. The fix
-   is a real class identity as the key rather than a name, which is why it has
-   not been done in passing.
+   **A member set belongs to its declaration, borrowed down the walk.**
+   `resolve_class` computes `classes::own_member_names` for the declaration
+   it is entering, keeps it in its own stack frame, and hands the chain down
+   as `&[EnclosingClass]`, each level borrowing the set of *its own*
+   declaration -- no set is copied, and none can be looked up by name, so two
+   classes with the same simple name anywhere in one module can never meet.
+   The superclass clause resolves against the same chain without the
+   declaration's own level. `EnclosingClass.name` stays for `outer N` alone,
+   where §5.9 does mean a name and the innermost enclosing class of that name
+   is the one. The resolver used to map a class's simple name to its own
+   members, under which two same-named classes shared one entry and the
+   last one collected won -- a member
+   declared by the loser was invisible to §5.7's search, which walked out to
+   an enclosing declaration instead, or found nothing and raised
+   `doesNotUnderstand:`, silently and at exit status 0. Renaming the
+   unrelated class changed the answer, which was the signature of the
+   defect. A textual count found eighteen of the 211 corpus modules declaring
+   two classes under one simple name -- a lower bound, since it only scans
+   source text -- and none of the six on `corpus/runnable.toml` was among
+   them, so no gate saw it; the reference lowering agreed with the wrong
+   answer too, since the mistake was made in the resolver, above both
+   lowerings. In both goldens the trailing, same-named declaration is the one
+   that would have won the shared map slot:
+   `spec_5_7_a_member_set_is_per_declaration_not_per_name` pins the case
+   where it is empty, so the search would have walked out to an enclosing
+   member instead of finding the class's own;
+   `spec_5_7_a_namesakes_members_are_not_in_reach` pins its mirror image,
+   where the trailing declaration instead has the member being searched for,
+   so the search would have stopped at the wrong class and answered
+   `doesNotUnderstand:` -- together showing the answer depends on neither
+   the name nor what an unrelated namesake happens to declare.
 
    **Open: the class side's scope.** Both sides of a class declaration
    contribute to one member set. The specification is silent on whether an
@@ -174,6 +188,36 @@ is `self` per §6.3.2. The resolver treats the target of an assignment exactly a
 it would an implicit-receiver keyword send to `id:`: full depth search,
 private-versus-virtual dispatch, everything. It is not a distinct slot-write
 primitive.
+
+The activation chain is searched first, and **built (2026-09-19): only a
+local that declares a setter answers `id:`.** §3.6 makes every parameter
+slot immutable, and makes a local slot what its declaration says (§6.3.2),
+so a parameter -- of a method, a block or a class's primary factory -- and
+an immutable local `| x = e. |` declare no setter; a mutable local (`| x |`,
+`| x ::= e. |`) does. `ScopeStack::resolve_setter` walks the activations
+innermost first, passes every declaration without a setter by, and answers
+the first that has one; when none does, the class chain's depth search for
+`id:` runs as it does now, and when nothing declares it either the send is
+`self id:`, so the program sees `doesNotUnderstand:` at run time -- the
+answer `spec_3_6_a_parameter_slot_is_immutable`,
+`spec_3_6_a_block_parameter_is_immutable` and
+`spec_3_6_a_factory_parameter_is_immutable` record, and
+`spec_3_6_an_immutable_local_slot_has_no_setter` records for a declared
+immutable local. The canonical compiler does exactly this: its scopes are
+keyed by selector, a parameter enters only its getter and a temporary its
+setter only when mutable, and `setterSendNode:` searches the scope chain
+outward for the setter (`prior-art/newspeak/NewspeakCompilation.ns`,
+`codeBodyNode:` and `setterSendNode:`; Primordial Soup's copy is the same).
+SOMns instead rejects an assignment to an argument at compile time, checking
+every enclosing activation before any local -- which its own `TODO` in
+`MethodBuilder.getSetterSend` doubts -- and writes an immutable local
+freely; neither is §5.4.3's send.
+
+One consequence reads oddly and follows from §5.7 all the same: a block
+parameter `v` shadowing a mutable temporary `v` of its method leaves `v:: e`
+in the block writing the *method's* `v`, the innermost declaration of `v:`,
+while `v` in the block still reads the parameter.
+`spec_5_7_a_setter_send_passes_a_shadowing_parameter_by` pins it.
 
 ### Shapes the resolver must recognize
 
@@ -1129,6 +1173,13 @@ dispatches on one.
   observable.
 - **Only declared members are lexically visible** (§5.7, §2.3.1). Counting
   inherited ones is the "comb" semantics Newspeak was designed against.
+- **Decided by the user (2026-09-19), planned with the other specification
+  gaps:** a member set belongs to its declaration, not to a name (**built**;
+  see "A member set belongs to its declaration, borrowed down the walk"
+  above); and a setter send passes by every local that declares no setter --
+  parameters and immutable locals -- as the canonical compiler does, rather
+  than refusing at compile time as SOMns does (**built**; see "Setter sends"
+  above).
 - **A slot's accessors are methods** (§6.3.2), in the method table, answered
   without an activation.
 - **`doesNotUnderstand:` bypasses access control**, because `Object`'s own

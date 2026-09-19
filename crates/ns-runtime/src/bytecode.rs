@@ -248,11 +248,13 @@ pub struct CompiledCode {
     /// compiler-allocated scratch registers. An activation is pushed with
     /// `register_count - argument_count`.
     pub register_count: u16,
-    /// Maps a statement index (a method's/block's `CodeBody.statements` index;
-    /// for an initializer, each slot initializer then each `initExpr`, in that
-    /// order) to the half-open instruction range it compiled to -- the
-    /// safepoint boundary, and how an activation's instruction
-    /// `program_counter` maps back to the statement it is in.
+    /// Maps a statement index to the half-open instruction range it compiled
+    /// to -- the safepoint boundary, and how an activation's instruction
+    /// `program_counter` maps back to the statement it is in. For a method or
+    /// a block, the index runs through its local initializers (§3.6, in
+    /// declaration order) first, then its `CodeBody.statements`; for an
+    /// initializer, each slot initializer then each `initExpr`, in that
+    /// order.
     pub statement_program_counter: Vec<(usize, Range<usize>)>,
     /// One past the highest call-site number among this body's own sends
     /// and its nested blocks' `family_size`s; 0 when there is none.

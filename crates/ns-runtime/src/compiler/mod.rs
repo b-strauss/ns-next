@@ -61,15 +61,16 @@ pub fn compile_method(
         return reference::compile_method(method, bindings);
     }
     let argument_count = argument_count_of(&method.pattern);
-    let named_temporary_count = method.body.temporaries.len() as u16;
     let mut lowerer = Lowerer::new(
         CodeKind::Method,
         argument_count,
-        named_temporary_count,
+        &method.body.temporaries,
         bindings,
+        vec![],
         vec![],
         0,
     );
+    lowerer.lower_local_initializers(&method.body.temporaries);
     lowerer.lower_body(&method.body.statements);
     lowerer.finish(method.span)
 }
@@ -115,8 +116,9 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
     let mut lowerer = Lowerer::new(
         CodeKind::Initializer,
         argument_count,
-        0,
+        &[],
         bindings,
+        vec![],
         vec![],
         0,
     );
@@ -156,7 +158,15 @@ fn compile_superclass_clause(
     let statements = vec![Statement::Return(
         crate::interpreter::nested::superclass_clause_expression(clause),
     )];
-    let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, 0, bindings, vec![], 0);
+    let mut lowerer = Lowerer::new(
+        CodeKind::SuperclassClause,
+        0,
+        &[],
+        bindings,
+        vec![],
+        vec![],
+        0,
+    );
     lowerer.lower_body(&statements);
     Some(lowerer.finish(clause.span))
 }
@@ -189,8 +199,9 @@ fn compile_superclass_message(
     let mut lowerer = Lowerer::new(
         CodeKind::SuperclassMessage,
         argument_count,
-        0,
+        &[],
         bindings,
+        vec![],
         vec![],
         0,
     );

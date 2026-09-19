@@ -5,7 +5,7 @@ mod classes;
 mod scope;
 mod sends;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast::{self, Expression, Statement};
@@ -26,8 +26,7 @@ pub fn resolve(
         bindings: HashMap::new(),
         errors: Vec::new(),
     };
-    let member_sets = build_member_sets(&module.root_class);
-    resolver.resolve_class(&module.root_class, &[], &member_sets);
+    resolver.resolve_class(&module.root_class, &[]);
     if resolver.errors.is_empty() {
         Ok(ResolvedModule {
             module: Rc::new(module),
@@ -40,70 +39,24 @@ pub fn resolve(
     }
 }
 
-/// Each class declaration's *own* declared members
-/// (`classes::own_member_names`), keyed by the class's own name, which
-/// assumes no module declares two same-named classes at different nesting
-/// depths that would collide within one compile; revisit with a real
-/// `ClassId` if that ever bites.
-///
-/// Nothing inherited goes in: `newspeak-spec.pdf` §5.7 looks for the
-/// innermost lexically enclosing construct in which a member "is
-/// declared", and §2.3.1 proceeds "up the inheritance chain of self" only
-/// once no lexically visible declaration matches -- which is dispatch's job
-/// at run time, over the real class chain.
-fn build_member_sets(root: &ast::ClassDeclaration) -> HashMap<Symbol, HashSet<Symbol>> {
-    let mut sets = HashMap::new();
-    collect_member_sets(root, &mut sets);
-    sets
-}
-
-fn collect_member_sets(
-    declaration: &ast::ClassDeclaration,
-    sets: &mut HashMap<Symbol, HashSet<Symbol>>,
-) {
-    let name = Symbol::intern(&declaration.name.name);
-    sets.insert(name, classes::own_member_names(declaration));
-    for nested in &declaration.instance_side.nested_classes {
-        collect_member_sets(nested, sets);
-    }
-    if let Some(class_side) = &declaration.class_side {
-        for nested in &class_side.nested_classes {
-            collect_member_sets(nested, sets);
-        }
-    }
-}
-
-/// Builds an innermost-first `EnclosingClass` chain from `names`
-/// (outer-to-inner order, as accumulated while walking down nested class
-/// declarations).
-fn class_chain_from<'a>(
-    names: &[Symbol],
-    member_sets: &'a HashMap<Symbol, HashSet<Symbol>>,
-) -> Vec<EnclosingClass<'a>> {
-    names
-        .iter()
-        .rev()
-        .map(|&name| EnclosingClass {
-            name,
-            members: member_sets.get(&name).unwrap_or_else(|| {
-                static EMPTY: std::sync::OnceLock<HashSet<Symbol>> = std::sync::OnceLock::new();
-                EMPTY.get_or_init(HashSet::new)
-            }),
-        })
-        .collect()
-}
-
 struct Resolver {
     bindings: HashMap<Span, Binding>,
     errors: Vec<ResolveError>,
 }
 
 impl Resolver {
+    /// `enclosing` is the chain of declarations around this one, innermost
+    /// first. Each level borrows the member set of *its own* declaration,
+    /// computed here as the walk enters it, so two classes of one simple name
+    /// can never share or overwrite a set (`docs/design/dispatch.md`,
+    /// "Resolution"). Nothing inherited goes in: §5.7 looks for the innermost
+    /// lexically enclosing construct in which a member "is declared", and
+    /// §2.3.1 proceeds "up the inheritance chain of self" only once no
+    /// lexically visible declaration matches -- dispatch's job at run time.
     fn resolve_class(
         &mut self,
         declaration: &ast::ClassDeclaration,
-        enclosing: &[Symbol],
-        member_sets: &HashMap<Symbol, HashSet<Symbol>>,
+        enclosing: &[EnclosingClass<'_>],
     ) {
         let name = Symbol::intern(&declaration.name.name);
         for duplicate in classes::duplicate_member_names(declaration) {
@@ -112,10 +65,13 @@ impl Resolver {
                 message: format!("class `{name}` has multiple definitions of `{duplicate}`"),
             });
         }
-        let mut chain: Vec<Symbol> = enclosing.to_vec();
-        chain.push(name);
-        // Innermost first for the chain we hand to `sends::depth_search`.
-        let class_chain = class_chain_from(&chain, member_sets);
+        let own_members = classes::own_member_names(declaration);
+        let class_chain: Vec<EnclosingClass<'_>> = std::iter::once(EnclosingClass {
+            name,
+            members: &own_members,
+        })
+        .chain(enclosing.iter().copied())
+        .collect();
 
         // The superclass clause's receiver (e.g. `Object` in `Object new`)
         // is evaluated "as if it occurred inside an instance method of the
@@ -124,8 +80,7 @@ impl Resolver {
         // chain of classes *enclosing* this declaration, not against this
         // class's own not-yet-existing member set.
         if let Some(clause) = &declaration.superclass {
-            let enclosing_chain = class_chain_from(enclosing, member_sets);
-            self.resolve_superclass_clause(clause, &enclosing_chain);
+            self.resolve_superclass_clause(clause, enclosing);
         }
 
         for method in &declaration.instance_side.methods {
@@ -159,7 +114,7 @@ impl Resolver {
             .map(pattern_parameter_names)
             .unwrap_or_default();
         let mut scope = ScopeStack::new();
-        scope.push(LocalScope::new(&factory_parameters));
+        scope.push(LocalScope::new(&factory_parameters, &[]));
         for slot in &declaration.instance_side.slots {
             if let Some(initializer) = &slot.initializer {
                 self.resolve_expression(initializer, &mut scope, &class_chain);
@@ -186,29 +141,37 @@ impl Resolver {
         }
 
         for nested in &declaration.instance_side.nested_classes {
-            self.resolve_class(nested, &chain, member_sets);
+            self.resolve_class(nested, &class_chain);
         }
         if let Some(class_side) = &declaration.class_side {
             for nested in &class_side.nested_classes {
-                self.resolve_class(nested, &chain, member_sets);
+                self.resolve_class(nested, &class_chain);
             }
         }
     }
 
     fn resolve_method(&mut self, method: &ast::MethodDeclaration, class_chain: &[EnclosingClass]) {
         let parameter_names: Vec<Symbol> = pattern_parameter_names(&method.pattern);
-        let temporary_names: Vec<Symbol> = method
-            .body
-            .temporaries
-            .iter()
-            .map(|temporary| Symbol::intern(&temporary.name))
-            .collect();
-        let mut all = parameter_names;
-        all.extend(temporary_names);
         let mut scope = ScopeStack::new();
-        scope.push(LocalScope::new(&all));
+        scope.push(LocalScope::new(&parameter_names, &method.body.temporaries));
+        self.resolve_local_initializers(&method.body.temporaries, &mut scope, class_chain);
         for statement in &method.body.statements {
             self.resolve_statement(statement, &mut scope, class_chain);
+        }
+    }
+
+    /// A local slot's initializer runs in the activation it belongs to
+    /// (§3.6), so it resolves in the scope its body's statements do.
+    fn resolve_local_initializers(
+        &mut self,
+        temporaries: &[ast::SlotDeclaration],
+        scope: &mut ScopeStack,
+        chain: &[EnclosingClass],
+    ) {
+        for temporary in temporaries {
+            if let Some(initializer) = &temporary.initializer {
+                self.resolve_expression(initializer, scope, chain);
+            }
         }
     }
 
@@ -252,15 +215,8 @@ impl Resolver {
                     .iter()
                     .map(|parameter| Symbol::intern(&parameter.name))
                     .collect();
-                let temporary_names: Vec<Symbol> = block
-                    .body
-                    .temporaries
-                    .iter()
-                    .map(|temporary| Symbol::intern(&temporary.name))
-                    .collect();
-                let mut names = parameter_names;
-                names.extend(temporary_names);
-                scope.push(LocalScope::new(&names));
+                scope.push(LocalScope::new(&parameter_names, &block.body.temporaries));
+                self.resolve_local_initializers(&block.body.temporaries, scope, chain);
                 for statement in &block.body.statements {
                     self.resolve_statement(statement, scope, chain);
                 }
@@ -384,11 +340,12 @@ impl Resolver {
     /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
     /// exactly like an implicit-receiver keyword send to `id:` -- see
     /// `docs/design/dispatch.md`, "Setter sends", and `newspeak-spec.pdf`
-    /// §5.4.3, which makes `id:: e` the send of `id:`. Locals win first (a
-    /// local temporary/parameter can be reassigned directly); otherwise it is
-    /// a `LexicalSend` at the depth of the innermost declaration of the
-    /// setter `id:` itself (§5.7) -- a mutable slot `id`, or a method `id:`.
-    /// An immutable slot declares no setter (§6.3.2), so it is passed by.
+    /// §5.4.3, which makes `id:: e` the send of `id:`. Only a local that
+    /// declares a setter wins first -- a parameter or an immutable local
+    /// declares no `id:`, so it is passed by, as the canonical compiler
+    /// does. Otherwise it is a `LexicalSend` at the depth of the innermost
+    /// declaration of the setter `id:` itself (§5.7) -- a mutable slot `id`,
+    /// or a method `id:`.
     fn resolve_setter_target(
         &mut self,
         target: &ast::Identifier,
@@ -396,7 +353,7 @@ impl Resolver {
         chain: &[EnclosingClass],
     ) {
         let name = Symbol::intern(&target.name);
-        if let Some(binding) = scope.resolve(name) {
+        if let Some(binding) = scope.resolve_setter(name) {
             self.bindings.insert(target.span, binding);
             return;
         }

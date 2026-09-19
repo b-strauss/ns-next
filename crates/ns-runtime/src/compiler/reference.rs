@@ -30,6 +30,7 @@ pub(crate) fn compile_method(method: &ast::MethodDeclaration, bindings: &Binding
             .expect("internal: more than u16::MAX temporaries in one method"),
         bindings,
     );
+    body.local_initializers(&method.body.temporaries);
     body.statements_and_end(&method.body.statements);
     body.finish(method.span)
 }
@@ -166,6 +167,24 @@ impl<'a> Body<'a> {
         let index = self.statement_program_counter.len();
         self.statement_program_counter
             .push((index, start..self.instructions.len()));
+    }
+
+    /// Each local slot with an initializer, in declaration order, as one
+    /// statement: its expression, then a `StoreLocal` into the slot's own
+    /// register, which follows the parameters (§3.6) -- the same shape
+    /// `lower.rs`'s `lower_local_initializers` emits, in this module's own
+    /// idiom.
+    fn local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
+        for (position, temporary) in temporaries.iter().enumerate() {
+            let Some(initializer) = &temporary.initializer else {
+                continue;
+            };
+            let start = self.instructions.len();
+            let source = self.value(initializer);
+            let slot = self.argument_count + position as u16;
+            self.emit(Instruction::StoreLocal { source, slot });
+            self.record_statement(start);
+        }
     }
 
     fn statements_and_end(&mut self, statements: &[Statement]) {
@@ -441,6 +460,7 @@ impl<'a> Body<'a> {
                 .expect("internal: more than u16::MAX temporaries in one block"),
             self.bindings,
         );
+        inner.local_initializers(&block.body.temporaries);
         inner.statements_and_end(&block.body.statements);
         let code = inner.finish(block.span);
         let destination = self.fresh();

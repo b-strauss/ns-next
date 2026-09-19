@@ -555,6 +555,11 @@ time.
   registers, sender, home, current class and kind. A married frame's registers
   are its entry's, traced with the stack.
 - The host root table.
+- The heap's canonical symbol table ([object-model.md](object-model.md),
+  "Values and objects"), a strong root until the collector makes it weak, as
+  Primordial Soup's `symbolTable` is -- a symbol no program holds any more is
+  then free to go, and the next literal of its text allocates a new
+  canonical one.
 
 **Every impl names every field and matches every variant**, with no `..` and
 no `_` arm, so a field or a variant added later does not compile until someone

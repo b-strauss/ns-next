@@ -1,4 +1,3 @@
-skipped = "not implemented yet: a parameter is bound to a writable register, so a setter send to it writes it"
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #value:
