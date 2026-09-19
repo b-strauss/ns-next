@@ -77,8 +77,21 @@ pub(crate) struct Lowerer<'a> {
     /// initialization can write it: every parameter, and every immutable
     /// local slot (§3.6). The resolver binds no assignment to one
     /// (`docs/design/dispatch.md`, "Setter sends"), so an operand read from
-    /// one survives anything lowered after it.
-    read_only_locals: Vec<bool>,
+    /// one survives anything lowered after it. `Rc<[bool]>` so
+    /// `lower_block_literal` can hand a nested `Lowerer` a copy of it (as
+    /// one entry of that nested `Lowerer`'s own `enclosing_read_only_locals`)
+    /// without cloning the table's contents.
+    read_only_locals: Rc<[bool]>,
+    /// The `read_only_locals` table of each enclosing `Frame` scope, one
+    /// entry per `Frame` in `scopes` other than this body's own, innermost
+    /// enclosing frame last. Lets `lower_assign`'s `StoreOuterLocal` branch
+    /// (`hops != 0`) check the same precondition the `StoreLocal` branches
+    /// already `debug_assert!` for `hops == 0` -- a write from a nested
+    /// block into an *enclosing* frame's read-only local, the write-through-a-
+    /// closure case `materialize`'s copy exists to protect against
+    /// (`CLAUDE.md`, "An expression's value register must still hold that
+    /// value").
+    enclosing_read_only_locals: Vec<Rc<[bool]>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -88,11 +101,12 @@ impl<'a> Lowerer<'a> {
         temporaries: &[ast::SlotDeclaration],
         bindings: &'a Rc<HashMap<Span, Binding>>,
         mut enclosing_scopes: Vec<ScopeKind>,
+        enclosing_read_only_locals: Vec<Rc<[bool]>>,
         first_call_site: u32,
     ) -> Self {
         enclosing_scopes.push(ScopeKind::Frame);
         let base = argument_count + temporaries.len() as u16;
-        let read_only_locals: Vec<bool> = std::iter::repeat_n(true, argument_count as usize)
+        let read_only_locals: Rc<[bool]> = std::iter::repeat_n(true, argument_count as usize)
             .chain(
                 temporaries
                     .iter()
@@ -113,6 +127,7 @@ impl<'a> Lowerer<'a> {
             next_call_site: first_call_site,
             last_expression_register: None,
             read_only_locals,
+            enclosing_read_only_locals,
         }
     }
 
@@ -325,12 +340,15 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|parameter| crate::Symbol::intern(&parameter.name))
             .collect();
+        let mut enclosing_read_only_locals = self.enclosing_read_only_locals.clone();
+        enclosing_read_only_locals.push(self.read_only_locals.clone());
         let mut inner = Lowerer::new(
             CodeKind::Block,
             parameters.len() as u16,
             &block.body.temporaries,
             self.bindings,
             self.scopes.clone(),
+            enclosing_read_only_locals,
             self.next_call_site,
         );
         inner.lower_local_initializers(&block.body.temporaries);
@@ -605,6 +623,16 @@ impl<'a> Lowerer<'a> {
                         slot: index,
                     });
                 } else {
+                    // `enclosing_read_only_locals` is innermost last, so the
+                    // frame `hops` scopes out sits `hops` entries before the
+                    // end.
+                    let target_frame = &self.enclosing_read_only_locals
+                        [self.enclosing_read_only_locals.len() - hops as usize];
+                    debug_assert!(
+                        !target_frame[index as usize],
+                        "internal: an assignment bound to a parameter or an immutable local \
+                         (the resolver passes a setter send by them)"
+                    );
                     self.emit(Instruction::StoreOuterLocal {
                         source: value_register,
                         depth: hops,
@@ -1149,6 +1177,7 @@ mod tests {
             argument_count,
             &method.body.temporaries,
             bindings,
+            vec![],
             vec![],
             0,
         )
@@ -1732,6 +1761,10 @@ mod tests {
         // mutable temporary gives the assignment a named local to hand on --
         // a parameter would need no copy at all
         // (`a_slot_initializer_that_assigns_a_parameter_copies_nothing`).
+        // Lowering an `Initializer` from a method's own temporaries is an
+        // artificial shape -- a real initializer has no locals of its own --
+        // used here only to pin `materialize`'s copy mechanism generically,
+        // independent of `CodeKind`.
         let source = indoc! {"
             Newspeak3
             'T'
@@ -1747,6 +1780,7 @@ mod tests {
             0,
             &method.body.temporaries,
             &bindings,
+            vec![],
             vec![],
             0,
         );
@@ -1796,7 +1830,7 @@ mod tests {
             ) : ()
         "};
         let (method, bindings) = resolve_method(source, 0);
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, &[], &bindings, vec![], 0);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, &[], &bindings, vec![], vec![], 0);
         lowerer.lower_slot_initializer(return_expression(&method), 4);
         let code = lowerer.finish(method.span);
         assert!(
@@ -2371,7 +2405,7 @@ mod tests {
             0,
         );
         // Reuse `foo`'s `^1` as if it were an initializer expression: kind Initializer, 0 arguments.
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], 0);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], vec![], 0);
         lowerer.lower_body(&method.body.statements);
         let code = lowerer.finish(method.span);
         assert_eq!(
@@ -2400,7 +2434,7 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], 0);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], vec![], 0);
         lowerer.lower_slot_initializer(return_expression(&method), 4);
         let code = lowerer.finish(method.span);
         // `6`, `7`, the `*` send, then the field write: four instructions.

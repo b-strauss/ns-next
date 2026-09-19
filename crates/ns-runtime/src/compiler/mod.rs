@@ -67,6 +67,7 @@ pub fn compile_method(
         &method.body.temporaries,
         bindings,
         vec![],
+        vec![],
         0,
     );
     lowerer.lower_local_initializers(&method.body.temporaries);
@@ -118,6 +119,7 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
         &[],
         bindings,
         vec![],
+        vec![],
         0,
     );
     let mut source: Option<Span> = None;
@@ -156,7 +158,15 @@ fn compile_superclass_clause(
     let statements = vec![Statement::Return(
         crate::interpreter::nested::superclass_clause_expression(clause),
     )];
-    let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, &[], bindings, vec![], 0);
+    let mut lowerer = Lowerer::new(
+        CodeKind::SuperclassClause,
+        0,
+        &[],
+        bindings,
+        vec![],
+        vec![],
+        0,
+    );
     lowerer.lower_body(&statements);
     Some(lowerer.finish(clause.span))
 }
@@ -191,6 +201,7 @@ fn compile_superclass_message(
         argument_count,
         &[],
         bindings,
+        vec![],
         vec![],
         0,
     );
