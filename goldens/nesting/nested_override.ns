@@ -10,15 +10,15 @@ class NestedOverride usingPlatform: p = Object new (| t ::= p transcript. |) (
         public class Nested = Inner () ()
     )
     class GrandChildOfOuter = ChildOfOuter (| public Inner ::= String. |) (
-        public setInner: v = ( Inner := v )
+        public setInner: v = ( Inner:: v )
     )
     public main: platform args: args = (
         | g n1 n2 |
-        g := GrandChildOfOuter new.
-        n1 := g Nested.
+        g:: GrandChildOfOuter new.
+        n1:: g Nested.
         t show: n1 new printString; newLine.
         g setInner: Array.
-        n2 := g Nested.
+        n2:: g Nested.
         t show: (n1 == n2) printString; newLine.
     )
 )

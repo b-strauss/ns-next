@@ -136,7 +136,7 @@ fn temporaries_implicit_self_sends_and_arithmetic_work() {
         class X = Object new (
         ) (
           helper = ( ^40 )
-          public foo = ( | t | t := helper. ^t + 2 )
+          public foo = ( | t | t:: helper. ^t + 2 )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -156,7 +156,7 @@ fn slots_read_and_write_through_lexical_sends() {
         class X = Object new (
           | n ::= 1. |
         ) (
-          public bump = ( n := n + 1. ^n )
+          public bump = ( n:: n + 1. ^n )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -219,7 +219,7 @@ fn cascades_and_builtin_instantiation_work() {
         'T'
         class X = Object new (
         ) (
-          public foo = ( | c | c := OrderedCollection new. c add: 1; add: 2. ^c size )
+          public foo = ( | c | c:: OrderedCollection new. c add: 1; add: 2. ^c size )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -239,7 +239,7 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
         class X = Object new (
         ) (
           find: target in: coll = ( coll do: [:each | each = target ifTrue: [^'found']]. ^'not found' )
-          public main = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. ^(self find: 2 in: c), (self find: 9 in: c) )
+          public main = ( | c | c:: OrderedCollection new. c add: 1; add: 2; add: 3. ^(self find: 2 in: c), (self find: 9 in: c) )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -260,7 +260,7 @@ fn a_block_writes_an_enclosing_temporary_through_store_outer_local() {
         'T'
         class X = Object new (
         ) (
-          public sum = ( | n | n := 0. #(1 2 3) do: [:e | n := n + e]. ^n )
+          public sum = ( | n | n:: 0. #(1 2 3) do: [:e | n:: n + e]. ^n )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -368,7 +368,7 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
         'T'
         class X = Object new (
         ) (
-          public foo = ( | a | a := {1. 2. 3}. ^a )
+          public foo = ( | a | a:: {1. 2. 3}. ^a )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

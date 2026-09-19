@@ -7,7 +7,7 @@ class StoredBlockReturn usingPlatform: platform = Object new (
     | blk ::= nil. |
 ) (
     stash = (
-        blk := [^'too late'].
+        blk:: [^'too late'].
         ^'stashed'
     )
     public main: p args: a = (

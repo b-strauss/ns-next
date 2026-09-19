@@ -14,7 +14,7 @@ class CacheDoesNotUnderstandHandlers usingPlatform: thePlatform = Object new (| 
     )
     public main: platform args: args = (
         | recorder |
-        recorder := Recorder new.
+        recorder:: Recorder new.
         {Catcher new. recorder. Catcher new. recorder} do: [:each |
             transcript show: (each zork == each) printString; newLine].
         transcript show: (recorder doesNotUnderstand at: 1) printString; newLine.

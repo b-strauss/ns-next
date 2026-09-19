@@ -190,7 +190,7 @@ not scratch, and anything that writes the local writes the expression's value to
 An assignment through a setter copies the local its value was read from even
 when the consumer is the very next instruction, because the setter send itself
 runs user code before that consumer reads — code that can write the local
-through a closure that captured the frame. `^x := y`, with a setter that assigns
+through a closure that captured the frame. `^x:: y`, with a setter that assigns
 `y`, would otherwise answer `y`'s new value, where the language answers the
 value `y` had ([dispatch.md](dispatch.md), "Setter sends").
 
@@ -621,7 +621,7 @@ emits, for exactly the sends `control_flow::recognize` accepts.
   since it never emits `SendInlinable`.
 - **A crafted artifact cannot use the exemption to recurse without bound.**
   Code decoded from an artifact can emit `SendInlinable` with any block in the
-  argument register — `b := [true ifTrue: b]` — and an exemption granted by
+  argument register — `b:: [true ifTrue: b]` — and an exemption granted by
   selector alone would let that recursion run uncounted until memory ran out.
   So the block must also have been created by the activation that sends: its
   `captured_frame` is that activation's reified frame. Every block the
@@ -640,7 +640,7 @@ the depth of a `StackOverflowError` to frame sizes and compilation tier, would
 leave every overflow unchecked and report false divergences for a recursion
 that fits under one lowering and not the other. Counting only method-like
 activations would agree under both, but would leave a recursion through blocks
-alone — `b := [:n | n = 0 ifFalse: [b value: n - 1]]` — to a second, memory-based
+alone — `b:: [:n | n = 0 ifFalse: [b value: n - 1]]` — to a second, memory-based
 bound that does not agree. Of the prior art, the Smalltalk lineage bounds depth
 by memory and Nova by a fixed count of contexts ([execution.md](execution.md),
 "How other systems bound recursion depth"); none has two lowerings that must

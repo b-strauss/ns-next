@@ -460,7 +460,6 @@ impl<'a> Parser<'a> {
     fn parse_trailing_sends(&mut self, out: &mut Vec<MessageSend>) {
         while (self.at(TokenKind::Identifier) || self.at(TokenKind::Class))
             && !self.is_reserved_identifier(self.current())
-            && self.peek2() != TokenKind::Assign
         {
             let selector_token = self.bump();
             out.push(MessageSend {
@@ -994,9 +993,9 @@ mod class_tests {
             class Outer usingPlatform: p = (
                 (* a comment *)
                 | x ::= 0. |
-                x := 1.
+                x:: 1.
             ) (
-                public bump = ( x := x + 1 )
+                public bump = ( x:: x + 1 )
                 class Inner = ( ) ( public ping = ( ^ 42 ) ) : ()
             )
         "};
@@ -1124,7 +1123,7 @@ mod class_tests {
         let module = module(indoc! {"
             Newspeak3
             'X'
-            class C = ( x := 1. y := 2. ) ()
+            class C = ( x:: 1. y:: 2. ) ()
         "});
         let body = &module.root_class.instance_side;
         assert_eq!(body.initializer_expressions.len(), 2);

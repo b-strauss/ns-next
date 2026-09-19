@@ -48,12 +48,12 @@ const PROGRAMS: &str = indoc! {"
     ) (
         fact: n = ( ^n = 0 ifTrue: [1] ifFalse: [n * (self fact: n - 1)] )
         public factorial = ( ^self fact: 10 )
-        public loop = ( | i sum | i := 0. sum := 0. [i < 10] whileTrue: [i := i + 1. sum := sum + i]. ^sum )
-        public early = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. c do: [:e | e = 2 ifTrue: [^e * 100]]. ^0 )
+        public loop = ( | i sum | i:: 0. sum:: 0. [i < 10] whileTrue: [i:: i + 1. sum:: sum + i]. ^sum )
+        public early = ( | c | c:: OrderedCollection new. c add: 1; add: 2; add: 3. c do: [:e | e = 2 ifTrue: [^e * 100]]. ^0 )
         public logic = ( ^(((3 < 4) and: [4 < 5]) and: [(3 > 4) or: [true]]) ifTrue: [1] ifFalse: [0] )
         public slots = ( ^a + b )
-        public cascade = ( | c n | c := OrderedCollection new. c add: 1; add: 2; add: 3. n := 0. c do: [:e | n := n + e]. ^n )
-        public chained = ( | t u | u := t := 5. ^t + u )
+        public cascade = ( | c n | c:: OrderedCollection new. c add: 1; add: 2; add: 3. n:: 0. c do: [:e | n:: n + e]. ^n )
+        public chained = ( | t u | u:: t:: 5. ^t + u )
     ) : ()
 "};
 

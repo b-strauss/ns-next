@@ -187,7 +187,7 @@ fn register_addressing_puts_arguments_before_temporaries() {
         Newspeak3
         'T'
         class T usingPlatform: p = Object new () (
-            public run: a = (| t | t := a. ^t)
+            public run: a = (| t | t:: a. ^t)
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

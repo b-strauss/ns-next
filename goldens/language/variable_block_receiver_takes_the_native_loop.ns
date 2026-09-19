@@ -5,8 +5,8 @@ class WhileVar usingPlatform: platform = Object new (
 ) (
     public main: p args: a = (
         | cond |
-        cond := [n < 3].
-        cond whileTrue: [n := n + 1].
+        cond:: [n < 3].
+        cond whileTrue: [n:: n + 1].
         p transcript show: n printString; newLine
     )
 ) : ()

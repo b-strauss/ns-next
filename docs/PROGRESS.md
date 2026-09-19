@@ -121,6 +121,12 @@ immutable local's register never copied. All five decided with the user on
 See "M4 — The specification gaps" below for what changed, commit by commit,
 and the decisions behind each.
 
+**Removing `:=` is done** (2026-09-19): the lexer refuses Smalltalk's
+assignment by name, and every golden, test and document example is spelled
+as §5.4.3's setter send, `name:: expression`, with no recorded outcome
+moving; see "M4 — Removing `:=`" below. **Closure conversion, step 4 of the
+order of work below, is next** ([execution.md](design/execution.md)).
+
 **The baseline was `22a56f7`**, the merge of 3c into `master`, whose last
 change to a send's path is `5d3aeff`; `393311f`, 3c's own baseline, stayed
 superseded; `be3eb40` was carried beside it, as every measurement since
@@ -134,14 +140,14 @@ that drives a megamorphic site.
 four are not in the tree at all and must be written out from the text the
 documents give, never reconstructed from their prose descriptions.**
 A reconstruction runs and prints the right answer while measuring something
-else, and older comparison binaries may not run it at all. `bench_do.ns` is
-written out in the
-[2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
-"Measurement protocol"; `bench_new.ns`, `bench_new2.ns` and
-`bench_newarg.ns`, whose slots had to be renamed when accessors became
-method-table entries, are written out in
-[execution.md](design/execution.md), "What spec-conformant lookup moved" —
-in that document, not in the 2c plan.
+else, and older comparison binaries may not run it at all. All four —
+`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns`, whose slots had to be
+renamed when accessors became method-table entries, and `bench_do.ns` — are
+written out in [execution.md](design/execution.md), "What spec-conformant
+lookup moved", spelled with the setter send. The
+[2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md)'s
+older copies spell `:=`, which the tree no longer parses; take them from
+execution.md.
 
 **Every compared binary, the current tree included, was built with the
 protocol's explicit flags through `RUSTFLAGS`** — `+crt-static` and the
@@ -168,14 +174,6 @@ specification gaps moved".
   builtin names resolve statically rather than as sends to the accessors
   §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
   class name is loaded, not sent").
-- **`:=` is accepted but is not Newspeak syntax** (§5.4.3): only `id:: e` is
-  the specification's setter send; the lexer and parser also accept `:=`,
-  Smalltalk syntax, as a synonym for it, and some goldens and tests use it
-  ([frontend.md](design/frontend.md), "Deviation: `:=` is accepted as a
-  synonym for a setter send"). **This is the next piece of work**, decided
-  with the user on 2026-09-19: its own small step, removing `:=` from the
-  lexer and parser and converting every golden and test that uses it to
-  `::`, before closure conversion (item 4 of the order of work below).
 - **`nil printString` answers `'an Object'`**: `Object>>printString` is a
   stub (`crates/ns-runtime/src/builtins/object_class.rs`, `an Object` for
   every receiver); no golden pins the correct answer yet.
@@ -479,7 +477,7 @@ one multiply; `bench_send.ns` is 12.5% faster for it.
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
 and all three done, 1b done, 2 done in all three parts, the spec-conformant
 lookup inserted ahead of 3 and done, 3 done in all three parts, the
-specification gaps done, removing `:=` next as its own small step ahead of
+specification gaps done, removing `:=` done as its own small step ahead of
 4, everything from 4 on still ahead — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
@@ -575,8 +573,8 @@ so nothing is lost by it going second.
    Inline caches" below. **3c, the dispatch id's place, is done**: a guard
    reads the id from the object header; see "M4 — The dispatch id's place"
    below. **The specification gaps are done**, one plan and one measurement;
-   see "M4 — The specification gaps" below. **Removing `:=`** is next, its
-   own small step, before step 4 ("Where the next session starts" above).
+   see "M4 — The specification gaps" below. **Removing `:=`** is done, its
+   own small step before step 4; see "M4 — Removing `:=`" below.
 4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
    variables they only read and share a box for the ones they write, instead of
    reaching them through their method's frame. That ends 1a's divorce copy and
@@ -2694,6 +2692,34 @@ worth revisiting only if many heaps live in one process (actors). `nil
 printString` answering `'an Object'` and `:=` not being Newspeak syntax are
 open findings, not follow-ups of this step's own code; both are recorded in
 "Where the next session starts" above.
+
+## M4 — Removing `:=` (2026-09-19)
+
+Plan: [ns-next-remove-assign](superpowers/plans/2026-09-19-2125-ns-next-remove-assign.md),
+committed on the branch ahead of Task 1 (`8ac121b`). Branch
+`feature/remove-assign`, started from `24e414d`, on the checked-out tree.
+Decided with the user on 2026-09-19, while closing the specification gaps,
+as its own small step ahead of closure conversion.
+
+- `84abbdf` — every golden and runtime test that spelled `:=` is written as a
+  setter send, while `:=` was still accepted, so the whole suite under both
+  lowerings proved the two spellings answered the same: no `.toml` moved.
+  The image wire-format fixture was regenerated in the same commit: its
+  source spelled `:=` three times, so the source spans it records shifted by
+  one to three bytes, and nothing else in the image differs.
+- `dcf83ae` — the lexer refuses `:=` with a diagnostic naming the setter
+  send, `TokenKind::Assign` is gone, and so are the parser's `:=` arm and the
+  two guards that kept a unary loop off an assignment's target.
+- The record, in the commit after it: frontend.md's deviation retired, the
+  README row dropped, every design-document example respelled, and
+  `bench_do.ns` written out in execution.md beside the other three throwaway
+  sources, since the 2c plan's copy, an execution record, keeps its `:=`.
+
+Not measured: nothing on the run loop's path changed, and the measurement
+sources changed spelling only; all four throwaway sources were run from the
+text in execution.md and print their recorded answers. `parse-corpus`
+stayed at **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under
+both stress modes.
 
 ## Notes
 

@@ -74,7 +74,7 @@ const INITIALIZER_EXPRESSIONS: &str = indoc! {"
     'T'
     class Foo = Object new (
       | q ::= 5. r ::= 0. |
-      r := q + 1.
+      r:: q + 1.
     ) (
       public r2 = ( ^r )
     ) : ()

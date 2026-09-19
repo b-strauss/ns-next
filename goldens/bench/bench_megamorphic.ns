@@ -10,13 +10,13 @@ class BenchMegamorphic usingPlatform: platform = Object new (
 	class KindE = Object new () ( public value = ( ^5 ) )
 	public main: p args: a = (
 		| kinds which |
-		kinds := {KindA new. KindB new. KindC new. KindD new. KindE new}.
-		which := 1.
+		kinds:: {KindA new. KindB new. KindC new. KindD new. KindE new}.
+		which:: 1.
 		[n < 50000] whileTrue: [
-			sum := sum + ((kinds at: which) value).
-			which := which + 1.
-			(which > 5) ifTrue: [which := 1].
-			n := n + 1
+			sum:: sum + ((kinds at: which) value).
+			which:: which + 1.
+			(which > 5) ifTrue: [which:: 1].
+			n:: n + 1
 		].
 		p transcript show: sum printString; newLine
 	)

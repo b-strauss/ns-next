@@ -12,7 +12,7 @@ class SuperclassArgs usingPlatform: p = Object new (| t ::= p transcript. |) (
 	)
 	public main: platform args: args = (
 		| x |
-		x := Leaf new.
+		x:: Leaf new.
 		t show: x base printString; newLine.
 		t show: x middle printString; newLine.
 		t show: x leaf printString; newLine.

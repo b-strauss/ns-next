@@ -522,18 +522,18 @@ representation, and it is what chose the milestone's order. "What the activation
 stack moved" below re-takes it against the arena and against the stack, in one
 sitting; "What the arena moved" re-measures the aggregate only.
 Three separate fixtures, shaped like `bench_loop.ns` but not it -- each with
-the body `[n < 50000] whileTrue: [<first statement>. n := n + 1]` -- isolate
+the body `[n < 50000] whileTrue: [<first statement>. n:: n + 1]` -- isolate
 the pieces, because each differs from the next by exactly one send. Row
-one's `sum := sum + 1` reads a literal where `bench_loop.ns` itself reads
-the variable `n` (`sum := sum + n`), so its 19.02 ms is a separate
+one's `sum:: sum + 1` reads a literal where `bench_loop.ns` itself reads
+the variable `n` (`sum:: sum + n`), so its 19.02 ms is a separate
 measurement that happens to land close to `bench_loop.ns`'s own ~19.6 ms
 at the time, not the same run reported twice:
 
 | First statement | Method it calls | bytecode median | ns/iteration |
 |---|---|---|---|
-| `sum := sum + 1` | — | 19.02 ms | 380.5 |
-| `sum := self tick: sum` | `public tick: x = (^x)` | 22.44 ms | 448.7 |
-| `sum := self tick: sum` | `public tick: x = (^x + 1)` | 27.28 ms | 545.7 |
+| `sum:: sum + 1` | — | 19.02 ms | 380.5 |
+| `sum:: self tick: sum` | `public tick: x = (^x)` | 22.44 ms | 448.7 |
+| `sum:: self tick: sum` | `public tick: x = (^x + 1)` | 27.28 ms | 545.7 |
 
 Rows one and three each pay three native sends per iteration; row two pays two,
 because its method body has no `+`. So the third minus the second is one native
@@ -638,7 +638,7 @@ and the middle of the three as ns per iteration (`median_ms * 1e6 / 50000`):
 | `bench_loop.ns` | 16.27, 16.50, 16.43 ms | 16.07, 16.22, 16.57 ms | 328.6 → 324.4 |
 | `bench_send.ns` | 23.49, 23.46, 23.58 ms | 20.68, 20.51, 20.51 ms | 469.8 → 410.2 |
 | `bench_block.ns` | 38.83, 38.99, 39.16 ms | 38.46, 40.84, 39.24 ms | 779.8 → 784.7 |
-| row one, `sum := sum + 1` | 16.16, 16.18, 16.24 ms | 15.97, 15.98, 16.26 ms | 323.5 → 319.5 |
+| row one, `sum:: sum + 1` | 16.16, 16.18, 16.24 ms | 15.97, 15.98, 16.26 ms | 323.5 → 319.5 |
 | row two, `tick: x = ( ^x )` | 19.18, 20.07, 19.28 ms | 17.84, 17.83, 17.90 ms | 385.6 → 356.9 |
 
 The decomposition, re-taken from the middle medians (ns per iteration):
@@ -983,7 +983,7 @@ throwaway sources exercise the paths that changed and no fixture does, each
 printing the sum it accumulates:
 
 - `bench_do.ns`: 50,000 block activations through `do:` — a 5,000-iteration
-  `whileTrue:` loop over `#(1 2 3 4 5 6 7 8 9 10) do: [:e | sum := sum + e]`.
+  `whileTrue:` loop over `#(1 2 3 4 5 6 7 8 9 10) do: [:e | sum:: sum + e]`.
 - `bench_new.ns`: 20,000 instantiations of
   `class Cell = Object new ( | v ::= 1. | )`, each followed by `v`.
 - `bench_new2.ns`: the same with two levels of slots,
@@ -1410,9 +1410,13 @@ have left both before-binaries, which answer no explicit-receiver slot send,
 with a `doesNotUnderstand:`.
 
 These are the three as every later measurement uses them, written under
-`target\bench-lookup\` (ignored by git) beside the unchanged `bench_do.ns` of
-the [2c plan](../superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
-"Measurement protocol". Each prints `20000`:
+`target\bench-lookup\` (ignored by git), and after them `bench_do.ns`, first
+written out in the
+[2c plan](../superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
+"Measurement protocol". All four are spelled with the setter send, which every
+compared binary back to `be3eb40` parses; the 2c plan's copy spells `:=`,
+which the tree has refused since "M4 — Removing `:=`" ([PROGRESS.md](../PROGRESS.md)),
+and is the same program. The three print `20000`:
 
 ```
 Newspeak3
@@ -1427,8 +1431,8 @@ class BenchNew usingPlatform: platform = Object new (
 	) : ()
 	public main: p args: a = (
 		| n |
-		n := 0.
-		[n < 20000] whileTrue: [sum := sum + Cell new v. n := n + 1].
+		n:: 0.
+		[n < 20000] whileTrue: [sum:: sum + Cell new v. n:: n + 1].
 		p transcript show: sum printString; newLine
 	)
 ) : ()
@@ -1452,8 +1456,8 @@ class BenchNew2 usingPlatform: platform = Object new (
 	) : ()
 	public main: p args: a = (
 		| n |
-		n := 0.
-		[n < 20000] whileTrue: [sum := sum + Cell new v. n := n + 1].
+		n:: 0.
+		[n < 20000] whileTrue: [sum:: sum + Cell new v. n:: n + 1].
 		p transcript show: sum printString; newLine
 	)
 ) : ()
@@ -1477,8 +1481,25 @@ class BenchNewArg usingPlatform: platform = Object new (
 	) : ()
 	public main: p args: a = (
 		| n |
-		n := 0.
-		[n < 20000] whileTrue: [sum := sum + Cell new u. n := n + 1].
+		n:: 0.
+		[n < 20000] whileTrue: [sum:: sum + Cell new u. n:: n + 1].
+		p transcript show: sum printString; newLine
+	)
+) : ()
+```
+
+`bench_do.ns` prints `275000`:
+
+```
+Newspeak3
+'Bench'
+class BenchDo usingPlatform: platform = Object new (
+	| sum ::= 0. |
+) (
+	public main: p args: a = (
+		| n |
+		n:: 0.
+		[n < 5000] whileTrue: [#(1 2 3 4 5 6 7 8 9 10) do: [:e | sum:: sum + e]. n:: n + 1].
 		p transcript show: sum printString; newLine
 	)
 ) : ()

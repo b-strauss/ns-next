@@ -4,7 +4,7 @@ class BenchLoop usingPlatform: platform = Object new (
 	| n ::= 0. sum ::= 0. |
 ) (
 	public main: p args: a = (
-		[n < 50000] whileTrue: [sum := sum + n. n := n + 1].
+		[n < 50000] whileTrue: [sum:: sum + n. n:: n + 1].
 		p transcript show: sum printString; newLine
 	)
 ) : ()

@@ -92,7 +92,7 @@ fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
 fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
     for body in [
         "^true ifTrue: [1] ifFalse: [2]",
-        "| t f | t := [1]. f := [2]. ^true ifTrue: t ifFalse: f",
+        "| t f | t:: [1]. f:: [2]. ^true ifTrue: t ifFalse: f",
     ] {
         let source = formatdoc! {"
             Newspeak3
@@ -124,7 +124,7 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
 fn if_true_block_body_resolves_an_enclosing_slot_reference() {
     for body in [
         "^true ifTrue: [ x ] ifFalse: [ 0 ]",
-        "| t f | t := [ x ]. f := [ 0 ]. ^true ifTrue: t ifFalse: f",
+        "| t f | t:: [ x ]. f:: [ 0 ]. ^true ifTrue: t ifFalse: f",
     ] {
         let source = formatdoc! {"
             Newspeak3
@@ -163,7 +163,7 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
 fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
     for body in [
         "true and: [^'escaped']. ^'fell through'",
-        "| b | b := [^'escaped']. true and: b. ^'fell through'",
+        "| b | b:: [^'escaped']. true and: b. ^'fell through'",
     ] {
         let source = formatdoc! {"
             Newspeak3
@@ -197,7 +197,7 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
 fn and_or_short_circuit_never_invokes_the_untaken_block() {
     for body in [
         "false and: [^'wrongly invoked']. true or: [^'wrongly invoked']. ^'correct'",
-        "| b | b := [^'wrongly invoked']. false and: b. true or: b. ^'correct'",
+        "| b | b:: [^'wrongly invoked']. false and: b. true or: b. ^'correct'",
     ] {
         let source = formatdoc! {"
             Newspeak3

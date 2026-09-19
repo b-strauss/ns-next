@@ -442,7 +442,7 @@ fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
                 ) : ()
                 inherited = ( ^super Inner )
             ) : ()
-            public both = ( | i | i := Sub new Inner new. ^i tag, i own )
+            public both = ( | i | i:: Sub new Inner new. ^i tag, i own )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -887,7 +887,7 @@ fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
           public class Inner = self pick (
           ) (
           ) : ()
-          pick = ( first ifTrue: [first := false. ^nil foo]. ^Object )
+          pick = ( first ifTrue: [first:: false. ^nil foo]. ^Object )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

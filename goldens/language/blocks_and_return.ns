@@ -8,7 +8,7 @@ class BlocksAndReturn usingPlatform: platform = Object new (
 	)
 	public main: p args: a = (
 		| c |
-		c := OrderedCollection new.
+		c:: OrderedCollection new.
 		c add: 1; add: 2; add: 3.
 		p transcript show: (self find: 2 in: c); newLine.
 		p transcript show: (self find: 9 in: c); newLine

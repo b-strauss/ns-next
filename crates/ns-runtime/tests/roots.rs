@@ -45,7 +45,7 @@ const COUNTER: &str = indoc! {"
     class Counter = Object new (
       | n ::= 0. |
     ) (
-      public bump: k = ( n := n + k. ^n )
+      public bump: k = ( n:: n + k. ^n )
     ) : ()
 "};
 
@@ -147,9 +147,9 @@ const GRAPH: &str = indoc! {"
       ) : ()
       public build = (
         | n |
-        n := 40.
-        counter := [n := n + 1. n].
-        cell := Cell new.
+        n:: 40.
+        counter:: [n:: n + 1. n].
+        cell:: Cell new.
         ^{cell. counter}
       )
       public read = ( ^cell v + counter value )

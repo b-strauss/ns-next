@@ -6,10 +6,10 @@ class NestedAccess usingPlatform: p = Object new (| t ::= p transcript. |) (
     )
     public main: platform args: args = (
         | a b inst |
-        a := Inner.
-        b := Inner.
+        a:: Inner.
+        b:: Inner.
         t show: (a == b) printString; newLine.
-        inst := a new.
+        inst:: a new.
         t show: inst value printString; newLine.
     )
 )

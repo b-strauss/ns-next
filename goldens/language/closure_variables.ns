@@ -4,36 +4,36 @@ class ClosureVariables usingPlatform: platform = Object new (
 ) (
 	sumOf: coll = (
 		| s |
-		s := 0.
-		coll do: [:e | s := s + e].
+		s:: 0.
+		coll do: [:e | s:: s + e].
 		^s
 	)
 	nested = (
 		| a |
-		a := 1.
+		a:: 1.
 		^[:b | [:c | a + b + c] value: 10] value: 100
 	)
 	counter = (
 		| n |
-		n := 0.
-		^[n := n + 1. n]
+		n:: 0.
+		^[n:: n + 1. n]
 	)
 	adder: base = (
 		^[:x | [:y | base + x + y]]
 	)
 	public main: p args: a = (
 		| coll c d add |
-		coll := OrderedCollection new.
+		coll:: OrderedCollection new.
 		coll add: 1; add: 2; add: 3.
 		p transcript show: (self sumOf: coll) printString; newLine.
 		p transcript show: self nested printString; newLine.
-		c := self counter.
-		d := self counter.
+		c:: self counter.
+		d:: self counter.
 		c value.
 		c value.
 		p transcript show: c value printString; newLine.
 		p transcript show: d value printString; newLine.
-		add := (self adder: 100) value: 20.
+		add:: (self adder: 100) value: 20.
 		p transcript show: (add value: 3) printString; newLine
 	)
 ) : ()

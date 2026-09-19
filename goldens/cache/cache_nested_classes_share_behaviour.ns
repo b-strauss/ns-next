@@ -8,7 +8,7 @@ class CacheNestedClassesShareBehaviour usingPlatform: thePlatform = Object new (
 	)
 	public main: platform args: args = (
 		| inners |
-		inners := {(Outer tag: 'a') Inner new. (Outer tag: 'b') Inner new. (Outer tag: 'c') Inner new}.
+		inners:: {(Outer tag: 'a') Inner new. (Outer tag: 'b') Inner new. (Outer tag: 'c') Inner new}.
 		inners do: [:each | transcript show: each describe; newLine].
 		transcript show: ((Outer tag: 'a') Inner == (Outer tag: 'a') Inner) printString; newLine.
 	)

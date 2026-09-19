@@ -281,23 +281,11 @@ impl<'a> Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub(crate) fn parse_expression(&mut self) -> Expression {
-        // assignment: Identifier ':=' expression
-        if self.at(TokenKind::Identifier) && self.peek2() == TokenKind::Assign {
-            let target = self.identifier();
-            self.bump(); // :=
-            let value = self.parse_expression();
-            let span = target.span.merge(expression_span(&value));
-            return Expression::Assign {
-                target,
-                value: Box::new(value),
-                span,
-            };
-        }
-
-        // `x:: v` at expression head — grammar's `setterKeyword*
-        // sendExpression`. Semantically a slot write, so represent it as Assign
-        // (== `x := v` for M1). Setter-keyword *after* a receiver (`receiver
-        // x:: v`) is still a keyword send, handled in parse_keyword_message.
+        // `x:: v` at expression head — the grammar's `setterKeyword*
+        // sendExpression`, §5.4.3's setter send and Newspeak's only assignment
+        // form. Semantically a slot write, so represent it as Assign.
+        // Setter-keyword *after* a receiver (`receiver x:: v`) is still a
+        // keyword send, handled in parse_keyword_message.
         //
         // NOTE: the lexer emits `x::` as a single `SetterKeyword` token whose text
         // is `x::` (not `Identifier` followed by `SetterKeyword`), so the name is
@@ -460,8 +448,7 @@ impl<'a> Parser<'a> {
                 self.bump(); // `:`
             }
             if !((self.at(TokenKind::Identifier) || self.at(TokenKind::Class))
-                && !self.is_reserved_identifier(self.current())
-                && self.peek2() != TokenKind::Assign)
+                && !self.is_reserved_identifier(self.current()))
             {
                 break;
             }

@@ -1,6 +1,6 @@
 Newspeak3
 'T'
-(* `x := e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
+(* `x:: e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
    sends"), even when the setter it sends writes the local `e` read, through a
    closure built earlier. One case per position that reads an assignment's
    value after its setter send has run: a `^`, a `^` inside a block, a block's
@@ -16,17 +16,17 @@ class SetterValue usingPlatform: platform = Object new (
     | blk ::= nil. |
 ) (
     x: v = ( blk value )
-    returned = ( | y | y := 1. blk := [y := 99]. ^x := y )
-    returnedFromABlock = ( [ | z | z := 1. blk := [z := 99]. ^x := z ] value. ^0 )
-    blockValue = ( ^[ | z | z := 1. blk := [z := 99]. x := z ] value )
-    inlinedBranch: c = ( | y | y := 1. blk := [y := 99]. ^c ifTrue: [x := y] ifFalse: [0] )
-    inlinedAnd = ( | y | y := true. blk := [y := false]. ^true and: [x := y] )
+    returned = ( | y | y:: 1. blk:: [y:: 99]. ^x:: y )
+    returnedFromABlock = ( [ | z | z:: 1. blk:: [z:: 99]. ^x:: z ] value. ^0 )
+    blockValue = ( ^[ | z | z:: 1. blk:: [z:: 99]. x:: z ] value )
+    inlinedBranch: c = ( | y | y:: 1. blk:: [y:: 99]. ^c ifTrue: [x:: y] ifFalse: [0] )
+    inlinedAnd = ( | y | y:: true. blk:: [y:: false]. ^true and: [x:: y] )
     inlinedCondition = (
         | y count |
-        y := true.
-        count := 0.
-        blk := [y := false].
-        [x := y] whileTrue: [count := count + 1].
+        y:: true.
+        count:: 0.
+        blk:: [y:: false].
+        [x:: y] whileTrue: [count:: count + 1].
         ^count
     )
     public main: p args: a = (

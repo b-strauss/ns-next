@@ -6,7 +6,7 @@ class IfArity usingPlatform: platform = Object new (
 ) (
     public main: p args: a = (
         | b |
-        b := [:x | x].
+        b:: [:x | x].
         true ifTrue: b
     )
 ) : ()

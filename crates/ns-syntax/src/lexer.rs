@@ -119,12 +119,21 @@ impl<'a> Lexer<'a> {
                 }
             }
             b':' => {
-                if self.peek_at(1) == Some(b'=') {
-                    self.position += 2;
-                    self.push(TokenKind::Assign, start, self.position);
-                } else if self.peek_at(1) == Some(b':') && self.peek_at(2) == Some(b'=') {
+                if self.peek_at(1) == Some(b':') && self.peek_at(2) == Some(b'=') {
                     self.position += 3;
                     self.push(TokenKind::ColonColonEquals, start, self.position);
+                } else if self.peek_at(1) == Some(b'=') {
+                    // Smalltalk's assignment. §5.4.3 gives Newspeak one
+                    // assignment form, the setter send, and nothing in the
+                    // specification's grammar, the canonical grammar, Primordial
+                    // Soup or SOMns accepts `:=`. Named here, because split into
+                    // `:` and `=` it would surface as an unrelated parse error
+                    // further on.
+                    self.position += 2;
+                    self.diagnostics.push(Diagnostic::error(
+                        Span::new(start as u32, self.position as u32),
+                        "`:=` is not Newspeak syntax; a setter send is written `name:: expression`",
+                    ));
                 } else {
                     self.single(TokenKind::Colon);
                 }
@@ -178,9 +187,9 @@ impl<'a> Lexer<'a> {
             if self.peek_at(1) == Some(b'=')
                 || (self.peek_at(1) == Some(b':') && self.peek_at(2) == Some(b'='))
             {
-                // `id:=` -> Identifier then Assign; `id::=` -> Identifier then
-                // ColonColonEquals. Emit the bare word and let `lex_one`'s `:` arm
-                // form the operator.
+                // `id::=` -> Identifier then ColonColonEquals, and `id:=` ->
+                // Identifier then the `:` arm's refusal of `:=`. Emit the bare
+                // word and let `lex_one`'s `:` arm take the rest.
                 let kind = self.word_kind(start, self.position);
                 self.push(kind, start, self.position);
                 return;
@@ -450,18 +459,41 @@ mod tests {
     #[test]
     fn punctuation_versus_binary_selector() {
         assert_eq!(
-            kinds("| || = := ::= ^ ."),
+            kinds("| || = ::= ^ ."),
             vec![
                 Bar,
                 DoubleBar,
                 Equals,
-                Assign,
                 ColonColonEquals,
                 Caret,
                 Dot,
                 EndOfInput,
             ]
         );
+    }
+
+    #[test]
+    fn smalltalk_assignment_is_refused_by_name() {
+        // §5.4.3 gives Newspeak one assignment form, the setter send. Both the
+        // spaced and the glued spelling are named, not split into `:` and `=`.
+        for (source, start, end) in [("x := 1", 2, 4), ("x:=1", 1, 3)] {
+            let (_, diagnostics) = Lexer::new(source).run();
+            assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+            let diagnostic = &diagnostics[0];
+            assert_eq!(
+                diagnostic.severity,
+                crate::diagnostic::Severity::Error,
+                "{source}"
+            );
+            assert_eq!(diagnostic.span, Span::new(start, end), "{source}");
+            assert!(
+                diagnostic
+                    .message
+                    .starts_with("`:=` is not Newspeak syntax"),
+                "{source}: {}",
+                diagnostic.message
+            );
+        }
     }
 
     #[test]
