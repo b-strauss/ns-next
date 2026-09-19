@@ -73,19 +73,32 @@ pub(crate) struct Lowerer<'a> {
     /// `finish_body`'s block case and for reading an inlined
     /// block's result.
     last_expression_register: Option<u16>,
+    /// For each named local's register (`< base`), whether nothing but its
+    /// initialization can write it: every parameter, and every immutable
+    /// local slot (§3.6). The resolver binds no assignment to one
+    /// (`docs/design/dispatch.md`, "Setter sends"), so an operand read from
+    /// one survives anything lowered after it.
+    read_only_locals: Vec<bool>,
 }
 
 impl<'a> Lowerer<'a> {
     pub(crate) fn new(
         kind: CodeKind,
         argument_count: u16,
-        named_temporary_count: u16,
+        temporaries: &[ast::SlotDeclaration],
         bindings: &'a Rc<HashMap<Span, Binding>>,
         mut enclosing_scopes: Vec<ScopeKind>,
         first_call_site: u32,
     ) -> Self {
         enclosing_scopes.push(ScopeKind::Frame);
-        let base = argument_count + named_temporary_count;
+        let base = argument_count + temporaries.len() as u16;
+        let read_only_locals: Vec<bool> = std::iter::repeat_n(true, argument_count as usize)
+            .chain(
+                temporaries
+                    .iter()
+                    .map(|temporary| temporary.mutability == ast::SlotMutability::Immutable),
+            )
+            .collect();
         Lowerer {
             bindings,
             kind,
@@ -99,6 +112,7 @@ impl<'a> Lowerer<'a> {
             statement_program_counter: Vec::new(),
             next_call_site: first_call_site,
             last_expression_register: None,
+            read_only_locals,
         }
     }
 
@@ -314,7 +328,7 @@ impl<'a> Lowerer<'a> {
         let mut inner = Lowerer::new(
             CodeKind::Block,
             parameters.len() as u16,
-            block.body.temporaries.len() as u16,
+            &block.body.temporaries,
             self.bindings,
             self.scopes.clone(),
             self.next_call_site,
@@ -338,7 +352,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Copies `register` into a fresh scratch register when it is one of this
-    /// frame's *named* locals and `clobbered` says something lowered
+    /// frame's *named*, writable locals and `clobbered` says something lowered
     /// between here and the consuming instruction can write it.
     ///
     /// `lower_expression`'s contract is that the register it returns still
@@ -347,9 +361,12 @@ impl<'a> Lowerer<'a> {
     /// is live storage, so an operand that has to survive a write to it is
     /// copied out first. A register `>= base` needs no copy: no `Binding` can
     /// name it, so only this body's own instructions ever write it, and the
-    /// scratch allocator never reuses a live one.
+    /// scratch allocator never reuses a live one. Nor does a read-only local's
+    /// (`read_only_locals`): a parameter or an immutable local, which nothing
+    /// lowered afterwards can write, because the resolver binds no assignment
+    /// to one (§3.6).
     fn materialize(&mut self, register: u16, clobbered: bool) -> u16 {
-        if !clobbered || register >= self.base {
+        if !clobbered || register >= self.base || self.read_only_locals[register as usize] {
             return register;
         }
         let destination = self.allocate_scratch();
@@ -565,6 +582,11 @@ impl<'a> Lowerer<'a> {
         match self.bindings.get(&target.span) {
             Some(Binding::Local(slot)) => {
                 let (_, index) = self.local_target(0, *slot);
+                debug_assert!(
+                    !self.read_only_locals[index as usize],
+                    "internal: an assignment bound to a parameter or an immutable local \
+                     (the resolver passes a setter send by them)"
+                );
                 self.emit(Instruction::StoreLocal {
                     source: value_register,
                     slot: index,
@@ -573,6 +595,11 @@ impl<'a> Lowerer<'a> {
             Some(Binding::OuterLocal { depth, index }) => {
                 let (hops, index) = self.local_target(*depth, *index);
                 if hops == 0 {
+                    debug_assert!(
+                        !self.read_only_locals[index as usize],
+                        "internal: an assignment bound to a parameter or an immutable local \
+                         (the resolver passes a setter send by them)"
+                    );
                     self.emit(Instruction::StoreLocal {
                         source: value_register,
                         slot: index,
@@ -1120,7 +1147,7 @@ mod tests {
         Lowerer::new(
             CodeKind::Method,
             argument_count,
-            method.body.temporaries.len() as u16,
+            &method.body.temporaries,
             bindings,
             vec![],
             0,
@@ -1275,6 +1302,79 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, vec![1, 2])],
             "receiver and first argument are read straight out of their own registers"
+        );
+    }
+
+    /// A parameter cannot be written once its activation starts (§3.6), so
+    /// the send in `rest` that would force a copy out of a mutable local
+    /// forces none here.
+    #[test]
+    fn a_parameter_operand_is_never_copied() {
+        let (method, bindings) = resolve_method(
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  m: argument = ( ^argument foo: self bar )
+                ) : ()
+            "},
+            0,
+        );
+        let mut lowerer = method_lowerer(&method, &bindings); // `argument` is register 0
+        lowerer.lower_expression(return_expression(&method));
+        let code = lowerer.finish(method.span);
+        assert!(
+            !code
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Move { .. })),
+            "a parameter needs no copy: {:?}",
+            code.instructions
+        );
+    }
+
+    /// Likewise an immutable local: only its initializer writes it.
+    #[test]
+    fn an_immutable_local_operand_is_never_copied() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              m = ( | local = 1. | ^local foo: self bar )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0); // `local` is register 0
+        assert!(
+            !code
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
+            "an immutable local needs no copy: {:?}",
+            code.instructions
+        );
+    }
+
+    /// A mutable local still is copied: the send can write it through a
+    /// closure that captured the frame.
+    #[test]
+    fn a_mutable_local_operand_is_still_copied() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              m = ( | local ::= 1. | ^local foo: self bar )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0); // `local` is register 0
+        assert!(
+            code.instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
+            "a mutable local is copied out: {:?}",
+            code.instructions
         );
     }
 
@@ -1629,18 +1729,27 @@ mod tests {
     fn a_slot_initializer_that_assigns_a_slot_copies_its_value_out_of_the_local() {
         // A method body stands in for the initializer expression, as in
         // `a_slot_initializer_is_one_statement_ending_in_initialize_slot`; the
-        // parameter gives the assignment a named local to hand on.
+        // mutable temporary gives the assignment a named local to hand on --
+        // a parameter would need no copy at all
+        // (`a_slot_initializer_that_assigns_a_parameter_copies_nothing`).
         let source = indoc! {"
             Newspeak3
             'T'
             class X = Object new (
               | n ::= 0. |
             ) (
-              foo: p = ( ^n := p )
+              foo = ( | p | ^n := p )
             ) : ()
         "};
         let (method, bindings) = resolve_method(source, 0);
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, 0, &bindings, vec![], 0);
+        let mut lowerer = Lowerer::new(
+            CodeKind::Initializer,
+            0,
+            &method.body.temporaries,
+            &bindings,
+            vec![],
+            0,
+        );
         lowerer.lower_slot_initializer(return_expression(&method), 4);
         let code = lowerer.finish(method.span);
         let [copy] = setter_arguments(&code)[..] else {
@@ -1672,8 +1781,54 @@ mod tests {
         );
     }
 
+    /// A parameter needs no copy even here: nothing but its own
+    /// initialization can write it (`a_parameter_operand_is_never_copied`),
+    /// so the setter send reads it straight out of its own register.
+    #[test]
+    fn a_slot_initializer_that_assigns_a_parameter_copies_nothing() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              foo: p = ( ^n := p )
+            ) : ()
+        "};
+        let (method, bindings) = resolve_method(source, 0);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, &[], &bindings, vec![], 0);
+        lowerer.lower_slot_initializer(return_expression(&method), 4);
+        let code = lowerer.finish(method.span);
+        assert!(
+            !code
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Move { .. })),
+            "a parameter needs no copy: {:?}",
+            code.instructions
+        );
+        assert_eq!(
+            code.instructions,
+            vec![
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: crate::Symbol::intern("n:"),
+                    argument_registers: vec![0],
+                    destination: 1,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::InitializeSlot {
+                    source: 0,
+                    own_index: 4
+                },
+            ]
+        );
+    }
+
     /// A block answers its last statement's value, so that statement's
-    /// assignment is copied; an earlier statement's is not.
+    /// assignment is copied; an earlier statement's is not. `t` is a mutable
+    /// block-local temporary, not a parameter: a parameter would need no
+    /// copy at all (`a_parameter_operand_is_never_copied`).
     #[test]
     fn a_blocks_last_slot_assignment_copies_its_value_and_an_earlier_one_does_not() {
         let source = indoc! {"
@@ -1682,7 +1837,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( ^[:t | n := t. n := t] )
+              m = ( ^[ | t | n := t. n := t] )
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
@@ -2182,7 +2337,7 @@ mod tests {
             0,
         );
         // Reuse `foo`'s `^1` as if it were an initializer expression: kind Initializer, 0 arguments.
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![], 0);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], 0);
         lowerer.lower_body(&method.body.statements);
         let code = lowerer.finish(method.span);
         assert_eq!(
@@ -2211,7 +2366,7 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![], 0);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], 0);
         lowerer.lower_slot_initializer(return_expression(&method), 4);
         let code = lowerer.finish(method.span);
         // `6`, `7`, the `*` send, then the field write: four instructions.

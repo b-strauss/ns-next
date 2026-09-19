@@ -208,17 +208,20 @@ top-level `^`, which returns nothing. Getting this wrong is silent wrong
 output with exit status 0, not a crash — which is why it is an invariant in
 `CLAUDE.md` rather than a comment.
 
-**Decided (2026-09-19), planned with the other specification gaps: a
-read-only local is never copied.** Once a setter send passes by every local
-that declares no setter ([dispatch.md](dispatch.md), "Setter sends"), a
+**A read-only local is never copied.** A setter send passes by every local
+that declares no setter ([dispatch.md](dispatch.md), "Setter sends"), so a
 parameter's register and an immutable local's are written by their
 initialization and by nothing after it -- no assignment binds to them, in
 this activation or through a closure. The copy guards against a write that
 can then no longer happen, so `materialize` skips it for such a register,
-whatever `rest` holds; parameters are the commonest operands there are. The
-rule rests on one precondition the plan pins with a test: the only write to
-a read-only local's register is its initialization, a statement of its own,
-which no expression's `rest` can contain.
+whatever `rest` holds; parameters are the commonest operands there are.
+`Lowerer` tracks which registers are read-only (`read_only_locals`, built in
+`Lowerer::new` from the argument count and each temporary's
+`SlotMutability`), and `lower_assign`'s two `StoreLocal` branches
+`debug_assert!` the precondition this rests on: the resolver never binds an
+assignment to a parameter or an immutable local, so the only write to a
+read-only local's register is its own initialization, a statement of its own
+that no expression's `rest` can contain.
 
 ## Control-flow inlining
 
