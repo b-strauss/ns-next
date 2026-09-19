@@ -118,12 +118,16 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    source text -- and none of the six on `corpus/runnable.toml` was among
    them, so no gate saw it; the reference lowering agreed with the wrong
    answer too, since the mistake was made in the resolver, above both
-   lowerings. `spec_5_7_a_member_set_is_per_declaration_not_per_name` pins
-   the fix with the empty namesake collected *after* the one whose member the
-   search must find, and `spec_5_7_a_namesakes_members_are_not_in_reach`
-   pins its mirror image, the empty-of-the-relevant-member namesake collected
-   *before* it -- together showing the answer depends on neither the name
-   nor the collection order.
+   lowerings. In both goldens the trailing, same-named declaration is the one
+   that would have won the shared map slot:
+   `spec_5_7_a_member_set_is_per_declaration_not_per_name` pins the case
+   where it is empty, so the search would have walked out to an enclosing
+   member instead of finding the class's own;
+   `spec_5_7_a_namesakes_members_are_not_in_reach` pins its mirror image,
+   where the trailing declaration instead has the member being searched for,
+   so the search would have stopped at the wrong class and answered
+   `doesNotUnderstand:` -- together showing the answer depends on neither
+   the name nor what an unrelated namesake happens to declare.
 
    **Open: the class side's scope.** Both sides of a class declaration
    contribute to one member set. The specification is silent on whether an
