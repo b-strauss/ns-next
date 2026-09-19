@@ -201,7 +201,13 @@ fn make_class(
         // right.
         let class = mutator.heap_mut().allocate_object(
             class_of_class,
-            ObjectData::Class(ClassData::new(application, None, None, None, None)),
+            ObjectData::Class(Box::new(ClassData::new(
+                application,
+                None,
+                None,
+                None,
+                None,
+            ))),
         );
         mutator.stash(Value::Object(class))
     })

@@ -10,6 +10,7 @@ use ns_syntax::Span;
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal};
 use crate::heap::Heap;
 use crate::interpreter::instantiate;
+use crate::mixin::DispatchId;
 use crate::types::{
     BuiltinClass, ClassReference, ClosureData, Frame, FrameKind, FrameReference, Object,
     ObjectData, ObjectReference, SourceOrigin, Value,
@@ -2081,7 +2082,7 @@ fn rebuild_applications<'gc>(
             if !context
                 .mutator
                 .heap
-                .set_class_application(*object, application)
+                .install_class_application(*object, application)
             {
                 unreachable!("this object was filled in as a class record");
             }
@@ -2277,7 +2278,7 @@ pub fn decode_graph_section<'gc>(
                     object: index,
                     mixin,
                 });
-                ObjectData::Class(data)
+                ObjectData::Class(Box::new(data))
             }
             tag => {
                 return Err(DecodeError::InvalidTag {
@@ -2291,11 +2292,19 @@ pub fn decode_graph_section<'gc>(
             Object {
                 class,
                 identity_hash,
+                // `class` may name a record later in this same table --
+                // decoding fills records in table order, not dependency
+                // order -- so that class may not have an application yet.
+                // `NONE` matches no cache entry; `stamp_dispatch_ids`, right
+                // after `rebuild_applications` gives every class one,
+                // replaces it with the real id.
+                dispatch_id: DispatchId::NONE,
                 data,
             },
         );
     }
     rebuild_applications(context, &objects, pending_classes)?;
+    context.mutator.heap.stamp_dispatch_ids(&objects);
     for frame in &frames {
         let decoded = decode_frame(reader, context, &tables, symbols)?;
         context.mutator.heap.replace_frame(*frame, decoded);

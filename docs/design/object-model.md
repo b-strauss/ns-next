@@ -11,11 +11,16 @@
 Value = Nil | Boolean(bool) | SmallInteger(i64) | Float(f64) | Object(ObjectReference)   // Copy
 ObjectReference = a 32-bit index into the `Heap`'s object arena; ClassReference is an alias
 
-Object { class: ClassReference, identity_hash: u32, data: ObjectData }
+Object { class: ClassReference, identity_hash: u32, dispatch_id: DispatchId, data: ObjectData }
 
 ObjectData = Instance(Vec<Value>) | String(String) | Symbol(Symbol)
-           | Array(Vec<Value>) | Closure(ClosureData) | Class(ClassData)
+           | Array(Vec<Value>) | Closure(ClosureData) | Class(Box<ClassData>)
 ```
+
+`dispatch_id` is the id an inline cache guards the object's sends on, a copy
+stamped from its application's ids, and a class object's data is boxed to keep `Object` at 56
+bytes in a release build with it ([dispatch.md](dispatch.md), "The dispatch
+id").
 
 `nil`, `true`, `false` and small integers are `Value` variants rather than heap
 objects, which is why nothing resembling an object store is needed to name them

@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -42,7 +42,7 @@ with a multiply-rotate hasher instead of SipHash. Measured whole, no source is
 slower than `59061ec` or `be3eb40`, and six are 4–12.5% faster than both; see
 "M4 — Spec-conformant lookup" below.
 
-**Step 3, the inline caches, is built but for its last part** (designed
+**Step 3, the inline caches, is done** (designed
 2026-09-15; [dispatch.md](design/dispatch.md), "Inline caches"; item 3 of the
 order of work below), in three parts, each landing green and measured on its
 own. **3a, primitives are method-table entries, is done**: every native is
@@ -54,24 +54,13 @@ heap, indexed from the activation's `feedback_base`; a site goes
 monomorphic, then a polymorphic cache of 4, then megamorphic, with a global
 cache of 1024 entries — 512 two-slot groups since the step below — behind
 every site; the guard is a dense per-application
-dispatch id reached through the class object; a send's decision is
+dispatch id; a send's decision is
 `resolve` then `act`, so a cache records what the lookup decided and never
 decides; call sites are numbered per code family as `u32`s behind new send
 tags; the reference lowering runs uncached as the oracle; and
 `NS_NEXT_STRESS_CACHES=1` vacates every cache at every safepoint, a gate of
 its own. Measured whole, every source is 4.3–11.3% faster than 3a's head and
 9.4–19.7% faster than `be3eb40`; see "M4 — Inline caches" below.
-
-- **3c — the dispatch id's place**, still ahead: measured against `393311f`
-  in two
-  variants, the id in the object header (64-byte objects) or in the header
-  with `ClassData` boxed (about 48), against the id on the class object
-  (`ClassData.dispatch_id`, the instances id, the class side derived as the
-  next id; 56-byte objects). The proposed rule is that the faster wins and,
-  within noise, the smaller, and that the id stays on the class object if
-  neither beats that baseline; **the user decides on the numbers**
-  ([dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
-  header").
 
 **The step before 3c is done** (2026-09-18): five changes the user decided on
 2026-09-17 and 2026-09-18 ([dispatch.md](design/dispatch.md), "Decisions",
@@ -109,14 +98,38 @@ core library in Newspeak**, where both references declare them and which sits
 immediately before the reflection work that cannot be done without them
 ([object-model.md](design/object-model.md), "Class sides and metaclasses").
 
-**The next piece is 3c: the dispatch id's place.** Its plan goes under
-`docs/superpowers/plans/`, written against
-[dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
-header", and measured against `393311f` — the last commit of this step that
-changed a send's path, and so the baseline whatever lands after it.
-Performance is measured, not assumed: the protocol and the seven sources of
-"What removing the re-entries moved"
-([execution.md](design/execution.md)), plus
+**3c, the dispatch id's place, is done** (2026-09-19): a guard reads the id
+from the object header, and a class object's data is boxed so that an
+`Object` stays 56 bytes in a release build. Neither header variant measured
+faster than the id on the class object, and the rule proposed with the
+measurement would have kept it there; the user chose the header for a JIT
+tier's guard and step 6's uniform stamping; see "M4 — The dispatch id's
+place" below.
+
+**The next piece is the specification gaps, in one plan** (the order the
+user decided on 2026-09-18: 3c first, then the gaps together). Its core is
+the member-set fix — a §5.7 member set keyed by a real class identity in
+place of a class's simple name ("Older than this step", below) — and the two
+cheap fixes ride along with it: equal symbol literals as one object (§5.1.6),
+and a parameter slot refusing a setter send (§3.6). Each has a golden under
+`goldens/spec/` recorded as `skipped` with the answer the specification
+requires — `spec_5_7_a_member_set_is_per_declaration_not_per_name`,
+`spec_5_1_6_equal_symbols_are_one_object` and
+`spec_3_6_a_parameter_slot_is_immutable` — and a fix is done when its
+`skipped` line is deleted and the recorded answer holds. The plan goes
+under `docs/superpowers/plans/`, named by the convention in `CLAUDE.md`.
+The gaps are done together because at least two of them can move the
+measurement — the member-set fix is in the resolver, and interning symbol
+literals changes a value representation that selectors share — so they are
+measured once, not once per fix. The failure mode to
+avoid is the tempting one: closing a gap here and there between measured
+steps, after which no number compares with any other.
+
+**The baseline is fresh**: the head of `master` once
+`feature/dispatch-id-in-header` is merged, whose last change to a send's path
+is `5d3aeff`. `393311f`, 3c's baseline, is superseded. Performance is
+measured, not assumed: the protocol and the seven sources of "What removing
+the re-entries moved" ([execution.md](design/execution.md)), plus
 `goldens/bench/bench_megamorphic.ns`, the eighth source and the only one
 that drives a megamorphic site.
 
@@ -133,32 +146,17 @@ method-table entries, are written out in
 [execution.md](design/execution.md), "What spec-conformant lookup moved" —
 in that document, not in the 2c plan.
 
-**The order after 3c, decided by the user on 2026-09-18: 3c first, then every
-specification gap in one go.** The gaps do not depend on each other and none
-depends on 3c; what couples them is the measurement. `393311f` is 3c's
-baseline, and at least two of the fixes can move it -- the member-set fix is
-in the resolver, and interning symbol literals changes a value representation
-that selectors share -- so whichever lands first costs the other a fresh
-baseline. Doing 3c while its context is freshest keeps that measurement
-valid, and doing the gaps together means re-measuring once instead of once
-per fix. The failure mode to avoid is the tempting one: closing a gap here
-and there between measured steps, after which no number compares with any
-other. The member-set fix wants a plan of its own -- a real class identity in
-place of a name -- and the two cheap ones can ride along with it.
-
-Then: **every compared
-binary, the current tree included,
-built with the protocol's explicit flags through `RUSTFLAGS`** —
-`+crt-static` and the function-alignment pin, which no configuration
-carries — two sittings for a whole step, and a comparison against `be3eb40`
-as well as against the commit the step starts from (the findings below).
-3b's measurement, the template for 3c's, is in
-[execution.md](design/execution.md), "What the inline caches moved", and this
-step's, which follows it, in "What the step before 3c moved". 3c
-changes what every cached guard reads, which is on the hot path the run
-loop's step inlines, so its measurement should check with `dumpbin /disasm`
-that the step is still inline before it times anything (the first finding
-below).
+**Every compared binary, the current tree included, is built with the
+protocol's explicit flags through `RUSTFLAGS`** — `+crt-static` and the
+function-alignment pin, which no configuration carries — with two sittings
+for a whole step, compared against the baseline; every measurement through
+step 3 compared against `be3eb40` as well (the findings below). The latest
+measurement, and the template for the next, is
+[execution.md](design/execution.md), "What 3c moved". The member-set fix
+is in the resolver, ahead of the run loop, but interning symbol literals
+touches what a send's selector is, so the measurement should check with
+`dumpbin /disasm` that `vm::run`'s step is still inline before it times
+anything (the second finding below).
 
 **Known gaps the step left**, each recorded where it applies:
 
@@ -290,9 +288,12 @@ but fails loudly.
   `bench_send.ns` 2.2–3.6% slower than the commit it started from, entirely
   above in both sittings — and every source is still 6.7–18.2% below
   `be3eb40`, entirely below in both
-  ([execution.md](design/execution.md), "What the step before 3c moved"). If
-  a source is slower than `be3eb40` once 3c has landed, the shift is chased
-  then. None is slower now.
+  ([execution.md](design/execution.md), "What the step before 3c moved").
+  3c left every source 8.3–19.4% below `be3eb40`, entirely below in both
+  sittings ([execution.md](design/execution.md), "What 3c moved"). None is
+  slower. The rule as decided ran up to and including step 3, which is
+  complete; whether the specification gaps' measurement still carries
+  `be3eb40` is for its plan to say — it costs one binary more.
 - **A send's hit path pays about 2% for every component its key gains.** The
   step before 3c cost `bench_loop.ns` and `bench_send.ns` 2.1–3.3% and
   `bench_megamorphic.ns` about 1%, all of it on the lexical global-cache
@@ -303,11 +304,10 @@ but fails loudly.
   moves no source beyond the noise. So it is not work done per send; it is
   the eighteen instructions the key's fourth component adds to the step,
   which every send executes. Entry size is not it either — `GlobalEntry`
-  stayed 32 bytes and `CacheEntry` 24 throughout. **The bearing on 3c:** 3c
-  changes what every guard *reads*, not what the key carries, so this cost
-  does not recur by itself; but it is the going rate for widening a send's
-  hit path, and it says that a variant which adds a load per send should be
-  expected to show, not assumed to be free
+  stayed 32 bytes and `CacheEntry` 24 throughout. It is the going rate for
+  widening a send's hit path: a change that adds work per send should be
+  expected to show, not assumed to be free. 3c changed what every guard
+  *reads* rather than what the key carries, and measured level
   ([execution.md](design/execution.md), "Which half of the lexical key costs
   the send benchmarks").
 - **`bench_do.ns` moves without a cause, twice in one step.** 2.8% / 3.3%
@@ -479,8 +479,8 @@ one multiply; `bench_send.ns` is 12.5% faster for it.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
 and all three done, 1b done, 2 done in all three parts, the spec-conformant
-lookup inserted ahead of 3 and done, 3a and 3b done, everything from 3c on
-still ahead — and it is
+lookup inserted ahead of 3 and done, 3 done in all three parts, the
+specification gaps next, everything from 4 on still ahead — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -572,7 +572,10 @@ so nothing is lost by it going second.
    see "M4 — Primitives as method-table entries" below. **3b, the caches, is
    done**: a cache guards on the **mixin application**, not on the class
    object, whose obvious key would never hit on a nested class; see "M4 —
-   Inline caches" below. **3c, the dispatch id's place, is still ahead.**
+   Inline caches" below. **3c, the dispatch id's place, is done**: a guard
+   reads the id from the object header; see "M4 — The dispatch id's place"
+   below. **The specification gaps come next**, before step 4, in one plan
+   and one measurement ("Where the next session starts" above).
 4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
    variables they only read and share a box for the ones they write, instead of
    reaching them through their method's frame. That ends 1a's divorce copy and
@@ -2507,6 +2510,56 @@ the same under `NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`;
 under both stress modes. Two recorded outcomes moved, both deliberately:
 `class_side.ns`, and `cache_super_send_reaches_the_factory_check.ns`, which
 pinned a class-side inheritance §3.2 forbids and was replaced.
+
+## M4 — The dispatch id's place (2026-09-19)
+
+Plan: [ns-next-dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md).
+
+The last part of step 3. **A guard reads the dispatch id from the object
+header** (`Object.dispatch_id`), one load and one compare, and a class
+object's data is boxed (`ObjectData::Class(Box<ClassData>)`) to pay for the
+four bytes, so an `Object` is still 56 bytes in a release build and 80, down
+from 96, in a debug one ([dispatch.md](design/dispatch.md), "3c — The
+dispatch id in the object header").
+
+**What changed:** two tests pinning the ids of a reapplied class and of a
+decoded graph (`27797ed`); the id in the header, stamped at allocation,
+restamped for every live instance when `Heap::set_class_application` changes
+a class's application, and stamped once for every decoded object after
+`rebuild_applications`, with a debug-build check in `Heap::dispatch_id` that
+the header agrees with the class (`681126d`); `ClassData` boxed (`5d3aeff`).
+
+**Measurement.** Both header variants against `393311f` and `be3eb40`, two
+sittings by the protocol, eight sources. Neither is faster than `393311f` by
+the protocol's gate: the kept variant's means moved −0.4% to −2.8% in 14 of
+16 cells, never entirely below in both sittings. The header alone grows an
+`Object` to 64 bytes, the release amplification to 18.2x and
+`bench_block.ns`'s peak working set by 2.6%; the boxed variant keeps 56 bytes
+and 16.9x, and takes the debug amplification from 24.9x to 22.2x. Every
+source is 8.3–19.4% below `be3eb40`. `vm::run` is still one function, 4,878
+instructions against 4,926 at `393311f` ([execution.md](design/execution.md),
+"What 3c moved").
+
+**The decision departs from the proposed rule**, which would have kept the id
+on the class object since neither variant beat `393311f`. The user kept the
+header with the box, on architectural grounds: a JIT tier's guard is one
+compare at a fixed offset instead of two dependent loads, a class check and a
+class-side branch, as in V8, HotSpot, Cog and Primordial Soup; step 6's
+reified metaclasses make the stamping uniform; and of the two header variants
+the boxed one is the smaller for the same speed. Accepted: a further
+indirection on every read of a class's data, measured level on the
+instantiation and block sources; an allocation per class object; and a copy
+to restamp wherever a class's application changes, which `become:` will have
+to exchange as well ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
+If closure conversion shrinks `ClosureData` to 24 bytes or less, `Object`
+reaches 48.
+
+Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
+warning-free; `cargo test --workspace`, 750 tests passing with one ignored,
+and the release suite with the size test; the same under
+`NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`; `parse-corpus` at
+**210/0/1/0** and `run-corpus` at **6/0/205**, plain and under both stress
+modes. No recorded outcome moved.
 
 ## Notes
 

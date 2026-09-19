@@ -85,8 +85,12 @@ activations still running; a debug-build stress mode,
 it outside that mode and the tests yet, since nothing mutates a method table
 at run time. Scoping an invalidation to
 the applications a change affects comes with the first mutation that needs
-it. If step 3c puts the dispatch id into the object header, `become:` and a
-class change must exchange it along with the class.
+it. The dispatch id a cache guards on is a copy in the object header
+([dispatch.md](dispatch.md), "The dispatch id"), so `become:` must exchange
+it along with the class, and a class change must restamp it, as
+`Heap::set_class_application` already does when a class's application
+changes; otherwise a cache hit would run the old class's method on the
+object.
 
 ## Debugger
 

@@ -320,3 +320,47 @@ fn immediates_answer_their_builtin_classes_instance_ids() {
         );
     });
 }
+
+/// A class given a new application -- an edit to a live class, the shape
+/// `install_mixin` in `tests/image.rs` takes -- moves its live instances to
+/// the new application's id with it. With the id copied into every object
+/// header (`docs/design/dispatch.md`, "3c"), an instance keeping the old copy
+/// would go on hitting the old application's cache entries.
+#[test]
+fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new (
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    interpreter.enter(|mutator| {
+        let Value::Object(class_object) = mutator.fetch(&class) else {
+            panic!("expected a class object")
+        };
+        let before = mutator.heap().class_dispatch_ids(class_object);
+        let application = mutator
+            .heap()
+            .class_application(class_object)
+            .unwrap_or_else(|| panic!("expected a class object"));
+        // A copy of the mixin, not the mixin itself: `apply_mixin` answers
+        // its cached application for a (mixin, superclass application) pair
+        // it has seen, and a copy is another key -- an edited class.
+        let edited = std::rc::Rc::new((*application.mixin).clone());
+        let reapplied = mutator.apply_mixin(&edited, application.superclass.as_ref());
+        assert!(mutator
+            .heap_mut()
+            .set_class_application(class_object, reapplied));
+        let after = mutator.heap().class_dispatch_ids(class_object);
+        assert_ne!(before, after, "a new application mints new ids");
+        let instance = mutator.fetch(&instance);
+        assert_eq!(mutator.heap().dispatch_id(&instance), after.instances);
+        assert_eq!(
+            mutator.heap().dispatch_id(&Value::Object(class_object)),
+            after.class_side
+        );
+    });
+}

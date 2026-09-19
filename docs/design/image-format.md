@@ -121,7 +121,9 @@ surface is.
   given a fresh range when it first runs, and a loaded artifact starts with
   empty caches ([dispatch.md](dispatch.md), "3b — The caches"). The dispatch
   ids the caches guard on are minted per heap as the applications are
-  rebuilt, so an id never comes from the bytes either.
+  rebuilt, so an id never comes from the bytes either; every decoded
+  object's header is stamped from its class in one pass once they all are
+  ([dispatch.md](dispatch.md), "The dispatch id").
 - **The bindings map.** A binding is resolved by span only at compile time, which
   a loaded world never reaches: lowering has already turned every binding into an
   instruction, and nothing that runs compiled code takes a map. Reconstructing

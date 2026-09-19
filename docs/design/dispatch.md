@@ -1,7 +1,7 @@
 # Name resolution and dispatch
 
-> **Status:** built, the inline caches included; the dispatch id's place
-> (3c) is planned.
+> **Status:** built, the inline caches included, with the dispatch id in the
+> object header (3c).
 > **Code:** `crates/ns-runtime/src/resolver/`, `dispatch.rs`,
 > `interpreter/resolve.rs` (every send's lookup, `doesNotUnderstand:`, and
 > `act`, which runs what a lookup found), `interpreter/inline_cache.rs` (the
@@ -417,14 +417,14 @@ bootstrap and never serialized, so primitive numbers never reach the wire.
 
 ## Inline caches
 
-**Partial:** 3a and 3b are built; 3c, the dispatch id's place, is planned.
 Every send the optimized lowering compiles consults a cache at its own call
 site before running a lookup, and a miss there consults a global cache before
 the lookup runs. Designed on 2026-09-15, in three steps — 3a, 3b, 3c below — each
-landing green and measured on its own. **3a is built** — a native send binds
-an enumerated primitive found by the ordinary lookup, "Primitives" above.
-**3b is built** — "3b — The caches" below. **3c is not**: the guard is still
-reached through the receiver's class object.
+landing green and measured on its own, and all three are built. **3a** — a
+native send binds an enumerated primitive found by the ordinary lookup,
+"Primitives" above. **3b** — "3b — The caches" below. **3c** — the guard reads
+the dispatch id from the receiver's object header, "3c — The dispatch id in
+the object header" below.
 
 **What bounds the gain.** A cache removes the lookup and nothing else: what an
 activation costs to build is untouched. Profiled at 3a's head, before the
@@ -529,21 +529,46 @@ since every class object shares one placeholder class and its behaviour
 (its metaclass, the factory among its members, then `Object`'s own) depends
 on its application alone. The
 two are minted consecutively, so the class side's is always the instances id
-plus one (`DispatchId::class_side`), and a class object stores only the
-instances id (`ClassData.dispatch_id`), in padding `ClassData` already had: a
-guard does not follow the `Rc` to the application, and an `Object` stays 56
-bytes in a release build, the size `CLAUDE.md`'s amplification figure
-assumes, which a release-build test pins. `MixinApplication.dispatch_ids`
-keeps the pair, and `Heap::set_class_application` keeps the class object's
-copy equal to it. A decoded image rebuilds its applications through
-`apply_mixin` ([image-format.md](image-format.md), "What is *not*
-serialized"), so an id never comes from its bytes. `Heap::dispatch_id(value)`
-answers it: for an instance, object → class → `ClassData` (two arena loads);
-for a class object, its own `ClassData`'s id, plus one; for `nil`, a
-boolean, an integer or a float, a table indexed by the `Value` variant, which
-the bootstrap fills from the builtin classes. Nothing outside that function
-and `Heap::class_dispatch_ids` knows where the id lives, which is what lets
-3c move it. Two values are reserved: `DispatchId::NONE`, which a value whose
+plus one (`DispatchId::class_side`). `MixinApplication.dispatch_ids` keeps
+the pair; a class object keeps a copy of the instances id
+(`ClassData.dispatch_id`), which is where allocation and restamping read it.
+
+**The id a guard reads is in the object header** (`Object.dispatch_id`),
+stamped at allocation — an instance's from its class's instances id, a class
+object's from its own class-side id — so `Heap::dispatch_id(value)` answers
+an object's in one arena load, and a guard is that load and one compare, for
+instances and class objects alike. It is where V8 (the map), HotSpot (the
+klass pointer), Cog (the class index) and Primordial Soup (the class id) keep
+their answer. For `nil`, a boolean, an integer or a float it is a table
+indexed by the `Value` variant, which the bootstrap fills from the builtin
+classes. The header's four bytes are paid for by boxing a class object's
+data, `ObjectData::Class(Box<ClassData>)`, so an `Object` is still 56 bytes
+in a release build, the size `CLAUDE.md`'s amplification figure assumes,
+which a release-build test pins ([memory.md](memory.md)). It is 56 rather
+than 48 because `ClosureData`, 32 bytes, is now `ObjectData`'s largest
+payload.
+
+The header holds a copy, so every place a class's application changes must
+restamp: `Heap::set_class_application` walks the arena and restamps every
+live instance of the class along with the class object itself. The decoder
+does not use that path, since a walk per class record would be quadratic in
+a count the image controls: `rebuild_applications` installs each class
+record's application without the walk (`Heap::install_class_application`),
+and one pass afterwards stamps every decoded object (`Heap::stamp_dispatch_ids`).
+A decoded record carries `DispatchId::NONE` from the moment it is filled
+until that pass — its class may not have its application yet — and nothing
+dispatches on it in between. A decoded image rebuilds its applications
+through `apply_mixin` ([image-format.md](image-format.md), "What is *not*
+serialized"), so an id never comes from its bytes. The id is not a handle,
+so the tracer does not see it and a move carries it along; `become:` will
+have to exchange it with the class
+([liveness-and-reflection.md](liveness-and-reflection.md)). In a debug build
+`Heap::dispatch_id` recomputes the id from the class on every read and
+asserts that the header agrees, so a missed restamp fails the first test
+that dispatches on the stale object. Outside `heap.rs` nothing knows where
+the id lives: every read goes through `Heap::dispatch_id` or
+`Heap::class_dispatch_ids`. Two values are
+reserved: `DispatchId::NONE`, which a value whose
 class has no application answers — only a crafted image makes one — and
 which is never cached, and `DispatchId::VACANT`, which guards a site state
 and which no value answers. Minting stops before either; an exhausted
@@ -1004,46 +1029,68 @@ one per instruction ("Decisions" below).
 
 ### 3c — The dispatch id in the object header
 
-**Planned.** `Heap::dispatch_id` stops reaching the id through the class
-object; 3c changes that one function's representation and measures two
-variants against `393311f`, the last commit on the step after 3b that
-changed a send's path — the baseline [PROGRESS.md](../PROGRESS.md) names,
-not 3b's own head. That baseline is: the id lives on the class object,
-`ClassData.dispatch_id` holding the instances id in padding the
-struct already had and the class side derived from it as the next id, so an
-instance's guard costs two arena loads, a class object's one load and an add,
-and a release `Object` is still 56 bytes ("The dispatch id" above). The
-guards, the entries and the global cache do not change with either variant;
-only where `Heap::dispatch_id` reads the id does.
+**Built** (2026-09-19, the user's decision), by its
+[plan](../superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md):
+the id a guard reads is in the object header, and a class object's data is
+boxed to pay for it ("The dispatch id" above). Only where
+`Heap::dispatch_id` reads the id changed; the guards, the entries and the
+global cache did not.
 
-- **C2: the id in the header.** `Object` gains `dispatch_id: u32`, set at
-  allocation — an instance's from its class's instance id, a class object's
-  from its own class-side id. A placeholder the decoder allocates before it can
-  validate its record carries an id no application is ever given, so it matches
-  no entry, and is set when the record is filled; the id still never comes from
-  the bytes. A guard becomes one load and one compare, for instances and class
-  objects alike. It is where V8, HotSpot, Cog and Primordial Soup all keep the
-  answer. Its cost is memory: an `Object` grows from 56 to 64 bytes in a release
-  build, and the amplification a crafted image can reach at the graph section
-  from about 16.9x to about 18.2x ([memory.md](memory.md)). The tracer is
-  unaffected — the id is not a handle — and `become:` will have to exchange it
-  with the class ([liveness-and-reflection.md](liveness-and-reflection.md)).
-- **C2+: the id in the header, `ClassData` out of it.** `ClassData` alone sets
-  `ObjectData`'s size, and class objects are few. Boxed —
-  `ObjectData::Class(Box<ClassData>)` — an `Object` shrinks to about 48 bytes
-  with the id, smaller than today, and the amplification to about 15.6x. Cog's
-  class table is the alternative to a box, and buys nothing here: this id is
-  per application, not per class object. The price is one more indirection on
-  every read of a class's data: every level `kth_enclosing_object` walks, the
-  start of a `super` send, the `k` steps of a hit with `k > 0`,
-  `metaclass_of`, the miss path, instantiation — and an allocation per class
-  object.
+Two variants were built and measured against `393311f`, the last commit
+before 3c that changed a send's path, where the id lived on the class object
+(`ClassData.dispatch_id`, in padding the struct already had) and an
+instance's guard cost two arena loads, a class object's one load and an add:
 
-Each is measured against `393311f` in two sittings, with `be3eb40`, together
-with the object sizes, the amplification and the memory after `run-corpus`.
-The proposed rule: the faster wins; within noise, the smaller; if neither
-beats `393311f`, the id stays on the class object and the question is
-recorded as closed by that measurement. The user decides on the numbers.
+- **C2, the id in the header.** `Object` gains `dispatch_id`, and grows from
+  56 to 64 bytes in a release build (96 to 104 in a debug one); the
+  amplification a crafted image can reach at the graph section goes from
+  about 16.9x to about 18.2x, and `bench_block.ns`'s peak working set
+  rises 2.6%.
+- **C2+, the id in the header and `ClassData` boxed out of `ObjectData`.**
+  `Object` stays 56 bytes in a release build and falls to 80 in a debug one,
+  the amplification stays about 16.9x in release and falls to about 22.2x in
+  debug, and the working set is level. The design had expected 48 bytes; that
+  expectation predates 3b, after which `ClosureData` became `ObjectData`'s
+  largest payload. Cog's class table is the alternative to a box, and buys
+  nothing here: this id is per application, not per class object.
+
+**Neither variant is faster than `393311f` by the protocol's gate.** C2+'s
+means moved −0.4% to −2.8% in 14 of its 16 source-and-sitting cells, and
+`bench_block.ns` +0.1% / +0.2%, but no source is entirely below
+`393311f` in both sittings for either variant — only single-sitting results,
+which the protocol does not count. `vm::run`'s step stayed inline in both
+([execution.md](execution.md), "What 3c moved", which has every number).
+
+**The proposed rule would have kept the id on the class object**: the faster
+wins; within noise, the smaller; if neither beats `393311f`, the id stays
+where it is. **The user chose C2+ instead, on architectural grounds** the
+interpreter's measurement cannot see:
+
+- **A JIT tier's guard.** With the id in the header, a compiled guard is one
+  compare against the receiver at a fixed offset. On the class object it is
+  two dependent loads, a check that the class is a class object, and a branch
+  for the class side's plus one. V8, HotSpot, Cog and Primordial Soup all keep
+  it in the header. In the interpreter the difference is lost in the run
+  loop's own overhead, which is why the protocol cannot show it.
+- **Step 6 makes the stamping uniform.** Once `Class`, `Behavior` and
+  `Metaclass` are reified and a class object's class is its metaclass
+  ([object-model.md](object-model.md), "Class sides and metaclasses"), every
+  header id comes from the object's class, and the class-side special case in
+  the stamping goes.
+- **Between the two header variants, C2+ is the smaller for the same
+  speed**: C2 costs 8 bytes an object, the amplification and the working set
+  for nothing measured. Closure conversion (step 4) rebuilds `ClosureData`;
+  if it shrinks to 24 bytes or less, `Object` reaches 48.
+
+**The costs accepted.** One more indirection on every read of a class's data
+— every level `kth_enclosing_object` walks, the start of a `super` send,
+`metaclass_of`, the miss path, instantiation — measured level on
+`bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_block.ns`; an
+allocation per class object; and a copy that must be restamped wherever a
+class's application changes (`Heap::set_class_application`, the decoder's
+one stamping pass), which `become:` will have to honour too. A debug build's
+check in `Heap::dispatch_id` catches a stale copy in every test that
+dispatches on one.
 
 ### Considered and rejected
 
@@ -1122,10 +1169,10 @@ recorded as closed by that measurement. The user decides on the numbers.
     needs a size); blocks pointing at their root (a reference cycle or a
     table, and a load per block send).
   - **A class object stores one dispatch id**, the instances id, and derives
-    the class side's as the next, so that `Object` stays 56 bytes. Rejected:
-    both ids on `ClassData` (`Object` 64 bytes, amplification 18.2x); the ids
-    only on the application (a further load on every send). Whether the id
-    moves into the object header is 3c's measured question.
+    the class side's as the next. Rejected: both ids on `ClassData`; the ids
+    only on the application (a further load on every send). Since 3c a guard
+    reads the id from the object header instead, and `ClassData`'s copy is
+    what allocation and restamping read.
   - **`vm::run`'s step is forced inline**, and `decide_super_send` kept out
     of it: the caches' hit path pushes the step past LLVM's inlining
     threshold, where every instruction pays a call. Rejected: keeping the
@@ -1295,6 +1342,19 @@ recorded as closed by that measurement. The user decides on the numbers.
   decision): the 16-byte variant with an index into side tables measured no
   faster and grows those tables with misses ("Considered, not adopted: a
   16-byte entry" above).
-- **Planned (2026-09-15): the dispatch id's place is decided by measurement**
-  (3c): on the class object, in the header, or in the header with `ClassData`
-  boxed.
+- **The dispatch id is in the object header, with `ClassData` boxed** (3c,
+  the user's decision, 2026-09-19): measured against the id on the class
+  object and the id in the header alone, in two sittings, and **chosen
+  against the rule proposed with the measurement**. That rule — the faster
+  wins, within noise the smaller, and the id stays on the class object if
+  neither beats `393311f` — would have kept the class object, since neither
+  header variant cleared the gate in both sittings on any source. The user
+  chose the header for what the interpreter cannot measure: a JIT tier's
+  guard is one compare at a fixed offset instead of two dependent loads, a
+  class check and a class-side branch, as in V8, HotSpot, Cog and Primordial
+  Soup; step 6's reified metaclasses make the stamping uniform; and boxing
+  `ClassData` keeps `Object` at 56 bytes where the header alone grows it to
+  64. Accepted: a further indirection on every read of a class's data, an
+  allocation per class object, and restamping wherever a class's application
+  changes ("3c — The dispatch id in the object header" above;
+  [execution.md](execution.md), "What 3c moved").
