@@ -125,7 +125,14 @@ and the decisions behind each.
 assignment by name, and every golden, test and document example is spelled
 as §5.4.3's setter send, `name:: expression`, with no recorded outcome
 moving; see "M4 — Removing `:=`" below. **Closure conversion, step 4 of the
-order of work below, is next** ([execution.md](design/execution.md)).
+order of work below, is next, and designed** (2026-09-19,
+[execution.md](design/execution.md), "Planned: closure conversion"): a
+closure keeps its defining activation, a captured variable is copied unless
+it is written after capture, written ones share one indirection vector per
+scope, the analysis is the optimized lowering's, and the reference lowering
+stays by-reference as an interim oracle. Its implementation plan is the next
+piece of work, built in four parts: the capture goldens recorded first, the
+analysis, the conversion with its image format, and fewer protective copies.
 
 **The baseline was `22a56f7`**, the merge of 3c into `master`, whose last
 change to a send's path is `5d3aeff`; `393311f`, 3c's own baseline, stayed
@@ -576,9 +583,11 @@ so nothing is lost by it going second.
    see "M4 — The specification gaps" below. **Removing `:=`** is done, its
    own small step before step 4; see "M4 — Removing `:=`" below.
 4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
-   variables they only read and share a box for the ones they write, instead of
-   reaching them through their method's frame. That ends 1a's divorce copy and
-   makes a surviving block retain only what it captured, which is why it comes
+   variables they only read and share their scope's indirection vector for the
+   ones they write, instead of reaching them through their method's frame
+   (designed 2026-09-19). That ends 1a's divorce copy for optimized code and
+   makes a surviving block retain what it captured plus its creator's frame
+   record without registers, which is why it comes
    directly before the collector. Every Smalltalk and Newspeak VM that moved to
    stack frames made this change to do it; ns-next makes it second, because the
    reification mechanism is needed with or without it.

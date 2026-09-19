@@ -2657,54 +2657,269 @@ level below the JIT.
 
 ## Planned: closure conversion
 
-What would change: a block stops reaching its method's variables through the
-method's frame. A captured variable that is only read is copied into the closure
-when the closure is created; one that is written lives in a small heap box that
-the method and the block share. The resolver decides which is which, so every
-lowering sees the same conversion. Placed after the inline caches and before the
-collector, whose retention it affects most.
+**Designed with the user on 2026-09-19; not built.** Step 4 of the order of work
+([PROGRESS.md](../PROGRESS.md)), placed after the inline caches and before the
+collector, whose retention it affects most. The decisions are listed under
+"Decisions" below; this section is the design they add up to.
+
+What changes: under the optimized lowering, a block stops reaching its method's
+variables through the method's frame. A captured variable that is never written
+after the block reads it is **copied** into the closure when the closure is
+created; one that is written lives in its scope's **indirection vector**, which
+the method and every block that needs it share. The reference lowering keeps
+the by-reference model, as the oracle the conversion is checked against.
 
 The activation stack keeps ns-next's by-reference model and pays for it with a
 divorce: a reified frame copies all its registers into the arena when its
 activation returns, because a surviving block may still read them. Conversion
-removes that need. It does not remove reification — a block with `^` still needs
-its home activation, and so does the debugger — which is why it can come after
-the stack rather than before it: it changes where variables live, not what an
-activation is.
+removes that need for optimized code. It does not remove reification — a block
+with `^` still needs its home activation, and so do the debugger and the
+activation mirrors — which is why it can come after the stack rather than
+before it: it changes where variables live, not what an activation is.
 
 **Every Smalltalk and Newspeak VM that moved to stack frames made this change to
 do it.** Cog's closure compiler introduced copied values and remote temps
 (`pushClosureNumArgs:copiedValues:`, `pushRemoteTemp`) precisely so frames could
 live on a stack, and Primordial Soup does the same (`PushClosure`,
-`PushIndirectLocal`). Reaching the frame by reference is what systems do whose
-frames live in the heap anyway — Smalltalk-80's Blue Book, ns-next before the
-activation stack — or whose JIT can remove the cost: SOMns materializes the frame
-for every block
+`PushIndirectLocal`; its compiler's `ClosureRewriter1`,
+`prior-art/primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns`, and
+the three cases `ActivationMirrorTesting.ns` names: "Not copied", "Copied",
+"Indirect"). Reaching the frame by reference is what systems do whose frames
+live in the heap anyway — Smalltalk-80's Blue Book, ns-next before the
+activation stack, Nova, which follows ECMAScript's environment records to the
+letter (`DeclarativeEnvironmentRecord`, a map of bindings per scope, chained) —
+or whose JIT can remove the cost: SOMns materializes the frame for every block
 (`prior-art/somns/src/som/interpreter/nodes/literals/BlockNode.java`,
 `frame.materialize()`) and relies on Graal's partial escape analysis, which
-removes the materialization only when the block is inlined. Outside that
-lineage, V8's context allocation, CPython's cells and Scheme's stack-based model
-are the same conversion, and Lua's upvalues are a per-variable middle ground: an
-open upvalue points at its stack slot and is closed — that one variable copied —
-when the function returns.
+removes the materialization only when the block is inlined.
 
-What it changes in cost, for a method that creates a non-inlined block:
+### The closure keeps its defining activation
 
-| | By reference (today) | Converted |
+A closure keeps `captured_frame`, the reified activation that created it, as in
+Cog (`BlockClosure>>outerContext`), Primordial Soup
+(`Closure::defining_activation`) and SOMns. Only variable access moves to
+copies and vectors. Newspeak's reflective API depends on the link:
+`Activation>>enclosingActivation` (`KernelForPrimordialSoup.ns`) and
+`ActivationMirror>>enclosingActivation` (`Mirrors.ns`) name a block
+activation's creator, the debugger labels a stack entry "`[] in Foo bar`" by
+walking that chain (`ActivationMirrorTesting.ns`, `describeActivation:to:`),
+the creator is still answered after its method has returned
+(`testClosureActivation`, on a block `seven` returned), and a block evaluated
+directly in its method has `sender = enclosingActivation`
+(`testEnclosingActivationEquality`). Once the core library is Newspeak (step
+6), every block a collection iterator runs is such an entry.
+
+The alternative — reify nothing for a block without `^`, carry only what it
+captured, as the JVM does (a lambda holds its captured values and no frame;
+JDWP shows only those) — was weighed and rejected: it saves one frame-arena
+entry per block created, not per block run, and it would have weakened
+`enclosingActivation` to `nil` or to a stand-in without identity. A variant that
+kept the link only while a debugging flag was set was rejected too: a closure
+created without it, including every closure in an image serialized from a run
+without it, could never be given it back.
+
+What a returned optimized frame keeps is its receiver, its program counter,
+its `home` and its `uncontinuable` flag, but no registers: a variable nothing
+captured is unreachable once its activation returns, and a captured one lives
+in a closure or a vector. So what a surviving block retains is what it captured
+plus that frame record, not the frame's registers.
+
+### Where the analysis lives
+
+The capture analysis is a pre-pass of the optimized lowering,
+`compiler/capture.rs`, not a resolver pass. The resolver counts every block
+literal as a scope and cannot tell which blocks `compiler/control_flow.rs`
+inlines; a variable read only in an inlined `ifTrue:` block is not captured,
+and the loop rule below depends on knowing which blocks are inlined loops. The
+pass calls `control_flow::recognize`, so it and the lowering agree on every
+block. The resolver and the reference lowering do not change.
+
+Per code body (method, initializer, real block) it answers:
+
+- **each local's class**: not captured (a register, as today); copied (a
+  register, and a copy in every capturing block); or in the vector (a place in
+  the body's indirection vector);
+- **each real block's copied values**, in a fixed order: the copied variables
+  it captures, the vectors of the scopes whose vector variables it needs, and,
+  **transitively**, whatever a block nested in it needs from further out — a
+  middle block carries what an inner one needs, as in Cog.
+
+**The rule.** Parameters and immutable locals (`=`) are always copied: nothing
+but their initialization writes them (§3.6). A mutable local (`| x |`,
+`x ::= …`) goes into the vector when
+
+1. a real block nested in its scope writes it, or
+2. its own scope writes it after a real block has read it, in the lowering's
+   textual order, or
+3. its own scope writes it inside an inlined loop — the body or the condition
+   of a `whileTrue:` or `whileFalse:` the compiler inlines — that also contains
+   the reading block literal, even when the write is textually before it: the
+   next iteration's write happens after this iteration's block was created.
+
+Rules 1 and 2 are Primordial Soup's (`ClosureRewriter1`'s comment and
+`localWriteNode:`). Rule 3 is what ns-next's inlining adds: its inlined blocks
+take no temporaries (`lower_inline_block_body`'s gate), so every variable a loop
+writes is its method's, and textual order alone would let
+`[i < 3] whileTrue: [x:: i. blocks add: [x]. i:: i + 1]` copy `x` and leave the
+first block answering the first `x` instead of the last. Every other captured
+mutable local is copied — the common "declare, set once, then capture" pattern
+costs no vector.
+
+### Representation
+
+**The vector** is an ordinary `ObjectData::Array` of class `Array`, as Cog's
+indirection vector is. No new object kind: the heap, `trace.rs` and the image
+already handle it, and Newspeak code never receives it as a value, since only
+the new instructions touch it. One vector per body that has vector variables,
+not a box per variable — the Smalltalk and Newspeak lineage's choice (Cog,
+Primordial Soup); Strongtalk, V8 and .NET instead keep one context per scope
+holding every captured variable, read or written, and Lua, CPython, Kotlin
+(`Ref.IntRef`/`ObjectRef`), Scala and Groovy box per variable. In today's arena
+a box would be one allocation and one dependent load cheaper for a single
+variable, because an `Array`'s elements sit in a `Vec`; once objects are laid
+out inline by the collector (step 5), both cost one allocation for one variable
+and the vector saves `k − 1` for `k`. A small-vector inline representation was
+considered and not built.
+
+**Registers.** A method's or initializer's layout is parameters, temporaries,
+then one hidden vector register when the body has vector variables, then
+scratch. A block's is parameters, **copied values**, temporaries, the hidden
+vector register, scratch. A vector variable keeps its resolver index, whose
+register then simply stays `nil`, so every `Binding` stays valid.
+
+**Instructions**, emitted by the optimized lowering only:
+
+- `MakeVector { destination, size }` at the start of the body, before any local
+  initializer runs, since `| x ::= 3. |` on a vector variable writes the vector.
+  A parameter is never a vector variable, so, unlike Cog, nothing is copied into
+  the vector on entry.
+- `LoadVector { destination, vector, index }` and
+  `StoreVector { vector, index, source }`: a vector variable's read and write —
+  the method through its own vector register, a block through its copy of it.
+- `MakeClosure` gains `copied: Vec<u16>`, the registers whose values go into
+  the closure. The reference lowering always emits an empty list.
+
+The optimized lowering stops emitting `LoadOuterLocal` and `StoreOuterLocal`;
+they remain the reference lowering's.
+
+**Activating a block** writes the closure's copied values into the registers
+after its parameters, as Cog and Primordial Soup do ("Copied values are included
+at the beginning of temporaries"). A block then reads a copied variable as a
+plain register, with no instruction at all. Those registers are read-only by
+construction: the analysis puts every variable anything writes after capture
+into a vector. `self`, `current_class` and `^` go through `captured_frame` as
+today.
+
+**`ClosureData` stays at 32 bytes**, so that an `Object` stays at 56 in a
+release build (`heap.rs`'s pinned size, the figure `CLAUDE.md`'s amplification
+paragraph is computed from). It gains `copied: Box<[Value]>` (16 bytes; an empty
+one allocates nothing) and loses two fields that duplicate something already
+held: `parameters`, whose only use is its length, which the block code's
+`argument_count` already is; and `home`, which the captured frame determines —
+the captured frame itself when it is a method's or an initializer's, that
+frame's own `home` when it is a block's. The trace impl names `copied`, which
+the compiler enforces.
+
+**The divorce.** `CompiledCode` gains a flag that is set when the body or a
+block nested in it contains `LoadOuterLocal` or `StoreOuterLocal`, which only
+the reference lowering emits. It is computed when the code is built, by the
+compiler and by the decoder alike, and is not on the wire. `pop_activation`
+copies a reified frame's registers out only when its code has the flag.
+
+**An untrusted image** can put any value where code expects a vector.
+`LoadVector` and `StoreVector` check the value's kind and the index and raise a
+run-time error, not a panic, on a mismatch; code the compiler produced never
+has one.
+
+### The image format
+
+Tags follow "assigned once, never renumbered or reused"
+(`crates/ns-runtime/src/image/opcodes.rs`, pinned by
+`crates/ns-runtime/tests/opcode_tags.rs`):
+
+- `MakeClosure`'s payload changes, so tag 11 is **retired** and `MakeClosure`
+  takes 29; `MakeVector`, `LoadVector` and `StoreVector` take 30, 31 and 32.
+- A closure's object record gains its copied values and loses its parameter
+  names and home, so `OBJECT_CLOSURE` (4) is retired and the new record takes 6.
+
+A code record gains `copied_count: u16`, so that a block's register layout is
+known from its code alone, as the `uncached` flag was added before it.
+
+The decoder's verification adds, before any decoded code runs:
+- every register operand of a new instruction is within the body's
+  `register_count`;
+- a `MakeClosure`'s `copied.len()` equals its block's `copied_count`;
+- a closure record's copied values number its code's `copied_count`;
+- `argument_count + copied_count` does not exceed `register_count`;
+- every count is bounded by `bounded_count` before it allocates.
+
+A vector's size and kind are run-time values and are checked at run time
+(above). `inspect` and `disasm` print the new instructions and a closure's
+copied values, `inspect` from the same tags as the encoder and decoder. A
+returned optimized frame is written with empty `arguments` and `temporaries`;
+the frame record does not change.
+
+### Fewer protective copies
+
+`materialize` (`compiler/lower.rs`) copies a named mutable local into a scratch
+register when something lowered before its consumer may write it, and
+`may_clobber_locals` treats **every send** as such a write, because the code it
+runs could write the local through a closure (`CLAUDE.md`, "An expression's
+value register must still hold that value"). Under the optimized lowering,
+after conversion, no closure writes a register of another activation: a
+captured written variable lives in a vector, and a vector read lands in a
+scratch register as a snapshot; a copied register is read-only. A local's
+register can only be written by an assignment in its own body, including inside
+an inlined block, never inside a real one.
+
+So under the optimized lowering an expression may clobber a local only when it
+contains — without looking into real blocks — an assignment to a local of the
+body being lowered, and an assignment through a setter no longer copies its
+value for the same reason. `lower_assign`'s `debug_assert!`s stay. The
+invariant in `CLAUDE.md` and [compiler.md](compiler.md) keeps its statement and
+gets its new justification. The reference lowering is unaffected. A mistake here
+is silent wrong output with exit status 0; the reference lowering is the oracle
+for it, and dedicated goldens pin a send whose code writes, through a closure, a
+local its caller reads — as an operand, as an argument and as a setter
+assignment's value.
+
+### Verification and the reference lowering
+
+The reference lowering stays on the by-reference model for this step, so that a
+defect in the capture analysis — rule 3 above all — shows as the two
+lowerings disagreeing, as a cache defect shows against the uncached reference
+since 3b. It is an interim oracle: **the reference lowering is to be removed at
+some point, and from then on the recorded golden outcomes are how this is
+tested.** The goldens are written with that in mind: `goldens/capture/` is
+recorded on the unconverted `master`, before anything here changes, and covers
+copied and vector variables; a write before capture, after it, inside a
+`whileTrue:`, a `whileFalse:` and a loop condition; a block that writes; nested
+blocks three deep that carry a variable through a middle block; a variable read
+only in an inlined `ifTrue:`; a vector variable with an initializer; an
+initializer body and a slot initializer creating blocks; `^` from a block whose
+home has captured variables; a closure surviving its method; and the
+protective-copy cases above. Each recorded output is checked against the
+semantics by hand before it is taken.
+
+### Cost
+
+What it changes, for a method that creates a non-inlined block:
+
+| | By reference (today) | Converted (optimized lowering) |
 |---|---|---|
-| Per activation that creates a block | a reified frame, plus a copy of every register at return | the closure's copied values, plus a box per written captured variable |
-| A block reading a captured variable | one hop per nesting level, then a live-or-dead branch | a closure field, or closure → box; independent of depth |
-| The method reading its own captured variable | a register | a register if only read; through the box if written |
-| What a surviving block retains | the whole frame, including registers it never reads | exactly what it captured |
-| A later JIT | every local a block can reach stays in memory once a block exists | copied values are ordinary values; escape analysis can remove a box |
+| Per activation that creates a block | a reified frame, plus a copy of every register at return | a reified frame; the closure's copied values; one vector if a captured variable is written |
+| A block reading a captured variable | one hop per nesting level, then a live-or-dead branch | a register if copied, a register then the vector if written; independent of depth |
+| The method reading its own captured variable | a register | a register if copied; through the vector if written |
+| What a surviving block retains | the whole frame, including registers it never reads | what it captured, plus the frame record without registers |
+| A later JIT | every local a block can reach stays in memory once a block exists | copied values are ordinary values; escape analysis can remove a vector |
 
-For the interpreter the difference is small — the stack's large gain, that an
-activation creating no block allocates nothing, is the same under both — so the
-case for conversion is the collector's space safety and the JIT's freedom, not
-the interpreter's speed. `bench_block.ns`, which creates a block per iteration,
-is the benchmark that would show what it saves. What it costs is breadth: the
-resolver's capture analysis, the compiler's instructions for boxes and copied
-values, and the closure record in the image format.
+`bench_block.ns`, which creates a block per iteration, is the benchmark that
+shows what it saves, with its peak working set. The measurement follows the
+protocol of "What removing the re-entries moved" on all eight sources, after
+the conversion and again after the protective copies, against `efac7d2` and
+`be3eb40`; `MakeClosure` and a block's activation are on the send path, so
+`dumpbin /disasm` confirms first that no `vm::run::closure` became a function
+of its own.
 
 ## Planned: JIT tiers
 
@@ -2775,3 +2990,25 @@ binds it is that no native code may ever enter an image.
   pair a cyclic definition is, so the check is the read the accessor makes
   anyway, where the list was scanned in full at every level of a deep chain of
   creations.
+- **Closure conversion keeps the defining activation** (decided 2026-09-19,
+  "Planned: closure conversion"): a closure keeps `captured_frame` and only
+  variable access moves to copies and vectors, because Newspeak's
+  `enclosingActivation` and the debugger's "`[] in Foo bar`" need the link;
+  dropping it for blocks without `^`, as the JVM does, saves one reification
+  per block created and was rejected, as was keeping it only under a
+  debugging flag, which a closure created without it could never recover.
+- **A captured mutable variable is copied unless it is written after
+  capture** (decided 2026-09-19): Primordial Soup's rule, plus a rule for
+  writes inside an inlined loop that contains the capturing block — the
+  performance-oriented choice over boxing every captured variable that is
+  written anywhere, and made more important by step 6, which runs the core
+  library's blocks per element.
+- **One indirection vector per scope, as an ordinary `Array`** (decided
+  2026-09-19), as in Cog and Primordial Soup, rather than a box per variable;
+  no inline small-vector representation for now.
+- **The capture analysis is the optimized lowering's**, not the resolver's
+  (2026-09-19): only the compiler knows which blocks are inlined.
+- **The reference lowering keeps the by-reference model as an interim
+  oracle** (decided 2026-09-19): it is to be removed at some point, and from
+  then on the recorded golden outcomes are how closure conversion, and
+  everything else, is tested.
