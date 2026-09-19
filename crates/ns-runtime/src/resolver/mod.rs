@@ -117,7 +117,7 @@ impl Resolver {
             .map(pattern_parameter_names)
             .unwrap_or_default();
         let mut scope = ScopeStack::new();
-        scope.push(LocalScope::new(&factory_parameters));
+        scope.push(LocalScope::new(&factory_parameters, &[]));
         for slot in &declaration.instance_side.slots {
             if let Some(initializer) = &slot.initializer {
                 self.resolve_expression(initializer, &mut scope, &class_chain);
@@ -155,16 +155,8 @@ impl Resolver {
 
     fn resolve_method(&mut self, method: &ast::MethodDeclaration, class_chain: &[EnclosingClass]) {
         let parameter_names: Vec<Symbol> = pattern_parameter_names(&method.pattern);
-        let temporary_names: Vec<Symbol> = method
-            .body
-            .temporaries
-            .iter()
-            .map(|temporary| Symbol::intern(&temporary.name.name))
-            .collect();
-        let mut all = parameter_names;
-        all.extend(temporary_names);
         let mut scope = ScopeStack::new();
-        scope.push(LocalScope::new(&all));
+        scope.push(LocalScope::new(&parameter_names, &method.body.temporaries));
         self.resolve_local_initializers(&method.body.temporaries, &mut scope, class_chain);
         for statement in &method.body.statements {
             self.resolve_statement(statement, &mut scope, class_chain);
@@ -226,15 +218,7 @@ impl Resolver {
                     .iter()
                     .map(|parameter| Symbol::intern(&parameter.name))
                     .collect();
-                let temporary_names: Vec<Symbol> = block
-                    .body
-                    .temporaries
-                    .iter()
-                    .map(|temporary| Symbol::intern(&temporary.name.name))
-                    .collect();
-                let mut names = parameter_names;
-                names.extend(temporary_names);
-                scope.push(LocalScope::new(&names));
+                scope.push(LocalScope::new(&parameter_names, &block.body.temporaries));
                 self.resolve_local_initializers(&block.body.temporaries, scope, chain);
                 for statement in &block.body.statements {
                     self.resolve_statement(statement, scope, chain);
@@ -359,11 +343,12 @@ impl Resolver {
     /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
     /// exactly like an implicit-receiver keyword send to `id:` -- see
     /// `docs/design/dispatch.md`, "Setter sends", and `newspeak-spec.pdf`
-    /// §5.4.3, which makes `id:: e` the send of `id:`. Locals win first (a
-    /// local temporary/parameter can be reassigned directly); otherwise it is
-    /// a `LexicalSend` at the depth of the innermost declaration of the
-    /// setter `id:` itself (§5.7) -- a mutable slot `id`, or a method `id:`.
-    /// An immutable slot declares no setter (§6.3.2), so it is passed by.
+    /// §5.4.3, which makes `id:: e` the send of `id:`. Only a local that
+    /// declares a setter wins first -- a parameter or an immutable local
+    /// declares no `id:`, so it is passed by, as the canonical compiler
+    /// does. Otherwise it is a `LexicalSend` at the depth of the innermost
+    /// declaration of the setter `id:` itself (§5.7) -- a mutable slot `id`,
+    /// or a method `id:`.
     fn resolve_setter_target(
         &mut self,
         target: &ast::Identifier,
@@ -371,7 +356,7 @@ impl Resolver {
         chain: &[EnclosingClass],
     ) {
         let name = Symbol::intern(&target.name);
-        if let Some(binding) = scope.resolve(name) {
+        if let Some(binding) = scope.resolve_setter(name) {
             self.bindings.insert(target.span, binding);
             return;
         }

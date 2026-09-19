@@ -202,12 +202,11 @@ has had time to fix from being a surprise.
 Most rows only under-reject or narrow what can be expressed. Four do worse:
 the sequential simultaneous slot clauses, the eager lazy slot, the binary
 float behind a non-integral literal and the synchronous asynchronous send
-each answer a **correct** program **wrongly, at exit status 0**. Two more
-behave that way without being rows here, because they are rules not
-implemented yet rather than decisions to differ -- equal symbols are not
-one object, and a parameter slot accepts a setter send; the closing
-paragraph below names them. Read all six before trusting a program's
-output.
+each answer a **correct** program **wrongly, at exit status 0**. One more
+behaves that way without being a row here, because it is a rule not
+implemented yet rather than a decision to differ -- equal symbols are not
+one object; the closing paragraph below names it. Read all five before
+trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
@@ -238,11 +237,10 @@ is no answer to record that would not be invented.
 
 A `skipped` golden is not always a row here. `goldens/spec/` also records
 rules the runtime simply does not implement yet, rather than places where a
-decision was taken to differ: equal symbols are not one object (§5.1.6), a
-parameter slot accepts a setter send (§3.6), `nil` does not answer `isNil`
-(§5.1.3), and a parameter and a local of the same name compile (§3.6). Each
-carries its own `skipped` reason, and the first two answer wrongly at exit
-status 0.
+decision was taken to differ: equal symbols are not one object (§5.1.6),
+`nil` does not answer `isNil` (§5.1.3), and a parameter and a local of the
+same name compile (§3.6). Each carries its own `skipped` reason, and the
+first answers wrongly at exit status 0.
 
 ## What lives elsewhere
 

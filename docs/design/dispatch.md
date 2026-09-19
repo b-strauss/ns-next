@@ -189,32 +189,35 @@ it would an implicit-receiver keyword send to `id:`: full depth search,
 private-versus-virtual dispatch, everything. It is not a distinct slot-write
 primitive.
 
-The activation chain is searched first, and today a local of the name wins
-whatever it is. **Decided (2026-09-19), planned with the other specification
-gaps: only a local that declares a setter answers `id:`.** §3.6 makes every
-parameter slot immutable, and makes a local slot what its declaration says
-(§6.3.2), so a parameter -- of a method, a block or a class's primary
-factory -- and an immutable local `| x = e. |` declare no setter; a mutable
-local (`| x |`, `| x ::= e. |`) does. `ScopeStack::resolve_setter` walks the
-activations innermost first, passes every declaration without a setter by,
-and answers the first that has one; when none does, the class chain's depth
-search for `id:` runs as it does now, and when nothing declares it either the
-send is `self id:`, so the program sees `doesNotUnderstand:` at run time --
-the answer `spec_3_6_a_parameter_slot_is_immutable` records. The canonical
-compiler does exactly this: its scopes are keyed by selector, a parameter
-enters only its getter and a temporary its setter only when mutable, and
-`setterSendNode:` searches the scope chain outward for the setter
-(`prior-art/newspeak/NewspeakCompilation.ns`, `codeBodyNode:` and
-`setterSendNode:`; Primordial Soup's copy is the same). SOMns instead rejects
-an assignment to an argument at compile time, checking every enclosing
-activation before any local -- which its own `TODO` in
+The activation chain is searched first, and **built (2026-09-19): only a
+local that declares a setter answers `id:`.** §3.6 makes every parameter
+slot immutable, and makes a local slot what its declaration says (§6.3.2),
+so a parameter -- of a method, a block or a class's primary factory -- and
+an immutable local `| x = e. |` declare no setter; a mutable local (`| x |`,
+`| x ::= e. |`) does. `ScopeStack::resolve_setter` walks the activations
+innermost first, passes every declaration without a setter by, and answers
+the first that has one; when none does, the class chain's depth search for
+`id:` runs as it does now, and when nothing declares it either the send is
+`self id:`, so the program sees `doesNotUnderstand:` at run time -- the
+answer `spec_3_6_a_parameter_slot_is_immutable`,
+`spec_3_6_a_block_parameter_is_immutable` and
+`spec_3_6_a_factory_parameter_is_immutable` record, and
+`spec_3_6_an_immutable_local_slot_has_no_setter` records for a declared
+immutable local. The canonical compiler does exactly this: its scopes are
+keyed by selector, a parameter enters only its getter and a temporary its
+setter only when mutable, and `setterSendNode:` searches the scope chain
+outward for the setter (`prior-art/newspeak/NewspeakCompilation.ns`,
+`codeBodyNode:` and `setterSendNode:`; Primordial Soup's copy is the same).
+SOMns instead rejects an assignment to an argument at compile time, checking
+every enclosing activation before any local -- which its own `TODO` in
 `MethodBuilder.getSetterSend` doubts -- and writes an immutable local
 freely; neither is §5.4.3's send.
 
 One consequence reads oddly and follows from §5.7 all the same: a block
 parameter `v` shadowing a mutable temporary `v` of its method leaves `v:: e`
 in the block writing the *method's* `v`, the innermost declaration of `v:`,
-while `v` in the block still reads the parameter. A golden pins it.
+while `v` in the block still reads the parameter.
+`spec_5_7_a_setter_send_passes_a_shadowing_parameter_by` pins it.
 
 ### Shapes the resolver must recognize
 
@@ -1175,7 +1178,8 @@ dispatches on one.
   see "A member set belongs to its declaration, borrowed down the walk"
   above); and a setter send passes by every local that declares no setter --
   parameters and immutable locals -- as the canonical compiler does, rather
-  than refusing at compile time as SOMns does ("Setter sends" above).
+  than refusing at compile time as SOMns does (**built**; see "Setter sends"
+  above).
 - **A slot's accessors are methods** (§6.3.2), in the method table, answered
   without an activation.
 - **`doesNotUnderstand:` bypasses access control**, because `Object`'s own
