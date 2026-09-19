@@ -2619,6 +2619,34 @@ the work itself.
   handle origin, matching every other write accessor.
 - `abd9bb4` — a decoded image enters its symbols into the heap's table and
   refuses a repeat record, instead of decoding one object per occurrence.
+- `687c7b4` — records the step as built and measured: "What the
+  specification gaps moved" in [execution.md](design/execution.md), this
+  section, "Where the next session starts" rewritten to say the gaps are
+  done, and the `:=` deviation documented in
+  [README.md](design/README.md) and [frontend.md](design/frontend.md).
+- `e48c8a4` — rewords [README.md](design/README.md)'s status-cell setter-send
+  clause, found reading as a cut-off sentence on review, although
+  grammatical.
+
+**The final whole-branch review** (on Fable) found nothing Critical or
+Important and agreed with both rulings below; four more commits close what
+its minors and recommendations found:
+
+- `36c4d34` — [dispatch.md](design/dispatch.md)'s member-set paragraph
+  reworded to drop `resolver::build_member_sets`, a function that no longer
+  exists in the codebase — docs describe the current state, and the history
+  belongs in git.
+- `71e1eb2` — `resolve_class`'s chain built via `EnclosingClass`'s `Copy`
+  impl (`.copied()`) instead of rebuilding each field by hand.
+- `bfe9cea` — `lower_assign`'s `StoreOuterLocal` branch (a write from a
+  nested block into an enclosing frame's local) now `debug_assert!`s the
+  value-register invariant too, so every write into a named local is
+  asserted, not only the two `StoreLocal` branches; `CLAUDE.md` and
+  [compiler.md](design/compiler.md) updated to say so.
+- `7bf39e6` — the decoder refuses a decoded symbol record whose class is not
+  the builtin `Symbol` class (`DecodeError::SymbolOfWrongClass`), since the
+  canonical table would otherwise hand that object to every later literal of
+  its text.
 
 **Two rulings**, both recorded in the SDD ledger as the controller's:
 
@@ -2646,7 +2674,7 @@ writes a parameter, so it never fires on any of them. See
 [execution.md](design/execution.md), "What the specification gaps moved".
 
 Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
-warning-free; `cargo test --workspace`, 763 tests passing with one ignored;
+warning-free; `cargo test --workspace`, 764 tests passing with one ignored;
 the same under `NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`;
 `parse-corpus` at **210/0/1/0** and `run-corpus` at **6/0/205**, plain and
 under both stress modes. One recorded outcome moved, deliberately (the first
@@ -2655,16 +2683,17 @@ ruling above): the `Init` case of
 
 **Left, none affecting an outcome:** the golden comment "order collected"
 and dispatch.md's "what a namesake declares" name the member-set fix's
-second axis differently (Task 1); `class_chain` rebuilds `EnclosingClass`
-field by field although it is `Copy`, where `.copied()` would do (Task 1);
-README.md's forward-reference paragraph also had its count corrected, beyond
-the brief's literal wording, signed off by the controller (Task 3); the
-rewritten slot-initializer test builds an `Initializer` lowerer with a
-method's temporaries, uncommented (Task 4); the image round-trip test's
-`storedSymbol` name collides with its own held accessors, explained in its
-own comment (Task 6). `nil printString` answering `'an Object'` and `:=`
-not being Newspeak syntax are open findings, not follow-ups of this step's
-own code; both are recorded in "Where the next session starts" above.
+second axis differently (Task 1); README.md's forward-reference paragraph
+also had its count corrected, beyond the brief's literal wording, signed off
+by the controller (Task 3); the image round-trip test's `storedSymbol` name
+collides with its own held accessors, explained in its own comment (Task 6);
+`Heap::traced_size` counts the canonical symbol table's empty slots too —
+its length follows the process-wide interner, not this heap's own symbols —
+irrelevant to the stress mode's pacing, which only needs an upper bound, and
+worth revisiting only if many heaps live in one process (actors). `nil
+printString` answering `'an Object'` and `:=` not being Newspeak syntax are
+open findings, not follow-ups of this step's own code; both are recorded in
+"Where the next session starts" above.
 
 ## Notes
 
