@@ -451,17 +451,23 @@ longer fits misses, and a mismatch gives wrong but safe behaviour.
 `RETIRED_OPCODES`) in `crates/ns-runtime/tests/image.rs` pin the numbering
 and the retired tags.
 
-**A symbol is one record per text.** Symbols are canonical per heap
-([object-model.md](object-model.md), "Values and objects"), so no encoder
-writes two symbol records of the same text; a graph section that holds two is
-corrupt or crafted, and `decode_graph_section` refuses it with
-`DecodeError::DuplicateSymbol` rather than merging them, which would mean
-rewriting every reference to the second
+**A symbol is one record per text, of the builtin `Symbol` class.** Symbols
+are canonical per heap ([object-model.md](object-model.md), "Values and
+objects"), so no encoder writes two symbol records of the same text; a graph
+section that holds two is corrupt or crafted, and `decode_graph_section`
+refuses it with `DecodeError::DuplicateSymbol` rather than merging them,
+which would mean rewriting every reference to the second
 (`a_symbol_recorded_twice_is_refused` in `crates/ns-runtime/tests/image.rs`).
 Every symbol record it accepts enters the loading heap's canonical table
 through `Heap::record_canonical_symbol`, so a literal evaluated after the
 load answers the very object the graph decoded
-(`a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object`).
+(`a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object`) --
+which is also why the record's class tag is checked before that entry is
+made: a record whose class names anything other than the builtin `Symbol`
+class is refused with `DecodeError::SymbolOfWrongClass`
+(`a_symbol_recorded_with_a_class_other_than_symbol_is_refused`), since
+entering it under the wrong class would make every later literal of that
+text answer the mis-classed object too.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns

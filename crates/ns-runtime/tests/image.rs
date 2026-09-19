@@ -2143,6 +2143,34 @@ fn a_symbol_recorded_twice_is_refused() {
     assert_eq!(error.to_string(), "symbol #foo is recorded twice");
 }
 
+#[test]
+fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
+    // `decode_graph_section` enters every `OBJECT_SYMBOL` record into the
+    // heap's canonical symbol table as it decodes it, before anything else
+    // runs -- so a record whose class tag names something other than
+    // `Symbol` would still answer every later literal of that text if it
+    // were let through.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1, 0);
+    writer.write_u8(CLASS_BUILTIN);
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_SYMBOL);
+    writer.write_u32(0); // symbol-table id 0: "foo"
+    writer.write_u32(0); // no roots
+    let mut fixture = GraphFixture::new();
+    fixture.symbols = table_with(&["foo"]);
+    let error = fixture.decode_error(&writer.into_bytes());
+    assert_eq!(
+        error,
+        decode::DecodeError::SymbolOfWrongClass("foo".to_string())
+    );
+    assert_eq!(
+        error.to_string(),
+        "symbol #foo is recorded with a class other than Symbol"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Class records. A class object is an ordinary object-table entry, so every
 // id it names -- its mixin, its superclass, its enclosing object, its
