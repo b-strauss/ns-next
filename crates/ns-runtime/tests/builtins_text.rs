@@ -102,9 +102,10 @@ fn equal_symbols_are_identical() {
     });
 }
 
-/// §5.1.6, through `doesNotUnderstand:`: the selector `handler_message`
-/// (`interpreter/resolve.rs`) hands the handler must be the same object as
-/// a symbol literal spelling the same selector.
+/// §5.1.6, through `doesNotUnderstand:`: the selector that `handler_message`
+/// (`interpreter/resolve.rs`) hands to the handler must be the same object
+/// as a symbol literal spelling the same selector, since it too goes
+/// through `Mutator::new_symbol`.
 #[test]
 fn does_not_understand_hands_the_literals_selector_object() {
     let source = indoc! {"
