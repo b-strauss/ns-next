@@ -62,9 +62,12 @@ that code can write the local through a closure. `lower_expression_for` skips th
 where its caller states that nothing reads the value (`ValueUse::Discarded`). A parameter's
 or an immutable local's register is never copied, whatever else is lowered afterwards: no
 assignment can bind to one (§3.6), so nothing but its own initialization ever writes it. This
-rests on the resolver passing a setter send by every parameter and every immutable local
-(`ScopeStack::resolve_setter`); `lower_assign` `debug_assert!`s that guarantee at the one
-place a violation would otherwise write a read-only register. Getting this
+rests entirely on the resolver passing a setter send by every parameter and every immutable
+local (`ScopeStack::resolve_setter`); `lower_assign`'s `debug_assert!`s only check a write
+into the current frame's own registers (`Binding::Local`, and `Binding::OuterLocal` at
+`hops == 0`). A write from a nested block into an *enclosing* frame's read-only local
+(`StoreOuterLocal`, `hops != 0`) -- the write-through-a-closure case the copy protected
+against -- is asserted nowhere: it rests on the resolver's rule alone. Getting this
 wrong is silent wrong output with exit status 0, not a crash.
 
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:

@@ -1862,6 +1862,40 @@ mod tests {
         );
     }
 
+    /// A block parameter is read-only exactly like a method parameter
+    /// (`a_parameter_operand_is_never_copied`): `lower_block_literal` builds
+    /// its own `Lowerer` with its own `read_only_locals`, so the second
+    /// setter send here reads `t` straight out of its own register too.
+    #[test]
+    fn a_block_parameter_operand_is_never_copied() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              m = ( ^[:t | n := t. n := t] )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0);
+        let Instruction::MakeClosure { code: block, .. } = &code.instructions[0] else {
+            panic!("expected the block literal: {:?}", code.instructions);
+        };
+        assert!(
+            !block
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
+            "a block parameter needs no copy: {:?}",
+            block.instructions
+        );
+        assert_eq!(
+            setter_arguments(block),
+            vec![0, 0],
+            "both setter sends read `t`'s own register directly"
+        );
+    }
+
     /// An inlined block's last statement is read exactly when the inlined
     /// form's own value is -- a loop condition always, a loop body never.
     #[test]

@@ -217,11 +217,15 @@ can then no longer happen, so `materialize` skips it for such a register,
 whatever `rest` holds; parameters are the commonest operands there are.
 `Lowerer` tracks which registers are read-only (`read_only_locals`, built in
 `Lowerer::new` from the argument count and each temporary's
-`SlotMutability`), and `lower_assign`'s two `StoreLocal` branches
-`debug_assert!` the precondition this rests on: the resolver never binds an
-assignment to a parameter or an immutable local, so the only write to a
-read-only local's register is its own initialization, a statement of its own
-that no expression's `rest` can contain.
+`SlotMutability`). `lower_assign`'s two `StoreLocal` branches `debug_assert!`
+the precondition this rests on, but only for a write into the *current*
+frame's own registers (`Binding::Local`, and `Binding::OuterLocal` at
+`hops == 0`): the resolver never binds an assignment to a parameter or an
+immutable local, so the only write to a read-only local's register in this
+frame is its own initialization, a statement of its own that no expression's
+`rest` can contain. A write from a nested block into an *enclosing* frame's
+read-only local (`StoreOuterLocal`, `hops != 0`) is not asserted anywhere --
+that case rests on the resolver's rule alone.
 
 ## Control-flow inlining
 
