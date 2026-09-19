@@ -42,8 +42,8 @@ indexable object for step 6's kernel, where `Symbol` is a subclass of
 `String`. Rejected: a symbol as an immediate `Value` variant, which no
 reference does and which every string primitive, and later the Newspeak
 kernel, would have to accept as a non-object. An image carries a symbol as a
-record, as now; the decoder does not yet enter one into the table or refuse a
-second record of the same text -- that is next
+record; the decoder enters each one into the loading heap's table and refuses
+a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
 **An `ObjectReference` is an index, not a pointer.** Every `Object` lives in one

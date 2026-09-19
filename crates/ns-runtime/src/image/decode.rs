@@ -254,6 +254,11 @@ pub enum DecodeError {
     UnassignedTagNamedHash,
     /// One tag-named object listed twice in the closing hash table.
     DuplicateTagNamedHash,
+    /// A graph section holds two object records for the same symbol text. A
+    /// canonical heap never encodes two: merging them would mean rewriting
+    /// every reference to the second, so the image is refused instead
+    /// (`docs/design/image-format.md`, "Verification").
+    DuplicateSymbol(String),
     /// Bytes remain after the last section. Refused rather than ignored: with
     /// two artifact shapes in one format, silently accepting a tail means a
     /// binary with a graph appended -- or an image truncated to a binary and
@@ -424,6 +429,9 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "an image records the identity hash of one tag-named object twice"
             ),
+            DecodeError::DuplicateSymbol(text) => {
+                write!(f, "symbol #{text} is recorded twice")
+            }
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
@@ -2287,6 +2295,10 @@ pub fn decode_graph_section<'gc>(
                 })
             }
         };
+        let decoded_symbol = match &data {
+            ObjectData::Symbol(symbol) => Some(*symbol),
+            _ => None,
+        };
         context.mutator.heap.replace_object(
             *object,
             Object {
@@ -2302,6 +2314,20 @@ pub fn decode_graph_section<'gc>(
                 data,
             },
         );
+        // A heap holds one object per symbol, and so does an image of one:
+        // a second record of the same text is refused, not merged
+        // (`docs/design/image-format.md`, "Verification"). `load` decodes
+        // into a fresh interpreter, where nothing made a symbol before the
+        // graph section, so an entry already here came from this graph.
+        if let Some(symbol) = decoded_symbol {
+            if context.mutator.heap.canonical_symbol(symbol).is_some() {
+                return Err(DecodeError::DuplicateSymbol(symbol.as_str().to_string()));
+            }
+            context
+                .mutator
+                .heap
+                .record_canonical_symbol(symbol, *object);
+        }
     }
     rebuild_applications(context, &objects, pending_classes)?;
     context.mutator.heap.stamp_dispatch_ids(&objects);

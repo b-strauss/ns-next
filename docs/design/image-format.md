@@ -451,15 +451,17 @@ longer fits misses, and a mismatch gives wrong but safe behaviour.
 `RETIRED_OPCODES`) in `crates/ns-runtime/tests/image.rs` pin the numbering
 and the retired tags.
 
-**Planned with the specification gaps (decided 2026-09-19): a symbol is one
-record per text.** Once symbols are canonical per heap
-([object-model.md](object-model.md), "Values and objects"), no encoder can
-write two symbol records of the same text, so a graph section that holds two
-is corrupt or crafted, and the decoder refuses it with a `DecodeError` of its
-own rather than merging them, which would mean rewriting every reference to
-the second. Every symbol record it accepts enters the loading heap's
-canonical table, so a literal evaluated after the load answers the decoded
-object.
+**A symbol is one record per text.** Symbols are canonical per heap
+([object-model.md](object-model.md), "Values and objects"), so no encoder
+writes two symbol records of the same text; a graph section that holds two is
+corrupt or crafted, and `decode_graph_section` refuses it with
+`DecodeError::DuplicateSymbol` rather than merging them, which would mean
+rewriting every reference to the second
+(`a_symbol_recorded_twice_is_refused` in `crates/ns-runtime/tests/image.rs`).
+Every symbol record it accepts enters the loading heap's canonical table
+through `Heap::record_canonical_symbol`, so a literal evaluated after the
+load answers the very object the graph decoded
+(`a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object`).
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
