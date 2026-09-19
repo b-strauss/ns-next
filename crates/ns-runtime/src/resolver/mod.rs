@@ -70,10 +70,7 @@ impl Resolver {
             name,
             members: &own_members,
         })
-        .chain(enclosing.iter().map(|class| EnclosingClass {
-            name: class.name,
-            members: class.members,
-        }))
+        .chain(enclosing.iter().copied())
         .collect();
 
         // The superclass clause's receiver (e.g. `Object` in `Object new`)
