@@ -155,6 +155,28 @@ This only under-rejects programs that illegally use one of the six as an
 ordinary identifier. It cannot affect a correct program, and no corpus file
 exercises the illegal form.
 
+## Deviation: `:=` is accepted as a synonym for a setter send
+
+§5.4.3 gives Newspeak exactly one assignment form, the setter send `id:: e`
+(desugaring to `id: e`, "Setter Sends"). The lexer also recognizes `:=`
+(`TokenKind::Assign`) and `parse_expression` accepts `identifier := expression`
+as a second spelling of the same thing, producing the same `Expression::Assign`
+node and so resolved and lowered exactly as `id:: e` is
+([dispatch.md](dispatch.md), "Setter sends"). Nothing in the specification
+grammar, the canonical grammar
+(`corpus/reference/NewspeakGrammar.ns`), Primordial Soup or SOMns accepts
+`:=` -- all four know only the setter-send form -- so this is Smalltalk
+syntax carried over rather than a reading of Newspeak's own grammar. It only
+over-accepts: a program written with `id:: e` behaves exactly as the
+specification requires, so no correct program is affected, but a program
+that writes `id := e` instead -- which the specification does not accept at
+all -- parses and runs anyway. Several goldens and tests use `:=`, since
+nothing before this step distinguished it from `::`.
+Decided with the user (2026-09-19) as the next piece of work after the
+specification gaps, ahead of closure conversion: remove `:=` from the lexer
+and parser, and convert every golden and test that uses it to `::`
+([PROGRESS.md](../PROGRESS.md), "Where the next session starts").
+
 ## The corpus as a parser gate
 
 `corpus/` holds every `.ns` file from `newspeaklanguage/newspeak` at a fixed

@@ -1708,9 +1708,13 @@ from round to round; two whole sittings, nothing else running. The import
 check and the inlining checks below used `dumpbin` from the Visual Studio
 Build Tools, which is installed but not on `PATH`: `/dependents` on every
 binary, and `/disasm` on a release copy built with debug information to see
-which functions the optimizer kept whole. "Entirely below" and "entirely
-above" are the protocol's gate: all five after-medians below, or above, all
-five of the group compared with.
+which functions the optimizer kept whole. That copy is built with the same
+`RUSTFLAGS` as the timed binary, plus `CARGO_PROFILE_RELEASE_DEBUG=true` and
+a separate `--target-dir` so it does not disturb the timed build:
+`CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p ns-cli
+--target-dir target-debuginfo`. "Entirely below" and "entirely above" are the
+protocol's gate: all five after-medians below, or above, all five of the
+group compared with.
 
 **`feedback_base` on its own** (`f8fdcfa`, against its parent `401817a`).
 Every activation carries the base, `vm::run` holds it in a local and
@@ -2143,6 +2147,102 @@ two dependent loads, a check that the class is a class object and a branch
 for the class side — which is why the header was kept on a measurement that
 shows it level ([dispatch.md](dispatch.md), "3c — The dispatch id in the
 object header").
+
+### What the specification gaps moved
+
+The specification gaps ([PROGRESS.md](../PROGRESS.md), "M4 — The
+specification gaps") touch a send's compiled path in two places: a
+parameter's or an immutable local's register is never copied any more
+(Task 4, `ff1657d`, riding on Task 3's resolver guarantee), and a symbol
+literal now names the heap's one canonical object for its text instead of a
+fresh `Symbol` per occurrence (Tasks 5–6, `7135854`, `67ba5c0`, `abd9bb4`).
+The other two gaps — the §5.7 member set keyed by a declaration instead of a
+class's simple name (Task 1, `df0f347`) and passing a setter send by a
+parameter or an immutable local (Task 3, `73921e1`), which the local-slot
+declaration fix (Task 2, `717300a`) sits beside — are resolver changes,
+ahead of the run loop, and change nothing a send executes.
+
+Measured 2026-09-19: the branch head `abd9bb4` against `22a56f7`, the merge
+of 3c, with `be3eb40` carried as the reference. Three throwaway detached
+worktrees, one each for `22a56f7`, `be3eb40` and `abd9bb4`; every binary
+built with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
+none imports `VCRUNTIME140.dll` (`dumpbin /dependents`); every binary checked
+to print the expected answer for all eight sources first, exit 0 everywhere.
+`ns-next bench <source> --iterations 30`, five rounds per sitting, the order
+of the three binaries rotating by one position from round to round; two
+whole sittings, nothing else running. None of the eight sources declares a
+local slot with an initializer or writes a parameter, so Tasks 2–3 change
+nothing any of them does and all eight stay comparable with earlier
+measurements.
+
+**The head is level with `22a56f7` on every source.** Sitting 1's medians in
+ms, both means, the change of the head's mean in sitting 1 / sitting 2, and
+the gate in sitting 1 / sitting 2:
+
+| Source | `22a56f7`, rounds 1–5 | mean | head, rounds 1–5 | mean | change | gate |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.59, 10.39, 10.39, 10.16, 10.14 | 10.336 | 10.43, 10.19, 10.37, 10.41, 10.32 | 10.342 | +0.06% / +1.43% | overlapping in both |
+| `bench_send.ns` | 11.48, 11.46, 11.52, 11.32, 11.45 | 11.447 | 11.54, 11.55, 11.60, 11.59, 11.62 | 11.578 | +1.15% / +0.51% | entirely above in the first, overlapping in the second |
+| `bench_block.ns` | 19.80, 20.28, 19.95, 20.59, 20.11 | 20.146 | 19.60, 20.24, 20.27, 20.19, 20.42 | 20.146 | +0.00% / +0.21% | overlapping in both |
+| `bench_do.ns` | 6.92, 7.07, 6.95, 6.99, 7.17 | 7.020 | 7.02, 6.96, 6.91, 7.03, 7.02 | 6.988 | −0.45% / +1.10% | overlapping in both |
+| `bench_new.ns` | 6.15, 6.13, 6.13, 6.24, 6.26 | 6.183 | 6.17, 6.26, 6.27, 6.20, 6.18 | 6.218 | +0.58% / −0.88% | overlapping in both |
+| `bench_new2.ns` | 7.17, 7.10, 7.22, 7.27, 7.09 | 7.170 | 7.19, 7.17, 7.18, 7.16, 7.19 | 7.179 | +0.13% / +0.86% | overlapping in both |
+| `bench_newarg.ns` | 9.11, 9.11, 9.09, 9.15, 9.12 | 9.116 | 9.07, 8.88, 9.16, 9.10, 9.06 | 9.051 | −0.71% / +0.52% | overlapping in both |
+| `bench_megamorphic.ns` | 16.66, 16.69, 16.70, 16.91, 16.74 | 16.742 | 16.66, 16.87, 16.79, 16.76, 16.84 | 16.783 | +0.25% / +0.13% | overlapping in both |
+
+No source is entirely above `22a56f7` in both sittings — the protocol's rule
+for a real regression — and none is entirely below in either. The one
+single-sitting result, `bench_send.ns` entirely above in sitting 1 (+1.15%),
+does not repeat in sitting 2 (+0.51%, overlapping). The means moved by
+−0.88% to +1.43%, ten of the sixteen cells up, all within the spread the
+protocol treats as level.
+
+Means in ms, sitting 1 / sitting 2:
+
+| Source | `be3eb40` | `22a56f7` | head `abd9bb4` |
+|---|---|---|---|
+| `bench_loop.ns` | 11.290 / 11.252 | 10.336 / 10.250 | 10.342 / 10.397 |
+| `bench_send.ns` | 14.090 / 13.986 | 11.447 / 11.491 | 11.578 / 11.550 |
+| `bench_block.ns` | 23.743 / 23.569 | 20.146 / 19.823 | 20.146 / 19.865 |
+| `bench_do.ns` | 8.132 / 8.057 | 7.020 / 6.932 | 6.988 / 7.008 |
+| `bench_new.ns` | 7.556 / 7.444 | 6.183 / 6.146 | 6.218 / 6.092 |
+| `bench_new2.ns` | 8.507 / 8.372 | 7.170 / 7.053 | 7.179 / 7.114 |
+| `bench_newarg.ns` | 10.751 / 10.582 | 9.116 / 8.980 | 9.051 / 9.026 |
+| `bench_megamorphic.ns` | 18.296 / 18.077 | 16.742 / 16.554 | 16.783 / 16.576 |
+
+**Every source stays well below `be3eb40`**, every group entirely below in
+both sittings, for the head and for `22a56f7`:
+
+| Source | head vs `be3eb40` | `22a56f7` vs `be3eb40` |
+|---|---|---|
+| `bench_loop.ns` | −8.40% / −7.60% | −8.46% / −8.90% |
+| `bench_send.ns` | −17.82% / −17.42% | −18.75% / −17.84% |
+| `bench_block.ns` | −15.15% / −15.71% | −15.15% / −15.89% |
+| `bench_do.ns` | −14.06% / −13.02% | −13.67% / −13.97% |
+| `bench_new.ns` | −17.70% / −18.16% | −18.17% / −17.43% |
+| `bench_new2.ns` | −15.61% / −15.03% | −15.72% / −15.76% |
+| `bench_newarg.ns` | −15.81% / −14.71% | −15.20% / −15.15% |
+| `bench_megamorphic.ns` | −8.27% / −8.30% | −8.49% / −8.43% |
+
+**`vm::run`'s step is still inline.** Release builds with debug information
+of `22a56f7` and `abd9bb4` (the same `RUSTFLAGS`, plus
+`CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`, "What the
+inline caches moved" above), then `dumpbin /disasm`: no `vm::run::closure`
+function in either. `ns_runtime::vm::run` is one function of **4,878
+instructions at `22a56f7`** (the count "What 3c moved" records for C2+,
+`5d3aeff`) and **4,878 at `abd9bb4`**. With relocated addresses normalized
+the two streams differ in 192 lines, all of them displacements: the head's
+`rbx`-relative field offsets are 0x18 higher from `+0A8h` on — the heap's new
+canonical-symbol-table field — and some absolute data addresses moved; no
+instruction was added, removed or changed in kind.
+
+**The copy elision measured no gain on these eight sources.** None of the
+eight declares a local slot with an initializer or writes a parameter, so
+Task 4's change never fires on any of them; the two constructs it touches are
+exercised by the golden suite, not by the benchmarks. What the numbers show
+is that the four gaps together cost nothing on a send's hit path, not that
+the elision itself is worth anything measured here.
 
 ## The trampoline
 
