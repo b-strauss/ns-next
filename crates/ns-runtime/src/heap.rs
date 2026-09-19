@@ -379,6 +379,13 @@ struct StackEntry<'gc> {
     /// The frame `Heap::reify` created for this activation, married to it
     /// until the entry is popped.
     reified: Option<FrameReference<'gc>>,
+    /// Whether this activation's registers must survive its return: set by
+    /// `retain_registers` when it creates a closure that reads enclosing
+    /// frames by reference. Nothing else can still read them once it has
+    /// returned -- a converted closure carries what it captured -- so an
+    /// unmarked activation leaves its frame with no registers at all
+    /// (`docs/design/execution.md`, "Representation").
+    retains_registers: bool,
     #[cfg(debug_assertions)]
     generation: u32,
 }
@@ -586,6 +593,7 @@ impl crate::trace::Trace for StackEntry<'_> {
             then,
             counted: _,
             reified,
+            retains_registers: _, // not a handle
             generation: _,
         } = self;
         tracer.value(receiver);
@@ -777,9 +785,9 @@ impl<'gc> Heap<'gc> {
     /// here -- so that replacing what backs a handle only ever touches this
     /// file.
     ///
-    /// `Frame.home` restates what `Frame.kind` already carries for a closure
-    /// frame -- its closure's `home` -- and the image records both, so the
-    /// two must agree: `home` populated exactly for a `FrameKind::Closure`
+    /// `Frame.home` is what `closure_home` reads back for a closure created
+    /// in this frame, and the image records it, so it must be populated
+    /// exactly for a `FrameKind::Closure`
     /// activation. `reify` upholds that by building `home` from the entry's
     /// `kind`, but nothing in the type system ties the two fields together,
     /// so a new constructor added later -- or a mismatched pair of literal
@@ -1146,9 +1154,12 @@ impl<'gc> Heap<'gc> {
     }
 
     /// How many parameters closure `object` declares, or `None` when `object`
-    /// is not a closure.
+    /// is not a closure. Read off the body rather than a parameter-name list
+    /// of the closure's own: one source, so the arity a call is checked
+    /// against and the arity the register file is sized from cannot disagree.
     pub fn closure_parameter_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
-        self.closure(object).map(|closure| closure.parameters.len())
+        self.closure(object)
+            .map(|closure| closure.code.argument_count as usize)
     }
 
     /// Closure `object`'s compiled body, or `None` when `object` is not a
@@ -1179,16 +1190,58 @@ impl<'gc> Heap<'gc> {
         self.closure(object).map(|closure| {
             (
                 closure.code.clone(),
-                closure.parameters.len(),
+                closure.code.argument_count as usize,
                 closure.captured_frame,
                 closure.feedback_base,
             )
         })
     }
 
-    /// A copy of closure `object`'s payload -- two `Rc` bumps, since its
-    /// parameter names and body are shared with the instruction that made
-    /// it. For the image verifier and for tests; the encoder reads a closure
+    /// Writes closure `object`'s copied values into `activation`'s registers,
+    /// immediately after its arguments, which is where a block's compiled
+    /// code addresses them (`docs/design/execution.md`, "Representation").
+    /// Does nothing for a non-closure, and stops at the end of the register
+    /// file: `decode`'s `CopiedCountOutOfRange` keeps a decoded closure's
+    /// list inside its body's registers, and this is what keeps a future gap
+    /// there from becoming a panic on an untrusted image.
+    pub(crate) fn fill_copied_values(
+        &mut self,
+        activation: ActivationReference,
+        object: ObjectReference<'gc>,
+    ) {
+        self.check_activation(activation);
+        let Some(closure) = self.closure(object) else {
+            return;
+        };
+        if closure.copied.is_empty() {
+            return;
+        }
+        // Copied out first: the write below needs the stack mutably, and
+        // `closure` borrows the object arena of the same heap.
+        let copied: Vec<Value<'gc>> = closure.copied.to_vec();
+        let entry = &self.stack.entries[activation.index as usize];
+        let base = entry.base as usize;
+        let argument_count = entry.argument_count as usize;
+        // The activation's own window, so a list longer than its register
+        // file stops at the end of it rather than writing into whatever
+        // sits above.
+        let end = self
+            .stack
+            .entries
+            .get(activation.index as usize + 1)
+            .map_or(self.stack.values.len(), |above| above.base as usize);
+        for (position, value) in copied.into_iter().enumerate() {
+            let slot = base + argument_count + position;
+            if slot >= end {
+                break;
+            }
+            self.stack.values[slot] = value;
+        }
+    }
+
+    /// A copy of closure `object`'s payload -- one `Rc` bump for the body it
+    /// shares with the instruction that made it, and a copy of its copied
+    /// values. For the image verifier and for tests; the encoder reads a closure
     /// through `object_snapshot`, and the run loop reads what it needs
     /// through the narrower accessors above.
     pub fn closure_data(&self, object: ObjectReference<'gc>) -> Option<ClosureData<'gc>> {
@@ -1221,18 +1274,38 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Closure `object`'s captured frame and home, or `None` when `object` is
-    /// not a closure: what a closure activation's kind reaches through. A frame
+    /// Closure `object`'s captured frame, or `None` when `object` is not a
+    /// closure: what a closure activation's kind reaches through. A frame
     /// kind decoded from an image names an object the decoder has confirmed is
     /// a closure (`NotAClosureReference`), but answering `None` rather than
     /// panicking keeps a future change there from turning an untrusted image
     /// into a panic here.
-    fn closure_frames(
+    pub fn closure_captured_frame(
         &self,
         object: ObjectReference<'gc>,
-    ) -> Option<(FrameReference<'gc>, FrameReference<'gc>)> {
-        self.closure(object)
-            .map(|closure| (closure.captured_frame, closure.home))
+    ) -> Option<FrameReference<'gc>> {
+        self.closure(object).map(|closure| closure.captured_frame)
+    }
+
+    /// A closure's home: the activation a `^` in its body returns from.
+    /// Derived rather than stored, so that `ClosureData` stays 32 bytes --
+    /// the captured frame itself when it is a method's, an initializer's or a
+    /// clause's, its own `home` when it is a block's.
+    ///
+    /// A closure frame the runtime reified always carries a `home`
+    /// (`allocate_frame` asserts it), so the fallback below is reached only
+    /// by a *decoded* closure frame, which `replace_frame` fills straight
+    /// from the wire. Answering the captured frame for one is what keeps an
+    /// untrusted image from panicking here: a decoded frame is never married
+    /// to an activation, so a `^` aimed at it is the `cannotReturn` error
+    /// `raise_return` already raises for a dead home.
+    pub fn closure_home(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
+        let captured = self.closure(object)?.captured_frame;
+        let slot = &self.frames[captured.index as usize];
+        Some(match &slot.frame.kind {
+            FrameKind::Closure(_) => slot.frame.home.unwrap_or(captured),
+            _ => captured,
+        })
     }
 
     /// The whole of `object`'s record -- `class`, `identity_hash` and `data`
@@ -1689,9 +1762,7 @@ impl<'gc> Heap<'gc> {
     pub fn frame_captured(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
         self.check_frame_origin(frame);
         match &self.frames[frame.index as usize].frame.kind {
-            FrameKind::Closure(closure) => {
-                self.closure_frames(*closure).map(|(captured, _)| captured)
-            }
+            FrameKind::Closure(closure) => self.closure_captured_frame(*closure),
             _ => None,
         }
     }
@@ -1814,17 +1885,34 @@ impl<'gc> Heap<'gc> {
             then: header.then,
             counted: header.counted,
             reified: None,
+            retains_registers: false,
             #[cfg(debug_assertions)]
             generation,
         });
         self.activation_handle(index)
     }
 
+    /// Marks `activation` as one whose registers must survive its return: it
+    /// created a closure that reads enclosing frames by reference. The VM's
+    /// `MakeClosure` is the one caller, and it marks exactly when the block
+    /// it creates has a non-zero `outer_reach`.
+    pub fn retain_registers(&mut self, activation: ActivationReference) {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize].retains_registers = true;
+    }
+
     /// Pops the top activation. If it was reified, its frame is divorced:
-    /// the registers move into the frame, which is dead from then on --
-    /// uncontinuable, and with no sender, as a returned Smalltalk context
-    /// has none. Answers the activation's continuation, which the run loop
-    /// applies to its value.
+    /// the frame becomes dead from then on -- uncontinuable, and with no
+    /// sender, as a returned Smalltalk context has none. Answers the
+    /// activation's continuation, which the run loop applies to its value.
+    ///
+    /// The registers move into the frame only when the activation was
+    /// marked (`retain_registers`): something still reaches them by
+    /// reference. Otherwise they are dropped with the stack window -- a
+    /// variable nothing captured is unreachable once its activation
+    /// returns, and a captured one the closure carries itself
+    /// (`docs/design/execution.md`, "The closure keeps its defining
+    /// activation").
     pub fn pop_activation(&mut self, activation: ActivationReference) -> Popped<'gc> {
         self.check_activation(activation);
         debug_assert_eq!(
@@ -1841,9 +1929,14 @@ impl<'gc> Heap<'gc> {
         if let Some(frame) = entry.reified {
             let registers = &self.stack.values[base..];
             let split = entry.argument_count as usize;
+            let (arguments, temporaries) = if entry.retains_registers {
+                (registers[..split].to_vec(), registers[split..].to_vec())
+            } else {
+                (Vec::new(), Vec::new())
+            };
             let slot = &mut self.frames[frame.index as usize];
-            slot.frame.arguments = registers[..split].to_vec();
-            slot.frame.temporaries = registers[split..].to_vec();
+            slot.frame.arguments = arguments;
+            slot.frame.temporaries = temporaries;
             slot.frame.program_counter = entry.program_counter;
             slot.frame.sender = None;
             slot.frame.uncontinuable = true;
@@ -1873,7 +1966,7 @@ impl<'gc> Heap<'gc> {
             program_counter: entry.program_counter,
             sender: None,
             home: match &entry.kind {
-                FrameKind::Closure(closure) => self.closure_frames(*closure).map(|(_, home)| home),
+                FrameKind::Closure(closure) => self.closure_home(*closure),
                 _ => None,
             },
             current_class: entry.current_class,
@@ -1977,7 +2070,7 @@ impl<'gc> Heap<'gc> {
     pub fn activation_home(&self, activation: ActivationReference) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
         match &self.stack.entries[activation.index as usize].kind {
-            FrameKind::Closure(closure) => self.closure_frames(*closure).map(|(_, home)| home),
+            FrameKind::Closure(closure) => self.closure_home(*closure),
             _ => None,
         }
     }
@@ -1990,9 +2083,7 @@ impl<'gc> Heap<'gc> {
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
         match &self.stack.entries[activation.index as usize].kind {
-            FrameKind::Closure(closure) => {
-                self.closure_frames(*closure).map(|(captured, _)| captured)
-            }
+            FrameKind::Closure(closure) => self.closure_captured_frame(*closure),
             _ => None,
         }
     }
@@ -2075,6 +2166,15 @@ impl<'gc> Heap<'gc> {
     /// activation runs, the frame's own copy after it has returned. This is
     /// the path a block takes to its method's variables, and the only
     /// register access that branches.
+    ///
+    /// A returned activation that was never marked kept no registers at all
+    /// (`pop_activation`), and a decoded frame's register file is whatever
+    /// the image said. No code the compiler produces reaches a register
+    /// either one lacks -- `MakeClosure` marks every activation a
+    /// by-reference block is created in -- so an index past the file is
+    /// either a crafted image or a compiler defect, and answering `Nil`
+    /// rather than panicking is what keeps the first from aborting the
+    /// process.
     pub fn frame_local(&self, frame: FrameReference<'gc>, index: u16) -> Value<'gc> {
         self.check_frame_origin(frame);
         let slot = &self.frames[frame.index as usize];
@@ -2086,12 +2186,18 @@ impl<'gc> Heap<'gc> {
                 if register_index < stored_frame.arguments.len() {
                     stored_frame.arguments[register_index]
                 } else {
-                    stored_frame.temporaries[register_index - stored_frame.arguments.len()]
+                    stored_frame
+                        .temporaries
+                        .get(register_index - stored_frame.arguments.len())
+                        .copied()
+                        .unwrap_or(Value::Nil)
                 }
             }
         }
     }
 
+    /// `frame_local`'s twin, and silently a no-op for an index a dead
+    /// frame's register file does not have, for the reason given there.
     pub fn frame_set_local(&mut self, frame: FrameReference<'gc>, index: u16, value: Value<'gc>) {
         self.check_frame_origin(frame);
         // Copied out first, so neither arm below holds a borrow of `frames`
@@ -2109,7 +2215,9 @@ impl<'gc> Heap<'gc> {
                     stored_frame.arguments[register_index] = value;
                 } else {
                     let temporary_index = register_index - stored_frame.arguments.len();
-                    stored_frame.temporaries[temporary_index] = value;
+                    if let Some(slot) = stored_frame.temporaries.get_mut(temporary_index) {
+                        *slot = value;
+                    }
                 }
             }
         }
@@ -2556,6 +2664,8 @@ mod tests {
             register_count: 1,
             statement_program_counter: Vec::new(),
             family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
             source: ns_syntax::Span::new(0, 0),
         })
     }
@@ -2663,15 +2773,21 @@ mod tests {
         heap.pop_activation(activation);
     }
 
-    /// Popping a reified activation hands its registers to the frame, which
-    /// a surviving block goes on reading and writing; the frame is dead from
-    /// then on, and a dead activation has no sender.
+    /// Popping a *marked* reified activation hands its registers to the
+    /// frame, which a surviving block goes on reading and writing; the
+    /// frame is dead from then on, and a dead activation has no sender.
+    /// Unmarked is
+    /// `a_returning_activation_keeps_its_registers_only_when_it_was_marked`
+    /// in `tests/heap.rs`.
     #[test]
     fn popping_a_reified_activation_divorces_its_frame() {
         let mut heap = Heap::new();
         let activation = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
         heap.set_activation_program_counter(activation, 4);
         let frame = heap.reify(activation);
+        // What a `MakeClosure` whose block reads this frame by reference
+        // does, and the only reason the registers below survive the pop.
+        heap.retain_registers(activation);
         // Written after reification: it must survive the divorce.
         heap.activation_set_local(activation, 1, Value::SmallInteger(3));
         heap.pop_activation(activation);
@@ -2686,6 +2802,43 @@ mod tests {
         assert!(matches!(heap.frame_local(frame, 1), Value::SmallInteger(8)));
     }
 
+    /// A block's copied values land in the registers between its parameters
+    /// and its temporaries, which is where its compiled code addresses them
+    /// (`docs/design/execution.md`, "Representation"). A list longer than
+    /// the register file stops at its end rather than writing into the
+    /// activation below: an image, not the compiler, is what can present
+    /// one.
+    #[test]
+    fn a_closures_copied_values_land_after_the_activations_arguments() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let captured_frame = heap.allocate_frame(top_level_frame());
+        let closure = heap.allocate_object(
+            class,
+            ObjectData::Closure(ClosureData {
+                code: trivial_code(),
+                captured_frame,
+                copied: Box::new([Value::SmallInteger(7), Value::SmallInteger(8)]),
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
+            }),
+        );
+
+        let activation = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
+        heap.fill_copied_values(activation, closure);
+        assert!(matches!(
+            heap.activation_local(activation, 0),
+            Value::SmallInteger(1)
+        ));
+        assert!(matches!(
+            heap.activation_local(activation, 1),
+            Value::SmallInteger(7)
+        ));
+        // The activation has two registers, so the second copied value has
+        // nowhere to go and is dropped rather than written past the window.
+        assert_eq!(heap.stack.values.len(), 2);
+        heap.pop_activation(activation);
+    }
+
     /// The next activation at the same depth reuses the stack slots. A
     /// divorced frame owns its own copy, so that reuse cannot reach it.
     #[test]
@@ -2694,6 +2847,7 @@ mod tests {
         let first = heap.push_activation(header(), &[], 2);
         heap.activation_set_local(first, 1, Value::SmallInteger(3));
         let frame = heap.reify(first);
+        heap.retain_registers(first);
         heap.pop_activation(first);
 
         let second = heap.push_activation(header(), &[], 2);
@@ -2824,55 +2978,65 @@ mod tests {
     /// captured-variable read rather than fail loudly. The closure's two
     /// frames are distinct -- a block inside a block captures the outer
     /// block's activation and returns to the method's -- so that the two
-    /// swapped in `closure_frames` would fail here rather than pass. This
-    /// also exercises `allocate_frame`'s debug assertion that `Frame.home` is
-    /// populated exactly for a `FrameKind::Closure` activation, since
-    /// `reify` builds that frame from a closure entry's `kind` here for the
-    /// first time in this test module.
+    /// swapped would fail here rather than pass. The home is derived from
+    /// the captured frame (`closure_home`) rather than stored, which is
+    /// exactly what the two nesting levels below exercise: the inner
+    /// closure's captured frame is a *block* activation, so its home is that
+    /// frame's own. This also exercises `allocate_frame`'s debug assertion
+    /// that `Frame.home` is populated exactly for a `FrameKind::Closure`
+    /// activation, since `reify` builds that frame from a closure entry's
+    /// `kind` here for the first time in this test module.
     #[test]
     fn a_closure_activations_home_and_captured_frame_are_its_closures() {
         let mut heap = Heap::new();
+        fn block_closure<'gc>(
+            heap: &mut Heap<'gc>,
+            class: ClassReference<'gc>,
+            captured_frame: FrameReference<'gc>,
+        ) -> ObjectReference<'gc> {
+            heap.allocate_object(
+                class,
+                ObjectData::Closure(ClosureData {
+                    code: std::rc::Rc::new(crate::bytecode::CompiledCode {
+                        kind: crate::bytecode::CodeKind::Block,
+                        instructions: vec![crate::bytecode::Instruction::ImplicitReturn {
+                            register: 0,
+                        }],
+                        argument_count: 0,
+                        register_count: 1,
+                        statement_program_counter: vec![],
+                        family_size: 0,
+                        copied_count: 0,
+                        outer_reach: 0,
+                        source: ns_syntax::Span::new(0, 0),
+                    }),
+                    captured_frame,
+                    copied: Box::new([]),
+                    feedback_base: FeedbackBase::NOT_ASSIGNED,
+                }),
+            )
+        }
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let block_header = |closure| ActivationHeader {
+            receiver: Value::Nil,
+            current_class: None,
+            kind: FrameKind::Closure(closure),
+            slot_base: 0,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+            code: trivial_code(),
+            then: Continuation::Deliver,
+            counted: true,
+        };
+
         let method_activation = heap.push_activation(header(), &[], 0);
         let home_frame = heap.reify(method_activation);
-        let outer_block_activation = heap.push_activation(header(), &[], 0);
+        let outer_closure = block_closure(&mut heap, class, home_frame);
+        let outer_block_activation = heap.push_activation(block_header(outer_closure), &[], 0);
         let captured_frame = heap.reify(outer_block_activation);
         assert!(!captured_frame.same(home_frame));
 
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
-        let closure = heap.allocate_object(
-            class,
-            ObjectData::Closure(ClosureData {
-                parameters: std::rc::Rc::new(vec![]),
-                code: std::rc::Rc::new(crate::bytecode::CompiledCode {
-                    kind: crate::bytecode::CodeKind::Block,
-                    instructions: vec![crate::bytecode::Instruction::ImplicitReturn {
-                        register: 0,
-                    }],
-                    argument_count: 0,
-                    register_count: 1,
-                    statement_program_counter: vec![],
-                    family_size: 0,
-                    source: ns_syntax::Span::new(0, 0),
-                }),
-                captured_frame,
-                home: home_frame,
-                feedback_base: FeedbackBase::NOT_ASSIGNED,
-            }),
-        );
-        let closure_activation = heap.push_activation(
-            ActivationHeader {
-                receiver: Value::Nil,
-                current_class: None,
-                kind: FrameKind::Closure(closure),
-                slot_base: 0,
-                feedback_base: FeedbackBase::NOT_ASSIGNED,
-                code: trivial_code(),
-                then: Continuation::Deliver,
-                counted: true,
-            },
-            &[],
-            0,
-        );
+        let closure = block_closure(&mut heap, class, captured_frame);
+        let closure_activation = heap.push_activation(block_header(closure), &[], 0);
 
         assert!(heap.activation_home(method_activation).is_none());
         assert!(heap.activation_captured(method_activation).is_none());
@@ -2907,8 +3071,8 @@ mod tests {
 
     /// A move gives every object and every frame a new index -- the
     /// rotation has no fixed point -- and rewrites everything that names
-    /// one: an array's element, a closure's two frames, a frame's receiver,
-    /// a class's own class, and the host roots.
+    /// one: an array's element, a closure's captured frame and its copied
+    /// values, a frame's receiver, a class's own class, and the host roots.
     #[test]
     #[cfg(debug_assertions)]
     fn a_move_gives_every_slot_a_new_index_and_rewrites_what_names_it() {
@@ -2924,10 +3088,9 @@ mod tests {
         let closure = heap.allocate_object(
             class,
             ObjectData::Closure(ClosureData {
-                parameters: std::rc::Rc::new(vec![]),
                 code: trivial_code(),
                 captured_frame: frame,
-                home: frame,
+                copied: Box::new([Value::Object(string)]),
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
@@ -2969,7 +3132,10 @@ mod tests {
         );
         assert_eq!(heap.str_value(string).as_deref(), Some("a"));
         let data = heap.closure_data(closure).expect("still a closure");
-        assert!(data.captured_frame.same(data.home));
+        assert!(
+            matches!(data.copied[..], [Value::Object(copied)] if copied.same(string)),
+            "a copied value is rewritten"
+        );
         assert_ne!(
             frame_before,
             heap.frame_identity_key(data.captured_frame),
@@ -3062,9 +3228,9 @@ mod tests {
     /// placeholder-arena amplification from, so a change to `Object` that
     /// moves it fails here rather than leaving that figure silently wrong.
     /// The header's dispatch id is paid for by boxing `ClassData`, and the
-    /// size stays at 56 rather than 48 because `ClosureData` -- two `Rc`s,
-    /// two `FrameReference`s and a `FeedbackBase`, 32 bytes -- is now
-    /// `ObjectData`'s largest payload.
+    /// size stays at 56 rather than 48 because `ClosureData` -- an `Rc`, a
+    /// `Box<[Value]>`, a `FrameReference` and a `FeedbackBase`, 32 bytes --
+    /// is `ObjectData`'s largest payload.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {

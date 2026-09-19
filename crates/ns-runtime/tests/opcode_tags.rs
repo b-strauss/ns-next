@@ -25,7 +25,6 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_STORE_LOCAL, 4);
     assert_eq!(OPCODE_LOAD_OUTER_LOCAL, 5);
     assert_eq!(OPCODE_STORE_OUTER_LOCAL, 6);
-    assert_eq!(OPCODE_MAKE_CLOSURE, 11);
     assert_eq!(OPCODE_MAKE_ARRAY, 12);
     assert_eq!(OPCODE_INITIALIZE_SLOT, 13);
     assert_eq!(OPCODE_RETURN, 14);
@@ -39,6 +38,7 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_SEND_PUBLIC, 26);
     assert_eq!(OPCODE_SEND_INLINABLE, 27);
     assert_eq!(OPCODE_SEND_SUPER, 28);
+    assert_eq!(OPCODE_MAKE_CLOSURE, 29);
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn no_two_tags_share_a_number() {
 /// (`image/opcodes.rs`).
 #[test]
 fn retired_instruction_tags_are_never_reused() {
-    assert_eq!(RETIRED_OPCODES, [7, 8, 9, 10, 21, 22, 23, 24]);
+    assert_eq!(RETIRED_OPCODES, [7, 8, 9, 10, 11, 21, 22, 23, 24]);
     let live = [
         OPCODE_LOAD_LITERAL,
         OPCODE_LOAD_SELF,
@@ -146,6 +146,27 @@ fn retired_instruction_tags_are_never_reused() {
     }
 }
 
+/// A retired object-body tag stays retired, for the same reason a retired
+/// instruction tag does: the closure record's payload changed on both
+/// halves, so tag 4's bytes would otherwise decode into a different,
+/// perfectly valid closure.
+#[test]
+fn retired_object_body_tags_are_refused() {
+    assert_eq!(RETIRED_OBJECT_BODIES, [4]);
+    assert_eq!(OBJECT_CLOSURE, 6);
+    let live = [
+        OBJECT_INSTANCE,
+        OBJECT_STRING,
+        OBJECT_SYMBOL,
+        OBJECT_ARRAY,
+        OBJECT_CLOSURE,
+        OBJECT_CLASS,
+    ];
+    for retired in RETIRED_OBJECT_BODIES {
+        assert!(!live.contains(&retired), "tag {retired} is retired");
+    }
+}
+
 /// The graph section's tags, pinned for the same reason as the instruction
 /// tags above: three readers now share this numbering -- the encoder, the
 /// loader's decoder, and `inspect`'s structural walk -- and a renumbering
@@ -166,8 +187,8 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_STRING, 1);
     assert_eq!(OBJECT_SYMBOL, 2);
     assert_eq!(OBJECT_ARRAY, 3);
-    assert_eq!(OBJECT_CLOSURE, 4);
     assert_eq!(OBJECT_CLASS, 5);
+    assert_eq!(OBJECT_CLOSURE, 6);
 
     assert_eq!(CLASS_BUILTIN, 0);
     assert_eq!(CLASS_USER_ROOT, 1);

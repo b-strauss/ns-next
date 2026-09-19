@@ -365,6 +365,9 @@ impl<'a> Lowerer<'a> {
             destination,
             parameters: Rc::new(parameters),
             code: Rc::new(code),
+            // The optimized lowering still reaches every variable by
+            // reference; the capture analysis fills this.
+            copied: Vec::new(),
         });
         destination
     }
@@ -1094,6 +1097,10 @@ impl<'a> Lowerer<'a> {
         CompiledCode {
             kind: self.kind,
             family_size: crate::bytecode::family_size_of(&self.instructions),
+            // Nothing is copied yet: every block still reads its enclosing
+            // registers through `LoadOuterLocal`.
+            copied_count: 0,
+            outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
             instructions: self.instructions,
             argument_count: self.argument_count,
             register_count: self.max_register,
@@ -2125,6 +2132,7 @@ mod tests {
             destination: 0,
             parameters,
             code: block,
+            copied,
         }) = code.instructions.first()
         else {
             panic!(
@@ -2133,6 +2141,10 @@ mod tests {
             );
         };
         assert_eq!(parameters.as_slice(), &[crate::Symbol::intern("x")]);
+        assert!(
+            copied.is_empty(),
+            "the optimized lowering still reaches every variable by reference"
+        );
         assert_eq!(block.kind, CodeKind::Block);
         assert_eq!(block.argument_count, 1);
         // `x` is the block's own register 0: read with no instruction, then

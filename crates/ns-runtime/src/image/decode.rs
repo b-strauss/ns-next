@@ -146,6 +146,26 @@ pub enum DecodeError {
         parameters: usize,
         argument_count: u16,
     },
+    /// A `MakeClosure`'s copied-register list, or a closure record's copied
+    /// values, does not number what the block body it names declares. The
+    /// two are separate wire fields, and the block's activation is sized and
+    /// filled from `copied_count` (`Heap::fill_copied_values`) while the
+    /// list is what supplies the values: a shorter list leaves a register
+    /// the body reads as a plain local holding nil, and a longer one hands
+    /// values to registers that are somebody else's temporaries.
+    CopiedCountMismatch {
+        copied: usize,
+        copied_count: u16,
+    },
+    /// A code record's parameters and copied values together do not fit its
+    /// register file. `push_step` sizes an activation as `register_count -
+    /// argument_count`, so this would leave `fill_copied_values` writing
+    /// past the registers the body has.
+    CopiedCountOutOfRange {
+        argument_count: u16,
+        copied_count: u16,
+        register_count: u16,
+    },
     /// The image's mixin table is empty, so it describes no root class --
     /// and a world without one has nothing for the graph's class tag 1 to
     /// name and no declaration to instantiate.
@@ -343,6 +363,15 @@ impl std::fmt::Display for DecodeError {
             DecodeError::ClosureArityMismatch { parameters, argument_count } => write!(
                 f,
                 "closure record declares {parameters} parameters but the code it names takes {argument_count}"
+            ),
+            DecodeError::CopiedCountMismatch { copied, copied_count } => write!(
+                f,
+                "the image supplies {copied} copied values for a block that is handed {copied_count}"
+            ),
+            DecodeError::CopiedCountOutOfRange { argument_count, copied_count, register_count } => write!(
+                f,
+                "a body in the image takes {argument_count} arguments and {copied_count} copied \
+                 values, which do not fit its {register_count} registers"
             ),
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
@@ -919,6 +948,7 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
             let Instruction::MakeClosure {
                 parameters,
                 code: block,
+                copied,
                 ..
             } = instruction
             else {
@@ -937,6 +967,15 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
                 return Err(DecodeError::ClosureArityMismatch {
                     parameters: parameters.len(),
                     argument_count: block.argument_count,
+                });
+            }
+            // The same reconciliation for the other half of a block's
+            // register layout: the instruction supplies the values, the
+            // body declares how many registers take them.
+            if copied.len() != block.copied_count as usize {
+                return Err(DecodeError::CopiedCountMismatch {
+                    copied: copied.len(),
+                    copied_count: block.copied_count,
                 });
             }
             if parents[id].is_some() {
@@ -1108,8 +1147,19 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
     match instruction {
         Instruction::LoadLiteral { destination, .. }
         | Instruction::LoadSelf { destination }
-        | Instruction::LoadBuiltinClass { destination, .. }
-        | Instruction::MakeClosure { destination, .. } => vec![*destination],
+        | Instruction::LoadBuiltinClass { destination, .. } => vec![*destination],
+        // The copied registers are read out of the *executing* frame, like
+        // a send's arguments, so they are bounded here and not by
+        // `verify_outer_locals`.
+        Instruction::MakeClosure {
+            destination,
+            copied,
+            ..
+        } => {
+            let mut registers = copied.clone();
+            registers.push(*destination);
+            registers
+        }
         Instruction::Move {
             destination,
             source,
@@ -1273,6 +1323,21 @@ fn decode_code(
     };
     let argument_count = reader.read_u16()?;
     let register_count = reader.read_u16()?;
+    let copied_count = reader.read_u16()?;
+    // The copied values' own half of the register layout. `argument_count`
+    // alone exceeding the file is a different fault, reported as
+    // `ArgumentsExceedRegisters` by `verify_body`, so this is asked only
+    // once that holds -- and in `u32` arithmetic, so the sum cannot wrap
+    // back into range.
+    if argument_count <= register_count
+        && u32::from(argument_count) + u32::from(copied_count) > u32::from(register_count)
+    {
+        return Err(DecodeError::CopiedCountOutOfRange {
+            argument_count,
+            copied_count,
+            register_count,
+        });
+    }
     let start = reader.read_u32()?;
     let end = reader.read_u32()?;
     if start > end {
@@ -1307,9 +1372,15 @@ fn decode_code(
         // sends as if they were already dense from 0. Recomputed there, once
         // the real numbers exist.
         family_size: crate::bytecode::family_size_of(&instructions),
+        // Not on the wire: derived from the instructions with the same
+        // function the compiler used. It reads each nested block's own
+        // `outer_reach`, which is already filled because post-order puts a
+        // block's code before its parent's.
+        outer_reach: crate::bytecode::outer_reach_of(&instructions),
         instructions,
         argument_count,
         register_count,
+        copied_count,
         statement_program_counter,
         source,
     })
@@ -1463,6 +1534,7 @@ fn decode_instruction(
                 destination,
                 parameters: Rc::new(parameters),
                 code: codes[id as usize].clone(),
+                copied: decode_registers(reader)?,
             }
         }
         OPCODE_MAKE_ARRAY => {
@@ -1754,35 +1826,32 @@ fn decode_closure_record<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
-    symbols: &symbols::Table,
 ) -> Result<ClosureData<'gc>, DecodeError> {
-    let count = reader.read_u16()? as usize;
-    let mut parameters = reserve_for(count, reader);
-    for _ in 0..count {
-        parameters.push(decode_symbol(reader, symbols)?);
-    }
     let code_id = reader.read_u32()?;
     let code = context
         .codes
         .get(code_id as usize)
         .cloned()
         .ok_or(DecodeError::BadCodeId(code_id))?;
+    let captured_frame = decode_frame_id(reader, tables)?;
+    let count = reader.read_u16()? as usize;
     // The one place in the format that can see both halves of a closure's
-    // arity. Checked before the frame ids are read, so a mismatch is
+    // copied values. Checked before any of them is read, so a mismatch is
     // reported as itself rather than as whatever the next field trips on.
-    if parameters.len() != code.argument_count as usize {
-        return Err(DecodeError::ClosureArityMismatch {
-            parameters: parameters.len(),
-            argument_count: code.argument_count,
+    if count != code.copied_count as usize {
+        return Err(DecodeError::CopiedCountMismatch {
+            copied: count,
+            copied_count: code.copied_count,
         });
     }
-    let captured_frame = decode_frame_id(reader, tables)?;
-    let home = decode_frame_id(reader, tables)?;
+    let mut copied = reserve_for(count, reader);
+    for _ in 0..count {
+        copied.push(decode_value(reader, context, tables)?);
+    }
     Ok(ClosureData {
-        parameters: Rc::new(parameters),
         code,
         captured_frame,
-        home,
+        copied: copied.into_boxed_slice(),
         // Never on the wire: a decoded closure is given a fresh range of its
         // family's size when it is first activated (`Mutator::push_step`).
         feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
@@ -2287,9 +2356,7 @@ pub fn decode_graph_section<'gc>(
             OBJECT_STRING => ObjectData::String(reader.read_str()?),
             OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
             OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
-            OBJECT_CLOSURE => {
-                ObjectData::Closure(decode_closure_record(reader, context, &tables, symbols)?)
-            }
+            OBJECT_CLOSURE => ObjectData::Closure(decode_closure_record(reader, context, &tables)?),
             OBJECT_CLASS => {
                 let (data, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
@@ -2545,7 +2612,9 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    image carries only bytecode), but which body it counts them in is only
 ///    known once the decoded mixins carry their code.
 /// 1. A frame's register file must match the body that runs in it -- the
-///    same `arguments` count, and at least as many registers. (At least, not
+///    same `arguments` count, and at least as many registers -- or be empty,
+///    which is what a returning activation nothing reads by reference leaves
+///    behind. (At least, not
 ///    exactly: a frame's register file is grown, never shrunk -- the
 ///    liveness spec's reified activations may be wider than the body
 ///    currently running in them -- so a wider frame is legitimate and only
@@ -2580,8 +2649,13 @@ pub fn verify_graph<'gc>(
                 instructions: code.instructions.len(),
             });
         }
-        if argument_count != code.argument_count as usize
-            || argument_count + temporary_count < code.register_count as usize
+        // An empty register file is what a returning activation that was
+        // never marked leaves behind (`Heap::pop_activation`): nothing
+        // reaches its registers any more, so it keeps none. Every other
+        // shape is still held to the body's.
+        if argument_count + temporary_count != 0
+            && (argument_count != code.argument_count as usize
+                || argument_count + temporary_count < code.register_count as usize)
         {
             return Err(DecodeError::FrameRegisterFile {
                 arguments: argument_count,

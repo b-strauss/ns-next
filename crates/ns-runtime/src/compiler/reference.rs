@@ -468,6 +468,9 @@ impl<'a> Body<'a> {
             destination,
             parameters: Rc::new(parameters),
             code: Rc::new(code),
+            // The reference lowering is the by-reference oracle: it copies
+            // nothing into a closure, ever.
+            copied: Vec::new(),
         });
         destination
     }
@@ -488,6 +491,8 @@ impl<'a> Body<'a> {
         CompiledCode {
             kind: self.kind,
             family_size: crate::bytecode::family_size_of(&self.instructions),
+            copied_count: 0,
+            outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
             instructions: self.instructions,
             argument_count: self.argument_count,
             register_count: self.next_register,

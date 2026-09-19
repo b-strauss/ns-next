@@ -138,13 +138,18 @@ pub enum Instruction {
         destination: u16,
         call_site: CallSite,
     },
-    /// Builds a closure over the *compiled* block body. `captured_frame` and
-    /// `home` are runtime values the VM supplies from its current frame
-    /// when the instruction executes.
+    /// Builds a closure over the *compiled* block body. `captured_frame` is
+    /// a runtime value the VM supplies from its current activation when the
+    /// instruction executes.
     MakeClosure {
         destination: u16,
         parameters: Rc<Vec<Symbol>>,
         code: Rc<CompiledCode>,
+        /// The registers whose values the closure is handed, in the order
+        /// the block's own registers take them
+        /// (`docs/design/execution.md`, "Representation"). Empty under both
+        /// of today's lowerings, which reach every variable by reference.
+        copied: Vec<u16>,
     },
     MakeArray {
         destination: u16,
@@ -259,6 +264,17 @@ pub struct CompiledCode {
     /// One past the highest call-site number among this body's own sends
     /// and its nested blocks' `family_size`s; 0 when there is none.
     pub family_size: u32,
+    /// How many copied values a block's activation is handed, between its
+    /// parameters and its temporaries. Zero for every other kind of body.
+    pub copied_count: u16,
+    /// How many frames out the deepest by-reference read or write this body
+    /// or a block it creates can reach: `0` for converted code, `1` for a
+    /// fallback closure that reads its own creator's registers, one more per
+    /// level above that. `MakeClosure` marks the creating activation when
+    /// this is non-zero, which is what makes a returning frame keep its
+    /// registers (`docs/design/execution.md`, "Representation"). Derived from
+    /// the instructions, never on the wire.
+    pub outer_reach: u16,
     pub source: Span,
 }
 
@@ -326,6 +342,23 @@ pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
                 Some(site) if site != CallSite::UNCACHED => site.number + 1,
                 _ => 0,
             },
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// A body's `outer_reach`. A nested block's reach counts one level less from
+/// here: the frame it reaches through is the one this body creates. The
+/// compiler and the decoder both compute it here, so the two cannot disagree
+/// about a body.
+pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
+    instructions
+        .iter()
+        .map(|instruction| match instruction {
+            Instruction::LoadOuterLocal { depth, .. }
+            | Instruction::StoreOuterLocal { depth, .. } => *depth,
+            Instruction::MakeClosure { code, .. } => code.outer_reach.saturating_sub(1),
+            _ => 0,
         })
         .max()
         .unwrap_or(0)
@@ -459,15 +492,28 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::MakeClosure {
             destination,
             parameters,
+            copied,
             ..
-        } => format!(
-            "MakeClosure r{destination}, [{}] ->",
-            parameters
+        } => {
+            let names = parameters
                 .iter()
                 .map(|parameter| format!(":{parameter}"))
                 .collect::<Vec<_>>()
-                .join(" ")
-        ),
+                .join(" ");
+            // The copied list is appended only when there is one, so a
+            // listing of by-reference code reads exactly as it did before
+            // closure conversion existed.
+            if copied.is_empty() {
+                format!("MakeClosure r{destination}, [{names}] ->")
+            } else {
+                let copied = copied
+                    .iter()
+                    .map(|register| format!("r{register}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("MakeClosure r{destination}, [{names}] -> copying {copied}")
+            }
+        }
         Instruction::MakeArray {
             destination,
             element_registers,
@@ -545,11 +591,82 @@ mod tests {
             register_count: 2,
             statement_program_counter: vec![(0, 0..2)],
             family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
             source: Span::new(0, 10),
         };
         assert_eq!(code.instructions.len(), 2);
         assert_eq!(code.register_count - code.argument_count, 1);
         assert_eq!(code, code.clone());
+    }
+
+    /// A body's reach is the deepest frame anything in it addresses: its own
+    /// outer-local depths, and one level less for each block it creates,
+    /// since the frame a nested block reaches through is the one this body
+    /// creates. Non-zero is what makes `MakeClosure` mark its activation.
+    #[test]
+    fn outer_reach_counts_a_nested_blocks_reach_one_level_less() {
+        let make = |outer_reach, instructions| {
+            Rc::new(CompiledCode {
+                kind: CodeKind::Block,
+                instructions,
+                argument_count: 0,
+                register_count: 1,
+                statement_program_counter: vec![],
+                family_size: 0,
+                copied_count: 0,
+                outer_reach,
+                source: Span::new(0, 0),
+            })
+        };
+        let inner = make(
+            2,
+            vec![
+                Instruction::LoadOuterLocal {
+                    destination: 0,
+                    depth: 2,
+                    index: 0,
+                },
+                Instruction::ImplicitReturn { register: 0 },
+            ],
+        );
+        let creating = vec![
+            Instruction::MakeClosure {
+                destination: 0,
+                parameters: Rc::new(vec![]),
+                code: inner,
+                copied: Vec::new(),
+            },
+            Instruction::ImplicitReturn { register: 0 },
+        ];
+        assert_eq!(outer_reach_of(&creating), 1);
+
+        let converted = make(0, vec![Instruction::ImplicitReturn { register: 0 }]);
+        assert_eq!(
+            outer_reach_of(&[
+                Instruction::MakeClosure {
+                    destination: 0,
+                    parameters: Rc::new(vec![]),
+                    code: converted,
+                    copied: Vec::new(),
+                },
+                Instruction::ImplicitReturn { register: 0 },
+            ]),
+            0,
+            "a block that reaches nothing outer leaves its creator unmarked"
+        );
+
+        assert_eq!(
+            outer_reach_of(&[
+                Instruction::StoreOuterLocal {
+                    source: 0,
+                    depth: 1,
+                    index: 0,
+                },
+                Instruction::ImplicitReturn { register: 0 },
+            ]),
+            1
+        );
     }
 
     #[test]
@@ -586,12 +703,15 @@ mod tests {
             register_count: 1,
             statement_program_counter: vec![(0, 0..1)],
             family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
             source: Span::new(0, 5),
         });
         let make = Instruction::MakeClosure {
             destination: 0,
             parameters: Rc::new(vec![Symbol::intern("x")]),
             code: block,
+            copied: Vec::new(),
         };
         let Instruction::MakeClosure { code, .. } = &make else {
             panic!()
@@ -615,6 +735,8 @@ mod tests {
             register_count: 1,
             statement_program_counter: vec![(0, 0..2)],
             family_size: 0,
+            copied_count: 0,
+            outer_reach: 1,
             source: Span::new(0, 5),
         });
         let code = CompiledCode {
@@ -624,6 +746,7 @@ mod tests {
                     destination: 1,
                     parameters: Rc::new(vec![]),
                     code: block,
+                    copied: Vec::new(),
                 },
                 Instruction::SendPublic {
                     selector: Symbol::intern("value"),
@@ -639,6 +762,8 @@ mod tests {
             register_count: 4,
             statement_program_counter: vec![(0, 0..2)],
             family_size: 2,
+            copied_count: 0,
+            outer_reach: 0,
             source: Span::new(0, 10),
         };
         let text = disassemble(&code, "foo:");
@@ -653,6 +778,38 @@ method foo: (args 1, registers 4)
    3        -  ImplicitReturn r3
 ";
         assert_eq!(text, expected);
+    }
+
+    /// A `MakeClosure` with copied registers names them; one without reads
+    /// exactly as it did before closure conversion, which is what keeps
+    /// every recorded disassembly of by-reference code where it is.
+    #[test]
+    fn disassembly_names_a_closures_copied_registers_only_when_it_has_some() {
+        let block = Rc::new(CompiledCode {
+            kind: CodeKind::Block,
+            instructions: vec![Instruction::ImplicitReturn { register: 0 }],
+            argument_count: 0,
+            register_count: 3,
+            statement_program_counter: vec![(0, 0..1)],
+            family_size: 0,
+            copied_count: 2,
+            outer_reach: 0,
+            source: Span::new(0, 5),
+        });
+        let copying = format_instruction(&Instruction::MakeClosure {
+            destination: 1,
+            parameters: Rc::new(vec![Symbol::intern("x")]),
+            code: block.clone(),
+            copied: vec![0, 3],
+        });
+        assert_eq!(copying, "MakeClosure r1, [:x] -> copying r0 r3");
+        let plain = format_instruction(&Instruction::MakeClosure {
+            destination: 1,
+            parameters: Rc::new(vec![Symbol::intern("x")]),
+            code: block,
+            copied: Vec::new(),
+        });
+        assert_eq!(plain, "MakeClosure r1, [:x] ->");
     }
 
     #[test]

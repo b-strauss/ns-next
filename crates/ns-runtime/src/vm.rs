@@ -20,7 +20,7 @@ use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
-    home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
+    read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
 };
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
@@ -321,8 +321,9 @@ fn execute<'gc>(
         }
         Instruction::MakeClosure {
             destination,
-            parameters,
             code: block,
+            copied,
+            ..
         } => {
             // Stored before reifying, so the frame `reify` builds starts
             // from this program counter.
@@ -330,12 +331,20 @@ fn execute<'gc>(
                 .heap
                 .set_activation_program_counter(activation, program_counter);
             let captured_frame = mutator.heap.reify(activation);
-            let home = home_of(&mut mutator.heap, activation);
+            // A closure that reads enclosing registers by reference -- the
+            // reference lowering's, and an optimized fallback closure -- is
+            // what makes this activation's registers outlive it.
+            if block.outer_reach > 0 {
+                mutator.heap.retain_registers(activation);
+            }
+            let copied_values = copied
+                .iter()
+                .map(|register| read_local(&mutator.heap, activation, *register))
+                .collect();
             let value = Value::Object(mutator.new_closure(ClosureData {
-                parameters: parameters.clone(),
                 code: block.clone(),
                 captured_frame,
-                home,
+                copied: copied_values,
                 // A block belongs to its enclosing method's family: the
                 // running activation's own base, already in hand here, so
                 // this costs no extra load.

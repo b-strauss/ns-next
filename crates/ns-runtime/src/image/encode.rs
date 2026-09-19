@@ -345,6 +345,10 @@ fn encode_code(
     writer.write_u8(code_kind_tag(code.kind));
     writer.write_u16(code.argument_count);
     writer.write_u16(code.register_count);
+    // `outer_reach` is deliberately absent: it follows from the
+    // instructions, and `decode_code` recomputes it with the same
+    // `bytecode::outer_reach_of` the compiler used.
+    writer.write_u16(code.copied_count);
     writer.write_u32(code.source.start);
     writer.write_u32(code.source.end);
     writer.write_u32(u32_field(
@@ -502,6 +506,7 @@ fn encode_instruction(
             destination,
             parameters,
             code,
+            copied,
         } => {
             writer.write_u8(OPCODE_MAKE_CLOSURE);
             writer.write_u16(*destination);
@@ -510,6 +515,7 @@ fn encode_instruction(
                 writer.write_u32(symbols.intern(parameter.as_str()));
             }
             writer.write_u32(ids.id_of(code));
+            encode_registers(writer, copied);
         }
         Instruction::MakeArray {
             destination,
@@ -730,7 +736,11 @@ impl<'gc> GraphTable<'gc> {
                 }
                 ObjectData::Closure(closure) => {
                     stack.push(Pending::Frame(closure.captured_frame));
-                    stack.push(Pending::Frame(closure.home));
+                    // A closure's home is not walked: it is derived from
+                    // the captured frame on both sides of the wire
+                    // (`Heap::closure_home`), so it is never a reference of
+                    // its own.
+                    stack.extend(closure.copied.iter().copied().map(Pending::Value));
                 }
                 // A class object's three references. `metaclass` is not one
                 // of them: it is a lazy cache `Mutator::metaclass_of`
@@ -939,30 +949,32 @@ fn encode_frame_reference<'gc>(
     }
 }
 
-/// `parameters`, `code_id`, `captured_frame` id, `home` id.
+/// `code_id`, `captured_frame` id, then the copied values, counted.
+///
+/// No parameter names: the arity a call is checked against is the body's
+/// own `argument_count`, so there is no second half to disagree with. No
+/// home either: it follows from the captured frame
+/// (`Heap::closure_home`).
 fn encode_closure_record<'gc>(
     writer: &mut Writer,
     closure: &ClosureData<'gc>,
     context: &EncodeContext<'_, 'gc>,
-    symbols: &mut symbols::Builder,
 ) {
     // Destructured, not read field by field: a new `ClosureData` field must
     // say here whether it belongs on the wire, rather than silently being
     // left off it.
     let ClosureData {
-        parameters,
         code,
         captured_frame,
-        home,
+        copied,
         feedback_base: _, // never on the wire; see `decode_closure_record`
     } = closure;
-    writer.write_u16(u16_field("closure parameter count", parameters.len()));
-    for parameter in parameters.iter() {
-        writer.write_u32(symbols.intern(parameter.as_str()));
-    }
     writer.write_u32(context.code_ids.id_of(code));
     writer.write_u32(context.table.frame_id(context.heap, *captured_frame));
-    writer.write_u32(context.table.frame_id(context.heap, *home));
+    writer.write_u16(u16_field("closure copied value count", copied.len()));
+    for value in copied.iter() {
+        encode_value(writer, value, context);
+    }
 }
 
 /// A class object's record: which declaration it applies, and the three
@@ -1063,7 +1075,7 @@ fn encode_object<'gc>(
         }
         ObjectData::Closure(closure) => {
             writer.write_u8(OBJECT_CLOSURE);
-            encode_closure_record(writer, closure, context, symbols);
+            encode_closure_record(writer, closure, context);
         }
         ObjectData::Class(data) => {
             writer.write_u8(OBJECT_CLASS);

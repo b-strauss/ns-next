@@ -71,14 +71,13 @@ impl Trace for ObjectData<'_> {
 impl Trace for ClosureData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let ClosureData {
-            parameters: _,
             code: _,
             captured_frame,
-            home,
+            copied,
             feedback_base: _, // not a handle
         } = self;
         tracer.frame(captured_frame);
-        tracer.frame(home);
+        trace_values(copied, tracer);
     }
 }
 

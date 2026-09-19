@@ -189,23 +189,33 @@ impl BuiltinClass {
     ];
 }
 
-/// A block closure. Its parameter names and compiled body are `Rc`s it
-/// shares with the `MakeClosure` instruction that made it -- the same for
-/// every closure one instruction makes -- and the two frames it captured
-/// are its own. Stored inline in the closure object, never behind an `Rc`
+/// A block closure. Its compiled body is an `Rc` it shares with the
+/// `MakeClosure` instruction that made it -- the same for every closure one
+/// instruction makes -- and the frame it captured is its own. Stored inline
+/// in the closure object, never behind an `Rc`
 /// of its own: a handle lives only where the tracer can rewrite it in place
 /// (`docs/design/memory.md`, "What the collector traces"), so everything
 /// else that needs a closure -- an activation's `FrameKind`, a native
 /// loop's state, a decided `Step` -- names the closure object instead.
+///
+/// 32 bytes in a release build, which is what keeps an `Object` at 56 --
+/// this is `ObjectData`'s largest payload, and `heap.rs`'s
+/// `an_object_is_the_size_the_amplification_figure_assumes` pins the
+/// figure `CLAUDE.md`'s amplification paragraph is computed from.
 #[derive(Debug, Clone)]
 pub struct ClosureData<'gc> {
-    pub parameters: Rc<Vec<Symbol>>,
     pub code: Rc<crate::bytecode::CompiledCode>,
-    /// The activation the closure was created in, reified.
+    /// The activation the closure was created in, reified. A closure keeps
+    /// it whatever it captured: `enclosingActivation` and the debugger's
+    /// "[] in Foo bar" are read off it (`docs/design/execution.md`, "The
+    /// closure keeps its defining activation").
     pub captured_frame: FrameReference<'gc>,
-    /// The lexically enclosing *method* (or initializer) activation, which a
-    /// `^` in the block returns from.
-    pub home: FrameReference<'gc>,
+    /// What the closure was handed when it was created: a copied variable's
+    /// value, or an enclosing body's indirection vector. Its registers are
+    /// `code.argument_count + position`. `Box<[_]>`, not a `Vec`, because
+    /// `ClosureData` is `ObjectData`'s largest payload and an `Object` is
+    /// pinned at 56 bytes in a release build (`heap.rs`).
+    pub copied: Box<[Value<'gc>]>,
     /// The start of its family's range in the heap's cache table, copied from
     /// the activation that created it, since a block belongs to its method's
     /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`

@@ -1,5 +1,5 @@
-//! Register and outer-local access for a running activation, and the two
-//! helpers `MakeClosure` and `InitializeSlot` write through.
+//! Register and outer-local access for a running activation, and the helper
+//! `InitializeSlot` writes through.
 
 use crate::heap::{ActivationReference, Heap};
 use crate::types::*;
@@ -76,20 +76,6 @@ pub(crate) fn write_outer_local<'gc>(
     match frame_at_depth(heap, activation, depth) {
         OuterFrame::Own(own) => heap.activation_set_local(own, index, value),
         OuterFrame::Captured(frame) => heap.frame_set_local(frame, index, value),
-    }
-}
-
-/// The `home` a closure created in `activation` gets: a closure activation
-/// passes its own closure's `home` on; any other activation -- method,
-/// initializer, superclass clause or message -- is its own return target, so it
-/// is reified and is its own home. The VM's `MakeClosure` calls it.
-pub(crate) fn home_of<'gc>(
-    heap: &mut Heap<'gc>,
-    activation: ActivationReference,
-) -> FrameReference<'gc> {
-    match heap.activation_home(activation) {
-        Some(home) => home,
-        None => heap.reify(activation),
     }
 }
 

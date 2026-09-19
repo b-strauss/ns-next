@@ -1287,6 +1287,8 @@ mod tests {
             register_count: 1,
             statement_program_counter: vec![],
             family_size,
+            copied_count: 0,
+            outer_reach: 0,
             source: Span::new(0, 0),
         })
     }

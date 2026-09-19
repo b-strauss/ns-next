@@ -3,9 +3,13 @@
 //! seam.
 
 use indoc::indoc;
-use ns_runtime::types::Value;
+use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction};
+use ns_runtime::interpreter::FeedbackBase;
+use ns_runtime::types::{Continuation, FrameKind, Value};
 use ns_runtime::Interpreter;
-use ns_runtime::{BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol};
+use ns_runtime::{
+    ActivationHeader, BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol,
+};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -362,5 +366,78 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
             mutator.heap().dispatch_id(&Value::Object(class_object)),
             after.class_side
         );
+    });
+}
+
+/// A body that returns its first register; nothing here runs it.
+fn trivial_code() -> std::rc::Rc<CompiledCode> {
+    std::rc::Rc::new(CompiledCode {
+        kind: CodeKind::Method,
+        instructions: vec![Instruction::Return { register: 0 }],
+        argument_count: 1,
+        register_count: 2,
+        statement_program_counter: Vec::new(),
+        family_size: 0,
+        copied_count: 0,
+        outer_reach: 0,
+        source: ns_syntax::Span::new(0, 0),
+    })
+}
+
+fn activation_header<'gc>() -> ActivationHeader<'gc> {
+    ActivationHeader {
+        receiver: Value::Nil,
+        current_class: None,
+        kind: FrameKind::TopLevel,
+        slot_base: 0,
+        feedback_base: FeedbackBase::NOT_ASSIGNED,
+        code: trivial_code(),
+        then: Continuation::Deliver,
+        counted: true,
+    }
+}
+
+#[test]
+fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
+    // A frame reified for a closure that reads nothing by reference needs no
+    // registers once its activation has returned: what the closure captured
+    // it carries itself. One that was marked -- a reference-lowering block,
+    // or an optimized fallback closure -- still keeps them.
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap_mut();
+
+        let unmarked = heap.push_activation(activation_header(), &[Value::SmallInteger(1)], 1);
+        heap.set_activation_program_counter(unmarked, 0);
+        let forgetful = heap.reify(unmarked);
+        heap.activation_set_local(unmarked, 1, Value::SmallInteger(2));
+        heap.pop_activation(unmarked);
+        assert_eq!(
+            heap.frame_register_shape(forgetful),
+            (0, 0, 0),
+            "an unmarked activation leaves its frame no registers"
+        );
+        // A crafted image can pair a by-reference closure with a frame that
+        // has no registers, so a read past the file answers nil rather than
+        // aborting the process.
+        assert!(matches!(heap.frame_local(forgetful, 1), Value::Nil));
+        heap.frame_set_local(forgetful, 1, Value::SmallInteger(9));
+        assert!(matches!(heap.frame_local(forgetful, 1), Value::Nil));
+
+        let marked = heap.push_activation(activation_header(), &[Value::SmallInteger(1)], 1);
+        heap.set_activation_program_counter(marked, 0);
+        let kept = heap.reify(marked);
+        // What `MakeClosure` does for a block whose `outer_reach` is
+        // non-zero.
+        heap.retain_registers(marked);
+        heap.activation_set_local(marked, 1, Value::SmallInteger(2));
+        heap.pop_activation(marked);
+        assert_eq!(
+            heap.frame_register_shape(kept),
+            (0, 1, 1),
+            "a marked activation hands its registers to its frame"
+        );
+        assert!(matches!(heap.frame_local(kept, 0), Value::SmallInteger(1)));
+        assert!(matches!(heap.frame_local(kept, 1), Value::SmallInteger(2)));
     });
 }
