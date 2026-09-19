@@ -111,9 +111,21 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    text -- and none of the six on `corpus/runnable.toml` is among them, so no
    gate sees it. The
    reference lowering is no help either -- the mistake is made in the
-   resolver, above both lowerings, so they agree on the wrong answer. The fix
-   is a real class identity as the key rather than a name, which is why it has
-   not been done in passing.
+   resolver, above both lowerings, so they agree on the wrong answer.
+
+   **Decided (2026-09-19), planned with the other specification gaps: a
+   member set belongs to its declaration.** The name-keyed map goes away.
+   `resolve_class` computes `classes::own_member_names` for the declaration
+   it is entering, keeps it in its own stack frame, and hands the chain down
+   as `&[EnclosingClass]`, each level borrowing the set of *its own*
+   declaration -- no set is copied, and none can be looked up by name, so
+   two same-named classes can no longer meet. The superclass clause resolves
+   against the same chain without the declaration's own level, as now.
+   `EnclosingClass.name` stays for `outer N` alone, where §5.9 does mean a
+   name and the innermost enclosing class of that name is the one.
+   `spec_5_7_a_member_set_is_per_declaration_not_per_name` pins the fix, and
+   a second golden with the empty namesake collected *first* pins that the
+   answer does not depend on collection order.
 
    **Open: the class side's scope.** Both sides of a class declaration
    contribute to one member set. The specification is silent on whether an
@@ -174,6 +186,33 @@ is `self` per §6.3.2. The resolver treats the target of an assignment exactly a
 it would an implicit-receiver keyword send to `id:`: full depth search,
 private-versus-virtual dispatch, everything. It is not a distinct slot-write
 primitive.
+
+The activation chain is searched first, and today a local of the name wins
+whatever it is. **Decided (2026-09-19), planned with the other specification
+gaps: only a local that declares a setter answers `id:`.** §3.6 makes every
+parameter slot immutable, and makes a local slot what its declaration says
+(§6.3.2), so a parameter -- of a method, a block or a class's primary
+factory -- and an immutable local `| x = e. |` declare no setter; a mutable
+local (`| x |`, `| x ::= e. |`) does. `ScopeStack::resolve_setter` walks the
+activations innermost first, passes every declaration without a setter by,
+and answers the first that has one; when none does, the class chain's depth
+search for `id:` runs as it does now, and when nothing declares it either the
+send is `self id:`, so the program sees `doesNotUnderstand:` at run time --
+the answer `spec_3_6_a_parameter_slot_is_immutable` records. The canonical
+compiler does exactly this: its scopes are keyed by selector, a parameter
+enters only its getter and a temporary its setter only when mutable, and
+`setterSendNode:` searches the scope chain outward for the setter
+(`prior-art/newspeak/NewspeakCompilation.ns`, `codeBodyNode:` and
+`setterSendNode:`; Primordial Soup's copy is the same). SOMns instead rejects
+an assignment to an argument at compile time, checking every enclosing
+activation before any local -- which its own `TODO` in
+`MethodBuilder.getSetterSend` doubts -- and writes an immutable local
+freely; neither is §5.4.3's send.
+
+One consequence reads oddly and follows from §5.7 all the same: a block
+parameter `v` shadowing a mutable temporary `v` of its method leaves `v:: e`
+in the block writing the *method's* `v`, the innermost declaration of `v:`,
+while `v` in the block still reads the parameter. A golden pins it.
 
 ### Shapes the resolver must recognize
 
@@ -1129,6 +1168,12 @@ dispatches on one.
   observable.
 - **Only declared members are lexically visible** (§5.7, §2.3.1). Counting
   inherited ones is the "comb" semantics Newspeak was designed against.
+- **Decided by the user (2026-09-19), planned with the other specification
+  gaps:** a member set belongs to its declaration, not to a name ("Defect: a
+  member set is keyed by the class's simple name" above); and a setter send
+  passes by every local that declares no setter -- parameters and immutable
+  locals -- as the canonical compiler does, rather than refusing at compile
+  time as SOMns does ("Setter sends" above).
 - **A slot's accessors are methods** (§6.3.2), in the method table, answered
   without an activation.
 - **`doesNotUnderstand:` bypasses access control**, because `Object`'s own
