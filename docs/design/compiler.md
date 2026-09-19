@@ -108,6 +108,14 @@ A method body, a block body and an instance initializer all compile to the same
 shape; `kind` tags which. An activation of it is pushed with
 `register_count - argument_count` temporaries.
 
+A method's or a block's own statements are its local slot initializers first,
+one per declared local that has one, each `initializer_expression; StoreLocal`
+into the slot's own register, in declaration order (§3.6), then its
+`CodeBody.statements` -- the same order an instance initializer's own slot
+initializers precede its `initExprs` ("One body per mixin" below). A local
+with no initializer is skipped: its register keeps the **nil** every register
+starts with.
+
 A compiled body lives on the declaration it belongs to. A method's is on its
 `MixinMethod` (`code`); a mixin's instance initializer and its superclass clause's
 two bodies are on the `Mixin` (`initializer_code`, `superclass_clause_code`,

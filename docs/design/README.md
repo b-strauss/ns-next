@@ -124,8 +124,9 @@ goes through the snapshot and the build/load round trip, which hold an image's
 and a binary's three streams against what `run` answers on the source.
 
 A fourth key, `skipped`, carries why the runtime does not answer this one
-yet -- `skipped = "not implemented yet: §3.6 requires a local slot's
-initializer to run"`. The sweeps pass it over and count it; everything
+yet -- `skipped = "not implemented yet: simultaneous slot clauses initialize
+sequentially, so second is nil when first is computed"`. The sweeps pass it
+over and count it; everything
 else about it still holds, including the pairing check, so a `skipped`
 cannot switch a half-written golden past discovery. The other three keys
 still record what the program *should* answer, which is the point: a gap
@@ -198,15 +199,14 @@ Places where the implementation differs from
 rather than an oversight -- and, where a row says so, to keep a defect nobody
 has had time to fix from being a surprise.
 
-Most rows only under-reject or narrow what can be expressed. Five do worse:
-the dropped local-slot initializer, the sequential simultaneous slot
-clauses, the eager lazy slot, the binary float behind a non-integral
-literal and the synchronous asynchronous send each answer a **correct**
-program **wrongly, at exit status 0**. Two more
+Most rows only under-reject or narrow what can be expressed. Four do worse:
+the sequential simultaneous slot clauses, the eager lazy slot, the binary
+float behind a non-integral literal and the synchronous asynchronous send
+each answer a **correct** program **wrongly, at exit status 0**. Two more
 behave that way without being rows here, because they are rules not
 implemented yet rather than decisions to differ -- equal symbols are not
 one object, and a parameter slot accepts a setter send; the closing
-paragraph below names them. Read all seven before trusting a program's
+paragraph below names them. Read all six before trusting a program's
 output.
 
 | Deviation | Spec | Where it is explained |
@@ -218,7 +218,6 @@ output.
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
-| A local slot's initializer is dropped: `\| x = expression. \|` in a method or block body declares the slot but leaves it **nil** | §3.6, §6.3.2 | [frontend.md](frontend.md) |
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
 | Mixin application `Base <: Trait` does not parse | §6.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
@@ -227,9 +226,9 @@ output.
 | `doesNotUnderstand:`'s argument is a two-element tuple of the selector and the arguments, not an object obeying `MessageMirror`'s protocol | §3.4 | [dispatch.md](dispatch.md) |
 | A `doesNotUnderstand:` declared on a class side is never invoked: the handler walk starts at the class object's own class, the bootstrap `Object` placeholder, not at its metaclass | §5.5 | [dispatch.md](dispatch.md) |
 
-Four of these have a golden under `goldens/spec/`, recorded as `skipped`:
-the dropped local-slot initializer, the sequential simultaneous slot
-clauses, the eager lazy slot and the unparsed mixin application. Each
+Three of these have a golden under `goldens/spec/`, recorded as `skipped`:
+the sequential simultaneous slot clauses, the eager lazy slot and the
+unparsed mixin application. Each
 states what the specification requires the program
 to answer, so closing the gap is deleting the `skipped` line, and the
 expectation written the day the gap was found is what then has to hold. The

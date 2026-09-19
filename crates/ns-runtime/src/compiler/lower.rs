@@ -164,6 +164,31 @@ impl<'a> Lowerer<'a> {
         self.statement_index += 1;
     }
 
+    /// Each local slot with an initializer, in declaration order, as one
+    /// statement: its expression, then a `StoreLocal` into the slot's own
+    /// register, which follows the parameters (§3.6). These are the body's
+    /// first statements, so an activation's statement indices run through
+    /// its local initializers before its statements, the way an instance
+    /// initializer's run through its slot initializers before its
+    /// `initExprs`. They leave `last_expression_register` alone: a body's
+    /// value is its last *statement's*, and a body with none answers nil.
+    pub(crate) fn lower_local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
+        for (position, temporary) in temporaries.iter().enumerate() {
+            let Some(initializer) = &temporary.initializer else {
+                continue;
+            };
+            self.next_scratch = self.base;
+            let start = self.instructions.len();
+            let source = self.lower_expression_for(initializer, ValueUse::Read);
+            let slot = self.argument_count + position as u16;
+            self.emit(Instruction::StoreLocal { source, slot });
+            let end = self.instructions.len();
+            self.statement_program_counter
+                .push((self.statement_index, start..end));
+            self.statement_index += 1;
+        }
+    }
+
     /// Lowers a statement without touching the allocator or the PC table --
     /// shared by `lower_statement` and `lower_inline_block_body`. `use_` is
     /// what reads an expression statement's value; a `^` that returns reads
@@ -294,6 +319,7 @@ impl<'a> Lowerer<'a> {
             self.scopes.clone(),
             self.next_call_site,
         );
+        inner.lower_local_initializers(&block.body.temporaries);
         inner.lower_body(&block.body.statements);
         // The block's sends share the enclosing family's one counter, so the
         // root and every nested block number densely across the whole
@@ -1807,6 +1833,7 @@ mod tests {
     fn lower_whole_method(source: &str, index: usize) -> CompiledCode {
         let (method, bindings) = resolve_method(source, index);
         let mut lowerer = method_lowerer(&method, &bindings);
+        lowerer.lower_local_initializers(&method.body.temporaries);
         lowerer.lower_body(&method.body.statements);
         lowerer.finish(method.span)
     }

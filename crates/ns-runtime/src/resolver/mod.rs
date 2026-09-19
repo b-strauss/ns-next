@@ -159,14 +159,30 @@ impl Resolver {
             .body
             .temporaries
             .iter()
-            .map(|temporary| Symbol::intern(&temporary.name))
+            .map(|temporary| Symbol::intern(&temporary.name.name))
             .collect();
         let mut all = parameter_names;
         all.extend(temporary_names);
         let mut scope = ScopeStack::new();
         scope.push(LocalScope::new(&all));
+        self.resolve_local_initializers(&method.body.temporaries, &mut scope, class_chain);
         for statement in &method.body.statements {
             self.resolve_statement(statement, &mut scope, class_chain);
+        }
+    }
+
+    /// A local slot's initializer runs in the activation it belongs to
+    /// (§3.6), so it resolves in the scope its body's statements do.
+    fn resolve_local_initializers(
+        &mut self,
+        temporaries: &[ast::SlotDeclaration],
+        scope: &mut ScopeStack,
+        chain: &[EnclosingClass],
+    ) {
+        for temporary in temporaries {
+            if let Some(initializer) = &temporary.initializer {
+                self.resolve_expression(initializer, scope, chain);
+            }
         }
     }
 
@@ -214,11 +230,12 @@ impl Resolver {
                     .body
                     .temporaries
                     .iter()
-                    .map(|temporary| Symbol::intern(&temporary.name))
+                    .map(|temporary| Symbol::intern(&temporary.name.name))
                     .collect();
                 let mut names = parameter_names;
                 names.extend(temporary_names);
                 scope.push(LocalScope::new(&names));
+                self.resolve_local_initializers(&block.body.temporaries, scope, chain);
                 for statement in &block.body.statements {
                     self.resolve_statement(statement, scope, chain);
                 }

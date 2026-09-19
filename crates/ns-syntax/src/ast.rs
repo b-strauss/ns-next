@@ -96,7 +96,7 @@ pub enum MessagePattern {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeBody {
-    pub temporaries: Vec<Identifier>,
+    pub temporaries: Vec<SlotDeclaration>,
     pub statements: Vec<Statement>,
     pub span: Span,
 }

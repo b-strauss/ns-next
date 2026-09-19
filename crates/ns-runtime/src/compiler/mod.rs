@@ -70,6 +70,7 @@ pub fn compile_method(
         vec![],
         0,
     );
+    lowerer.lower_local_initializers(&method.body.temporaries);
     lowerer.lower_body(&method.body.statements);
     lowerer.finish(method.span)
 }
