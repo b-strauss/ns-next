@@ -139,6 +139,7 @@ since the harness keeps a passing test quiet.
 |---|---|
 | `bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
 | `cache/` | an outcome an inline cache could change, each added before any cache existed |
+| `capture/` | what a block captures: copied variables, indirection vectors, the fallback closures of an inlined conditional |
 | `class-side/` | class sides: an implicit one, `outer` from one, class-side `super` |
 | `errors/` | a program that raises, where the error text and the exit status are the point |
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |

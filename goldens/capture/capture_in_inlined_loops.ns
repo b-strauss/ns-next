@@ -1,0 +1,61 @@
+Newspeak3
+'Test'
+(* The compiler inlines whileTrue: and whileFalse:, and an inlined block
+   takes no temporaries, so every variable such a loop writes is its
+   method's. A block created in one iteration is written by the next, so
+   these variables are shared however early in the loop body the write
+   stands -- textual order alone would answer the value of the iteration
+   that created each block.
+
+   loopBody: x is written at the top of the body and the block created
+   below it; all three blocks answer the last value written, 2.
+   loopCondition and loopConditionWhileFalse: the write is in the
+   condition, which runs once more than the body, so all three blocks
+   answer 3. writtenBeforeTheLoop: the write is outside the loop and
+   before the capture, the case a copy is right for. readOnlyInABranch:
+   an inlined ifTrue: block is not a block at run time, so reading x
+   there captures nothing. *)
+class CaptureInInlinedLoops usingPlatform: platform = Object new (
+	| transcript = platform transcript. |
+) (
+	loopBody = (
+		| index ::= 0. x ::= 0. blocks ::= nil. |
+		blocks:: OrderedCollection new.
+		[index < 3] whileTrue: [x:: index. blocks add: [x]. index:: index + 1].
+		^blocks
+	)
+	loopCondition = (
+		| index ::= 0. x ::= 0. blocks ::= nil. |
+		blocks:: OrderedCollection new.
+		[x:: index. index < 3] whileTrue: [blocks add: [x]. index:: index + 1].
+		^blocks
+	)
+	loopConditionWhileFalse = (
+		| index ::= 0. x ::= 0. blocks ::= nil. |
+		blocks:: OrderedCollection new.
+		[x:: index. index >= 3] whileFalse: [blocks add: [x]. index:: index + 1].
+		^blocks
+	)
+	writtenBeforeTheLoop = (
+		| x ::= 0. blocks ::= nil. |
+		blocks:: OrderedCollection new.
+		x:: 41.
+		blocks add: [x + 1].
+		^blocks
+	)
+	readOnlyInABranch = (
+		| x ::= 4. |
+		^true ifTrue: [x + 1] ifFalse: [0]
+	)
+	show: blocks = (
+		blocks do: [:each | transcript show: each value printString; show: ' '].
+		transcript newLine
+	)
+	public main: platform args: arguments = (
+		self show: self loopBody.
+		self show: self loopCondition.
+		self show: self loopConditionWhileFalse.
+		self show: self writtenBeforeTheLoop.
+		transcript show: self readOnlyInABranch printString; newLine
+	)
+) : ()
