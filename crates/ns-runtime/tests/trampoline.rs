@@ -97,7 +97,7 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
         ) (
             public find = ( self each: [:e | e = 3 ifTrue: [^e * 10]]. ^0 )
             each: blk = ( self to: 5 do: blk )
-            to: hi do: blk = ( | i | i := 1. [i <= hi] whileTrue: [blk value: i. i := i + 1] )
+            to: hi do: blk = ( | i | i:: 1. [i <= hi] whileTrue: [blk value: i. i:: i + 1] )
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
@@ -205,10 +205,10 @@ const THROUGH_NATIVES: &str = indoc! {"
     'T'
     class N = Object new (
     ) (
-        public viaValue: n = ( | b | b := [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )
-        public viaIf: n = ( | t f | t := [0]. f := [viaIf: n - 1]. ^n = 0 ifTrue: t ifFalse: f )
-        public viaOr: n = ( | rest | rest := [(viaOr: n - 1) = 0]. ^(n = 0 or: rest) ifTrue: [0] ifFalse: [1] )
-        public viaWhile: n = ( | c b | c := [n > 0]. b := [^viaWhile: n - 1]. c whileTrue: b. ^0 )
+        public viaValue: n = ( | b | b:: [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )
+        public viaIf: n = ( | t f | t:: [0]. f:: [viaIf: n - 1]. ^n = 0 ifTrue: t ifFalse: f )
+        public viaOr: n = ( | rest | rest:: [(viaOr: n - 1) = 0]. ^(n = 0 or: rest) ifTrue: [0] ifFalse: [1] )
+        public viaWhile: n = ( | c b | c:: [n > 0]. b:: [^viaWhile: n - 1]. c whileTrue: b. ^0 )
     ) : ()
 "};
 
@@ -357,8 +357,8 @@ fn code_table_of(bytes: &[u8]) -> Vec<Rc<ns_runtime::bytecode::CompiledCode>> {
 #[test]
 fn a_crafted_send_inlinable_cannot_recurse_uncounted() {
     for (block, sender_reified) in [
-        ("[n := n + 1. n < 200000 ifTrue: b]", false),
-        ("[[0]. n := n + 1. n < 200000 ifTrue: b]", true),
+        ("[n:: n + 1. n < 200000 ifTrue: b]", false),
+        ("[[0]. n:: n + 1. n < 200000 ifTrue: b]", true),
     ] {
         crafted_recursion_is_counted(block, sender_reified);
     }
@@ -373,7 +373,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
         'T'
         class Crafted = Object new (
         ) (
-            public main = ( | b n | n := 0. b := {block}. ^b value )
+            public main = ( | b n | n:: 0. b:: {block}. ^b value )
         ) : ()
     "};
     // `n < 200000 ifTrue: b` is not a literal-block send, so even the
@@ -472,7 +472,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
         ) (
             public below: k = ( ^[n < k] )
             public atLeast: k = ( ^[n >= k] )
-            public step = ( ^[n := n + 1] )
+            public step = ( ^[n:: n + 1] )
             public count = ( ^n )
             public constant: v = ( ^[v] )
         ) : ()
@@ -700,8 +700,8 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
             public class Inner = self pick (
             ) (
             ) : ()
-            pick = ( armed ifTrue: [armed := false. escape value: 7]. ^Object )
-            public probe = ( escape := [:v | ^v]. ^Inner )
+            pick = ( armed ifTrue: [armed:: false. escape value: 7]. ^Object )
+            public probe = ( escape:: [:v | ^v]. ^Inner )
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
@@ -766,7 +766,7 @@ fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
             ) (
                 public v = ( ^vValue )
             ) : ()
-            public make = ( | c | c := Cell new. ^c u * 10 + c v )
+            public make = ( | c | c:: Cell new. ^c u * 10 + c v )
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {

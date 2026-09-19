@@ -16,7 +16,7 @@ class CacheSlotsUnderTwoApplications usingPlatform: thePlatform = Object new (| 
 	)
 	public main: platform args: args = (
 		| cells |
-		cells := {(Box on: Narrow) Cell new. (Box on: Wide) Cell new. (Box on: Narrow) Cell new}.
+		cells:: {(Box on: Narrow) Cell new. (Box on: Wide) Cell new. (Box on: Narrow) Cell new}.
 		cells do: [:each | transcript show: each held; show: ' | '; show: each describe; newLine].
 		cells do: [:each | each held: 'set ', each describe].
 		cells do: [:each | transcript show: each both; show: ' | '; show: each touch; newLine].

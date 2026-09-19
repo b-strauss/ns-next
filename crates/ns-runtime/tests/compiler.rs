@@ -108,7 +108,7 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
         'T'
         class Foo x: a = Object new (
           | p = a. q ::= 5. |
-          q := p.
+          q:: p.
         ) (
         ) : ()
     "};
@@ -141,7 +141,7 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
                 source: 1,
                 own_index: 1
             },
-            // `q := p.` -- slot reads/writes are lexical sends.
+            // `q:: p.` -- slot reads/writes are lexical sends.
             Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("p"),

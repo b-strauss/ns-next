@@ -8,13 +8,13 @@ class CalleeClobber usingPlatform: platform = Object new (
 ) (
     first: x second: y = ( ^x )
     hook: v = ( c value. ^v )
-    setterValue = ( | t | t := 1. c := [t := 9]. ^self first: (hook := t) second: 1 )
-    argThroughASend = ( | t | t := 1. c := [t := 9]. ^self first: t second: (self hook: 0) )
+    setterValue = ( | t | t:: 1. c:: [t:: 9]. ^self first: (hook:: t) second: 1 )
+    argThroughASend = ( | t | t:: 1. c:: [t:: 9]. ^self first: t second: (self hook: 0) )
     cascadeReceiver = (
         | t orig |
-        orig := OrderedCollection new.
-        t := orig.
-        c := [t := OrderedCollection new].
+        orig:: OrderedCollection new.
+        t:: orig.
+        c:: [t:: OrderedCollection new].
         t add: 1; add: (self hook: 2).
         ^orig size
     )

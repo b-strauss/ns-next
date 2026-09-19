@@ -415,7 +415,7 @@ impl<'a> Lowerer<'a> {
     /// it on as its value: the setter send runs user code, which can write
     /// that local through a closure that captured this frame, and it runs
     /// before any consumer reads the value -- even a consumer that is the
-    /// very next instruction (`^x := y`, with a setter that assigns `y`).
+    /// very next instruction (`^x:: y`, with a setter that assigns `y`).
     /// Only when nothing reads the value at all is the copy pure overhead.
     ///
     /// Every position that knows its use routes through here and states it:
@@ -586,7 +586,7 @@ impl<'a> Lowerer<'a> {
         // own value, so a named local's register may no longer hold what was
         // assigned by then. (The `StoreLocal`/`StoreOuterLocal` cases below
         // need no copy: the only named local a `StoreLocal` can write while
-        // `value_register` is live is `value_register` itself -- `t := t` --
+        // `value_register` is live is `value_register` itself -- `t:: t` --
         // which leaves it unchanged, and a `StoreOuterLocal` writes a different
         // frame.)
         if use_ == ValueUse::Read
@@ -1258,7 +1258,7 @@ mod tests {
                 class X = Object new (
                 ) (
                   foo: x bar: y = ( ^x )
-                  m = ( | t | t := 1. ^self foo: t bar: (t := 9) )
+                  m = ( | t | t:: 1. ^self foo: t bar: (t:: 9) )
                 ) : ()
             "},
             1,
@@ -1443,13 +1443,13 @@ mod tests {
                 'T'
                 class X = Object new (
                 ) (
-                  foo = ( | t | t := 7. ^t )
+                  foo = ( | t | t:: 7. ^t )
                 ) : ()
             "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings); // temporary `t` is register 0, base 1
-        lowerer.lower_statement(&method.body.statements[0], ValueUse::Discarded); // `t := 7.`
+        lowerer.lower_statement(&method.body.statements[0], ValueUse::Discarded); // `t:: 7.`
         let code = lowerer.finish(method.span);
         assert_eq!(
             code.instructions,
@@ -1473,7 +1473,7 @@ mod tests {
                 'T'
                 class X = Object new (
                 ) (
-                  foo = ( | t | t := 1. t := 2. ^t )
+                  foo = ( | t | t:: 1. t:: 2. ^t )
                 ) : ()
             "},
             0,
@@ -1662,7 +1662,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              bump = ( n := n + 1 )
+              bump = ( n:: n + 1 )
             ) : ()
         "};
         let (bump, bindings) = resolve_method(source, 0);
@@ -1709,7 +1709,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( | t | t := 1. n := t )
+              m = ( | t | t:: 1. n:: t )
             ) : ()
         "};
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
@@ -1736,7 +1736,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( | t | t := 1. ^n := t )
+              m = ( | t | t:: 1. ^n:: t )
             ) : ()
         "};
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
@@ -1771,7 +1771,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              foo = ( | p | ^n := p )
+              foo = ( | p | ^n:: p )
             ) : ()
         "};
         let (method, bindings) = resolve_method(source, 0);
@@ -1826,7 +1826,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              foo: p = ( ^n := p )
+              foo: p = ( ^n:: p )
             ) : ()
         "};
         let (method, bindings) = resolve_method(source, 0);
@@ -1871,7 +1871,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( ^[ | t | n := t. n := t] )
+              m = ( ^[ | t | n:: t. n:: t] )
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
@@ -1908,7 +1908,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( ^[:t | n := t. n := t] )
+              m = ( ^[:t | n:: t. n:: t] )
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
@@ -1940,10 +1940,10 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              discarded: c = ( | t | c ifTrue: [n := t] ifFalse: [n := t]. c and: [n := t] )
-              returned: c = ( | t | ^c ifTrue: [n := t] ifFalse: [n := t] )
-              returnedAnd: c = ( | t | ^c and: [n := t] )
-              loop = ( | t | [n := t] whileTrue: [n := t] )
+              discarded: c = ( | t | c ifTrue: [n:: t] ifFalse: [n:: t]. c and: [n:: t] )
+              returned: c = ( | t | ^c ifTrue: [n:: t] ifFalse: [n:: t] )
+              returnedAnd: c = ( | t | ^c and: [n:: t] )
+              loop = ( | t | [n:: t] whileTrue: [n:: t] )
             ) : ()
         "};
         // `c` is register 0 and `t` register 1; `loop`'s `t` is register 0.
@@ -1998,7 +1998,7 @@ mod tests {
             'T'
             class X = Object new (
             ) (
-              foo = ( | c | c := OrderedCollection new. c add: 1; add: 2 )
+              foo = ( | c | c:: OrderedCollection new. c add: 1; add: 2 )
             ) : ()
         "};
         let (foo, bindings) = resolve_method(source, 0);
@@ -2201,7 +2201,7 @@ mod tests {
                 'T'
                 class X = Object new (
                 ) (
-                  foo: x = ( | t | ^[ t := x ] )
+                  foo: x = ( | t | ^[ t:: x ] )
                 ) : ()
             "},
             0,
@@ -2523,7 +2523,7 @@ mod tests {
 
     #[test]
     fn a_block_with_temporaries_is_not_inlined() {
-        let code = compile_foo("x ifTrue: [ | t | t := 1. t ] ifFalse: [2]");
+        let code = compile_foo("x ifTrue: [ | t | t:: 1. t ] ifFalse: [2]");
         assert!(!has(&code, |instruction| matches!(
             instruction,
             Instruction::JumpIfNotBoolean { .. }

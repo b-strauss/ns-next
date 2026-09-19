@@ -9,12 +9,12 @@ class CachePolymorphicSites usingPlatform: thePlatform = Object new (| transcrip
 	class Six = Object new () ( public value = ( ^6 ) )
 	public main: platform args: args = (
 		| sum all round |
-		sum := 0.
-		round := 0.
-		all := {One new. Two new. Three new. Four new. Five new. Six new. [7]}.
+		sum:: 0.
+		round:: 0.
+		all:: {One new. Two new. Three new. Four new. Five new. Six new. [7]}.
 		[round < 3] whileTrue: [
-			all do: [:each | sum := sum + each value].
-			round := round + 1].
+			all do: [:each | sum:: sum + each value].
+			round:: round + 1].
 		transcript show: sum printString; newLine.
 		{true. false. true. 3 < 4. 4 < 3} do: [:each | transcript show: each not printString; show: ' '].
 		transcript newLine.

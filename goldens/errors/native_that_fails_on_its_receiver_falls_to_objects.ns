@@ -19,7 +19,7 @@ class Sub usingPlatform: platform = Object new (
     )
     public main: p args: a = (
         | t |
-        t := Text new.
+        t:: Text new.
         p transcript show: (t = t) printString; newLine.
         p transcript show: t printString; newLine.
         p transcript show: t viaSelf; newLine.

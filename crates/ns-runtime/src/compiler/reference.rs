@@ -851,7 +851,7 @@ mod tests {
     #[test]
     fn while_true_is_a_real_send_whose_blocks_reach_the_method_through_their_frames() {
         let code = compile(
-            &method("foo = ( | n | n := 0. [n < 3] whileTrue: [n := n + 1]. ^n )"),
+            &method("foo = ( | n | n:: 0. [n < 3] whileTrue: [n:: n + 1]. ^n )"),
             0,
         );
         assert!(no_branch(&code));
@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn an_assignments_value_is_its_fresh_register_never_the_local() {
-        let code = compile(&method("foo = ( | t | ^t := 3 )"), 0);
+        let code = compile(&method("foo = ( | t | ^t:: 3 )"), 0);
         assert_eq!(
             code.instructions,
             vec![

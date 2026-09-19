@@ -8,8 +8,8 @@ class NestedIdentity usingPlatform: p = Object new (| t ::= p transcript. |) (
     )
     public main: platform args: args = (
         | a b |
-        a := Holder new.
-        b := Holder new.
+        a:: Holder new.
+        b:: Holder new.
         t show: ((a Inner == b Inner) not) printString; newLine.
         t show: (a Inner == a Inner) printString; newLine.
         t show: a Inner new value printString; newLine.

@@ -6,8 +6,8 @@ class AndVar usingPlatform: platform = Object new (
 ) (
     public main: p args: a = (
         | three yes |
-        three := [3].
-        yes := [true].
+        three:: [3].
+        yes:: [true].
         p transcript show: (true and: three) printString; newLine.
         p transcript show: (true and: yes) printString; newLine.
         p transcript show: (false or: three) printString; newLine

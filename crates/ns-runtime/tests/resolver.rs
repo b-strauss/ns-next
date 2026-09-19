@@ -93,7 +93,7 @@ fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
         'T'
         class Foo = Object new (
         ) (
-          bar = ( | c | c := OrderedCollection new. ^c )
+          bar = ( | c | c:: OrderedCollection new. ^c )
         ) : ()
     "};
     let module = ns_syntax::parse(source).expect("parse");
@@ -108,7 +108,7 @@ fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
     let ns_syntax::ast::Statement::Expression(ns_syntax::ast::Expression::Assign { value, .. }) =
         &method.body.statements[0]
     else {
-        panic!("expected the method's first statement to be `c := OrderedCollection new.`");
+        panic!("expected the method's first statement to be `c:: OrderedCollection new.`");
     };
     let ns_syntax::ast::Expression::Send(send) = value.as_ref() else {
         panic!("expected the assignment's value to be a `Send` (`OrderedCollection new`)");

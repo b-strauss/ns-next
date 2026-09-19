@@ -58,14 +58,14 @@ const EVERY_CONTINUATION: &str = indoc! {"
       base = ( ^Object )
       public run = (
         | sum n cond body |
-        sum := 0.
-        #(1 2 3 4) do: [:e | sum := sum + e].
-        n := 0.
-        cond := [n < 3].
-        body := [n := n + 1. sum := sum + n].
+        sum:: 0.
+        #(1 2 3 4) do: [:e | sum:: sum + e].
+        n:: 0.
+        cond:: [n < 3].
+        body:: [n:: n + 1. sum:: sum + n].
         cond whileTrue: body.
-        sum := sum + Cell new u + Cell new v.
-        sum := sum + Late new w.
+        sum:: sum + Cell new u + Cell new v.
+        sum:: sum + Late new w.
         ^sum
       )
     ) : ()

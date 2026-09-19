@@ -6,15 +6,15 @@ class InlinedReturn usingPlatform: platform = Object new (
 ) (
     count: limit = (
         | i |
-        i := 0.
+        i:: 0.
         [true] whileTrue: [
-            i := i + 1.
+            i:: i + 1.
             i > limit ifTrue: [^i]].
         ^0
     )
     capture: x = (
         | c |
-        x > 0 ifTrue: [c := [x * 2]] ifFalse: [c := [x]].
+        x > 0 ifTrue: [c:: [x * 2]] ifFalse: [c:: [x]].
         ^c value
     )
     public main: p args: a = (

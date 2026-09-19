@@ -372,10 +372,10 @@ const RICH: &str = indoc! {"
     'T'
     class Rich x: a = Object new (
       | p = a. q ::= 0. |
-      q := p.
+      q:: p.
     ) (
       find: t in: c = ( c do: [:e | e = t ifTrue: [^e]]. ^nil )
-      loop = ( | n | n := 0. [n < 3] whileTrue: [n := n + 1]. ^n )
+      loop = ( | n | n:: 0. [n < 3] whileTrue: [n:: n + 1]. ^n )
       arr = ( ^{ 1. #(2 3). 'four' } )
     ) : ()
 "};
@@ -1202,7 +1202,7 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
         match creates {
             Some(block) => {
                 writer.write_u32(2); // two instructions ...
-                writer.write_u8(OPCODE_MAKE_CLOSURE); // ... r0 := the next block in,
+                writer.write_u8(OPCODE_MAKE_CLOSURE); // ... r0 <- the next block in,
                 writer.write_u16(0);
                 writer.write_u16(0); // taking no parameters,
                 writer.write_u32(u32::try_from(block).expect("a test-sized code id"));
@@ -2939,7 +2939,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         class Counter = Object new (
           | n ::= 0. |
         ) (
-          public bump = ( n := n + 1. ^n )
+          public bump = ( n:: n + 1. ^n )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -4025,7 +4025,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         class X = Object new (
           | held ::= nil. |
         ) (
-          public keep = ( | t | t := 7. held := [ t ]. ^held )
+          public keep = ( | t | t:: 7. held:: [ t ]. ^held )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -4081,7 +4081,7 @@ fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
         class X = Object new (
           | storedSymbol ::= nil. |
         ) (
-          public keep = ( storedSymbol := #foo. ^storedSymbol )
+          public keep = ( storedSymbol:: #foo. ^storedSymbol )
           public held = ( ^storedSymbol )
         ) : ()
     "};
@@ -4137,7 +4137,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         class X = Object new (
           | held ::= nil. |
         ) (
-          public keep = ( held := [:x | [ x ] ] value: 5. ^held )
+          public keep = ( held:: [:x | [ x ] ] value: 5. ^held )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -6738,7 +6738,7 @@ const LEAK_PROBE_MODULE: &str = indoc! {"
     (* commentaryAboutTheFrobulator explains nothing at all *)
     class Probe usingPlatform: aPlatformSlotName = Object new (
         | mnemosyneSlot ::= 3 + 4 * 5. |
-        mnemosyneSlot := mnemosyneSlot + 111.
+        mnemosyneSlot:: mnemosyneSlot + 111.
     ) (
         public quixoticAccumulator = ( ^mnemosyneSlot + 1 - 1 )
         public verbatimSentinel: aParameterName = ( ^aParameterName )
@@ -6839,7 +6839,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
 /// `doubled` -- enough that a `HashMap`'s iteration order has real room to
 /// vary, which is what makes the determinism test below able to fail), and a
 /// slot with an initializer -- both the slot's own initial value (`count ::=
-/// 0`) and a statement in the initializer body (`count := count + 1`), which
+/// 0`) and a statement in the initializer body (`count:: count + 1`), which
 /// is what gives the code table a `CodeKind::Initializer` entry to cover.
 ///
 /// Left out on purpose: a superclass clause or message, multiple levels of
@@ -6852,11 +6852,11 @@ const GOLDEN_SOURCE: &str = indoc! {"
     'Golden'
     class Golden usingPlatform: p = Object new (
         | count ::= 0. |
-        count := count + 1.
+        count:: count + 1.
     ) (
-        public increment = ( count := count + 1. ^count )
+        public increment = ( count:: count + 1. ^count )
         public current = ( ^count )
-        public reset = ( count := 0. ^self )
+        public reset = ( count:: 0. ^self )
         public doubled = ( ^count * 2 )
         public class Inner withSeed: s = Object new (| held = s. |) (
             public seed = ( ^held )
@@ -7424,7 +7424,7 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
         class Keeper = Object new (
             | keep ::= nil. |
         ) (
-            public prepare = ( keep := [:each | each + 1]. ^self )
+            public prepare = ( keep:: [:each | each + 1]. ^self )
             public apply: value = ( ^keep value: value )
         ) : ()
     "};
@@ -7539,7 +7539,7 @@ fn a_decoded_metaclass_is_rebuilt_with_no_superclass_application() {
           ) : (
             public makeBlock = ( ^[ 'from the class side' ] )
           )
-          public keep = ( held := Widget makeBlock. ^held )
+          public keep = ( held:: Widget makeBlock. ^held )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

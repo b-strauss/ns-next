@@ -18,7 +18,7 @@ class CacheClassObjectsAndInstancesAtOneSite usingPlatform: thePlatform = Object
 	)
 	public main: platform args: args = (
 		| receivers |
-		receivers := {Maker. Plain. Custom new. Maker. Plain. Custom new}.
+		receivers:: {Maker. Plain. Custom new. Maker. Plain. Custom new}.
 		receivers do: [:each | transcript show: each make describe; newLine].
 		{Plain. Custom. Custom new. Maker. Plain new. Plain. Custom}
 			do: [:each | transcript show: each printString; newLine].

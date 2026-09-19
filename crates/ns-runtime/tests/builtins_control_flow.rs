@@ -72,7 +72,7 @@ fn module(body: &str) -> String {
 #[test]
 fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
     let (mut interpreter, result) = run_method(
-        &module("| n c b | n := 0. c := [n < 3]. b := [n := n + 1]. c whileTrue: b. ^n"),
+        &module("| n c b | n:: 0. c:: [n < 3]. b:: [n:: n + 1]. c whileTrue: b. ^n"),
         "run",
     );
     let value = expect_ok(result, "run");
@@ -81,7 +81,7 @@ fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
         3
     );
     let (mut interpreter, result) =
-        run_method(&module("| c | c := [false]. ^c whileTrue: [nil]"), "run");
+        run_method(&module("| c | c:: [false]. ^c whileTrue: [nil]"), "run");
     let value = expect_ok(result, "run");
     assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Nil)));
 }
@@ -89,7 +89,7 @@ fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
 #[test]
 fn while_false_loops_until_the_condition_is_true() {
     let (mut interpreter, result) = run_method(
-        &module("| n c | n := 0. c := [n = 3]. c whileFalse: [n := n + 1]. ^n"),
+        &module("| n c | n:: 0. c:: [n = 3]. c whileFalse: [n:: n + 1]. ^n"),
         "run",
     );
     let value = expect_ok(result, "run");
@@ -101,7 +101,7 @@ fn while_false_loops_until_the_condition_is_true() {
 
 #[test]
 fn a_non_boolean_condition_sends_must_be_boolean() {
-    let (_interpreter, result) = run_method(&module("| c | c := [3]. ^c whileTrue: [nil]"), "run");
+    let (_interpreter, result) = run_method(&module("| c | c:: [3]. ^c whileTrue: [nil]"), "run");
     match result {
         Err(HostSignal::Error(error)) => {
             assert!(
@@ -117,7 +117,7 @@ fn a_non_boolean_condition_sends_must_be_boolean() {
 #[test]
 fn a_non_local_return_escapes_a_while_loop() {
     let (mut interpreter, result) = run_method(
-        &module("| n c | n := 0. c := [true]. c whileTrue: [n := n + 1. n = 5 ifTrue: [^n]]"),
+        &module("| n c | n:: 0. c:: [true]. c whileTrue: [n:: n + 1. n = 5 ifTrue: [^n]]"),
         "run",
     );
     let value = expect_ok(result, "run");
@@ -130,7 +130,7 @@ fn a_non_local_return_escapes_a_while_loop() {
 #[test]
 fn if_false_if_true_picks_the_right_block() {
     let (mut interpreter, result) = run_method(
-        &module("| f t | f := ['f']. t := ['t']. ^true ifFalse: f ifTrue: t"),
+        &module("| f t | f:: ['f']. t:: ['t']. ^true ifFalse: f ifTrue: t"),
         "run",
     );
     let value = expect_ok(result, "run");
@@ -139,7 +139,7 @@ fn if_false_if_true_picks_the_right_block() {
         "t"
     );
     let (mut interpreter, result) = run_method(
-        &module("| f t | f := ['f']. t := ['t']. ^false ifFalse: f ifTrue: t"),
+        &module("| f t | f:: ['f']. t:: ['t']. ^false ifFalse: f ifTrue: t"),
         "run",
     );
     let value = expect_ok(result, "run");

@@ -451,7 +451,7 @@ fn new_answers_the_instance_its_initializers_ran_on() {
             public class Bare = Base new (
             ) (
             )
-            note: o = ( seen := o )
+            note: o = ( seen:: o )
             public lastSeen = ( ^seen )
             public make: c = ( ^c new )
         ) : ()

@@ -12,14 +12,14 @@ class NestedRedeclared usingPlatform: p = Object new (| t ::= p transcript. |) (
         )
         public superFirst = (
             | inherited own |
-            inherited := (super Inner) new label.
-            own := Inner new label.
+            inherited:: (super Inner) new label.
+            own:: Inner new label.
             ^inherited, '/', own
         )
         public ownFirst = (
             | inherited own |
-            own := Inner new label.
-            inherited := (super Inner) new label.
+            own:: Inner new label.
+            inherited:: (super Inner) new label.
             ^inherited, '/', own
         )
     )

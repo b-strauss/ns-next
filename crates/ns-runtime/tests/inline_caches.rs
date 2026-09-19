@@ -103,9 +103,9 @@ fn nested_class_instances_of_two_enclosing_objects_share_one_entry() {
           )
           public run = (
             | sum |
-            sum := 0.
+            sum:: 0.
             {Outer new Inner new. Outer new Inner new. Outer new Inner new}
-              do: [:each | sum := sum + each describe].
+              do: [:each | sum:: sum + each describe].
             ^sum
           )
         ) : ()
@@ -137,12 +137,12 @@ const FIVE_KINDS: &str = indoc! {"
       class KindFive = Object new () ( public value = ( ^5 ) )
       public run: count = (
         | sum index all |
-        sum := 0.
-        index := 0.
-        all := {KindOne new. KindTwo new. KindThree new. KindFour new. KindFive new}.
+        sum:: 0.
+        index:: 0.
+        all:: {KindOne new. KindTwo new. KindThree new. KindFour new. KindFive new}.
         [index < count] whileTrue: [
-          index := index + 1.
-          sum := sum + (all at: index) value].
+          index:: index + 1.
+          sum:: sum + (all at: index) value].
         ^sum
       )
     ) : ()
@@ -192,8 +192,8 @@ fn a_site_on_true_and_false_is_bimorphic() {
         class Subject = Object new () (
           public run = (
             | count |
-            count := 0.
-            {true. false. true} do: [:each | each not ifTrue: [count := count + 1]].
+            count:: 0.
+            {true. false. true} do: [:each | each not ifTrue: [count:: count + 1]].
             ^count
           )
         ) : ()
@@ -226,9 +226,9 @@ const TWO_APPLICATIONS: &str = indoc! {"
       public narrowCell = ( ^(Box on: Narrow) Cell )
       public run = (
         | sum |
-        sum := 0.
+        sum:: 0.
         {(Box on: Narrow) Cell new. (Box on: Wide) Cell new}
-          do: [:each | sum := sum + each held + each describe].
+          do: [:each | sum:: sum + each held + each describe].
         ^sum
       )
     ) : ()
@@ -303,9 +303,9 @@ fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
           public anInner = ( ^(Outer named: 1) Inner )
           public run = (
             | sum |
-            sum := 0.
+            sum:: 0.
             {Outer named: 1. Sub named: 2. Outer named: 3. Sub named: 4}
-              do: [:each | sum := sum + each Inner new reveal].
+              do: [:each | sum:: sum + each Inner new reveal].
             ^sum
           )
         ) : ()
@@ -343,8 +343,8 @@ fn class_objects_and_instances_share_a_site() {
           class Custom = Object new () ( public describe = ( ^3 ) public make = ( ^self ) )
           public run = (
             | sum |
-            sum := 0.
-            {Maker. Plain. Custom new} do: [:each | sum := sum + each make describe].
+            sum:: 0.
+            {Maker. Plain. Custom new} do: [:each | sum:: sum + each make describe].
             ^sum
           )
         ) : ()
@@ -381,10 +381,10 @@ fn does_not_understand_handlers_are_entries_like_any_other() {
           class Recorder = Object new (| public doesNotUnderstand ::= nil. |) ()
           public run = (
             | sum |
-            sum := 0.
+            sum:: 0.
             {Catcher new. Recorder new. Catcher new} do: [:each | | answer |
-              answer := each zork.
-              sum := sum + ((answer == each) ifTrue: [10] ifFalse: [answer])].
+              answer:: each zork.
+              sum:: sum + ((answer == each) ifTrue: [10] ifFalse: [answer])].
             ^sum
           )
         ) : ()
@@ -512,7 +512,7 @@ fn a_vacant_lexical_site_does_not_borrow_a_different_ns_entry() {
           public baseClass = ( ^Base )
           public run = (
             | derived |
-            derived := Derived new.
+            derived:: Derived new.
             ^(derived fromDerived) * 10 + (derived fromBase)
           )
         ) : ()
@@ -619,8 +619,8 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
         class Subject = Object new () (
           public used = (
             | sum |
-            sum := 0.
-            #(1 2) do: [:each | sum := sum + each].
+            sum:: 0.
+            #(1 2) do: [:each | sum:: sum + each].
             ^sum
           )
           public unused = ( ^1 + 2 + 3 )
@@ -646,7 +646,7 @@ fn a_failing_primitive_keeps_its_entry() {
         class Subject = Object new () (
           public run: platform = (
             | stream |
-            stream := platform transcript.
+            stream:: platform transcript.
             {platform. stream} do: [:each | each transcript].
             ^0
           )
@@ -684,8 +684,8 @@ const TWO_FACTORIES: &str = indoc! {"
       class Beta with: seed = Object new () ( public describe = ( ^2 ) )
       public makeAll: order = (
         | sum |
-        sum := 0.
-        order do: [:each | sum := sum * 10 + each new describe].
+        sum:: 0.
+        order do: [:each | sum:: sum * 10 + each new describe].
         ^sum
       )
       public alphaThenBeta = ( ^self makeAll: {Alpha. Beta} )
@@ -717,11 +717,11 @@ fn a_cached_factory_instantiates_the_receiver_it_is_sent_to() {
           )
           public run = (
             | first second sum |
-            first := Holder seed: 1.
-            second := Holder seed: 2.
-            sum := 0.
+            first:: Holder seed: 1.
+            second:: Holder seed: 2.
+            sum:: 0.
             {first item. second item. first item}
-              do: [:each | sum := sum * 10 + each new describe].
+              do: [:each | sum:: sum * 10 + each new describe].
             ^sum
           )
         ) : ()

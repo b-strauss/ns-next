@@ -110,7 +110,7 @@ fn array_at_put_writes_and_returns_the_receiver() {
         'T'
         class Foo = Object new (
         ) (
-          public m = ( | a | a := {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )
+          public m = ( | a | a:: {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -136,13 +136,13 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
         'T'
         class Foo = Object new (
         ) (
-          public m = ( | sum | sum := 0. {1. 2. 3} do: [:x | sum := sum + x]. ^sum )
+          public m = ( | sum | sum:: 0. {1. 2. 3} do: [:x | sum:: sum + x]. ^sum )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
-    let result = expect_ok(result, "{1. 2. 3} do: [:x | sum := sum + x]");
+    let result = expect_ok(result, "{1. 2. 3} do: [:x | sum:: sum + x]");
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(6) => {}
         other => panic!(
@@ -256,9 +256,9 @@ fn do_walks_a_snapshot_of_its_receiver() {
         ) (
           public m: aColl = (
             | seen |
-            seen := 0.
+            seen:: 0.
             aColl add: 1; add: 2.
-            aColl do: [:x | seen := seen + 1. aColl add: x].
+            aColl do: [:x | seen:: seen + 1. aColl add: x].
             ^seen * 100 + aColl size
           )
         ) : ()
@@ -283,7 +283,7 @@ fn do_with_a_non_block_answers_its_receiver() {
         'T'
         class Foo = Object new (
         ) (
-          public m = ( | a | a := {1. 2}. ^(a do: 3) == a )
+          public m = ( | a | a:: {1. 2}. ^(a do: 3) == a )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

@@ -24,19 +24,19 @@ class NonlocalReturnDepth usingPlatform: platform = Object new (
 	selfRecur: n with: b = (
 		| blk |
 		n = 0 ifTrue: [b value. ^'level 0 fell through'].
-		blk := n = 3 ifTrue: [[^'returned from level 3']] ifFalse: [b].
+		blk:: n = 3 ifTrue: [[^'returned from level 3']] ifFalse: [b].
 		^(self selfRecur: n - 1 with: blk), ' ', n printString
 	)
 	intercept: b = (
 		| coll |
-		coll := OrderedCollection new.
+		coll:: OrderedCollection new.
 		coll add: 1; add: 2; add: 3.
 		coll do: [:e | e = 2 ifTrue: [b value. ^'intercepted by its own block']].
 		^'intercepted normally'
 	)
 	throughInterceptor = (
 		| r |
-		r := self intercept: [^'home got it'].
+		r:: self intercept: [^'home got it'].
 		^'home fell through with ', r
 	)
 	public main: p args: a = (
