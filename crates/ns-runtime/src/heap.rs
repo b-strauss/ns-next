@@ -1119,6 +1119,7 @@ impl<'gc> Heap<'gc> {
     /// Records `object` as the one object `symbol` is in this heap, from
     /// now on.
     pub(crate) fn record_canonical_symbol(&mut self, symbol: Symbol, object: ObjectReference<'gc>) {
+        self.check_object_origin(object);
         let index = symbol.index();
         if self.canonical_symbols.len() <= index {
             self.canonical_symbols.resize(index + 1, None);
