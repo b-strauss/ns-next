@@ -1,0 +1,53 @@
+Newspeak3
+'Test'
+(* A block's own register layout, and the capture rules applied to a
+   block's own locals rather than a method's (docs/design/execution.md,
+   "Converted representation"; "The rule", rule 3).
+
+   fullLayout returns a block whose layout has all three summands of
+   `vector_register = arguments + copied + temporaries` non-zero: one
+   parameter (increment), one copied value (outerCopied, which nothing
+   writes after the block reads it), and three temporaries, of which
+   shared is a vector variable because the nested block writes it.
+   Per call: own is outerCopied + increment, and bump adds increment to
+   shared twice from zero. With 5 that is 8 + 10 = 18, with 2 it is
+   5 + 4 = 9 -- a fresh vector per activation, or the second call would
+   start from the first's total.
+
+   loopInsideABlock is loopBody of capture_in_inlined_loops.ns moved into
+   a block, so the loop writes the *block's* own local: x is written at
+   the top of an inlined loop body that also creates [x], so all three
+   blocks answer the last value written, 2. Textual order alone would
+   copy and answer 0 1 2. *)
+class ABlocksOwnRegistersAndVector usingPlatform: platform = Object new (
+	| transcript = platform transcript. |
+) (
+	fullLayout = (
+		| outerCopied ::= 3. |
+		^[:increment |
+			| own ::= 0. shared ::= 0. bump ::= nil. |
+			bump:: [shared:: shared + increment].
+			own:: outerCopied + increment.
+			bump value.
+			bump value.
+			own + shared]
+	)
+	loopInsideABlock = (
+		^[
+			| index ::= 0. x ::= 0. blocks ::= nil. |
+			blocks:: OrderedCollection new.
+			[index < 3] whileTrue: [x:: index. blocks add: [x]. index:: index + 1].
+			blocks]
+	)
+	show: blocks = (
+		blocks do: [:each | transcript show: each value printString; show: ' '].
+		transcript newLine
+	)
+	public main: platform args: arguments = (
+		| block |
+		block:: self fullLayout.
+		transcript show: (block value: 5) printString; newLine.
+		transcript show: (block value: 2) printString; newLine.
+		self show: self loopInsideABlock value
+	)
+) : ()
