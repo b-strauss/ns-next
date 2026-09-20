@@ -2432,12 +2432,13 @@ impl<'gc> Heap<'gc> {
 
     /// Forwards every handle the heap itself holds through `forwarder`:
     /// every arena record, every stack entry and the continuation it owns,
-    /// every register, and every host root. Shared by `move_everything` and
-    /// `compact` -- both build their own `Forwarder` first, over a
-    /// different `Relocation`, and then walk the same six roots through it
-    /// -- so that a field either one must reach is named here once, rather
-    /// than in two copies a later change can update in one and miss in the
-    /// other (`trace.rs`'s reason for existing, one level up).
+    /// every register, every surviving canonical symbol table entry, and
+    /// every host root. Shared by `move_everything` and `compact` -- both
+    /// build their own `Forwarder` first, over a different `Relocation`,
+    /// and then walk the same six roots through it -- so that a field
+    /// either one must reach is named here once, rather than in two copies
+    /// a later change can update in one and miss in the other (`trace.rs`'s
+    /// reason for existing, one level up).
     fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
         use crate::trace::{Trace, Tracer};
         for object in &mut self.objects {
@@ -2454,6 +2455,13 @@ impl<'gc> Heap<'gc> {
         for value in &mut self.stack.values {
             forwarder.value(value);
         }
+        // The table is weak -- `begin_marking` deliberately does not walk it
+        // (see its doc comment) -- but by the time a caller reaches
+        // `compact`, `prune_canonical_symbols` has already run against the
+        // finished marking and cleared every entry whose object died. What
+        // remains here is still a handle into the arena just compacted, and
+        // rewriting it is this loop's job like any other: skipping it would
+        // leave a stale index behind for a symbol that is very much alive.
         for object in self.canonical_symbols.iter_mut().flatten() {
             forwarder.object(object);
         }
