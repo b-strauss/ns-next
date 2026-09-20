@@ -131,20 +131,41 @@ pub enum DecodeError {
     /// reference is a `u32` id checked against the table at the point of
     /// use, never trusted to have been validated elsewhere.
     BadSymbolId(u32),
-    /// A closure record's parameter list and the code it names disagree about
-    /// how many arguments the closure takes. The two are separate fields on the
-    /// wire, so only a decode-time reconciliation can catch a crafted mismatch
-    /// -- and it must, because the two halves are read by different parts of
-    /// `Mutator::push_step`: it checks the *call's* arity against
-    /// `parameters.len()` but sizes the register file from the *code*
-    /// (`register_count - argument_count`). Disagreement leaves
-    /// `locals::read_local` computing `temporaries[i - arguments.len()]` past
-    /// the end of `temporaries` -- an unchecked index panic from a
-    /// version-matching image -- or, the other way round, silently
-    /// misaddressing temporaries as arguments.
+    /// A `MakeClosure`'s parameter-name list and the block body it names
+    /// disagree about how many arguments the closure takes. The two are
+    /// separate fields on the wire, so only a decode-time reconciliation can
+    /// catch a crafted mismatch. Nothing at run time reads the name list --
+    /// `Heap::closure_parameter_count` answers from the body, so the arity a
+    /// call is checked against and the arity the register file is sized from
+    /// are one number -- but `bytecode::disassemble` prints the names, and
+    /// `inspect` reads them off the same field. A mismatch left standing
+    /// would make a decoded image describe itself wrongly, with nothing
+    /// reporting it, so it is refused instead. A closure *record* no longer
+    /// has this half at all: it carries copied values, not parameter names
+    /// (`CopiedCountMismatch` is what reconciles a record).
     ClosureArityMismatch {
         parameters: usize,
         argument_count: u16,
+    },
+    /// A `MakeClosure`'s copied-register list, or a closure record's copied
+    /// values, does not number what the block body it names declares. The
+    /// two are separate wire fields, and the block's activation is sized and
+    /// filled from `copied_count` (`Heap::fill_copied_values`) while the
+    /// list is what supplies the values: a shorter list leaves a register
+    /// the body reads as a plain local holding nil, and a longer one hands
+    /// values to registers that are somebody else's temporaries.
+    CopiedCountMismatch {
+        copied: usize,
+        copied_count: u16,
+    },
+    /// A code record's parameters and copied values together do not fit its
+    /// register file. `push_step` sizes an activation as `register_count -
+    /// argument_count`, so this would leave `fill_copied_values` writing
+    /// past the registers the body has.
+    CopiedCountOutOfRange {
+        argument_count: u16,
+        copied_count: u16,
+        register_count: u16,
     },
     /// The image's mixin table is empty, so it describes no root class --
     /// and a world without one has nothing for the graph's class tag 1 to
@@ -342,7 +363,16 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::ClosureArityMismatch { parameters, argument_count } => write!(
                 f,
-                "closure record declares {parameters} parameters but the code it names takes {argument_count}"
+                "a `MakeClosure` names {parameters} parameters but the block body it creates takes {argument_count}"
+            ),
+            DecodeError::CopiedCountMismatch { copied, copied_count } => write!(
+                f,
+                "the image supplies {copied} copied values for a block that is handed {copied_count}"
+            ),
+            DecodeError::CopiedCountOutOfRange { argument_count, copied_count, register_count } => write!(
+                f,
+                "a body in the image takes {argument_count} arguments and {copied_count} copied \
+                 values, which do not fit its {register_count} registers"
             ),
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
@@ -919,6 +949,7 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
             let Instruction::MakeClosure {
                 parameters,
                 code: block,
+                copied,
                 ..
             } = instruction
             else {
@@ -930,13 +961,23 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
             if block.kind != CodeKind::Block {
                 return Err(DecodeError::WrongCodeKind { expected: "block" });
             }
-            // The `MakeClosure` mirror of `decode_closure_record`'s check:
-            // `push_step` validates the call against `parameters.len()`
-            // but sizes the register file from the body's `argument_count`.
+            // The instruction's parameter names against the body's arity:
+            // nothing runs on the names, but `disassemble` and `inspect`
+            // print them, so a mismatch would be an image describing itself
+            // wrongly rather than an error anyone sees.
             if parameters.len() != block.argument_count as usize {
                 return Err(DecodeError::ClosureArityMismatch {
                     parameters: parameters.len(),
                     argument_count: block.argument_count,
+                });
+            }
+            // The same reconciliation for the other half of a block's
+            // register layout: the instruction supplies the values, the
+            // body declares how many registers take them.
+            if copied.len() != block.copied_count as usize {
+                return Err(DecodeError::CopiedCountMismatch {
+                    copied: copied.len(),
+                    copied_count: block.copied_count,
                 });
             }
             if parents[id].is_some() {
@@ -1108,8 +1149,19 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
     match instruction {
         Instruction::LoadLiteral { destination, .. }
         | Instruction::LoadSelf { destination }
-        | Instruction::LoadBuiltinClass { destination, .. }
-        | Instruction::MakeClosure { destination, .. } => vec![*destination],
+        | Instruction::LoadBuiltinClass { destination, .. } => vec![*destination],
+        // The copied registers are read out of the *executing* frame, like
+        // a send's arguments, so they are bounded here and not by
+        // `verify_outer_locals`.
+        Instruction::MakeClosure {
+            destination,
+            copied,
+            ..
+        } => {
+            let mut registers = copied.clone();
+            registers.push(*destination);
+            registers
+        }
         Instruction::Move {
             destination,
             source,
@@ -1158,6 +1210,16 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             registers.push(*destination);
             registers
         }
+        Instruction::MakeVector { destination, .. } => vec![*destination],
+        // `index` is a slot of the vector `Array`, not a register of this
+        // frame -- checked at run time against the vector's actual length,
+        // since a vector's size is a run-time value.
+        Instruction::LoadVector {
+            destination,
+            vector,
+            ..
+        } => vec![*destination, *vector],
+        Instruction::StoreVector { vector, source, .. } => vec![*vector, *source],
         Instruction::InitializeSlot { source, .. } => vec![*source],
         Instruction::Return { register }
         | Instruction::ImplicitReturn { register }
@@ -1191,6 +1253,9 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::SendSuper { .. }
         | Instruction::MakeClosure { .. }
         | Instruction::MakeArray { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::LoadVector { .. }
+        | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
@@ -1273,6 +1338,21 @@ fn decode_code(
     };
     let argument_count = reader.read_u16()?;
     let register_count = reader.read_u16()?;
+    let copied_count = reader.read_u16()?;
+    // The copied values' own half of the register layout. `argument_count`
+    // alone exceeding the file is a different fault, reported as
+    // `ArgumentsExceedRegisters` by `verify_body`, so this is asked only
+    // once that holds -- and in `u32` arithmetic, so the sum cannot wrap
+    // back into range.
+    if argument_count <= register_count
+        && u32::from(argument_count) + u32::from(copied_count) > u32::from(register_count)
+    {
+        return Err(DecodeError::CopiedCountOutOfRange {
+            argument_count,
+            copied_count,
+            register_count,
+        });
+    }
     let start = reader.read_u32()?;
     let end = reader.read_u32()?;
     if start > end {
@@ -1307,9 +1387,15 @@ fn decode_code(
         // sends as if they were already dense from 0. Recomputed there, once
         // the real numbers exist.
         family_size: crate::bytecode::family_size_of(&instructions),
+        // Not on the wire: derived from the instructions with the same
+        // function the compiler used. It reads each nested block's own
+        // `outer_reach`, which is already filled because post-order puts a
+        // block's code before its parent's.
+        outer_reach: crate::bytecode::outer_reach_of(&instructions),
         instructions,
         argument_count,
         register_count,
+        copied_count,
         statement_program_counter,
         source,
     })
@@ -1463,6 +1549,7 @@ fn decode_instruction(
                 destination,
                 parameters: Rc::new(parameters),
                 code: codes[id as usize].clone(),
+                copied: decode_registers(reader)?,
             }
         }
         OPCODE_MAKE_ARRAY => {
@@ -1470,6 +1557,31 @@ fn decode_instruction(
             Instruction::MakeArray {
                 destination,
                 element_registers: decode_registers(reader)?,
+            }
+        }
+        OPCODE_MAKE_VECTOR => {
+            let destination = reader.read_u16()?;
+            Instruction::MakeVector {
+                destination,
+                size: reader.read_u16()?,
+            }
+        }
+        OPCODE_LOAD_VECTOR => {
+            let destination = reader.read_u16()?;
+            let vector = reader.read_u16()?;
+            Instruction::LoadVector {
+                destination,
+                vector,
+                index: reader.read_u16()?,
+            }
+        }
+        OPCODE_STORE_VECTOR => {
+            let vector = reader.read_u16()?;
+            let index = reader.read_u16()?;
+            Instruction::StoreVector {
+                vector,
+                index,
+                source: reader.read_u16()?,
             }
         }
         OPCODE_INITIALIZE_SLOT => {
@@ -1754,35 +1866,32 @@ fn decode_closure_record<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
-    symbols: &symbols::Table,
 ) -> Result<ClosureData<'gc>, DecodeError> {
-    let count = reader.read_u16()? as usize;
-    let mut parameters = reserve_for(count, reader);
-    for _ in 0..count {
-        parameters.push(decode_symbol(reader, symbols)?);
-    }
     let code_id = reader.read_u32()?;
     let code = context
         .codes
         .get(code_id as usize)
         .cloned()
         .ok_or(DecodeError::BadCodeId(code_id))?;
+    let captured_frame = decode_frame_id(reader, tables)?;
+    let count = reader.read_u16()? as usize;
     // The one place in the format that can see both halves of a closure's
-    // arity. Checked before the frame ids are read, so a mismatch is
+    // copied values. Checked before any of them is read, so a mismatch is
     // reported as itself rather than as whatever the next field trips on.
-    if parameters.len() != code.argument_count as usize {
-        return Err(DecodeError::ClosureArityMismatch {
-            parameters: parameters.len(),
-            argument_count: code.argument_count,
+    if count != code.copied_count as usize {
+        return Err(DecodeError::CopiedCountMismatch {
+            copied: count,
+            copied_count: code.copied_count,
         });
     }
-    let captured_frame = decode_frame_id(reader, tables)?;
-    let home = decode_frame_id(reader, tables)?;
+    let mut copied = reserve_for(count, reader);
+    for _ in 0..count {
+        copied.push(decode_value(reader, context, tables)?);
+    }
     Ok(ClosureData {
-        parameters: Rc::new(parameters),
         code,
         captured_frame,
-        home,
+        copied: copied.into_boxed_slice(),
         // Never on the wire: a decoded closure is given a fresh range of its
         // family's size when it is first activated (`Mutator::push_step`).
         feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
@@ -2287,9 +2396,7 @@ pub fn decode_graph_section<'gc>(
             OBJECT_STRING => ObjectData::String(reader.read_str()?),
             OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
             OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
-            OBJECT_CLOSURE => {
-                ObjectData::Closure(decode_closure_record(reader, context, &tables, symbols)?)
-            }
+            OBJECT_CLOSURE => ObjectData::Closure(decode_closure_record(reader, context, &tables)?),
             OBJECT_CLASS => {
                 let (data, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
@@ -2487,13 +2594,21 @@ fn decode_class_record<'gc>(
 // Reconciling the decoded graph with the code that runs in it.
 //
 // `decode_graph_section` reads frames and closures in isolation: it has no
-// selector-to-body mapping, so it can check a closure record's own two
-// halves (`ClosureArityMismatch`) and nothing more. Once the decoded mixins
-// carry their code, every frame's body can be resolved --
-// and must be, because `locals::read_local` splits a frame at `arguments.len()`
-// and indexes `temporaries` unchecked. A crafted frame that is smaller than the
-// body addressing it is an out-of-bounds index reached from a
-// version-matching image.
+// selector-to-body mapping, so it can check a closure record's copied values
+// against the code it names (`CopiedCountMismatch`) and nothing more. Once
+// the decoded mixins carry their code, every frame's body can be resolved --
+// and is, because a frame's program counter, its register file and a
+// closure's captured frame mean nothing except against that body.
+//
+// A register file the body overruns is no longer a memory-safety hole:
+// `Heap::frame_local` answers `Nil` for an index a returned frame lacks and
+// `frame_set_local` ignores the write, which is what keeps a crafted image
+// from aborting the process. It is still refused here, because a frame
+// narrower than its body is not something a run produces. An *empty*
+// register file is, though, and is accepted: closure conversion leaves one
+// behind for every returning activation no by-reference closure can reach
+// ("Converted representation", "The divorce", in
+// `docs/design/execution.md`).
 // ---------------------------------------------------------------------------
 
 /// The compiled body that runs (or ran) in `frame`, or `None` when the
@@ -2545,7 +2660,9 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    image carries only bytecode), but which body it counts them in is only
 ///    known once the decoded mixins carry their code.
 /// 1. A frame's register file must match the body that runs in it -- the
-///    same `arguments` count, and at least as many registers. (At least, not
+///    same `arguments` count, and at least as many registers -- or be empty,
+///    which is what a returning activation nothing reads by reference leaves
+///    behind. (At least, not
 ///    exactly: a frame's register file is grown, never shrunk -- the
 ///    liveness spec's reified activations may be wider than the body
 ///    currently running in them -- so a wider frame is legitimate and only
@@ -2580,8 +2697,13 @@ pub fn verify_graph<'gc>(
                 instructions: code.instructions.len(),
             });
         }
-        if argument_count != code.argument_count as usize
-            || argument_count + temporary_count < code.register_count as usize
+        // An empty register file is what a returning activation that was
+        // never marked leaves behind (`Heap::pop_activation`): nothing
+        // reaches its registers any more, so it keeps none. Every other
+        // shape is still held to the body's.
+        if argument_count + temporary_count != 0
+            && (argument_count != code.argument_count as usize
+                || argument_count + temporary_count < code.register_count as usize)
         {
             return Err(DecodeError::FrameRegisterFile {
                 arguments: argument_count,

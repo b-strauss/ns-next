@@ -61,8 +61,9 @@ object or a `become:` swaps identities, and identity has to be stable across a
 snapshot; see [memory.md](memory.md). Assigning it lazily, as Cog/Spur
 (`hashBitsOf:`) and Primordial Soup (`Object_identityHash`) do, keeps
 allocation order unobservable: the reference lowering allocates closures the
-optimized one does not, and closure conversion and a JIT's escape analysis will
-add and remove allocations the same way, so a hash drawn when the object is
+optimized one does not, closure conversion allocates an indirection vector the
+reference lowering does not, and a JIT's escape analysis will add and remove
+allocations the same way, so a hash drawn when the object is
 allocated would change a program's `hash` values under any of them. The encoder writes the
 stored value without assigning one, and the decoder keeps every value, 0
 included.

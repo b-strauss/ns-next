@@ -842,7 +842,7 @@ impl<'gc> Mutator<'gc> {
                 let receiver = self.heap.frame_receiver(captured_frame);
                 let current_class = self.heap.frame_current_class(captured_frame);
                 let temporaries = (code.register_count - code.argument_count) as usize;
-                self.push(
+                let activation = self.push(
                     ActivationHeader {
                         receiver,
                         current_class,
@@ -855,7 +855,13 @@ impl<'gc> Mutator<'gc> {
                     },
                     arguments,
                     temporaries,
-                )
+                )?;
+                // The copied values sit between the block's parameters and
+                // its temporaries, so they are written once the register
+                // file exists and before the body runs an instruction
+                // (`docs/design/execution.md`, "Converted representation").
+                self.heap.fill_copied_values(activation, closure);
+                Ok(activation)
             }
             // An initializer level, a superclass clause or its message is
             // never an activation the optimized lowering inlines away, so

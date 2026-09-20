@@ -1,0 +1,41 @@
+Newspeak3
+'Test'
+(* A block three levels down reads a variable of the method, so every
+   block between them has to carry it -- a copy when nothing writes it
+   after capture (first), the shared variable when something does
+   (second). threeDeep answers 1 + 20 + 100 + 1000 + 10000; second is
+   written after the blocks exist, so 20, not 10. innerWrites has the
+   innermost block writing the method's variable, which every level shares.
+   blockLocals captures a block's own temporary, one per activation of
+   that block, each written before the inner block is created. *)
+class NestedBlocksCarryVariables usingPlatform: platform = Object new (
+	| transcript = platform transcript. |
+) (
+	threeDeep = (
+		| first ::= 1. second ::= 10. outer ::= nil. |
+		outer:: [:x | [:y | [:z | first + second + x + y + z]]].
+		second:: 20.
+		^((outer value: 100) value: 1000) value: 10000
+	)
+	innerWrites = (
+		| total ::= 0. numbers ::= nil. |
+		numbers:: OrderedCollection new.
+		numbers add: 1; add: 2; add: 3.
+		numbers do: [:each | [:factor | total:: total + (each * factor)] value: 10].
+		^total
+	)
+	blockLocals = (
+		| numbers ::= nil. makers ::= nil. |
+		numbers:: OrderedCollection new.
+		numbers add: 1; add: 2; add: 3.
+		makers:: OrderedCollection new.
+		numbers do: [:each | | doubled ::= 0. | doubled:: each * 2. makers add: [doubled]].
+		^makers
+	)
+	public main: platform args: arguments = (
+		transcript show: self threeDeep printString; newLine.
+		transcript show: self innerWrites printString; newLine.
+		self blockLocals do: [:each | transcript show: each value printString; show: ' '].
+		transcript newLine
+	)
+) : ()

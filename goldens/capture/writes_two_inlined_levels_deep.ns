@@ -1,0 +1,42 @@
+Newspeak3
+'Test'
+(* An assignment inside an inlined block is lowered into the body that
+   inlines it, so it writes that body's registers directly and an operand
+   read before it has to be copied out first (CLAUDE.md, "An expression's
+   value register must still hold that value when its consumer executes").
+   The resolver counts every block literal as a scope, inlined or not, so
+   the compiler has to subtract the inlined levels it has descended before
+   it can tell which register the assignment lands in -- and two levels is
+   where getting that wrong stops being visible as a crash.
+
+   Each method reads t as the left operand of a binary send and then
+   assigns t two inlined levels deep inside the right operand, so each
+   answers t's value at the moment it was read, plus one: 2 + 1, 5 + 1 and
+   7 + 1. The loops run once and leave nil, which is why the array's second
+   element is what `at: 2` answers. Reading t after the assignment instead
+   would answer 31, 41 and 51. *)
+class WritesTwoInlinedLevelsDeep usingPlatform: platform = Object new (
+	| transcript = platform transcript. |
+) (
+	nestedLoopsInTheMethod = (
+		| t ::= 2. outerDone ::= false. innerDone ::= false. |
+		^t + ({[outerDone] whileFalse: [
+			[innerDone] whileFalse: [innerDone:: true. t:: 30].
+			outerDone:: true]. 1} at: 2)
+	)
+	nestedLoopsInABlock = (
+		^[ | t ::= 5. outerDone ::= false. innerDone ::= false. |
+		   t + ({[outerDone] whileFalse: [
+			[innerDone] whileFalse: [innerDone:: true. t:: 40].
+			outerDone:: true]. 1} at: 2)]
+	)
+	nestedConditionalsInABlock = (
+		^[ | t ::= 7. |
+		   t + (true ifTrue: [true ifTrue: [t:: 50. 1] ifFalse: [0]] ifFalse: [0])]
+	)
+	public main: platform args: arguments = (
+		transcript show: self nestedLoopsInTheMethod printString; newLine.
+		transcript show: self nestedLoopsInABlock value printString; newLine.
+		transcript show: self nestedConditionalsInABlock value printString; newLine
+	)
+) : ()

@@ -3,7 +3,9 @@
 > **Status:** built, including the reference lowering it is checked against.
 > **Code:** `crates/ns-runtime/src/bytecode.rs` (the instruction set and the
 > compiled-code shapes), `compiler/mod.rs` (entry points), `compiler/lower.rs`
-> (lowering, register allocation, the scope stack), `compiler/control_flow.rs`
+> (lowering, register allocation, the scope stack, the converted register
+> layout), `compiler/capture.rs` (the capture analysis closure conversion runs
+> ahead of the optimized lowering), `compiler/control_flow.rs`
 > (inlining), `compiler/reference.rs` (the reference lowering). CLI: `ns-next
 > disasm`.
 
@@ -61,10 +63,22 @@ identity".
 
 **Construction**
 
-- `MakeClosure { destination, parameters, code }` — `code` is the block body's own compiled
-  `CompiledCode`, nested inside the enclosing code; nested block literals nest
-  again. `captured_frame` and `home` are run-time values the VM supplies from its
-  current frame, never operands.
+- `MakeClosure { destination, parameters, code, copied }` — `code` is the block
+  body's own compiled `CompiledCode`, nested inside the enclosing code; nested
+  block literals nest again. `copied` names the registers of *this* body whose
+  values the new closure is handed, in the order the block's own registers take
+  them ([execution.md](execution.md), "Closure conversion"); it is empty under
+  the reference lowering and for a fallback closure. `captured_frame` is a
+  run-time value the VM supplies from its current activation, never an operand,
+  and a closure's `home` is derived from it rather than stored.
+- `MakeVector { destination, size }`, `LoadVector { destination, vector, index }`
+  and `StoreVector { vector, index, source }` — a body's indirection vector,
+  the `Array` its captured-and-written locals live in, and one slot's read and
+  write. Emitted by the optimized lowering only, `MakeVector` once as the
+  body's first instruction. A vector's size and kind are run-time values, so
+  `LoadVector` and `StoreVector` check them and raise an ordinary error rather
+  than trusting the register ([execution.md](execution.md), "Converted
+  representation").
 - `MakeArray { destination, element_registers }`.
 - `InitializeSlot { source, own_index }` — writes one of `self`'s own instance slots.
   Emitted **only** by initializer compilation, for a slot's own initializer
@@ -97,7 +111,12 @@ CompiledCode {
     kind: CodeKind,           // Method | Block | Initializer
     instructions: Vec<Instruction>,
     argument_count: u16,
-    register_count: u16,       // arguments + named temporaries + scratch
+    register_count: u16,       // arguments + copied values + named temporaries
+                               // + the vector register + scratch
+    copied_count: u16,         // values a block's activation is handed, between
+                               // its parameters and its temporaries; 0 otherwise
+    outer_reach: u16,          // how many frames out this body or a block it
+                               // creates can read or write by reference
     statement_program_counter: Vec<(usize, Range<usize>)>,   // safepoints
     family_size: u32,          // one past the highest call-site number in this body and its blocks
     source: Span,
@@ -106,7 +125,15 @@ CompiledCode {
 
 A method body, a block body and an instance initializer all compile to the same
 shape; `kind` tags which. An activation of it is pushed with
-`register_count - argument_count` temporaries.
+`register_count - argument_count` temporaries, and a block's activation is
+then handed its closure's `copied_count` values into the registers just above
+its parameters.
+
+`outer_reach` is derived from the instructions, by the compiler and by the
+image decoder alike (`bytecode::outer_reach_of`), and decides whether the
+activation that creates a closure keeps its registers when it returns
+([execution.md](execution.md), "Converted representation").
+`copied_count` is on the wire; `outer_reach` and `family_size` are not.
 
 A method's or a block's own statements are its local slot initializers first,
 one per declared local that has one, each `initializer_expression; StoreLocal`
@@ -163,6 +190,21 @@ resolver's `Binding::Local` already used, so the compiler needs no separate
 renumbering, and a block's `OuterLocal` indices are untouched by the scratch
 registers a bytecode frame adds — scratch sits after the named locals.
 
+**A converted block's layout inserts its copied values between the two.** Under
+the optimized lowering a block's registers are its parameters, then the values
+it was handed when the closure was created, then its temporaries, then one
+hidden register holding its indirection vector when it has one, then scratch; a
+method's, an initializer's or a clause's are the same without the copied values
+([execution.md](execution.md), "Closure conversion"). A resolver index is no
+longer a register index, so `Layout` (`compiler/lower.rs`) is the one place
+that maps one to the other: `local_register` pushes every temporary up by the
+copied count, and a local the capture analysis put in the vector keeps its
+resolver index while its register simply stays nil, so every `Binding` stays
+valid. A fallback closure and anything nested in it get a by-reference
+`Layout` instead — no copied values, no vector, every local in the register its
+resolver index names — because such a closure reaches the frame whose common
+path it stands in for by reference.
+
 Registers above the named locals are compiler-allocated scratch from a bump
 allocator **reset to the first scratch index at the start of every statement**.
 Statements are the unit `program_counter` and safepoints already work at, so scratch never
@@ -187,12 +229,34 @@ because a named local's register *is* its value, that register is live storage,
 not scratch, and anything that writes the local writes the expression's value too.
 
 `lower_operand` copies when anything lowered afterwards can write the register.
-An assignment through a setter copies the local its value was read from even
+An assignment through a setter copies the local its value was read from — when
+anything can write that local at all, the next paragraph — even
 when the consumer is the very next instruction, because the setter send itself
-runs user code before that consumer reads — code that can write the local
-through a closure that captured the frame. `^x:: y`, with a setter that assigns
-`y`, would otherwise answer `y`'s new value, where the language answers the
-value `y` had ([dispatch.md](dispatch.md), "Setter sends").
+runs user code before that consumer reads, and that code can write the local
+through a closure. `^x:: y`, with a setter that assigns `y`, would otherwise
+answer `y`'s new value, where the language answers the value `y` had
+([dispatch.md](dispatch.md), "Setter sends").
+
+**Which sends can do that is now a question about the register, not about the
+send.** Closure conversion left exactly two ways user code can write a named
+local of a running activation: an assignment lowered into that same body,
+including inside an inlined block, and — for a local some inlinable branch of
+the body assigns — the fallback closure that branch's guard failure creates,
+which any send may have kept and may run at any later time. A converted closure
+writes no register of another activation at all: a captured written variable
+lives in the indirection vector, whose read lands in a scratch register as a
+snapshot, and a copied register is read-only by construction. So the lowering
+asks `a_send_can_write(register)` per register rather than treating every send
+as a write, and `writes_register` walks an expression without descending into
+real block literals ([execution.md](execution.md), "Fewer protective copies").
+The reference lowering is unaffected: it reaches everything by reference and
+copies every read of a named local unconditionally, which `check_shape` asserts
+on every body it emits ("What it emits" below). A mistake in the narrower rule
+is silent wrong output at exit status 0, so the reference lowering is the
+oracle for it and `goldens/capture/` pins the cases by hand —
+`a_fallback_closure_writes_a_local_a_send_reads.ns` for the one register shape
+`a_send_can_write` answers `true` for, read as an operand, as an argument and as
+a setter assignment's value.
 
 The copy is skipped only where nothing reads the value at all, and every
 position says which it is rather than inferring it: `lower_expression_for` takes a
@@ -216,16 +280,20 @@ this activation or through a closure. The copy guards against a write that
 can then no longer happen, so `materialize` skips it for such a register,
 whatever `rest` holds; parameters are the commonest operands there are.
 `Lowerer` tracks which registers are read-only (`read_only_locals`, built in
-`Lowerer::new` from the argument count and each temporary's
-`SlotMutability`). `lower_assign`'s `debug_assert!`s cover every write into a
+`Lowerer::new` and indexed by **register**): every parameter, every immutable
+local, and, after closure conversion, every copied register, the vector
+register and the now-unused register of a variable that lives in the vector.
+`lower_assign`'s `debug_assert!`s cover every write into a
 named local, this frame's own or an enclosing one's: the two `StoreLocal`
 branches check a write into the *current* frame's own registers
 (`Binding::Local`, and `Binding::OuterLocal` at `hops == 0`), and the
 `StoreOuterLocal` branch (`hops != 0`) checks a write from a nested block
 into an *enclosing* frame's register the same way, against that frame's own
-`read_only_locals` table. `lower_block_literal` hands each nested `Lowerer`
-the `read_only_locals` of every `Frame` scope enclosing it
-(`enclosing_read_only_locals`, innermost last) alongside the scope stack it
+`read_only_locals` table; `check_writable` carries both, and skips a vector
+slot, which is writable by construction because only a variable something
+writes is ever put in a vector. `lower_block_literal` hands each nested
+`Lowerer` the `read_only_locals` of every `Frame` scope enclosing it
+(innermost last), and the `Layout` of each, alongside the scope stack it
 already passed down, so a `StoreOuterLocal` at any depth can check the same
 precondition the same-frame case always could. In every case the resolver
 never binds an assignment to a parameter or an immutable local, so the only
@@ -480,7 +548,11 @@ against code nothing had checked.
 6. A cascade evaluates its receiver once into a fresh register and sends every
    message to it; its value is the last send's.
 7. A block literal is a `MakeClosure` whose body the reference lowering
-   compiles too.
+   compiles too, with an empty `copied` list: every block reaches its
+   enclosing variables by reference, which is the model closure conversion is
+   checked against ([execution.md](execution.md), "Verification and the
+   reference lowering"). It emits no `MakeVector`, `LoadVector` or
+   `StoreVector` at all.
 8. `^` follows the code kind alone: `Return` in a method, `NonLocalReturn` in a
    block, evaluate-and-discard at the top of an initializer, `Return` in a
    superclass clause or its message. There is no "inside an inlined block"

@@ -3,7 +3,29 @@
 //! emission lives here (see `lower.rs`'s `lower_if`/`lower_and_or`/
 //! `lower_while`). See `docs/design/compiler.md`, "Control-flow inlining".
 
+use std::collections::HashMap;
+
 use ns_syntax::ast;
+use ns_syntax::Span;
+
+use crate::types::Binding;
+
+/// Whether `send` is an ordinary explicit-receiver send -- the gate in front
+/// of `recognize`, since a `super` or implicit-receiver (lexical) send is
+/// never inlined and has no receiver expression to walk.
+///
+/// Shared rather than repeated because three places must answer it
+/// identically: `lower_send`, which lowers the send; `send_writes_register`,
+/// which asks what a send can clobber before it; and `capture::Walker::send`,
+/// which decides which block literals the analysis sees as real. A fourth
+/// answer anywhere would let the analysis and the lowering disagree about
+/// which blocks become closures.
+pub(crate) fn is_ordinary_send(bindings: &HashMap<Span, Binding>, send: &ast::Send) -> bool {
+    !matches!(
+        bindings.get(&send.span),
+        Some(Binding::SuperSend) | Some(Binding::LexicalSend { .. })
+    )
+}
 
 pub(crate) enum InlineForm<'a> {
     /// `ifTrue:ifFalse:` and (arguments swapped) `ifFalse:ifTrue:`.

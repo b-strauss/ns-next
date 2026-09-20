@@ -1,0 +1,55 @@
+Newspeak3
+'Test'
+(* Closure conversion (docs/design/execution.md, "Planned: closure
+   conversion") decides per captured mutable local whether a block gets a
+   copy of it or shares its scope's indirection vector. These are the shapes
+   that decision is made on, recorded before the conversion exists, so that
+   the conversion is held to them.
+
+   setOnceThenCaptured: written before the block is created and never
+   after -- a copy answers 7 just as a shared variable does.
+   writtenAfterCapture: the write happens after the block exists, so the
+   block must see 2, which a copy would not.
+   writtenByTheBlock: the block itself writes, so method and block share.
+   immutableCaptured: an immutable local is never written (3.6).
+   vectorVariableWithInitializer: a declared initializer runs before the
+   block exists and the block then writes, so the method reads 30. *)
+class CopiedAndVectorVariables usingPlatform: platform = Object new (
+	| transcript = platform transcript. |
+) (
+	setOnceThenCaptured = (
+		| x ::= 0. |
+		x:: 7.
+		^[x]
+	)
+	writtenAfterCapture = (
+		| x ::= 1. reader ::= nil. |
+		reader:: [x].
+		x:: 2.
+		^reader
+	)
+	writtenByTheBlock = (
+		| count ::= 0. bump ::= nil. |
+		bump:: [count:: count + 1].
+		bump value.
+		bump value.
+		^count
+	)
+	immutableCaptured = (
+		| five = 5. |
+		^[five + 1]
+	)
+	vectorVariableWithInitializer = (
+		| x ::= 3. scale ::= nil. |
+		scale:: [x:: x * 10].
+		scale value.
+		^x
+	)
+	public main: platform args: arguments = (
+		transcript show: self setOnceThenCaptured value printString; newLine.
+		transcript show: self writtenAfterCapture value printString; newLine.
+		transcript show: self writtenByTheBlock printString; newLine.
+		transcript show: self immutableCaptured value printString; newLine.
+		transcript show: self vectorVariableWithInitializer printString; newLine
+	)
+) : ()

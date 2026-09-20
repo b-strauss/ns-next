@@ -385,9 +385,14 @@ fn every_instruction_once() -> CompiledCode {
         kind: CodeKind::Block,
         instructions: vec![Instruction::NonLocalReturn { register: 0 }],
         argument_count: 1,
-        register_count: 1,
+        // One parameter, two copied values, one temporary: the widest
+        // register layout a block can have, so the round trip covers
+        // `copied_count` too.
+        register_count: 4,
         statement_program_counter: vec![(0, 0..1)],
         family_size: 0,
+        copied_count: 2,
+        outer_reach: 0,
         source: Span::new(1, 2),
     });
     CompiledCode {
@@ -458,10 +463,25 @@ fn every_instruction_once() -> CompiledCode {
                 destination: 8,
                 parameters: Rc::new(vec![Symbol::intern("e")]),
                 code: block,
+                copied: vec![1, 2],
             },
             Instruction::MakeArray {
                 destination: 9,
                 element_registers: vec![0, 1],
+            },
+            Instruction::MakeVector {
+                destination: 10,
+                size: 2,
+            },
+            Instruction::LoadVector {
+                destination: 11,
+                vector: 10,
+                index: 0,
+            },
+            Instruction::StoreVector {
+                vector: 10,
+                index: 0,
+                source: 1,
             },
             Instruction::InitializeSlot {
                 source: 9,
@@ -485,14 +505,17 @@ fn every_instruction_once() -> CompiledCode {
             },
         ],
         argument_count: 2,
-        register_count: 10,
-        statement_program_counter: vec![(0, 0..3), (1, 3..20)],
+        register_count: 12,
+        statement_program_counter: vec![(0, 0..3), (1, 3..24)],
         // One past the highest number among its own sends (0..=3, in
         // emission order -- what `number_call_site_families` assigns on the
         // decoded side too) and the block's `family_size` (0): the same
         // `bytecode::family_size_of` the decoder recomputes with, so the
         // round trip must agree.
         family_size: 4,
+        copied_count: 0,
+        // Its own `LoadOuterLocal`/`StoreOuterLocal` reach two frames out.
+        outer_reach: 2,
         source: Span::new(10, 20),
     }
 }
@@ -817,6 +840,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u8(encode::code_kind_tag(CodeKind::Block)); // CodeKind::Block
     writer.write_u16(0); // argument_count
     writer.write_u16(1); // register_count
+    writer.write_u16(0); // copied_count
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
@@ -826,6 +850,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u16(0); // destination
     writer.write_u16(0); // no parameters
     writer.write_u32(9); // ... whose block-body code id is out of range
+    writer.write_u16(0); // copying nothing
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
@@ -843,6 +868,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // ... the first a CodeKind::Method
     writer.write_u16(0);
     writer.write_u16(1);
+    writer.write_u16(0); // copied_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
@@ -852,6 +878,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     writer.write_u16(0); // destination
     writer.write_u16(0); // no parameters
     writer.write_u32(1); // ... naming the *following*, not-yet-decoded entry
+    writer.write_u16(0); // copying nothing
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
@@ -883,19 +910,20 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0);
     writer.write_u16(0);
+    writer.write_u16(0); // copied_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(29); // ... one past the last real tag
+    writer.write_u8(33); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 29
+            tag: 33
         })
     );
 }
@@ -913,6 +941,7 @@ fn one_method_code_table(
     writer.write_u8(encode::code_kind_tag(CodeKind::Method));
     writer.write_u16(0); // argument_count
     writer.write_u16(2); // register_count
+    writer.write_u16(0); // copied_count
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
@@ -978,6 +1007,7 @@ fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
         writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
         writer.write_u16(0);
         writer.write_u16(1);
+        writer.write_u16(0); // copied_count
         writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(0);
@@ -1003,6 +1033,7 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
     writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0);
     writer.write_u16(1);
+    writer.write_u16(0); // copied_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
@@ -1076,6 +1107,37 @@ fn every_builtin_class_tag_round_trips() {
     assert_eq!(tags.len(), all.len(), "every builtin class has its own tag");
 }
 
+/// A body's parameters and copied values share one register file, and
+/// `push_step` sizes an activation as `register_count - argument_count`, so
+/// a `copied_count` that does not fit would leave `fill_copied_values`
+/// writing past the registers the body has.
+#[test]
+fn a_copied_count_that_does_not_fit_the_register_file_is_a_decode_error() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(encode::code_kind_tag(CodeKind::Block)); // CodeKind::Block
+    writer.write_u16(1); // argument_count
+    writer.write_u16(2); // register_count
+    writer.write_u16(2); // copied_count -- one more than the file has room for
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    let error = decode::decode_code_table(&mut reader, &symbols::Table::empty())
+        .expect_err("the copied values do not fit");
+    assert_eq!(
+        error,
+        decode::DecodeError::CopiedCountOutOfRange {
+            argument_count: 1,
+            copied_count: 2,
+            register_count: 2
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a body in the image takes 1 arguments and 2 copied values, which do not fit its \
+         2 registers"
+    );
+}
+
 #[test]
 fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -1083,6 +1145,7 @@ fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0); // argument_count
     writer.write_u16(0); // register_count
+    writer.write_u16(0); // copied_count
     writer.write_u32(9); // source.start ...
     writer.write_u32(4); // ... after source.end
     let bytes = writer.into_bytes();
@@ -1122,6 +1185,7 @@ fn code_table_with_nested_literal_array(depth: usize) -> Vec<u8> {
     writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0); // argument_count
     writer.write_u16(1); // register_count
+    writer.write_u16(0); // copied_count
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
@@ -1188,13 +1252,14 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
 /// Body 0 is the innermost block, each later body creates the one before it,
 /// and the last is the method -- the order the encoder writes, every block
 /// before the code that creates it. The innermost block sits `levels`
-/// `MakeClosure` hops below the method. Each level is 34 bytes, so the file
+/// `MakeClosure` hops below the method. Each level is 38 bytes, so the file
 /// grows linearly with the nesting it asks for.
 fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
     let body = |writer: &mut encode::Writer, kind: u8, creates: Option<usize>| {
         writer.write_u8(kind);
         writer.write_u16(0); // argument_count
         writer.write_u16(1); // register_count
+        writer.write_u16(0); // copied_count
         writer.write_u32(0); // source.start
         writer.write_u32(0); // source.end
         writer.write_u32(0); // no statement_program_counter entries
@@ -1206,6 +1271,7 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
                 writer.write_u16(0);
                 writer.write_u16(0); // taking no parameters,
                 writer.write_u32(u32::try_from(block).expect("a test-sized code id"));
+                writer.write_u16(0); // copying nothing
             }
             None => writer.write_u32(1), // the innermost: one instruction ...
         }
@@ -1753,23 +1819,21 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             // and grow its register file before snapshotting.
             interpreter.enter(|mutator| {
                 let closure_value = mutator.fetch(&closure);
-                let closure_data = mutator
+                let home = mutator
                     .heap()
-                    .closure_data(*object(&closure_value))
+                    .closure_home(*object(&closure_value))
                     .expect("expected a closure");
                 let (_, argument_count, temporary_count) =
-                    mutator.heap().frame_register_shape(closure_data.home);
+                    mutator.heap().frame_register_shape(home);
                 mutator
                     .heap_mut()
-                    .frame_grow_temporaries(closure_data.home, temporary_count + 1);
+                    .frame_grow_temporaries(home, temporary_count + 1);
                 mutator.heap_mut().frame_set_local(
-                    closure_data.home,
+                    home,
                     (argument_count + temporary_count) as u16,
                     Value::SmallInteger(9),
                 );
-                mutator
-                    .heap_mut()
-                    .set_frame_program_counter(closure_data.home, 1);
+                mutator.heap_mut().set_frame_program_counter(home, 1);
             });
             vec![closure]
         });
@@ -1788,13 +1852,16 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         let closure_data = heap
             .closure_data(*object(&decoded_0))
             .expect("expected a closure");
+        let closure_home = heap
+            .closure_home(*object(&decoded_0))
+            .expect("expected a closure");
         let code = &closure_data.code;
         assert_eq!(**code, *original_code);
         assert!(
-            closure_data.captured_frame.same(closure_data.home),
+            closure_data.captured_frame.same(closure_home),
             "captured_frame and home were the same frame"
         );
-        let home = heap.frame_snapshot(closure_data.home);
+        let home = heap.frame_snapshot(closure_home);
         assert_eq!(home.program_counter, 1);
         assert!(matches!(
             home.temporaries.last(),
@@ -1856,10 +1923,10 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
         let held = heap
             .instance_field(*object(&decoded_0), 0)
             .expect("expected an instance");
-        let closure_data = heap
-            .closure_data(*object(&held))
-            .expect("slot holds a closure");
-        let home_kind = heap.frame_kind(closure_data.home);
+        let home_kind = heap.frame_kind(
+            heap.closure_home(*object(&held))
+                .expect("slot holds a closure"),
+        );
         let FrameKind::Initializer(home_class) = &home_kind else {
             panic!("home is the initializer frame")
         };
@@ -2455,7 +2522,6 @@ fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
-    writer.write_u16(0); // no parameters
     writer.write_u32(42); // code id, out of range for an empty code table
     let bytes = writer.into_bytes();
     assert_eq!(
@@ -2565,27 +2631,33 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         let inner = heap
             .closure_data(*object(&decoded_0))
             .expect("expected the inner closure");
+        let inner_home = heap
+            .closure_home(*object(&decoded_0))
+            .expect("expected the inner closure");
         assert!(
-            !inner.captured_frame.same(inner.home),
+            !inner.captured_frame.same(inner_home),
             "the inner closure was captured by the block activation, not by `mk`"
         );
         let captured = heap.frame_snapshot(inner.captured_frame);
         let FrameKind::Closure(_) = &captured.kind else {
             panic!("the captured frame is a block activation")
         };
-        assert!(matches!(
-            captured.arguments.first(),
-            Some(Value::SmallInteger(5))
-        ));
+        // The optimized lowering converts `[ x ]`: `x` is copied into the
+        // inner closure when it is created, so the outer block's activation
+        // returned without copying its registers into its frame
+        // (`docs/design/execution.md`, "Lifecycle"). The value survives in
+        // the closure, not in the frame.
+        assert!(captured.arguments.is_empty());
+        assert!(matches!(inner.copied.first(), Some(Value::SmallInteger(5))));
         assert!(
             captured
                 .home
                 .as_ref()
                 .expect("a block activation has a home")
-                .same(inner.home),
+                .same(inner_home),
             "both closures share `mk`'s activation as their home"
         );
-        let home_kind = heap.frame_kind(inner.home);
+        let home_kind = heap.frame_kind(inner_home);
         let FrameKind::Method(declaration) = &home_kind else {
             panic!("the home is `mk`'s method frame")
         };
@@ -2628,15 +2700,21 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
         let inner = heap
             .closure_data(*object(&decoded_0))
             .expect("expected the inner closure");
+        let inner_home = heap
+            .closure_home(*object(&decoded_0))
+            .expect("expected the inner closure");
         let FrameKind::Closure(outer) = heap.frame_kind(inner.captured_frame) else {
             panic!("the captured frame is a block activation")
         };
-        let outer = heap
-            .closure_data(outer)
-            .expect("a closure frame names a closure object");
-        assert_eq!(outer.parameters.len(), 1, "the outer block takes `x`");
+        assert_eq!(
+            heap.closure_parameter_count(outer),
+            Some(1),
+            "the outer block takes `x`"
+        );
         assert!(
-            outer.home.same(inner.home),
+            heap.closure_home(outer)
+                .expect("a closure frame names a closure object")
+                .same(inner_home),
             "both closures share `mk`'s activation as their home"
         );
     });
@@ -2762,8 +2840,8 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
         .expect("an object id");
     let object = &report.graph_objects[id];
     assert!(
-        object.contains("closure [x] code "),
-        "object {id} should be the outer block, with its parameter `x`: {object}"
+        object.contains("closure code ") && object.contains(", copied []"),
+        "object {id} should be the outer block, copying nothing: {object}"
     );
 }
 
@@ -2815,40 +2893,41 @@ fn a_top_level_frame_kind_decodes() {
     });
 }
 
-/// A block `CompiledCode` taking `argument_count` arguments in `argument_count
-/// + 1` registers -- enough for the graph decoder, which never runs it.
-fn block_code(argument_count: u16) -> Rc<CompiledCode> {
+/// A block `CompiledCode` taking `argument_count` arguments and
+/// `copied_count` copied values, in one register more than the two together
+/// -- enough for the graph decoder, which never runs it.
+fn block_code(argument_count: u16, copied_count: u16) -> Rc<CompiledCode> {
     Rc::new(CompiledCode {
         kind: CodeKind::Block,
         instructions: vec![Instruction::ImplicitReturn { register: 0 }],
         argument_count,
-        register_count: argument_count + 1,
+        register_count: argument_count + copied_count + 1,
         statement_program_counter: vec![],
         family_size: 0,
+        copied_count,
+        outer_reach: 0,
         source: Span::new(0, 0),
     })
 }
 
 /// A graph section holding one closure object and the one `TopLevel` frame
-/// it points at, with `parameters` declared parameters against code id 0.
-/// Every field but the parameter count is well-formed, so *only* the
-/// arity reconciliation can reject it.
-fn closure_object_with_parameter_count(parameters: &[&str]) -> Vec<u8> {
+/// it points at, carrying `copied` copied values against code id 0. Every
+/// field but their count is well-formed, so *only* the copied-count
+/// reconciliation can reject it.
+fn closure_object_with_copied_values(copied: &[i64]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 1);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
-    writer.write_u16(parameters.len() as u16);
-    for (id, _) in parameters.iter().enumerate() {
-        // `table_with(parameters)` interns them in this same order, so a
-        // parameter's position is its id.
-        writer.write_u32(id as u32);
-    }
     writer.write_u32(0); // code id
     writer.write_u32(0); // captured frame id -- frame 0 exists
-    writer.write_u32(0); // home frame id -- frame 0 exists
+    writer.write_u16(copied.len() as u16);
+    for value in copied {
+        writer.write_u8(VALUE_SMALL_INTEGER);
+        writer.write_i64(*value);
+    }
     writer.write_u8(VALUE_NIL); // frame 0: receiver nil
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
@@ -2865,65 +2944,67 @@ fn closure_object_with_parameter_count(parameters: &[&str]) -> Vec<u8> {
 }
 
 #[test]
-fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
-    // The control for the two rejection tests below: the same section
-    // shape, with the parameter count the code actually declares. Without
-    // it, a reconciliation that rejected *everything* would look correct.
+fn a_closure_records_its_copied_values_and_a_wrong_count_is_refused() {
+    // The record carries the values and the body declares how many
+    // registers take them (`Heap::fill_copied_values`), so the two are
+    // separate wire fields and `decode_closure_record` is the only place
+    // that sees both. A shorter list would leave a register the block reads
+    // as a plain local holding nil, at exit status 0; a longer one would
+    // hand values to registers past the block's own.
+    //
+    // The control comes first: without it, a reconciliation that rejected
+    // *everything* would look correct.
     let mut fixture = GraphFixture::new();
-    fixture.codes.push(block_code(1));
-    fixture.symbols = table_with(&["x"]);
+    fixture.codes.push(block_code(0, 2));
     fixture.decoded(
-        &closure_object_with_parameter_count(&["x"]),
-        "arity agrees",
+        &closure_object_with_copied_values(&[7, 8]),
+        "the copied count agrees",
         |heap, decoded| {
             let closure_data = heap
                 .closure_data(*object(&decoded.roots[0]))
                 .expect("expected a closure");
-            assert_eq!(*closure_data.parameters, vec![Symbol::intern("x")]);
+            assert!(matches!(
+                closure_data.copied[..],
+                [Value::SmallInteger(7), Value::SmallInteger(8)]
+            ));
         },
     );
-}
 
-#[test]
-fn a_closure_record_declaring_too_few_parameters_is_a_decode_error() {
-    // `push_step` checks the *call's* arity against `parameters.len()` but
-    // sizes the register file from the *code* (`register_count -
-    // argument_count`), and `locals::read_local` then indexes `temporaries[i -
-    // arguments.len()]` unchecked. So this section -- otherwise entirely
-    // well-formed, as the control above proves -- would decode cleanly and
-    // panic the process the first time the closure is sent `value`.
-    // `decode_closure_record` is the only place that sees both halves of the
-    // arity.
-    let mut fixture = GraphFixture::new();
-    fixture.codes.push(block_code(1));
-    let error = fixture.decode_error(&closure_object_with_parameter_count(&[]));
+    let error = fixture.decode_error(&closure_object_with_copied_values(&[7]));
     assert_eq!(
         error,
-        decode::DecodeError::ClosureArityMismatch {
-            parameters: 0,
-            argument_count: 1
+        decode::DecodeError::CopiedCountMismatch {
+            copied: 1,
+            copied_count: 2
         }
     );
     assert_eq!(
         error.to_string(),
-        "closure record declares 0 parameters but the code it names takes 1"
+        "the image supplies 1 copied values for a block that is handed 2"
     );
 }
 
+/// A closure whose code declares no copied values at all: every closure the
+/// reference lowering builds, and every fallback closure the optimized one
+/// builds, since both reach their variables by reference.
 #[test]
-fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
-    // The mirror case does not panic -- it silently misaddresses temporaries as
-    // arguments -- so nothing downstream would ever report it.
+fn a_closure_record_with_no_copied_values_decodes() {
     let mut fixture = GraphFixture::new();
-    fixture.codes.push(block_code(0));
-    fixture.symbols = table_with(&["x"]);
-    let error = fixture.decode_error(&closure_object_with_parameter_count(&["x"]));
-    assert_eq!(
-        error,
-        decode::DecodeError::ClosureArityMismatch {
-            parameters: 1,
-            argument_count: 0
-        }
+    fixture.codes.push(block_code(1, 0));
+    fixture.decoded(
+        &closure_object_with_copied_values(&[]),
+        "no copied values",
+        |heap, decoded| {
+            let closure_data = heap
+                .closure_data(*object(&decoded.roots[0]))
+                .expect("expected a closure");
+            assert!(closure_data.copied.is_empty());
+            // The arity a call is checked against now has one source.
+            assert_eq!(
+                heap.closure_parameter_count(*object(&decoded.roots[0])),
+                Some(1)
+            );
+        },
     );
 }
 
@@ -3268,9 +3349,26 @@ fn code_with(
         statement_program_counter: vec![],
         // `verify_code_table` never looks at `family_size` -- numbering a
         // family is `number_call_site_families`'s job, and none of these
-        // tests calls it -- so an arbitrary value is fine here.
+        // tests calls it -- so an arbitrary value is fine here. The same
+        // holds for `outer_reach`, which only the VM reads.
         family_size: 0,
+        copied_count: 0,
+        outer_reach: 0,
         source: Span::new(0, 0),
+    })
+}
+
+/// `code_with`, plus a `copied_count` for the bodies that declare one.
+fn code_with_copied(
+    kind: CodeKind,
+    argument_count: u16,
+    register_count: u16,
+    copied_count: u16,
+    instructions: Vec<Instruction>,
+) -> Rc<CompiledCode> {
+    Rc::new(CompiledCode {
+        copied_count,
+        ..(*code_with(kind, argument_count, register_count, instructions)).clone()
     })
 }
 
@@ -3489,6 +3587,7 @@ fn a_make_closure_naming_a_method_body_is_refused() {
                 destination: 0,
                 parameters: Rc::new(vec![]),
                 code: method.clone(),
+                copied: Vec::new(),
             },
             Instruction::Return { register: 0 },
         ],
@@ -3502,9 +3601,10 @@ fn a_make_closure_naming_a_method_body_is_refused() {
 
 #[test]
 fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
-    // The `MakeClosure` mirror of `ClosureArityMismatch`: `parameters` and the
-    // body's `argument_count` are separate wire fields here too, and
-    // `push_step` reads one while the frame is sized from the other.
+    // `parameters` and the body's `argument_count` are separate wire fields,
+    // and nothing at run time reads the names -- but `disassemble` prints
+    // them, so a mismatch that decoded cleanly would be an image describing
+    // itself wrongly with nothing to report it.
     let block = code_with(
         CodeKind::Block,
         1,
@@ -3520,6 +3620,7 @@ fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
                 destination: 0,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
+                copied: Vec::new(),
             },
             Instruction::Return { register: 0 },
         ],
@@ -3530,6 +3631,80 @@ fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
         Err(decode::DecodeError::ClosureArityMismatch {
             parameters: 0,
             argument_count: 1
+        })
+    );
+}
+
+#[test]
+fn a_make_closure_whose_copied_list_does_not_match_its_block_is_refused() {
+    // The other half of a block's register layout, beside its arity: the
+    // instruction names the registers to read, the body says how many of
+    // its own registers take them (`Heap::fill_copied_values`). A shorter
+    // list leaves one of those holding nil and the block reading it as a
+    // plain local, at exit status 0.
+    let block = code_with_copied(
+        CodeKind::Block,
+        0,
+        2,
+        1,
+        vec![Instruction::ImplicitReturn { register: 0 }],
+    );
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instruction::MakeClosure {
+                destination: 0,
+                parameters: Rc::new(vec![]),
+                code: block.clone(),
+                copied: Vec::new(),
+            },
+            Instruction::Return { register: 0 },
+        ],
+    );
+    let table = table_of(vec![block, parent]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::CopiedCountMismatch {
+            copied: 0,
+            copied_count: 1
+        })
+    );
+}
+
+/// A `MakeClosure`'s copied registers are read out of the *executing*
+/// frame, like a send's arguments, so they are bounded against the body
+/// that holds the instruction and not against the block's own file.
+#[test]
+fn a_make_closure_copying_a_register_its_own_body_lacks_is_refused() {
+    let block = code_with_copied(
+        CodeKind::Block,
+        0,
+        2,
+        1,
+        vec![Instruction::ImplicitReturn { register: 0 }],
+    );
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instruction::MakeClosure {
+                destination: 0,
+                parameters: Rc::new(vec![]),
+                code: block.clone(),
+                copied: vec![4],
+            },
+            Instruction::Return { register: 0 },
+        ],
+    );
+    let table = table_of(vec![block, parent]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            register: 4,
+            register_count: 1
         })
     );
 }
@@ -3550,6 +3725,7 @@ fn a_block_body_created_by_two_make_closures_is_refused() {
         destination,
         parameters: Rc::new(vec![]),
         code: block.clone(),
+        copied: Vec::new(),
     };
     let parent = code_with(
         CodeKind::Method,
@@ -3584,6 +3760,7 @@ fn number_call_site_families_leaves_the_table_untouched_when_it_fails() {
         destination,
         parameters: Rc::new(vec![]),
         code: block.clone(),
+        copied: Vec::new(),
     };
     let parent = code_with(
         CodeKind::Method,
@@ -3634,6 +3811,7 @@ fn a_make_closure_naming_a_body_outside_the_table_is_refused() {
                 destination: 0,
                 parameters: Rc::new(vec![]),
                 code: stranger,
+                copied: Vec::new(),
             },
             Instruction::Return { register: 0 },
         ],
@@ -3675,6 +3853,7 @@ fn outer_local_table(
                 destination: 0,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
+                copied: Vec::new(),
             },
             Instruction::Return { register: 0 },
         ],
@@ -3759,6 +3938,7 @@ fn a_store_to_an_outer_local_is_checked_like_a_load() {
                 destination: 0,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
+                copied: Vec::new(),
             },
             Instruction::Return { register: 0 },
         ],
@@ -3876,6 +4056,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
                 destination: 0,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
+                copied: Vec::new(),
             },
             Instruction::Return { register: 0 },
         ],
@@ -3904,7 +4085,8 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
 }
 
 /// A graph section holding one closure object over code id 0 and the one
-/// frame it names as its `captured_frame` and `home`, written by `frame`.
+/// frame it names as its `captured_frame`, written by `frame`. The home
+/// follows from the captured frame, so the record carries no second id.
 fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 1);
@@ -3912,10 +4094,9 @@ fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
-    writer.write_u16(0); // no parameters
     writer.write_u32(0); // code id 0 -- the block body
     writer.write_u32(0); // captured frame id
-    writer.write_u32(0); // home frame id
+    writer.write_u16(0); // copying nothing
     frame(&mut writer);
     writer.write_u32(1); // one root...
     writer.write_u8(VALUE_OBJECT_ID);
@@ -3961,6 +4142,23 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
         "decode",
         |heap, graph| {
             decode::verify_graph(graph, &table, heap).expect("the captured frame runs `foo`");
+        },
+    );
+}
+
+/// A returning activation nothing reads by reference keeps no registers at
+/// all (`Heap::pop_activation`), so the frame it leaves behind is empty --
+/// and that is exactly what a snapshot of it records. An empty file is
+/// legitimate; every other shape is still held to the body's.
+#[test]
+fn a_frame_with_no_registers_at_all_verifies() {
+    let (mut fixture, table) = closure_world();
+    fixture.decoded(
+        &closure_over_frame(foo_frame(0)),
+        "decode",
+        |heap, graph| {
+            decode::verify_graph(graph, &table, heap)
+                .expect("a frame that kept no registers is what an unmarked return leaves");
         },
     );
 }
@@ -5353,6 +5551,8 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
             register_count: 1,
             statement_program_counter: vec![(0, 0..2)],
             family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
             source: Span::new(0, 0),
         });
         let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| {
@@ -6621,10 +6821,9 @@ fn a_frames_sender_survives_a_round_trip() {
                 let closure = mutator.heap_mut().allocate_object(
                     block_class,
                     ObjectData::Closure(ns_runtime::ClosureData {
-                        parameters: std::rc::Rc::new(vec![]),
                         code: foo.clone(),
                         captured_frame: frame,
-                        home: frame,
+                        copied: Box::new([]),
                         feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
                     }),
                 );
@@ -6634,17 +6833,14 @@ fn a_frames_sender_survives_a_round_trip() {
     interpreter.enter(|mutator| {
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let closure_data = heap
-            .closure_data(*object(&decoded_0))
+        let home = heap
+            .closure_home(*object(&decoded_0))
             .expect("expected a closure");
-        assert!(matches!(
-            heap.frame_receiver(closure_data.home),
-            Value::SmallInteger(8)
-        ));
+        assert!(matches!(heap.frame_receiver(home), Value::SmallInteger(8)));
         let sender = heap
-            .frame_sender(closure_data.home)
+            .frame_sender(home)
             .expect("the decoded frame keeps its sender");
-        assert!(!sender.same(closure_data.home));
+        assert!(!sender.same(home));
         assert!(matches!(
             heap.frame_receiver(sender),
             Value::SmallInteger(7)
@@ -6678,9 +6874,8 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
     let bytes = interpreter.enter(|mutator| {
         let home = mutator
             .heap()
-            .closure_data(*object(&mutator.fetch(&closure)))
-            .expect("expected a closure")
-            .home;
+            .closure_home(*object(&mutator.fetch(&closure)))
+            .expect("expected a closure");
         let mut forged = mutator.heap().frame_snapshot(home);
         assert!(forged.uncontinuable, "`mk` had returned");
         forged.uncontinuable = false;
@@ -6706,9 +6901,8 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         let decoded_value = mutator.fetch(&decoded);
         let decoded_home = mutator
             .heap()
-            .closure_data(*object(&decoded_value))
-            .expect("expected a closure")
-            .home;
+            .closure_home(*object(&decoded_value))
+            .expect("expected a closure");
         assert!(
             !mutator.heap().frame_is_uncontinuable(decoded_home),
             "the flag the file carried must survive decoding, or this tests nothing"

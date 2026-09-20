@@ -118,8 +118,12 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
             .closure_data(object)
             .unwrap_or_else(|| panic!("expected a closure"));
         assert_eq!(closure.code.argument_count, 0);
+        let home = mutator
+            .heap()
+            .closure_home(object)
+            .unwrap_or_else(|| panic!("expected a closure"));
         assert!(matches!(
-            mutator.heap().frame_kind(closure.home),
+            mutator.heap().frame_kind(home),
             FrameKind::Initializer(_)
         ));
     });

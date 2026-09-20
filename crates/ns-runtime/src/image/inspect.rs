@@ -229,21 +229,17 @@ fn read_values(reader: &mut decode::Reader) -> Result<Vec<String>, decode::Decod
     (0..count).map(|_| read_value(reader)).collect()
 }
 
-fn read_closure_record(
-    reader: &mut decode::Reader,
-    symbols: &symbols::Table,
-) -> Result<String, decode::DecodeError> {
-    let parameters = reader.read_u16()? as usize;
-    let mut names = Vec::with_capacity(parameters);
-    for _ in 0..parameters {
-        names.push(symbols.get(reader.read_u32()?)?.to_string());
-    }
+fn read_closure_record(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
     let code = reader.read_u32()?;
     let captured = reader.read_u32()?;
-    let home = reader.read_u32()?;
+    let count = reader.read_u16()? as usize;
+    let mut copied = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
+        copied.push(read_value(reader)?);
+    }
     Ok(format!(
-        "[{}] code {code}, captured frame {captured}, home frame {home}",
-        names.join(", ")
+        "code {code}, captured frame {captured}, copied [{}]",
+        copied.join(", ")
     ))
 }
 
@@ -263,7 +259,7 @@ fn walk_graph(
             opcodes::OBJECT_STRING => format!("string {:?}", reader.read_str()?),
             opcodes::OBJECT_SYMBOL => format!("symbol #{}", symbols.get(reader.read_u32()?)?),
             opcodes::OBJECT_ARRAY => format!("array [{}]", read_values(reader)?.join(", ")),
-            opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, symbols)?),
+            opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader)?),
             opcodes::OBJECT_CLASS => {
                 let mixin = reader.read_u32()?;
                 let superclass = read_optional_class(reader)?;

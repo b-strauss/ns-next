@@ -23,8 +23,11 @@
 // call site widened from a `u16` instruction index to a `u32` family number,
 // reassigned to 21-24, then retired a second time and reassigned below at
 // 25-28 once the number itself stopped being part of the artifact at all --
-// a property the decoder now derives instead of reading.
-// Next free number: 29.
+// a property the decoder now derives instead of reading. `MakeClosure` is
+// retired at 11 and reassigned to 29 for the same reason: closure
+// conversion gave it a list of copied registers, so its old bytes describe
+// a different instruction.
+// Next free number: 33.
 
 /// Loads a literal into a register; a string, symbol, character or array
 /// literal allocates a fresh object every time it runs.
@@ -44,9 +47,6 @@ pub const OPCODE_STORE_LOCAL: u8 = 4;
 pub const OPCODE_LOAD_OUTER_LOCAL: u8 = 5;
 /// Writes a local variable of an enclosing activation, reached the same way.
 pub const OPCODE_STORE_OUTER_LOCAL: u8 = 6;
-/// Creates a block closure over a compiled block body, capturing the running
-/// activation.
-pub const OPCODE_MAKE_CLOSURE: u8 = 11;
 /// Creates an array from the values of a list of registers, for a `{ ... }`
 /// expression.
 pub const OPCODE_MAKE_ARRAY: u8 = 12;
@@ -85,14 +85,28 @@ pub const OPCODE_SEND_INLINABLE: u8 = 27;
 /// Sends a message to `self`, looked up from the superclass of the running
 /// method's defining class (§5.10).
 pub const OPCODE_SEND_SUPER: u8 = 28;
+/// Creates a block closure over a compiled block body, capturing the running
+/// activation and copying the values of a list of registers into it.
+pub const OPCODE_MAKE_CLOSURE: u8 = 29;
+/// Builds a scope's indirection vector: an `Array` of `size` `nil` slots that
+/// every block needing one of the scope's captured-and-written locals is
+/// handed a reference to.
+pub const OPCODE_MAKE_VECTOR: u8 = 30;
+/// Reads one slot of an indirection vector.
+pub const OPCODE_LOAD_VECTOR: u8 = 31;
+/// Writes one slot of an indirection vector.
+pub const OPCODE_STORE_VECTOR: u8 = 32;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction
 /// index; widening it to a `u32` family number moved them to 21–24. Retiring
 /// those in turn and moving to 25–28 is what makes a stale artifact from
 /// before call-site numbers stopped being serialized at all meet an unknown
-/// tag instead of decoding into a different, perfectly valid program.
-pub const RETIRED_OPCODES: [u8; 8] = [7, 8, 9, 10, 21, 22, 23, 24];
+/// tag instead of decoding into a different, perfectly valid program. 11 was
+/// `MakeClosure` before it carried a list of copied registers; a stale
+/// artifact's tag-11 bytes would otherwise decode as a `MakeClosure` whose
+/// block is handed nothing, which is a different, perfectly valid program.
+pub const RETIRED_OPCODES: [u8; 9] = [7, 8, 9, 10, 11, 21, 22, 23, 24];
 
 // Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
 // Next free number: 10.
@@ -147,12 +161,22 @@ pub const VALUE_CLASS_TAG: u8 = 6;
 pub const VALUE_PLATFORM: u8 = 7;
 
 /// An object record's body, following its class tag and identity hash.
+/// Next free number: 7.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
 pub const OBJECT_ARRAY: u8 = 3;
-pub const OBJECT_CLOSURE: u8 = 4;
 pub const OBJECT_CLASS: u8 = 5;
+/// A block closure: its code, the frame it captured, and its copied values.
+pub const OBJECT_CLOSURE: u8 = 6;
+
+/// Object-body tags that no longer name anything and are never reused: 4 was
+/// the closure record while it carried its parameter names and its home
+/// frame, and carried no copied values. Both halves changed, so a stale
+/// artifact's tag-4 record would decode -- field for field, by luck of the
+/// layout or not at all -- into something other than what it said. Retiring
+/// the number makes those bytes an unknown tag instead.
+pub const RETIRED_OBJECT_BODIES: [u8; 1] = [4];
 
 /// How a class reference is named. A builtin and the module's root class are
 /// not in the graph at all -- the bootstrap and the mixin table produce them --

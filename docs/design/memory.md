@@ -77,9 +77,11 @@ write. A register access is now a slice index into an owned `Vec`. Over
 16.4–16.8 ms after** — about 15%. The rest of the cost of an activation nothing
 captures — a `Vec` apiece for its arguments and temporaries, and an arena entry
 — went with the activation stack. A captured activation still takes an arena
-entry for its reified frame, and two vectors when its divorce copies the
-registers out. [execution.md](execution.md), "What the activation stack moved",
-has the figures.
+entry for its reified frame, and two vectors when it copies its registers out
+on return — which, since closure conversion, only an activation whose block can
+still reach them by reference does. [execution.md](execution.md) has both:
+"Lifecycle" for when the registers are copied, "What the activation stack
+moved" for the figures.
 
 `ObjectReference`, `FrameReference`, `ActivationReference` and `Value` are `Copy`. A handle has no
 destructor and nothing to clone, which is why `Value` could become `Copy` at all,
@@ -550,7 +552,7 @@ time.
   with their arguments, and phase; and every register. `StackEntry`'s impl is
   in `heap.rs`, where its fields are private.
 - Every arena record: an object's class and payload — an instance's or an
-  array's fields, a closure's captured frame and home, a class's enclosing
+  array's fields, a closure's captured frame and its copied values, a class's enclosing
   object, declaring class, superclass and metaclass — and a frame's receiver,
   registers, sender, home, current class and kind. A married frame's registers
   are its entry's, traced with the stack.
@@ -583,13 +585,14 @@ entry, where the stack is traced anyway.
 **A handle lives only where the tracer can rewrite it in place**: in an arena
 record, in a stack entry, in a continuation that one stack entry owns, or in
 the step state's own roots — never behind a shared `Rc`, which the tracer could reach
-only through a shared reference. So a closure's two frame handles live in the
+only through a shared reference. So a closure's handles live in the
 closure object: `ClosureData` is stored inline in the object's payload,
-sharing only `parameters` and `code`, which hold no handle, through their own
-`Rc`s with the `MakeClosure` instruction that made it; and everything else
+sharing only `code`, which holds no handle, through its own
+`Rc` with the `MakeClosure` instruction that made it; and everything else
 that needs a closure — `FrameKind::Closure` on each of its activations,
 `WhileLoop.condition`, `DoLoop.block`, `Step::Block` — names the closure object,
-whose `captured_frame` and `home` the tracer then rewrites once, in its record.
+whose `captured_frame` and copied values the tracer then rewrites once, in its
+record.
 A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
 `Box<DoLoop>`), owned by exactly one stack entry.
 
@@ -755,12 +758,14 @@ checked by the stress mode. The collector un-gates the tracing and the
 forwarding, and adds liveness, reclamation, the allocation counter that
 requests a collection, and the spaces — a nursery, a large-object space.
 
-Closure conversion ([execution.md](execution.md), "Planned: closure
-conversion") is scheduled directly before the collector for the collector's
-sake. Until it lands, a block that outlives its method keeps that method's
-whole reified frame alive — every register, including ones the block never
-reads — so the collector would retain more than the program can reach through
-its variables. After it, a surviving block holds exactly what it captured.
+Closure conversion ([execution.md](execution.md), "Closure conversion") was
+built directly before the collector for the collector's sake. Before it, a
+block that outlived its method kept that method's whole reified frame alive —
+every register, including ones the block never reads — so the collector would
+have retained more than the program can reach through its variables. A
+surviving block now holds what it captured: its copied values, and the
+indirection vector of any scope whose written variables it needs, plus its
+creator's frame record without registers.
 
 ### Open: what the collector owns
 
@@ -801,8 +806,15 @@ its variables. After it, a surviving block holds exactly what it captured.
   either back. Its peak roughly halved, because the block's own
   activation no longer takes an arena entry, but it still grows with the work
   done. A long-running process that creates blocks is therefore unbounded until
-  the collector exists, and closure conversion (above) is what shrinks each
-  reified frame's share.
+  the collector exists. Closure conversion shrank each reified frame's share —
+  a frame of a body nothing reaches by reference is now written back with no
+  registers at all — and **measured 2.6% worse on this source, not better**:
+  454.7 MB to 466.4 MB, because a block that writes a captured local now
+  allocates an indirection-vector `Array` per activation of the body that
+  declares it, into the same arena that gives nothing back
+  ([execution.md](execution.md), "What closure conversion moved", where that
+  explanation is marked as an inference from what changed rather than a
+  measured attribution).
 
   Peak does not climb smoothly with the work done. Sweeping `bench
   --iterations` over `bench_loop.ns` on the arena binary, before the activation
@@ -860,10 +872,13 @@ its variables. After it, a surviving block holds exactly what it captured.
   The release `Object` size is pinned by a release-build test
   (`an_object_is_the_size_the_amplification_figure_assumes`, `heap.rs`),
   so a field that grows it fails there before this figure goes stale. It is
-  56 bytes rather than 48 because `ClosureData` — two `Rc`s, two
-  `FrameReference`s and a `FeedbackBase`, 32 bytes — is `ObjectData`'s
+  56 bytes rather than 48 because `ClosureData` — an `Rc` to its code, a
+  `FrameReference`, the boxed slice of its copied values and a
+  `FeedbackBase`, 32 bytes — is `ObjectData`'s
   largest payload now that a class object's data is boxed; a placeholder
-  record is an empty instance and allocates no box.
+  record is an empty instance and allocates no box. Closure conversion kept
+  that at 32: `copied` replaced the two fields it made redundant, the
+  parameter names and the home.
 
   A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
   152 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
@@ -957,7 +972,7 @@ its variables. After it, a surviving block holds exactly what it captured.
   rewrites every value a host holds and releasing one needs no heap.
 - **A closure's payload is inline in the closure object**, not behind an `Rc`
   of its own, and everything else that needs a closure names the object: a
-  handle behind a shared `Rc` cannot be rewritten in place. Only `parameters` and
-  `code`, which hold no handle, stay shared. It also made `bench_block.ns`
+  handle behind a shared `Rc` cannot be rewritten in place. Only `code`, which
+  holds no handle, stays shared. It also made `bench_block.ns`
   about 4% faster, since `MakeClosure` no longer allocates an `Rc` and a popped
   block activation drops none.

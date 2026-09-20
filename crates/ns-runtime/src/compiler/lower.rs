@@ -10,6 +10,7 @@ use std::rc::Rc;
 use ns_syntax::ast::{self, Expression, Statement};
 use ns_syntax::Span;
 
+use super::capture::{BodyKey, Captured, Captures, Place};
 use super::control_flow::{self, InlineForm};
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral};
 use crate::interpreter::literals::parse_integer_literal;
@@ -19,10 +20,199 @@ use crate::types::Binding;
 /// block literal as one scope; at run time only `Frame` scopes cost a
 /// `captured_frame` hop -- an `Inlined` scope (control-flow inlining) has
 /// no frame.
+///
+/// `by_reference` marks a fallback closure's frame and everything nested in
+/// it, the one place the optimized lowering still reaches a frame's
+/// registers by reference (`docs/design/execution.md`, "Fallback blocks").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeKind {
-    Frame,
+    Frame { key: BodyKey, by_reference: bool },
     Inlined,
+}
+
+/// Where a body keeps what it can reach: its own locals, the values it was
+/// handed when it was created, and its indirection vector
+/// (`docs/design/execution.md`, "Converted representation").
+pub(crate) struct Layout {
+    key: BodyKey,
+    argument_count: u16,
+    /// What a block of this body's key is handed when it is created, in the
+    /// order its own registers take them. Empty for a root body and for a
+    /// by-reference one.
+    copied: Vec<Captured>,
+    /// One entry per local, by resolver index. All `Register` for a
+    /// by-reference body.
+    places: Vec<Place>,
+    /// The hidden register holding this body's indirection vector, present
+    /// only when it has vector variables.
+    vector_register: Option<u16>,
+    vector_size: u16,
+}
+
+/// Where one frame keeps a variable, in that frame's own registers -- the
+/// answer before the reading body's own distance from that frame is added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Location {
+    Register(u16),
+    Vector { vector_register: u16, slot: u16 },
+}
+
+/// How the body being lowered reaches one variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Register(u16),
+    OuterRegister { hops: u16, index: u16 },
+    Vector { vector: VectorAccess, slot: u16 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VectorAccess {
+    Register(u16),
+    Outer { hops: u16, index: u16 },
+}
+
+/// What a nested `Lowerer` inherits from the one that creates it: the scope
+/// stack, and one entry per enclosing `Frame` scope (innermost last) of the
+/// two tables a write or a read through a frame hop consults.
+#[derive(Default)]
+pub(crate) struct Enclosing {
+    pub(crate) scopes: Vec<ScopeKind>,
+    pub(crate) read_only_locals: Vec<Rc<[bool]>>,
+    pub(crate) layouts: Vec<Rc<Layout>>,
+}
+
+impl Layout {
+    /// The layout of a converted body: the copied values sit between the
+    /// parameters and the temporaries, and one hidden register after the
+    /// temporaries holds the indirection vector when the body has one.
+    fn converted(
+        key: BodyKey,
+        argument_count: u16,
+        temporary_count: u16,
+        captures: &Captures,
+    ) -> Self {
+        let body = captures.body(key);
+        let copied = body.copied.clone();
+        let vector_register = if body.vector_size > 0 {
+            Some(argument_count + copied.len() as u16 + temporary_count)
+        } else {
+            None
+        };
+        Layout {
+            key,
+            argument_count,
+            copied,
+            places: body.places.clone(),
+            vector_register,
+            vector_size: body.vector_size,
+        }
+    }
+
+    /// The layout of a fallback closure, or of a block nested in one: no
+    /// copied values and no vector, so every local sits in the register its
+    /// resolver index names (`docs/design/execution.md`, "Fallback blocks").
+    fn by_reference(key: BodyKey, argument_count: u16, temporary_count: u16) -> Self {
+        Layout {
+            key,
+            argument_count,
+            copied: Vec::new(),
+            places: vec![Place::Register; (argument_count + temporary_count) as usize],
+            vector_register: None,
+            vector_size: 0,
+        }
+    }
+
+    fn local_count(&self) -> u16 {
+        self.places.len() as u16
+    }
+
+    /// One past this body's last named register: the parameters, the copied
+    /// values, the temporaries and the vector register. Everything above is
+    /// scratch.
+    fn base(&self) -> u16 {
+        self.local_count() + self.copied.len() as u16 + u16::from(self.vector_register.is_some())
+    }
+
+    /// The register a local of *this* body sits in: the copied values sit
+    /// between the parameters and the temporaries, so every temporary is
+    /// pushed up by their count.
+    fn local_register(&self, index: u16) -> u16 {
+        if index < self.argument_count {
+            index
+        } else {
+            index + self.copied.len() as u16
+        }
+    }
+
+    /// The register of a frame with this layout that holds `entry` -- its own
+    /// local or vector when `entry` names this body, and otherwise the copied
+    /// register it was handed when it was created.
+    fn register_holding(&self, entry: Captured) -> u16 {
+        match entry {
+            Captured::Variable { body, index } if body == self.key => self.local_register(index),
+            Captured::Vector { body } if body == self.key => self
+                .vector_register
+                .expect("internal: a vector variable in a body with no vector"),
+            _ => {
+                let position =
+                    self.copied.iter().position(|held| *held == entry).expect(
+                        "internal: a variable the capture analysis did not hand this block",
+                    );
+                self.argument_count + position as u16
+            }
+        }
+    }
+
+    /// Where a frame with this layout keeps the variable `body` declares at
+    /// `index`.
+    fn locate(&self, body: BodyKey, index: u16, captures: &Captures) -> Location {
+        match captures.body(body).places[index as usize] {
+            Place::Register => {
+                Location::Register(self.register_holding(Captured::Variable { body, index }))
+            }
+            Place::Vector(slot) => Location::Vector {
+                vector_register: self.register_holding(Captured::Vector { body }),
+                slot,
+            },
+        }
+    }
+}
+
+/// `location`, read from a body `hops` frames below the one that holds it.
+fn access_through(hops: u16, location: Location) -> Access {
+    match location {
+        Location::Register(register) if hops == 0 => Access::Register(register),
+        Location::Register(register) => Access::OuterRegister {
+            hops,
+            index: register,
+        },
+        Location::Vector {
+            vector_register,
+            slot,
+        } if hops == 0 => Access::Vector {
+            vector: VectorAccess::Register(vector_register),
+            slot,
+        },
+        Location::Vector {
+            vector_register,
+            slot,
+        } => Access::Vector {
+            vector: VectorAccess::Outer {
+                hops,
+                index: vector_register,
+            },
+            slot,
+        },
+    }
+}
+
+/// The runtime `captured_frame` hop count from the innermost scope up to the
+/// scope at `position`: the number of `Frame` scopes above it.
+fn hops_above(scopes: &[ScopeKind], position: usize) -> u16 {
+    scopes[position + 1..]
+        .iter()
+        .filter(|scope| matches!(scope, ScopeKind::Frame { .. }))
+        .count() as u16
 }
 
 /// Whether anything reads an expression's value once it is computed. A position
@@ -41,22 +231,39 @@ enum ValueUse {
     Discarded,
 }
 
-/// The runtime `captured_frame` hop count for a resolver depth of `depth`
-/// scopes: the number of `Frame` scopes among the innermost `depth`
-/// entries of `scopes` (innermost last).
-pub(crate) fn hops_for_depth(scopes: &[ScopeKind], depth: u16) -> u16 {
-    scopes
-        .iter()
-        .rev()
-        .take(depth as usize)
-        .filter(|scope| **scope == ScopeKind::Frame)
-        .count() as u16
+/// The position in `scopes` (innermost last) of the scope a resolver depth
+/// of `depth` names, and the `Frame` scope it must be.
+fn declaring_scope(scopes: &[ScopeKind], depth: u16) -> (usize, BodyKey, bool) {
+    let position = scopes.len() - 1 - depth as usize;
+    match scopes[position] {
+        ScopeKind::Frame { key, by_reference } => (position, key, by_reference),
+        ScopeKind::Inlined => unreachable!(
+            "internal: a local declared by an inlined block (the inlining gate admits no names there)"
+        ),
+    }
 }
 
 pub(crate) struct Lowerer<'a> {
     bindings: &'a Rc<HashMap<Span, Binding>>,
     kind: CodeKind,
     argument_count: u16,
+    /// The capture analysis of the whole code family, shared by every body
+    /// of it (`compiler/capture.rs`).
+    captures: Rc<Captures>,
+    /// This body's own layout.
+    layout: Rc<Layout>,
+    /// The layout of each enclosing `Frame` scope, one entry per `Frame` in
+    /// `scopes` other than this body's own, innermost enclosing frame last --
+    /// parallel to `enclosing_read_only_locals`.
+    layouts: Vec<Rc<Layout>>,
+    /// Whether this body is a fallback closure, or a block nested in one, and
+    /// so reaches an enclosing frame's registers by reference
+    /// (`docs/design/execution.md`, "Fallback blocks").
+    by_reference: bool,
+    /// Whether the block literals lowered right now become fallback closures:
+    /// set while `lower_fallback_send` lowers an inlined form's guard-failure
+    /// arm out of the very block literals the common path inlined.
+    blocks_by_reference: bool,
     /// Innermost last. The last entry is this body's own `Frame` scope
     /// with `Inlined` entries pushed above it while an inlined block body
     /// is being lowered.
@@ -92,33 +299,103 @@ pub(crate) struct Lowerer<'a> {
     /// (`CLAUDE.md`, "An expression's value register must still hold that
     /// value").
     enclosing_read_only_locals: Vec<Rc<[bool]>>,
+    /// For each named local's register (`< base`), whether a fallback closure
+    /// can write it at any later time -- the one way user code a send runs
+    /// reaches a register of this activation after closure conversion
+    /// (`docs/design/execution.md`, "Fewer protective copies"). In a
+    /// converted body that is exactly the locals an inlinable conditional of
+    /// this body assigns (`BodyCaptures::branch_assigned`), because the
+    /// fallback closure that conditional builds out of the same block literal
+    /// writes them by reference; in a by-reference body it is every writable
+    /// register, since every closure nested in one reaches this frame by
+    /// reference too.
+    reachable_by_a_fallback_closure: Vec<bool>,
 }
 
 impl<'a> Lowerer<'a> {
+    /// The nine parameters are the body's identity (`kind`, `key`), its own
+    /// shape (`argument_count`, `temporaries`), the two analyses every body
+    /// of the family shares (`bindings`, `captures`), what makes it a
+    /// fallback closure (`by_reference`), what it inherits from its creator
+    /// (`enclosing`) and where its sends' numbering resumes.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         kind: CodeKind,
+        key: BodyKey,
         argument_count: u16,
         temporaries: &[ast::SlotDeclaration],
         bindings: &'a Rc<HashMap<Span, Binding>>,
-        mut enclosing_scopes: Vec<ScopeKind>,
-        enclosing_read_only_locals: Vec<Rc<[bool]>>,
+        captures: Rc<Captures>,
+        by_reference: bool,
+        enclosing: Enclosing,
         first_call_site: u32,
     ) -> Self {
-        enclosing_scopes.push(ScopeKind::Frame);
-        let base = argument_count + temporaries.len() as u16;
-        let read_only_locals: Rc<[bool]> = std::iter::repeat_n(true, argument_count as usize)
-            .chain(
-                temporaries
-                    .iter()
-                    .map(|temporary| temporary.mutability == ast::SlotMutability::Immutable),
-            )
-            .collect();
+        let Enclosing {
+            mut scopes,
+            read_only_locals: enclosing_read_only_locals,
+            layouts,
+        } = enclosing;
+        scopes.push(ScopeKind::Frame { key, by_reference });
+        let temporary_count = temporaries.len() as u16;
+        let layout = if by_reference {
+            Layout::by_reference(key, argument_count, temporary_count)
+        } else {
+            Layout::converted(key, argument_count, temporary_count, &captures)
+        };
+        let base = layout.base();
+        // Indexed by *register*, not by resolver index. A parameter and an
+        // immutable local slot are read-only because nothing but their
+        // initialization writes them (§3.6); a copied register because the
+        // analysis puts every variable anything writes after capture into a
+        // vector; the vector register because only `MakeVector` writes it;
+        // and a vector variable's own register because it stays nil.
+        let mut read_only_locals = vec![true; base as usize];
+        for (offset, temporary) in temporaries.iter().enumerate() {
+            let index = argument_count + offset as u16;
+            let writable = temporary.mutability != ast::SlotMutability::Immutable
+                && layout.places[index as usize] == Place::Register;
+            read_only_locals[layout.local_register(index) as usize] = !writable;
+        }
+        // Also indexed by register. A by-reference body has no capture
+        // analysis of its own -- it was walked as the inlined block it also
+        // is -- and anything nested in it reaches every one of its registers,
+        // so every writable register counts.
+        let mut reachable_by_a_fallback_closure = vec![false; base as usize];
+        if by_reference {
+            for (register, read_only) in read_only_locals.iter().enumerate() {
+                reachable_by_a_fallback_closure[register] = !read_only;
+            }
+        } else {
+            let body = captures.body(key);
+            for (index, assigned) in body.branch_assigned.iter().enumerate() {
+                // A vector variable's own register stays nil: the fallback
+                // closure writes the vector slot instead.
+                if *assigned && body.places[index] == Place::Register {
+                    let register = layout.local_register(index as u16);
+                    reachable_by_a_fallback_closure[register as usize] = true;
+                }
+            }
+        }
+        let mut instructions = Vec::new();
+        // Before the local initializers, which already write through it:
+        // `| x ::= 3. |` on a vector variable is a `StoreVector`.
+        if let Some(destination) = layout.vector_register {
+            instructions.push(Instruction::MakeVector {
+                destination,
+                size: layout.vector_size,
+            });
+        }
         Lowerer {
             bindings,
             kind,
             argument_count,
-            scopes: enclosing_scopes,
-            instructions: Vec::new(),
+            captures,
+            layout: Rc::new(layout),
+            layouts,
+            by_reference,
+            blocks_by_reference: false,
+            scopes,
+            instructions,
             base,
             next_scratch: base,
             max_register: base,
@@ -126,8 +403,9 @@ impl<'a> Lowerer<'a> {
             statement_program_counter: Vec::new(),
             next_call_site: first_call_site,
             last_expression_register: None,
-            read_only_locals,
+            read_only_locals: read_only_locals.into(),
             enclosing_read_only_locals,
+            reachable_by_a_fallback_closure,
         }
     }
 
@@ -209,8 +487,11 @@ impl<'a> Lowerer<'a> {
             self.next_scratch = self.base;
             let start = self.instructions.len();
             let source = self.lower_expression_for(initializer, ValueUse::Read);
-            let slot = self.argument_count + position as u16;
-            self.emit(Instruction::StoreLocal { source, slot });
+            // Through the same `Access` as an assignment: a captured-and-
+            // written local's initializer writes its scope's vector, not a
+            // register (`docs/design/execution.md`, "Converted representation").
+            let access = self.resolve_variable(0, self.argument_count + position as u16);
+            self.emit_store(access, source);
             let end = self.instructions.len();
             self.statement_program_counter
                 .push((self.statement_index, start..end));
@@ -340,15 +621,39 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|parameter| crate::Symbol::intern(&parameter.name))
             .collect();
+        let key = BodyKey::Block(block.span);
+        // A fallback closure's block, and everything nested in one, keeps the
+        // by-reference model; the capture analysis holds no entry for such a
+        // body, because it walked that block literal as the inlined one it
+        // also is (`docs/design/execution.md`, "Fallback blocks").
+        let by_reference = self.by_reference || self.blocks_by_reference;
+        let copied: Vec<u16> = if by_reference {
+            Vec::new()
+        } else {
+            self.captures
+                .body(key)
+                .copied
+                .iter()
+                .map(|entry| self.layout.register_holding(*entry))
+                .collect()
+        };
         let mut enclosing_read_only_locals = self.enclosing_read_only_locals.clone();
         enclosing_read_only_locals.push(self.read_only_locals.clone());
+        let mut layouts = self.layouts.clone();
+        layouts.push(self.layout.clone());
         let mut inner = Lowerer::new(
             CodeKind::Block,
+            key,
             parameters.len() as u16,
             &block.body.temporaries,
             self.bindings,
-            self.scopes.clone(),
-            enclosing_read_only_locals,
+            self.captures.clone(),
+            by_reference,
+            Enclosing {
+                scopes: self.scopes.clone(),
+                read_only_locals: enclosing_read_only_locals,
+                layouts,
+            },
             self.next_call_site,
         );
         inner.lower_local_initializers(&block.body.temporaries);
@@ -365,6 +670,7 @@ impl<'a> Lowerer<'a> {
             destination,
             parameters: Rc::new(parameters),
             code: Rc::new(code),
+            copied,
         });
         destination
     }
@@ -399,10 +705,10 @@ impl<'a> Lowerer<'a> {
     /// everything lowered after this operand but before that instruction
     /// executes -- the arguments still to come, for instance.
     fn lower_operand(&mut self, expression: &Expression, rest: &[Expression]) -> u16 {
+        let register = self.lower_expression(expression);
         let clobbered = rest
             .iter()
-            .any(|expression| self.may_clobber_locals(expression));
-        let register = self.lower_expression(expression);
+            .any(|later| self.writes_register(later, register, 0));
         self.materialize(register, clobbered)
     }
 
@@ -435,36 +741,171 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Whether lowering `expression` can emit an instruction that writes one of
-    /// this frame's named locals: a `StoreLocal`/`StoreOuterLocal` from an
-    /// assignment, or *any* send -- a send runs user code, and that code can
-    /// assign this frame's locals through a closure that captured the frame.
-    /// The closure need not appear in `expression` at all (an earlier statement
-    /// may have built and stored it), so every send counts.
+    /// Whether the user code a send runs can write `register`.
     ///
-    /// Conservative in one direction only: answering `true` costs one
-    /// `Move`, answering `false` when a write can happen breaks the
-    /// value-register invariant (`docs/design/compiler.md`).
-    fn may_clobber_locals(&self, expression: &Expression) -> bool {
+    /// After closure conversion a converted closure writes no register of
+    /// another activation: a captured written variable lives in its scope's
+    /// indirection vector, a vector read lands in a scratch register as a
+    /// snapshot, and a copied register is read-only. The one exception is a
+    /// fallback closure, which writes by reference exactly the locals its
+    /// inlinable branch assigns -- and such a closure can be kept and run at
+    /// any later time, so any send may be the one that runs it
+    /// (`docs/design/execution.md`, "Fewer protective copies").
+    ///
+    /// A register above `base` is unreachable by name from anywhere, so no
+    /// send can write it whatever the body's shape.
+    fn a_send_can_write(&self, register: u16) -> bool {
+        register < self.base && self.reachable_by_a_fallback_closure[register as usize]
+    }
+
+    /// Whether reading `identifier` dispatches -- an implicit-receiver send --
+    /// rather than loading a register. Mirrors `lower_identifier_read`, whose
+    /// `self` case answers before the binding is consulted; a bare builtin
+    /// class name and the deferred unresolved-identifier case are single
+    /// register loads.
+    fn identifier_sends(&self, identifier: &ast::Identifier) -> bool {
+        identifier.name != "self"
+            && matches!(
+                self.bindings.get(&identifier.span),
+                Some(Binding::LexicalSend { .. })
+            )
+    }
+
+    /// The register of *this* body a write to `target` lands in, if any.
+    ///
+    /// `inlined_depth` is how many inlined-block scopes stand between this
+    /// body's scope stack and `target`'s own scope: the resolver counts every
+    /// block literal as a scope, and `lower_inline_block_body` pushes the
+    /// matching `ScopeKind::Inlined` only while it lowers the block, which is
+    /// after this question is asked.
+    fn assignment_target_register(
+        &self,
+        target: &ast::Identifier,
+        inlined_depth: u16,
+    ) -> Option<u16> {
+        let (depth, index) = match self.bindings.get(&target.span)? {
+            Binding::Local(index) => (0, *index),
+            Binding::OuterLocal { depth, index } => (*depth, *index),
+            Binding::LexicalSend { .. } | Binding::SuperSend => return None,
+        };
+        // The inlining gate admits no block with temporaries or parameters,
+        // so a binding inside an inlined block never names that block's own
+        // scope and the subtraction cannot underflow.
+        let depth = depth.checked_sub(inlined_depth).unwrap_or_else(|| {
+            panic!(
+                "internal: an assignment inside an inlined block bound to that block's own scope"
+            )
+        });
+        match self.resolve_variable(depth, index) {
+            Access::Register(register) => Some(register),
+            // Another frame's register, or a vector slot: neither is a
+            // register of this body.
+            Access::OuterRegister { .. } | Access::Vector { .. } => None,
+        }
+    }
+
+    /// Whether lowering `expression` here can emit an instruction that writes
+    /// `register`, a register of the body being lowered, before the
+    /// instruction that consumes `register` executes.
+    ///
+    /// Conservative in one direction only: answering `true` costs one `Move`,
+    /// answering `false` when a write can happen breaks the value-register
+    /// invariant (`CLAUDE.md`, "An expression's value register must still hold
+    /// that value when its consumer executes") -- silent wrong output, not a
+    /// crash.
+    fn writes_register(&self, expression: &Expression, register: u16, inlined_depth: u16) -> bool {
         match expression {
-            // `LoadLiteral` and `MakeClosure` allocate; neither runs user
-            // code nor writes a named local.
+            // `LoadLiteral` and `MakeClosure` write only their own scratch
+            // destination. A block literal that is not inlined runs nothing
+            // here, and the body it compiles to writes its own registers.
             Expression::Literal(_) | Expression::Block(_) => false,
-            Expression::Identifier(id) => match self.bindings.get(&id.span) {
-                // A register read (`LoadOuterLocal` at worst).
-                Some(Binding::Local(_) | Binding::OuterLocal { .. }) => false,
-                // An implicit receiverless send -- real dispatch.
-                Some(Binding::LexicalSend { .. }) => true,
-                // `self`, a bare builtin class name, and the deferred
-                // unresolved-identifier case: a single register load each.
-                Some(Binding::SuperSend) | None => false,
-            },
-            Expression::Assign { .. } | Expression::Send(_) | Expression::Cascade(_) => true,
-            // `MakeArray` itself cannot; its elements can.
+            Expression::Identifier(identifier) => {
+                self.identifier_sends(identifier) && self.a_send_can_write(register)
+            }
+            Expression::Assign { target, value, .. } => {
+                self.writes_register(value, register, inlined_depth)
+                    || self.assignment_target_register(target, inlined_depth) == Some(register)
+                    // A setter send runs user code like any other send.
+                    || (self.identifier_sends(target) && self.a_send_can_write(register))
+            }
+            Expression::Send(send) => self.send_writes_register(send, register, inlined_depth),
+            Expression::Cascade(cascade) => {
+                self.a_send_can_write(register)
+                    || self.writes_register(&cascade.receiver, register, inlined_depth)
+                    || std::iter::once(&cascade.first)
+                        .chain(cascade.rest.iter())
+                        .flat_map(|message| message.arguments.iter())
+                        .any(|argument| self.writes_register(argument, register, inlined_depth))
+            }
+            // `MakeArray` itself writes nothing but its destination; its
+            // elements can.
             Expression::DynamicArray { elements, .. } => elements
                 .iter()
-                .any(|element| self.may_clobber_locals(element)),
+                .any(|element| self.writes_register(element, register, inlined_depth)),
         }
+    }
+
+    /// Mirrors `lower_send` through the shared gate: only an ordinary
+    /// explicit-receiver send is offered to `recognize`, and a lexical or
+    /// `super` send has no receiver expression to walk. Every send runs user
+    /// code, and so does every recognized inlinable form -- through the real
+    /// send its guard-failure path makes (`lower_fallback_send`,
+    /// `emit_must_be_boolean`).
+    fn send_writes_register(&self, send: &ast::Send, register: u16, inlined_depth: u16) -> bool {
+        if self.a_send_can_write(register) {
+            return true;
+        }
+        if control_flow::is_ordinary_send(self.bindings, send) {
+            if let Some(form) = control_flow::recognize(send) {
+                return self.inlined_form_writes_register(send, form, register, inlined_depth);
+            }
+            if self.writes_register(&send.receiver, register, inlined_depth) {
+                return true;
+            }
+        }
+        send.message
+            .arguments
+            .iter()
+            .any(|argument| self.writes_register(argument, register, inlined_depth))
+    }
+
+    /// A recognized inlinable form lowers its blocks into this same body, so
+    /// an assignment in one of them writes this body's registers directly --
+    /// one resolver scope deeper than the form itself.
+    fn inlined_form_writes_register(
+        &self,
+        send: &ast::Send,
+        form: InlineForm<'_>,
+        register: u16,
+        inlined_depth: u16,
+    ) -> bool {
+        let (receiver, first, second) = match form {
+            InlineForm::IfTrueIfFalse(true_block, false_block) => {
+                (Some(&send.receiver), Some(true_block), Some(false_block))
+            }
+            InlineForm::IfTrue(block)
+            | InlineForm::IfFalse(block)
+            | InlineForm::And(block)
+            | InlineForm::Or(block) => (Some(&send.receiver), Some(block), None),
+            // The receiver *is* the condition block: `lower_while` lowers no
+            // receiver expression of its own.
+            InlineForm::WhileTrue { condition, body }
+            | InlineForm::WhileFalse { condition, body } => (None, Some(condition), Some(body)),
+        };
+        if let Some(receiver) = receiver {
+            if self.writes_register(receiver, register, inlined_depth) {
+                return true;
+            }
+        }
+        [first, second]
+            .into_iter()
+            .flatten()
+            .flat_map(|block| block.body.statements.iter())
+            .any(|statement| match statement {
+                Statement::Expression(expression) | Statement::Return(expression) => {
+                    self.writes_register(expression, register, inlined_depth + 1)
+                }
+            })
     }
 
     /// Returns the register holding `expression`'s value.
@@ -499,17 +940,127 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// The position in `scopes` of the innermost converted `Frame` -- the
+    /// frame whose layout holds every converted variable this body can see.
+    /// From inside a fallback closure that is the frame below it, the one
+    /// whose common path the fallback stands in for; the root body is always
+    /// converted, so there is always one.
+    fn innermost_converted(&self) -> usize {
+        self.scopes
+            .iter()
+            .rposition(|scope| {
+                matches!(
+                    scope,
+                    ScopeKind::Frame {
+                        by_reference: false,
+                        ..
+                    }
+                )
+            })
+            .expect("internal: no converted frame below this body (the root body is converted)")
+    }
+
     /// Maps a resolver `Binding::Local`/`OuterLocal` onto the runtime
-    /// register file: `(hops, index)`, where `hops == 0` means "register
-    /// `index` of the current frame".
-    fn local_target(&self, depth: u16, index: u16) -> (u16, u16) {
-        if depth == 0 {
-            assert!(
-                self.scopes.last() == Some(&ScopeKind::Frame),
-                "internal: Binding::Local inside an inlined block (the inlining gate admits no names there)"
+    /// register file. The one place a binding becomes an access: a variable a
+    /// by-reference frame declares is reached by plain hops, and one a
+    /// converted frame declares through that frame's layout -- its own
+    /// register, the register it was copied into, or its vector register and
+    /// a slot -- with hops added when the reading body is a fallback closure
+    /// below it.
+    fn resolve_variable(&self, depth: u16, index: u16) -> Access {
+        let (declaring_position, key, by_reference) = declaring_scope(&self.scopes, depth);
+        if by_reference {
+            return access_through(
+                hops_above(&self.scopes, declaring_position),
+                Location::Register(index),
             );
         }
-        (hops_for_depth(&self.scopes, depth), index)
+        let anchor_position = self.innermost_converted();
+        let hops = hops_above(&self.scopes, anchor_position);
+        let layout = if hops == 0 {
+            &self.layout
+        } else {
+            // `layouts` is innermost last and holds no entry for this body's
+            // own frame, so the frame `hops` scopes out sits `hops` entries
+            // before the end.
+            &self.layouts[self.layouts.len() - hops as usize]
+        };
+        access_through(hops, layout.locate(key, index, &self.captures))
+    }
+
+    /// Emits whatever `access` needs to leave the variable's value in a
+    /// register, and answers that register.
+    fn emit_read(&mut self, access: Access) -> u16 {
+        match access {
+            Access::Register(register) => register,
+            Access::OuterRegister { hops, index } => {
+                let destination = self.allocate_scratch();
+                self.emit(Instruction::LoadOuterLocal {
+                    destination,
+                    depth: hops,
+                    index,
+                });
+                destination
+            }
+            Access::Vector { vector, slot } => {
+                let vector = self.emit_vector_register(vector);
+                let destination = self.allocate_scratch();
+                self.emit(Instruction::LoadVector {
+                    destination,
+                    vector,
+                    index: slot,
+                });
+                destination
+            }
+        }
+    }
+
+    /// Emits whatever `access` needs to write `source` into the variable.
+    /// The caller checks that a register write is allowed; a vector slot is
+    /// writable by construction, since only a variable something writes ever
+    /// goes into a vector.
+    fn emit_store(&mut self, access: Access, source: u16) {
+        match access {
+            Access::Register(register) => {
+                self.emit(Instruction::StoreLocal {
+                    source,
+                    slot: register,
+                });
+            }
+            Access::OuterRegister { hops, index } => {
+                self.emit(Instruction::StoreOuterLocal {
+                    source,
+                    depth: hops,
+                    index,
+                });
+            }
+            Access::Vector { vector, slot } => {
+                let vector = self.emit_vector_register(vector);
+                self.emit(Instruction::StoreVector {
+                    vector,
+                    index: slot,
+                    source,
+                });
+            }
+        }
+    }
+
+    /// The register holding the indirection vector itself: this frame's own
+    /// vector register, or -- inside a fallback closure -- a scratch register
+    /// the hop to the frame that owns it lands in.
+    fn emit_vector_register(&mut self, vector: VectorAccess) -> u16 {
+        match vector {
+            VectorAccess::Register(register) => register,
+            VectorAccess::Outer { hops, index } => {
+                let destination = self.allocate_scratch();
+                self.emit(Instruction::LoadOuterLocal {
+                    destination,
+                    depth: hops,
+                    index,
+                });
+                destination
+            }
+        }
     }
 
     fn lower_identifier_read(&mut self, id: &ast::Identifier) -> u16 {
@@ -520,21 +1071,12 @@ impl<'a> Lowerer<'a> {
         }
         match self.bindings.get(&id.span) {
             Some(Binding::Local(slot)) => {
-                let (_, index) = self.local_target(0, *slot);
-                index
+                let access = self.resolve_variable(0, *slot);
+                self.emit_read(access)
             }
             Some(Binding::OuterLocal { depth, index }) => {
-                let (hops, index) = self.local_target(*depth, *index);
-                if hops == 0 {
-                    return index;
-                }
-                let destination = self.allocate_scratch();
-                self.emit(Instruction::LoadOuterLocal {
-                    destination,
-                    depth: hops,
-                    index,
-                });
-                destination
+                let access = self.resolve_variable(*depth, *index);
+                self.emit_read(access)
             }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
@@ -573,6 +1115,31 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Every write into a named local, checked against the table of the
+    /// frame that owns the register: this frame's own for a `StoreLocal`,
+    /// and the target frame's for a `StoreOuterLocal` -- the
+    /// write-through-a-closure case `materialize`'s copy exists to protect
+    /// against (`CLAUDE.md`, "An expression's value register must still hold
+    /// that value"). A vector slot needs no check: only a variable something
+    /// writes is ever put in a vector.
+    fn check_writable(&self, access: Access) {
+        let read_only = match access {
+            Access::Register(register) => self.read_only_locals[register as usize],
+            // `enclosing_read_only_locals` is innermost last, so the frame
+            // `hops` scopes out sits `hops` entries before the end.
+            Access::OuterRegister { hops, index } => {
+                self.enclosing_read_only_locals
+                    [self.enclosing_read_only_locals.len() - hops as usize][index as usize]
+            }
+            Access::Vector { .. } => false,
+        };
+        debug_assert!(
+            !read_only,
+            "internal: an assignment bound to a parameter or an immutable local \
+             (the resolver passes a setter send by them)"
+        );
+    }
+
     /// `use_` is `Discarded` only where nothing reads this assignment's
     /// value -- see `lower_expression_for`, the only caller that passes it.
     fn lower_assign(
@@ -584,7 +1151,9 @@ impl<'a> Lowerer<'a> {
         let mut value_register = self.lower_expression(value);
         // A setter send runs user code before anything reads this expression's
         // own value, so a named local's register may no longer hold what was
-        // assigned by then. (The `StoreLocal`/`StoreOuterLocal` cases below
+        // assigned by then -- but only where that code can reach the register
+        // at all, which after conversion is a fallback closure's locals alone
+        // (`a_send_can_write`). (The `StoreLocal`/`StoreOuterLocal` cases below
         // need no copy: the only named local a `StoreLocal` can write while
         // `value_register` is live is `value_register` itself -- `t:: t` --
         // which leaves it unchanged, and a `StoreOuterLocal` writes a different
@@ -594,51 +1163,20 @@ impl<'a> Lowerer<'a> {
                 self.bindings.get(&target.span),
                 Some(Binding::LexicalSend { .. })
             )
+            && self.a_send_can_write(value_register)
         {
             value_register = self.materialize(value_register, true);
         }
         match self.bindings.get(&target.span) {
             Some(Binding::Local(slot)) => {
-                let (_, index) = self.local_target(0, *slot);
-                debug_assert!(
-                    !self.read_only_locals[index as usize],
-                    "internal: an assignment bound to a parameter or an immutable local \
-                     (the resolver passes a setter send by them)"
-                );
-                self.emit(Instruction::StoreLocal {
-                    source: value_register,
-                    slot: index,
-                });
+                let access = self.resolve_variable(0, *slot);
+                self.check_writable(access);
+                self.emit_store(access, value_register);
             }
             Some(Binding::OuterLocal { depth, index }) => {
-                let (hops, index) = self.local_target(*depth, *index);
-                if hops == 0 {
-                    debug_assert!(
-                        !self.read_only_locals[index as usize],
-                        "internal: an assignment bound to a parameter or an immutable local \
-                         (the resolver passes a setter send by them)"
-                    );
-                    self.emit(Instruction::StoreLocal {
-                        source: value_register,
-                        slot: index,
-                    });
-                } else {
-                    // `enclosing_read_only_locals` is innermost last, so the
-                    // frame `hops` scopes out sits `hops` entries before the
-                    // end.
-                    let target_frame = &self.enclosing_read_only_locals
-                        [self.enclosing_read_only_locals.len() - hops as usize];
-                    debug_assert!(
-                        !target_frame[index as usize],
-                        "internal: an assignment bound to a parameter or an immutable local \
-                         (the resolver passes a setter send by them)"
-                    );
-                    self.emit(Instruction::StoreOuterLocal {
-                        source: value_register,
-                        depth: hops,
-                        index,
-                    });
-                }
+                let access = self.resolve_variable(*depth, *index);
+                self.check_writable(access);
+                self.emit_store(access, value_register);
             }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
@@ -707,6 +1245,18 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// The real send an inlined conditional falls back to when its receiver
+    /// is not a Boolean. The closures it builds out of the same block
+    /// literals keep the by-reference model: such a closure can be kept and
+    /// run long after this statement (`docs/design/execution.md`, "Fallback
+    /// blocks").
+    fn lower_fallback_send(&mut self, receiver_register: u16, message: &ast::MessageSend) -> u16 {
+        let saved = std::mem::replace(&mut self.blocks_by_reference, true);
+        let result = self.emit_ordinary_send_with_receiver(receiver_register, message);
+        self.blocks_by_reference = saved;
+        result
+    }
+
     /// Every argument is live until the send instruction reads it, so each
     /// one has to survive whatever the arguments after it emit.
     fn lower_arguments(&mut self, message: &ast::MessageSend) -> Vec<u16> {
@@ -720,9 +1270,55 @@ impl<'a> Lowerer<'a> {
     /// `use_` is what reads the send's value. Only an inlined form passes it
     /// on, to the blocks whose values become its own.
     fn lower_send(&mut self, send: &ast::Send, use_: ValueUse) -> u16 {
+        // The inlining gate: only an ordinary explicit-receiver send is ever
+        // offered to `recognize` (`docs/design/compiler.md`, "Control-flow
+        // inlining"), through the one predicate the capture analysis and the
+        // protective-copy walk ask too. Every recognized form still keeps a
+        // runtime guard whose failure path is a real virtual send, so
+        // inlining stays a pure optimization.
+        if !control_flow::is_ordinary_send(self.bindings, send) {
+            return self.lower_super_or_lexical_send(send);
+        }
+        if let Some(form) = control_flow::recognize(send) {
+            return match form {
+                InlineForm::IfTrueIfFalse(true_block, false_block) => {
+                    self.lower_if(send, Some(true_block), Some(false_block), use_)
+                }
+                InlineForm::IfTrue(true_block) => self.lower_if(send, Some(true_block), None, use_),
+                InlineForm::IfFalse(false_block) => {
+                    self.lower_if(send, None, Some(false_block), use_)
+                }
+                InlineForm::And(block) => self.lower_and_or(send, block, true, use_),
+                InlineForm::Or(block) => self.lower_and_or(send, block, false, use_),
+                InlineForm::WhileTrue { condition, body } => {
+                    self.lower_while(condition, body, true)
+                }
+                InlineForm::WhileFalse { condition, body } => {
+                    self.lower_while(condition, body, false)
+                }
+            };
+        }
+        // The receiver is read by the send instruction, so it has to
+        // survive its own arguments' lowering.
+        let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
+        self.emit_ordinary_send_with_receiver(receiver_register, &send.message)
+    }
+
+    /// The two sends `is_ordinary_send` rejects: neither has a receiver
+    /// expression, and neither is ever inlined.
+    fn lower_super_or_lexical_send(&mut self, send: &ast::Send) -> u16 {
+        let selector = selector_of(&send.message);
         match self.bindings.get(&send.span) {
-            Some(Binding::SuperSend) => {
-                let selector = selector_of(&send.message);
+            Some(Binding::LexicalSend { depth }) => {
+                let depth = *depth;
+                let argument_registers = self.lower_arguments(&send.message);
+                self.emit_lexical_send(depth, selector, argument_registers)
+            }
+            binding => {
+                debug_assert!(
+                    matches!(binding, Some(Binding::SuperSend)),
+                    "internal: is_ordinary_send rejected a send that is neither super nor lexical"
+                );
                 let argument_registers = self.lower_arguments(&send.message);
                 self.emit_send(|destination, call_site| Instruction::SendSuper {
                     selector,
@@ -731,58 +1327,20 @@ impl<'a> Lowerer<'a> {
                     call_site,
                 })
             }
-            Some(Binding::LexicalSend { depth }) => {
-                let depth = *depth;
-                let selector = selector_of(&send.message);
-                let argument_registers = self.lower_arguments(&send.message);
-                self.emit_lexical_send(depth, selector, argument_registers)
-            }
-            _ => {
-                // The inlining gate: only an ordinary explicit-receiver send
-                // is ever offered to `recognize` (`docs/design/compiler.md`,
-                // "Control-flow inlining"). Every recognized form still keeps
-                // a runtime guard whose failure path is a real virtual send,
-                // so inlining stays a pure optimization.
-                if let Some(form) = control_flow::recognize(send) {
-                    return match form {
-                        InlineForm::IfTrueIfFalse(true_block, false_block) => {
-                            self.lower_if(send, Some(true_block), Some(false_block), use_)
-                        }
-                        InlineForm::IfTrue(true_block) => {
-                            self.lower_if(send, Some(true_block), None, use_)
-                        }
-                        InlineForm::IfFalse(false_block) => {
-                            self.lower_if(send, None, Some(false_block), use_)
-                        }
-                        InlineForm::And(block) => self.lower_and_or(send, block, true, use_),
-                        InlineForm::Or(block) => self.lower_and_or(send, block, false, use_),
-                        InlineForm::WhileTrue { condition, body } => {
-                            self.lower_while(condition, body, true)
-                        }
-                        InlineForm::WhileFalse { condition, body } => {
-                            self.lower_while(condition, body, false)
-                        }
-                    };
-                }
-                // The receiver is read by the send instruction, so it has to
-                // survive its own arguments' lowering.
-                let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
-                self.emit_ordinary_send_with_receiver(receiver_register, &send.message)
-            }
         }
     }
 
     fn lower_cascade(&mut self, cascade: &ast::Cascade) -> u16 {
-        // The one receiver register is read again by every message of the
-        // cascade, so it has to survive the earlier *sends* too, not just
-        // the arguments lowered between them.
-        let clobbered = !cascade.rest.is_empty()
-            || cascade
-                .first
-                .arguments
-                .iter()
-                .any(|argument| self.may_clobber_locals(argument));
         let receiver_register = self.lower_expression(&cascade.receiver);
+        // The one receiver register is read again by every message of the
+        // cascade, so it has to survive the earlier *sends* too -- the last
+        // one reads it as it executes -- and the arguments of every message,
+        // not only the first's.
+        let clobbered = (!cascade.rest.is_empty() && self.a_send_can_write(receiver_register))
+            || std::iter::once(&cascade.first)
+                .chain(cascade.rest.iter())
+                .flat_map(|message| message.arguments.iter())
+                .any(|argument| self.writes_register(argument, receiver_register, 0));
         let receiver_register = self.materialize(receiver_register, clobbered);
         let mut result = self.emit_ordinary_send_with_receiver(receiver_register, &cascade.first);
         for message in &cascade.rest {
@@ -978,7 +1536,7 @@ impl<'a> Lowerer<'a> {
                 Some(block) => lowerer.lower_inline_block_body(block, use_),
                 None => lowerer.emit_nil(),
             },
-            |lowerer| lowerer.emit_ordinary_send_with_receiver(guard_register, &send.message),
+            |lowerer| lowerer.lower_fallback_send(guard_register, &send.message),
         );
         destination
     }
@@ -1000,9 +1558,8 @@ impl<'a> Lowerer<'a> {
             let block_register = lowerer.lower_inline_block_body(block, use_);
             lowerer.emit_coerce_to_boolean(block_register)
         };
-        let fallback = |lowerer: &mut Self| {
-            lowerer.emit_ordinary_send_with_receiver(guard_register, &send.message)
-        };
+        let fallback =
+            |lowerer: &mut Self| lowerer.lower_fallback_send(guard_register, &send.message);
         if is_and {
             self.emit_guarded_branch(
                 guard_register,
@@ -1094,6 +1651,8 @@ impl<'a> Lowerer<'a> {
         CompiledCode {
             kind: self.kind,
             family_size: crate::bytecode::family_size_of(&self.instructions),
+            copied_count: self.layout.copied.len() as u16,
+            outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
             instructions: self.instructions,
             argument_count: self.argument_count,
             register_count: self.max_register,
@@ -1138,9 +1697,42 @@ pub(super) fn lower_literal(literal: &ast::Literal) -> BytecodeLiteral {
 
 #[cfg(test)]
 mod tests {
+    use super::super::capture::{analyze, RootBody};
     use super::*;
     use indoc::{formatdoc, indoc};
     use std::path::PathBuf;
+
+    /// A `Lowerer` for a body a test describes directly, over the capture
+    /// analysis of that same body.
+    fn lowerer_for<'a>(
+        kind: CodeKind,
+        argument_count: u16,
+        temporaries: &[ast::SlotDeclaration],
+        slot_initializers: Vec<&Expression>,
+        statements: &[Statement],
+        bindings: &'a Rc<HashMap<Span, Binding>>,
+    ) -> Lowerer<'a> {
+        let captures = Rc::new(analyze(
+            RootBody {
+                argument_count,
+                temporaries,
+                slot_initializers,
+                statements,
+            },
+            bindings,
+        ));
+        Lowerer::new(
+            kind,
+            BodyKey::Root,
+            argument_count,
+            temporaries,
+            bindings,
+            captures,
+            false,
+            Enclosing::default(),
+            0,
+        )
+    }
 
     /// Parses `source` (a full, minimal `class ... ( ) ( <methods> ) : ()`
     /// module), resolves it for real via `crate::resolve`, and returns the
@@ -1172,14 +1764,13 @@ mod tests {
             ast::MessagePattern::Binary { .. } => 1,
             ast::MessagePattern::Keyword { parts } => parts.len() as u16,
         };
-        Lowerer::new(
+        lowerer_for(
             CodeKind::Method,
             argument_count,
             &method.body.temporaries,
+            Vec::new(),
+            &method.body.statements,
             bindings,
-            vec![],
-            vec![],
-            0,
         )
     }
 
@@ -1385,25 +1976,202 @@ mod tests {
         );
     }
 
-    /// A mutable local still is copied: the send can write it through a
-    /// closure that captured the frame.
+    /// The receiver register of the one `SendPublic` whose selector is
+    /// `selector`.
+    fn public_receiver(code: &CompiledCode, selector: &str) -> u16 {
+        let Some(Instruction::SendPublic {
+            receiver_register, ..
+        }) = code.instructions.iter().find(
+            |instruction| matches!(instruction, Instruction::SendPublic { selector: sent, .. } if sent.as_str() == selector),
+        ) else {
+            panic!("expected a `{selector}` send: {:?}", code.instructions)
+        };
+        *receiver_register
+    }
+
+    /// After closure conversion a converted closure writes no register of
+    /// another activation, so a send is no longer a write of every local. A
+    /// mutable local that no inlinable branch of the body assigns survives
+    /// every send lowered after it, and the operand stays in its own
+    /// register.
     #[test]
-    fn a_mutable_local_operand_is_still_copied() {
+    fn an_operand_is_no_longer_copied_because_a_send_might_write_it() {
         let source = indoc! {"
             Newspeak3
             'T'
             class X = Object new (
             ) (
-              m = ( | local ::= 1. | ^local foo: self bar )
+              m = ( | t ::= 1. | ^t + self foo )
             ) : ()
         "};
-        let code = lower_whole_method(source, 0); // `local` is register 0
+        let code = lower_whole_method(source, 0); // `t` is register 0
         assert!(
-            code.instructions
+            !code
+                .instructions
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
-            "a mutable local is copied out: {:?}",
+            "nothing the `foo` send runs can write `t`'s register: {:?}",
             code.instructions
+        );
+        assert_eq!(
+            public_receiver(&code, "+"),
+            0,
+            "the `+` send reads `t`'s own register"
+        );
+    }
+
+    /// The exception: a fallback closure writes by reference exactly the
+    /// locals its inlinable branch assigns, and it can be kept and run at any
+    /// later time, so any send may be the one that runs it.
+    #[test]
+    fn an_operand_a_branch_assigns_is_still_copied() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              m: c = ( | t ::= 1. | c ifTrue: [t:: 9]. ^t + self foo )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0); // `c` is register 0, `t` register 1
+        let receiver = public_receiver(&code, "+");
+        assert_ne!(
+            receiver, 1,
+            "the `ifTrue:` fallback closure can write `t` from inside `foo`: {:?}",
+            code.instructions
+        );
+        assert!(
+            code.instructions.contains(&Instruction::Move {
+                destination: receiver,
+                source: 1
+            }),
+            "the copy out of `t` is a Move: {:?}",
+            code.instructions
+        );
+    }
+
+    /// And an assignment lowered between the operand and its consumer writes
+    /// the register directly, whatever any closure can reach.
+    #[test]
+    fn an_operand_a_later_argument_assigns_is_still_copied() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              first: x second: y = ( ^x )
+              m = ( | t ::= 1. | ^self first: t second: (t:: 9) )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 1); // `t` is register 0
+                                                  // An explicit `self` receiver is a depth-0 lexical send.
+        let Some(Instruction::SendLexical {
+            argument_registers, ..
+        }) = code
+            .instructions
+            .iter()
+            .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
+        else {
+            panic!("expected the keyword send: {:?}", code.instructions);
+        };
+        assert_ne!(argument_registers[0], 0, "`t` is register 0");
+        assert!(
+            code.instructions.contains(&Instruction::Move {
+                destination: argument_registers[0],
+                source: 0
+            }),
+            "the copy out of `t` is a Move: {:?}",
+            code.instructions
+        );
+    }
+
+    /// The two nested inlined loops of
+    /// `goldens/capture/writes_two_inlined_levels_deep.ns`, as a method body
+    /// and as a block body. Both levels are loops on purpose: a loop's
+    /// guard-failure path is `mustBeBoolean`, with no closure, so no
+    /// inlinable conditional assigns `t` and `branch_assigned` is false. The
+    /// copy can therefore come only from resolving the assignment's target
+    /// back to `t`'s own register, which is where `writes_register`'s
+    /// `inlined_depth` arithmetic is.
+    const TWO_INLINED_LEVELS: &str = "t + ({[outerDone] whileFalse: [
+                     [innerDone] whileFalse: [innerDone:: true. t:: 30].
+                     outerDone:: true]. 1} at: 2)";
+
+    /// The register the `+` send reads its receiver out of, and the register
+    /// the copy out of `t` (register 0) went into.
+    fn receiver_and_copy_of_the_binary_send(code: &CompiledCode) -> (u16, u16) {
+        let receiver = public_receiver(code, "+");
+        let Some(Instruction::Move { destination, .. }) = code
+            .instructions
+            .iter()
+            .find(|instruction| matches!(instruction, Instruction::Move { source: 0, .. }))
+        else {
+            panic!(
+                "expected a copy out of `t`'s register: {:?}",
+                code.instructions
+            );
+        };
+        (receiver, *destination)
+    }
+
+    /// In a root body a wrong `inlined_depth` underflows `declaring_scope`'s
+    /// `scopes.len() - 1 - depth` and panics, which a release build would
+    /// still hit.
+    #[test]
+    fn an_assignment_two_inlined_levels_deep_in_a_method_copies_the_operand() {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              m = (
+                | t ::= 2. outerDone ::= false. innerDone ::= false. |
+                ^{TWO_INLINED_LEVELS}
+              )
+            ) : ()
+        "};
+        let code = lower_whole_method(&source, 0); // `t` is register 0
+        let (receiver, copy) = receiver_and_copy_of_the_binary_send(&code);
+        assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
+        assert_eq!(
+            receiver, copy,
+            "the `+` send reads the copy of `t`: {:?}",
+            code.instructions
+        );
+    }
+
+    /// Inside a block body the scope stack is more than one frame deep, so
+    /// an off-by-one does not underflow: it resolves against the enclosing
+    /// frame's layout instead and answers no register of this body at all --
+    /// a missed copy, and silent wrong output at exit status 0. This is the
+    /// case the panic above cannot stand in for.
+    #[test]
+    fn an_assignment_two_inlined_levels_deep_in_a_block_copies_the_operand() {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              m = (
+                ^[ | t ::= 2. outerDone ::= false. innerDone ::= false. |
+                   {TWO_INLINED_LEVELS}]
+              )
+            ) : ()
+        "};
+        let code = lower_whole_method(&source, 0);
+        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
+            panic!("expected the block literal: {:?}", code.instructions);
+        };
+        assert_eq!(
+            block.copied_count, 0,
+            "the block reads nothing of its method, so `t` is its register 0"
+        );
+        let (receiver, copy) = receiver_and_copy_of_the_binary_send(block);
+        assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
+        assert_eq!(
+            receiver, copy,
+            "the `+` send reads the copy of `t`: {:?}",
+            block.instructions
         );
     }
 
@@ -1693,14 +2461,21 @@ mod tests {
 
     /// The copy `lower_assign` makes for a setter send protects the
     /// assignment's *value* from the user code that setter runs, which can
-    /// write the local through a closure before anything reads the value --
-    /// even a consumer that is the very next instruction. Only where nothing
-    /// reads the value is the copy pure overhead: one instruction, and one more
-    /// register in every activation's `temporaries`. This test pins the cheap
-    /// form for a statement; the tests after it pin the copy for each position
-    /// that reads the value, and `ns-cli`'s
+    /// write the local before anything reads the value -- even a consumer
+    /// that is the very next instruction. Only where nothing reads the value
+    /// is the copy pure overhead: one instruction, and one more register in
+    /// every activation's `temporaries`. This test pins the cheap form for a
+    /// statement; the tests after it pin the copy for each position that
+    /// reads the value, and `ns-cli`'s
     /// `an_assignment_through_a_setter_answers_the_value_before_the_setter_ran`
     /// pins what a program observes.
+    ///
+    /// `true ifTrue: [t:: 2]` is what makes the copy possible at all after
+    /// closure conversion: it is the fallback closure of an inlined
+    /// conditional that writes `t`, by reference, from inside the setter
+    /// (`docs/design/execution.md`, "Fewer protective copies"). Without it
+    /// neither this test nor the next would copy, and the pair would not
+    /// contrast.
     #[test]
     fn a_slot_assignment_in_statement_position_does_not_copy_its_value() {
         let source = indoc! {"
@@ -1709,7 +2484,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( | t | t:: 1. n:: t )
+              m = ( | t | t:: 1. true ifTrue: [t:: 2]. n:: t )
             ) : ()
         "};
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
@@ -1717,7 +2492,7 @@ mod tests {
             !code
                 .instructions
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::Move { .. })),
+                .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "nothing reads the assignment's value, so it needs no copy: {:?}",
             code.instructions
         );
@@ -1736,7 +2511,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( | t | t:: 1. ^n:: t )
+              m = ( | t | t:: 1. true ifTrue: [t:: 2]. ^n:: t )
             ) : ()
         "};
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
@@ -1756,7 +2531,7 @@ mod tests {
 
     #[test]
     fn a_slot_initializer_that_assigns_a_slot_copies_its_value_out_of_the_local() {
-        // A method body stands in for the initializer expression, as in
+        // A method body stands in for the initializer expressions, as in
         // `a_slot_initializer_is_one_statement_ending_in_initialize_slot`; the
         // mutable temporary gives the assignment a named local to hand on --
         // a parameter would need no copy at all
@@ -1764,54 +2539,59 @@ mod tests {
         // Lowering an `Initializer` from a method's own temporaries is an
         // artificial shape -- a real initializer has no locals of its own --
         // used here only to pin `materialize`'s copy mechanism generically,
-        // independent of `CodeKind`.
+        // independent of `CodeKind`. The first initializer is what makes `p`
+        // one a fallback closure can write, and so the copy possible at all
+        // (`a_slot_assignment_in_statement_position_does_not_copy_its_value`).
         let source = indoc! {"
             Newspeak3
             'T'
             class X = Object new (
               | n ::= 0. |
             ) (
-              foo = ( | p | ^n:: p )
+              foo: c = ( | p | c ifTrue: [p:: 1]. ^n:: p )
             ) : ()
         "};
         let (method, bindings) = resolve_method(source, 0);
-        let mut lowerer = Lowerer::new(
+        let initializers: Vec<&Expression> = method
+            .body
+            .statements
+            .iter()
+            .map(|statement| match statement {
+                Statement::Expression(expression) | Statement::Return(expression) => expression,
+            })
+            .collect();
+        let mut lowerer = lowerer_for(
             CodeKind::Initializer,
-            0,
+            1, // `c` is the factory parameter, register 0
             &method.body.temporaries,
+            initializers.clone(),
+            &[],
             &bindings,
-            vec![],
-            vec![],
-            0,
         );
-        lowerer.lower_slot_initializer(return_expression(&method), 4);
+        lowerer.lower_slot_initializer(initializers[0], 3);
+        lowerer.lower_slot_initializer(initializers[1], 4);
         let code = lowerer.finish(method.span);
         let [copy] = setter_arguments(&code)[..] else {
             panic!("expected one setter send: {:?}", code.instructions);
         };
         assert_ne!(
-            copy, 0,
+            copy, 1,
             "the setter can write `p` before `InitializeSlot` reads"
         );
+        assert!(
+            code.instructions.contains(&Instruction::Move {
+                destination: copy,
+                source: 1
+            }),
+            "the copy out of `p` is a Move: {:?}",
+            code.instructions
+        );
         assert_eq!(
-            code.instructions,
-            vec![
-                Instruction::Move {
-                    destination: copy,
-                    source: 0
-                },
-                Instruction::SendLexical {
-                    depth: 0,
-                    selector: crate::Symbol::intern("n:"),
-                    argument_registers: vec![copy],
-                    destination: copy + 1,
-                    call_site: CallSite { number: 0 },
-                },
-                Instruction::InitializeSlot {
-                    source: copy,
-                    own_index: 4
-                },
-            ]
+            code.instructions.last(),
+            Some(&Instruction::InitializeSlot {
+                source: copy,
+                own_index: 4
+            })
         );
     }
 
@@ -1830,7 +2610,14 @@ mod tests {
             ) : ()
         "};
         let (method, bindings) = resolve_method(source, 0);
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, &[], &bindings, vec![], vec![], 0);
+        let mut lowerer = lowerer_for(
+            CodeKind::Initializer,
+            1,
+            &[],
+            vec![return_expression(&method)],
+            &[],
+            &bindings,
+        );
         lowerer.lower_slot_initializer(return_expression(&method), 4);
         let code = lowerer.finish(method.span);
         assert!(
@@ -1862,7 +2649,12 @@ mod tests {
     /// A block answers its last statement's value, so that statement's
     /// assignment is copied; an earlier statement's is not. `t` is a mutable
     /// block-local temporary, not a parameter: a parameter would need no
-    /// copy at all (`a_parameter_operand_is_never_copied`).
+    /// copy at all (`a_parameter_operand_is_never_copied`). The block's
+    /// `true ifTrue: [t:: 1]` is what makes `t` one a fallback closure can
+    /// write, and so the copy possible at all
+    /// (`a_slot_assignment_in_statement_position_does_not_copy_its_value`);
+    /// its receiver is a literal so that the block captures nothing and `t`
+    /// stays the block's register 0.
     #[test]
     fn a_blocks_last_slot_assignment_copies_its_value_and_an_earlier_one_does_not() {
         let source = indoc! {"
@@ -1871,7 +2663,7 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              m = ( ^[ | t | n:: t. n:: t] )
+              m = ( ^[ | t | true ifTrue: [t:: 1]. n:: t. n:: t] )
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
@@ -1932,6 +2724,9 @@ mod tests {
 
     /// An inlined block's last statement is read exactly when the inlined
     /// form's own value is -- a loop condition always, a loop body never.
+    /// The leading `true ifTrue: [t:: 1]` is what makes `t` one a fallback
+    /// closure can write, and so the copy possible at all
+    /// (`a_slot_assignment_in_statement_position_does_not_copy_its_value`).
     #[test]
     fn an_inlined_blocks_last_slot_assignment_is_copied_only_when_its_value_is_read() {
         let source = indoc! {"
@@ -1940,10 +2735,10 @@ mod tests {
             class X = Object new (
               | n ::= 0. |
             ) (
-              discarded: c = ( | t | c ifTrue: [n:: t] ifFalse: [n:: t]. c and: [n:: t] )
-              returned: c = ( | t | ^c ifTrue: [n:: t] ifFalse: [n:: t] )
-              returnedAnd: c = ( | t | ^c and: [n:: t] )
-              loop = ( | t | [n:: t] whileTrue: [n:: t] )
+              discarded: c = ( | t | true ifTrue: [t:: 1]. c ifTrue: [n:: t] ifFalse: [n:: t]. c and: [n:: t] )
+              returned: c = ( | t | true ifTrue: [t:: 1]. ^c ifTrue: [n:: t] ifFalse: [n:: t] )
+              returnedAnd: c = ( | t | true ifTrue: [t:: 1]. ^c and: [n:: t] )
+              loop = ( | t | true ifTrue: [t:: 1]. [n:: t] whileTrue: [n:: t] )
             ) : ()
         "};
         // `c` is register 0 and `t` register 1; `loop`'s `t` is register 0.
@@ -2018,19 +2813,13 @@ mod tests {
             .collect();
         // `OrderedCollection new`, then the cascade's two `add:` sends.
         assert_eq!(receiver_registers.len(), 3);
-        // `c` is register 0, but the cascade's receiver has to survive the
-        // sends between the messages -- any of which can reassign `c` --
-        // so it is copied into a scratch register first.
-        assert!(
-            receiver_registers[1] >= 1,
-            "the cascade receiver must not be `c`'s own live register"
-        );
-        assert!(
-            code.instructions.contains(&Instruction::Move {
-                destination: receiver_registers[1],
-                source: 0
-            }),
-            "the copy out of `c` is a Move"
+        // Nothing the `add:` sends run can write `c`'s register -- no
+        // inlinable branch of this body assigns it, so no fallback closure
+        // reaches it -- so the cascade reads `c` itself.
+        assert_eq!(
+            receiver_registers[1], 0,
+            "the cascade receiver is `c`'s own register: {:?}",
+            code.instructions
         );
         assert_eq!(
             receiver_registers[1], receiver_registers[2],
@@ -2039,18 +2828,107 @@ mod tests {
         assert_eq!(code.family_size, 3);
     }
 
+    /// The registers the cascade's `add:` sends read their receiver out of.
+    fn cascade_receivers(code: &CompiledCode) -> (u16, u16) {
+        let receiver_registers: Vec<u16> = code
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::SendPublic {
+                    selector,
+                    receiver_register,
+                    ..
+                } if selector.as_str() == "add:" => Some(*receiver_register),
+                _ => None,
+            })
+            .collect();
+        let [first, second] = receiver_registers[..] else {
+            panic!("expected the cascade's two sends: {:?}", code.instructions);
+        };
+        (first, second)
+    }
+
+    /// When a fallback closure *can* write the receiver's local, the sends
+    /// between the cascade's messages can run it, so the receiver is copied
+    /// out first and every message still shares that one register.
+    #[test]
+    fn a_cascade_receiver_a_branch_assigns_is_copied_out_of_its_local() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              foo = (
+                | c |
+                c:: OrderedCollection new.
+                true ifTrue: [c:: OrderedCollection new].
+                c add: 1; add: 2
+              )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0); // temporary `c` is register 0
+        let (first, second) = cascade_receivers(&code);
+        assert_ne!(first, 0, "the receiver must not be `c`'s own live register");
+        assert_eq!(first, second, "both cascade sends share one register");
+        assert!(
+            code.instructions.contains(&Instruction::Move {
+                destination: first,
+                source: 0
+            }),
+            "the copy out of `c` is a Move: {:?}",
+            code.instructions
+        );
+    }
+
+    /// And the arguments of *every* message are lowered before the last send
+    /// reads the receiver, not only the first's -- so an assignment in a
+    /// later message's argument copies the receiver out just as one in the
+    /// first message's does.
+    #[test]
+    fn a_cascade_receiver_a_later_messages_argument_assigns_is_copied_out_of_its_local() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              foo = (
+                | c |
+                c:: OrderedCollection new.
+                c add: 1; add: (c:: OrderedCollection new)
+              )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0); // temporary `c` is register 0
+        let (first, second) = cascade_receivers(&code);
+        assert_ne!(first, 0, "the receiver must not be `c`'s own live register");
+        assert_eq!(first, second, "both cascade sends share one register");
+        assert!(
+            code.instructions.contains(&Instruction::Move {
+                destination: first,
+                source: 0
+            }),
+            "the copy out of `c` is a Move: {:?}",
+            code.instructions
+        );
+    }
+
     #[test]
     fn hops_count_only_frame_scopes_within_the_depth() {
-        use ScopeKind::*;
+        let frame = ScopeKind::Frame {
+            key: BodyKey::Root,
+            by_reference: false,
+        };
+        let inlined = ScopeKind::Inlined;
         // [Frame, Inlined, Frame] innermost-last: from the innermost frame,
-        // resolver depth 2 (block -> inlined -> method) crosses one frame.
-        assert_eq!(hops_for_depth(&[Frame, Inlined, Frame], 2), 1);
+        // resolver depth 2 (block -> inlined -> method) names scope 0, and
+        // one frame stands above it.
+        assert_eq!(hops_above(&[frame, inlined, frame], 0), 1);
         // From directly inside an inlined block, depth 1 is the enclosing
         // frame's own registers: zero hops.
-        assert_eq!(hops_for_depth(&[Frame, Inlined], 1), 0);
+        assert_eq!(hops_above(&[frame, inlined], 0), 0);
         // No inlining anywhere: hops == depth.
-        assert_eq!(hops_for_depth(&[Frame, Frame, Frame], 2), 2);
-        assert_eq!(hops_for_depth(&[Frame], 0), 0);
+        assert_eq!(hops_above(&[frame, frame, frame], 0), 2);
+        assert_eq!(hops_above(&[frame], 0), 0);
     }
 
     fn lower_whole_method(source: &str, index: usize) -> CompiledCode {
@@ -2125,6 +3003,7 @@ mod tests {
             destination: 0,
             parameters,
             code: block,
+            copied,
         }) = code.instructions.first()
         else {
             panic!(
@@ -2133,6 +3012,10 @@ mod tests {
             );
         };
         assert_eq!(parameters.as_slice(), &[crate::Symbol::intern("x")]);
+        assert!(
+            copied.is_empty(),
+            "the block captures nothing, so it is handed nothing"
+        );
         assert_eq!(block.kind, CodeKind::Block);
         assert_eq!(block.argument_count, 1);
         // `x` is the block's own register 0: read with no instruction, then
@@ -2193,8 +3076,11 @@ mod tests {
         assert_eq!(inner.family_size, 3);
     }
 
+    /// The same source as the by-reference model's own test: the block reads
+    /// `x` out of its own copied register and writes `t` through the vector
+    /// the method built for it, with no frame hop at all.
     #[test]
-    fn a_block_reads_and_writes_enclosing_locals_through_outer_local_instructions() {
+    fn a_block_reads_a_copied_value_and_writes_through_its_scopes_vector() {
         let code = lower_whole_method(
             indoc! {"
                 Newspeak3
@@ -2206,54 +3092,196 @@ mod tests {
             "},
             0,
         );
-        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
+        // `x` is r0, `t` is r1 (unused: it lives in the vector), the vector
+        // is r2.
+        assert_eq!(
+            code.instructions[0],
+            Instruction::MakeVector {
+                destination: 2,
+                size: 1
+            }
+        );
+        let Some(Instruction::MakeClosure {
+            code: block,
+            copied,
+            ..
+        }) = code.instructions.get(1)
+        else {
             panic!()
         };
+        // The parameter's own register, then the vector register.
+        assert_eq!(*copied, vec![0, 2]);
+        assert_eq!(block.copied_count, 2);
+        assert_eq!(block.outer_reach, 0);
         assert_eq!(
             block.instructions,
             vec![
-                Instruction::LoadOuterLocal {
-                    destination: 0,
-                    depth: 1,
-                    index: 0
-                }, // x
-                Instruction::StoreOuterLocal {
-                    source: 0,
-                    depth: 1,
-                    index: 1
-                }, // t
+                Instruction::StoreVector {
+                    vector: 1,
+                    index: 0,
+                    source: 0
+                }, // t:: x
                 Instruction::ImplicitReturn { register: 0 },
             ]
         );
     }
 
     #[test]
-    fn a_doubly_nested_block_counts_two_frame_hops() {
+    fn a_block_reads_a_copied_variable_as_its_own_register() {
         let code = lower_whole_method(
             indoc! {"
                 Newspeak3
                 'T'
                 class X = Object new (
                 ) (
-                  foo: x = ( ^[ [ x ] ] )
+                  foo: x = ( ^[x] )
                 ) : ()
             "},
             0,
         );
-        let Some(Instruction::MakeClosure { code: outer, .. }) = code.instructions.first() else {
+        let Some(Instruction::MakeClosure {
+            code: block,
+            copied,
+            ..
+        }) = code.instructions.first()
+        else {
             panic!()
         };
-        let Some(Instruction::MakeClosure { code: inner, .. }) = outer.instructions.first() else {
-            panic!()
-        };
+        assert_eq!(*copied, vec![0]); // the parameter's own register
+        assert_eq!(block.copied_count, 1);
         assert_eq!(
-            inner.instructions[0],
-            Instruction::LoadOuterLocal {
-                destination: 0,
-                depth: 2,
-                index: 0
+            block.instructions,
+            vec![Instruction::ImplicitReturn { register: 0 }]
+        );
+        assert_eq!(block.outer_reach, 0);
+    }
+
+    #[test]
+    fn a_block_that_writes_shares_its_scopes_vector() {
+        let code = lower_whole_method(
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( | t | ^[t:: 1] )
+                ) : ()
+            "},
+            0,
+        );
+        assert_eq!(
+            code.instructions[0],
+            Instruction::MakeVector {
+                destination: 1,
+                size: 1
             }
         );
+        let Some(Instruction::MakeClosure {
+            code: block,
+            copied,
+            ..
+        }) = code.instructions.get(1)
+        else {
+            panic!()
+        };
+        assert_eq!(*copied, vec![1]); // the vector register
+        assert_eq!(
+            block.instructions,
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: BytecodeLiteral::SmallInteger(1)
+                },
+                Instruction::StoreVector {
+                    vector: 0,
+                    index: 0,
+                    source: 1
+                },
+                Instruction::ImplicitReturn { register: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_doubly_nested_block_is_handed_the_variable_by_the_block_between() {
+        let code = lower_whole_method(
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo: x = ( ^[[x]] )
+                ) : ()
+            "},
+            0,
+        );
+        let Some(Instruction::MakeClosure {
+            code: outer,
+            copied,
+            ..
+        }) = code.instructions.first()
+        else {
+            panic!()
+        };
+        assert_eq!(*copied, vec![0]);
+        let Some(Instruction::MakeClosure {
+            code: inner,
+            copied: inner_copied,
+            ..
+        }) = outer.instructions.first()
+        else {
+            panic!()
+        };
+        // The middle block holds it in its own first copied register.
+        assert_eq!(*inner_copied, vec![0]);
+        assert_eq!(
+            inner.instructions,
+            vec![Instruction::ImplicitReturn { register: 0 }]
+        );
+    }
+
+    #[test]
+    fn the_fallback_closure_of_an_inlined_conditional_stays_by_reference() {
+        let code = lower_whole_method(
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo: c = ( | t | c ifTrue: [t:: 1]. ^t )
+                ) : ()
+            "},
+            0,
+        );
+        let fallback = code
+            .instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::MakeClosure {
+                    code: block,
+                    copied,
+                    ..
+                } => {
+                    assert!(copied.is_empty());
+                    Some(block.clone())
+                }
+                _ => None,
+            })
+            .expect("the fallback path builds a real closure");
+        assert!(fallback.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instruction::StoreOuterLocal {
+                depth: 1,
+                index: 1,
+                ..
+            }
+        )));
+        assert_eq!(fallback.outer_reach, 1);
+        // Nothing captured `t`, so it stays a register.
+        assert!(!code
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })));
     }
 
     #[test]
@@ -2405,7 +3433,14 @@ mod tests {
             0,
         );
         // Reuse `foo`'s `^1` as if it were an initializer expression: kind Initializer, 0 arguments.
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], vec![], 0);
+        let mut lowerer = lowerer_for(
+            CodeKind::Initializer,
+            0,
+            &[],
+            Vec::new(),
+            &method.body.statements,
+            &bindings,
+        );
         lowerer.lower_body(&method.body.statements);
         let code = lowerer.finish(method.span);
         assert_eq!(
@@ -2434,8 +3469,16 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, &[], &bindings, vec![], vec![], 0);
-        lowerer.lower_slot_initializer(return_expression(&method), 4);
+        let initializer = return_expression(&method);
+        let mut lowerer = lowerer_for(
+            CodeKind::Initializer,
+            0,
+            &[],
+            vec![initializer],
+            &[],
+            &bindings,
+        );
+        lowerer.lower_slot_initializer(initializer, 4);
         let code = lowerer.finish(method.span);
         // `6`, `7`, the `*` send, then the field write: four instructions.
         assert!(matches!(
@@ -2590,27 +3633,55 @@ mod tests {
         )));
     }
 
+    /// The same block literal, lowered twice: converted on the inlined
+    /// common path, by reference inside the fallback closure the guard's
+    /// failure path builds out of the very same source
+    /// (`docs/design/execution.md`, "Fallback blocks").
     #[test]
-    fn a_real_block_nested_in_an_inlined_block_counts_one_hop_fewer() {
-        // `[ x ]` sits two resolver scopes below the method (inner block ->
-        // inlined block -> method) but only one frame below it at run time.
+    fn a_real_block_nested_in_an_inlined_block_is_converted_and_its_fallback_copy_is_not() {
         let code = compile_foo("x ifTrue: [ [ x ] value ] ifFalse: [nil]");
-        let nested = code
+        let closures: Vec<(Rc<CompiledCode>, Vec<u16>)> = code
             .instructions
             .iter()
-            .find_map(|instruction| match instruction {
-                Instruction::MakeClosure { code, .. } => Some(code.clone()),
+            .filter_map(|instruction| match instruction {
+                Instruction::MakeClosure { code, copied, .. } => {
+                    Some((code.clone(), copied.clone()))
+                }
                 _ => None,
-            });
-        let nested = nested.expect("the true branch creates a closure");
+            })
+            .collect();
+        // The inlined true arm's own `[ x ]`, then the two closures the
+        // fallback send is given.
+        assert_eq!(closures.len(), 3);
+        let (inlined_arm_block, copied) = &closures[0];
+        assert_eq!(*copied, vec![0], "handed the method's own register for x");
+        assert_eq!(
+            inlined_arm_block.instructions[0],
+            Instruction::ImplicitReturn { register: 0 }
+        );
+        assert_eq!(inlined_arm_block.outer_reach, 0);
+        // Inside the fallback closure the nested `[ x ]` reaches two frames
+        // out: through the fallback closure's own frame to the method's.
+        let (fallback_true_block, fallback_copied) = &closures[1];
+        assert!(fallback_copied.is_empty());
+        let Some(Instruction::MakeClosure {
+            code: nested,
+            copied: nested_copied,
+            ..
+        }) = fallback_true_block.instructions.first()
+        else {
+            panic!("the fallback closure re-creates the nested block")
+        };
+        assert!(nested_copied.is_empty());
         assert_eq!(
             nested.instructions[0],
             Instruction::LoadOuterLocal {
                 destination: 0,
-                depth: 1,
+                depth: 2,
                 index: 0
             }
         );
+        assert_eq!(fallback_true_block.outer_reach, 1);
     }
 
     #[test]

@@ -1,0 +1,54 @@
+Newspeak3
+'Test'
+(* The one run-time case `a_send_can_write` exists for
+   (docs/design/execution.md, "Fewer protective copies"). An inlined
+   ifTrue: whose receiver is not a Boolean sends the real message with a
+   real closure; that closure keeps the by-reference model, so the frame's
+   register for t is written whenever the closure is run -- which any send
+   may do. t is a register-resident local (no real block captures it), so
+   a read of t that a later send stands between must be copied out first.
+
+   In each method t is 1 when the fallback closure is made, the closure is
+   stored rather than run, and runKept answers 9 -- the value of `t:: 9`,
+   the closure's last statement -- after writing t's register to 9. So
+   every reader that was copied out sees 1 and every one that was not sees
+   9. asAnOperand: 1 + 9 = 10, and 9 + 9 = 18 without the copy.
+   asAnArgument: the same through a keyword send's first argument.
+   asASetterValue: `sink:: t` answers the value t had before `sink:` ran,
+   so 1, and 9 without the copy. *)
+class AFallbackClosureWritesALocalASendReads usingPlatform: platform = Object new (
+	| transcript = platform transcript.
+	  keeper ::= nil. |
+) (
+	class Keeper = Object new (
+		| kept ::= nil. |
+	) (
+		public ifTrue: block = ( kept:: block. ^nil )
+		public runKept = ( ^kept value )
+	) : ()
+	sum: first with: second = ( ^first + second )
+	sink: value = ( ^keeper runKept )
+	asAnOperand = (
+		| t ::= 1. |
+		keeper ifTrue: [t:: 9].
+		^t + keeper runKept
+	)
+	asAnArgument = (
+		| t ::= 1. |
+		keeper ifTrue: [t:: 9].
+		^self sum: t with: keeper runKept
+	)
+	asASetterValue = (
+		| t ::= 1. |
+		keeper ifTrue: [t:: 9].
+		^sink:: t
+	)
+	public main: platform args: arguments = (
+		keeper:: Keeper new.
+		transcript show: self asAnOperand printString; newLine.
+		keeper:: Keeper new.
+		transcript show: self asAnArgument printString; newLine.
+		keeper:: Keeper new.
+		transcript show: self asASetterValue printString; newLine
+	)
+) : ()

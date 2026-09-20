@@ -1,0 +1,22 @@
+Newspeak3
+'Test'
+(* An instance initializer's activation has the factory's parameters as
+   its locals (6.2), and a slot initializer is one of its statements. A
+   block built there captures those parameters, which no assignment can
+   write (3.6), so they are copied. The block outlives the initializer:
+   every send of add: runs it after the initializer has returned. *)
+class CapturesInInitializers usingPlatform: platform = Object new (
+	| transcript = platform transcript. |
+) (
+	class Adder base: base = Object new (
+		| adder = [:x | x + base]. |
+	) (
+		public add: x = ( ^adder value: x )
+	) : ()
+	public main: platform args: arguments = (
+		| adder |
+		adder:: Adder base: 5.
+		transcript show: (adder add: 10) printString; newLine.
+		transcript show: (adder add: 100) printString; newLine
+	)
+) : ()
