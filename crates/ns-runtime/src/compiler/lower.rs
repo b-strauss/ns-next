@@ -2080,6 +2080,96 @@ mod tests {
         );
     }
 
+    /// The two nested inlined loops of
+    /// `goldens/capture/writes_two_inlined_levels_deep.ns`, as a method body
+    /// and as a block body. Both levels are loops on purpose: a loop's
+    /// guard-failure path is `mustBeBoolean`, with no closure, so no
+    /// inlinable conditional assigns `t` and `branch_assigned` is false. The
+    /// copy can therefore come only from resolving the assignment's target
+    /// back to `t`'s own register, which is where `writes_register`'s
+    /// `inlined_depth` arithmetic is.
+    const TWO_INLINED_LEVELS: &str = "t + ({[outerDone] whileFalse: [
+                     [innerDone] whileFalse: [innerDone:: true. t:: 30].
+                     outerDone:: true]. 1} at: 2)";
+
+    /// The register the `+` send reads its receiver out of, and the register
+    /// the copy out of `t` (register 0) went into.
+    fn receiver_and_copy_of_the_binary_send(code: &CompiledCode) -> (u16, u16) {
+        let receiver = public_receiver(code, "+");
+        let Some(Instruction::Move { destination, .. }) = code
+            .instructions
+            .iter()
+            .find(|instruction| matches!(instruction, Instruction::Move { source: 0, .. }))
+        else {
+            panic!(
+                "expected a copy out of `t`'s register: {:?}",
+                code.instructions
+            );
+        };
+        (receiver, *destination)
+    }
+
+    /// In a root body a wrong `inlined_depth` underflows `declaring_scope`'s
+    /// `scopes.len() - 1 - depth` and panics, which a release build would
+    /// still hit.
+    #[test]
+    fn an_assignment_two_inlined_levels_deep_in_a_method_copies_the_operand() {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              m = (
+                | t ::= 2. outerDone ::= false. innerDone ::= false. |
+                ^{TWO_INLINED_LEVELS}
+              )
+            ) : ()
+        "};
+        let code = lower_whole_method(&source, 0); // `t` is register 0
+        let (receiver, copy) = receiver_and_copy_of_the_binary_send(&code);
+        assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
+        assert_eq!(
+            receiver, copy,
+            "the `+` send reads the copy of `t`: {:?}",
+            code.instructions
+        );
+    }
+
+    /// Inside a block body the scope stack is more than one frame deep, so
+    /// an off-by-one does not underflow: it resolves against the enclosing
+    /// frame's layout instead and answers no register of this body at all --
+    /// a missed copy, and silent wrong output at exit status 0. This is the
+    /// case the panic above cannot stand in for.
+    #[test]
+    fn an_assignment_two_inlined_levels_deep_in_a_block_copies_the_operand() {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              m = (
+                ^[ | t ::= 2. outerDone ::= false. innerDone ::= false. |
+                   {TWO_INLINED_LEVELS}]
+              )
+            ) : ()
+        "};
+        let code = lower_whole_method(&source, 0);
+        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
+            panic!("expected the block literal: {:?}", code.instructions);
+        };
+        assert_eq!(
+            block.copied_count, 0,
+            "the block reads nothing of its method, so `t` is its register 0"
+        );
+        let (receiver, copy) = receiver_and_copy_of_the_binary_send(block);
+        assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
+        assert_eq!(
+            receiver, copy,
+            "the `+` send reads the copy of `t`: {:?}",
+            block.instructions
+        );
+    }
+
     /// A bare `super` is a program-level error the language raises at
     /// evaluation time, not a compiler-invariant violation, so it must lower
     /// to the deferred literal rather than panic.
