@@ -115,7 +115,8 @@ impl World {
         use crate::trace::Tracer;
         self.check_quiescent_state();
         let mutator = &mut self.mutator;
-        let mut forwarder = mutator.heap.move_everything();
+        let mut forwarder: crate::heap::Forwarder<crate::heap::Rotation> =
+            mutator.heap.move_everything();
         for class in &mut mutator.builtin_classes {
             forwarder.object(class);
         }

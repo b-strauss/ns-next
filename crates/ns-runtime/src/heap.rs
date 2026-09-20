@@ -499,6 +499,16 @@ impl std::fmt::Debug for Heap<'_> {
     }
 }
 
+/// How a move maps an old slot index to its new one. Two answer it: the
+/// stress mode's `Rotation`, which keeps every slot, and the collector's
+/// `ForwardingTable`, which keeps only the live ones. A type parameter
+/// rather than an enum or a trait object, because `apply` runs once per
+/// handle in the whole heap and a monomorphized call leaves neither a
+/// branch nor an indirection there.
+pub(crate) trait Relocation {
+    fn apply(&self, index: u32) -> u32;
+}
+
 /// A rotation of one arena: slot `i` moves to `(i + shift) % length`.
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy)]
@@ -525,8 +535,11 @@ impl Rotation {
         };
         Rotation { shift, length }
     }
+}
 
-    fn apply(self, index: u32) -> u32 {
+#[cfg(debug_assertions)]
+impl Relocation for Rotation {
+    fn apply(&self, index: u32) -> u32 {
         if self.length == 0 {
             return index;
         }
@@ -534,50 +547,57 @@ impl Rotation {
     }
 }
 
-/// The tracer a move forwards every handle with. It also checks each handle
-/// it forwards: one from another heap, or one already stale, was stored in
-/// this heap by a mistake the move would otherwise make permanent.
-#[cfg(debug_assertions)]
-pub(crate) struct Forwarder {
+/// The tracer a move or a collection forwards every handle with. In a debug
+/// build it also checks each handle it forwards: one from another heap, or
+/// one already stale, was stored in this heap by a mistake the rewrite would
+/// otherwise make permanent.
+pub(crate) struct Forwarder<M: Relocation> {
+    #[cfg(debug_assertions)]
     heap_id: u32,
+    #[cfg(debug_assertions)]
     from_epoch: u32,
+    #[cfg(debug_assertions)]
     to_epoch: u32,
-    objects: Rotation,
-    frames: Rotation,
+    objects: M,
+    frames: M,
 }
 
-#[cfg(debug_assertions)]
-impl crate::trace::Tracer for Forwarder {
+impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
     fn object(&mut self, handle: &mut ObjectReference<'_>) {
-        assert_eq!(
-            handle.origin, self.heap_id,
-            "a handle from another heap is stored in this one"
-        );
-        assert_eq!(
-            handle.epoch, self.from_epoch,
-            "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
-            handle.epoch, self.to_epoch
-        );
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(
+                handle.origin, self.heap_id,
+                "a handle from another heap is stored in this one"
+            );
+            assert_eq!(
+                handle.epoch, self.from_epoch,
+                "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
+                handle.epoch, self.to_epoch
+            );
+            handle.epoch = self.to_epoch;
+        }
         handle.index = self.objects.apply(handle.index);
-        handle.epoch = self.to_epoch;
     }
 
     fn frame(&mut self, handle: &mut FrameReference<'_>) {
-        assert_eq!(
-            handle.origin, self.heap_id,
-            "a handle from another heap is stored in this one"
-        );
-        assert_eq!(
-            handle.epoch, self.from_epoch,
-            "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
-            handle.epoch, self.to_epoch
-        );
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(
+                handle.origin, self.heap_id,
+                "a handle from another heap is stored in this one"
+            );
+            assert_eq!(
+                handle.epoch, self.from_epoch,
+                "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
+                handle.epoch, self.to_epoch
+            );
+            handle.epoch = self.to_epoch;
+        }
         handle.index = self.frames.apply(handle.index);
-        handle.epoch = self.to_epoch;
     }
 }
 
-#[cfg(debug_assertions)]
 impl crate::trace::Trace for StackEntry<'_> {
     fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
         let StackEntry {
@@ -594,7 +614,8 @@ impl crate::trace::Trace for StackEntry<'_> {
             counted: _,
             reified,
             retains_registers: _, // not a handle
-            generation: _,
+            #[cfg(debug_assertions)]
+                generation: _,
         } = self;
         tracer.value(receiver);
         if let Some(class) = current_class {
@@ -2289,7 +2310,7 @@ impl<'gc> Heap<'gc> {
     /// handle: at a safepoint of the run loop, or between runs.
     #[cfg(debug_assertions)]
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
-    fn move_everything(&mut self) -> Forwarder {
+    fn move_everything(&mut self) -> Forwarder<Rotation> {
         use crate::trace::{Trace, Tracer};
         let from_epoch = self.epoch;
         let to_epoch = from_epoch.wrapping_add(1);

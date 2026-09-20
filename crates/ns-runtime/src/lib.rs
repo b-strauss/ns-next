@@ -20,7 +20,6 @@ pub mod mixin;
 pub mod platform;
 pub mod resolver;
 pub mod symbol;
-#[cfg(debug_assertions)]
 pub(crate) mod trace;
 pub mod types;
 pub mod vm;
