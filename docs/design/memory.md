@@ -767,7 +767,7 @@ surviving block now holds what it captured: its copied values, and the
 indirection vector of any scope whose written variables it needs, plus its
 creator's frame record without registers.
 
-### Open: what the collector owns
+### The interim cost, and the one question still open
 
 - **Neither arena reclaims a slot today**, and that is the interim cost the
   milestone's ordering accepts. It is measurable. Peak working set on a release
@@ -897,23 +897,267 @@ creator's frame record without registers.
   refcount and an allocator round trip per record; the arena makes the same
   placeholders two contiguous `Vec` pushes. The collector's interest here is the
   peak, not a lifetime bug.
-- **Whether an application cache entry must be weak.** Applications are shared and
-  cached globally; nothing collects them today because nothing collects at all.
-  The collector has to decide whether an application whose classes are all
-  unreachable is itself collectable.
 - **The application cache grows without bound** in the presence of live editing,
   because every re-application mints a fresh entry that nothing evicts. That is
   the same knot as `Mixin`'s lack of interior mutability; see
-  [liveness-and-reflection.md](liveness-and-reflection.md).
-- **MMTk, or a collector built here.** `mmtk-core` is the one Rust collector
-  framework that moves objects — SemiSpace, Immix, GenImmix — and it has
-  bindings for OpenJDK, Julia and Ruby. It works on addresses
-  (`ObjectReference`), so adopting it would replace the arena of 32-bit indices,
-  and the runtime would supply the object model and root scanning through its
-  binding trait. The Rust crates that do not move (gc-arena, safe-gc, rust-gc,
-  the reference-counting ones) are no candidates, because `become:` needs
-  forwarding. The root discipline is the same under either answer; the
-  question is step 5's.
+  [liveness-and-reflection.md](liveness-and-reflection.md). Evicting weakly is
+  not available until a mixin carries an id of its own rather than an address —
+  see "Weak references" below for why the address is what holds the cache
+  strong.
+
+### The shape: mark, compact, forward
+
+Decided with the user on 2026-09-20; designed, not yet built. The collector
+marks from the roots, slides the live slots to the front of each arena, and
+rewrites every handle through a forwarding table. One space, stop-the-world.
+Generations come later, as their own measured step.
+
+Three things the representation settles before any taste enters:
+
+- **MMTk is out.** It is the one Rust framework whose collectors move, but it
+  works on raw addresses, mapped spaces and headers reached by pointer
+  arithmetic, and `crates/ns-runtime/src/lib.rs` is `#![forbid(unsafe_code)]`.
+  Adopting it would replace not only the arena of 32-bit indices but the origin
+  guards, the epoch check and the proof behind the brand. That is a different
+  runtime, not a choice of collector.
+- **Reference counting is out**, because cycles need tracing and `become:`
+  needs forwarding.
+- **Conservative scanning is out**, decided earlier and on its own grounds
+  ("Considered and rejected: conservative stack scanning").
+
+What is left is the choice between a non-moving free list over the slot table,
+a semispace copier, and mark-compact — and the two arguments that usually
+decide it do not apply here. Every slot is the same size, so a free list has no
+fragmentation to solve; and an object's payload (`Vec<Value>`, `String`,
+`Box<ClassData>`) is a separate allocation that no collector here moves, so a
+copier buys far less locality than it would where payloads sit inline.
+
+Mark-compact was chosen for four reasons:
+
+- **It reaches the goal of the step.** The table shrinks and the pages go back
+  to the operating system. A free list holds the table at its historic maximum
+  for the life of the process, which is the figure step 5 exists to fix.
+- **Rewriting is the cheap part here rather than the expensive one.** Over an
+  index arena the forwarding table is a flat `Vec<u32>` over the slot count:
+  O(1) per handle, 4 bytes per slot while a collection runs — 32 MB against the
+  466 MB `bench_block.ns` peaks at today. In an address-based collector this is
+  what costs. Nova, the one engine with the same representation, pays more than
+  it needs to: its `CompactionList` stores shift runs and binary-searches per
+  handle.
+- **A free list's sweep scales with the historic maximum**, while every phase of
+  a mark-compact scales with the live set. Where there is much garbage and
+  little live data — `bench_block.ns` — mark-compact is the cheaper of the two,
+  not the dearer.
+- **It uses the machinery that exists and is under test.** `trace.rs`,
+  `Forwarder`, the epoch check and the move stress mode were built for exactly
+  this shape; under a free list they would stay a debug-only appendage with no
+  production role.
+
+The prior art points the same way. Nova (`prior-art/nova/nova_vm/src/heap/`),
+the only reference implementation with this representation, is mark-and-sweep
+with compaction over per-type vectors and is not generational. Strongtalk's
+full collection is a mark-compact despite the name of `markSweep.cpp`
+(`prepare_for_compaction`, `compact`), under a scavenged young generation.
+Spur compacts its old space. Every current HotSpot collector moves, and the one
+free-list old space it had, CMS's, was deprecated in JDK 9 and removed in
+JDK 14. Primordial Soup is the one that keeps a free list, in its old space
+(`vm/heap.h`, seven size classes) — and it has the fragmentation this design
+does not, because its objects are variably sized in address space.
+
+### Marking
+
+Mark bits live in a side table, one `Vec<u64>` per arena, one bit per slot —
+1/448 of the object arena — and exist only while a collection runs. Not in the
+header: `Object` is pinned at 56 bytes by
+`an_object_is_the_size_the_amplification_figure_assumes` (`heap.rs`), and the
+image format's amplification figures are computed from that number. Nova's
+`heap_bits.rs` keeps its bits beside the data for the same reason.
+
+Marking is a second `Tracer` (`trace.rs`) beside `Forwarder`: it sets the bit
+and, where the bit was clear, pushes the index onto an explicit work list. The
+traversal is iterative because the graph's depth is the program's to choose —
+the reasoning that already made `MixinApplication`'s `Drop` iterative. Sharing
+one edge enumeration between marking and forwarding is what keeps the two from
+drifting: a field a later change adds is named in exactly one place, and the
+compiler refuses that place until it is named.
+
+The roots are the list `Heap::move_everything` and `World::move_everything`
+already walk — the activation stack's entries and registers, the builtin
+classes, the `platform` singleton, the host roots — with the canonical symbol
+table removed from it, since that becomes weak. The difference from a move is
+the direction: a move walks every arena record because everything counts as
+live, while the collector starts at the roots and reaches a record only along
+an edge.
+
+### Compaction and forwarding
+
+Three passes per arena. One over the bits with a running destination index,
+which *is* the forwarding table, a `Vec<u32>` over the slot count. One that
+slides the live slots forward and truncates the arena to the number of live
+ones — the dead `Object`s drop there, and their payloads with them. One with
+the existing `Forwarder` over everything that holds a handle, looking up the
+table instead of applying a `Rotation`.
+
+A collection does both arenas and one forwarding pass, because they are one
+graph: a closure holds a `FrameReference`, a frame holds objects.
+
+The epoch is unchanged, and it is what makes a stale handle loud rather than
+silent. A reclaimed slot does not linger to be read the way a free list's
+would; it is gone, and the index that takes its place carries a new epoch.
+Poisoning a freed slot, which Primordial Soup does with `kUnallocatedByte`, is
+not needed here.
+
+The move stress mode stays beside the collector rather than being folded into
+it. It moves everything without liveness, so it isolates the completeness of
+the root enumeration from the correctness of marking: when the collector's own
+gate fails, a green move stress says the fault is in marking. `Forwarder`
+therefore takes its mapping as a parameter — a rotation for the stress mode, a
+forwarding table for the collector.
+
+### The trigger and the growth policy
+
+A collection happens only at a safepoint of the run loop, as decided on
+2026-09-13. An allocation sets the request at most; it never collects.
+
+The test is a comparison, not a counter. `push_object` already holds the
+arena's length, so it compares that against a limit and sets the safepoint
+request when it is reached; `reify` does the same for the frame arena. One
+predictable branch, and no new state on the hot path.
+
+After a collection each arena's limit becomes `max(floor, live * 2)`, so that
+between two collections no more is allocated than is live and the marking work
+per allocated slot is amortized constant. The floor — 4096 slots — keeps a
+small program out of the collector altogether: `bench_loop.ns` and
+`bench_send.ns` run in 4.6 MB today and should never collect. Soup's
+`GrowthPolicy` and HotSpot's free-ratio control have the same shape.
+
+The image decoder never collects, because it never polls — it does not run in
+the run loop. The transient peak described under the decode amplification above
+therefore stands unchanged: a rejected image's placeholders are reachable until
+validation finishes, so they are live, and the amplification figures stay
+valid.
+
+In a release build this gives the safepoint's slow path its first real work.
+
+### Weak references
+
+**The canonical symbol table becomes weak.** It is a strong root today
+(`canonical_symbols`), and left that way every symbol object a program ever
+makes would outlive the process, since a selector literal makes one. It is not
+a root for marking; after marking and before compaction, an entry whose object
+is unmarked becomes `None`, and the rest are forwarded like everything else.
+Nova has exactly this pair: `shift_strong_u32_index` answers an index,
+`shift_weak_u32_index` answers an `Option`.
+
+This does not weaken §5.1.6. Equal symbols are one object as long as
+`Mutator::new_symbol` is the only way to make one. If a symbol object is
+collected then nothing held it — anything that did would have been a root and
+kept it live — so the next `new_symbol` mints a fresh one whose identity is
+again unique, and no live comparison can tell the difference. An identity hash
+belongs to the object rather than to the symbol; a program that keeps the
+number `identityHash` answered instead of the object has no guarantee today
+either, and Squeak's weak symbol table behaves the same way.
+
+**The application cache stays strong, and the reason is its key rather than the
+collector.** `mixin_key` and `application_key` are `Rc::as_ptr(...) as usize`
+(`mixin.rs`), and the strong `Rc` the cache holds is what keeps that address
+valid and unique. A weak cache would let a freed `Rc<Mixin>` hand its address
+to a newly allocated one, and the new mixin would hit the old entry and be
+given a **different, perfectly valid** application, reporting nothing — the
+failure class the handle invariants exist to prevent. Weakness becomes
+decidable only once a mixin carries an id of its own instead of an address.
+That is a change in its own right, and it belongs with the live-editing work
+([liveness-and-reflection.md](liveness-and-reflection.md)), which is also where
+the cache's unbounded growth belongs. The same per-mixin id is wanted
+independently by dispatch's open option of guarding a private lexical site on
+N's mixin ([dispatch.md](dispatch.md), "Decisions").
+
+The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
+value — so it is neither a root nor a forwarding target.
+
+Nothing else is weak. An inline-cache entry holds no handle by construction, so
+it survives a collection untouched and simply misses when its guard no longer
+matches. Compiled code holds none either: `Literal::Symbol` is an interner
+index, not an object.
+
+### Frames, the activation stack and the marriage
+
+The activation stack is a root, and nothing there is reclaimed: an entry is
+popped when its activation returns, so the stack is bounded by the deepest the
+program has been. Marking walks every `StackEntry` — receiver, `current_class`,
+`kind`, the continuation and `reified` — and every register in `stack.values`.
+
+The frame arena is collected exactly as the object arena is, with its own bits
+and its own forwarding table.
+
+**A married frame cannot be collected, and that needs no rule of its own.**
+`StackEntry::trace` follows `reified`, so a frame whose activation is still
+running is reachable from the stack and is marked. Leaving that to the root set
+rather than to a special case is what keeps a later change from silently
+freeing a running activation's frame.
+
+The marriage survives compaction in both directions: `FrameSlot::live` holds a
+*stack* index and no stack entry moves, and `StackEntry::reified` is forwarded
+like any other handle. The divorce on pop, and the conditional write-back of
+registers, are unchanged.
+
+What keeps a frame alive past its return is a closure's `captured_frame`, or
+another reified frame's `sender`/`home`. Closure conversion shrank the record —
+a body nothing reaches by reference is written back with no registers — but did
+not remove it: `ClosureData` still names its captured frame, because the home
+of a non-local return hangs on it. A surviving closure therefore retains its
+frame and, through that frame's `sender`/`home`, possibly a chain. That is the
+semantics rather than a defect, and it is what `bench_block.ns` measures.
+
+### The gates the collector needs
+
+The existing gates cover the completeness of the roots and the rewriting,
+because the move stress treats everything as live. The collector's own failures
+are different: **premature reclamation** — a missed root, a reachable object
+gone, silent wrong output at exit status 0 — and **false retention**, which no
+test sees at all and only a measurement shows.
+
+`NS_NEXT_STRESS_COLLECT=1` is the third stress mode, beside the move and the
+cache one, and a gate of its own. It collects at every safepoint rather than at
+a limit, paced by heap size like `STRESS_MOVE_BUDGET`, since collecting at
+literally every safepoint is quadratic in a deep recursion. Under it every
+golden and every corpus module runs at the highest collection frequency there
+is, so a missed root kills its object at the earliest possible moment and the
+recorded outputs catch the difference.
+
+False retention is caught by counting rather than by observing: a
+`debug_assertions`-only `collect_now`, beside `move_now`, and a
+`heap_statistics` answering live and occupied slots per arena. A program that
+discards n closures is back at its starting size afterwards; one that keeps n
+closures keeps n frames.
+
+### How the collector is measured
+
+The baseline is `dc0ffe5`, the merge of closure conversion into `master`, with
+`be3eb40` carried beside it as in every measurement since step 2. All eight
+sources, two sittings, every compared binary built with the protocol's explicit
+flags. `dumpbin /disasm` before any timing: `vm::run`'s step must still be one
+function. That matters more here than usual, because the trigger adds a
+comparison to `push_object` and the safepoint's slow path gets real code for
+the first time — `safepoint` being `#[cold]` and `#[inline(never)]` is checked,
+not assumed.
+
+Two metrics, not one: throughput as always, and peak working set, since the
+memory is the point of the step. The table above gains a fourth column. Beside
+them, reported separately, the number of collections, the total pause and the
+longest single pause, which `bench` learns to report the way it reports cache
+statistics.
+
+The expectation is recorded before the measurement, so that the result is not
+read to fit afterwards. `bench_block.ns`'s peak falls substantially.
+`bench_loop.ns` and `bench_send.ns` run in 4.6 MB, stay under the floor and
+never collect, so their throughput must not move measurably, and the send
+benchmarks must not feel the added comparison in `push_object`. And
+`bench_block.ns`'s maxima — 63.8-67.9 ms over medians of 37.6-39.9 ms today,
+consistent with the arena `Vec`s doubling — are the figure the pause has to
+justify itself against. A falling median with a rising maximum is a result, not
+a puzzle.
+
 
 ## Decisions
 
@@ -976,3 +1220,32 @@ creator's frame record without registers.
   holds no handle, stays shared. It also made `bench_block.ns`
   about 4% faster, since `MakeClosure` no longer allocates an `Rc` and a popped
   block activation drops none.
+- **Mark-compact over the index arena, one space, stop-the-world** (decided with
+  the user on 2026-09-20), with generations as a later, separately measured
+  step. Over uniform slots a free list has no fragmentation to solve and a
+  copier little locality to win, so the choice rested on what the step is for —
+  the table shrinks and the pages go back — on rewriting being O(1) per handle
+  through a flat forwarding table over an index arena, and on the machinery
+  already built and under test. Nova, the one engine with this representation,
+  compacts; Strongtalk, Spur and HotSpot compact or evacuate their old
+  generation, and HotSpot removed the one free-list old space it had.
+- **MMTk is ruled out by `#![forbid(unsafe_code)]`**, not by a comparison of
+  collectors. It works on raw addresses, so adopting it would replace the arena,
+  the origin guards, the epoch check and the brand's proof along with the
+  collector.
+- **The canonical symbol table is the system's only weak structure.** §5.1.6
+  survives it because `Mutator::new_symbol` is the only way to make a symbol
+  object, so one that is collected was held by nothing.
+- **The application cache stays strong because its key is an address.**
+  `Rc::as_ptr` as a key needs the strong reference to keep it unique; weakly, a
+  recycled address would answer an old entry with a different, perfectly valid
+  application. It becomes decidable once a mixin carries an id, which the
+  live-editing work wants anyway.
+- **A collection is requested by comparing an arena's length against a limit**,
+  reset to `max(4096, live * 2)` after each collection, rather than by counting
+  allocations: the length is already in hand where an allocation happens, so the
+  hot path pays one predictable branch and carries no new state.
+- **Collecting at every safepoint is a third stress mode and a third gate**,
+  `NS_NEXT_STRESS_COLLECT`, kept beside the move stress rather than replacing
+  it, because moving everything without liveness is what separates a missing
+  root from a mistake in marking.

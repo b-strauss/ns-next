@@ -161,10 +161,18 @@ Closure conversion was scheduled immediately before it for the collector's
 sake — a surviving block now retains what it captured plus a frame record
 without registers, instead of its creator's whole frame — and the indirection
 vector it added is itself an object the collector will reclaim.
-[memory.md](design/memory.md) has the design that is in place for it (the
-safepoint, `trace.rs`, host roots, the brand, the stress mode) and the open
-question of what the collector owns; `become:` and instance migration rule
-out a conservative non-moving design.
+[memory.md](design/memory.md) has both the machinery already in place (the
+safepoint, `trace.rs`, host roots, the brand, the stress mode) and, since
+2026-09-20, the shape decided with the user: **mark-compact over the index
+arena, one space, stop-the-world**, with generations as a later, separately
+measured step. MMTk is ruled out by the crate's `#![forbid(unsafe_code)]`
+rather than by a comparison of collectors; the canonical symbol table becomes
+the system's only weak structure; and the application cache stays strong
+because its key is an address, which is what `Rc::as_ptr` needs a strong
+reference to keep unique. What is new work is liveness, reclamation, the
+trigger and a third stress mode, `NS_NEXT_STRESS_COLLECT`, since no existing
+gate covers premature reclamation — the move stress treats everything as
+live.
 
 **The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
 `22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
