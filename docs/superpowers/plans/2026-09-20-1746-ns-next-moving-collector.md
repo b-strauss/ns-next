@@ -40,6 +40,8 @@
 
   From Task 7 on, `NS_NEXT_STRESS_COLLECT=1` joins both lists.
 - **A golden's recorded outcome is never updated because the code now produces it.** A change that moves one is a behaviour change: establish the new output is right first. No task in this plan should move any golden.
+- **The Newspeak sources in this plan's tests are statements of intent, not verified syntax.** They were written before any of them was run, and Task 3 found the first one did not parse. Two facts established there, by reading `crates/ns-runtime/src/builtins/`: `timesRepeat:` and `to:do:` are **not** in the bare bootstrap, while `whileTrue:`, `==`, `add:`, `printString` and the `OrderedCollection` class are. A module also needs its header — `Newspeak3`, the `'T'` tag, `class X = Object new () ( ... ) : ()`. The working template is the fixture in `crates/ns-runtime/tests/collector.rs` that Task 3 left behind: copy its shape, keep each test's stated intent (what is allocated, what is kept, what is discarded), rewrite the iteration as `whileTrue:`, and say in your report what you changed and why. Adapting the source is expected; changing what the test asserts is not.
+
 - **Never judge performance from a debug build.** Only Task 9 measures, and it follows the protocol in `docs/design/execution.md`, "What removing the re-entries moved".
 
 ---
