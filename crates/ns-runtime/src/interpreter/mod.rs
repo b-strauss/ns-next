@@ -542,6 +542,12 @@ impl Interpreter {
         self.world.cache_statistics()
     }
 
+    /// The arenas' occupancy. Available in every build: it is what a
+    /// measurement and a retention test both read.
+    pub fn heap_statistics(&self) -> crate::HeapStatistics {
+        self.world.heap_statistics()
+    }
+
     /// Replaces the global cache with a fresh one sized for `entries`,
     /// vacating whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
     /// `run_goldens.rs`), not an input path a program can reach: `entries`

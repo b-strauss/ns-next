@@ -129,6 +129,13 @@ impl Interpreter {
         self.world.move_everything();
     }
 
+    /// Collects now, between runs, where only roots hold values. For tests;
+    /// the run loop collects at a safepoint instead.
+    pub fn collect_now(&mut self) {
+        assert!(!self.running, "collect_now is for between runs");
+        self.world.collect();
+    }
+
     /// Turns the stress mode on or off for this interpreter, whatever
     /// `NS_NEXT_STRESS_MOVES` says. For tests. Keeps the safepoint request
     /// set while the cache stress mode is on, since either one alone must

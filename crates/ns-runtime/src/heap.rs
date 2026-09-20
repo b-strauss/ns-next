@@ -548,6 +548,59 @@ impl Relocation for Rotation {
     }
 }
 
+/// What a collection maps each old slot index to: its new index, or `DEAD`
+/// for a slot that is gone. A flat table rather than a run-length list of
+/// shifts (Nova's `CompactionList`) because an index arena can afford 4
+/// bytes per slot for the length of one collection, and O(1) beats a binary
+/// search once per handle in the heap.
+pub(crate) struct ForwardingTable {
+    table: Vec<u32>,
+}
+
+/// No live slot can map here: an arena is addressed by 32-bit indices and
+/// `next_object_index` refuses to mint `u32::MAX` of them.
+const DEAD: u32 = u32::MAX;
+
+impl Relocation for ForwardingTable {
+    fn apply(&self, index: u32) -> u32 {
+        let destination = self.table[index as usize];
+        debug_assert_ne!(
+            destination, DEAD,
+            "a handle to a collected slot survived marking: a root the tracer does not know about"
+        );
+        destination
+    }
+}
+
+/// Slides the marked slots of one arena to the front, truncates the rest
+/// away -- which is where the dead records drop, and their payloads with
+/// them -- and answers the table that maps old index to new.
+fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits) -> ForwardingTable {
+    let mut table = vec![DEAD; slots.len()];
+    let mut destination = 0usize;
+    for (source, destination_of_source) in table.iter_mut().enumerate() {
+        if bits.is_set(source as u32) {
+            *destination_of_source = u32::try_from(destination)
+                .expect("internal: an arena is addressed by 32-bit indices");
+            if destination != source {
+                slots.swap(destination, source);
+            }
+            destination += 1;
+        }
+    }
+    slots.truncate(destination);
+    // `truncate` drops the dead records but never lowers the capacity, so
+    // without this the pages a collection frees stay with the process and
+    // the peak this step exists to lower does not move. With hysteresis, so
+    // that a heap which oscillates does not reallocate and copy at every
+    // collection: shrink only when three quarters of the buffer is idle,
+    // and leave the live set room to double.
+    if slots.capacity() > destination.saturating_mul(4) {
+        slots.shrink_to(destination.saturating_mul(2));
+    }
+    ForwardingTable { table }
+}
+
 /// The tracer a move or a collection forwards every handle with. In a debug
 /// build it also checks each handle it forwards: one from another heap, or
 /// one already stale, was stored in this heap by a mistake the rewrite would
@@ -628,6 +681,18 @@ impl crate::trace::Trace for StackEntry<'_> {
             tracer.frame(frame);
         }
     }
+}
+
+/// The arenas' occupancy, read without disturbing them
+/// (`Heap::heap_statistics`): `live_*` is the arena's length, `*_slots` its
+/// capacity -- the gap between them is what a collection can still give
+/// back before either arena grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeapStatistics {
+    pub live_objects: usize,
+    pub object_slots: usize,
+    pub live_frames: usize,
+    pub frame_slots: usize,
 }
 
 impl<'gc> Heap<'gc> {
@@ -2354,6 +2419,71 @@ impl<'gc> Heap<'gc> {
         forwarder
     }
 
+    /// Compacts both arenas against `marker`'s bits and rewrites every handle
+    /// the heap itself holds into the next epoch. What the heap does not
+    /// hold, the caller forwards with the answer, exactly as for a move
+    /// (`World::collect`).
+    ///
+    /// Sound only where nothing outside the heap and the interpreter holds a
+    /// handle: at a safepoint of the run loop, or between runs.
+    #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
+    pub(crate) fn compact(&mut self, marker: mark::Marker) -> Forwarder<ForwardingTable> {
+        use crate::trace::{Trace, Tracer};
+        #[cfg(debug_assertions)]
+        let from_epoch = self.epoch;
+        #[cfg(debug_assertions)]
+        let to_epoch = from_epoch.wrapping_add(1);
+        #[cfg(debug_assertions)]
+        {
+            self.epoch = to_epoch;
+        }
+        let objects = compact_arena(&mut self.objects, &marker.objects);
+        let frames = compact_arena(&mut self.frames, &marker.frames);
+        let mut forwarder = Forwarder {
+            #[cfg(debug_assertions)]
+            heap_id: self.heap_id,
+            #[cfg(debug_assertions)]
+            from_epoch,
+            #[cfg(debug_assertions)]
+            to_epoch,
+            objects,
+            frames,
+        };
+        for object in &mut self.objects {
+            object.trace(&mut forwarder);
+        }
+        for slot in &mut self.frames {
+            slot.frame.trace(&mut forwarder);
+        }
+        for entry in &mut self.stack.entries {
+            entry.trace(&mut forwarder);
+        }
+        for value in &mut self.stack.values {
+            forwarder.value(value);
+        }
+        for object in self.canonical_symbols.iter_mut().flatten() {
+            forwarder.object(object);
+        }
+        let roots = self.host_roots.get_mut();
+        roots.sweep();
+        for slot in &roots.slots {
+            let mut value = slot.get();
+            forwarder.value(&mut value);
+            slot.set(value);
+        }
+        forwarder
+    }
+
+    /// The arenas' occupancy (`Interpreter::heap_statistics`).
+    pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
+        crate::HeapStatistics {
+            live_objects: self.objects.len(),
+            object_slots: self.objects.capacity(),
+            live_frames: self.frames.len(),
+            frame_slots: self.frames.capacity(),
+        }
+    }
+
     /// Marks the heap's own roots -- the activation stack's entries and its
     /// registers, the canonical symbol table and the host roots -- and answers
     /// the marker without draining it, so that the caller can add the step
@@ -2410,6 +2540,14 @@ impl<'gc> Heap<'gc> {
         let mut marker = self.begin_marking();
         self.drain_marking(&mut marker);
         marker
+    }
+
+    /// Marks from the heap's own roots and compacts, for the heap's own
+    /// tests. A real collection goes through `World`.
+    #[cfg(test)]
+    fn collect_for_test(&mut self) {
+        let marker = self.mark_from_roots_for_test();
+        let _ = self.compact(marker);
     }
 }
 
@@ -3391,6 +3529,46 @@ mod tests {
 
         assert!(marker.objects.is_set(first.index));
         assert!(marker.objects.is_set(second.index));
+        heap.pop_activation(activation);
+    }
+
+    /// The point of the step: a slot nothing can reach is given back, and the
+    /// arena is shorter afterwards.
+    #[test]
+    fn collecting_reclaims_what_no_root_reaches() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let reachable = heap.allocate_object(class, ObjectData::String("live".to_string()));
+        heap.allocate_object(class, ObjectData::String("dead".to_string()));
+        heap.allocate_object(class, ObjectData::String("also dead".to_string()));
+        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+        let before = heap.objects.len();
+
+        heap.collect_for_test();
+
+        assert_eq!(before, 4);
+        // The class, the reachable string, and nothing else.
+        assert_eq!(heap.objects.len(), 2);
+        heap.pop_activation(activation);
+    }
+
+    /// A survivor is reached again through the root that kept it alive, which
+    /// is what pins that the forwarding rewrote the register rather than
+    /// leaving it pointing at whatever now occupies the old index.
+    #[test]
+    fn a_survivor_is_still_itself_after_compaction() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        heap.allocate_object(class, ObjectData::String("dead".to_string()));
+        let reachable = heap.allocate_object(class, ObjectData::String("live".to_string()));
+        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+
+        heap.collect_for_test();
+
+        let Value::Object(survivor) = heap.activation_local(activation, 0) else {
+            panic!("the register no longer holds an object");
+        };
+        assert_eq!(heap.str_value(survivor), Some("live".to_string()));
         heap.pop_activation(activation);
     }
 }

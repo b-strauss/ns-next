@@ -142,12 +142,34 @@ impl World {
         marker
     }
 
+    /// One collection: mark everything reachable, compact both arenas, and
+    /// forward what the step state holds beside the heap -- the bootstrap's
+    /// builtin classes and the `platform` singleton -- exactly as a move does.
+    pub(crate) fn collect(&mut self) {
+        use crate::trace::Tracer;
+        self.check_quiescent_state();
+        let marker = self.mark_everything_reachable();
+        let mutator = &mut self.mutator;
+        let mut forwarder = mutator.heap.compact(marker);
+        for class in &mut mutator.builtin_classes {
+            forwarder.object(class);
+        }
+        if let Some(platform) = &mut mutator.platform_singleton {
+            forwarder.value(platform);
+        }
+    }
+
+    pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
+        self.mutator.heap.heap_statistics()
+    }
+
     /// What must hold no handle when everything moves, because nothing
     /// traces it: the argument buffer, which a send fills and empties within
     /// one instruction, and the spare boxes finished instantiations leave
     /// for the next ones (`docs/design/memory.md`, "What the collector
-    /// traces").
-    #[cfg(debug_assertions)]
+    /// traces"). As true a requirement for a release collection as for a
+    /// debug-build move, so unlike `move_everything` this is not gated to
+    /// debug builds.
     fn check_quiescent_state(&self) {
         use crate::types::InstantiationPhase;
         let mutator = &self.mutator;
