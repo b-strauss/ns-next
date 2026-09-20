@@ -2,15 +2,19 @@
 
 > **Status:** built, including the trampoline; nothing re-enters the run loop
 > from Rust, the loop polls a safepoint, each instruction it executes is
-> one entry of the step state, and the sends it executes go through inline
-> caches, except the reference lowering's.
+> one entry of the step state, the sends it executes go through inline
+> caches, except the reference lowering's, and the optimized lowering converts
+> closures, so only by-reference code keeps a returning frame's registers.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
-> activation), `heap/world.rs` (the step state at rest, and its entry),
-> `types.rs` (`Frame`, `Continuation` and the state its variants
+> activation, the copied values a closure carries and whether a frame keeps its
+> registers), `heap/world.rs` (the step state at rest, and its entry),
+> `types.rs` (`Frame`, `ClosureData`, `Continuation` and the state its variants
 > carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
-> safepoint's slow path), `builtins/boolean.rs`,
+> safepoint's slow path, and the indirection vector's reads and writes in
+> `interpreter/locals.rs`), `compiler/capture.rs` (the capture analysis) and
+> `compiler/lower.rs` (the converted register layout), `builtins/boolean.rs`,
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack).
@@ -63,17 +67,26 @@ only when something asks for one — `PushClosure`, `thisContext`, an error — 
 the same: `marryFrameSP` on closure creation, `isWidowedContext` for the dead
 case (`prior-art/opensmalltalk-vm/src/spur64.stack/interp.c`).
 
-One difference decides the shape of this design. Cog's and Primordial Soup's
-closures **copy** the values they capture and box the variables they write
+One difference decided the shape of this design, and closure conversion has
+since closed most of it. Cog's and Primordial Soup's closures **copy** the
+values they capture and box the variables they write
 (`pushClosureNumArgs:copiedValues:` and `pushRemoteTemp` in Cog; `PushClosure`
 and `PushIndirectLocal` in Primordial Soup), so nothing ever reads a dead
-frame's temporaries and a widowed context needs none of them. ns-next's closures
-read an enclosing activation's locals **by reference**, through
-`captured_frame`, including after that activation has returned — a counter block
-returned from the method that declares `n` goes on writing `n`
-(`goldens/language/closure_variables.ns` pins this). So a reified frame here keeps
-its registers when its activation returns ("Pop" below). Removing that need is a
-step of its own, "Planned: closure conversion" below.
+frame's temporaries and a widowed context needs none of them. The optimized
+lowering now does the same ("Closure conversion" below): a captured variable is
+copied into the closure, or lives in its scope's indirection vector, which the
+declaring body and every block that needs it share. A counter block returned
+from the method that declares `n` still goes on writing `n`
+(`goldens/language/closure_variables.ns` pins this) — through the vector rather
+than through the frame.
+
+Two things still read an enclosing activation's registers **by reference**,
+through `captured_frame`: the reference lowering, which keeps the by-reference
+model as the oracle the conversion is checked against, and the fallback closure
+an inlined `ifTrue:` sends when its receiver is not a Boolean ("Fallback
+blocks" below). So a reified frame keeps its registers when its activation
+returns only when something can still reach them that way, decided per
+activation from the block's own `outer_reach` ("Pop" below).
 
 ### Representation
 
@@ -135,7 +148,7 @@ pub struct ActivationReference {
   anyone holds.
 - **Two handle types, not one tagged handle.** `ActivationReference` names a live
   stack entry; `FrameReference` names a reified frame in the arena and is the only
-  activation handle anything *stores*: `ClosureData.captured_frame` and `home`,
+  activation handle anything *stores*: `ClosureData.captured_frame`,
   `Frame.home` and every image record take a `FrameReference`, so storing a stack
   handle is a compile error rather than a convention. A tagged `FrameReference` would
   have touched only `heap.rs`, but it would put a branch on every register
@@ -167,24 +180,39 @@ pub struct ActivationReference {
 **Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call creates
 the arena `Frame` — receiver, `kind`, `current_class`, `program_counter`, and `home` when the
 activation is a closure's — marries it to the entry, and records it in
-`entry.reified`; every later call answers the same handle. Its caller is closure
-creation, the VM's `MakeClosure`: directly for the new closure's
-`captured_frame`, and through `home_of` for its `home`. `home_of` passes a
-closure activation's own `home` on and reifies any other activation as its own
-home. Every block creation reifies the activation that creates it, whether or
-not the block reads one of its variables, because `captured_frame` is also where
-`Mutator::push_step` reads the block's receiver and current class from.
+`entry.reified`; every later call answers the same handle. Its one caller is
+closure creation, the VM's `MakeClosure`, for the new closure's
+`captured_frame`. A closure stores no `home` of its own: `Heap::closure_home`
+derives it from the captured frame — that frame itself when it is a method's or
+an initializer's, that frame's own `home` when it is a block's ("The closure
+keeps its defining activation"). Every block creation reifies the activation
+that creates it, whether or not the block reads one of its variables, because
+`captured_frame` is also where `Mutator::push_step` reads the block's receiver
+and current class from.
 
 **Pop.** The run loop pops every activation it runs, on *every* exit, error
 paths included (`vm::run`), and only the top entry can be popped. Popping hands
 back the entry's continuation (`Popped`), which the loop applies to the
 activation's value ("The VM" below). If the entry was reified, its frame is
-**divorced**: the registers are copied into the frame's `arguments`/`temporaries`, its `program_counter`
-takes the entry's last stored one, `live` becomes `None`, `uncontinuable` becomes
-true and `sender` becomes `None`. Then `values` is truncated to the entry's
-`base`. An entry that was never reified leaves nothing behind, so storage for
-activations nothing captured is bounded by the deepest the program has been
-rather than by every activation it has ever made.
+**divorced**: its `program_counter` takes the entry's last stored one, `live`
+becomes `None`, `uncontinuable` becomes true and `sender` becomes `None`. Then
+`values` is truncated to the entry's `base`.
+
+**The registers are copied into the frame's `arguments`/`temporaries` only when
+the entry asks for it**, `StackEntry.retains_registers`, which
+`Heap::retain_registers` sets and which `MakeClosure` sets when the block it
+creates can reach this frame by reference — `block.outer_reach > 0`
+("Representation", under "Closure conversion"). Under the reference lowering
+that is every activation that creates a closure, so every frame is divorced
+with its registers as it always was; under the optimized lowering it is only an
+activation whose fallback path actually created a closure. A frame divorced
+without its registers answers `nil` for a register read and ignores a write
+(`Heap::frame_local`/`frame_set_local`), which is what a crafted image's
+by-reference closure over a register-less frame sees
+([image-format.md](image-format.md), "Verification"). An entry that was never
+reified leaves nothing behind, so storage for activations nothing captured is
+bounded by the deepest the program has been rather than by every activation it
+has ever made.
 
 **Sender.** A live activation's sender is the entry below it — structural, not a
 stored field, so no call site can forget to pass it on, at a block boundary or
@@ -439,6 +467,8 @@ the milestone that builds one; it is a deliberate trade, not an oversight.
 
 A closure's `home` is the reified frame of the method, initializer,
 superclass-clause or superclass-message activation that lexically encloses it.
+It is not a field: `Heap::closure_home` derives it from the closure's
+`captured_frame` ("The closure keeps its defining activation").
 `Signal::Return` carries an `ActivationReference`, its target, and `raise_return` picks
 it: for a closure activation, its closure's `home` — the stack entry that frame is
 married to (`Heap::frame_activation`) while its activation is still running, and
@@ -904,7 +934,7 @@ trampoline took the argument vector and the callback.
 
 What is left on `bench_block.ns` is mostly the reification and the divorce —
 about a quarter of the timed samples — which is what closure conversion
-("Planned: closure conversion") and a collector ([memory.md](memory.md)) are
+("Closure conversion") and a collector ([memory.md](memory.md)) are
 for. On `bench_send.ns` the profile shows a cost no measurement had
 isolated: `Symbol::intern` is 11.9% of the timed samples. `self tick: sum` is a
 lexical send whose selector has a setter's shape, so
@@ -965,7 +995,7 @@ than half of "deciding a send": `bench_new.ns`'s instantiation-heavy path
 spends most of its deciding time inside `decide_instantiation` itself, not the
 method-table walk a cache would shortcut, and `bench_block.ns`'s repeated
 reification and divorce — 27.0%, the largest single share on any source — is
-what "Planned: closure conversion" and a collector ([memory.md](memory.md))
+what "Closure conversion" and a collector ([memory.md](memory.md))
 are for, not the caches. `bench_loop.ns`'s `+` and `<` never leave the
 primitive path, so it pushes no activation at all (0.0%) and pops none;
 `bench_send.ns`'s single `tick:` call an iteration pushes one (5.8%) and,
@@ -2265,6 +2295,124 @@ exercised by the golden suite, not by the benchmarks. What the numbers show
 is that the four gaps together cost nothing on a send's hit path, not that
 the elision itself is worth anything measured here.
 
+### What closure conversion moved
+
+Closure conversion ([PROGRESS.md](../PROGRESS.md), "M4 — Closure conversion")
+changes what every block creation and every block activation does, and it
+narrows the protective register copies the lowering emits, so it was measured
+in two steps against one baseline: the conversion on its own, then the copies
+on top of it.
+
+Measured 2026-09-20. Four binaries, each `cargo build --workspace --release`
+with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
+the three earlier commits in throwaway worktrees:
+
+- `efac7d2` — the `master` the branch started from (the merge of
+  `feature/remove-assign`);
+- `be3eb40` — the reference carried since step 2c;
+- `a3f36a2` — the conversion alone (`feat: convert closures in the optimized
+  lowering`);
+- `fbd7d9f` — the head, the conversion plus the narrowed protective copies.
+
+The protocol is the one of "What removing the re-entries moved": no binary
+imports `VCRUNTIME140.dll` (`dumpbin /dependents`); every binary was checked to
+print the expected answer for all eight sources before anything was timed;
+`ns-next bench <source> --iterations 30`, five rounds per sitting, the four
+binaries' order rotating by one position from round to round, two whole
+sittings, nothing else running — 320 timed data lines.
+
+**Where the four out-of-tree sources came from.** `bench_do.ns`,
+`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` were copied from "What
+spec-conformant lookup moved" above, not from the
+[2c plan](../superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md)'s
+measurement protocol, whose copies spell the retired `:=` and no longer parse —
+and three of which also declare a slot and a getter of the same simple name,
+which the resolver now refuses as a duplicate member (§5.7). That substitution
+is what every measurement since the spec-conformant-lookup step has already
+made; the next one should take all four from execution.md too.
+
+**Level everywhere.** Means in ms, sitting 1 / sitting 2:
+
+| Source | `be3eb40` | `efac7d2` | `a3f36a2` (conversion) | `fbd7d9f` (head) |
+|---|---|---|---|---|
+| `bench_loop.ns` | 11.185 / 11.271 | 10.257 / 10.216 | 10.336 / 10.392 | 10.475 / 10.323 |
+| `bench_send.ns` | 13.913 / 13.924 | 11.410 / 11.510 | 11.459 / 11.503 | 11.489 / 11.470 |
+| `bench_block.ns` | 23.405 / 23.432 | 19.848 / 19.863 | 19.727 / 19.792 | 19.933 / 19.785 |
+| `bench_megamorphic.ns` | 17.945 / 17.967 | 16.538 / 16.501 | 16.655 / 16.583 | 16.670 / 16.555 |
+| `bench_do.ns` | 8.094 / 8.114 | 6.970 / 7.007 | 7.016 / 6.855 | 6.949 / 7.030 |
+| `bench_new.ns` | 7.493 / 7.509 | 6.115 / 6.124 | 6.185 / 6.179 | 6.178 / 6.117 |
+| `bench_new2.ns` | 8.506 / 8.403 | 7.135 / 7.117 | 7.163 / 7.090 | 7.115 / 7.171 |
+| `bench_newarg.ns` | 10.641 / 10.664 | 8.997 / 9.014 | 9.057 / 9.049 | 9.039 / 9.102 |
+
+The gate is the protocol's: a source has moved only when its five-round range
+(min to max of the five medians) lies entirely above, or entirely below, the
+baseline's in **both** sittings.
+
+- **The conversion against `efac7d2`**: −2.18% to +1.73%, every source
+  overlapping in both sittings but one — `bench_do.ns`, entirely below in the
+  second sitting only (−2.18%), which does not repeat in the first (+0.67%).
+  No source is entirely above. The conversion is level with `efac7d2` on all
+  eight.
+- **The copies against the conversion**: −1.00% to +2.56%, every source
+  overlapping in both sittings, `bench_block.ns` — the one source that
+  exercises a write-after-capture block every iteration — included. Narrowing
+  the protective copies moved nothing measurable.
+- **The head against `efac7d2`**: −0.39% to +2.12%, every source overlapping in
+  both sittings. **No regression.**
+- **The head against `be3eb40`**: every source entirely below in both sittings,
+  by **6–19%** — `bench_loop.ns` −6.4% / −8.4%, `bench_send.ns` −17.4% /
+  −17.6%, `bench_block.ns` −14.8% / −15.6%, `bench_megamorphic.ns` −7.1% /
+  −7.9%, `bench_do.ns` −14.2% / −13.4%, `bench_new.ns` −17.6% / −18.5%,
+  `bench_new2.ns` −16.4% / −14.7%, `bench_newarg.ns` −15.1% / −14.7%. Every
+  gain accumulated since step 2c is still there; the conversion gave none of it
+  back.
+
+**What the design expected and what was measured.** "Cost", under "Closure
+conversion" below, predicted that a block would stop paying a hop per nesting
+level and that an activation would stop copying its registers out. Both happen,
+and neither shows in the running time of any of these eight sources. The
+profile taken before the trampoline ("What the profiles show" above) is the
+reason to expect little: it put reifying a frame at 9.6% of `bench_block.ns`'s
+samples and the divorce on return at 8.9%, and the conversion removes neither
+the reification nor the divorce — only the register copy inside the divorce,
+and only for an activation no by-reference closure can read. What is recorded
+here is that the conversion is free, not that it is faster.
+
+**`bench_block.ns`'s peak working set rose about 2.6%.** Measured as
+[memory.md](memory.md)'s "Open: what the collector owns" records it — Windows
+11, release build, `PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize` through
+`psapi!GetProcessMemoryInfo` on the still-open handle immediately after the
+process exits, `bench bench_block.ns --iterations 30`, three runs each:
+
+| Binary | Three-run band |
+|---|---|
+| `efac7d2` | 454.719–454.754 MB |
+| `a3f36a2` (conversion only) | 466.406–467.598 MB |
+| `fbd7d9f` (head) | 466.418–466.469 MB |
+
+**The rise belongs to the conversion.** `a3f36a2`'s band lies entirely above
+`efac7d2`'s, already at the head's level, and `fbd7d9f`'s band sits inside
+`a3f36a2`'s, so the copy-narrowing adds and removes nothing here. The
+explanation — a block that writes a captured local now allocates an
+indirection-vector `Array` per activation of the body that declares it, in an
+arena that reclaims nothing — **is an inference from what changed, not a
+measured attribution**: no allocation profile was taken, and the numbers are
+consistent with it without singling it out. It is a cost the collector (step 5)
+removes; until then a vector is retained exactly as every other object the
+process has ever made.
+
+**`vm::run`'s step is still inline.** Release builds with debug information of
+`efac7d2` and the head (the same `RUSTFLAGS`, plus
+`CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`), then
+`dumpbin /disasm`: no `vm::run::closure` function in either.
+`ns_runtime::vm::run` is one function of **4,878 instructions at `efac7d2`**
+and **5,700 at the head**, +16.9% — the three vector instructions and the
+two-mode block-creation logic, all still inlined into the one function rather
+than split out. That is what the step's own size did; it cost none of the
+eight sources any measurable time, and nothing here should be read as saying it
+did.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -2655,27 +2803,29 @@ same missing piece as resuming a decoded frame
 frames it touches out of their fast representation; this is the same step, one
 level below the JIT.
 
-## Planned: closure conversion
+## Closure conversion
 
-**Designed with the user on 2026-09-19; not built.** Step 4 of the order of work
-([PROGRESS.md](../PROGRESS.md)), placed after the inline caches and before the
-collector, whose retention it affects most. The decisions are listed under
-"Decisions" below; this section is the design they add up to.
+**Built 2026-09-20**, designed with the user on 2026-09-19. Step 4 of the order
+of work ([PROGRESS.md](../PROGRESS.md)), placed after the inline caches and
+before the collector, whose retention it affects most. The decisions are listed
+under "Decisions" below; this section is what they add up to.
 
-What changes: under the optimized lowering, a block stops reaching its method's
-variables through the method's frame. A captured variable that is never written
-after the block reads it is **copied** into the closure when the closure is
-created; one that is written lives in its scope's **indirection vector**, which
-the method and every block that needs it share. The reference lowering keeps
-the by-reference model, as the oracle the conversion is checked against.
+Under the optimized lowering a block does not reach its method's variables
+through the method's frame. A captured variable that is never written after the
+block reads it is **copied** into the closure when the closure is created; one
+that is written lives in its scope's **indirection vector**, which the
+declaring body and every block that needs it share. The reference lowering
+keeps the by-reference model, as the oracle the conversion is checked against.
 
-The activation stack keeps ns-next's by-reference model and pays for it with a
-divorce: a reified frame copies all its registers into the arena when its
-activation returns, because a surviving block may still read them. Conversion
-removes that need for optimized code. It does not remove reification — a block
-with `^` still needs its home activation, and so do the debugger and the
-activation mirrors — which is why it can come after the stack rather than
-before it: it changes where variables live, not what an activation is.
+Before this, the activation stack paid for the by-reference model with an
+unconditional divorce: a reified frame copied all its registers into the arena
+when its activation returned, because a surviving block might still read them.
+Whether a returning activation copies its registers out is now decided per
+activation, from the block's own `outer_reach` ("Representation" below).
+Conversion did not remove reification — a block with `^` still needs its home
+activation, and so do the debugger and the activation mirrors — which is why it
+came after the stack rather than before it: it changes where variables live,
+not what an activation is.
 
 **Every Smalltalk and Newspeak VM that moved to stack frames made this change to
 do it.** Cog's closure compiler introduced copied values and remote temps
@@ -2718,11 +2868,23 @@ kept the link only while a debugging flag was set was rejected too: a closure
 created without it, including every closure in an image serialized from a run
 without it, could never be given it back.
 
-What a returned optimized frame keeps is its receiver, its program counter,
-its `home` and its `uncontinuable` flag, but no registers: a variable nothing
+What a returned converted frame keeps is its receiver, its program counter, its
+`home` and its `uncontinuable` flag, but no registers: a variable nothing
 captured is unreachable once its activation returns, and a captured one lives
 in a closure or a vector. So what a surviving block retains is what it captured
-plus that frame record, not the frame's registers.
+plus that frame record, not the frame's registers. An activation that created a
+fallback closure is the exception and keeps them, which is exactly what
+`outer_reach` decides ("Representation" below).
+
+The link costs `ClosureData` nothing it did not already hold, and the home is
+no longer a field of its own: `Heap::closure_home` derives it from
+`captured_frame` — that frame itself when it is a method's, an initializer's or
+a superclass clause's, and that frame's own `home` when it is a block's. A
+decoded frame can be missing its `home` (the decoder does not require one), so
+`closure_home` falls back to the captured frame rather than asserting: a
+decoded frame is never married, so `raise_return` treats it as a dead home and
+raises `cannotReturn` either way, where an assertion would have aborted the
+process on an untrusted image ("An image is untrusted input", `CLAUDE.md`).
 
 ### Where the analysis lives
 
@@ -2732,17 +2894,26 @@ literal as a scope and cannot tell which blocks `compiler/control_flow.rs`
 inlines; a variable read only in an inlined `ifTrue:` block is not captured,
 and the loop rule below depends on knowing which blocks are inlined loops. The
 pass calls `control_flow::recognize`, so it and the lowering agree on every
-block. The resolver and the reference lowering do not change.
+block. Neither the resolver nor the reference lowering knows about it.
 
-Per code body (method, initializer, real block) it answers:
+`analyze(RootBody, &bindings) -> Captures` walks one code family — a root body
+(method, initializer, superclass clause or clause message) and every block
+literal under it — and answers, per body, keyed by `BodyKey::Root` or
+`BodyKey::Block(Span)`:
 
-- **each local's class**: not captured (a register, as today); copied (a
-  register, and a copy in every capturing block); or in the vector (a place in
-  the body's indirection vector);
-- **each real block's copied values**, in a fixed order: the copied variables
-  it captures, the vectors of the scopes whose vector variables it needs, and,
+- **each local's place** (`Place`): `Register`, whether it is captured by
+  copy or not captured at all, or `Vector(slot)`, a slot of the body's own
+  indirection vector;
+- **each real block's copied values** (`Captured`), in a fixed order: the
+  copied variables it captures (`Captured::Variable`), the vectors of the
+  scopes whose vector variables it needs (`Captured::Vector`), and,
   **transitively**, whatever a block nested in it needs from further out — a
-  middle block carries what an inner one needs, as in Cog.
+  middle block carries what an inner one needs, as in Cog. A block that only
+  *writes* an enclosing variable needs that scope's vector just as a reading
+  one does, and so does every real block between the two
+  (`goldens/capture/a_nested_block_that_only_writes.ns`);
+- **which locals an inlinable branch of the body assigns**
+  (`branch_assigned`), which is what "Fewer protective copies" below reads.
 
 **The rule.** Parameters and immutable locals (`=`) are always copied: nothing
 but their initialization writes them (§3.6). A mutable local (`| x |`,
@@ -2795,6 +2966,16 @@ variable written in an inlinable branch goes into the vector only when a real
 block also captures it. The common path pays nothing; the fallback pays only
 when it runs.
 
+`lower_fallback_send` is the one place this is decided: it sets the `Lowerer`'s
+`blocks_by_reference` around the fallback send, so every block literal lowered
+underneath it — the fallback closure itself and anything nested in it — gets a
+by-reference `Layout` (no copied values, no vector, every local in the register
+its resolver index names) instead of a converted one. So the two lowerings of
+one literal differ in more than where they sit:
+`a_real_block_nested_in_an_inlined_block_is_converted_and_its_fallback_copy_is_not`
+(`compiler/lower.rs`) pins both halves of one literal, the converted one
+reading a copied register and the fallback one a `LoadOuterLocal` at depth 2.
+
 Rejected: converting fallback closures like any other block (a vector for every
 variable any branch writes), and sending `mustBeBoolean` on the fallback path
 as Cog does, which would change recorded outcomes and make inlining observable.
@@ -2819,60 +3000,78 @@ considered and not built.
 then one hidden vector register when the body has vector variables, then
 scratch. A block's is parameters, **copied values**, temporaries, the hidden
 vector register, scratch. A vector variable keeps its resolver index, whose
-register then simply stays `nil`, so every `Binding` stays valid.
+register then simply stays `nil`, so every `Binding` stays valid. `Layout`
+(`compiler/lower.rs`) is where that arithmetic lives — `local_register` pushes
+every temporary up by the copied count, `register_holding` answers the register
+a given `Captured` entry sits in, and `locate` turns a resolver index into a
+`Location` in one frame, which `access_through` lifts into an `Access` by
+adding the reading body's distance from that frame.
 
 **Instructions**, emitted by the optimized lowering only:
 
 - `MakeVector { destination, size }` at the start of the body, before any local
   initializer runs, since `| x ::= 3. |` on a vector variable writes the vector.
   A parameter is never a vector variable, so, unlike Cog, nothing is copied into
-  the vector on entry.
+  the vector on entry. It is instruction 0 and sits outside every
+  `statement_program_counter` range, as the terminating return already does.
 - `LoadVector { destination, vector, index }` and
   `StoreVector { vector, index, source }`: a vector variable's read and write —
   the method through its own vector register, a block through its copy of it.
-- `MakeClosure` gains `copied: Vec<u16>`, the registers whose values go into
-  the closure. The reference lowering always emits an empty list.
+- `MakeClosure` carries `copied: Vec<u16>`, the registers whose values go into
+  the closure. The reference lowering always emits an empty list, and so does
+  the optimized one for a fallback closure.
 
 The optimized lowering emits `LoadOuterLocal` and `StoreOuterLocal` only inside
 fallback closures ("Fallback blocks"); everywhere else they remain the
 reference lowering's.
 
 **Activating a block** writes the closure's copied values into the registers
-after its parameters, as Cog and Primordial Soup do ("Copied values are included
+after its parameters (`Heap::fill_copied_values`, called by `Step::Block` right
+after the push), as Cog and Primordial Soup do ("Copied values are included
 at the beginning of temporaries"). A block then reads a copied variable as a
 plain register, with no instruction at all. Those registers are read-only by
 construction: the analysis puts every variable anything writes after capture
 into a vector. `self`, `current_class` and `^` go through `captured_frame` as
-today.
+before. The fill allocates nothing — the values go straight from the object
+arena into the register window — and it stops at the end of the activation's
+own window, so a crafted image whose `copied` list is longer than the register
+file writes nothing above it.
 
-**`ClosureData` stays at 32 bytes**, so that an `Object` stays at 56 in a
+**`ClosureData` is 32 bytes**, so that an `Object` stays at 56 in a
 release build (`heap.rs`'s pinned size, the figure `CLAUDE.md`'s amplification
-paragraph is computed from). It gains `copied: Box<[Value]>` (16 bytes; an empty
-one allocates nothing) and loses two fields that duplicate something already
-held: `parameters`, whose only use is its length, which the block code's
-`argument_count` already is; and `home`, which the captured frame determines —
-the captured frame itself when it is a method's or an initializer's, that
-frame's own `home` when it is a block's. The trace impl names `copied`, which
-the compiler enforces.
+paragraph is computed from). It carries `copied: Box<[Value]>` (16 bytes; an
+empty one allocates nothing) in place of two fields that duplicated something
+already held: `parameters`, whose only use was its length, which the block
+code's `argument_count` already is, and which `Heap::closure_parameter_count`
+now reads from there; and `home`, which the captured frame determines
+(`Heap::closure_home`, above). The trace impl names `copied`, which the
+compiler enforces.
 
 **The divorce.** Whether a returning frame keeps its registers is decided per
-activation, at run time. `CompiledCode` gains a flag, `reaches_by_reference`,
-set when the body or a block nested in it contains `LoadOuterLocal` or
-`StoreOuterLocal` — every block of the reference lowering, and every fallback
-closure of the optimized one. It is computed when the code is built, by the
-compiler and by the decoder alike, and is not on the wire. A `MakeClosure`
-whose block has the flag marks the creating activation's stack entry, and
-`pop_activation` copies a reified frame's registers out only when its entry is
-marked. The chain holds by induction: a by-reference closure reaching two
-frames out was created by a by-reference closure's activation, which its own
-creation marked. Under the reference lowering every activation that creates a
-closure is marked, as every frame is divorced today; under the optimized one
-only an activation whose fallback path actually ran.
+activation, at run time. `CompiledCode` carries `outer_reach`, a **depth**, not
+a flag: `bytecode::outer_reach_of` takes the maximum of the body's own
+`LoadOuterLocal`/`StoreOuterLocal` depths and of each nested `MakeClosure`'s
+block reach minus one. So it is 0 for converted code, 1 for a body that creates
+a fallback closure reading its own registers, and one more per level above
+that. It is computed when the code is built, by the compiler and by the decoder
+alike, and is not on the wire.
+
+`MakeClosure` calls `Heap::retain_registers` on the creating activation when
+the block it creates has a non-zero reach, and `pop_activation` copies a
+reified frame's registers out only for an entry so marked. A depth rather than
+a flag is what keeps the chain unbroken through nesting: a closure that reaches
+two frames out gives the body that creates it a reach of 1, so that body's own
+creation marks *its* activation too, and so on down to the innermost. Under the
+reference lowering every block reads something outer at depth ≥ 1, so every
+activation that creates a closure is marked and every frame is divorced with
+its registers, exactly as before; under the optimized lowering only an
+activation that actually created a fallback closure is.
 
 **An untrusted image** can put any value where code expects a vector.
 `LoadVector` and `StoreVector` check the value's kind and the index and raise a
-run-time error, not a panic, on a mismatch; code the compiler produced never
-has one.
+run-time error, not a panic, on a mismatch (`interpreter::locals::load_vector`
+and `store_vector`, whose error names `indirectionVector`); code the compiler
+produced never has one.
 
 ### The image format
 
@@ -2880,36 +3079,56 @@ Tags follow "assigned once, never renumbered or reused"
 (`crates/ns-runtime/src/image/opcodes.rs`, pinned by
 `crates/ns-runtime/tests/opcode_tags.rs`):
 
-- `MakeClosure`'s payload changes, so tag 11 is **retired** and `MakeClosure`
-  takes 29; `MakeVector`, `LoadVector` and `StoreVector` take 30, 31 and 32.
-- A closure's object record gains its copied values and loses its parameter
-  names and home, so `OBJECT_CLOSURE` (4) is retired and the new record takes 6.
+- `MakeClosure`'s payload changed, so tag 11 is **retired** and `MakeClosure`
+  is 29; `MakeVector`, `LoadVector` and `StoreVector` are 30, 31 and 32, and
+  the next free instruction number is 33.
+- A closure's object record carries its copied values and no longer its
+  parameter names or home, so `OBJECT_CLOSURE` 4 is retired
+  (`RETIRED_OBJECT_BODIES`, the first retired body tag) and the record is 6.
 
-A code record gains `copied_count: u16`, so that a block's register layout is
-known from its code alone, as the `uncached` flag was added before it.
+A code record carries `copied_count: u16`, so that a block's register layout is
+known from its code alone, as the `uncached` flag was before it. `outer_reach`
+is *not* on the wire: the decoder derives it with the compiler's own
+`outer_reach_of`, which works because a block's code precedes its parent's in
+the table.
 
-The decoder's verification adds, before any decoded code runs:
-- every register operand of a new instruction is within the body's
-  `register_count`;
-- a `MakeClosure`'s `copied.len()` equals its block's `copied_count`;
-- a closure record's copied values number its code's `copied_count`;
-- `argument_count + copied_count` does not exceed `register_count`;
-- every count is bounded by `bounded_count` before it allocates.
+The decoder's verification, before any decoded code runs:
+- every register operand of the three new instructions is within the body's
+  `register_count` (`own_registers`, which also lists a `MakeClosure`'s copied
+  registers beside its destination);
+- a `MakeClosure`'s `copied.len()` equals its block's `copied_count`
+  (`CopiedCountMismatch`, raised from `lexical_parents`);
+- a closure record's copied values number its code's `copied_count` (the same
+  error, raised from `decode_closure_record`, before any value is read);
+- `argument_count + copied_count` does not exceed `register_count`
+  (`CopiedCountOutOfRange`, in `u32` arithmetic in `decode_code`, asked only
+  once `argument_count <= register_count` so that a body whose arity alone
+  overruns its register file is still reported as `ArgumentsExceedRegisters`).
+
+Each of those counts sizes its `Vec` through `reserve_for`, which caps the
+capacity at the bytes left in the reader — the per-field pattern the format
+already uses, so a claimed count allocates in proportion to the input rather
+than to a `u16` ([image-format.md](image-format.md), "Verification";
+`bounded_count` is what divides the *remainder* between the graph section's two
+record kinds, which these fields are not).
 
 A vector's size and kind are run-time values and are checked at run time
-(above). `inspect` and `disasm` print the new instructions and a closure's
-copied values, `inspect` from the same tags as the encoder and decoder. A
-returned optimized frame is written with empty `arguments` and `temporaries`;
-the frame record does not change.
+(above). `disasm` prints the three new instructions and the registers a
+`MakeClosure` copies, through `bytecode::disassemble`, which `inspect` uses
+too; `inspect`'s own structural walk reads a closure record's copied values
+from the same tags as the encoder and decoder. A
+returned converted frame is written with empty `arguments` and `temporaries`,
+which is why `verify_graph` accepts a frame with no registers at all; the frame
+record itself did not change.
 
 ### Fewer protective copies
 
 `materialize` (`compiler/lower.rs`) copies a named mutable local into a scratch
-register when something lowered before its consumer may write it, and
-`may_clobber_locals` treats **every send** as such a write, because the code it
-runs could write the local through a closure (`CLAUDE.md`, "An expression's
-value register must still hold that value"). Under the optimized lowering,
-after conversion, a converted closure writes no register of another
+register when something lowered before its consumer may write it. That question
+used to be asked per expression class, and **every send** counted as such a
+write, because the code it runs could write the local through a closure
+(`CLAUDE.md`, "An expression's value register must still hold that value").
+Under the optimized lowering a converted closure writes no register of another
 activation: a captured written variable lives in a vector, and a vector read
 lands in a scratch register as a snapshot; a copied register is read-only. The
 one exception is a fallback closure ("Fallback blocks"), which writes by
@@ -2918,43 +3137,77 @@ can therefore be written only by an assignment in its own body, including inside
 an inlined block, or — for a local some inlinable branch of the body assigns —
 by a fallback closure that any send may run.
 
-So under the optimized lowering an expression may clobber a local only when it
-contains — without looking into real blocks — an assignment to a local of the
-body being lowered, or a send, cascade or implicit send while the local is one
-an inlinable branch of the body assigns. An assignment through a setter copies
-its value only under the same condition. `lower_assign`'s `debug_assert!`s stay. The
-invariant in `CLAUDE.md` and [compiler.md](compiler.md) keeps its statement and
-gets its new justification. The reference lowering is unaffected. A mistake here
-is silent wrong output with exit status 0; the reference lowering is the oracle
-for it, and dedicated goldens pin a send whose code writes, through a closure, a
-local its caller reads — as an operand, as an argument and as a setter
-assignment's value.
+So the question is now asked **per register**, not per expression class.
+`a_send_can_write(register)` is the whole of "a send runs user code that can
+write this local": true only for a named local of this body that the analysis's
+`branch_assigned` marks and whose `Place` is a `Register`. In a by-reference
+body — a fallback closure, or a real block nested in one — it is true for every
+writable register, the conservative branch, since every closure nested in such
+a body reaches this frame by reference. `writes_register(expression, register,
+inlined_depth)` walks the expression without descending into real block
+literals: an assignment writes the register when its value expression does,
+when its target resolves to that register in this frame, or when its target is
+a setter send and `a_send_can_write`; a send or a cascade writes it when
+`a_send_can_write` or when its receiver or any message's arguments do; a
+recognized inlinable form walks its receiver and its blocks' statements
+instead. An assignment through a setter copies its value only under the same
+condition.
+
+`inlined_depth` is the one subtle parameter. The resolver counts every block
+literal as a scope, including one an inlinable form inlines, but the matching
+`ScopeKind::Inlined` is pushed only while that block is lowered — after
+`lower_operand` asks the question — so the walk increments `inlined_depth` as
+it descends into an inlined block's statements and subtracts it from the
+binding's depth before resolving. It cannot underflow: the inlining gate admits
+no block with parameters or temporaries, so no binding inside an inlined block
+names that block's own scope. Getting it wrong is a missed copy, which is
+silent wrong output at exit status 0, so it is pinned two levels deep both as
+lowering tests and as a golden (`goldens/capture/writes_two_inlined_levels_deep.ns`,
+whose two loop-only methods cannot be rescued by `branch_assigned`).
+
+`lower_assign`'s `debug_assert!`s are unchanged, and `check_writable` carries
+both of them — this frame's own `read_only_locals` table for a register write,
+the target frame's for a `StoreOuterLocal` — while skipping a vector slot,
+which is writable by construction because only a variable something writes is
+ever put in a vector. The invariant in `CLAUDE.md` and
+[compiler.md](compiler.md) keeps its statement and has this as its
+justification. The reference lowering is unaffected. A mistake here is silent
+wrong output with exit status 0; the reference lowering is the oracle for it,
+and goldens pin a send whose code writes, through a closure, a local its caller
+reads — as an operand, as an argument and as a setter assignment's value.
 
 ### Verification and the reference lowering
 
-The reference lowering stays on the by-reference model for this step, so that a
-defect in the capture analysis — rule 3 above all — shows as the two
-lowerings disagreeing, as a cache defect shows against the uncached reference
-since 3b. It is an interim oracle: **the reference lowering is to be removed at
-some point, and from then on the recorded golden outcomes are how this is
-tested.** The goldens are written with that in mind: `goldens/capture/` is
-recorded on the unconverted `master`, before anything here changes, and covers
-copied and vector variables; a write before capture, after it, inside a
-`whileTrue:`, a `whileFalse:` and a loop condition; a block that writes; nested
-blocks three deep that carry a variable through a middle block; a variable read
-only in an inlined `ifTrue:`; a vector variable with an initializer; an
-initializer body and a slot initializer creating blocks; `^` from a block whose
-home has captured variables; a closure surviving its method; a non-Boolean
-receiver whose `ifTrue:` keeps its fallback closure and runs it later — reading
-and writing a variable another block captured, from inside a method, a block
-and an outer block that has returned; and the protective-copy cases above. Each recorded output is checked against the
-semantics by hand before it is taken.
+The reference lowering stays on the by-reference model, so that a defect in the
+capture analysis — rule 3 above all — shows as the two lowerings disagreeing,
+as a cache defect shows against the uncached reference since 3b. It is an
+interim oracle: **the reference lowering is to be removed at some point, and
+from then on the recorded golden outcomes are how this is tested.** The goldens
+are written with that in mind: `goldens/capture/` was recorded on the
+unconverted `master`, before any of this existed, and covers copied and vector
+variables; a write before capture, after it, inside a `whileTrue:`, a
+`whileFalse:` and a loop condition; a block that writes; nested blocks three
+deep that carry a variable through a middle block; a variable read only in an
+inlined `ifTrue:`; a vector variable with an initializer; an initializer body
+and a slot initializer creating blocks; `^` from a block whose home has
+captured variables; a closure surviving its method; a non-Boolean receiver
+whose `ifTrue:` keeps its fallback closure and runs it later — reading and
+writing a variable another block captured, from inside a method, a block and an
+outer block that has returned; and the protective-copy cases above. Each
+recorded output was checked against the semantics by hand before it was taken.
+
+Two goldens were added while building, for defects the recorded set did not
+cover: `a_nested_block_that_only_writes.ns`, for a block that only *assigns* an
+enclosing scope's variable and the middle blocks that have to carry that
+scope's vector to it — the capture analysis did not record such a need, and the
+shapes failed to compile until it did — and `writes_two_inlined_levels_deep.ns`,
+for the `inlined_depth` arithmetic above.
 
 ### Cost
 
-What it changes, for a method that creates a non-inlined block:
+What it changed, for a method that creates a non-inlined block:
 
-| | By reference (today) | Converted (optimized lowering) |
+| | By reference (the reference lowering, and a fallback closure) | Converted (optimized lowering) |
 |---|---|---|
 | Per activation that creates a block | a reified frame, plus a copy of every register at return | a reified frame; the closure's copied values; one vector if a captured variable is written |
 | A block reading a captured variable | one hop per nesting level, then a live-or-dead branch | a register if copied, a register then the vector if written; independent of depth |
@@ -2962,13 +3215,12 @@ What it changes, for a method that creates a non-inlined block:
 | What a surviving block retains | the whole frame, including registers it never reads | what it captured, plus the frame record without registers |
 | A later JIT | every local a block can reach stays in memory once a block exists | copied values are ordinary values; escape analysis can remove a vector |
 
-`bench_block.ns`, which creates a block per iteration, is the benchmark that
-shows what it saves, with its peak working set. The measurement follows the
-protocol of "What removing the re-entries moved" on all eight sources, after
-the conversion and again after the protective copies, against `efac7d2` and
-`be3eb40`; `MakeClosure` and a block's activation are on the send path, so
-`dumpbin /disasm` confirms first that no `vm::run::closure` became a function
-of its own.
+**What that was worth, measured: nothing either way on speed, and about 2.6%
+more peak working set on `bench_block.ns`.** The design expected the
+interpreter to be no slower and the memory to fall; the first held and the
+second did not. "What closure conversion moved", in the measurements section
+above, is the measurement, with the reasoning for why the memory moved the way
+it did and how far that reasoning is evidence.
 
 ## Planned: JIT tiers
 
@@ -3004,10 +3256,13 @@ binds it is that no native code may ever enter an image.
   parameters that once threaded through every send and block invocation were
   removed rather than retyped, because once the sender is structural nothing
   read them.
-- **Blocks reach their method's variables by reference until closure conversion
-  lands**, and a reified frame keeps its registers when its activation returns
-  to allow it. The reification mechanism itself is permanent: `^` and the
-  debugger need it with or without conversion.
+- **Only by-reference code keeps a frame's registers alive.** The reference
+  lowering and a fallback closure reach their method's variables by reference,
+  and a reified frame keeps its registers when its activation returns only when
+  a block it created can do that (`outer_reach`, "Representation" under
+  "Closure conversion"); converted code copies or shares a vector instead. The
+  reification mechanism itself is permanent: `^` and the debugger need it with
+  or without conversion.
 - **Sends run on the activation stack, not the Rust stack**: one loop pushes,
   pops and resumes, and it pops everything it runs on every path out.
 - **The control-flow natives are trampoline steps and depth has one bound**,
@@ -3040,7 +3295,7 @@ binds it is that no native code may ever enter an image.
   anyway, where the list was scanned in full at every level of a deep chain of
   creations.
 - **Closure conversion keeps the defining activation** (decided 2026-09-19,
-  "Planned: closure conversion"): a closure keeps `captured_frame` and only
+  "Closure conversion"): a closure keeps `captured_frame` and only
   variable access moves to copies and vectors, because Newspeak's
   `enclosingActivation` and the debugger's "`[] in Foo bar`" need the link;
   dropping it for blocks without `^`, as the JVM does, saves one reification

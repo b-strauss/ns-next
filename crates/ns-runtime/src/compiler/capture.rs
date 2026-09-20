@@ -1,5 +1,5 @@
 //! The capture analysis of closure conversion (`docs/design/execution.md`,
-//! "Planned: closure conversion"): for one code family -- a root body and
+//! "Closure conversion"): for one code family -- a root body and
 //! every block literal in it -- which of a body's locals live in registers
 //! and which in its indirection vector, and what each real block is handed
 //! when it is created.

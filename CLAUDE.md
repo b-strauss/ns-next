@@ -56,9 +56,20 @@ deferred to execution instead (see `Literal::MalformedInteger` and
 
 **An expression's value register must still hold that value when its consumer executes.**
 A named local's register is live storage. `lower_operand` copies it when anything lowered
-afterwards can write it. An assignment through a setter copies it too, even when the very
-next instruction reads the assignment's value: the setter send runs user code first, and
-that code can write the local through a closure. `lower_expression_for` skips that copy only
+afterwards can write it, and an assignment through a setter copies its value under the same
+condition, even when the very next instruction reads it, because the setter send runs user
+code before that consumer reads. **Which sends can write a local is a question about the
+register, not about the send.** Since closure conversion, exactly two things write a named
+local of a running activation under the optimized lowering: an assignment lowered into that
+same body, including inside an inlined block, and -- for a local that an inlinable
+conditional's block assigns -- the fallback closure that conditional's guard failure creates,
+which any later send may run. A converted closure writes no register of another activation at
+all: a captured written variable lives in its scope's indirection vector, whose read lands in
+a scratch register, and a copied register is read-only. So the lowering asks
+`a_send_can_write(register)` per register rather than treating every send as a write
+(`docs/design/execution.md`, "Fewer protective copies"); the reference lowering reaches
+everything by reference and copies every read of a local unconditionally, which is what makes
+it the oracle for a mistake here. `lower_expression_for` skips the copy only
 where its caller states that nothing reads the value (`ValueUse::Discarded`). A parameter's
 or an immutable local's register is never copied, whatever else is lowered afterwards: no
 assignment can bind to one (§3.6), so nothing but its own initialization ever writes it. This
@@ -66,9 +77,10 @@ rests entirely on the resolver passing a setter send by every parameter and ever
 local (`ScopeStack::resolve_setter`); `lower_assign`'s `debug_assert!`s check every write
 into a named local, whether it is the current frame's own register (`Binding::Local`, and
 `Binding::OuterLocal` at `hops == 0`) or an enclosing frame's (`StoreOuterLocal`,
-`hops != 0` -- the write-through-a-closure case the copy protected against, checked
+`hops != 0` -- the write from a fallback closure the copy protects against, checked
 against the target frame's own `read_only_locals` table, which `lower_block_literal`
-hands each nested `Lowerer` alongside its scope stack). Getting this
+hands each nested `Lowerer` alongside its scope stack and its `Layout`). A vector slot needs
+no such check: only a variable something writes is ever put in a vector. Getting this
 wrong is silent wrong output with exit status 0, not a crash.
 
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:
@@ -169,9 +181,13 @@ read into a panic. The run loop pops every activation it runs, on every exit,
 error paths included (`vm::run`) -- `Interpreter::run_from_host`, the one way
 a host's `send` or `instantiate` enters the loop, debug-asserts that the stack
 is balanced. A reified frame is married to its
-live entry and divorced on pop, which copies its registers out, because a
-block reads its method's variables by reference
-(`docs/design/execution.md`, "Activations").
+live entry and divorced on pop, and the divorce copies its registers out only
+when something can still read them by reference: the reference lowering's
+blocks, and the fallback closure an inlined conditional sends to a non-Boolean
+receiver. Converted code copies what it captures into the closure, or shares
+its scope's indirection vector, so it needs none of them. Which it is, is
+decided per activation from the block's `outer_reach`
+(`docs/design/execution.md`, "Activations", "Closure conversion").
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvaluationResult`.**
 `ObjectReference`, `FrameReference` and `ActivationReference` each carry a hand-written `Debug` that prints

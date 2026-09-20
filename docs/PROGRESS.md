@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md), [specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md), [specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md), [remove-assign](superpowers/plans/2026-09-19-2125-ns-next-remove-assign.md), [closure-conversion](superpowers/plans/2026-09-19-2344-ns-next-closure-conversion.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -124,19 +124,51 @@ and the decisions behind each.
 **Removing `:=` is done** (2026-09-19): the lexer refuses Smalltalk's
 assignment by name, and every golden, test and document example is spelled
 as §5.4.3's setter send, `name:: expression`, with no recorded outcome
-moving; see "M4 — Removing `:=`" below. **Closure conversion, step 4 of the
-order of work below, is next, and designed** (2026-09-19,
-[execution.md](design/execution.md), "Planned: closure conversion"): a
-closure keeps its defining activation, a captured variable is copied unless
-it is written after capture, written ones share one indirection vector per
-scope, the analysis is the optimized lowering's, and the reference lowering
-stays by-reference as an interim oracle. Its implementation plan is the next
-piece of work, built in four parts: the capture goldens recorded first, the
-analysis, the conversion with its image format, and fewer protective copies.
+moving; see "M4 — Removing `:=`" below.
 
-**The baseline was `22a56f7`**, the merge of 3c into `master`, whose last
-change to a send's path is `5d3aeff`; `393311f`, 3c's own baseline, stayed
-superseded; `be3eb40` was carried beside it, as every measurement since
+**Closure conversion, step 4 of the order of work below, is done**
+(2026-09-20; designed 2026-09-19,
+[execution.md](design/execution.md), "Closure conversion"): under the
+optimized lowering a block no longer reaches its method's variables through
+the method's frame. A captured variable nothing writes after capture is
+copied into the closure at `MakeClosure`; one that is written lives in its
+scope's indirection vector, an ordinary `Array` built by `MakeVector` and
+read and written by `LoadVector`/`StoreVector`. A block's registers are its
+parameters, its copied values, its temporaries and then the hidden vector
+register. `ClosureData` carries `copied` and derives its home from its
+captured frame, at the same 32 bytes as before. Whether a returning
+activation copies its registers into its reified frame is decided per
+activation, from `CompiledCode.outer_reach`, a depth. The fallback closures
+an inlined conditional sends to a non-Boolean receiver keep the by-reference
+model, and so does the reference lowering, which stays the oracle. The
+protective register copies are now asked per register rather than assumed for
+every send. See "M4 — Closure conversion" below.
+
+**Measured whole, it costs nothing and gives nothing back on speed**: the
+head is level with `efac7d2` on all eight sources in both sittings, and stays
+6–19% below `be3eb40`. The one concrete cost is memory, and it is the
+conversion's own: `bench_block.ns`'s peak working set rose about 2.6%
+(454.7 MB to 466.4 MB), which a three-way measurement attributes to the
+conversion rather than to the copy-narrowing. `vm::run` grew from 4,878 to
+5,700 instructions and stayed one inlined function. See
+[execution.md](design/execution.md), "What closure conversion moved".
+
+**Step 5, the moving collector, is the next piece of work.** It is the last
+numbered step of M4 and what ends the arena's never-reclaim interim: nothing
+gives an object or a reified frame back today, which is why `bench_block.ns`
+grows with the work it does whichever way its blocks reach their variables.
+Closure conversion was scheduled immediately before it for the collector's
+sake — a surviving block now retains what it captured plus a frame record
+without registers, instead of its creator's whole frame — and the indirection
+vector it added is itself an object the collector will reclaim.
+[memory.md](design/memory.md) has the design that is in place for it (the
+safepoint, `trace.rs`, host roots, the brand, the stress mode) and the open
+question of what the collector owns; `become:` and instance migration rule
+out a conservative non-moving design.
+
+**The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
+`22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
+beside it, as every measurement since
 step 2. Performance is measured, not assumed: the protocol and the seven
 sources of "What removing the re-entries moved"
 ([execution.md](design/execution.md)), plus
@@ -160,14 +192,16 @@ execution.md.
 protocol's explicit flags through `RUSTFLAGS`** — `+crt-static` and the
 function-alignment pin, which no configuration carries — two sittings,
 compared against the baseline and against `be3eb40`. The head is level with
-`22a56f7` on every source, no source entirely above in both sittings, and
-7.6–18.2% below `be3eb40`. The member-set fix is in the resolver, ahead of
-the run loop, but interning symbol literals touches what a send's selector
-is, so the measurement checked with `dumpbin /disasm` that `vm::run`'s step
-was still inline before timing anything: 4,878 instructions in both the
-baseline and the head, no split closure. The measurement, and the template
-for the next, is [execution.md](design/execution.md), "What the
-specification gaps moved".
+`efac7d2` on every source, no source entirely above in both sittings, and
+6–19% below `be3eb40`. Closure conversion was measured in two steps against
+the one baseline — the conversion alone, then the narrowed protective copies
+on top of it — because they are separate changes with separate risks: the
+conversion changes what every block creation and activation does, and the
+copy-narrowing changes the code every method compiles to. `dumpbin /disasm` checked
+before any timing that `vm::run`'s step was still inline: one function of
+4,878 instructions at the baseline and 5,700 at the head, no split closure.
+The measurement, and the template for the next, is
+[execution.md](design/execution.md), "What closure conversion moved".
 
 **Known gaps the step left**, each recorded where it applies:
 
@@ -485,7 +519,7 @@ The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
 and all three done, 1b done, 2 done in all three parts, the spec-conformant
 lookup inserted ahead of 3 and done, 3 done in all three parts, the
 specification gaps done, removing `:=` done as its own small step ahead of
-4, everything from 4 on still ahead — and it is
+4, 4 done, 5 the one step left — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -582,19 +616,27 @@ so nothing is lost by it going second.
    below. **The specification gaps are done**, one plan and one measurement;
    see "M4 — The specification gaps" below. **Removing `:=`** is done, its
    own small step before step 4; see "M4 — Removing `:=`" below.
-4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
+4. **Closure conversion. Done.** [execution.md](design/execution.md),
+   "Closure conversion". Blocks copy the
    variables they only read and share their scope's indirection vector for the
    ones they write, instead of reaching them through their method's frame
-   (designed 2026-09-19). That ends 1a's divorce copy for optimized code and
-   makes a surviving block retain what it captured plus its creator's frame
-   record without registers, which is why it comes
+   (designed 2026-09-19, built 2026-09-20). That ended 1a's divorce copy for
+   optimized code — whether a returning activation copies its registers out is
+   decided per activation, from the block's `outer_reach` — and makes a
+   surviving block retain what it captured plus its creator's frame
+   record without registers, which is why it came
    directly before the collector. Every Smalltalk and Newspeak VM that moved to
-   stack frames made this change to do it; ns-next makes it second, because the
-   reification mechanism is needed with or without it.
-5. **A moving collector** — [memory.md](design/memory.md). `become:` and instance
+   stack frames made this change to do it; ns-next made it second, because the
+   reification mechanism is needed with or without it. Level with `efac7d2` on
+   all eight sources; `bench_block.ns`'s peak working set 2.6% higher; see
+   "M4 — Closure conversion" below.
+5. **A moving collector** — [memory.md](design/memory.md). **The next piece of
+   work.** `become:` and instance
    migration rule out a conservative non-moving design, and pinning whatever a
    conservative stack scan finds was considered and rejected for the same reason.
-   This is what ends the arena's never-reclaim interim.
+   This is what ends the arena's never-reclaim interim — the one the closure
+   conversion measurement ran into, where an indirection vector per block
+   activation shows as peak working set because nothing gives it back.
 
 Then, after M4 and before the JIT tiers:
 
@@ -2729,6 +2771,119 @@ sources changed spelling only; all four throwaway sources were run from the
 text in execution.md and print their recorded answers. `parse-corpus`
 stayed at **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under
 both stress modes.
+
+## M4 — Closure conversion (2026-09-20)
+
+Plan: [ns-next-closure-conversion](superpowers/plans/2026-09-19-2344-ns-next-closure-conversion.md),
+committed on the branch ahead of Task 1 (`faf527c`), over the design decided
+with the user on 2026-09-19 (`891de70`, refined by `ec546dd`). Branch
+`feature/closure-conversion`, started from `efac7d2`, on the checked-out tree
+throughout — no worktree for the work itself, only throwaway ones for the
+comparison binaries. Step 4 of the order of work above; the design is
+[execution.md](design/execution.md), "Closure conversion".
+
+**Decisions**, all taken with the user on 2026-09-19 and unchanged by the
+build ([execution.md](design/execution.md), "Decisions"):
+
+- **A closure keeps its defining activation.** Only variable access moves to
+  copies and vectors, because Newspeak's `enclosingActivation` and the
+  debugger's "`[] in Foo bar`" need the link. Dropping it for blocks without
+  `^`, as the JVM does, was rejected, as was keeping it behind a debugging
+  flag, which a closure created without it could never recover.
+- **A captured mutable variable is copied unless it is written after
+  capture** — Primordial Soup's rule, plus a rule of ns-next's own for a write
+  inside an inlined loop that also contains the capturing block, since an
+  inlined loop's next iteration writes after this iteration's block was made.
+- **One indirection vector per scope, as an ordinary `Array`**, as in Cog and
+  Primordial Soup, rather than a box per variable; no inline small-vector
+  representation for now.
+- **The capture analysis is the optimized lowering's**, not the resolver's:
+  only the compiler knows which blocks `control_flow::recognize` inlines.
+- **A fallback closure keeps the by-reference model**, so that inlining stays
+  unobservable and the common path pays nothing.
+- **The reference lowering keeps the by-reference model as an interim
+  oracle**, to be removed at some point, after which the recorded golden
+  outcomes are how this is tested.
+
+**What changed**, commit by commit:
+
+- `e7ffe32` — the `goldens/capture/` set recorded on the unconverted tree,
+  before any code changed, so that every outcome the conversion must preserve
+  was pinned by a hand-derived answer first.
+- `2de9780` — `compiler/capture.rs`: the analysis that classifies every local
+  as a register, a copied value or a vector slot, and lists each real block's
+  copied values. Nothing consumed it yet.
+- `ea1bc90` — `ClosureData` carries `copied` and loses `parameters` and
+  `home`; `CompiledCode` gains `copied_count` and `outer_reach`; a returning
+  activation copies its registers into its reified frame only when its entry
+  was marked; the wire format follows (`MakeClosure` retires tag 11 for 29,
+  the closure record retires body tag 4 for 6, `copied_count` on a code
+  record, and the decode checks for all of it).
+- `001c0e1` — `fill_copied_values` writes straight from the object arena into
+  the register window, so a block activation allocates nothing for it.
+- `84b9bf5` — `MakeVector`, `LoadVector` and `StoreVector` end to end, wire
+  tags 30–32; nothing emitted them yet.
+- `a3f36a2` — the optimized lowering converts: `Layout` places a body's
+  parameters, copied values, temporaries and vector register; `resolve_variable`
+  is the one place a `Binding` becomes an access; `lower_fallback_send` keeps
+  a fallback closure and everything nested in it by reference.
+- `5441d05` — the protective register copies are asked per register
+  (`a_send_can_write`, `writes_register`) instead of per expression class,
+  with a golden for the transitive write-only shape.
+- `fbd7d9f` — regression coverage for the `inlined_depth` arithmetic two
+  levels deep, as a golden and as two lowering tests, both checked against
+  two mutations of the shipped code.
+
+**One defect found while building, fixed at its source.** The capture
+analysis recorded a *read* across a frame boundary as a need but not a
+*write*, so a block that only assigns an enclosing scope's variable — and
+every real block between it and the declaring scope — was handed no vector to
+write through, and the shapes failed to compile
+(`internal: a variable the capture analysis did not hand this block`). The
+bookkeeping was extracted into `Walker::note_need` and the write path now
+calls it too; `goldens/capture/a_nested_block_that_only_writes.ns` pins all
+three shapes. No recorded outcome moved, because the affected programs did
+not compile before the fix.
+
+**Measurement.** Four binaries — `efac7d2`, `be3eb40`, `a3f36a2` (the
+conversion alone) and `fbd7d9f` (the head) — two sittings by the protocol,
+eight sources, 320 timed data lines. **The head is level with `efac7d2` on
+every source**, no source entirely above in both sittings, and 6–19% below
+`be3eb40`, entirely below in both. The conversion on its own is level with
+`efac7d2`, and the copy-narrowing is level with the conversion,
+`bench_block.ns` included. `vm::run` stayed one inlined function and grew
+from 4,878 to 5,700 instructions; no `vm::run::closure` split out on either
+side, and no source paid for the growth in time. **`bench_block.ns`'s peak
+working set rose about 2.6%** — 454.72–454.75 MB to 466.41–467.60 MB — and a
+three-way measurement puts the whole rise on the conversion, with the
+copy-narrowing neither adding nor removing any of it. The explanation, an
+indirection-vector `Array` per activation of a block that writes a captured
+local in an arena that reclaims nothing, is an inference from what changed
+and not a measured attribution: no allocation profile was taken. See
+[execution.md](design/execution.md), "What closure conversion moved".
+
+Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
+warning-free; `cargo test --workspace` green, and the same under
+`NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`; `parse-corpus` at
+**210/0/1/0** and `run-corpus` at **6/0/205**, plain and under both stress
+modes. **No recorded outcome moved**: no golden `.toml`, no
+`corpus/runnable.toml` row and no `tests/fixtures` outcome. Two artifacts did
+change by design — the wire-format fixture `golden-image.bin` (1154 to 1176
+bytes, the new closure record and `copied_count`) and the `disasm` snapshot
+of `find:in:`, whose block now takes the sought value as a copied register
+instead of a `LoadOuterLocal`.
+
+**Left, none affecting an outcome:** `capture.rs`'s `Captures::keys` exists
+for tests only (`#[cfg(test)]`); `decode.rs`'s `ClosureArityMismatch` doc
+comment and error text still describe the record half that is gone, although
+the `MakeClosure` half it still checks is real; `closure_activation` takes an
+argument count it no longer needs; `closure_home` does not check the frame's
+handle origin as its neighbours do; `inspect.rs`'s `read_closure_record`
+bounds its count with `min(1024)` rather than `reserve_for`; a fallback
+closure reloads its scope's vector on every access; one slot-initializer test
+traded its exact-instruction assertion for three targeted ones when the
+program it lowers grew a second statement; and the committed `insta` snapshot
+carries an `assertion_line` key.
 
 ## Notes
 

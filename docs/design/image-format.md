@@ -186,13 +186,12 @@ Instructions:
   steps out along the chain of captured frames.
 - 6 `StoreOuterLocal`: writes a local variable of an enclosing activation,
   reached the same way.
-- 7–10 and 21–24: retired. 7–10 were the sends while a call site was a `u16`
+- 7–11 and 21–24: retired. 7–10 were the sends while a call site was a `u16`
   instruction index; 21–24 were the sends while the number was serialized as
-  a `u32` (see the call-site paragraph below). The sends are 25–28; bytes
-  written under either retired number meet an unknown tag and are refused
-  (`opcodes::RETIRED_OPCODES`).
-- 11 `MakeClosure`: creates a block closure over a compiled block body,
-  capturing the running activation.
+  a `u32` (see the call-site paragraph below); 11 was `MakeClosure` before
+  closure conversion gave it a list of copied registers. The sends are 25–28
+  and `MakeClosure` is 29; bytes written under any retired number meet an
+  unknown tag and are refused (`opcodes::RETIRED_OPCODES`).
 - 12 `MakeArray`: creates an array from the values of a list of registers, for a
   `{ ... }` expression.
 - 13 `InitializeSlot`: writes the initial value of one of the running mixin's
@@ -219,8 +218,15 @@ Instructions:
   lowerings count recursion depth alike.
 - 28 `SendSuper`: sends a message to `self`, looked up from the superclass of
   the running method's defining class (§5.10).
+- 29 `MakeClosure`: creates a block closure over a compiled block body,
+  capturing the running activation, and carries the registers whose values the
+  closure is handed ([execution.md](execution.md), "Closure conversion").
+- 30 `MakeVector`: builds a body's indirection vector, the `Array` the locals
+  a block writes live in; emitted once, as the body's first instruction.
+- 31 `LoadVector`: reads one slot of an indirection vector.
+- 32 `StoreVector`: writes one slot of an indirection vector.
 
-The next free instruction number is 29. A send's `CallSite` -- its number
+The next free instruction number is 33. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see
@@ -249,13 +255,17 @@ the whole code table is read (`decode::number_call_site_families`), rather
 than trusting a number the file claims. A code record carries one flag,
 whether its sends were compiled uncached (the reference lowering never
 numbers a send at all, so it marks the whole body rather than leaving each
-send to say so). A body's `family_size` is not on the wire either way; both
+send to say so), and one count, `copied_count`, so that a block's register
+layout is known from its code alone. `outer_reach` is not on the wire either:
+the decoder derives it with the compiler's own `bytecode::outer_reach_of`,
+which works because a block's code precedes its parent's in the table. A
+body's `family_size` is not on the wire either way; both
 sides derive it from the sends' numbers and the blocks' sizes with the same
 function (`bytecode::family_size_of`). A block precedes its parent in the
 table, but its numbers depend on where its `MakeClosure` sits in its root's
 emission order, so the decoder numbers a family only once its root -- the
 body nothing else's `MakeClosure` creates -- has been read in full. The
-golden image is 1154 bytes.
+golden image is 1176 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -297,8 +307,13 @@ receiver's dynamic one, so an image that dropped it would come back resolving
 **Object table.** Every heap object reachable from the roots — instances,
 strings, symbols, arrays, closures — decoded in two passes (placeholder, then
 fill) so cycles and shared references round-trip with identity preserved. A
-closure encodes its parameters, its compiled body as a code id, and its captured
-frame and home as frame ids.
+closure encodes its compiled body as a code id, its captured frame as a frame
+id, and the values it was handed when it was created: a `u16` count and that
+many encoded values. It encodes neither its parameter names, which its body's
+`argument_count` already gives, nor its home, which `Heap::closure_home`
+derives from the captured frame. That is a different record shape, so the
+closure body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the
+record is 6.
 
 **Frame table.** Every `Frame` reachable from the roots, with receiver, args,
 temps, `program_counter` — an instruction index into the frame's compiled body — `sender`,
@@ -351,16 +366,19 @@ what "verbatim" promises for every other object.
 Only through a closure. A running activation lives on the activation stack and
 is not in the object graph at all; a frame exists for it only once a block
 captured it ([execution.md](execution.md), "Activations"). So a frame enters the
-table only as a closure's `captured_frame` or `home` — a closure a value names,
-or the one a closure frame already in the table runs — or as the `home` of a
-frame already in it. A snapshot is taken at a **quiesced** point —
+table only as a closure's `captured_frame` — a closure a value names, or the
+one a closure frame already in the table runs — or as the `home` of a frame
+already in it. (A closure has no `home` field of its own to bring one in:
+`Heap::closure_home` derives it from the captured frame.) A snapshot is taken
+at a **quiesced** point —
 after instantiation, optionally after an entry send, with the Rust call stack
 already unwound and the activation stack empty; `image::snapshot` refuses to
 encode otherwise — so every frame in it is dead:
 divorced when its activation returned, or decoded from an earlier image and never
-run. A frame the runtime reified carries its own registers and has no sender, so
-a closure brings in the frames it names and nothing of the call chain that
-created them, and the table never holds a suspended computation.
+run. Such a frame has no sender, and carries its own registers only when
+something could still read them by reference, so a closure brings in the frames
+it names, the values it copied, and nothing of the call chain that created
+them, and the table never holds a suspended computation.
 
 The format still records a `sender` per frame, and the decoder restores one if a
 record carries it; only such a decoded frame can carry one into a later
@@ -393,6 +411,32 @@ wherever the declaration needs one. `mixins::decode` attaches without checking,
 so `inspect` can still display an artifact whose halves disagree; only `load`
 refuses it. A corrupt but version-matching image is an error there, never a
 panic in the VM later.
+
+**A closure's copied values are reconciled with the code that runs them.** Both
+halves come off the wire independently, so a crafted image can make them
+disagree: a `MakeClosure`'s `copied` list against its block's `copied_count`
+(checked in `lexical_parents`), a closure record's own values against the same
+count (checked in `decode_closure_record`, before any of them is read), and
+`argument_count + copied_count` against `register_count` (checked in
+`decode_code`, in `u32` arithmetic, once the arity itself fits). Every register
+a `MakeClosure` copies, and every register operand of `MakeVector`,
+`LoadVector` and `StoreVector`, is inside its own body's register file, like
+every other register operand; a vector slot is not a register and is checked at
+run time, since a vector's size is a run-time value.
+
+**A frame with no registers at all is accepted, which a by-reference closure
+can then read as `nil`.** A returning activation copies its registers into its
+reified frame only when something can reach them by reference
+([execution.md](execution.md), "Lifecycle"), so an empty register file is now
+the ordinary shape of a returned converted frame, and `verify_graph`'s
+register-file check accepts it instead of demanding a file that matches the
+body. A crafted image can use that to pair a by-reference closure with a
+register-less frame; the reads then answer `nil` and the writes are dropped
+(`Heap::frame_local`/`frame_set_local`) where the file used to be refused.
+Tightening the check is not available: nothing on the wire distinguishes a
+legitimately register-less frame from a crafted one. It is the same class as
+the `own_index` gap below — wrong but safe output from a mutated program,
+never a panic.
 
 **`Instruction::InitializeSlot`'s `own_index` is not one of the counts these passes
 bound.** `verify_mixins` checks a body's kind and arity against its
