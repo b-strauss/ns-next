@@ -85,7 +85,7 @@ The mapping is a generic parameter rather than an enum, because `apply` runs onc
 
 - [ ] **Step 1: Make `trace` unconditional**
 
-In `crates/ns-runtime/src/lib.rs`, remove the `#[cfg(debug_assertions)]` above `pub(crate) mod trace;`. In `crates/ns-runtime/src/trace.rs`, replace the last line of the module comment — "Debug builds only, until the collector (step 5) needs it in every build." — with:
+In `crates/ns-runtime/src/lib.rs`, remove the `#[cfg(debug_assertions)]` above `pub(crate) mod trace;`. In `crates/ns-runtime/src/heap.rs:580`, remove the `#[cfg(debug_assertions)]` above `impl crate::trace::Trace for StackEntry<'_>` as well: the collector marks the activation stack through that impl in every build, and Task 2's `begin_marking` will not compile in a release build while it is gated. In `crates/ns-runtime/src/trace.rs`, replace the last line of the module comment — "Debug builds only, until the collector (step 5) needs it in every build." — with:
 
 ```rust
 //! In every build: the collector marks through the same enumeration the
@@ -539,7 +539,7 @@ Marking answers what is live; this task slides it to the front, truncates, rewri
   - `pub(crate) struct ForwardingTable` implementing `Relocation`
   - `Heap::compact(&mut self, marker: mark::Marker) -> Forwarder<ForwardingTable>`
   - `World::collect(&mut self)` — mark, compact, forward, including the step state's own roots
-  - `pub struct HeapStatistics { pub live_objects: usize, pub object_slots: usize, pub live_frames: usize, pub frame_slots: usize }`
+  - `pub struct HeapStatistics { pub live_objects: usize, pub object_slots: usize, pub live_frames: usize, pub frame_slots: usize }` — defined in `heap.rs` and re-exported from `lib.rs`, the way `CacheStatistics` is defined in `inline_cache.rs` and re-exported. `live_*` is the arena's length, `*_slots` its capacity.
   - `Interpreter::heap_statistics(&self) -> HeapStatistics` (every build)
   - `Interpreter::collect_now(&mut self)` (debug builds only)
 
@@ -640,12 +640,16 @@ fn a_collection_gives_back_what_a_run_discarded() {
     let after_collection = interpreter.heap_statistics();
 
     assert!(
-        after_run.object_slots > before.object_slots,
+        after_run.live_objects > before.live_objects,
         "the run should have allocated"
     );
     assert!(
-        after_collection.object_slots < after_run.object_slots,
+        after_collection.live_objects < after_run.live_objects,
         "the collection should have given the discarded closures back"
+    );
+    assert!(
+        after_collection.object_slots <= after_run.object_slots,
+        "the buffer must not have grown across a collection"
     );
 }
 ```
@@ -703,6 +707,15 @@ fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits) -> ForwardingTabl
         }
     }
     slots.truncate(destination);
+    // `truncate` drops the dead records but never lowers the capacity, so
+    // without this the pages a collection frees stay with the process and
+    // the peak this step exists to lower does not move. With hysteresis, so
+    // that a heap which oscillates does not reallocate and copy at every
+    // collection: shrink only when three quarters of the buffer is idle,
+    // and leave the live set room to double.
+    if slots.capacity() > destination.saturating_mul(4) {
+        slots.shrink_to(destination.saturating_mul(2));
+    }
     ForwardingTable { table }
 }
 ```
