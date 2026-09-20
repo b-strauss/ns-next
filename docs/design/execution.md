@@ -2558,7 +2558,57 @@ only one that collects enough to show: `bench --collector-statistics` over
 
 Pause accounts for roughly 1.4 ms of the 2.46 ms the head adds per round on
 `bench_block.ns`; the remaining amount is not accounted for by pause and is
-recorded as unexplained rather than guessed at. `bench_do.ns`,
+recorded as unexplained rather than guessed at.
+
+Setting each source's pause per entry send against the change actually
+measured separates what the collector itself costs from everything else it
+moved. The pause is the total over eleven entry sends — one warm-up and ten
+timed — and the change is the head's pooled median minus `dc0ffe5`'s:
+
+| Source | Pause per send | Change per send | Not accounted for by pause |
+|---|---|---|---|
+| `bench_block.ns` | 1.407 ms | +2.460 ms | **+1.053 ms** |
+| `bench_newarg.ns` | 0.492 ms | +0.260 ms | −0.232 ms |
+| `bench_new2.ns` | 0.257 ms | +0.040 ms | −0.217 ms |
+| `bench_new.ns` | 0.242 ms | −0.140 ms | −0.382 ms |
+| `bench_do.ns` | 0.122 ms | −0.010 ms | −0.132 ms |
+
+**The last column changes sign.** On the four sources other than
+`bench_block.ns` the pause *exceeds* the measured change by 0.13 to 0.38 ms
+per send: collecting gives more back there than it costs. Only on
+`bench_block.ns` does anything cost beyond the pause. A sign that holds
+across four sources is not noise, and it is the part of this measurement
+most in need of explaining.
+
+What plausibly gives back: an arena that never passes its limit never
+doubles. Under `dc0ffe5` these sources grow both arenas to hold everything
+ever allocated — `bench_new.ns` reaches roughly 220,000 objects over eleven
+sends — and a growing `Vec` reallocates and copies periodically, in the
+mutator, counted in no pause. The head's arenas stay at a few thousand slots.
+
+One candidate this measurement rules out. Freeing the dead payloads is **not**
+a mutator cost: `compact_arena`'s `truncate` drops them, inside
+`Heap::compact`, inside the span `World::collect` times. Only the subsequent
+allocation falls outside it, and allocating from a free list the collection
+has just refilled is not obviously dearer than growing into fresh pages.
+
+What fits the sign change better is the *number* of collections rather than
+their total cost. `bench_block.ns` collects 269 times against
+`bench_new.ns`'s 53 at a similar live object count, and every collection
+walks the whole live graph, leaving the mutator's caches holding the
+collector's working set instead of the program's. That after-effect scales
+with how often a program collects rather than with how long each collection
+takes, and it falls outside the measured pause. `bench_block.ns` is also the
+only source with a populated frame arena — 1,529 live frames against 0 or 1
+elsewhere — so it is the only one whose closures have their
+`captured_frame` rewritten at every collection.
+
+Both of those are hypotheses. Two cheap experiments discriminate between
+them: a fixture whose blocks capture nothing, which keeps the object churn
+and removes the frame reification; and varying `COLLECTION_FLOOR` so that the
+same program collects less often but does more per collection, since a cost
+that tracks the collection count rather than the pause total is the cache
+after-effect rather than the work. `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` collect too — 26 to 107
 times over ten iterations — at a fraction of the pause, and stay level with
 `dc0ffe5` — so

@@ -208,15 +208,31 @@ per round there; nothing in this measurement explains the rest. What the
 numbers do support: on the four other collecting sources the pause is
 1.7–5.4% of the median (`bench_do.ns` 0.12 ms of 7.06 ms; `bench_newarg.ns`
 0.49 ms of 9.13 ms) while the measured difference against `dc0ffe5` runs
-−2.1% to +2.9%, so on those four the pause is not simply additive to the
-median. On `bench_block.ns` roughly 1 ms per round remains beyond the
-pause. What distinguishes it from the other four: the frame arena (1,529
-live frames against 0–1 elsewhere) and that before this branch no payload
-was ever freed — the allocator only grew, whereas now each collection
-releases thousands of boxed slices and frame vectors that the following
-iterations request again, and that allocator cost falls in the mutator
-rather than in the measured pause. **This is a hypothesis, not a finding.**
-The cheapest experiment that would separate the trigger's cost from the
+−2.1% to +2.9%. Set against the change actually measured, the pause on those
+four — far from being additive — *exceeds* it by 0.13 to 0.38 ms per send:
+collecting gives more back there than it costs, plausibly because an arena
+that never passes its limit never doubles and copies. On `bench_block.ns`
+the pause falls 1.05 ms per send short instead, and that sign change across
+four sources is the part most in need of explaining
+([execution.md](design/execution.md), "What the moving collector moved", has
+the table).
+
+One candidate is ruled out: freeing the dead payloads is **not** a mutator
+cost, since `compact_arena`'s `truncate` drops them inside the span
+`World::collect` times. What distinguishes `bench_block.ns` from the other
+four is that it collects 269 times against their 26 to 107 at a similar live
+object count, and that it is the only source with a populated frame arena
+(1,529 live frames against 0–1 elsewhere), so the only one whose closures
+have their `captured_frame` rewritten at every collection. A cost that scales
+with how *often* a program collects rather than with the total pause would be
+the cache after-effect of walking the live graph, which falls outside the
+measurement. **These are hypotheses, not findings.**
+Three cheap experiments, none run. A fixture whose blocks capture nothing
+keeps the object churn and removes the frame reification, separating the
+frame arena from everything else. Varying `COLLECTION_FLOOR` so the same
+program collects less often but does more per collection separates a cost
+that tracks the collection count — the cache after-effect — from one that
+tracks the pause total. And to separate the trigger's cost from the
 collection's: a head build with `COLLECTION_FLOOR` raised above
 `bench_block.ns`'s whole allocation, which then never collects but still
 pays the trigger's comparison in `push_object` and `reify` — that isolates
