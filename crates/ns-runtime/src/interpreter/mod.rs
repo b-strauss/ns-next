@@ -564,6 +564,12 @@ impl Interpreter {
     /// `NS_NEXT_STRESS_CACHES` says. For tests. Keeps the safepoint request
     /// set while the move stress mode is on, since either one alone must
     /// keep every safepoint coming back to `safepoint`.
+    ///
+    /// Like `set_stress_moves`, this can drop `safepoint_requested` to
+    /// `false` while a collection is still pending, by the same
+    /// self-healing, debug-only path: the collection limits were never
+    /// reset, so the next allocation that reaches one re-requests both
+    /// flags.
     pub fn set_stress_caches(&mut self, enabled: bool) {
         self.stress_caches = enabled;
         self.world

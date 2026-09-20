@@ -51,6 +51,13 @@ impl Interpreter {
         }
         if self.world.collection_requested() {
             self.world.collect();
+            // Returns without also clearing `safepoint_requested`: `collect`
+            // already reset the collection limits, which is what
+            // `collection_requested` is read from, so the very next poll
+            // takes this same slow path once more, finds no request and no
+            // stress pending, and clears it there instead. Harmless -- one
+            // extra call to a `#[cold]` function per collection -- and
+            // simpler than threading a second clear through this branch.
             return;
         }
         #[cfg(debug_assertions)]
@@ -154,6 +161,15 @@ impl Interpreter {
     /// `NS_NEXT_STRESS_MOVES` says. For tests. Keeps the safepoint request
     /// set while the cache stress mode is on, since either one alone must
     /// keep every safepoint coming back to `safepoint`.
+    ///
+    /// This can overwrite `safepoint_requested` from `true` to `false` while
+    /// a collection is still pending -- turning both stress modes off here
+    /// with `collection_requested` set does exactly that. It self-heals: the
+    /// collection limits were never reset, so the next allocation that
+    /// reaches one re-requests both flags, only slightly later than it
+    /// otherwise would have. Debug-only, since this setter does not exist
+    /// in a release build; not worth coupling the two flags together to
+    /// close.
     pub fn set_stress_moves(&mut self, enabled: bool) {
         self.stress = enabled.then(StressMoves::default);
         self.world

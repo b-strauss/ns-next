@@ -293,11 +293,6 @@ pub struct Root {
     slot: std::rc::Rc<std::cell::Cell<Value<'static>>>,
 }
 
-/// The initial value of `Heap::collection_floor`, and of
-/// `next_object_collection` and `next_frame_collection` before anything has
-/// collected (`docs/design/memory.md`, "The trigger and the growth policy").
-const COLLECTION_FLOOR: usize = 4096;
-
 /// The two conversions of a brand (`docs/design/memory.md`, "The brand"): a
 /// host root's slot is shared with a host outside every entry, so it holds
 /// `Value<'static>`, and `stash` passes a value through `at_rest` on the
@@ -418,6 +413,11 @@ struct FrameSlot<'gc> {
     live: Option<u32>,
 }
 
+/// The initial value of `Heap::collection_floor`, and of
+/// `next_object_collection` and `next_frame_collection` before anything has
+/// collected (`docs/design/memory.md`, "The trigger and the growth policy").
+const COLLECTION_FLOOR: usize = 4096;
+
 pub struct Heap<'gc> {
     /// The next identity hash to hand out. Hashes are assigned lazily, the
     /// first time `ensure_identity_hash` is asked for one, and never derived
@@ -454,11 +454,11 @@ pub struct Heap<'gc> {
     host_roots: std::cell::RefCell<HostRoots>,
     /// Whether the run loop's next safepoint must take its slow path
     /// (`Interpreter::safepoint`). The poll is one compare of this flag
-    /// (`docs/design/memory.md`, "Where a collection can happen"). Nothing
-    /// sets it in a release build until the collector's allocation counter
-    /// exists. In a debug build the stress mode keeps it set for as long as
-    /// the mode is on; otherwise the safepoint that takes a request clears
-    /// it.
+    /// (`docs/design/memory.md`, "Where a collection can happen"). An
+    /// allocation that reaches its arena's limit sets it, in every build
+    /// (`request_collection`); in a debug build a stress mode additionally
+    /// holds it set for its own reasons, for as long as the mode is on.
+    /// Otherwise the safepoint that takes a request clears it.
     safepoint_requested: bool,
     /// The arena length at which the next allocation asks for a collection.
     /// Checked against the length the allocation already has in hand, so the
@@ -2374,6 +2374,14 @@ impl<'gc> Heap<'gc> {
     /// An allocation never collects; it asks, and the run loop's next
     /// safepoint serves the request (decided 2026-09-13). Setting
     /// `safepoint_requested` is what makes the poll take its slow path.
+    ///
+    /// Must do nothing but set these two booleans: both call sites raise the
+    /// request while the object or frame just allocated is still half-wired
+    /// -- `push_object` before `object_handle` names it, `reify` between
+    /// `allocate_frame` and the writes that make the frame reachable from
+    /// its stack entry -- so it is harmless only because nothing here reads
+    /// the heap back. Real work here would have `reify` collect a frame no
+    /// stack entry points at yet.
     fn request_collection(&mut self) {
         self.collection_requested = true;
         self.safepoint_requested = true;
@@ -2388,8 +2396,12 @@ impl<'gc> Heap<'gc> {
     /// amortized constant.
     pub(crate) fn reset_collection_limits(&mut self) {
         self.collection_requested = false;
-        self.next_object_collection = self.collection_floor.max(self.objects.len() * 2);
-        self.next_frame_collection = self.collection_floor.max(self.frames.len() * 2);
+        self.next_object_collection = self
+            .collection_floor
+            .max(self.objects.len().saturating_mul(2));
+        self.next_frame_collection = self
+            .collection_floor
+            .max(self.frames.len().saturating_mul(2));
     }
 
     #[cfg(debug_assertions)]
@@ -3649,5 +3661,49 @@ mod tests {
         };
         assert_eq!(heap.str_value(survivor), Some("live".to_string()));
         heap.pop_activation(activation);
+    }
+
+    /// The growth policy's arithmetic (`docs/design/memory.md`, "The
+    /// trigger and the growth policy"), pinned against the mistake its two
+    /// near-identical lines invite: swapping which arena's length feeds
+    /// which limit would still compile, and would only misbehave at the
+    /// wrong time -- the wrong arena's limit still collects, just later or
+    /// earlier than it should. Covers both a live count under the floor,
+    /// where the floor must still win, and one above it in each arena, with
+    /// the two counts kept different so a swapped read shows up as a wrong
+    /// number rather than merely as the floor again.
+    #[test]
+    fn reset_collection_limits_reads_each_arenas_own_length() {
+        let mut heap = Heap::new();
+        heap.collection_floor = 8;
+
+        // Zero live in either arena: both limits fall back to the floor.
+        heap.reset_collection_limits();
+        assert_eq!(heap.next_object_collection, 8);
+        assert_eq!(heap.next_frame_collection, 8);
+
+        // One frame, still under the floor once doubled (2 < 8): the floor
+        // still wins.
+        heap.allocate_frame(top_level_frame());
+        heap.reset_collection_limits();
+        assert_eq!(heap.next_object_collection, 8);
+        assert_eq!(heap.next_frame_collection, 8);
+
+        // Six objects and five frames in total -- above the floor once
+        // doubled in both arenas, and still a different count in each.
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        for _ in 0..5 {
+            heap.allocate_object(class, ObjectData::Instance(vec![]));
+        }
+        for _ in 0..4 {
+            heap.allocate_frame(top_level_frame());
+        }
+        let object_count = heap.objects.len();
+        let frame_count = heap.frames.len();
+        assert_ne!(object_count, frame_count);
+
+        heap.reset_collection_limits();
+        assert_eq!(heap.next_object_collection, object_count * 2);
+        assert_eq!(heap.next_frame_collection, frame_count * 2);
     }
 }
