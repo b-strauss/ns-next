@@ -437,9 +437,11 @@ pub struct Heap<'gc> {
     /// equal symbols are one object; `docs/design/object-model.md`,
     /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
     /// way to make a symbol, and by the image decoder. Per heap, because a
-    /// handle means nothing against another heap. A root the tracer
-    /// forwards; a strong one until the collector makes it weak
-    /// (`docs/design/memory.md`, "What the collector traces").
+    /// handle means nothing against another heap. The system's one weak
+    /// structure: not a root for marking, pruned by
+    /// `prune_canonical_symbols` between marking and compaction, and
+    /// forwarded by `compact` like everything else that survives
+    /// (`docs/design/memory.md`, "Weak references").
     canonical_symbols: Vec<Option<ObjectReference<'gc>>>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
@@ -2475,13 +2477,15 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Marks the heap's own roots -- the activation stack's entries and its
-    /// registers, the canonical symbol table and the host roots -- and answers
-    /// the marker without draining it, so that the caller can add the step
-    /// state's roots (`World::mark_everything_reachable`) before the traversal
-    /// runs.
+    /// registers, and the host roots -- and answers the marker without
+    /// draining it, so that the caller can add the step state's roots
+    /// (`World::mark_everything_reachable`) before the traversal runs.
     ///
-    /// The canonical symbol table is a root here and stops being one when it
-    /// becomes weak; the arenas are never roots, only what the roots reach.
+    /// The canonical symbol table is deliberately not among these roots: it
+    /// is the system's one weak structure (`docs/design/memory.md`, "Weak
+    /// references"), pruned against the finished marking by
+    /// `prune_canonical_symbols` rather than kept alive by it. The arenas
+    /// themselves are never roots, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
         use crate::trace::{Trace, Tracer};
         let mut marker = mark::Marker::new(self.objects.len(), self.frames.len());
@@ -2491,9 +2495,6 @@ impl<'gc> Heap<'gc> {
         for value in &mut self.stack.values {
             marker.value(value);
         }
-        for object in self.canonical_symbols.iter_mut().flatten() {
-            marker.object(object);
-        }
         let roots = self.host_roots.get_mut();
         roots.sweep();
         for slot in &roots.slots {
@@ -2502,6 +2503,30 @@ impl<'gc> Heap<'gc> {
             slot.set(value);
         }
         marker
+    }
+
+    /// Clears every canonical symbol the marking did not reach. The table is
+    /// the system's only weak structure: `Mutator::new_symbol` is the only
+    /// way to make a symbol object (§5.1.6: equal symbols are one object), so
+    /// one that is collected was held by nothing -- anything that held it
+    /// would have been a root and kept it live -- and the next mint is again
+    /// the only one. No live comparison can tell a collected-and-reminted
+    /// symbol from one that was never collected (`docs/design/memory.md`,
+    /// "Weak references").
+    ///
+    /// Must run between marking and compaction, never outside that window:
+    /// after compaction the mark bits no longer line up with the arena's
+    /// indices, and before marking has finished draining, an entry cleared
+    /// here reads bits that are not yet complete and could wrongly prune a
+    /// symbol the traversal has not reached yet.
+    pub(crate) fn prune_canonical_symbols(&mut self, marker: &mark::Marker) {
+        for slot in &mut self.canonical_symbols {
+            if let Some(object) = slot {
+                if !marker.objects.is_set(object.index) {
+                    *slot = None;
+                }
+            }
+        }
     }
 
     /// Runs the marker's work lists empty. Each record is traced with the

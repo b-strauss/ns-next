@@ -141,6 +141,11 @@ impl World {
     pub(crate) fn collect(&mut self) {
         self.check_quiescent_state();
         let marker = self.mark_everything_reachable();
+        // Between marking and compacting: after compaction the mark bits no
+        // longer line up with the arena, and before marking finishes an
+        // entry cleared here could resurrect nothing but would be read
+        // before it is complete (`docs/design/memory.md`, "Weak references").
+        self.mutator.heap.prune_canonical_symbols(&marker);
         let mut forwarder = self.mutator.heap.compact(marker);
         self.forward_step_state(&mut forwarder);
     }
