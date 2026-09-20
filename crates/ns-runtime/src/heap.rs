@@ -20,6 +20,7 @@ use crate::mixin::{DispatchId, DispatchIds};
 use crate::types::*;
 use crate::Symbol;
 
+pub(crate) mod mark;
 mod world;
 pub(crate) use world::World;
 
@@ -60,9 +61,12 @@ type Brand<'gc> = std::marker::PhantomData<fn(&'gc ()) -> &'gc ()>;
 /// to one file rather than to every caller. See `docs/design/memory.md`,
 /// "The seam".
 ///
-/// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two live
-/// objects never share an index.
+/// A handle is meaningful only against the `Heap` that allocated it.
+/// Compaction does reuse a slot once nothing reaches the object that held
+/// it, but a collection rewrites every handle it can find into the new
+/// arrangement, and the debug-build epoch below turns a handle still naming
+/// the old one into a panic rather than a silent hit on whatever object took
+/// the slot -- so two live objects never share an index.
 #[derive(Clone, Copy)]
 pub struct ObjectReference<'gc> {
     index: u32,
@@ -76,8 +80,8 @@ pub struct ObjectReference<'gc> {
     /// Debug builds only: a move rewrites every handle the tracer knows
     /// about into the new epoch, so one still carrying an old epoch is one
     /// the tracer missed, and reading it panics instead of answering for
-    /// whatever object took its slot (`docs/design/memory.md`, "Checking
-    /// the roots before a collector exists: the stress mode").
+    /// whatever object took its slot (`docs/design/memory.md`, "The move
+    /// stress mode").
     #[cfg(debug_assertions)]
     epoch: u32,
     brand: Brand<'gc>,
@@ -136,9 +140,12 @@ pub type ClassReference<'gc> = ObjectReference<'gc>;
 /// current call (`Heap::reify`). This is the only activation handle anything
 /// may store -- in a closure, in another frame, in an image.
 ///
-/// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two frames
-/// never share an index.
+/// A handle is meaningful only against the `Heap` that allocated it.
+/// Compaction does reuse a slot once nothing reaches the frame that held it,
+/// but a collection rewrites every handle it can find into the new
+/// arrangement, and the debug-build epoch below turns a handle still naming
+/// the old one into a panic rather than a silent hit on whatever frame took
+/// the slot -- so two frames never share an index.
 #[derive(Clone, Copy)]
 pub struct FrameReference<'gc> {
     index: u32,
@@ -152,8 +159,8 @@ pub struct FrameReference<'gc> {
     /// Debug builds only: a move rewrites every handle the tracer knows
     /// about into the new epoch, so one still carrying an old epoch is one
     /// the tracer missed, and reading it panics instead of answering for
-    /// whatever object took its slot (`docs/design/memory.md`, "Checking
-    /// the roots before a collector exists: the stress mode").
+    /// whatever object took its slot (`docs/design/memory.md`, "The move
+    /// stress mode").
     #[cfg(debug_assertions)]
     epoch: u32,
     brand: Brand<'gc>,
@@ -412,6 +419,11 @@ struct FrameSlot<'gc> {
     live: Option<u32>,
 }
 
+/// The initial value of `Heap::collection_floor`, and of
+/// `next_object_collection` and `next_frame_collection` before anything has
+/// collected (`docs/design/memory.md`, "The trigger and the growth policy").
+const COLLECTION_FLOOR: usize = 4096;
+
 pub struct Heap<'gc> {
     /// The next identity hash to hand out. Hashes are assigned lazily, the
     /// first time `ensure_identity_hash` is asked for one, and never derived
@@ -421,24 +433,28 @@ pub struct Heap<'gc> {
     next_identity_hash: u32,
     /// Every *reified* activation, addressed by a `FrameReference`'s index: one
     /// `Heap::reify` created because a block captured it, or one the image
-    /// decoder rebuilt. Nothing is ever removed: reclaiming a slot needs a
-    /// collector. An activation that is never reified never reaches this
-    /// arena at all.
+    /// decoder rebuilt. Nothing is removed except by a collection's
+    /// compaction, which shrinks this back to its live set and rewrites
+    /// every surviving `FrameReference`. An activation that is never
+    /// reified never reaches this arena at all.
     frames: Vec<FrameSlot<'gc>>,
     /// Every live activation. A stack entry is popped when its activation
     /// returns, so -- unlike `frames` and `objects` -- this is bounded by
     /// the deepest the program has been, not by everything it has run.
     stack: ActivationStack<'gc>,
-    /// Every object, addressed by an `ObjectReference`'s index. Nothing is ever
-    /// removed, for the same reason as `frames`.
+    /// Every object, addressed by an `ObjectReference`'s index. Nothing is
+    /// removed except by a collection's compaction, for the same reason as
+    /// `frames`.
     objects: Vec<Object<'gc>>,
     /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
     /// equal symbols are one object; `docs/design/object-model.md`,
     /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
     /// way to make a symbol, and by the image decoder. Per heap, because a
-    /// handle means nothing against another heap. A root the tracer
-    /// forwards; a strong one until the collector makes it weak
-    /// (`docs/design/memory.md`, "What the collector traces").
+    /// handle means nothing against another heap. The system's one weak
+    /// structure: not a root for marking, pruned by
+    /// `prune_canonical_symbols` between marking and compaction, and
+    /// forwarded by `compact` like everything else that survives
+    /// (`docs/design/memory.md`, "Weak references").
     canonical_symbols: Vec<Option<ObjectReference<'gc>>>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
@@ -446,12 +462,34 @@ pub struct Heap<'gc> {
     host_roots: std::cell::RefCell<HostRoots>,
     /// Whether the run loop's next safepoint must take its slow path
     /// (`Interpreter::safepoint`). The poll is one compare of this flag
-    /// (`docs/design/memory.md`, "Where a collection can happen"). Nothing
-    /// sets it in a release build until the collector's allocation counter
-    /// exists. In a debug build the stress mode keeps it set for as long as
-    /// the mode is on; otherwise the safepoint that takes a request clears
-    /// it.
+    /// (`docs/design/memory.md`, "Where a collection can happen"). An
+    /// allocation that reaches its arena's limit sets it, in every build
+    /// (`request_collection`); in a debug build a stress mode additionally
+    /// holds it set for its own reasons, for as long as the mode is on.
+    /// Otherwise the safepoint that takes a request clears it.
     safepoint_requested: bool,
+    /// The arena length at which the next allocation asks for a collection.
+    /// Checked against the length the allocation already has in hand, so the
+    /// hot path pays one predictable branch and carries no counter.
+    next_object_collection: usize,
+    next_frame_collection: usize,
+    /// Whether a limit has been reached since the last collection. Separate
+    /// from `safepoint_requested`, which only means "take the slow path" and
+    /// which a stress mode holds set for its own reasons.
+    collection_requested: bool,
+    /// The smallest limit a collection will set. A program that stays under
+    /// it never collects: `bench_loop.ns` and `bench_send.ns` run in 4.6 MB
+    /// and should not pay for a collector they do not need.
+    collection_floor: usize,
+    /// How many collections have run, and how long they have taken in total
+    /// and at the longest (`Interpreter::collector_statistics`,
+    /// `--collector-statistics`). `World::collect` is the only writer,
+    /// through `record_collection`, and it times the whole collection with
+    /// one `Instant::now()`/`elapsed()` -- these three fields cost nothing
+    /// per allocation and nothing per instruction.
+    collections: usize,
+    total_pause: std::time::Duration,
+    longest_pause: std::time::Duration,
     /// The instance ids of the builtin classes of the immediates, indexed by
     /// `immediate_index`: an immediate has no class field to read one from.
     /// Set once by the bootstrap; `NONE` before it.
@@ -499,6 +537,16 @@ impl std::fmt::Debug for Heap<'_> {
     }
 }
 
+/// How a move maps an old slot index to its new one. Two answer it: the
+/// stress mode's `Rotation`, which keeps every slot, and the collector's
+/// `ForwardingTable`, which keeps only the live ones. A type parameter
+/// rather than an enum or a trait object, because `apply` runs once per
+/// handle in the whole heap and a monomorphized call leaves neither a
+/// branch nor an indirection there.
+pub(crate) trait Relocation {
+    fn apply(&self, index: u32) -> u32;
+}
+
 /// A rotation of one arena: slot `i` moves to `(i + shift) % length`.
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy)]
@@ -525,8 +573,11 @@ impl Rotation {
         };
         Rotation { shift, length }
     }
+}
 
-    fn apply(self, index: u32) -> u32 {
+#[cfg(debug_assertions)]
+impl Relocation for Rotation {
+    fn apply(&self, index: u32) -> u32 {
         if self.length == 0 {
             return index;
         }
@@ -534,50 +585,110 @@ impl Rotation {
     }
 }
 
-/// The tracer a move forwards every handle with. It also checks each handle
-/// it forwards: one from another heap, or one already stale, was stored in
-/// this heap by a mistake the move would otherwise make permanent.
-#[cfg(debug_assertions)]
-pub(crate) struct Forwarder {
-    heap_id: u32,
-    from_epoch: u32,
-    to_epoch: u32,
-    objects: Rotation,
-    frames: Rotation,
+/// What a collection maps each old slot index to: its new index, or `DEAD`
+/// for a slot that is gone. A flat table rather than a run-length list of
+/// shifts (Nova's `CompactionList`) because an index arena can afford 4
+/// bytes per slot for the length of one collection, and O(1) beats a binary
+/// search once per handle in the heap.
+pub(crate) struct ForwardingTable {
+    table: Vec<u32>,
 }
 
-#[cfg(debug_assertions)]
-impl crate::trace::Tracer for Forwarder {
+/// No live slot can map here: an arena is addressed by 32-bit indices and
+/// `next_object_index` refuses to mint `u32::MAX` of them.
+const DEAD: u32 = u32::MAX;
+
+impl Relocation for ForwardingTable {
+    fn apply(&self, index: u32) -> u32 {
+        let destination = self.table[index as usize];
+        debug_assert_ne!(
+            destination, DEAD,
+            "a handle to a collected slot survived marking: a root the tracer does not know about"
+        );
+        destination
+    }
+}
+
+/// Slides the marked slots of one arena to the front, truncates the rest
+/// away -- which is where the dead records drop, and their payloads with
+/// them -- and answers the table that maps old index to new.
+fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits) -> ForwardingTable {
+    let mut table = vec![DEAD; slots.len()];
+    let mut destination = 0usize;
+    for (source, destination_of_source) in table.iter_mut().enumerate() {
+        if bits.is_set(source as u32) {
+            *destination_of_source = u32::try_from(destination)
+                .expect("internal: an arena is addressed by 32-bit indices");
+            if destination != source {
+                slots.swap(destination, source);
+            }
+            destination += 1;
+        }
+    }
+    slots.truncate(destination);
+    // `truncate` drops the dead records but never lowers the capacity, so
+    // without this the pages a collection frees stay with the process and
+    // the peak this step exists to lower does not move. With hysteresis, so
+    // that a heap which oscillates does not reallocate and copy at every
+    // collection: shrink only when three quarters of the buffer is idle,
+    // and leave the live set room to double.
+    if slots.capacity() > destination.saturating_mul(4) {
+        slots.shrink_to(destination.saturating_mul(2));
+    }
+    ForwardingTable { table }
+}
+
+/// The tracer a move or a collection forwards every handle with. In a debug
+/// build it also checks each handle it forwards: one from another heap, or
+/// one already stale, was stored in this heap by a mistake the rewrite would
+/// otherwise make permanent.
+pub(crate) struct Forwarder<M: Relocation> {
+    #[cfg(debug_assertions)]
+    heap_id: u32,
+    #[cfg(debug_assertions)]
+    from_epoch: u32,
+    #[cfg(debug_assertions)]
+    to_epoch: u32,
+    objects: M,
+    frames: M,
+}
+
+impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
     fn object(&mut self, handle: &mut ObjectReference<'_>) {
-        assert_eq!(
-            handle.origin, self.heap_id,
-            "a handle from another heap is stored in this one"
-        );
-        assert_eq!(
-            handle.epoch, self.from_epoch,
-            "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
-            handle.epoch, self.to_epoch
-        );
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(
+                handle.origin, self.heap_id,
+                "a handle from another heap is stored in this one"
+            );
+            assert_eq!(
+                handle.epoch, self.from_epoch,
+                "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
+                handle.epoch, self.to_epoch
+            );
+            handle.epoch = self.to_epoch;
+        }
         handle.index = self.objects.apply(handle.index);
-        handle.epoch = self.to_epoch;
     }
 
     fn frame(&mut self, handle: &mut FrameReference<'_>) {
-        assert_eq!(
-            handle.origin, self.heap_id,
-            "a handle from another heap is stored in this one"
-        );
-        assert_eq!(
-            handle.epoch, self.from_epoch,
-            "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
-            handle.epoch, self.to_epoch
-        );
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(
+                handle.origin, self.heap_id,
+                "a handle from another heap is stored in this one"
+            );
+            assert_eq!(
+                handle.epoch, self.from_epoch,
+                "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
+                handle.epoch, self.to_epoch
+            );
+            handle.epoch = self.to_epoch;
+        }
         handle.index = self.frames.apply(handle.index);
-        handle.epoch = self.to_epoch;
     }
 }
 
-#[cfg(debug_assertions)]
 impl crate::trace::Trace for StackEntry<'_> {
     fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
         let StackEntry {
@@ -594,7 +705,8 @@ impl crate::trace::Trace for StackEntry<'_> {
             counted: _,
             reified,
             retains_registers: _, // not a handle
-            generation: _,
+            #[cfg(debug_assertions)]
+                generation: _,
         } = self;
         tracer.value(receiver);
         if let Some(class) = current_class {
@@ -606,6 +718,32 @@ impl crate::trace::Trace for StackEntry<'_> {
             tracer.frame(frame);
         }
     }
+}
+
+/// The arenas' occupancy, read without disturbing them
+/// (`Heap::heap_statistics`): `live_*` is the arena's length, `*_slots` its
+/// capacity -- the gap between them is what a collection can still give
+/// back before either arena grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeapStatistics {
+    pub live_objects: usize,
+    pub object_slots: usize,
+    pub live_frames: usize,
+    pub frame_slots: usize,
+}
+
+/// The collector's counts and pauses, read without disturbing them
+/// (`Heap::collector_statistics`): `collections`, `total_pause` and
+/// `longest_pause` accumulate across every `World::collect` so far;
+/// `live_objects`/`live_frames` are the arenas' occupancy right now, the
+/// same fields `HeapStatistics` reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectorStatistics {
+    pub collections: usize,
+    pub total_pause: std::time::Duration,
+    pub longest_pause: std::time::Duration,
+    pub live_objects: usize,
+    pub live_frames: usize,
 }
 
 impl<'gc> Heap<'gc> {
@@ -639,6 +777,13 @@ impl<'gc> Heap<'gc> {
                 sweep_at: MIN_ROOT_SWEEP,
             }),
             safepoint_requested: false,
+            next_object_collection: COLLECTION_FLOOR,
+            next_frame_collection: COLLECTION_FLOOR,
+            collection_requested: false,
+            collection_floor: COLLECTION_FLOOR,
+            collections: 0,
+            total_pause: std::time::Duration::ZERO,
+            longest_pause: std::time::Duration::ZERO,
             immediate_dispatch_ids: [DispatchId::NONE; 5],
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -739,6 +884,9 @@ impl<'gc> Heap<'gc> {
     fn push_object(&mut self, object: Object<'gc>) -> ObjectReference<'gc> {
         let index = self.next_object_index();
         self.objects.push(object);
+        if self.objects.len() >= self.next_object_collection {
+            self.request_collection();
+        }
         self.object_handle(index)
     }
 
@@ -1978,6 +2126,9 @@ impl<'gc> Heap<'gc> {
             slot_base: entry.slot_base,
         };
         let handle = self.allocate_frame(frame);
+        if self.frames.len() >= self.next_frame_collection {
+            self.request_collection();
+        }
         self.frames[handle.index as usize].live = Some(activation.index);
         self.stack.entries[entry_index].reified = Some(handle);
         handle
@@ -2254,6 +2405,53 @@ impl<'gc> Heap<'gc> {
         self.safepoint_requested = requested;
     }
 
+    /// An allocation never collects; it asks, and the run loop's next
+    /// safepoint serves the request (decided 2026-09-13). Setting
+    /// `safepoint_requested` is what makes the poll take its slow path.
+    ///
+    /// Must do nothing but set these two booleans: both call sites raise the
+    /// request while the object or frame just allocated is still half-wired
+    /// -- `push_object` before `object_handle` names it, `reify` between
+    /// `allocate_frame` and the writes that make the frame reachable from
+    /// its stack entry -- so it is harmless only because nothing here reads
+    /// the heap back. Real work here would have `reify` collect a frame no
+    /// stack entry points at yet.
+    ///
+    /// `push_object` and `reify` are its only two callers, not every
+    /// allocation path: `allocate_self_referential_class` and the image
+    /// decoder's direct use of `allocate_frame` compare against no limit at
+    /// all. Harmless -- the bootstrap that calls the former is bounded, the
+    /// decoder never polls a safepoint, and the next ordinary allocation
+    /// compares against the same limit either way.
+    fn request_collection(&mut self) {
+        self.collection_requested = true;
+        self.safepoint_requested = true;
+    }
+
+    pub(crate) fn collection_requested(&self) -> bool {
+        self.collection_requested
+    }
+
+    /// After a collection: no more is allowed to be allocated before the
+    /// next one than is live, so the marking work per allocated slot is
+    /// amortized constant.
+    pub(crate) fn reset_collection_limits(&mut self) {
+        self.collection_requested = false;
+        self.next_object_collection = self
+            .collection_floor
+            .max(self.objects.len().saturating_mul(2));
+        self.next_frame_collection = self
+            .collection_floor
+            .max(self.frames.len().saturating_mul(2));
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_collection_floor(&mut self, floor: usize) {
+        self.collection_floor = floor;
+        self.next_object_collection = floor;
+        self.next_frame_collection = floor;
+    }
+
     /// How much a move has to rewrite: both arenas, the activation stack's
     /// entries and registers, the canonical symbol table, and the host
     /// roots. The stress mode paces its moves by it.
@@ -2269,7 +2467,11 @@ impl<'gc> Heap<'gc> {
 
     // ---------- Moving everything (debug builds only) ----------
 
-    /// How many times this heap has moved everything.
+    /// How many times this heap has moved everything -- by `move_everything`
+    /// or by `compact`, both of which relocate every survivor to a new index
+    /// and so advance this the same way: a handle into the arrangement
+    /// before either one is exactly as stale as one into the arrangement
+    /// before the other.
     #[cfg(debug_assertions)]
     pub(crate) fn move_epoch(&self) -> u32 {
         self.epoch
@@ -2289,8 +2491,7 @@ impl<'gc> Heap<'gc> {
     /// handle: at a safepoint of the run loop, or between runs.
     #[cfg(debug_assertions)]
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
-    fn move_everything(&mut self) -> Forwarder {
-        use crate::trace::{Trace, Tracer};
+    fn move_everything(&mut self) -> Forwarder<Rotation> {
         let from_epoch = self.epoch;
         let to_epoch = from_epoch.wrapping_add(1);
         let objects = Rotation::new(self.objects.len(), to_epoch);
@@ -2305,20 +2506,75 @@ impl<'gc> Heap<'gc> {
             objects,
             frames,
         };
+        self.forward_everything(&mut forwarder);
+        forwarder
+    }
+
+    /// Compacts both arenas against `marker`'s bits and rewrites every handle
+    /// the heap itself holds into the next epoch. What the heap does not
+    /// hold, the caller forwards with the answer, exactly as for a move
+    /// (`World::collect`).
+    ///
+    /// Sound only where nothing outside the heap and the interpreter holds a
+    /// handle: at a safepoint of the run loop, or between runs.
+    #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
+    pub(crate) fn compact(&mut self, marker: mark::Marker) -> Forwarder<ForwardingTable> {
+        #[cfg(debug_assertions)]
+        let from_epoch = self.epoch;
+        #[cfg(debug_assertions)]
+        let to_epoch = from_epoch.wrapping_add(1);
+        #[cfg(debug_assertions)]
+        {
+            self.epoch = to_epoch;
+        }
+        let objects = compact_arena(&mut self.objects, &marker.objects);
+        let frames = compact_arena(&mut self.frames, &marker.frames);
+        let mut forwarder = Forwarder {
+            #[cfg(debug_assertions)]
+            heap_id: self.heap_id,
+            #[cfg(debug_assertions)]
+            from_epoch,
+            #[cfg(debug_assertions)]
+            to_epoch,
+            objects,
+            frames,
+        };
+        self.forward_everything(&mut forwarder);
+        forwarder
+    }
+
+    /// Forwards every handle the heap itself holds through `forwarder`:
+    /// every arena record, every stack entry and the continuation it owns,
+    /// every register, every surviving canonical symbol table entry, and
+    /// every host root. Shared by `move_everything` and `compact` -- both
+    /// build their own `Forwarder` first, over a different `Relocation`,
+    /// and then walk the same six roots through it -- so that a field
+    /// either one must reach is named here once, rather than in two copies
+    /// a later change can update in one and miss in the other (`trace.rs`'s
+    /// reason for existing, one level up).
+    fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
+        use crate::trace::{Trace, Tracer};
         for object in &mut self.objects {
-            object.trace(&mut forwarder);
+            object.trace(forwarder);
         }
         // A married frame's registers are its entry's, traced below with
         // the stack; `live` is a stack index, and no stack entry moves.
         for slot in &mut self.frames {
-            slot.frame.trace(&mut forwarder);
+            slot.frame.trace(forwarder);
         }
         for entry in &mut self.stack.entries {
-            entry.trace(&mut forwarder);
+            entry.trace(forwarder);
         }
         for value in &mut self.stack.values {
             forwarder.value(value);
         }
+        // The table is weak -- `begin_marking` deliberately does not walk it
+        // (see its doc comment) -- but by the time a caller reaches
+        // `compact`, `prune_canonical_symbols` has already run against the
+        // finished marking and cleared every entry whose object died. What
+        // remains here is still a handle into the arena just compacted, and
+        // rewriting it is this loop's job like any other: skipping it would
+        // leave a stale index behind for a symbol that is very much alive.
         for object in self.canonical_symbols.iter_mut().flatten() {
             forwarder.object(object);
         }
@@ -2329,7 +2585,129 @@ impl<'gc> Heap<'gc> {
             forwarder.value(&mut value);
             slot.set(value);
         }
-        forwarder
+    }
+
+    /// The arenas' occupancy (`Interpreter::heap_statistics`).
+    pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
+        crate::HeapStatistics {
+            live_objects: self.objects.len(),
+            object_slots: self.objects.capacity(),
+            live_frames: self.frames.len(),
+            frame_slots: self.frames.capacity(),
+        }
+    }
+
+    /// Records one collection's pause (`World::collect`, the only caller):
+    /// counts it and folds its duration into the total and the longest seen
+    /// so far. The timing itself happens once per collection in `collect`;
+    /// this only updates three fields, so neither costs anything per
+    /// allocation or per instruction.
+    pub(crate) fn record_collection(&mut self, pause: std::time::Duration) {
+        self.collections += 1;
+        self.total_pause += pause;
+        self.longest_pause = self.longest_pause.max(pause);
+    }
+
+    /// The collector's counts and pauses since the process started, plus the
+    /// arenas' occupancy right now (`Interpreter::collector_statistics`,
+    /// `--collector-statistics`).
+    pub(crate) fn collector_statistics(&self) -> crate::CollectorStatistics {
+        crate::CollectorStatistics {
+            collections: self.collections,
+            total_pause: self.total_pause,
+            longest_pause: self.longest_pause,
+            live_objects: self.objects.len(),
+            live_frames: self.frames.len(),
+        }
+    }
+
+    /// Marks the heap's own roots -- the activation stack's entries and its
+    /// registers, and the host roots -- and answers the marker without
+    /// draining it, so that the caller can add the step state's roots
+    /// (`World::mark_everything_reachable`) before the traversal runs.
+    ///
+    /// The canonical symbol table is deliberately not among these roots: it
+    /// is the system's one weak structure (`docs/design/memory.md`, "Weak
+    /// references"), pruned against the finished marking by
+    /// `prune_canonical_symbols` rather than kept alive by it. The arenas
+    /// themselves are never roots, only what the roots reach.
+    pub(crate) fn begin_marking(&mut self) -> mark::Marker {
+        use crate::trace::{Trace, Tracer};
+        let mut marker = mark::Marker::new(self.objects.len(), self.frames.len());
+        for entry in &mut self.stack.entries {
+            entry.trace(&mut marker);
+        }
+        for value in &mut self.stack.values {
+            marker.value(value);
+        }
+        let roots = self.host_roots.get_mut();
+        roots.sweep();
+        for slot in &roots.slots {
+            let mut value = slot.get();
+            marker.value(&mut value);
+            slot.set(value);
+        }
+        marker
+    }
+
+    /// Clears every canonical symbol the marking did not reach. The table is
+    /// the system's only weak structure: `Mutator::new_symbol` is the only
+    /// way to make a symbol object (§5.1.6: equal symbols are one object), so
+    /// one that is collected was held by nothing -- anything that held it
+    /// would have been a root and kept it live -- and the next mint is again
+    /// the only one. No live comparison can tell a collected-and-reminted
+    /// symbol from one that was never collected (`docs/design/memory.md`,
+    /// "Weak references").
+    ///
+    /// Must run between marking and compaction, never outside that window:
+    /// after compaction the mark bits no longer line up with the arena's
+    /// indices, and before marking has finished draining, an entry cleared
+    /// here reads bits that are not yet complete and could wrongly prune a
+    /// symbol the traversal has not reached yet.
+    pub(crate) fn prune_canonical_symbols(&mut self, marker: &mark::Marker) {
+        for slot in &mut self.canonical_symbols {
+            if let Some(object) = slot {
+                if !marker.objects.is_set(object.index) {
+                    *slot = None;
+                }
+            }
+        }
+    }
+
+    /// Runs the marker's work lists empty. Each record is traced with the
+    /// arena borrowed field by field, which is what lets the marker be
+    /// borrowed at the same time.
+    pub(crate) fn drain_marking(&mut self, marker: &mut mark::Marker) {
+        use crate::trace::Trace;
+        let Heap {
+            objects, frames, ..
+        } = self;
+        while let Some(work) = marker.next() {
+            match work {
+                mark::Work::Object(index) => objects[index as usize].trace(marker),
+                // A married frame's registers are its entry's, already traced
+                // with the stack; `live` is a stack index and no entry moves.
+                mark::Work::Frame(index) => frames[index as usize].frame.trace(marker),
+            }
+        }
+    }
+
+    /// Marks from the heap's own roots and drains, for the heap's own tests.
+    /// A real collection goes through `World`, which owns the step state's
+    /// roots as well.
+    #[cfg(test)]
+    fn mark_from_roots_for_test(&mut self) -> crate::heap::mark::Marker {
+        let mut marker = self.begin_marking();
+        self.drain_marking(&mut marker);
+        marker
+    }
+
+    /// Marks from the heap's own roots and compacts, for the heap's own
+    /// tests. A real collection goes through `World`.
+    #[cfg(test)]
+    fn collect_for_test(&mut self) {
+        let marker = self.mark_from_roots_for_test();
+        let _ = self.compact(marker);
     }
 }
 
@@ -2731,7 +3109,8 @@ mod tests {
 
     /// The property the activation stack exists for: an activation nothing
     /// reified is gone once it is popped, rather than kept in the frame
-    /// arena, which never reclaims a slot.
+    /// arena, whose slots only a collection reclaims, and only once nothing
+    /// reaches them.
     #[test]
     fn an_activation_that_is_never_reified_leaves_nothing_behind() {
         let mut heap = Heap::new();
@@ -3238,5 +3617,163 @@ mod tests {
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {
         assert_eq!(std::mem::size_of::<Object>(), 56);
+    }
+
+    /// Liveness is reachability from the roots, and the roots are what the
+    /// heap holds, not what a Rust local happens to name. `unreachable` is a
+    /// perfectly valid object that nothing can get to, which is exactly the
+    /// case the collector exists for.
+    #[test]
+    fn marking_reaches_what_a_root_reaches_and_nothing_else() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let reachable = heap.allocate_object(class, ObjectData::String("live".to_string()));
+        let unreachable = heap.allocate_object(class, ObjectData::String("dead".to_string()));
+        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(reachable.index));
+        assert!(marker.objects.is_set(class.index));
+        assert!(!marker.objects.is_set(unreachable.index));
+        heap.pop_activation(activation);
+    }
+
+    /// An edge is followed, not just a root: the value inside a reachable
+    /// instance keeps its own target alive.
+    #[test]
+    fn marking_follows_an_edge_out_of_a_reachable_object() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let target = heap.allocate_object(class, ObjectData::String("target".to_string()));
+        let holder = heap.allocate_object(class, ObjectData::Instance(vec![Value::Object(target)]));
+        let activation = heap.push_activation(header(), &[Value::Object(holder)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(target.index));
+        heap.pop_activation(activation);
+    }
+
+    /// A reified frame is reachable from the entry it is married to, which is
+    /// what makes "a running activation's frame is never collected" fall out
+    /// of the root set instead of needing a rule of its own.
+    #[test]
+    fn marking_reaches_a_married_frame_through_its_entry() {
+        let mut heap = Heap::new();
+        let activation = heap.push_activation(header(), &[], 1);
+        let frame = heap.reify(activation);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.frames.is_set(frame.index));
+        heap.pop_activation(activation);
+    }
+
+    /// Two ordinary objects reference each other through their `Instance`
+    /// payloads, so the traversal reaches back to the first one through the
+    /// second. This is what pins that the traversal terminates on a cycle:
+    /// `MarkBits::set` answers "already set" for the first object the
+    /// second time it is reached, which is what stops it from being pushed
+    /// onto the work list again. A regression here hangs this test rather
+    /// than failing it.
+    #[test]
+    fn marking_terminates_on_a_cycle_between_two_ordinary_objects() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let first = heap.allocate_object(class, ObjectData::Instance(vec![Value::Nil]));
+        let second = heap.allocate_object(class, ObjectData::Instance(vec![Value::Object(first)]));
+        heap.set_instance_field(first, 0, Value::Object(second));
+        let activation = heap.push_activation(header(), &[Value::Object(first)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(first.index));
+        assert!(marker.objects.is_set(second.index));
+        heap.pop_activation(activation);
+    }
+
+    /// The point of the step: a slot nothing can reach is given back, and the
+    /// arena is shorter afterwards.
+    #[test]
+    fn collecting_reclaims_what_no_root_reaches() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let reachable = heap.allocate_object(class, ObjectData::String("live".to_string()));
+        heap.allocate_object(class, ObjectData::String("dead".to_string()));
+        heap.allocate_object(class, ObjectData::String("also dead".to_string()));
+        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+        let before = heap.objects.len();
+
+        heap.collect_for_test();
+
+        assert_eq!(before, 4);
+        // The class, the reachable string, and nothing else.
+        assert_eq!(heap.objects.len(), 2);
+        heap.pop_activation(activation);
+    }
+
+    /// A survivor is reached again through the root that kept it alive, which
+    /// is what pins that the forwarding rewrote the register rather than
+    /// leaving it pointing at whatever now occupies the old index.
+    #[test]
+    fn a_survivor_is_still_itself_after_compaction() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        heap.allocate_object(class, ObjectData::String("dead".to_string()));
+        let reachable = heap.allocate_object(class, ObjectData::String("live".to_string()));
+        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+
+        heap.collect_for_test();
+
+        let Value::Object(survivor) = heap.activation_local(activation, 0) else {
+            panic!("the register no longer holds an object");
+        };
+        assert_eq!(heap.str_value(survivor), Some("live".to_string()));
+        heap.pop_activation(activation);
+    }
+
+    /// The growth policy's arithmetic (`docs/design/memory.md`, "The
+    /// trigger and the growth policy"), pinned against the mistake its two
+    /// near-identical lines invite: swapping which arena's length feeds
+    /// which limit would still compile, and would only misbehave at the
+    /// wrong time -- the wrong arena's limit still collects, just later or
+    /// earlier than it should. Covers both a live count under the floor,
+    /// where the floor must still win, and one above it in each arena, with
+    /// the two counts kept different so a swapped read shows up as a wrong
+    /// number rather than merely as the floor again.
+    #[test]
+    fn reset_collection_limits_reads_each_arenas_own_length() {
+        let mut heap = Heap::new();
+        heap.collection_floor = 8;
+
+        // Zero live in either arena: both limits fall back to the floor.
+        heap.reset_collection_limits();
+        assert_eq!(heap.next_object_collection, 8);
+        assert_eq!(heap.next_frame_collection, 8);
+
+        // One frame, still under the floor once doubled (2 < 8): the floor
+        // still wins.
+        heap.allocate_frame(top_level_frame());
+        heap.reset_collection_limits();
+        assert_eq!(heap.next_object_collection, 8);
+        assert_eq!(heap.next_frame_collection, 8);
+
+        // Six objects and five frames in total -- above the floor once
+        // doubled in both arenas, and still a different count in each.
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        for _ in 0..5 {
+            heap.allocate_object(class, ObjectData::Instance(vec![]));
+        }
+        for _ in 0..4 {
+            heap.allocate_frame(top_level_frame());
+        }
+        let object_count = heap.objects.len();
+        let frame_count = heap.frames.len();
+        assert_ne!(object_count, frame_count);
+
+        heap.reset_collection_limits();
+        assert_eq!(heap.next_object_collection, object_count * 2);
+        assert_eq!(heap.next_frame_collection, frame_count * 2);
     }
 }

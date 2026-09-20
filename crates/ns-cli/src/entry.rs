@@ -22,6 +22,20 @@ pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
     );
 }
 
+/// `--collector-statistics`'s one line, always to stderr so that a golden's
+/// recorded stdout is untouched.
+pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStatistics) {
+    eprintln!(
+        "collector: {} collections, {:.3} ms total pause, {:.3} ms longest; {} live objects, \
+         {} live frames",
+        statistics.collections,
+        statistics.total_pause.as_secs_f64() * 1000.0,
+        statistics.longest_pause.as_secs_f64() * 1000.0,
+        statistics.live_objects,
+        statistics.live_frames,
+    );
+}
+
 /// Renders the entry send's outcome -- the goldens' recorded `stderr` pins
 /// these strings byte for byte, so they live here once and are never
 /// duplicated.

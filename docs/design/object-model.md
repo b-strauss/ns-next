@@ -50,8 +50,9 @@ a second record of the same text
 `Heap`'s arena and is reached only through a `Heap` accessor; the index is
 private to `crates/ns-runtime/src/heap.rs`, so the compiler refuses to read it
 anywhere else. `Value` is therefore `Copy` and a handle has no destructor. What
-that representation buys, what it costs while nothing reclaims a slot, and why a
-handle means nothing against a different `Heap` are in [memory.md](memory.md).
+that representation buys, how the collector reclaims a slot once nothing
+reaches it, and why a handle means nothing against a different `Heap` are in
+[memory.md](memory.md).
 
 **The identity hash is drawn from a monotonic counter the first time `hash`
 asks for one**, never derived from an address and never from the arena index,
@@ -439,16 +440,20 @@ So an activation nothing captures costs no allocation and leaves nothing behind,
 and one that is captured is stored the way an object is. See
 [execution.md](execution.md), "Activations".
 
-**Planned: `become:` becomes expressible**, once there is a collector. Adding or
-removing an instance slot on a class with live instances requires allocating
-new-shape instances, copying fields and swapping identity, which the layout model
-already anticipates: the class owns the layout and access resolves through the
-current one. The arena supplies the precondition — identity is an index the
-`Heap` owns, not a pointer a caller holds — but not the mechanism. Swapping
-identity safely means finding and rewriting every reference, which is object
-forwarding in a moving collector, and no collector exists yet
-([memory.md](memory.md)). Until one does, the MirrorBuilder in
-[liveness-and-reflection.md](liveness-and-reflection.md) stays blocked on it.
+**Planned: `become:` becomes expressible**, now that the collector's object
+forwarding exists. Adding or removing an instance slot on a class with live
+instances requires allocating new-shape instances, copying fields and
+swapping identity, which the layout model already anticipates: the class
+owns the layout and access resolves through the current one. The arena
+supplies one precondition — identity is an index the `Heap` owns, not a
+pointer a caller holds — and the mark-compact collector supplies the other:
+swapping identity safely means finding and rewriting every reference, which
+is exactly what its forwarding table already does for a collection
+([memory.md](memory.md), "The shape: mark, compact, forward"). What is still
+missing is `become:` itself — the primitive that swaps two identities
+outside a collection and drives the same forwarding on demand — so the
+MirrorBuilder in [liveness-and-reflection.md](liveness-and-reflection.md)
+stays blocked on that, not on the collector.
 
 ## Decisions
 

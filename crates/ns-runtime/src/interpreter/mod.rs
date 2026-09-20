@@ -263,7 +263,7 @@ pub struct Mutator<'gc> {
 
 /// A host's interpreter: the step state at rest (`World`), and what only
 /// the run loop between steps needs -- whether a run is in progress, and
-/// the stress mode's schedule. Its methods are the host's entries: `enter`
+/// the stress modes' schedules. Its methods are the host's entries: `enter`
 /// for a step's worth of reading and allocating, and `send`,
 /// `instantiate`, `load_module` and `platform`, which take and answer
 /// roots.
@@ -282,6 +282,14 @@ pub struct Interpreter {
     /// Debug builds only.
     #[cfg(debug_assertions)]
     stress_caches: bool,
+    /// The collect stress mode's schedule, when it is on
+    /// (`NS_NEXT_STRESS_COLLECT`, or `set_stress_collect`): a full
+    /// collection at the safepoints its schedule picks, paced like the move
+    /// stress mode since a collection's cost is proportional to the traced
+    /// size too (`docs/design/memory.md`, "The gates the collector needs").
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_collect: Option<safepoint::StressCollections>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -308,11 +316,15 @@ impl Interpreter {
             #[cfg(debug_assertions)]
             stress_caches: safepoint::stress_caches_from_env(),
             #[cfg(debug_assertions)]
+            stress_collect: safepoint::StressCollections::from_env(),
+            #[cfg(debug_assertions)]
             cache_invalidations: 0,
         };
         #[cfg(debug_assertions)]
         {
-            let stress_enabled = interpreter.stress.is_some() || interpreter.stress_caches;
+            let stress_enabled = interpreter.stress.is_some()
+                || interpreter.stress_caches
+                || interpreter.stress_collect.is_some();
             interpreter.world.set_safepoint_requested(stress_enabled);
             // A fixture run small enough that every insert contends for the
             // same group (`run_goldens.rs`); anything not twice a decimal
@@ -542,6 +554,19 @@ impl Interpreter {
         self.world.cache_statistics()
     }
 
+    /// The arenas' occupancy. Available in every build: it is what a
+    /// measurement and a retention test both read.
+    pub fn heap_statistics(&self) -> crate::HeapStatistics {
+        self.world.heap_statistics()
+    }
+
+    /// The collector's counts and pauses since the process started, plus the
+    /// arenas' occupancy right now (`--collector-statistics`). Available in
+    /// every build, like `heap_statistics`.
+    pub fn collector_statistics(&self) -> crate::CollectorStatistics {
+        self.world.collector_statistics()
+    }
+
     /// Replaces the global cache with a fresh one sized for `entries`,
     /// vacating whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
     /// `run_goldens.rs`), not an input path a program can reach: `entries`
@@ -556,12 +581,19 @@ impl Interpreter {
 impl Interpreter {
     /// Turns the cache stress mode on or off for this interpreter, whatever
     /// `NS_NEXT_STRESS_CACHES` says. For tests. Keeps the safepoint request
-    /// set while the move stress mode is on, since either one alone must
+    /// set while either other stress mode is on, since any one alone must
     /// keep every safepoint coming back to `safepoint`.
+    ///
+    /// Like `set_stress_moves`, this can drop `safepoint_requested` to
+    /// `false` while a collection is still pending, by the same
+    /// self-healing, debug-only path: the collection limits were never
+    /// reset, so the next allocation that reaches one re-requests every
+    /// flag.
     pub fn set_stress_caches(&mut self, enabled: bool) {
         self.stress_caches = enabled;
-        self.world
-            .set_safepoint_requested(enabled || self.stress.is_some());
+        self.world.set_safepoint_requested(
+            enabled || self.stress.is_some() || self.stress_collect.is_some(),
+        );
     }
 
     /// How many times the cache stress mode has invalidated the caches since

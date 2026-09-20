@@ -71,6 +71,19 @@ impl World {
         self.mutator.heap.clear_safepoint_request();
     }
 
+    /// Whether an arena has reached its limit since the last collection
+    /// (`Interpreter::safepoint`). Separate from `safepoint_requested`,
+    /// which a stress mode also holds set for its own reasons.
+    #[inline(always)]
+    pub(crate) fn collection_requested(&self) -> bool {
+        self.mutator.heap.collection_requested()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_collection_floor(&mut self, floor: usize) {
+        self.mutator.heap.set_collection_floor(floor);
+    }
+
     /// Roots an immediate a host built itself (`Interpreter::stash`).
     pub(crate) fn stash(&self, value: Value<'static>) -> Root {
         self.mutator.heap.stash(value)
@@ -112,10 +125,73 @@ impl World {
     /// bootstrap's builtin classes and the `platform` singleton.
     #[cfg(debug_assertions)]
     pub(crate) fn move_everything(&mut self) {
-        use crate::trace::Tracer;
         self.check_quiescent_state();
+        let mut forwarder: crate::heap::Forwarder<crate::heap::Rotation> =
+            self.mutator.heap.move_everything();
+        self.forward_step_state(&mut forwarder);
+    }
+
+    /// Marks everything reachable: the heap's own roots, then the step state's
+    /// -- the bootstrap's builtin classes and the `platform` singleton -- then
+    /// the traversal.
+    pub(crate) fn mark_everything_reachable(&mut self) -> crate::heap::mark::Marker {
+        use crate::trace::Tracer;
         let mutator = &mut self.mutator;
-        let mut forwarder = mutator.heap.move_everything();
+        let mut marker = mutator.heap.begin_marking();
+        for class in &mut mutator.builtin_classes {
+            marker.object(class);
+        }
+        if let Some(platform) = &mut mutator.platform_singleton {
+            marker.value(platform);
+        }
+        mutator.heap.drain_marking(&mut marker);
+        marker
+    }
+
+    /// One collection: mark everything reachable, compact both arenas, and
+    /// forward what the step state holds beside the heap -- the bootstrap's
+    /// builtin classes and the `platform` singleton -- exactly as a move does.
+    ///
+    /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
+    /// `Heap`'s counters by `record_collection`. That timing call costs
+    /// nothing worth measuring against a mark-and-compact, and this is the
+    /// only site that pays it: an allocation and the safepoint poll pay
+    /// nothing towards it.
+    pub(crate) fn collect(&mut self) {
+        let start = std::time::Instant::now();
+        self.check_quiescent_state();
+        let marker = self.mark_everything_reachable();
+        // Between marking and compacting: after compaction the mark bits no
+        // longer line up with the arena, and before marking finishes an
+        // entry cleared here could resurrect nothing but would be read
+        // before it is complete (`docs/design/memory.md`, "Weak references").
+        self.mutator.heap.prune_canonical_symbols(&marker);
+        let mut forwarder = self.mutator.heap.compact(marker);
+        self.forward_step_state(&mut forwarder);
+        self.mutator.heap.reset_collection_limits();
+        self.mutator.heap.record_collection(start.elapsed());
+    }
+
+    pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
+        self.mutator.heap.heap_statistics()
+    }
+
+    /// The collector's counts and pauses (`Interpreter::collector_statistics`).
+    pub(crate) fn collector_statistics(&self) -> crate::CollectorStatistics {
+        self.mutator.heap.collector_statistics()
+    }
+
+    /// Forwards what the step state holds beside the heap: the bootstrap's
+    /// builtin classes and the `platform` singleton. Shared by
+    /// `move_everything` and `collect`, which forward the same two roots
+    /// after the heap has forwarded its own -- one copy so a root added
+    /// here later cannot land in one caller's walk and not the other's.
+    fn forward_step_state<M: crate::heap::Relocation>(
+        &mut self,
+        forwarder: &mut crate::heap::Forwarder<M>,
+    ) {
+        use crate::trace::Tracer;
+        let mutator = &mut self.mutator;
         for class in &mut mutator.builtin_classes {
             forwarder.object(class);
         }
@@ -128,8 +204,9 @@ impl World {
     /// traces it: the argument buffer, which a send fills and empties within
     /// one instruction, and the spare boxes finished instantiations leave
     /// for the next ones (`docs/design/memory.md`, "What the collector
-    /// traces").
-    #[cfg(debug_assertions)]
+    /// traces"). As true a requirement for a release collection as for a
+    /// debug-build move, so unlike `move_everything` this is not gated to
+    /// debug builds.
     fn check_quiescent_state(&self) {
         use crate::types::InstantiationPhase;
         let mutator = &self.mutator;

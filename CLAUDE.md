@@ -13,7 +13,8 @@ Rust 1.98.0, edition 2021, three crates:
   (`builtins/`), image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
   activation stack in the same `Heap` and are reified into the frame arena only
-  when a block captures one. Nothing reclaims an arena slot yet. The heap and
+  when a block captures one. A mark-compact collector reclaims a slot once
+  nothing reaches it, only at a safepoint of the run loop. The heap and
   everything else a step of the run loop uses are the step state, `Mutator`
   (`interpreter/mod.rs`), held at rest by `World` (`heap/world.rs`) and reached
   only through `Interpreter::enter`.
@@ -91,8 +92,9 @@ bodies it carries, before any decoded code can run. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee. One thing to keep in mind while decoding: the decoder
 allocates one placeholder object and reified frame per declared record before it
-can validate any of them, and the arena never reclaims a slot, so a rejected image
-holds its placeholders until the load finishes. That is a transient peak, not a
+can validate any of them, and nothing collects during a load, because the decoder
+never polls a safepoint, so a rejected image holds its placeholders until the load
+finishes. That is a transient peak, not a
 leak — `image::load` owns its `Interpreter` in a local, so every `Err` path drops
 it and both arenas with it — but the peak is amplified against the bytes remaining
 at the graph section, and both `bounded_count` calls divide the *same* remainder,
@@ -150,8 +152,10 @@ compile, and a value fetched from a root is good until that entry ends. In a
 debug build every handle also carries its move epoch and every accessor checks
 it, and `NS_NEXT_STRESS_MOVES=1` moves everything at the run loop's safepoints
 — at every one while the traced heap is within `STRESS_MOVE_BUDGET` (1,000
-entries), and paced by heap size above it (`interpreter/safepoint.rs`) — so
-the stress runs under "Working in this repository", below, still catch a
+entries), and paced by heap size above it (`interpreter/safepoint.rs`) —
+and `NS_NEXT_STRESS_COLLECT=1` moves everything too, by collecting instead of
+moving, on the same schedule — so the stress runs under "Working in this
+repository", below, still catch a
 handle the tracer (`trace.rs`) does not know about, which the brand cannot
 see. Add a field that holds a handle to any runtime type, and its `Trace` impl
 stops compiling until it says what to do with it.
@@ -260,6 +264,9 @@ NS_NEXT_STRESS_MOVES=1 cargo test --workspace
 # the same suite with every inline cache vacated at every safepoint
 # (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_CACHES=1 cargo test --workspace
+# the same suite with a collection at every safepoint
+# (debug builds only; Git Bash syntax)
+NS_NEXT_STRESS_COLLECT=1 cargo test --workspace
 # before every commit
 cargo fmt --all
 # must be warning-free
@@ -272,6 +279,8 @@ cargo run -p ns-cli -- run-corpus corpus/modules
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 # non-regression gate under the cache stress mode, same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
+# non-regression gate under the collect stress mode, same report
+NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the

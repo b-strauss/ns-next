@@ -1,7 +1,7 @@
 //! The stress mode: a debug build that moves every object and every reified
 //! frame at the run loop's safepoints, so that a handle the tracer does not
-//! know about panics at its first read (`docs/design/memory.md`, "Checking
-//! the roots before a collector exists: the stress mode").
+//! know about panics at its first read (`docs/design/memory.md`, "The move
+//! stress mode").
 #![cfg(debug_assertions)]
 
 use indoc::indoc;
@@ -85,10 +85,17 @@ fn run_sum(interpreter: &mut Interpreter, class: &Root) -> i64 {
 }
 
 /// `run`'s answer, how many times everything moved, and how many safepoints
-/// the stress mode took.
+/// the stress mode took. The collect stress mode is turned off regardless of
+/// `NS_NEXT_STRESS_COLLECT`: a collection also moves everything (it compacts
+/// against the mark bits rather than merely rotating, but a debug build
+/// bumps the same move epoch either way, since a handle into the old
+/// arrangement is exactly as stale after one as after the other), so this
+/// comparison -- an exact count of the moves the *move* stress mode alone
+/// causes -- needs a baseline the collect stress mode cannot also move.
 fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     let (mut interpreter, class) = load(EVERY_CONTINUATION);
     interpreter.set_stress_moves(stress);
+    interpreter.set_stress_collect(false);
     let sum = run_sum(&mut interpreter, &class);
     (sum, interpreter.moves(), interpreter.stress_safepoints())
 }
@@ -110,6 +117,25 @@ fn every_continuation_survives_a_move_at_every_safepoint() {
     );
 }
 
+/// The control above turns the collect stress mode off, on purpose, to
+/// isolate the move stress mode's exact move count from an ambient
+/// `NS_NEXT_STRESS_COLLECT=1` -- so it never runs this fixture, the suite's
+/// richest continuation shape, under the collect stress mode with its exact
+/// answer checked. This does: a premature reclamation that turned 31 into
+/// something else would have nowhere else to be caught, since the other
+/// collect stress coverage (`collector.rs`) uses a simpler fixture.
+#[test]
+fn every_continuation_survives_a_collection_at_every_safepoint() {
+    let (mut interpreter, class) = load(EVERY_CONTINUATION);
+    interpreter.set_stress_collect(true);
+    let sum = run_sum(&mut interpreter, &class);
+    assert_eq!(sum, 31);
+    assert!(
+        interpreter.stress_collections() > 0,
+        "the collect stress mode never collected"
+    );
+}
+
 /// The cache stress mode vacates every cache at every safepoint, so filling,
 /// transitions and invalidation all run under a program with every kind of
 /// continuation; its answer is the one without the mode.
@@ -121,6 +147,7 @@ fn the_cache_stress_mode_invalidates_at_every_safepoint_and_changes_no_answer() 
     interpreter.set_stress_caches(true);
     let stressed = run_sum(&mut interpreter, &class);
     assert_eq!(calm, stressed);
+    assert_eq!(calm, 31);
     assert!(
         interpreter.cache_invalidations() > 10,
         "an invalidation at every safepoint of the run"

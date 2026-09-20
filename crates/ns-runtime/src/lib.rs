@@ -20,15 +20,14 @@ pub mod mixin;
 pub mod platform;
 pub mod resolver;
 pub mod symbol;
-#[cfg(debug_assertions)]
 pub(crate) mod trace;
 pub mod types;
 pub mod vm;
 
 pub use compiler::Lowering;
 pub use heap::{
-    ActivationHeader, ActivationReference, ClassReference, FrameReference, Heap, ObjectReference,
-    Root,
+    ActivationHeader, ActivationReference, ClassReference, CollectorStatistics, FrameReference,
+    Heap, HeapStatistics, ObjectReference, Root,
 };
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,

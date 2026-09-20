@@ -15,6 +15,9 @@ struct BenchmarkStatistics {
     /// The inline caches' sizes after the timed runs, when `--cache-statistics`
     /// asked for them.
     cache_statistics: Option<ns_runtime::CacheStatistics>,
+    /// The collector's counts and pauses after the timed runs, when
+    /// `--collector-statistics` asked for them.
+    collector_statistics: Option<ns_runtime::CollectorStatistics>,
 }
 
 /// Renders an `instantiate`/`send` failure for `bench`'s purposes. Neither
@@ -66,6 +69,7 @@ fn benchmark_entry(
     send: &str,
     iterations: u32,
     cache_statistics: bool,
+    collector_statistics: bool,
 ) -> Result<BenchmarkStatistics, String> {
     let (mut interpreter, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
     let platform = interpreter.platform();
@@ -116,12 +120,14 @@ fn benchmark_entry(
     // After every timed run, so it reports what the timed sends actually
     // filled, not only the discarded warm-up.
     let cache_statistics = cache_statistics.then(|| interpreter.cache_statistics());
+    let collector_statistics = collector_statistics.then(|| interpreter.collector_statistics());
     Ok(BenchmarkStatistics {
         iterations,
         median,
         min,
         max,
         cache_statistics,
+        collector_statistics,
     })
 }
 
@@ -132,6 +138,7 @@ pub(crate) fn execute(
     send: &str,
     iterations: u32,
     cache_statistics: bool,
+    collector_statistics: bool,
 ) -> ExitCode {
     if cfg!(debug_assertions) {
         eprintln!(
@@ -152,7 +159,13 @@ pub(crate) fn execute(
          bootstrapping, and compiling all happened once beforehand and are excluded. \
          {iterations} timed run(s), after one discarded warm-up run."
     );
-    match benchmark_entry(&loaded, send, iterations, cache_statistics) {
+    match benchmark_entry(
+        &loaded,
+        send,
+        iterations,
+        cache_statistics,
+        collector_statistics,
+    ) {
         Ok(statistics) => {
             println!(
                 "median {:?} (min {:?}, max {:?}, n={})",
@@ -160,6 +173,9 @@ pub(crate) fn execute(
             );
             if let Some(cache_statistics) = &statistics.cache_statistics {
                 entry::print_cache_statistics(cache_statistics);
+            }
+            if let Some(collector_statistics) = &statistics.collector_statistics {
+                entry::print_collector_statistics(collector_statistics);
             }
         }
         Err(message) => {

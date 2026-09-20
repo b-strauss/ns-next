@@ -37,7 +37,7 @@ that cannot name its code is describing an intention, and should say so.
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a), per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c); step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | — |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, and the capture analysis and converted register layout closure conversion needs | — |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers | JIT tiers |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots, the stress mode and the lifetime brand are built; nothing reclaims an arena slot | a collector |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Built — the arena, the activation stack, the safepoint, tracing, host roots, the stress modes, the lifetime brand and a mark-compact collector; a slot is reclaimed once nothing reaches it | generations |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the core library as Newspeak source |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
@@ -72,9 +72,9 @@ carries the brand of the entry that minted it, a lifetime obtainable only
 inside `Interpreter::enter`, which `heap/world.rs`'s `World::enter` gives in
 safe Rust — the crate forbids `unsafe` code — so a handle held across a
 safepoint, or kept by a host outside an entry, is a compile error too. Start
-at [memory.md](memory.md) for what the heap guarantees and what it does not —
-notably that nothing reclaims an arena slot yet — and at
-[execution.md](execution.md), "Activations", for the stack.
+at [memory.md](memory.md) for what the heap guarantees — a mark-compact
+collector reclaims a slot once nothing reaches it, only at a safepoint of the
+run loop — and at [execution.md](execution.md), "Activations", for the stack.
 
 `ns-syntax` does not depend on `ns-runtime`. Nothing under `crates/ns-syntax`
 should change for runtime work.
@@ -171,17 +171,20 @@ regression.
 cargo test --workspace          # includes every golden, under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace   # the same, moving everything at the run loop's safepoints
 NS_NEXT_STRESS_CACHES=1 cargo test --workspace  # the same, vacating every inline cache at every safepoint
+NS_NEXT_STRESS_COLLECT=1 cargo test --workspace # the same, collecting at every safepoint
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
 cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report
+NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules # the same report
 ```
 
-The four stress runs are Git Bash syntax and do anything only in a debug build
-([memory.md](memory.md), "Checking the roots before a collector exists: the
-stress mode"; [dispatch.md](dispatch.md), "Invalidation"). Clippy's gate
+The three stress modes, six gate invocations, are Git Bash syntax and do
+anything only in a debug build ([memory.md](memory.md), "The move stress
+mode", "The gates the collector needs";
+[dispatch.md](dispatch.md), "Invalidation"). Clippy's gate
 includes `min_ident_chars` (`clippy.toml`), which refuses identifiers of one
 or two characters: names are written out
 (`CLAUDE.md`, "Conventions").

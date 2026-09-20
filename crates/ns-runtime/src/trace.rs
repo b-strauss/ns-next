@@ -10,7 +10,9 @@
 //! enumeration complete as the types grow; the stress mode checks that the
 //! places it is applied to are complete.
 //!
-//! Debug builds only, until the collector (step 5) needs it in every build.
+//! In every build: the collector marks through the same enumeration the
+//! stress mode's forwarding walks, which is what keeps the two from
+//! disagreeing about what holds a handle.
 
 use crate::heap::{FrameReference, ObjectReference};
 use crate::types::*;

@@ -1,10 +1,13 @@
 //! Global symbol interning for selectors, slot names, and class names.
 //!
 //! Interned strings are leaked (`Box::leak`) and live for the process
-//! lifetime. This is an accepted simplification -- the same spirit as the
-//! heap arena's own accepted growth without bound until a collector lands
-//! (`docs/design/memory.md`). A collector would intern into a proper
-//! symbol table instead.
+//! lifetime. This is deliberate, and the collector does not change it: a
+//! `Symbol` *object* the runtime allocates on the heap is reclaimed like any
+//! other object, through the canonical symbol table's weak entries
+//! (`docs/design/memory.md`, "Weak references"), but the leaked `&'static
+//! str` this interner hands out, and the interner's own table, are a
+//! separate store outside the heap that the collector never traces --
+//! nothing reclaims them, and nothing is meant to.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
