@@ -182,8 +182,8 @@ NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules # the 
 ```
 
 The three stress modes, six gate invocations, are Git Bash syntax and do
-anything only in a debug build ([memory.md](memory.md), "Checking the roots
-before a collector exists: the stress mode", "The gates the collector needs";
+anything only in a debug build ([memory.md](memory.md), "The move stress
+mode", "The gates the collector needs";
 [dispatch.md](dispatch.md), "Invalidation"). Clippy's gate
 includes `min_ident_chars` (`clippy.toml`), which refuses identifiers of one
 or two characters: names are written out

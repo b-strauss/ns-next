@@ -3001,8 +3001,9 @@ built through `RUSTFLAGS` with `+crt-static` and the function-alignment pin.
 conversion. **Peak working set is the point of the step**: `bench
 --iterations 10` on `bench_block.ns` falls from 228.8 MB at `dc0ffe5` to
 5.6 MB at the head, level with `bench_loop.ns` and `bench_send.ns`, which do
-not move. **Seven of the eight sources are level with `dc0ffe5`** (−2.1% to
-+0.6%, every group overlapping) **and 5.3–18.0% below `be3eb40`.**
+not move. **Seven of the eight sources are level with `dc0ffe5`** (groups
+overlapping the baseline's, means spanning −2.1% to +2.9%) **and 5.3–18.0%
+below `be3eb40`.**
 `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report zero
 collections and are exactly the three whose throughput does not move — the
 recorded expectation named the first two in advance, and `bench_megamorphic.ns`

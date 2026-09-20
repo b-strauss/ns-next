@@ -1256,8 +1256,7 @@ takes 12.7 s, measured at 682 tests, against 12.5 s for 662 before the step. Und
 `NS_NEXT_STRESS_MOVES=1` it takes 190.2 s: almost half of that is
 `crates/ns-runtime/tests/trampoline.rs`'s depth-limit test, and most of the
 rest the CLI tests that spawn `ns-next` per fixture or golden
-([memory.md](memory.md), "Checking the roots before a collector exists: the
-stress mode").
+([memory.md](memory.md), "The move stress mode").
 
 ### What 2c moved
 
@@ -1405,8 +1404,8 @@ as `#[inline(always)]` asks.
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 13.1 s at 691 tests, and 190.3 s under `NS_NEXT_STRESS_MOVES=1`,
-where 2b left 12.7 s and 190.2 s ([memory.md](memory.md), "Checking the
-roots before a collector exists: the stress mode").
+where 2b left 12.7 s and 190.2 s ([memory.md](memory.md), "The move stress
+mode").
 
 ### What spec-conformant lookup moved
 
@@ -2526,8 +2525,9 @@ the group compared with, in **both** sittings:
 | `bench_newarg.ns` | 9.39 | 9.13 | 10.86 | +2.9% | −13.5% | yes |
 
 **Seven of the eight sources are level with `dc0ffe5`** — `bench_loop.ns`
-through `bench_newarg.ns` above, −2.1% to +0.6%, every group overlapping in
-both sittings — **and 5.3–18.0% below `be3eb40`.** `bench_do.ns`,
+through `bench_newarg.ns` above, their groups overlapping the baseline's in
+both sittings, means spanning −2.1% to +2.9% — **and 5.3–18.0% below
+`be3eb40`.** `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` are the four
 out-of-tree sources written out in "What spec-conformant lookup moved"
 above, copied from there rather than reconstructed, as that section
@@ -2555,8 +2555,9 @@ that collects enough to show: `bench --collector-statistics` over
 Pause accounts for roughly 1.4 ms of the 2.46 ms the head adds per round on
 `bench_block.ns`; the remaining amount is not accounted for by pause and is
 recorded as unexplained rather than guessed at. `bench_do.ns`,
-`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` collect tens of times
-too, at a fraction of the pause, and stay level with `dc0ffe5` — so
+`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` collect too — 26 to 107
+times over ten iterations — at a fraction of the pause, and stay level with
+`dc0ffe5` — so
 collecting itself is not what shows on `bench_block.ns`; something about
 collecting *269 times in ten iterations*, an order of magnitude more often,
 is.

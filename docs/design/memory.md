@@ -135,8 +135,8 @@ of the heap that minted it, and every accessor that takes a handle asserts the t
 match — 69 sites in `heap.rs`, 16 of them through an `ActivationReference`, whose check
 also compares a generation, because a stack index is reused as soon as its entry
 is popped. An `ObjectReference` or a `FrameReference` also carries the heap's move epoch, which
-the same check compares ("Checking the roots before a collector exists: the
-stress mode" below). In a release build neither the fields nor the checks
+the same check compares ("The move stress mode" below). In a release build
+neither the fields nor the checks
 exist, and a handle is exactly its 32-bit index.
 
 The room the actor milestone needs is still there. Actors are designed to get one
@@ -629,7 +629,7 @@ rest of the object. Its four bytes are paid for by boxing a class object's
 data (`ObjectData::Class(Box<ClassData>)`), so an `Object` is still 56 bytes
 in a release build and the amplification figures below did not move there.
 
-### Checking the roots before a collector exists: the stress mode
+### The move stress mode
 
 The brand checks what Rust locals hold; it cannot check that the list above
 is complete, and nothing checks that at compile time. A debug-build
@@ -1187,9 +1187,9 @@ exactly the three sources whose throughput does not move: −0.3%, −0.0% and
 −0.4% against `dc0ffe5`, all three groups overlapping in both sittings. The
 send benchmarks do not feel the trigger's comparison in `push_object`. Four
 more sources — `bench_do.ns`, `bench_new.ns`, `bench_new2.ns` and
-`bench_newarg.ns` — do collect, tens of times over ten iterations, and are
-still level with `dc0ffe5` (−2.1% to +0.6%, every group overlapping) and
-5.3-18.0% below `be3eb40`.
+`bench_newarg.ns` — do collect, 26 to 107 times over ten iterations, and are
+still level with `dc0ffe5` (groups overlapping the baseline's, means
+spanning −2.1% to +2.9%) and 5.3-18.0% below `be3eb40`.
 
 **`bench_block.ns` is the one source that contradicts the expectation, and it
 does so plainly: +12.2% against `dc0ffe5`, the only source whose groups do
