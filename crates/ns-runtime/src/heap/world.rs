@@ -112,17 +112,10 @@ impl World {
     /// bootstrap's builtin classes and the `platform` singleton.
     #[cfg(debug_assertions)]
     pub(crate) fn move_everything(&mut self) {
-        use crate::trace::Tracer;
         self.check_quiescent_state();
-        let mutator = &mut self.mutator;
         let mut forwarder: crate::heap::Forwarder<crate::heap::Rotation> =
-            mutator.heap.move_everything();
-        for class in &mut mutator.builtin_classes {
-            forwarder.object(class);
-        }
-        if let Some(platform) = &mut mutator.platform_singleton {
-            forwarder.value(platform);
-        }
+            self.mutator.heap.move_everything();
+        self.forward_step_state(&mut forwarder);
     }
 
     /// Marks everything reachable: the heap's own roots, then the step state's
@@ -146,21 +139,33 @@ impl World {
     /// forward what the step state holds beside the heap -- the bootstrap's
     /// builtin classes and the `platform` singleton -- exactly as a move does.
     pub(crate) fn collect(&mut self) {
-        use crate::trace::Tracer;
         self.check_quiescent_state();
         let marker = self.mark_everything_reachable();
+        let mut forwarder = self.mutator.heap.compact(marker);
+        self.forward_step_state(&mut forwarder);
+    }
+
+    pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
+        self.mutator.heap.heap_statistics()
+    }
+
+    /// Forwards what the step state holds beside the heap: the bootstrap's
+    /// builtin classes and the `platform` singleton. Shared by
+    /// `move_everything` and `collect`, which forward the same two roots
+    /// after the heap has forwarded its own -- one copy so a root added
+    /// here later cannot land in one caller's walk and not the other's.
+    fn forward_step_state<M: crate::heap::Relocation>(
+        &mut self,
+        forwarder: &mut crate::heap::Forwarder<M>,
+    ) {
+        use crate::trace::Tracer;
         let mutator = &mut self.mutator;
-        let mut forwarder = mutator.heap.compact(marker);
         for class in &mut mutator.builtin_classes {
             forwarder.object(class);
         }
         if let Some(platform) = &mut mutator.platform_singleton {
             forwarder.value(platform);
         }
-    }
-
-    pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
-        self.mutator.heap.heap_statistics()
     }
 
     /// What must hold no handle when everything moves, because nothing

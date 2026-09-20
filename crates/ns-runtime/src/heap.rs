@@ -2377,7 +2377,6 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
     fn move_everything(&mut self) -> Forwarder<Rotation> {
-        use crate::trace::{Trace, Tracer};
         let from_epoch = self.epoch;
         let to_epoch = from_epoch.wrapping_add(1);
         let objects = Rotation::new(self.objects.len(), to_epoch);
@@ -2392,30 +2391,7 @@ impl<'gc> Heap<'gc> {
             objects,
             frames,
         };
-        for object in &mut self.objects {
-            object.trace(&mut forwarder);
-        }
-        // A married frame's registers are its entry's, traced below with
-        // the stack; `live` is a stack index, and no stack entry moves.
-        for slot in &mut self.frames {
-            slot.frame.trace(&mut forwarder);
-        }
-        for entry in &mut self.stack.entries {
-            entry.trace(&mut forwarder);
-        }
-        for value in &mut self.stack.values {
-            forwarder.value(value);
-        }
-        for object in self.canonical_symbols.iter_mut().flatten() {
-            forwarder.object(object);
-        }
-        let roots = self.host_roots.get_mut();
-        roots.sweep();
-        for slot in &roots.slots {
-            let mut value = slot.get();
-            forwarder.value(&mut value);
-            slot.set(value);
-        }
+        self.forward_everything(&mut forwarder);
         forwarder
     }
 
@@ -2428,7 +2404,6 @@ impl<'gc> Heap<'gc> {
     /// handle: at a safepoint of the run loop, or between runs.
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
     pub(crate) fn compact(&mut self, marker: mark::Marker) -> Forwarder<ForwardingTable> {
-        use crate::trace::{Trace, Tracer};
         #[cfg(debug_assertions)]
         let from_epoch = self.epoch;
         #[cfg(debug_assertions)]
@@ -2449,14 +2424,30 @@ impl<'gc> Heap<'gc> {
             objects,
             frames,
         };
+        self.forward_everything(&mut forwarder);
+        forwarder
+    }
+
+    /// Forwards every handle the heap itself holds through `forwarder`:
+    /// every arena record, every stack entry and the continuation it owns,
+    /// every register, and every host root. Shared by `move_everything` and
+    /// `compact` -- both build their own `Forwarder` first, over a
+    /// different `Relocation`, and then walk the same six roots through it
+    /// -- so that a field either one must reach is named here once, rather
+    /// than in two copies a later change can update in one and miss in the
+    /// other (`trace.rs`'s reason for existing, one level up).
+    fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
+        use crate::trace::{Trace, Tracer};
         for object in &mut self.objects {
-            object.trace(&mut forwarder);
+            object.trace(forwarder);
         }
+        // A married frame's registers are its entry's, traced below with
+        // the stack; `live` is a stack index, and no stack entry moves.
         for slot in &mut self.frames {
-            slot.frame.trace(&mut forwarder);
+            slot.frame.trace(forwarder);
         }
         for entry in &mut self.stack.entries {
-            entry.trace(&mut forwarder);
+            entry.trace(forwarder);
         }
         for value in &mut self.stack.values {
             forwarder.value(value);
@@ -2471,7 +2462,6 @@ impl<'gc> Heap<'gc> {
             forwarder.value(&mut value);
             slot.set(value);
         }
-        forwarder
     }
 
     /// The arenas' occupancy (`Interpreter::heap_statistics`).
