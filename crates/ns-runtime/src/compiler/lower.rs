@@ -32,7 +32,7 @@ pub(crate) enum ScopeKind {
 
 /// Where a body keeps what it can reach: its own locals, the values it was
 /// handed when it was created, and its indirection vector
-/// (`docs/design/execution.md`, "Representation").
+/// (`docs/design/execution.md`, "Converted representation").
 pub(crate) struct Layout {
     key: BodyKey,
     argument_count: u16,
@@ -147,7 +147,7 @@ impl Layout {
     /// The register of a frame with this layout that holds `entry` -- its own
     /// local or vector when `entry` names this body, and otherwise the copied
     /// register it was handed when it was created.
-    pub(crate) fn register_holding(&self, entry: Captured) -> u16 {
+    fn register_holding(&self, entry: Captured) -> u16 {
         match entry {
             Captured::Variable { body, index } if body == self.key => self.local_register(index),
             Captured::Vector { body } if body == self.key => self
@@ -489,7 +489,7 @@ impl<'a> Lowerer<'a> {
             let source = self.lower_expression_for(initializer, ValueUse::Read);
             // Through the same `Access` as an assignment: a captured-and-
             // written local's initializer writes its scope's vector, not a
-            // register (`docs/design/execution.md`, "Representation").
+            // register (`docs/design/execution.md`, "Converted representation").
             let access = self.resolve_variable(0, self.argument_count + position as u16);
             self.emit_store(access, source);
             let end = self.instructions.len();
@@ -845,20 +845,17 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Mirrors `lower_send`'s own gate: only an ordinary explicit-receiver
-    /// send is offered to `recognize`, and a lexical or `super` send has no
-    /// receiver expression to walk. Every send runs user code, and so does
-    /// every recognized inlinable form -- through the real send its
-    /// guard-failure path makes (`lower_fallback_send`, `emit_must_be_boolean`).
+    /// Mirrors `lower_send` through the shared gate: only an ordinary
+    /// explicit-receiver send is offered to `recognize`, and a lexical or
+    /// `super` send has no receiver expression to walk. Every send runs user
+    /// code, and so does every recognized inlinable form -- through the real
+    /// send its guard-failure path makes (`lower_fallback_send`,
+    /// `emit_must_be_boolean`).
     fn send_writes_register(&self, send: &ast::Send, register: u16, inlined_depth: u16) -> bool {
         if self.a_send_can_write(register) {
             return true;
         }
-        let ordinary = !matches!(
-            self.bindings.get(&send.span),
-            Some(Binding::SuperSend) | Some(Binding::LexicalSend { .. })
-        );
-        if ordinary {
+        if control_flow::is_ordinary_send(self.bindings, send) {
             if let Some(form) = control_flow::recognize(send) {
                 return self.inlined_form_writes_register(send, form, register, inlined_depth);
             }
@@ -1273,9 +1270,55 @@ impl<'a> Lowerer<'a> {
     /// `use_` is what reads the send's value. Only an inlined form passes it
     /// on, to the blocks whose values become its own.
     fn lower_send(&mut self, send: &ast::Send, use_: ValueUse) -> u16 {
+        // The inlining gate: only an ordinary explicit-receiver send is ever
+        // offered to `recognize` (`docs/design/compiler.md`, "Control-flow
+        // inlining"), through the one predicate the capture analysis and the
+        // protective-copy walk ask too. Every recognized form still keeps a
+        // runtime guard whose failure path is a real virtual send, so
+        // inlining stays a pure optimization.
+        if !control_flow::is_ordinary_send(self.bindings, send) {
+            return self.lower_super_or_lexical_send(send);
+        }
+        if let Some(form) = control_flow::recognize(send) {
+            return match form {
+                InlineForm::IfTrueIfFalse(true_block, false_block) => {
+                    self.lower_if(send, Some(true_block), Some(false_block), use_)
+                }
+                InlineForm::IfTrue(true_block) => self.lower_if(send, Some(true_block), None, use_),
+                InlineForm::IfFalse(false_block) => {
+                    self.lower_if(send, None, Some(false_block), use_)
+                }
+                InlineForm::And(block) => self.lower_and_or(send, block, true, use_),
+                InlineForm::Or(block) => self.lower_and_or(send, block, false, use_),
+                InlineForm::WhileTrue { condition, body } => {
+                    self.lower_while(condition, body, true)
+                }
+                InlineForm::WhileFalse { condition, body } => {
+                    self.lower_while(condition, body, false)
+                }
+            };
+        }
+        // The receiver is read by the send instruction, so it has to
+        // survive its own arguments' lowering.
+        let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
+        self.emit_ordinary_send_with_receiver(receiver_register, &send.message)
+    }
+
+    /// The two sends `is_ordinary_send` rejects: neither has a receiver
+    /// expression, and neither is ever inlined.
+    fn lower_super_or_lexical_send(&mut self, send: &ast::Send) -> u16 {
+        let selector = selector_of(&send.message);
         match self.bindings.get(&send.span) {
-            Some(Binding::SuperSend) => {
-                let selector = selector_of(&send.message);
+            Some(Binding::LexicalSend { depth }) => {
+                let depth = *depth;
+                let argument_registers = self.lower_arguments(&send.message);
+                self.emit_lexical_send(depth, selector, argument_registers)
+            }
+            binding => {
+                debug_assert!(
+                    matches!(binding, Some(Binding::SuperSend)),
+                    "internal: is_ordinary_send rejected a send that is neither super nor lexical"
+                );
                 let argument_registers = self.lower_arguments(&send.message);
                 self.emit_send(|destination, call_site| Instruction::SendSuper {
                     selector,
@@ -1283,44 +1326,6 @@ impl<'a> Lowerer<'a> {
                     destination,
                     call_site,
                 })
-            }
-            Some(Binding::LexicalSend { depth }) => {
-                let depth = *depth;
-                let selector = selector_of(&send.message);
-                let argument_registers = self.lower_arguments(&send.message);
-                self.emit_lexical_send(depth, selector, argument_registers)
-            }
-            _ => {
-                // The inlining gate: only an ordinary explicit-receiver send
-                // is ever offered to `recognize` (`docs/design/compiler.md`,
-                // "Control-flow inlining"). Every recognized form still keeps
-                // a runtime guard whose failure path is a real virtual send,
-                // so inlining stays a pure optimization.
-                if let Some(form) = control_flow::recognize(send) {
-                    return match form {
-                        InlineForm::IfTrueIfFalse(true_block, false_block) => {
-                            self.lower_if(send, Some(true_block), Some(false_block), use_)
-                        }
-                        InlineForm::IfTrue(true_block) => {
-                            self.lower_if(send, Some(true_block), None, use_)
-                        }
-                        InlineForm::IfFalse(false_block) => {
-                            self.lower_if(send, None, Some(false_block), use_)
-                        }
-                        InlineForm::And(block) => self.lower_and_or(send, block, true, use_),
-                        InlineForm::Or(block) => self.lower_and_or(send, block, false, use_),
-                        InlineForm::WhileTrue { condition, body } => {
-                            self.lower_while(condition, body, true)
-                        }
-                        InlineForm::WhileFalse { condition, body } => {
-                            self.lower_while(condition, body, false)
-                        }
-                    };
-                }
-                // The receiver is read by the send instruction, so it has to
-                // survive its own arguments' lowering.
-                let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
-                self.emit_ordinary_send_with_receiver(receiver_register, &send.message)
             }
         }
     }

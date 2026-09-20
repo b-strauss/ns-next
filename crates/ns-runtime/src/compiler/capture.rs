@@ -380,15 +380,11 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Mirrors `lower_send`: only an ordinary explicit-receiver send is
-    /// offered to `recognize`, and a lexical or `super` send has no receiver
-    /// expression to walk.
+    /// Mirrors `lower_send` through the shared gate: only an ordinary
+    /// explicit-receiver send is offered to `recognize`, and a lexical or
+    /// `super` send has no receiver expression to walk.
     fn send(&mut self, send: &ast::Send) {
-        let ordinary = !matches!(
-            self.bindings.get(&send.span),
-            Some(Binding::SuperSend) | Some(Binding::LexicalSend { .. })
-        );
-        if ordinary {
+        if control_flow::is_ordinary_send(self.bindings, send) {
             if let Some(form) = control_flow::recognize(send) {
                 self.inlined(send, form);
                 return;
