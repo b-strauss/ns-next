@@ -2426,7 +2426,11 @@ impl<'gc> Heap<'gc> {
 
     // ---------- Moving everything (debug builds only) ----------
 
-    /// How many times this heap has moved everything.
+    /// How many times this heap has moved everything -- by `move_everything`
+    /// or by `compact`, both of which relocate every survivor to a new index
+    /// and so advance this the same way: a handle into the arrangement
+    /// before either one is exactly as stale as one into the arrangement
+    /// before the other.
     #[cfg(debug_assertions)]
     pub(crate) fn move_epoch(&self) -> u32 {
         self.epoch

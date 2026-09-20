@@ -117,6 +117,25 @@ fn every_continuation_survives_a_move_at_every_safepoint() {
     );
 }
 
+/// The control above turns the collect stress mode off, on purpose, to
+/// isolate the move stress mode's exact move count from an ambient
+/// `NS_NEXT_STRESS_COLLECT=1` -- so it never runs this fixture, the suite's
+/// richest continuation shape, under the collect stress mode with its exact
+/// answer checked. This does: a premature reclamation that turned 31 into
+/// something else would have nowhere else to be caught, since the other
+/// collect stress coverage (`collector.rs`) uses a simpler fixture.
+#[test]
+fn every_continuation_survives_a_collection_at_every_safepoint() {
+    let (mut interpreter, class) = load(EVERY_CONTINUATION);
+    interpreter.set_stress_collect(true);
+    let sum = run_sum(&mut interpreter, &class);
+    assert_eq!(sum, 31);
+    assert!(
+        interpreter.stress_collections() > 0,
+        "the collect stress mode never collected"
+    );
+}
+
 /// The cache stress mode vacates every cache at every safepoint, so filling,
 /// transitions and invalidation all run under a program with every kind of
 /// continuation; its answer is the one without the mode.
@@ -128,6 +147,7 @@ fn the_cache_stress_mode_invalidates_at_every_safepoint_and_changes_no_answer() 
     interpreter.set_stress_caches(true);
     let stressed = run_sum(&mut interpreter, &class);
     assert_eq!(calm, stressed);
+    assert_eq!(calm, 31);
     assert!(
         interpreter.cache_invalidations() > 10,
         "an invalidation at every safepoint of the run"

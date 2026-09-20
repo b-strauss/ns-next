@@ -114,7 +114,9 @@ pub(crate) fn global_cache_entries_from_env() -> Option<usize> {
 /// trigger does, and every small program keeps a move at every safepoint.
 /// Fixed-frequency stress modes (HotSpot's `ScavengeALotInterval`,
 /// SpiderMonkey's `JS_GC_ZEAL` frequency) would take coverage from small
-/// programs to spare large ones.
+/// programs to spare large ones. `StressCollections` paces its collections
+/// by the same constant, for the same reason: a collection's compaction is
+/// proportional to the traced size too.
 #[cfg(debug_assertions)]
 pub(crate) const STRESS_MOVE_BUDGET: usize = 1_000;
 
@@ -162,6 +164,15 @@ impl StressMoves {
 #[derive(Default)]
 pub(crate) struct StressCollections {
     safepoints_since_collection: usize,
+    /// How many collections this schedule has actually caused since the
+    /// mode was turned on -- incremented only when `due` answers `true`,
+    /// never merely on a safepoint taken. `Interpreter::moves` cannot stand
+    /// in for this: an ordinary collection advances it too, so it cannot
+    /// tell "the stress mode collected" from "something else did". For
+    /// tests (`Interpreter::stress_collections`): without this, a schedule
+    /// whose `due` always answered `false` would still pass every existing
+    /// assertion -- the gate would be a no-op that stays green.
+    collections: usize,
 }
 
 #[cfg(debug_assertions)]
@@ -176,6 +187,7 @@ impl StressCollections {
             return false;
         }
         self.safepoints_since_collection = 0;
+        self.collections += 1;
         true
     }
 
@@ -238,7 +250,13 @@ impl Interpreter {
             .set_safepoint_requested(enabled || self.stress.is_some() || self.stress_caches);
     }
 
-    /// How many times this interpreter's heap has moved everything.
+    /// How many times this interpreter's heap has moved everything -- a
+    /// move, or a collection's compaction, both of which relocate every
+    /// survivor and so advance the same epoch: a handle into the
+    /// arrangement before either is exactly as stale as one into the
+    /// arrangement before the other. Does not tell the two apart, so a test
+    /// pinning that the *collect* stress mode specifically did something
+    /// uses `stress_collections` instead.
     pub fn moves(&self) -> u32 {
         self.world.move_epoch()
     }
@@ -255,6 +273,17 @@ impl Interpreter {
     /// safepoint.
     pub fn stress_safepoints(&self) -> usize {
         self.stress.as_ref().map_or(0, |stress| stress.safepoints)
+    }
+
+    /// How many collections the collect stress mode has actually caused
+    /// since it was turned on; 0 while it is off. Unlike `moves`, an
+    /// ordinary collection never advances this, so it is what a test pins
+    /// against to show the mode did something, rather than merely being a
+    /// schedule that never fires.
+    pub fn stress_collections(&self) -> usize {
+        self.stress_collect
+            .as_ref()
+            .map_or(0, |stress| stress.collections)
     }
 }
 

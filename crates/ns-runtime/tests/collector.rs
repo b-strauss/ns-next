@@ -332,6 +332,11 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
+    // A real control even under `NS_NEXT_STRESS_COLLECT=1`, which would
+    // otherwise turn the "quiet" run stressed too, ambiently, leaving only
+    // the absolute `5050` below to catch a difference rather than the
+    // quiet-versus-stressed comparison.
+    interpreter.set_stress_collect(false);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
     let count = interpreter.stash(Value::SmallInteger(100));
     let selector = Symbol::intern("upTo:");
@@ -345,6 +350,13 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
 
     assert_eq!(quiet_answer, stressed_answer);
     assert_eq!(quiet_answer, 5050);
+    // `moves` cannot show this: an ordinary collection would advance it
+    // too. Without this, a schedule whose `due` always answered `false`
+    // would still pass everything above.
+    assert!(
+        interpreter.stress_collections() > 0,
+        "the collect stress mode never collected"
+    );
 }
 
 /// Nothing asks for a collection until an arena reaches its limit, and
