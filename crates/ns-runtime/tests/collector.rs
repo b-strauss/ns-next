@@ -309,6 +309,44 @@ fn discarding_everything_returns_to_the_starting_size() {
     );
 }
 
+/// The mode that catches premature reclamation: collecting at every
+/// safepoint, so a missed root kills its object at the earliest possible
+/// moment. The program's answer must not change.
+#[test]
+#[cfg(debug_assertions)]
+fn the_collect_stress_mode_does_not_change_an_answer() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Sum = Object new () (
+          public upTo: count = (
+            | total remaining |
+            total:: 0.
+            remaining:: count.
+            [remaining > 0] whileTrue: [
+              total:: total + remaining.
+              remaining:: remaining - 1.
+            ].
+            ^total
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]));
+    let count = interpreter.stash(Value::SmallInteger(100));
+    let selector = Symbol::intern("upTo:");
+
+    let quiet = expect_ok(interpreter.send(&instance, selector, &[count]));
+    let quiet_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&quiet)));
+    interpreter.set_stress_collect(true);
+    let count_again = interpreter.stash(Value::SmallInteger(100));
+    let stressed = expect_ok(interpreter.send(&instance, selector, &[count_again]));
+    let stressed_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&stressed)));
+
+    assert_eq!(quiet_answer, stressed_answer);
+    assert_eq!(quiet_answer, 5050);
+}
+
 /// Nothing asks for a collection until an arena reaches its limit, and
 /// then the run loop's next safepoint serves it -- no allocation ever
 /// collects (`docs/design/memory.md`, "The trigger and the growth

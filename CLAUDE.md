@@ -260,6 +260,9 @@ NS_NEXT_STRESS_MOVES=1 cargo test --workspace
 # the same suite with every inline cache vacated at every safepoint
 # (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_CACHES=1 cargo test --workspace
+# the same suite with a collection at every safepoint
+# (debug builds only; Git Bash syntax)
+NS_NEXT_STRESS_COLLECT=1 cargo test --workspace
 # before every commit
 cargo fmt --all
 # must be warning-free
@@ -272,6 +275,8 @@ cargo run -p ns-cli -- run-corpus corpus/modules
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 # non-regression gate under the cache stress mode, same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
+# non-regression gate under the collect stress mode, same report
+NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
