@@ -151,7 +151,13 @@ impl World {
     /// One collection: mark everything reachable, compact both arenas, and
     /// forward what the step state holds beside the heap -- the bootstrap's
     /// builtin classes and the `platform` singleton -- exactly as a move does.
+    ///
+    /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
+    /// `Heap`'s counters by `record_collection`: nothing against a
+    /// mark-and-compact, and the only place this measurement costs
+    /// anything -- an allocation and the safepoint poll pay nothing towards it.
     pub(crate) fn collect(&mut self) {
+        let start = std::time::Instant::now();
         self.check_quiescent_state();
         let marker = self.mark_everything_reachable();
         // Between marking and compacting: after compaction the mark bits no
@@ -162,10 +168,16 @@ impl World {
         let mut forwarder = self.mutator.heap.compact(marker);
         self.forward_step_state(&mut forwarder);
         self.mutator.heap.reset_collection_limits();
+        self.mutator.heap.record_collection(start.elapsed());
     }
 
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         self.mutator.heap.heap_statistics()
+    }
+
+    /// The collector's counts and pauses (`Interpreter::collector_statistics`).
+    pub(crate) fn collector_statistics(&self) -> crate::CollectorStatistics {
+        self.mutator.heap.collector_statistics()
     }
 
     /// Forwards what the step state holds beside the heap: the bootstrap's

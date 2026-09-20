@@ -473,6 +473,15 @@ pub struct Heap<'gc> {
     /// it never collects: `bench_loop.ns` and `bench_send.ns` run in 4.6 MB
     /// and should not pay for a collector they do not need.
     collection_floor: usize,
+    /// How many collections have run, and how long they have taken in total
+    /// and at the longest (`Interpreter::collector_statistics`,
+    /// `--collector-statistics`). `World::collect` is the only writer,
+    /// through `record_collection`, and it times the whole collection with
+    /// one `Instant::now()`/`elapsed()` -- these three fields cost nothing
+    /// per allocation and nothing per instruction.
+    collections: usize,
+    total_pause: std::time::Duration,
+    longest_pause: std::time::Duration,
     /// The instance ids of the builtin classes of the immediates, indexed by
     /// `immediate_index`: an immediate has no class field to read one from.
     /// Set once by the bootstrap; `NONE` before it.
@@ -715,6 +724,20 @@ pub struct HeapStatistics {
     pub frame_slots: usize,
 }
 
+/// The collector's counts and pauses, read without disturbing them
+/// (`Heap::collector_statistics`): `collections`, `total_pause` and
+/// `longest_pause` accumulate across every `World::collect` so far;
+/// `live_objects`/`live_frames` are the arenas' occupancy right now, the
+/// same fields `HeapStatistics` reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectorStatistics {
+    pub collections: usize,
+    pub total_pause: std::time::Duration,
+    pub longest_pause: std::time::Duration,
+    pub live_objects: usize,
+    pub live_frames: usize,
+}
+
 impl<'gc> Heap<'gc> {
     /// A `Heap` built on the spot -- rather than the one `Interpreter` owns --
     /// is an empty arena: every object and frame accessor indexes directly into
@@ -750,6 +773,9 @@ impl<'gc> Heap<'gc> {
             next_frame_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
+            collections: 0,
+            total_pause: std::time::Duration::ZERO,
+            longest_pause: std::time::Duration::ZERO,
             immediate_dispatch_ids: [DispatchId::NONE; 5],
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -2553,6 +2579,30 @@ impl<'gc> Heap<'gc> {
             object_slots: self.objects.capacity(),
             live_frames: self.frames.len(),
             frame_slots: self.frames.capacity(),
+        }
+    }
+
+    /// Records one collection's pause (`World::collect`, the only caller):
+    /// counts it and folds its duration into the total and the longest seen
+    /// so far. The timing itself happens once per collection in `collect`;
+    /// this only updates three fields, so neither costs anything per
+    /// allocation or per instruction.
+    pub(crate) fn record_collection(&mut self, pause: std::time::Duration) {
+        self.collections += 1;
+        self.total_pause += pause;
+        self.longest_pause = self.longest_pause.max(pause);
+    }
+
+    /// The collector's counts and pauses since the process started, plus the
+    /// arenas' occupancy right now (`Interpreter::collector_statistics`,
+    /// `--collector-statistics`).
+    pub(crate) fn collector_statistics(&self) -> crate::CollectorStatistics {
+        crate::CollectorStatistics {
+            collections: self.collections,
+            total_pause: self.total_pause,
+            longest_pause: self.longest_pause,
+            live_objects: self.objects.len(),
+            live_frames: self.frames.len(),
         }
     }
 

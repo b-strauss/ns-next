@@ -560,6 +560,13 @@ impl Interpreter {
         self.world.heap_statistics()
     }
 
+    /// The collector's counts and pauses since the process started, plus the
+    /// arenas' occupancy right now (`--collector-statistics`). Available in
+    /// every build, like `heap_statistics`.
+    pub fn collector_statistics(&self) -> crate::CollectorStatistics {
+        self.world.collector_statistics()
+    }
+
     /// Replaces the global cache with a fresh one sized for `entries`,
     /// vacating whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
     /// `run_goldens.rs`), not an input path a program can reach: `entries`

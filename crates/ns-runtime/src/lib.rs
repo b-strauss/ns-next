@@ -26,8 +26,8 @@ pub mod vm;
 
 pub use compiler::Lowering;
 pub use heap::{
-    ActivationHeader, ActivationReference, ClassReference, FrameReference, Heap, HeapStatistics,
-    ObjectReference, Root,
+    ActivationHeader, ActivationReference, ClassReference, CollectorStatistics, FrameReference,
+    Heap, HeapStatistics, ObjectReference, Root,
 };
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,

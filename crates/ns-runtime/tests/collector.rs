@@ -391,10 +391,20 @@ fn allocating_past_the_limit_collects_during_the_run() {
 
     let _ = expect_ok(interpreter.send(&instance, selector, &[count]));
     let after = interpreter.heap_statistics();
+    let collector = interpreter.collector_statistics();
 
     assert!(
         after.live_objects < 5000,
         "the run collected nothing: {} live objects after 5000 closures",
         after.live_objects
+    );
+    // `after.live_objects < 5000` alone would also pass an optimization that
+    // stops allocating a closure per iteration and so never reaches the
+    // limit at all: fewer objects than 5000 with zero collections proves
+    // nothing was reclaimed, only that nothing needed to be. The honest
+    // witness is that the trigger actually fired.
+    assert!(
+        collector.collections > 0,
+        "the run reached 5000 closures without the trigger firing a single collection"
     );
 }

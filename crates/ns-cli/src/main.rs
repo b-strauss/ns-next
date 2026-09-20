@@ -128,6 +128,10 @@ enum Command {
         /// Print the inline caches' sizes to stderr after the timed runs.
         #[arg(long)]
         cache_statistics: bool,
+        /// Print the collector's counts and pauses to stderr after the
+        /// timed runs.
+        #[arg(long)]
+        collector_statistics: bool,
     },
     /// Print one compiled body: a method, or with --initializer the target
     /// class's instance initializer. Takes either a .ns file, which is
@@ -240,7 +244,14 @@ fn execute(command: Command) -> ExitCode {
             send,
             iterations,
             cache_statistics,
-        } => commands::bench::execute(&file, &send, iterations, cache_statistics),
+            collector_statistics,
+        } => commands::bench::execute(
+            &file,
+            &send,
+            iterations,
+            cache_statistics,
+            collector_statistics,
+        ),
         Command::Disasm {
             file,
             selector,

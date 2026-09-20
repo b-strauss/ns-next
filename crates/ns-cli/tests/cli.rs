@@ -342,3 +342,26 @@ fn benchmark_rejects_zero_iterations() {
     assert_ne!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).contains("iterations"));
 }
+
+/// `--collector-statistics` prints the collector's counts and pauses to
+/// stderr after the timed runs, exactly as `--cache-statistics` prints the
+/// inline caches' sizes there.
+#[test]
+fn benchmark_collector_statistics_reports_to_stderr() {
+    let out = ns_next()
+        .arg("bench")
+        .arg(common::golden("bench/bench_block"))
+        .arg("--iterations")
+        .arg("1")
+        .arg("--collector-statistics")
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("collector:"), "{stderr}");
+}
