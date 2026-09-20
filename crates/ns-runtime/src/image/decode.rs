@@ -131,17 +131,18 @@ pub enum DecodeError {
     /// reference is a `u32` id checked against the table at the point of
     /// use, never trusted to have been validated elsewhere.
     BadSymbolId(u32),
-    /// A closure record's parameter list and the code it names disagree about
-    /// how many arguments the closure takes. The two are separate fields on the
-    /// wire, so only a decode-time reconciliation can catch a crafted mismatch
-    /// -- and it must, because the two halves are read by different parts of
-    /// `Mutator::push_step`: it checks the *call's* arity against
-    /// `parameters.len()` but sizes the register file from the *code*
-    /// (`register_count - argument_count`). Disagreement leaves
-    /// `locals::read_local` computing `temporaries[i - arguments.len()]` past
-    /// the end of `temporaries` -- an unchecked index panic from a
-    /// version-matching image -- or, the other way round, silently
-    /// misaddressing temporaries as arguments.
+    /// A `MakeClosure`'s parameter-name list and the block body it names
+    /// disagree about how many arguments the closure takes. The two are
+    /// separate fields on the wire, so only a decode-time reconciliation can
+    /// catch a crafted mismatch. Nothing at run time reads the name list --
+    /// `Heap::closure_parameter_count` answers from the body, so the arity a
+    /// call is checked against and the arity the register file is sized from
+    /// are one number -- but `bytecode::disassemble` prints the names, and
+    /// `inspect` reads them off the same field. A mismatch left standing
+    /// would make a decoded image describe itself wrongly, with nothing
+    /// reporting it, so it is refused instead. A closure *record* no longer
+    /// has this half at all: it carries copied values, not parameter names
+    /// (`CopiedCountMismatch` is what reconciles a record).
     ClosureArityMismatch {
         parameters: usize,
         argument_count: u16,
@@ -362,7 +363,7 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::ClosureArityMismatch { parameters, argument_count } => write!(
                 f,
-                "closure record declares {parameters} parameters but the code it names takes {argument_count}"
+                "a `MakeClosure` names {parameters} parameters but the block body it creates takes {argument_count}"
             ),
             DecodeError::CopiedCountMismatch { copied, copied_count } => write!(
                 f,
@@ -960,9 +961,10 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
             if block.kind != CodeKind::Block {
                 return Err(DecodeError::WrongCodeKind { expected: "block" });
             }
-            // The `MakeClosure` mirror of `decode_closure_record`'s check:
-            // `push_step` validates the call against `parameters.len()`
-            // but sizes the register file from the body's `argument_count`.
+            // The instruction's parameter names against the body's arity:
+            // nothing runs on the names, but `disassemble` and `inspect`
+            // print them, so a mismatch would be an image describing itself
+            // wrongly rather than an error anyone sees.
             if parameters.len() != block.argument_count as usize {
                 return Err(DecodeError::ClosureArityMismatch {
                     parameters: parameters.len(),
@@ -2592,13 +2594,21 @@ fn decode_class_record<'gc>(
 // Reconciling the decoded graph with the code that runs in it.
 //
 // `decode_graph_section` reads frames and closures in isolation: it has no
-// selector-to-body mapping, so it can check a closure record's own two
-// halves (`ClosureArityMismatch`) and nothing more. Once the decoded mixins
-// carry their code, every frame's body can be resolved --
-// and must be, because `locals::read_local` splits a frame at `arguments.len()`
-// and indexes `temporaries` unchecked. A crafted frame that is smaller than the
-// body addressing it is an out-of-bounds index reached from a
-// version-matching image.
+// selector-to-body mapping, so it can check a closure record's copied values
+// against the code it names (`CopiedCountMismatch`) and nothing more. Once
+// the decoded mixins carry their code, every frame's body can be resolved --
+// and is, because a frame's program counter, its register file and a
+// closure's captured frame mean nothing except against that body.
+//
+// A register file the body overruns is no longer a memory-safety hole:
+// `Heap::frame_local` answers `Nil` for an index a returned frame lacks and
+// `frame_set_local` ignores the write, which is what keeps a crafted image
+// from aborting the process. It is still refused here, because a frame
+// narrower than its body is not something a run produces. An *empty*
+// register file is, though, and is accepted: closure conversion leaves one
+// behind for every returning activation no by-reference closure can reach
+// ("Converted representation", "The divorce", in
+// `docs/design/execution.md`).
 // ---------------------------------------------------------------------------
 
 /// The compiled body that runs (or ran) in `frame`, or `None` when the

@@ -384,7 +384,7 @@ struct StackEntry<'gc> {
     /// frames by reference. Nothing else can still read them once it has
     /// returned -- a converted closure carries what it captured -- so an
     /// unmarked activation leaves its frame with no registers at all
-    /// (`docs/design/execution.md`, "Representation").
+    /// (`docs/design/execution.md`, "Converted representation").
     retains_registers: bool,
     #[cfg(debug_assertions)]
     generation: u32,
@@ -1199,11 +1199,11 @@ impl<'gc> Heap<'gc> {
 
     /// Writes closure `object`'s copied values into `activation`'s registers,
     /// immediately after its arguments, which is where a block's compiled
-    /// code addresses them (`docs/design/execution.md`, "Representation").
-    /// Does nothing for a non-closure, and stops at the end of the register
-    /// file: `decode`'s `CopiedCountOutOfRange` keeps a decoded closure's
-    /// list inside its body's registers, and this is what keeps a future gap
-    /// there from becoming a panic on an untrusted image.
+    /// code addresses them (`docs/design/execution.md`, "Converted
+    /// representation"). Does nothing for a non-closure, and stops at the
+    /// end of the register file: `decode`'s `CopiedCountOutOfRange` keeps a
+    /// decoded closure's list inside its body's registers, and this is what
+    /// keeps a future gap there from becoming a panic on an untrusted image.
     ///
     /// `Step::Block` runs this on every block activation, so it allocates
     /// nothing: the two arenas are borrowed field by field rather than
@@ -2807,10 +2807,10 @@ mod tests {
 
     /// A block's copied values land in the registers between its parameters
     /// and its temporaries, which is where its compiled code addresses them
-    /// (`docs/design/execution.md`, "Representation"). A list longer than
-    /// the register file stops at its end rather than writing into the
-    /// activation below: an image, not the compiler, is what can present
-    /// one.
+    /// (`docs/design/execution.md`, "Converted representation"). A list
+    /// longer than the register file stops at its end rather than writing
+    /// into the activation below: an image, not the compiler, is what can
+    /// present one.
     #[test]
     fn a_closures_copied_values_land_after_the_activations_arguments() {
         let mut heap = Heap::new();

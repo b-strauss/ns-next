@@ -147,9 +147,9 @@ pub enum Instruction {
         code: Rc<CompiledCode>,
         /// The registers whose values the closure is handed, in the order
         /// the block's own registers take them
-        /// (`docs/design/execution.md`, "Representation"). Always empty
-        /// under the reference lowering, and under the optimized one for a
-        /// fallback closure, both of which reach every variable by
+        /// (`docs/design/execution.md`, "Converted representation"). Always
+        /// empty under the reference lowering, and under the optimized one
+        /// for a fallback closure, both of which reach every variable by
         /// reference.
         copied: Vec<u16>,
     },
@@ -160,9 +160,9 @@ pub enum Instruction {
     /// Builds this body's indirection vector: the `Array` its own
     /// captured-and-written locals live in, and which every block that needs
     /// one of them is handed a reference to
-    /// (`docs/design/execution.md`, "Representation"). Emitted once, before
-    /// the body's first statement, because a local slot's own initializer
-    /// already writes through it.
+    /// (`docs/design/execution.md`, "Converted representation"). Emitted
+    /// once, before the body's first statement, because a local slot's own
+    /// initializer already writes through it.
     MakeVector {
         destination: u16,
         size: u16,
@@ -303,8 +303,14 @@ pub struct CompiledCode {
     /// fallback closure that reads its own creator's registers, one more per
     /// level above that. `MakeClosure` marks the creating activation when
     /// this is non-zero, which is what makes a returning frame keep its
-    /// registers (`docs/design/execution.md`, "Representation"). Derived from
-    /// the instructions, never on the wire.
+    /// registers (`docs/design/execution.md`, "Converted representation").
+    /// Derived from the instructions, never on the wire.
+    ///
+    /// **Every instruction that reads or writes another frame's registers by
+    /// reference has to be named in `outer_reach_of`.** One that is not
+    /// leaves the creating activation unmarked, its frame drops its
+    /// registers when it returns, and the reads answer `nil` -- silent wrong
+    /// output at exit status 0, not a crash.
     pub outer_reach: u16,
     pub source: Span,
 }
@@ -382,6 +388,13 @@ pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
 /// here: the frame it reaches through is the one this body creates. The
 /// compiler and the decoder both compute it here, so the two cannot disagree
 /// about a body.
+///
+/// **The match below has to name every instruction that reaches another
+/// frame's registers by reference.** An omitted one contributes `0`, so
+/// `MakeClosure` never marks the creating activation, the frame loses its
+/// registers when it returns, and every read through it answers `nil`
+/// without a word (`docs/design/execution.md`, "The divorce"). Adding such
+/// an instruction is therefore a change to this function too.
 pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
     instructions
         .iter()

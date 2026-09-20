@@ -2984,8 +2984,9 @@ fn a_closure_records_its_copied_values_and_a_wrong_count_is_refused() {
     );
 }
 
-/// A closure whose code declares no copied values at all: the common case
-/// today, since neither lowering copies anything yet.
+/// A closure whose code declares no copied values at all: every closure the
+/// reference lowering builds, and every fallback closure the optimized one
+/// builds, since both reach their variables by reference.
 #[test]
 fn a_closure_record_with_no_copied_values_decodes() {
     let mut fixture = GraphFixture::new();
@@ -3600,9 +3601,10 @@ fn a_make_closure_naming_a_method_body_is_refused() {
 
 #[test]
 fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
-    // The `MakeClosure` mirror of `ClosureArityMismatch`: `parameters` and the
-    // body's `argument_count` are separate wire fields here too, and
-    // `push_step` reads one while the frame is sized from the other.
+    // `parameters` and the body's `argument_count` are separate wire fields,
+    // and nothing at run time reads the names -- but `disassemble` prints
+    // them, so a mismatch that decoded cleanly would be an image describing
+    // itself wrongly with nothing to report it.
     let block = code_with(
         CodeKind::Block,
         1,

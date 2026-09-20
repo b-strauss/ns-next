@@ -592,8 +592,10 @@ fn a_wrong_arity_send_is_refused() {
 
 // ---------------------------------------------------------------------------
 // The indirection vector's three instructions (`MakeVector`, `LoadVector`,
-// `StoreVector`) -- closure conversion's own storage, hand-built here since
-// nothing compiles them yet (Task 5 emits them).
+// `StoreVector`) -- closure conversion's own storage. Hand-built rather than
+// compiled, so that each instruction's own behaviour is pinned independently
+// of which shapes the optimized lowering happens to emit them for; the
+// goldens under `goldens/capture/` cover the compiled side.
 // ---------------------------------------------------------------------------
 
 #[test]

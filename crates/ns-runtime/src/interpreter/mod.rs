@@ -859,7 +859,7 @@ impl<'gc> Mutator<'gc> {
                 // The copied values sit between the block's parameters and
                 // its temporaries, so they are written once the register
                 // file exists and before the body runs an instruction
-                // (`docs/design/execution.md`, "Representation").
+                // (`docs/design/execution.md`, "Converted representation").
                 self.heap.fill_copied_values(activation, closure);
                 Ok(activation)
             }

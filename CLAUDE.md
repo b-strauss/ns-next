@@ -187,7 +187,11 @@ blocks, and the fallback closure an inlined conditional sends to a non-Boolean
 receiver. Converted code copies what it captures into the closure, or shares
 its scope's indirection vector, so it needs none of them. Which it is, is
 decided per activation from the block's `outer_reach`
-(`docs/design/execution.md`, "Activations", "Closure conversion").
+(`docs/design/execution.md`, "Activations", "Closure conversion"). **Every
+instruction that reads or writes another frame's registers by reference must be
+named in `bytecode::outer_reach_of`**, or `MakeClosure` leaves the creating
+activation unmarked, its frame drops its registers on return, and every read
+through it answers `nil` at exit status 0.
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvaluationResult`.**
 `ObjectReference`, `FrameReference` and `ActivationReference` each carry a hand-written `Debug` that prints
