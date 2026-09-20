@@ -1130,7 +1130,7 @@ interpreter's measurement cannot see:
   of copied values takes the room the parameter names and the home freed. So
   `Object` stays 56, which `heap.rs`'s release-build size test pins, and
   `ClosureData` stays `ObjectData`'s largest payload
-  ([execution.md](execution.md), "Representation" under "Closure conversion";
+  ([execution.md](execution.md), "Converted representation";
   [memory.md](memory.md), "Open: what the collector owns").
 
 **The costs accepted.** One more indirection on every read of a class's data

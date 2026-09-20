@@ -202,9 +202,9 @@ becomes `None`, `uncontinuable` becomes true and `sender` becomes `None`. Then
 the entry asks for it**, `StackEntry.retains_registers`, which
 `Heap::retain_registers` sets and which `MakeClosure` sets when the block it
 creates can reach this frame by reference — `block.outer_reach > 0`
-("Representation", under "Closure conversion"). Under the reference lowering
-that is every activation that creates a closure, so every frame is divorced
-with its registers as it always was; under the optimized lowering it is only an
+("Converted representation"). Under the reference lowering that is every
+activation that creates a closure, so every frame is divorced with its
+registers as it always was; under the optimized lowering it is only an
 activation whose fallback path actually created a closure. A frame divorced
 without its registers answers `nil` for a register read and ignores a write
 (`Heap::frame_local`/`frame_set_local`), which is what a crafted image's
@@ -2823,8 +2823,8 @@ Before this, the activation stack paid for the by-reference model with an
 unconditional divorce: a reified frame copied all its registers into the arena
 when its activation returned, because a surviving block might still read them.
 Whether a returning activation copies its registers out is now decided per
-activation, from the block's own `outer_reach` ("Representation" below).
-Conversion did not remove reification — a block with `^` still needs its home
+activation, from the block's own `outer_reach` ("Converted representation"
+below). Conversion did not remove reification — a block with `^` still needs its home
 activation, and so do the debugger and the activation mirrors — which is why it
 came after the stack rather than before it: it changes where variables live,
 not what an activation is.
@@ -2876,7 +2876,7 @@ captured is unreachable once its activation returns, and a captured one lives
 in a closure or a vector. So what a surviving block retains is what it captured
 plus that frame record, not the frame's registers. An activation that created a
 fallback closure is the exception and keeps them, which is exactly what
-`outer_reach` decides ("Representation" below).
+`outer_reach` decides ("Converted representation" below).
 
 The link costs `ClosureData` nothing it did not already hold, and the home is
 no longer a field of its own: `Heap::closure_home` derives it from
@@ -2986,7 +2986,7 @@ Rejected: converting fallback closures like any other block (a vector for every
 variable any branch writes), and sending `mustBeBoolean` on the fallback path
 as Cog does, which would change recorded outcomes and make inlining observable.
 
-### Representation
+### Converted representation
 
 **The vector** is an ordinary `ObjectData::Array` of class `Array`, as Cog's
 indirection vector is. No new object kind: the heap, `trace.rs` and the image
@@ -3019,7 +3019,10 @@ adding the reading body's distance from that frame.
   initializer runs, since `| x ::= 3. |` on a vector variable writes the vector.
   A parameter is never a vector variable, so, unlike Cog, nothing is copied into
   the vector on entry. It is instruction 0 and sits outside every
-  `statement_program_counter` range, as the terminating return already does.
+  `statement_program_counter` range, as the terminating return already does:
+  a range starts at the instruction count the lowering has already reached, so
+  the body's first statement starts at 1, and `disasm` prints `-` where it
+  prints a statement number for every instruction a statement owns.
 - `LoadVector { destination, vector, index }` and
   `StoreVector { vector, index, source }`: a vector variable's read and write —
   the method through its own vector register, a block through its copy of it.
@@ -3093,7 +3096,10 @@ Tags follow "assigned once, never renumbered or reused"
   (`RETIRED_OBJECT_BODIES`, the first retired body tag) and the record is 6.
 
 A code record carries `copied_count: u16`, so that a block's register layout is
-known from its code alone, as the `uncached` flag was before it. `outer_reach`
+known from its code alone: `Heap::fill_copied_values` sizes and fills the
+window between a block's parameters and its temporaries from it, and the
+decoder reconciles every `MakeClosure` and every closure record against it
+without needing the creating instruction in hand. `outer_reach`
 is *not* on the wire: the decoder derives it with the compiler's own
 `outer_reach_of`, which works because a block's code precedes its parent's in
 the table.
@@ -3179,8 +3185,19 @@ ever put in a vector. The invariant in `CLAUDE.md` and
 [compiler.md](compiler.md) keeps its statement and has this as its
 justification. The reference lowering is unaffected. A mistake here is silent
 wrong output with exit status 0; the reference lowering is the oracle for it,
-and goldens pin a send whose code writes, through a closure, a local its caller
-reads — as an operand, as an argument and as a setter assignment's value.
+and `goldens/capture/a_fallback_closure_writes_a_local_a_send_reads.ns` pins the
+one shape `a_send_can_write` answers `true` for at run time — a register-resident
+local an inlined `ifTrue:` assigns, whose fallback closure a later send runs — in
+each of the three positions that read such a local across a send: as an operand,
+as an argument and as a setter assignment's value.
+
+The goldens `goldens/language/` holds for the same invariant —
+`operands_that_mutate_each_other_keep_their_evaluated_values.ns` and
+`assignment_through_a_setter_answers_the_value_before_the_setter_ran.ns` — do
+*not* cover it, which is why that one was added: the first writes the local
+from the same body (`writes_register`'s assignment case, never
+`a_send_can_write`), and the second writes it from a real block, which after
+conversion makes it a vector variable whose read is already a snapshot.
 
 ### Verification and the reference lowering
 
@@ -3208,6 +3225,23 @@ enclosing scope's variable and the middle blocks that have to carry that
 scope's vector to it — the capture analysis did not record such a need, and the
 shapes failed to compile until it did — and `writes_two_inlined_levels_deep.ns`,
 for the `inlined_depth` arithmetic above.
+
+Four more were added once it was built, for what the recorded set had covered
+only as lowering tests — which pin what the compiler emits, not what a program
+answers, and so would not survive the reference lowering's removal:
+
+- `a_fallback_closure_writes_a_local_a_send_reads.ns`, the run-time case
+  `a_send_can_write` exists for ("Fewer protective copies" above);
+- `a_block_in_a_fallback_closure_outlives_its_method.ns`, a real block *inside*
+  a fallback closure reading a method local two frames out, evaluated after the
+  method has returned: what `outer_reach_of`'s folding of a nested
+  `MakeClosure` is for, and the only golden in which the method's frame is
+  marked by nothing but that folding;
+- `a_blocks_own_registers_and_vector.ns`, a block whose layout has all three
+  summands of `vector_register = arguments + copied + temporaries` non-zero,
+  and rule 3 applied to a block's own local rather than a method's;
+- `and_or_fallback_closures_share_variables.ns`, the fallback closure of an
+  `and:` and of an `or:`, which only `ifTrue:` had stood for.
 
 ### Cost
 
@@ -3265,8 +3299,8 @@ binds it is that no native code may ever enter an image.
 - **Only by-reference code keeps a frame's registers alive.** The reference
   lowering and a fallback closure reach their method's variables by reference,
   and a reified frame keeps its registers when its activation returns only when
-  a block it created can do that (`outer_reach`, "Representation" under
-  "Closure conversion"); converted code copies or shares a vector instead. The
+  a block it created can do that (`outer_reach`, "Converted
+  representation"); converted code copies or shares a vector instead. The
   reification mechanism itself is permanent: `^` and the debugger need it with
   or without conversion.
 - **Sends run on the activation stack, not the Rust stack**: one loop pushes,

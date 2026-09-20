@@ -77,7 +77,8 @@ identity".
   write. Emitted by the optimized lowering only, `MakeVector` once as the
   body's first instruction. A vector's size and kind are run-time values, so
   `LoadVector` and `StoreVector` check them and raise an ordinary error rather
-  than trusting the register ([execution.md](execution.md), "Representation").
+  than trusting the register ([execution.md](execution.md), "Converted
+  representation").
 - `MakeArray { destination, element_registers }`.
 - `InitializeSlot { source, own_index }` — writes one of `self`'s own instance slots.
   Emitted **only** by initializer compilation, for a slot's own initializer
@@ -131,7 +132,7 @@ its parameters.
 `outer_reach` is derived from the instructions, by the compiler and by the
 image decoder alike (`bytecode::outer_reach_of`), and decides whether the
 activation that creates a closure keeps its registers when it returns
-([execution.md](execution.md), "Representation", under "Closure conversion").
+([execution.md](execution.md), "Converted representation").
 `copied_count` is on the wire; `outer_reach` and `family_size` are not.
 
 A method's or a block's own statements are its local slot initializers first,
@@ -252,7 +253,10 @@ The reference lowering is unaffected: it reaches everything by reference and
 copies every read of a named local unconditionally, which `check_shape` asserts
 on every body it emits ("What it emits" below). A mistake in the narrower rule
 is silent wrong output at exit status 0, so the reference lowering is the
-oracle for it and `goldens/capture/` pins the cases by hand.
+oracle for it and `goldens/capture/` pins the cases by hand —
+`a_fallback_closure_writes_a_local_a_send_reads.ns` for the one register shape
+`a_send_can_write` answers `true` for, read as an operand, as an argument and as
+a setter assignment's value.
 
 The copy is skipped only where nothing reads the value at all, and every
 position says which it is rather than inferring it: `lower_expression_for` takes a
