@@ -308,3 +308,43 @@ fn discarding_everything_returns_to_the_starting_size() {
         "a hundred times the work, nothing kept, and the same live frames"
     );
 }
+
+/// Nothing asks for a collection until an arena reaches its limit, and
+/// then the run loop's next safepoint serves it -- no allocation ever
+/// collects (`docs/design/memory.md`, "The trigger and the growth
+/// policy").
+#[test]
+#[cfg(debug_assertions)]
+fn allocating_past_the_limit_collects_during_the_run() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Churn = Object new () (
+          public run: count = (
+            | total remaining |
+            total:: 0.
+            remaining:: count.
+            [remaining > 0] whileTrue: [
+              | block = [:value | value + 1]. |
+              total:: block value: total.
+              remaining:: remaining - 1.
+            ].
+            ^total
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.set_collection_floor(256);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]));
+    let count = interpreter.stash(Value::SmallInteger(5000));
+    let selector = Symbol::intern("run:");
+
+    let _ = expect_ok(interpreter.send(&instance, selector, &[count]));
+    let after = interpreter.heap_statistics();
+
+    assert!(
+        after.live_objects < 5000,
+        "the run collected nothing: {} live objects after 5000 closures",
+        after.live_objects
+    );
+}

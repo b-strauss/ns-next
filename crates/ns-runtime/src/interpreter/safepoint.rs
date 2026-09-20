@@ -16,9 +16,17 @@ impl Interpreter {
     /// on every safepoint (`docs/design/dispatch.md`, "Invalidation"); either
     /// one keeps the request set, so that every safepoint comes here.
     ///
-    /// Otherwise the safepoint that takes a request serves it, by clearing
-    /// it. Until the collector's allocation counter exists nothing in a
-    /// release build makes one, so there is nothing else to serve; but an
+    /// A pending collection is served after the stress modes have had their
+    /// turn: `World::collect` is sound only where nothing outside the heap
+    /// holds a handle, exactly the condition a safepoint of the run loop
+    /// gives it, and an allocation only ever asks for one
+    /// (`docs/design/memory.md`, "The trigger and the growth policy") --
+    /// this is the one place that request is served.
+    ///
+    /// Otherwise the safepoint that took no request clears it. In a release
+    /// build this is now real work rather than a debug-only convenience --
+    /// the collector's allocation limits ask for one -- but the same
+    /// argument still applies to what is left when no request is pending: an
     /// empty slow path would let the optimizer prove the call does nothing
     /// and delete it, and the flag's load and branch with it, and the
     /// release binary that is measured would carry no poll at all.
@@ -26,8 +34,9 @@ impl Interpreter {
     #[inline(never)]
     pub(crate) fn safepoint(&mut self) {
         #[cfg(debug_assertions)]
+        let mut stressed = false;
+        #[cfg(debug_assertions)]
         {
-            let mut stressed = false;
             if self.stress_caches {
                 self.world.invalidate_caches();
                 self.cache_invalidations += 1;
@@ -39,9 +48,14 @@ impl Interpreter {
                 }
                 stressed = true;
             }
-            if stressed {
-                return;
-            }
+        }
+        if self.world.collection_requested() {
+            self.world.collect();
+            return;
+        }
+        #[cfg(debug_assertions)]
+        if stressed {
+            return;
         }
         self.world.clear_safepoint_request();
     }
@@ -149,6 +163,12 @@ impl Interpreter {
     /// How many times this interpreter's heap has moved everything.
     pub fn moves(&self) -> u32 {
         self.world.move_epoch()
+    }
+
+    /// Sets both arenas' collection limits directly, so a test can reach the
+    /// trigger without allocating up to `COLLECTION_FLOOR` first.
+    pub fn set_collection_floor(&mut self, floor: usize) {
+        self.world.set_collection_floor(floor);
     }
 
     /// How many safepoints the stress mode has taken since it was turned

@@ -293,6 +293,11 @@ pub struct Root {
     slot: std::rc::Rc<std::cell::Cell<Value<'static>>>,
 }
 
+/// The initial value of `Heap::collection_floor`, and of
+/// `next_object_collection` and `next_frame_collection` before anything has
+/// collected (`docs/design/memory.md`, "The trigger and the growth policy").
+const COLLECTION_FLOOR: usize = 4096;
+
 /// The two conversions of a brand (`docs/design/memory.md`, "The brand"): a
 /// host root's slot is shared with a host outside every entry, so it holds
 /// `Value<'static>`, and `stash` passes a value through `at_rest` on the
@@ -455,6 +460,19 @@ pub struct Heap<'gc> {
     /// the mode is on; otherwise the safepoint that takes a request clears
     /// it.
     safepoint_requested: bool,
+    /// The arena length at which the next allocation asks for a collection.
+    /// Checked against the length the allocation already has in hand, so the
+    /// hot path pays one predictable branch and carries no counter.
+    next_object_collection: usize,
+    next_frame_collection: usize,
+    /// Whether a limit has been reached since the last collection. Separate
+    /// from `safepoint_requested`, which only means "take the slow path" and
+    /// which a stress mode holds set for its own reasons.
+    collection_requested: bool,
+    /// The smallest limit a collection will set. A program that stays under
+    /// it never collects: `bench_loop.ns` and `bench_send.ns` run in 4.6 MB
+    /// and should not pay for a collector they do not need.
+    collection_floor: usize,
     /// The instance ids of the builtin classes of the immediates, indexed by
     /// `immediate_index`: an immediate has no class field to read one from.
     /// Set once by the bootstrap; `NONE` before it.
@@ -728,6 +746,10 @@ impl<'gc> Heap<'gc> {
                 sweep_at: MIN_ROOT_SWEEP,
             }),
             safepoint_requested: false,
+            next_object_collection: COLLECTION_FLOOR,
+            next_frame_collection: COLLECTION_FLOOR,
+            collection_requested: false,
+            collection_floor: COLLECTION_FLOOR,
             immediate_dispatch_ids: [DispatchId::NONE; 5],
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -828,6 +850,9 @@ impl<'gc> Heap<'gc> {
     fn push_object(&mut self, object: Object<'gc>) -> ObjectReference<'gc> {
         let index = self.next_object_index();
         self.objects.push(object);
+        if self.objects.len() >= self.next_object_collection {
+            self.request_collection();
+        }
         self.object_handle(index)
     }
 
@@ -2067,6 +2092,9 @@ impl<'gc> Heap<'gc> {
             slot_base: entry.slot_base,
         };
         let handle = self.allocate_frame(frame);
+        if self.frames.len() >= self.next_frame_collection {
+            self.request_collection();
+        }
         self.frames[handle.index as usize].live = Some(activation.index);
         self.stack.entries[entry_index].reified = Some(handle);
         handle
@@ -2341,6 +2369,34 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
         self.safepoint_requested = requested;
+    }
+
+    /// An allocation never collects; it asks, and the run loop's next
+    /// safepoint serves the request (decided 2026-09-13). Setting
+    /// `safepoint_requested` is what makes the poll take its slow path.
+    fn request_collection(&mut self) {
+        self.collection_requested = true;
+        self.safepoint_requested = true;
+    }
+
+    pub(crate) fn collection_requested(&self) -> bool {
+        self.collection_requested
+    }
+
+    /// After a collection: no more is allowed to be allocated before the
+    /// next one than is live, so the marking work per allocated slot is
+    /// amortized constant.
+    pub(crate) fn reset_collection_limits(&mut self) {
+        self.collection_requested = false;
+        self.next_object_collection = self.collection_floor.max(self.objects.len() * 2);
+        self.next_frame_collection = self.collection_floor.max(self.frames.len() * 2);
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_collection_floor(&mut self, floor: usize) {
+        self.collection_floor = floor;
+        self.next_object_collection = floor;
+        self.next_frame_collection = floor;
     }
 
     /// How much a move has to rewrite: both arenas, the activation stack's

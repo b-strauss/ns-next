@@ -71,6 +71,19 @@ impl World {
         self.mutator.heap.clear_safepoint_request();
     }
 
+    /// Whether an arena has reached its limit since the last collection
+    /// (`Interpreter::safepoint`). Separate from `safepoint_requested`,
+    /// which a stress mode also holds set for its own reasons.
+    #[inline(always)]
+    pub(crate) fn collection_requested(&self) -> bool {
+        self.mutator.heap.collection_requested()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_collection_floor(&mut self, floor: usize) {
+        self.mutator.heap.set_collection_floor(floor);
+    }
+
     /// Roots an immediate a host built itself (`Interpreter::stash`).
     pub(crate) fn stash(&self, value: Value<'static>) -> Root {
         self.mutator.heap.stash(value)
@@ -148,6 +161,7 @@ impl World {
         self.mutator.heap.prune_canonical_symbols(&marker);
         let mut forwarder = self.mutator.heap.compact(marker);
         self.forward_step_state(&mut forwarder);
+        self.mutator.heap.reset_collection_limits();
     }
 
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
