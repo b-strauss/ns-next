@@ -43,13 +43,6 @@ impl MarkBits {
         debug_assert!(index < self.length, "internal: a handle past its arena");
         self.words[index / 64] & (1u64 << (index % 64)) != 0
     }
-
-    pub(crate) fn count(&self) -> usize {
-        self.words
-            .iter()
-            .map(|word| word.count_ones() as usize)
-            .sum()
-    }
 }
 
 /// The tracer that marks. Marking and forwarding share one edge

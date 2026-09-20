@@ -3370,4 +3370,27 @@ mod tests {
         assert!(marker.frames.is_set(frame.index));
         heap.pop_activation(activation);
     }
+
+    /// Two ordinary objects reference each other through their `Instance`
+    /// payloads, so the traversal reaches back to the first one through the
+    /// second. This is what pins that the traversal terminates on a cycle:
+    /// `MarkBits::set` answers "already set" for the first object the
+    /// second time it is reached, which is what stops it from being pushed
+    /// onto the work list again. A regression here hangs this test rather
+    /// than failing it.
+    #[test]
+    fn marking_terminates_on_a_cycle_between_two_ordinary_objects() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let first = heap.allocate_object(class, ObjectData::Instance(vec![Value::Nil]));
+        let second = heap.allocate_object(class, ObjectData::Instance(vec![Value::Object(first)]));
+        heap.set_instance_field(first, 0, Value::Object(second));
+        let activation = heap.push_activation(header(), &[Value::Object(first)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(first.index));
+        assert!(marker.objects.is_set(second.index));
+        heap.pop_activation(activation);
+    }
 }
