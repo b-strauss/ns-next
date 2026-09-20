@@ -92,8 +92,9 @@ bodies it carries, before any decoded code can run. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee. One thing to keep in mind while decoding: the decoder
 allocates one placeholder object and reified frame per declared record before it
-can validate any of them, and the arena never reclaims a slot, so a rejected image
-holds its placeholders until the load finishes. That is a transient peak, not a
+can validate any of them, and nothing collects during a load, because the decoder
+never polls a safepoint, so a rejected image holds its placeholders until the load
+finishes. That is a transient peak, not a
 leak — `image::load` owns its `Interpreter` in a local, so every `Err` path drops
 it and both arenas with it — but the peak is amplified against the bytes remaining
 at the graph section, and both `bounded_count` calls divide the *same* remainder,

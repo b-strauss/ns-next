@@ -1,7 +1,7 @@
 //! The stress mode: a debug build that moves every object and every reified
 //! frame at the run loop's safepoints, so that a handle the tracer does not
-//! know about panics at its first read (`docs/design/memory.md`, "Checking
-//! the roots before a collector exists: the stress mode").
+//! know about panics at its first read (`docs/design/memory.md`, "The move
+//! stress mode").
 #![cfg(debug_assertions)]
 
 use indoc::indoc;

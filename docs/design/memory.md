@@ -278,20 +278,22 @@ file next starts from a list rather than from rediscovery.
 
 ## Checked roots and a collector
 
-**Partial:** the safepoint, the tracing, host roots, the stress mode and the
-lifetime brand are built; the collector is not. What the collector would
-change: a collection could run — only at a safepoint in the run loop — and move
-objects. Every handle the runtime holds is already either where a collector can
-find and rewrite it, which the stress mode checks, or a compile error, which
-the brand makes it. Designed on 2026-09-13 as step 2 of Milestone 4, in three
+**Complete:** the safepoint, the tracing, host roots, the stress mode, the
+lifetime brand and the collector are all built. A collection can run — only
+at a safepoint in the run loop — and moves objects. Every handle the runtime
+holds is already either where the collector finds and rewrites it, which the
+stress mode checks, or a compile error, which the brand makes it. Designed on
+2026-09-13 as step 2 of Milestone 4, in three
 parts that each landed green and measured on their own: **2a** removed every
 re-entry of the run loop from Rust ([execution.md](execution.md), "No re-entry
 from Rust"); **2b** is the safepoint, the enumeration of everything the
 collector traces, host roots, and a debug-build stress mode that moves every
 object at the safepoints and so checks the enumeration against the whole
 suite; **2c** brands every movable handle with a lifetime, so that holding one
-across a safepoint is a compile error. The collector itself is step 5, and
-until it exists nothing requests a collection in a release build.
+across a safepoint is a compile error. The collector itself is step 5,
+complete since 2026-09-20: a release build's trigger requests a collection
+once an arena's length passes its limit, served at the run loop's next
+safepoint ("The trigger and the growth policy" below).
 
 **The collector has to move objects.** `become:`-style identity swap and object
 forwarding are requirements, not conveniences: adding an instance variable to a
@@ -357,19 +359,21 @@ heap owns, `safepoint_requested`. When the flag is set it calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a
 safepoint does. The safepoint serves a request by clearing the flag, except
-under the stress mode below, which keeps it set. Nothing sets it in a release
-build yet: the allocation counter that will is the collector's.
+under the stress mode below, which keeps it set. The collector's trigger sets
+it in a release build too: `push_object` and `reify` compare the arena's
+length against a limit, not a counter, and request a collection when it is
+reached ("The trigger and the growth policy" below).
 
-That the slow path serves the request, although nothing in a release build
-makes one, is what keeps the poll in the binary. With an empty release slow
+That the slow path serves the request, which a release build's trigger now
+also raises, is what keeps the poll in the binary. With an empty release slow
 path, fat LTO proved the call free of side effects and deleted it — then the
 branch, then the flag's load — so the release binary carried no poll at all,
 and the first measurement of it measured nothing. Clearing the flag leaves a
 compare-and-branch at both poll sites and a cold call in `vm::run`'s release
-assembly. The collector's trigger has to keep the same thing in mind: a
-measurement of the poll means something only on a binary whose assembly still
-contains it, so the price it shows is the price the collector will pay rather
-than one the optimizer hid.
+assembly. The collector's trigger relies on the same thing: a measurement of
+the poll means something only on a binary whose assembly still contains it,
+so the price it shows is the price the trigger pays rather than one the
+optimizer hid.
 
 Measured with the poll in the binary, on a release build in one sitting
 against its parent, no source was slower: from −3.0% on `bench_block.ns` to
@@ -799,6 +803,14 @@ creator's frame record without registers.
   | `bench --iterations 10`, `bench_send.ns` | 22 | — | 324.9 MB | 4.6 MB | 4.8 MB |
   | `bench --iterations 10`, `bench_block.ns` | 22 | — | 966.9 MB | 446.0 MB | 5.6 MB |
 
+  `dc0ffe5`, "After the collector"'s own baseline, measures 228.8 MB on
+  `bench_block.ns` under the same `--iterations 10` — about half the 446.0 MB
+  "After the activation stack" figure above, taken on 2026-09-10. The
+  likely contributors: closure conversion writing a body's frame back with
+  no registers when nothing reaches it by reference, the 56-byte `Object`,
+  and where a `Vec` sits against its own doubling threshold when the run
+  ends. This is not decomposed.
+
   Conditions, because the metric is platform-specific and the numbers are
   useless without them: Windows 11, release build, **peak working set**
   (`PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize`) read after the process exits.
@@ -868,8 +880,8 @@ creator's frame record without registers.
   until the load returns. `decode_graph_section` allocates `object_count` objects
   and `frame_count` reified frames up front, because a record must be addressable
   before the records that reference it are read, and only then validates each
-  record; nothing reclaims a slot, so a rejected image cannot give them back
-  part-way through.
+  record; nothing collects during a load, because the decoder never polls a
+  safepoint, so a rejected image cannot give them back part-way through.
 
   It is not retained past that. `image::load` owns its `Interpreter` in a local,
   so every `Err` path drops it and both arenas with it — the cost is a transient
@@ -959,8 +971,9 @@ Mark-compact was chosen for four reasons:
 - **Rewriting is the cheap part here rather than the expensive one.** Over an
   index arena the forwarding table is a flat `Vec<u32>` over the slot count:
   O(1) per handle, 4 bytes per slot while a collection runs — 32 MB against the
-  466 MB `bench_block.ns` peaks at today. In an address-based collector this is
-  what costs. Nova, the one engine with the same representation, pays more than
+  466 MB `bench_block.ns` peaked at before the collector, at `--iterations 30`.
+  In an address-based collector this is what costs. Nova, the one engine with
+  the same representation, pays more than
   it needs to: its `CompactionList` stores shift runs and binary-searches per
   handle.
 - **A free list's sweep scales with the historic maximum**, while every phase of
@@ -1185,15 +1198,20 @@ throughout. `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report
 zero collections apiece — they stay under the 4096-slot floor — and those are
 exactly the three sources whose throughput does not move: −0.3%, −0.0% and
 −0.4% against `dc0ffe5`, all three groups overlapping in both sittings. The
-send benchmarks do not feel the trigger's comparison in `push_object`. Four
-more sources — `bench_do.ns`, `bench_new.ns`, `bench_new2.ns` and
-`bench_newarg.ns` — do collect, 26 to 107 times over ten iterations, and are
-still level with `dc0ffe5` (groups overlapping the baseline's, means
-spanning −2.1% to +2.9%) and 5.3-18.0% below `be3eb40`.
+send benchmarks do not feel the trigger's comparison in `push_object`. Three
+more sources — `bench_do.ns`, `bench_new.ns` and `bench_new2.ns` — do
+collect, 26 to 54 times over ten iterations, and stay level with `dc0ffe5`,
+their groups overlapping the baseline's in both sittings, means spanning
+−2.1% to +0.6%. `bench_newarg.ns` collects 107 times, the second-most of the
+eight, and is the narrowest of the level sources at +2.9% pooled: entirely
+above `dc0ffe5` in the second sitting and overlapping it by only 0.01 ms in
+the first. All four of these collecting, still-level sources stay 5.3-18.0%
+below `be3eb40`.
 
 **`bench_block.ns` is the one source that contradicts the expectation, and it
-does so plainly: +12.2% against `dc0ffe5`, the only source whose groups do
-not overlap** (still 5.3% below `be3eb40`). It is the only one of the eight
+does so plainly: +12.2% against `dc0ffe5`, the one source whose pooled
+groups do not overlap in either sitting and the only one beyond a couple of
+percent** (still 5.3% below `be3eb40`). It is the only one of the eight
 that allocates a closure per iteration, so the only one that collects
 enough to show: `bench --collector-statistics` over `bench --iterations 10`
 records 269 collections, 15.479 ms total pause, 0.202 ms longest. Pause
@@ -1253,8 +1271,8 @@ statistics for every source and the inline check are in
   rejected for its reallocations, and an audited cast, chosen in its place,
   turned out to add nothing the higher-ranked closure does not already give.
 - **The roots' completeness is checked by moving everything**, in a debug-build
-  stress mode, before a collector exists, because the brand cannot see a handle
-  stored somewhere the tracer does not know about.
+  stress mode decided and built before the collector existed, because the
+  brand cannot see a handle stored somewhere the tracer does not know about.
 - **The stress mode moves on a budget paced by heap size**, not at literally
   every safepoint (decided with the user on 2026-09-13): at every safepoint
   while the traced size is within `STRESS_MOVE_BUDGET`, and above it once per

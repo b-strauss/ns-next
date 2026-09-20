@@ -61,9 +61,12 @@ type Brand<'gc> = std::marker::PhantomData<fn(&'gc ()) -> &'gc ()>;
 /// to one file rather than to every caller. See `docs/design/memory.md`,
 /// "The seam".
 ///
-/// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two live
-/// objects never share an index.
+/// A handle is meaningful only against the `Heap` that allocated it.
+/// Compaction does reuse a slot once nothing reaches the object that held
+/// it, but a collection rewrites every handle it can find into the new
+/// arrangement, and the debug-build epoch below turns a handle still naming
+/// the old one into a panic rather than a silent hit on whatever object took
+/// the slot -- so two live objects never share an index.
 #[derive(Clone, Copy)]
 pub struct ObjectReference<'gc> {
     index: u32,
@@ -77,8 +80,8 @@ pub struct ObjectReference<'gc> {
     /// Debug builds only: a move rewrites every handle the tracer knows
     /// about into the new epoch, so one still carrying an old epoch is one
     /// the tracer missed, and reading it panics instead of answering for
-    /// whatever object took its slot (`docs/design/memory.md`, "Checking
-    /// the roots before a collector exists: the stress mode").
+    /// whatever object took its slot (`docs/design/memory.md`, "The move
+    /// stress mode").
     #[cfg(debug_assertions)]
     epoch: u32,
     brand: Brand<'gc>,
@@ -137,9 +140,12 @@ pub type ClassReference<'gc> = ObjectReference<'gc>;
 /// current call (`Heap::reify`). This is the only activation handle anything
 /// may store -- in a closure, in another frame, in an image.
 ///
-/// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two frames
-/// never share an index.
+/// A handle is meaningful only against the `Heap` that allocated it.
+/// Compaction does reuse a slot once nothing reaches the frame that held it,
+/// but a collection rewrites every handle it can find into the new
+/// arrangement, and the debug-build epoch below turns a handle still naming
+/// the old one into a panic rather than a silent hit on whatever frame took
+/// the slot -- so two frames never share an index.
 #[derive(Clone, Copy)]
 pub struct FrameReference<'gc> {
     index: u32,
@@ -153,8 +159,8 @@ pub struct FrameReference<'gc> {
     /// Debug builds only: a move rewrites every handle the tracer knows
     /// about into the new epoch, so one still carrying an old epoch is one
     /// the tracer missed, and reading it panics instead of answering for
-    /// whatever object took its slot (`docs/design/memory.md`, "Checking
-    /// the roots before a collector exists: the stress mode").
+    /// whatever object took its slot (`docs/design/memory.md`, "The move
+    /// stress mode").
     #[cfg(debug_assertions)]
     epoch: u32,
     brand: Brand<'gc>,
@@ -427,16 +433,18 @@ pub struct Heap<'gc> {
     next_identity_hash: u32,
     /// Every *reified* activation, addressed by a `FrameReference`'s index: one
     /// `Heap::reify` created because a block captured it, or one the image
-    /// decoder rebuilt. Nothing is ever removed: reclaiming a slot needs a
-    /// collector. An activation that is never reified never reaches this
-    /// arena at all.
+    /// decoder rebuilt. Nothing is removed except by a collection's
+    /// compaction, which shrinks this back to its live set and rewrites
+    /// every surviving `FrameReference`. An activation that is never
+    /// reified never reaches this arena at all.
     frames: Vec<FrameSlot<'gc>>,
     /// Every live activation. A stack entry is popped when its activation
     /// returns, so -- unlike `frames` and `objects` -- this is bounded by
     /// the deepest the program has been, not by everything it has run.
     stack: ActivationStack<'gc>,
-    /// Every object, addressed by an `ObjectReference`'s index. Nothing is ever
-    /// removed, for the same reason as `frames`.
+    /// Every object, addressed by an `ObjectReference`'s index. Nothing is
+    /// removed except by a collection's compaction, for the same reason as
+    /// `frames`.
     objects: Vec<Object<'gc>>,
     /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
     /// equal symbols are one object; `docs/design/object-model.md`,
@@ -2408,6 +2416,13 @@ impl<'gc> Heap<'gc> {
     /// its stack entry -- so it is harmless only because nothing here reads
     /// the heap back. Real work here would have `reify` collect a frame no
     /// stack entry points at yet.
+    ///
+    /// `push_object` and `reify` are its only two callers, not every
+    /// allocation path: `allocate_self_referential_class` and the image
+    /// decoder's direct use of `allocate_frame` compare against no limit at
+    /// all. Harmless -- the bootstrap that calls the former is bounded, the
+    /// decoder never polls a safepoint, and the next ordinary allocation
+    /// compares against the same limit either way.
     fn request_collection(&mut self) {
         self.collection_requested = true;
         self.safepoint_requested = true;
@@ -3094,7 +3109,8 @@ mod tests {
 
     /// The property the activation stack exists for: an activation nothing
     /// reified is gone once it is popped, rather than kept in the frame
-    /// arena, which never reclaims a slot.
+    /// arena, whose slots only a collection reclaims, and only once nothing
+    /// reaches them.
     #[test]
     fn an_activation_that_is_never_reified_leaves_nothing_behind() {
         let mut heap = Heap::new();

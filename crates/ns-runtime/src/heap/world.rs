@@ -153,9 +153,10 @@ impl World {
     /// builtin classes and the `platform` singleton -- exactly as a move does.
     ///
     /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
-    /// `Heap`'s counters by `record_collection`: nothing against a
-    /// mark-and-compact, and the only place this measurement costs
-    /// anything -- an allocation and the safepoint poll pay nothing towards it.
+    /// `Heap`'s counters by `record_collection`. That timing call costs
+    /// nothing worth measuring against a mark-and-compact, and this is the
+    /// only site that pays it: an allocation and the safepoint poll pay
+    /// nothing towards it.
     pub(crate) fn collect(&mut self) {
         let start = std::time::Instant::now();
         self.check_quiescent_state();

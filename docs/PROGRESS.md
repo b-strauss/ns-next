@@ -183,12 +183,17 @@ the step, and it moved as designed.** `bench --iterations 10` on
 frame every iteration, the interim's worst case — falls from 228.8 MB to
 5.6 MB, level with `bench_loop.ns` and `bench_send.ns`. Seven of the eight
 sources are level with `dc0ffe5` on throughput and 5.3–18.0% below
-`be3eb40`; `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns`
+`be3eb40`; six of them overlap the baseline's group in both sittings, and
+`bench_newarg.ns`, pooled at +2.9%, is the narrowest of the seven — entirely
+above `dc0ffe5` in the second sitting and overlapping it by only 0.01 ms in
+the first — and it is the source with the second-most collections, 107.
+`bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns`
 report zero collections and are exactly the three whose throughput does not
 move — the recorded expectation named the first two by exactly this
 reasoning in advance, and `bench_megamorphic.ns` turns out to fit it too.
 `bench_block.ns` is the one source that does not stay level — **+12.2%
-against `dc0ffe5`**, the only source whose groups do not overlap — because
+against `dc0ffe5`**, the one source whose pooled groups do not overlap in
+either sitting and the only one beyond a couple of percent — because
 it is the only one that collects enough to show: 269 collections, 15.479 ms
 total pause, 0.202 ms longest. Pause accounts for roughly 1.4 ms of the
 2.46 ms the head adds per round; the rest is recorded as unexplained rather
@@ -196,6 +201,27 @@ than guessed at. See "M4 — The moving collector" below,
 [execution.md](design/execution.md)'s "What the moving collector moved" and
 [memory.md](design/memory.md)'s "How the collector is measured" for the
 full tables.
+
+**The unexplained remainder on `bench_block.ns` is an open finding, not a
+closed one.** Pause accounts for roughly 1.4 ms of the 2.46 ms the head adds
+per round there; nothing in this measurement explains the rest. What the
+numbers do support: on the four other collecting sources the pause is
+3.8–5.4% of the median (`bench_new.ns` 0.24 ms of 6.39 ms; `bench_newarg.ns`
+0.49 ms of 9.13 ms) while the measured difference against `dc0ffe5` runs
+−2.1% to +2.9%, so on those four the pause is not simply additive to the
+median. On `bench_block.ns` roughly 1 ms per round remains beyond the
+pause. What distinguishes it from the other four: the frame arena (1,529
+live frames against 0–1 elsewhere) and that before this branch no payload
+was ever freed — the allocator only grew, whereas now each collection
+releases thousands of boxed slices and frame vectors that the following
+iterations request again, and that allocator cost falls in the mutator
+rather than in the measured pause. **This is a hypothesis, not a finding.**
+The cheapest experiment that would separate the trigger's cost from the
+collection's: a head build with `COLLECTION_FLOOR` raised above
+`bench_block.ns`'s whole allocation, which then never collects but still
+pays the trigger's comparison in `push_object` and `reify` — that isolates
+whether the remainder is the reallocation cost above or something the
+trigger's comparison itself costs. Not yet run.
 
 **M4's numbered steps are now complete.** What comes next, after M4 and
 before the JIT tiers, is step 6: the core library in Newspeak (the order of
@@ -2985,10 +3011,10 @@ the last numbered step of M4.
 - Task 7 (`aea8459`, `0a0413c`) — `NS_NEXT_STRESS_COLLECT`, the third stress
   mode and third gate: collects at every safepoint, paced by heap size like
   the move stress mode, so a missed root is killed at the earliest possible
-  moment and the recorded outcomes catch the difference. `run-corpus` now
-  also runs every listed module as a built binary under it, since a decoded
-  image is the one place marking could miss a root the move stress mode's
-  schedule would not exercise.
+  moment and the recorded outcomes catch the difference. `run-corpus`
+  already ran every listed module from source and as a built binary, under
+  both lowerings (`CLAUDE.md`, "Working in this repository"); that existing
+  built-binary path now also runs under this gate.
 - Task 8 (`014f0ff`) — `bench --collector-statistics`, printed the way
   `--cache-statistics` already is: collections, total pause and longest
   pause, then live objects and live frames.
@@ -3001,15 +3027,19 @@ built through `RUSTFLAGS` with `+crt-static` and the function-alignment pin.
 conversion. **Peak working set is the point of the step**: `bench
 --iterations 10` on `bench_block.ns` falls from 228.8 MB at `dc0ffe5` to
 5.6 MB at the head, level with `bench_loop.ns` and `bench_send.ns`, which do
-not move. **Seven of the eight sources are level with `dc0ffe5`** (groups
-overlapping the baseline's, means spanning −2.1% to +2.9%) **and 5.3–18.0%
-below `be3eb40`.**
+not move. **Seven of the eight sources are level with `dc0ffe5`** (means spanning
+−2.1% to +2.9%) **and 5.3–18.0% below `be3eb40`.** Six of the seven overlap
+the baseline's group in both sittings; `bench_newarg.ns`, the narrowest at
++2.9% pooled, is entirely above `dc0ffe5` in the second sitting and
+overlaps it by only 0.01 ms in the first, and collects second most often of
+the eight, 107 times.
 `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report zero
 collections and are exactly the three whose throughput does not move — the
 recorded expectation named the first two in advance, and `bench_megamorphic.ns`
 fits the same pattern. **`bench_block.ns` is not
-level: +12.2% against `dc0ffe5`, the only source whose groups do not
-overlap**, still 5.3% below `be3eb40`. It is the only source that allocates
+level: +12.2% against `dc0ffe5`, the one source whose pooled groups do not
+overlap in either sitting and the only one beyond a couple of percent**,
+still 5.3% below `be3eb40`. It is the only source that allocates
 a closure per iteration, so the only one that collects enough to show: 269
 collections, 15.479 ms total pause, 0.202 ms longest, over
 `bench --iterations 10`. Pause accounts for roughly 1.4 ms of the 2.46 ms

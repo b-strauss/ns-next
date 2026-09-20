@@ -1,13 +1,13 @@
 //! The run loop's safepoint (`Interpreter::safepoint`, which `vm::run`'s poll
 //! calls when the heap asks for it) and, in a debug build, the stress modes:
 //! a move of everything at the safepoints its schedule picks
-//! (`docs/design/memory.md`, "Checking the roots before a collector exists:
-//! the stress mode"), and a full collection at the safepoints its own
-//! schedule picks (`docs/design/memory.md`, "The gates the collector
-//! needs") -- the mode that catches a root the marking does not know about,
-//! since the move stress mode alone treats everything as live. The step
-//! state's side of a move -- its own roots, forwarded after the heap's, and
-//! the state that must hold no handle when one happens -- is
+//! (`docs/design/memory.md`, "The move stress mode"), and a full collection
+//! at the safepoints its own schedule picks (`docs/design/memory.md`, "The
+//! gates the collector needs") -- the mode that catches a root the marking
+//! does not know about, since the move stress mode alone treats everything
+//! as live. The step state's side of a move -- its own roots, forwarded
+//! after the heap's, and the state that must hold no handle when one
+//! happens -- is
 //! `World::move_everything` and `World::check_quiescent_state`, in
 //! `heap/world.rs`; a collection's is `World::collect`, in the same file.
 
@@ -65,10 +65,11 @@ impl Interpreter {
         if self.world.collection_requested() {
             self.world.collect();
             // Returns without also clearing `safepoint_requested`: `collect`
-            // already reset the collection limits, which is what
-            // `collection_requested` is read from, so the very next poll
-            // takes this same slow path once more, finds no request and no
-            // stress pending, and clears it there instead. Harmless -- one
+            // already cleared `collection_requested`, a separate boolean
+            // `reset_collection_limits` sets alongside the new arena limits,
+            // so the very next poll takes this same slow path once more,
+            // finds no request and no stress pending, and clears
+            // `safepoint_requested` there instead. Harmless -- one
             // extra call to a `#[cold]` function per collection -- and
             // simpler than threading a second clear through this branch.
             return;

@@ -2525,9 +2525,12 @@ the group compared with, in **both** sittings:
 | `bench_newarg.ns` | 9.39 | 9.13 | 10.86 | +2.9% | −13.5% | yes |
 
 **Seven of the eight sources are level with `dc0ffe5`** — `bench_loop.ns`
-through `bench_newarg.ns` above, their groups overlapping the baseline's in
-both sittings, means spanning −2.1% to +2.9% — **and 5.3–18.0% below
-`be3eb40`.** `bench_do.ns`,
+through `bench_newarg.ns` above, means spanning −2.1% to +2.9% — **and
+5.3–18.0% below `be3eb40`.** Six of the seven overlap `dc0ffe5`'s group in
+both sittings; `bench_newarg.ns`, the narrowest of the seven at +2.9%
+pooled, is entirely above `dc0ffe5` in the second sitting and overlaps it by
+only 0.01 ms in the first — and of the seven it collects second most often,
+107 times over ten iterations. `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` are the four
 out-of-tree sources written out in "What spec-conformant lookup moved"
 above, copied from there rather than reconstructed, as that section
@@ -2535,10 +2538,11 @@ requires.
 
 **`bench_block.ns` is not level, and the honest reading is that the step
 cost it +12.2%.** Its pooled mean rose from 20.21 ms to 22.67 ms against
-`dc0ffe5` — the only source whose five-round ranges do not overlap in either
-sitting — while it stays 5.3% below `be3eb40`. It is the only one of the
-eight sources that allocates a closure every iteration, and so the only one
-that collects enough to show: `bench --collector-statistics` over
+`dc0ffe5` — the one source whose pooled groups do not overlap in either
+sitting, and the only one whose difference against `dc0ffe5` runs beyond a
+couple of percent — while it stays 5.3% below `be3eb40`. It is the only one
+of the eight sources that allocates a closure every iteration, and so the
+only one that collects enough to show: `bench --collector-statistics` over
 `bench --iterations 10` records
 
 | Source | Collections | Total pause | Longest pause | Live objects | Live frames |

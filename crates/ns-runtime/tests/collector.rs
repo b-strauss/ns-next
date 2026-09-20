@@ -240,9 +240,18 @@ fn kept_closures_keep_their_frames() {
         kept.live_frames, stable.live_frames,
         "a second collection must not disturb the frames the kept closures hold"
     );
-    assert!(
-        kept.live_frames >= 50,
-        "each kept closure retains the frame it captured, {} found",
+    // 51, not 50: each of the fifty kept closures retains the body block's
+    // activation for its own iteration of the loop, and `fill:`'s own
+    // activation besides. The loop body writes `remaining` and `made`, both
+    // outer to it, so `fill:`'s activation was reified as the body block's
+    // `home` -- and every kept closure reaches that same one frame through
+    // its own body-block frame's `home`, one shared frame beyond the fifty
+    // distinct ones. Tightened from `>= 50` to the exact count: a change
+    // that shares or drops a frame here changes this number, which a
+    // lower-bound check would not catch.
+    assert_eq!(
+        kept.live_frames, 51,
+        "fifty kept closures plus fill:'s own reified activation, {} found",
         kept.live_frames
     );
 
@@ -389,10 +398,15 @@ fn allocating_past_the_limit_collects_during_the_run() {
     let count = interpreter.stash(Value::SmallInteger(5000));
     let selector = Symbol::intern("run:");
 
-    let _ = expect_ok(interpreter.send(&instance, selector, &[count]));
+    let answer = expect_ok(interpreter.send(&instance, selector, &[count]));
+    let answer_value = interpreter.enter(|mutator| integer_of(&mutator.fetch(&answer)));
     let after = interpreter.heap_statistics();
     let collector = interpreter.collector_statistics();
 
+    assert_eq!(
+        answer_value, 5000,
+        "a collection during the run must not disturb the program's own answer"
+    );
     assert!(
         after.live_objects < 5000,
         "the run collected nothing: {} live objects after 5000 closures",
