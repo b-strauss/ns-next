@@ -2874,17 +2874,28 @@ of `find:in:`, whose block now takes the sought value as a copied register
 instead of a `LoadOuterLocal`.
 
 **Left, none affecting an outcome:** `capture.rs`'s `Captures::keys` exists
-for tests only (`#[cfg(test)]`); `decode.rs`'s `ClosureArityMismatch` doc
-comment and error text still describe the record half that is gone, although
-the `MakeClosure` half it still checks is real; `closure_activation` answers a
+for tests only (`#[cfg(test)]`); `closure_activation` answers a
 parameter count that is now just its body's own `argument_count`, which its
 caller already holds; `closure_home` does not check the frame's
 handle origin as its neighbours do; `inspect.rs`'s `read_closure_record`
 bounds its count with `min(1024)` rather than `reserve_for`; a fallback
 closure reloads its scope's vector on every access; one slot-initializer test
 traded its exact-instruction assertion for three targeted ones when the
-program it lowers grew a second statement; and the committed `insta` snapshot
-carries an `assertion_line` key.
+program it lowers grew a second statement; the committed `insta` snapshot
+carries an `assertion_line` key; and no fixture exercises the one silent form
+of a wrong inlined-depth correction, where the frame it lands on declares a
+local at the same index.
+
+**Left by the branch's own reviews, worth knowing before the next change
+here:** `outer_reach_of`'s `_ => 0` arm means the rule that every
+by-reference instruction must be named there is carried by prose and by the
+three places it is written down, not by the compiler — an instruction added
+without it silently loses its frame's registers. `DecodeError::CodeArityMismatch`
+(a different variant from the corrected `ClosureArityMismatch`) still
+justifies itself by `read_local` indexing past the end, which
+`Heap::frame_local` no longer does. And three citations of "Converted
+representation" are split across a line break, so grepping the workspace for
+that section's name misses them.
 
 ## Notes
 
