@@ -1123,8 +1123,15 @@ interpreter's measurement cannot see:
   the stamping goes.
 - **Between the two header variants, C2+ is the smaller for the same
   speed**: C2 costs 8 bytes an object, the amplification and the working set
-  for nothing measured. Closure conversion (step 4) rebuilds `ClosureData`;
-  if it shrinks to 24 bytes or less, `Object` reaches 48.
+  for nothing measured. The open question beside it — whether closure
+  conversion (step 4) would shrink `ClosureData` to 24 bytes or less and take
+  `Object` to 48 — is settled the other way: the conversion rebuilt
+  `ClosureData` and it is still 32 bytes (`types.rs`), because the boxed slice
+  of copied values takes the room the parameter names and the home freed. So
+  `Object` stays 56, which `heap.rs`'s release-build size test pins, and
+  `ClosureData` stays `ObjectData`'s largest payload
+  ([execution.md](execution.md), "Representation" under "Closure conversion";
+  [memory.md](memory.md), "Open: what the collector owns").
 
 **The costs accepted.** One more indirection on every read of a class's data
 — every level `kth_enclosing_object` walks, the start of a `super` send,

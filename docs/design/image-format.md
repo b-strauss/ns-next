@@ -309,8 +309,9 @@ strings, symbols, arrays, closures — decoded in two passes (placeholder, then
 fill) so cycles and shared references round-trip with identity preserved. A
 closure encodes its compiled body as a code id, its captured frame as a frame
 id, and the values it was handed when it was created: a `u16` count and that
-many encoded values. It encodes neither its parameter names, which its body's
-`argument_count` already gives, nor its home, which `Heap::closure_home`
+many encoded values. It encodes neither its parameter names, which nothing
+reads — the one thing anything asked of them was how many there were, and that
+is its body's `argument_count` — nor its home, which `Heap::closure_home`
 derives from the captured frame. That is a different record shape, so the
 closure body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the
 record is 6.

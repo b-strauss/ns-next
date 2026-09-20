@@ -2876,8 +2876,9 @@ instead of a `LoadOuterLocal`.
 **Left, none affecting an outcome:** `capture.rs`'s `Captures::keys` exists
 for tests only (`#[cfg(test)]`); `decode.rs`'s `ClosureArityMismatch` doc
 comment and error text still describe the record half that is gone, although
-the `MakeClosure` half it still checks is real; `closure_activation` takes an
-argument count it no longer needs; `closure_home` does not check the frame's
+the `MakeClosure` half it still checks is real; `closure_activation` answers a
+parameter count that is now just its body's own `argument_count`, which its
+caller already holds; `closure_home` does not check the frame's
 handle origin as its neighbours do; `inspect.rs`'s `read_closure_record`
 bounds its count with `min(1024)` rather than `reserve_for`; a fallback
 closure reloads its scope's vector on every access; one slot-initializer test

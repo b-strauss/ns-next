@@ -1232,8 +1232,9 @@ of its own, so their figures are not compared with these:
   the collector traces"): `bench_block.ns` −4.4% and `bench_newarg.ns` −0.8%,
   both entirely below, the rest level. `MakeClosure` no longer allocates an
   `Rc` per closure, and a popped block activation no longer drops one. A
-  release `Object` stays 56 bytes: the inline `ClosureData` is 24 bytes, within
-  the payload's 48.
+  release `Object` stays 56 bytes: the inline `ClosureData` was 24 bytes when
+  this was measured and is 32 since closure conversion, within the payload's 48
+  either way.
 - **The safepoint poll.** Its first measurement found no source slower, and
   measured nothing: with an empty slow path in a release build, fat LTO had
   deleted the poll's call, then its branch and the flag's load
@@ -2372,11 +2373,12 @@ baseline's in **both** sittings.
 conversion" below, predicted that a block would stop paying a hop per nesting
 level and that an activation would stop copying its registers out. Both happen,
 and neither shows in the running time of any of these eight sources. The
-profile taken before the trampoline ("What the profiles show" above) is the
-reason to expect little: it put reifying a frame at 9.6% of `bench_block.ns`'s
-samples and the divorce on return at 8.9%, and the conversion removes neither
-the reification nor the divorce — only the register copy inside the divorce,
-and only for an activation no by-reference closure can read. What is recorded
+profile of the trampoline's head ("What the profiles show" above, the
+`bench_block.ns` head column) is the reason to expect little: it put reifying a
+frame at 12.5% of the timed samples and popping, the divorce included, at
+13.1%, and the conversion removes neither the reification nor the divorce —
+only the register copy inside the divorce, and only for an activation no
+by-reference closure can read. What is recorded
 here is that the conversion is free, not that it is faster.
 
 **`bench_block.ns`'s peak working set rose about 2.6%.** Measured as
@@ -2904,13 +2906,17 @@ literal under it — and answers, per body, keyed by `BodyKey::Root` or
 - **each local's place** (`Place`): `Register`, whether it is captured by
   copy or not captured at all, or `Vector(slot)`, a slot of the body's own
   indirection vector;
-- **each real block's copied values** (`Captured`), in a fixed order: the
-  copied variables it captures (`Captured::Variable`), the vectors of the
-  scopes whose vector variables it needs (`Captured::Vector`), and,
-  **transitively**, whatever a block nested in it needs from further out — a
-  middle block carries what an inner one needs, as in Cog. A block that only
-  *writes* an enclosing variable needs that scope's vector just as a reading
-  one does, and so does every real block between the two
+- **each real block's copied values** (`Captured`), **in first-reference
+  order**: each entry — a copied variable (`Captured::Variable`) or a scope's
+  vector (`Captured::Vector`) — takes its place the first time the walk needs
+  it, and the two kinds interleave rather than grouping (`Walker::needs`, and
+  `finish`, which deduplicates while keeping that order). That order is what
+  the block's register layout is built from, so it is part of the answer, not a
+  presentation detail. What a block needs includes, **transitively**, whatever
+  a block nested in it needs from further out — a middle block carries what an
+  inner one needs, as in Cog — and a block that only *writes* an enclosing
+  variable needs that scope's vector just as a reading one does, as does every
+  real block between the two
   (`goldens/capture/a_nested_block_that_only_writes.ns`);
 - **which locals an inlinable branch of the body assigns**
   (`branch_assigned`), which is what "Fewer protective copies" below reads.
@@ -3209,7 +3215,7 @@ What it changed, for a method that creates a non-inlined block:
 
 | | By reference (the reference lowering, and a fallback closure) | Converted (optimized lowering) |
 |---|---|---|
-| Per activation that creates a block | a reified frame, plus a copy of every register at return | a reified frame; the closure's copied values; one vector if a captured variable is written |
+| Per activation of a body that creates a block | a reified frame, plus a copy of every register at return | a reified frame; the closure's copied values; and, when the body has vector variables at all, one vector — `MakeVector` is the body's first instruction, so that allocation happens on every activation of it, block created or not |
 | A block reading a captured variable | one hop per nesting level, then a live-or-dead branch | a register if copied, a register then the vector if written; independent of depth |
 | The method reading its own captured variable | a register | a register if copied; through the vector if written |
 | What a surviving block retains | the whole frame, including registers it never reads | what it captured, plus the frame record without registers |

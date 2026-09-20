@@ -277,8 +277,11 @@ pub struct CompiledCode {
     pub kind: CodeKind,
     pub instructions: Vec<Instruction>,
     pub argument_count: u16,
-    /// Total register count: `argument_count` + named temporaries +
-    /// compiler-allocated scratch registers. An activation is pushed with
+    /// Total register count, in the order the registers are laid out:
+    /// `argument_count`, then `copied_count`, then the named temporaries,
+    /// then one hidden register for the indirection vector when the body has
+    /// vector variables, then the compiler-allocated scratch registers
+    /// (`docs/design/compiler.md`, "Registers"). An activation is pushed with
     /// `register_count - argument_count`.
     pub register_count: u16,
     /// Maps a statement index to the half-open instruction range it compiled
