@@ -13,7 +13,8 @@ Rust 1.98.0, edition 2021, three crates:
   (`builtins/`), image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
   activation stack in the same `Heap` and are reified into the frame arena only
-  when a block captures one. Nothing reclaims an arena slot yet. The heap and
+  when a block captures one. A mark-compact collector reclaims a slot once
+  nothing reaches it, only at a safepoint of the run loop. The heap and
   everything else a step of the run loop uses are the step state, `Mutator`
   (`interpreter/mod.rs`), held at rest by `World` (`heap/world.rs`) and reached
   only through `Interpreter::enter`.

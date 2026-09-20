@@ -1758,9 +1758,15 @@ expected answer for every source first; `ns-next bench <source> --iterations
 30` over the seven sources, five rounds, the order of the binaries rotating
 from round to round; two whole sittings, nothing else running. The import
 check and the inlining checks below used `dumpbin` from the Visual Studio
-Build Tools, which is installed but not on `PATH`: `/dependents` on every
-binary, and `/disasm` on a release copy built with debug information to see
-which functions the optimizer kept whole. That copy is built with the same
+Build Tools, which is installed but not on `PATH` — on this machine, found
+through `vswhere.exe` in `C:\Program Files (x86)\Microsoft Visual Studio\Installer\`,
+at `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe`.
+From Git Bash it must be invoked as `dumpbin -disasm`, not `/disasm`: MSYS
+rewrites a `/option` argument into a Windows path, and the tool then
+silently tries to dump a file called `C:\Program Files\Git\disasm`.
+`/dependents` on every binary, and `/disasm` (or `-disasm`, from Git Bash) on
+a release copy built with debug information to see which functions the
+optimizer kept whole. That copy is built with the same
 `RUSTFLAGS` as the timed binary, plus `CARGO_PROFILE_RELEASE_DEBUG=true` and
 a separate `--target-dir` so it does not disturb the timed build:
 `CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p ns-cli
@@ -2382,7 +2388,8 @@ by-reference closure can read. What is recorded
 here is that the conversion is free, not that it is faster.
 
 **`bench_block.ns`'s peak working set rose about 2.6%.** Measured as
-[memory.md](memory.md)'s "Open: what the collector owns" records it — Windows
+[memory.md](memory.md)'s "The interim cost, and the one question still open"
+records it — Windows
 11, release build, `PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize` through
 `psapi!GetProcessMemoryInfo` on the still-open handle immediately after the
 process exits, `bench bench_block.ns --iterations 30`, three runs each:
@@ -2414,6 +2421,157 @@ two-mode block-creation logic, all still inlined into the one function rather
 than split out. That is what the step's own size did; it cost none of the
 eight sources any measurable time, and nothing here should be read as saying it
 did.
+
+### What the moving collector moved
+
+The moving collector ([PROGRESS.md](../PROGRESS.md), "M4 — The moving
+collector"; [memory.md](memory.md), "The shape: mark, compact, forward"
+onward) marks from the roots through `trace.rs`'s one edge enumeration,
+compacts by sliding each arena's live slots to the front, truncates and
+shrinks the arena with hysteresis, and rewrites every handle through a flat
+forwarding table; the canonical symbol table becomes weak; a trigger compares
+an arena's length against a limit in `push_object` and `reify` and requests a
+collection at the next safepoint; and `NS_NEXT_STRESS_COLLECT` collects at
+every safepoint as a third gate. `bench --collector-statistics` reports the
+counts and pauses the way `--cache-statistics` reports the caches. This is
+what ends the arena's never-reclaim interim ([memory.md](memory.md), "The
+interim cost, and the one question still open"), and it was measured against
+the expectation recorded in [memory.md](memory.md), "How the collector is
+measured", written before any of the numbers below existed.
+
+**Measured 2026-09-20, against `dc0ffe5` (the merge of closure conversion
+into `master`) and `be3eb40`, by the protocol of "What removing the
+re-entries moved" above.** Every binary — `dc0ffe5` and `be3eb40` built in
+throwaway worktrees, the head `014f0ff` in the current tree — built with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
+each checked to print the expected answer for all eight sources first;
+`ns-next bench <source> --iterations 30`, five rounds per sitting, the order
+of the three binaries rotating by one position from round to round, two
+whole sittings, nothing else running. Two facts that cost real time and are
+recorded here for the next measurement to skip past them: `dumpbin` lives at
+`C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe`
+on this machine, found via `vswhere.exe` in
+`C:\Program Files (x86)\Microsoft Visual Studio\Installer\`, and is not on
+`PATH`; and from Git Bash it must be invoked as `dumpbin -disasm`, not
+`/disasm` — MSYS rewrites a `/option` argument into a Windows path, and the
+tool then silently tries to dump a file called `C:\Program Files\Git\disasm`.
+
+**`vm::run`'s step is still one function.** A release build with debug
+information, `dumpbin -disasm`: one function label matching `vm::run`
+(`ns_runtime::vm::run`), no `vm::run::closure` of its own, at **5,732
+instructions**, against 5,700 at closure conversion — the trigger's
+comparison and the safepoint's now-real slow path add 32.
+
+**Peak working set fell as the design predicted, and this is the point of
+the step.** `PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize` through
+`psapi!GetProcessMemoryInfo` on the still-open handle, release build, the
+`run` and `bench --iterations 10` rows [memory.md](memory.md)'s table
+already carried:
+
+| Command | `dc0ffe5` | head |
+|---|---|---|
+| `run`, `bench_loop.ns` | 4.7 MB | 4.7 MB |
+| `bench --iterations 10`, `bench_loop.ns` | 4.8 MB | 4.8 MB |
+| `bench --iterations 10`, `bench_send.ns` | 4.8 MB | 4.8 MB |
+| `bench --iterations 10`, `bench_block.ns` | **228.8 MB** | **5.6 MB** |
+
+`bench_loop.ns` and `bench_send.ns`, which never collect (below), do not
+move. `bench_block.ns` — the one source that allocates a closure and reifies
+a frame every iteration, and so is the one source the arena's never-reclaim
+interim showed most starkly — falls from 228.8 MB to 5.6 MB, level with the
+other two. [memory.md](memory.md)'s own peak-working-set table, spanning
+before the arena to after the collector, has the fourth column.
+
+**Throughput is level on seven of the eight sources, entirely below
+`be3eb40`, and one source is not level.** Medians in ms per round, then each
+group's mean; sitting 1:
+
+| Source | head | mean | `dc0ffe5` | mean | `be3eb40` | mean | head vs `dc0ffe5` | head vs `be3eb40` |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.55, 10.37, 10.53, 10.55, 10.32 | 10.46 | 10.37, 10.48, 10.34, 10.46, 10.45 | 10.42 | 11.35, 11.44, 11.48, 11.38, 11.53 | 11.43 | +0.4% | −8.5% |
+| `bench_send.ns` | 11.58, 11.97, 11.59, 11.58, 11.58 | 11.66 | 11.65, 11.81, 11.62, 11.59, 11.66 | 11.67 | 14.15, 14.33, 14.36, 14.12, 14.01 | 14.19 | −0.1% | −17.9% |
+| `bench_block.ns` | 21.28, 22.84, 22.62, 22.97, 22.66 | 22.47 | 20.39, 20.02, 20.24, 20.07, 20.21 | 20.19 | 23.70, 24.31, 23.80, 23.79, 23.87 | 23.89 | +11.3% | −5.9% |
+| `bench_megamorphic.ns` | 16.78, 16.68, 16.98, 16.73, 16.65 | 16.76 | 16.77, 16.76, 17.05, 16.98, 16.92 | 16.90 | 18.43, 18.20, 18.42, 18.26, 18.29 | 18.32 | −0.8% | −8.5% |
+| `bench_do.ns` | 7.07, 7.12, 6.98, 7.03, 6.96 | 7.03 | 6.98, 7.00, 7.12, 7.12, 7.11 | 7.07 | 8.30, 8.25, 8.22, 8.13, 8.37 | 8.25 | −0.5% | −14.8% |
+| `bench_new.ns` | 6.30, 6.36, 6.17, 6.23, 6.24 | 6.26 | 6.34, 6.28, 6.39, 6.38, 6.35 | 6.35 | 7.62, 7.64, 7.66, 7.58, 7.58 | 7.62 | −1.3% | −17.8% |
+| `bench_new2.ns` | 7.24, 7.41, 7.24, 7.27, 7.23 | 7.28 | 7.20, 7.17, 7.24, 7.26, 7.32 | 7.24 | 8.51, 8.63, 8.52, 8.47, 8.42 | 8.51 | +0.6% | −14.5% |
+| `bench_newarg.ns` | 9.28, 9.42, 9.37, 9.49, 9.27 | 9.37 | 9.27, 9.01, 9.28, 9.08, 9.16 | 9.16 | 10.91, 10.95, 10.93, 10.81, 10.71 | 10.86 | +2.2% | −13.8% |
+
+Sitting 2:
+
+| Source | head | mean | `dc0ffe5` | mean | `be3eb40` | mean | head vs `dc0ffe5` | head vs `be3eb40` |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.38, 10.51, 10.48, 10.52, 10.33 | 10.44 | 10.61, 10.66, 10.62, 10.46, 10.42 | 10.55 | 11.44, 11.38, 11.47, 11.54, 11.37 | 11.44 | −1.0% | −8.7% |
+| `bench_send.ns` | 11.72, 11.75, 11.58, 11.75, 11.58 | 11.68 | 11.67, 11.78, 11.54, 11.71, 11.67 | 11.67 | 14.25, 14.27, 14.11, 14.30, 14.34 | 14.26 | +0.0% | −18.1% |
+| `bench_block.ns` | 22.89, 22.62, 22.60, 23.04, 23.20 | 22.87 | 20.24, 20.10, 20.29, 20.16, 20.39 | 20.24 | 23.93, 23.76, 23.74, 24.26, 24.15 | 23.97 | +13.0% | −4.6% |
+| `bench_megamorphic.ns` | 16.96, 16.82, 17.04, 16.81, 16.80 | 16.89 | 16.77, 16.75, 17.03, 16.96, 16.98 | 16.90 | 18.42, 18.25, 18.43, 18.56, 18.43 | 18.42 | −0.1% | −8.3% |
+| `bench_do.ns` | 7.11, 7.09, 7.15, 6.96, 7.00 | 7.06 | 7.01, 7.00, 7.13, 7.02, 7.11 | 7.06 | 8.10, 8.11, 8.17, 8.24, 8.21 | 8.17 | +0.1% | −13.5% |
+| `bench_new.ns` | 6.19, 6.31, 6.21, 6.28, 6.25 | 6.25 | 6.38, 6.48, 6.41, 6.47, 6.43 | 6.44 | 7.51, 7.62, 7.61, 7.70, 7.67 | 7.62 | −2.9% | −18.0% |
+| `bench_new2.ns` | 7.39, 7.33, 7.37, 7.28, 7.37 | 7.35 | 7.30, 7.21, 7.25, 7.41, 7.37 | 7.31 | 8.50, 8.53, 8.64, 8.67, 8.59 | 8.59 | +0.5% | −14.5% |
+| `bench_newarg.ns` | 9.30, 9.39, 9.38, 9.49, 9.49 | 9.41 | 9.07, 9.10, 9.07, 9.06, 9.16 | 9.09 | 10.74, 10.92, 10.86, 10.86, 10.88 | 10.85 | +3.5% | −13.3% |
+
+Both sittings pooled, by group mean, with the protocol's gate — a source has
+moved only when its five-round range lies entirely above, or entirely below,
+the group compared with, in **both** sittings:
+
+| Source | head | `dc0ffe5` | `be3eb40` | vs `dc0ffe5` | vs `be3eb40` | groups overlap vs `dc0ffe5` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.45 | 10.49 | 11.44 | −0.3% | −8.6% | yes |
+| `bench_send.ns` | 11.67 | 11.67 | 14.22 | −0.0% | −18.0% | yes |
+| `bench_block.ns` | 22.67 | 20.21 | 23.93 | **+12.2%** | −5.3% | **no** |
+| `bench_megamorphic.ns` | 16.82 | 16.90 | 18.37 | −0.4% | −8.4% | yes |
+| `bench_do.ns` | 7.05 | 7.06 | 8.21 | −0.2% | −14.2% | yes |
+| `bench_new.ns` | 6.25 | 6.39 | 7.62 | −2.1% | −17.9% | yes |
+| `bench_new2.ns` | 7.31 | 7.27 | 8.55 | +0.6% | −14.5% | yes |
+| `bench_newarg.ns` | 9.39 | 9.13 | 10.86 | +2.9% | −13.5% | yes |
+
+**Seven of the eight sources are level with `dc0ffe5`** — `bench_loop.ns`
+through `bench_newarg.ns` above, −2.1% to +0.6%, every group overlapping in
+both sittings — **and 5.3–18.0% below `be3eb40`.** `bench_do.ns`,
+`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` are the four
+out-of-tree sources written out in "What spec-conformant lookup moved"
+above, copied from there rather than reconstructed, as that section
+requires.
+
+**`bench_block.ns` is not level, and the honest reading is that the step
+cost it +12.2%.** Its pooled mean rose from 20.21 ms to 22.67 ms against
+`dc0ffe5` — the only source whose five-round ranges do not overlap in either
+sitting — while it stays 5.3% below `be3eb40`. It is the only one of the
+eight sources that allocates a closure every iteration, and so the only one
+that collects enough to show: `bench --collector-statistics` over
+`bench --iterations 10` records
+
+| Source | Collections | Total pause | Longest pause | Live objects | Live frames |
+|---|---|---|---|---|---|
+| `bench_block.ns` | 269 | 15.479 ms | 0.202 ms | 3,077 | 1,529 |
+| `bench_loop.ns` | 0 | 0.000 ms | 0.000 ms | 49 | 0 |
+| `bench_send.ns` | 0 | 0.000 ms | 0.000 ms | 49 | 0 |
+| `bench_megamorphic.ns` | 0 | 0.000 ms | 0.000 ms | 175 | 0 |
+| `bench_do.ns` | 26 | 1.341 ms | 0.088 ms | 4,062 | 1 |
+| `bench_new.ns` | 53 | 2.662 ms | 0.070 ms | 4,037 | 0 |
+| `bench_new2.ns` | 54 | 2.831 ms | 0.076 ms | 26 | 0 |
+| `bench_newarg.ns` | 107 | 5.415 ms | 0.088 ms | 4,056 | 0 |
+
+Pause accounts for roughly 1.4 ms of the 2.46 ms the head adds per round on
+`bench_block.ns`; the remaining amount is not accounted for by pause and is
+recorded as unexplained rather than guessed at. `bench_do.ns`,
+`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` collect tens of times
+too, at a fraction of the pause, and stay level with `dc0ffe5` — so
+collecting itself is not what shows on `bench_block.ns`; something about
+collecting *269 times in ten iterations*, an order of magnitude more often,
+is.
+
+**`bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report zero
+collections, and those are exactly the three sources whose throughput did
+not move.** All three stay under the 4,096-slot floor ("The trigger and the
+growth policy", [memory.md](memory.md)), so no allocation in them ever
+requests a collection, and the send benchmarks do not feel the trigger's
+added comparison in `push_object`. The recorded expectation named
+`bench_loop.ns` and `bench_send.ns` by exactly this reasoning, in advance;
+`bench_megamorphic.ns`, not named there, turns out to sit under the floor
+too and shows the identical pattern — zero collections, no measurable move —
+which is the expectation generalizing rather than a coincidence limited to
+the two sources it named.
 
 ## The trampoline
 

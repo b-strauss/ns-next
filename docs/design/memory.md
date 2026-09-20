@@ -1,27 +1,37 @@
 # Memory — object lifetime, identity, collection
 
-> **Status:** partial. Objects live in an arena owned by one `Heap`,
+> **Status:** built. Objects live in an arena owned by one `Heap`,
 > addressed by 32-bit handles; activations live on an activation stack in
 > the same `Heap` and reach the frame arena only when a block captures one.
 > Identity, layout ownership and the seam that routes every access through
-> `Heap` are built. Nothing reclaims an arena slot: there is no collector.
-> The root discipline one will use, in "Checked roots and a collector", is
-> built in all three of its parts: nothing re-enters the run loop from Rust,
-> so no Rust frame is live below a safepoint (step 2a); the run loop polls a
-> safepoint, every handle the collector would trace is enumerated, a host
-> keeps values across runs only as `Root`s, and a debug-build stress mode
-> moves everything at the safepoints to check all of it (step 2b); and every
+> `Heap` are built. A mark-compact collector reclaims a slot once nothing
+> reaches it: marking walks the roots through `trace.rs`'s one edge
+> enumeration, compaction slides each arena's live slots to the front,
+> truncates and shrinks with hysteresis, and rewrites every handle through a
+> flat forwarding table, in one stop-the-world pass over both arenas. It runs
+> only at a safepoint of the run loop, on a request an allocation past an
+> arena's limit sets — never inside an allocation itself. The root
+> discipline it runs on, in "Checked roots and a collector", is built in all
+> three of its parts: nothing re-enters the run loop from Rust, so no Rust
+> frame is live below a safepoint (step 2a); the run loop polls a safepoint,
+> every handle the collector traces is enumerated, a host keeps values
+> across runs only as `Root`s, and a debug-build stress mode moves
+> everything at the safepoints to check all of it (step 2b); and every
 > movable handle carries a lifetime brand, so that holding one across a
-> safepoint is a compile error (step 2c). Only the collector is not built.
+> safepoint is a compile error (step 2c). The canonical symbol table is
+> weak; everything else the collector traces is strong.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the activation
 > stack, the handle types and their brand, every accessor, the host root
-> table, the move), `heap/world.rs` (the step state at rest, and the entry
-> that lends it out), `interpreter/mod.rs` (`Mutator`, and
-> `Interpreter::enter` with the doctests that pin the brand), `trace.rs`
-> (everything the collector traces), `interpreter/safepoint.rs` (the
-> safepoint and the two stress modes), `vm.rs` (one entry per instruction, and
-> the poll), `types.rs` (`Value`, `Object`, `Frame`), `mixin.rs` (layout,
-> and the one remaining iterative `Drop`).
+> table, the move, the collection trigger, compaction and forwarding),
+> `heap/mark.rs` (the mark bits and the marker), `heap/world.rs` (the step
+> state at rest, the entry that lends it out, and `World::collect`),
+> `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
+> doctests that pin the brand), `trace.rs` (everything the collector
+> traces, marking and forwarding alike, in every build), `interpreter/safepoint.rs`
+> (the safepoint, `Interpreter::collect_now` and the three stress modes),
+> `vm.rs` (one entry per instruction, and the poll), `types.rs` (`Value`,
+> `Object`, `Frame`), `mixin.rs` (layout, and the one remaining iterative
+> `Drop`).
 
 ## What exists
 
@@ -42,13 +52,16 @@ stack every running activation lives on, and `frames` — the arena of *reified*
 activations, the ones a block captured or the image decoder rebuilt. An
 `ObjectReference` or a `FrameReference` is a 32-bit index into an arena, an `ActivationReference`
 into the stack. The representation is described below, and the stack in
-[execution.md](execution.md), "Activations". Nothing reclaims an arena slot: a
-cycle is no longer the special case that leaks, because everything in an arena
-is retained, deliberately, until a collector exists. The stack is the exception:
-an entry is popped when its activation returns, and one that was never reified
-leaves nothing behind. That is not a problem the image format inherits: the
-format is defined against the *logical* value model rather than against this
-representation, so replacing it again would not break images.
+[execution.md](execution.md), "Activations". A slot is reclaimed once the
+collector's mark pass cannot reach it, so a cycle is no longer the special
+case that leaks: the tracer follows every field, not a reference count, and a
+cycle nothing outside it reaches goes with the rest of the garbage at the next
+collection ("The shape: mark, compact, forward" below). The stack needs no
+collector for the same property: an entry is popped when its activation
+returns, and one that was never reified leaves nothing behind. That is not a
+problem the image format inherits: the format is defined against the
+*logical* value model rather than against this representation, so replacing
+it again would not break images.
 
 ### The representation: an arena of typed handles
 
@@ -297,9 +310,9 @@ checks.
 
 ### Where a collection can happen: only at a safepoint in the run loop
 
-An allocation never collects. Once the collector exists, an allocation will
-count what it allocates and, past a threshold, *request* a collection, which
-runs at the next safepoint of the run loop. `vm::run` polls one at every switch
+An allocation never collects. Past a threshold it *requests* a collection
+instead — "The trigger and the growth policy" below — which runs at the next
+safepoint of the run loop. `vm::run` polls one at every switch
 to another activation — a push, or a caller resumed — and at every backward
 jump, so every call and every loop iteration passes one, a loop that makes no
 send included; a forward jump does not poll. Between two instructions `run`
@@ -769,18 +782,22 @@ creator's frame record without registers.
 
 ### The interim cost, and the one question still open
 
-- **Neither arena reclaims a slot today**, and that is the interim cost the
-  milestone's ordering accepts. It is measurable. Peak working set on a release
-  build, before the arena, after it, and after the activation stack; the last two
-  columns were measured against each other in one sitting on 2026-09-10, and the
-  arena figures reproduced exactly the ones taken when the arena landed:
+- **Neither arena reclaimed a slot before the collector**, and that was the
+  interim cost the milestone's ordering accepted between the arena and step
+  5. It was measurable, and the collector closes it. Peak working set on a
+  release build, before the arena, after it, after the activation stack, and
+  after the collector; the middle two columns were measured against each
+  other in one sitting on 2026-09-10, the arena figures reproducing exactly
+  the ones taken when the arena landed, and the last column is `014f0ff`
+  against the `dc0ffe5` baseline of "How the collector is measured" below,
+  both under `bench --iterations 10`:
 
-  | Command | Entry sends | Before the arena | After the arena | After the activation stack |
-  |---|---|---|---|---|
-  | `run`, `bench_loop.ns` | 1 | 4.6 MB | 4.6 MB | 4.6 MB |
-  | `bench --iterations 10`, `bench_loop.ns` | 22 | 4.6 MB | 340.7 MB | 4.6 MB |
-  | `bench --iterations 10`, `bench_send.ns` | 22 | — | 324.9 MB | 4.6 MB |
-  | `bench --iterations 10`, `bench_block.ns` | 22 | — | 966.9 MB | 446.0 MB |
+  | Command | Entry sends | Before the arena | After the arena | After the activation stack | After the collector |
+  |---|---|---|---|---|---|
+  | `run`, `bench_loop.ns` | 1 | 4.6 MB | 4.6 MB | 4.6 MB | 4.7 MB |
+  | `bench --iterations 10`, `bench_loop.ns` | 22 | 4.6 MB | 340.7 MB | 4.6 MB | 4.8 MB |
+  | `bench --iterations 10`, `bench_send.ns` | 22 | — | 324.9 MB | 4.6 MB | 4.8 MB |
+  | `bench --iterations 10`, `bench_block.ns` | 22 | — | 966.9 MB | 446.0 MB | 5.6 MB |
 
   Conditions, because the metric is platform-specific and the numbers are
   useless without them: Windows 11, release build, **peak working set**
@@ -799,22 +816,24 @@ creator's frame record without registers.
   of `clip: x = ( x < 0 ifTrue: [^0]. ^x + 1 )` peak at 4.6 MB (2026-09-11,
   under the conditions above).
 
-  **What is still unbounded is everything in an arena: every reified frame and
-  every object the process has ever created**, not what is live.
-  `bench_block.ns` shows it: every iteration creates a block, so every
-  iteration reifies one frame and allocates one closure, and nothing gives
-  either back. Its peak roughly halved, because the block's own
-  activation no longer takes an arena entry, but it still grows with the work
-  done. A long-running process that creates blocks is therefore unbounded until
-  the collector exists. Closure conversion shrank each reified frame's share —
-  a frame of a body nothing reaches by reference is now written back with no
-  registers at all — and **measured 2.6% worse on this source, not better**:
-  454.7 MB to 466.4 MB, because a block that writes a captured local now
-  allocates an indirection-vector `Array` per activation of the body that
-  declares it, into the same arena that gives nothing back
-  ([execution.md](execution.md), "What closure conversion moved", where that
-  explanation is marked as an inference from what changed rather than a
-  measured attribution).
+  **What was unbounded — every reified frame and every object the process had
+  ever allocated, not what was live — is now bounded by the collector.**
+  `bench_block.ns` shows it most clearly: every iteration creates a block, so
+  every iteration reifies one frame and allocates one closure, and before
+  step 5 nothing gave either back. Under `bench --iterations 10` its peak
+  fell from 228.8 MB at `dc0ffe5` — the commit directly before the collector
+  — to 5.6 MB at the head, level with `bench_loop.ns` and `bench_send.ns`
+  ("How the collector is measured" below has the full measurement, against
+  the recorded expectation). The arena is now proportional to what is live
+  rather than to what the process has ever created, because a collection
+  runs at the next safepoint once an arena's length passes its limit ("The
+  trigger and the growth policy" below). Closure conversion's own peak rise
+  on this source under `--iterations 30` — 454.7 MB to 466.4 MB, attributed
+  to the indirection-vector `Array` a written capture now allocates
+  ([execution.md](execution.md), "What closure conversion moved") — was
+  exactly this kind of cost: garbage the arena kept only because nothing
+  reclaimed it. The allocation itself did not change; what changed is that
+  the collector now takes it back.
 
   Peak does not climb smoothly with the work done. Sweeping `bench
   --iterations` over `bench_loop.ns` on the arena binary, before the activation
@@ -907,7 +926,7 @@ creator's frame record without registers.
 
 ### The shape: mark, compact, forward
 
-Decided with the user on 2026-09-20; designed, not yet built. The collector
+Decided with the user on 2026-09-20; built. The collector
 marks from the roots, slides the live slots to the front of each arena, and
 rewrites every handle through a forwarding table. One space, stop-the-world.
 Generations come later, as their own measured step.
@@ -1157,6 +1176,37 @@ benchmarks must not feel the added comparison in `push_object`. And
 consistent with the arena `Vec`s doubling — are the figure the pause has to
 justify itself against. A falling median with a rising maximum is a result, not
 a puzzle.
+
+**Measured 2026-09-20, against both `dc0ffe5` and `be3eb40`, by the protocol
+above.** The peak held exactly as expected: `bench_block.ns` under
+`bench --iterations 10` falls from 228.8 MB at `dc0ffe5` to 5.6 MB at the
+head, level with `bench_loop.ns` and `bench_send.ns`, which stay at 4.6-4.8 MB
+throughout. `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report
+zero collections apiece — they stay under the 4096-slot floor — and those are
+exactly the three sources whose throughput does not move: −0.3%, −0.0% and
+−0.4% against `dc0ffe5`, all three groups overlapping in both sittings. The
+send benchmarks do not feel the trigger's comparison in `push_object`. Four
+more sources — `bench_do.ns`, `bench_new.ns`, `bench_new2.ns` and
+`bench_newarg.ns` — do collect, tens of times over ten iterations, and are
+still level with `dc0ffe5` (−2.1% to +0.6%, every group overlapping) and
+5.3-18.0% below `be3eb40`.
+
+**`bench_block.ns` is the one source that contradicts the expectation, and it
+does so plainly: +12.2% against `dc0ffe5`, the only source whose groups do
+not overlap** (still 5.3% below `be3eb40`). It is the only one of the eight
+that allocates a closure per iteration, so the only one that collects
+enough to show: `bench --collector-statistics` over `bench --iterations 10`
+records 269 collections, 15.479 ms total pause, 0.202 ms longest. Pause
+accounts for roughly 1.4 ms of the 2.46 ms the head adds per round; the
+remaining amount is not accounted for by pause and is recorded here as
+unexplained rather than guessed at. The longest single pause, 0.202 ms, is far
+too small by itself to be the mechanism behind the older maxima gap this
+section flagged in advance (63.8-67.9 ms over medians of 37.6-39.9 ms); this
+measurement recorded only the five medians per round, not each run's own
+minimum and maximum, so whether that gap persists under the collector is not
+re-tested here and stays open. The full throughput tables, the collector
+statistics for every source and the inline check are in
+[execution.md](execution.md), "What the moving collector moved".
 
 
 ## Decisions

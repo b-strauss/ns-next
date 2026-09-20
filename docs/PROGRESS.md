@@ -10,12 +10,12 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md), [specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md), [remove-assign](superpowers/plans/2026-09-19-2125-ns-next-remove-assign.md), [closure-conversion](superpowers/plans/2026-09-19-2344-ns-next-closure-conversion.md) |
+| M4 — Representation: arena, checked roots, stack activations, a moving collector | Complete | 2026-09-20 | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md), [specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md), [remove-assign](superpowers/plans/2026-09-19-2125-ns-next-remove-assign.md), [closure-conversion](superpowers/plans/2026-09-19-2344-ns-next-closure-conversion.md), [moving-collector](superpowers/plans/2026-09-20-1746-ns-next-moving-collector.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way. **Step 2, the compiler-checked root discipline, is done**,
+M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
 "Checked roots and a collector"). **2a, no re-entry from Rust** — `do:`,
 instantiation and the nested-class accessor are trampoline steps, so Rust
@@ -153,26 +153,53 @@ conversion rather than to the copy-narrowing. `vm::run` grew from 4,878 to
 5,700 instructions and stayed one inlined function. See
 [execution.md](design/execution.md), "What closure conversion moved".
 
-**Step 5, the moving collector, is the next piece of work.** It is the last
-numbered step of M4 and what ends the arena's never-reclaim interim: nothing
-gives an object or a reified frame back today, which is why `bench_block.ns`
-grows with the work it does whichever way its blocks reach their variables.
-Closure conversion was scheduled immediately before it for the collector's
-sake — a surviving block now retains what it captured plus a frame record
-without registers, instead of its creator's whole frame — and the indirection
-vector it added is itself an object the collector will reclaim.
-[memory.md](design/memory.md) has both the machinery already in place (the
-safepoint, `trace.rs`, host roots, the brand, the stress mode) and, since
-2026-09-20, the shape decided with the user: **mark-compact over the index
-arena, one space, stop-the-world**, with generations as a later, separately
-measured step. MMTk is ruled out by the crate's `#![forbid(unsafe_code)]`
-rather than by a comparison of collectors; the canonical symbol table becomes
-the system's only weak structure; and the application cache stays strong
-because its key is an address, which is what `Rc::as_ptr` needs a strong
-reference to keep unique. What is new work is liveness, reclamation, the
-trigger and a third stress mode, `NS_NEXT_STRESS_COLLECT`, since no existing
-gate covers premature reclamation — the move stress treats everything as
-live.
+**Step 5, the moving collector, is done** (2026-09-20;
+[ns-next-moving-collector](superpowers/plans/2026-09-20-1746-ns-next-moving-collector.md),
+nine tasks over the shape decided with the user the same day,
+[memory.md](design/memory.md), "The shape: mark, compact, forward" onward):
+**mark-compact over the index arena, one space, stop-the-world**, with
+generations as a later, separately measured step. Marking is a second
+`Tracer` beside `Forwarder`, driven from the roots through the one edge
+enumeration in `trace.rs`; compaction slides each arena's live slots to the
+front, truncates and shrinks with hysteresis (`max(4096, live * 2)` after
+each collection), and rewrites every handle through a flat forwarding table.
+The canonical symbol table is now the system's only weak structure; the
+application cache stays strong because its key is an address, which
+`Rc::as_ptr` needs a strong reference to keep unique. A collection runs only
+at a safepoint of the run loop, requested by a comparison `push_object` and
+`reify` already make against an arena's limit, never inside an allocation.
+`NS_NEXT_STRESS_COLLECT` is a third stress mode and gate, collecting at
+every safepoint to catch premature reclamation, which the move stress
+mode's everything-is-live sweep cannot see. `bench --collector-statistics`
+reports the counts and pauses. This ends the arena's never-reclaim interim:
+before this step nothing gave an object or a reified frame back, which is
+why `bench_block.ns` grew with the work it did whichever way its blocks
+reached their variables; the indirection vector closure conversion added is
+itself an object the collector now reclaims.
+
+**Measured against `dc0ffe5` and `be3eb40`: peak working set is the point of
+the step, and it moved as designed.** `bench --iterations 10` on
+`bench_block.ns` — the one source that allocates a closure and reifies a
+frame every iteration, the interim's worst case — falls from 228.8 MB to
+5.6 MB, level with `bench_loop.ns` and `bench_send.ns`. Seven of the eight
+sources are level with `dc0ffe5` on throughput and 5.3–18.0% below
+`be3eb40`; `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns`
+report zero collections and are exactly the three whose throughput does not
+move — the recorded expectation named the first two by exactly this
+reasoning in advance, and `bench_megamorphic.ns` turns out to fit it too.
+`bench_block.ns` is the one source that does not stay level — **+12.2%
+against `dc0ffe5`**, the only source whose groups do not overlap — because
+it is the only one that collects enough to show: 269 collections, 15.479 ms
+total pause, 0.202 ms longest. Pause accounts for roughly 1.4 ms of the
+2.46 ms the head adds per round; the rest is recorded as unexplained rather
+than guessed at. See "M4 — The moving collector" below,
+[execution.md](design/execution.md)'s "What the moving collector moved" and
+[memory.md](design/memory.md)'s "How the collector is measured" for the
+full tables.
+
+**M4's numbered steps are now complete.** What comes next, after M4 and
+before the JIT tiers, is step 6: the core library in Newspeak (the order of
+work below).
 
 **The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
 `22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
@@ -483,10 +510,12 @@ seam. That is worth ~15% of the benchmark and is described in
 [memory.md](design/memory.md); see "M4 — The heap seam" and "M4 — The object
 and frame arena" below. Then activations moved onto a stack the `Heap` owns
 (step 1a below), reified into the frame arena only when a block captures one;
-see "M4 — The activation stack" below. **Nothing reclaims an arena slot** —
-every object and every reified frame is kept for the life of the process. That
-is a deliberate interim cost. The activation stack bounded it for activations
-nothing captures, and step 5, the collector, is what ends it. Then step A
+see "M4 — The activation stack" below. **Nothing reclaimed an arena slot
+until the collector** — every object and every reified frame was kept for
+the life of the process, a deliberate interim cost the activation stack
+bounded for activations nothing captures. Step 5, the moving collector, ends
+it: a slot is reclaimed once nothing reaches it (see "M4 — The moving
+collector" below). Then step A
 retired the tree-walker, step B cleaned up after it, and step C built the
 reference lowering as the differential oracle; see "M4 — Retiring the
 tree-walker", "M4 — Cleaning up with one engine" and "M4 — The reference
@@ -527,7 +556,7 @@ The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
 and all three done, 1b done, 2 done in all three parts, the spec-conformant
 lookup inserted ahead of 3 and done, 3 done in all three parts, the
 specification gaps done, removing `:=` done as its own small step ahead of
-4, 4 done, 5 the one step left — and it is
+4, 4 done, 5 done — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -638,13 +667,18 @@ so nothing is lost by it going second.
    reification mechanism is needed with or without it. Level with `efac7d2` on
    all eight sources; `bench_block.ns`'s peak working set 2.6% higher; see
    "M4 — Closure conversion" below.
-5. **A moving collector** — [memory.md](design/memory.md). **The next piece of
-   work.** `become:` and instance
-   migration rule out a conservative non-moving design, and pinning whatever a
-   conservative stack scan finds was considered and rejected for the same reason.
-   This is what ends the arena's never-reclaim interim — the one the closure
-   conversion measurement ran into, where an indirection vector per block
-   activation shows as peak working set because nothing gives it back.
+5. **A moving collector. Done** (2026-09-20) — [memory.md](design/memory.md).
+   Mark-compact over the index arena, one space, stop-the-world, with
+   generations as a later step. `become:` and instance migration rule out a
+   conservative non-moving design, and pinning whatever a conservative stack
+   scan finds was considered and rejected for the same reason. This ends the
+   arena's never-reclaim interim — the one the closure conversion measurement
+   ran into, where an indirection vector per block activation showed as peak
+   working set because nothing gave it back. `bench_block.ns`'s peak working
+   set under `bench --iterations 10` fell from 228.8 MB to 5.6 MB; every
+   source but `bench_block.ns` itself stayed level with the baseline, and
+   `bench_block.ns` is 12.2% slower, the honest cost of the collections it
+   alone runs; see "M4 — The moving collector" below.
 
 Then, after M4 and before the JIT tiers:
 
@@ -680,8 +714,9 @@ computation and serializing it needed the trampoline and the removal of the
 re-entries from Rust, both built, and still needs a yield path out of the run
 loop and a re-entry point for a decoded frame
 ([image-format.md](design/image-format.md), "Planned: suspend and resume"),
-and so does the debugger; `become:`-based class mutation waits on the
-collector ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
+and so does the debugger; `become:`-based class mutation can now build on the
+collector's object forwarding, which it needed and did not have before step 5
+([liveness-and-reflection.md](design/liveness-and-reflection.md)).
 
 ## M1 — Frontend (2026-09-01)
 
@@ -2904,6 +2939,89 @@ justifies itself by `read_local` indexing past the end, which
 `Heap::frame_local` no longer does. And three citations of "Converted
 representation" are split across a line break, so grepping the workspace for
 that section's name misses them.
+
+## M4 — The moving collector (2026-09-20)
+
+Plan: [ns-next-moving-collector](superpowers/plans/2026-09-20-1746-ns-next-moving-collector.md),
+nine tasks over the design decided with the user on 2026-09-20
+([memory.md](design/memory.md), "The shape: mark, compact, forward" onward).
+Branch `feature/moving-collector`, started from `dc0ffe5`, the merge of
+closure conversion into `master`, on the checked-out tree throughout. Step 5,
+the last numbered step of M4.
+
+**What changed, task by task:**
+
+- Task 1 (`26669c6`) — `Forwarder`'s mapping becomes a parameter (a
+  `Rotation` for the move stress mode, a forwarding table for the
+  collector), and `trace.rs` stops being debug-only, since the collector
+  needs the same edge enumeration in every build.
+- Task 2 (`4a66f48`, `422b5d0`) — mark bits (`heap/mark.rs`, one `Vec<u64>`
+  per arena, one bit per slot) and a marker: a second `Tracer` beside
+  `Forwarder` that sets the bit and pushes onto an explicit work list where
+  it was clear, iterative because the graph's depth is the program's to
+  choose.
+- Task 3 (`a7954cb`, `94b4a53`) — compaction and forwarding: one pass over
+  the mark bits builds the forwarding table as a running destination index,
+  one slides the live slots forward and truncates, one rewrites every handle
+  through it; both arenas and one forwarding pass per collection, since a
+  closure holds a frame and a frame holds objects. `World::collect` is the
+  one entry point, called by `Interpreter::collect_now`, the trigger's
+  request path and the collect stress mode.
+- Task 4 (`d383a96`) — the canonical symbol table becomes weak: after
+  marking and before compaction, an entry whose object is unmarked becomes
+  `None`, and the rest are forwarded like everything else. The application
+  cache stays strong, because its key is `Rc::as_ptr`, which needs the
+  strong reference to keep the address unique.
+- Task 5 (`843cc5a`) — the retention gate: `heap_statistics` answers live
+  and occupied slots per arena, so a program that discards `n` closures is
+  pinned back at its starting size and one that keeps `n` closures is pinned
+  keeping `n` frames — false retention, which no other gate can see.
+- Task 6 (`ba82a60`, `4b09c7f`) — the trigger: `push_object` and `reify`
+  already hold the arena's length, so each compares it against a limit and
+  sets the safepoint request when it is reached, rather than counting
+  allocations. After a collection each arena's limit becomes
+  `max(4096, live * 2)`, so a small program — under the 4,096-slot floor —
+  never collects at all.
+- Task 7 (`aea8459`, `0a0413c`) — `NS_NEXT_STRESS_COLLECT`, the third stress
+  mode and third gate: collects at every safepoint, paced by heap size like
+  the move stress mode, so a missed root is killed at the earliest possible
+  moment and the recorded outcomes catch the difference. `run-corpus` now
+  also runs every listed module as a built binary under it, since a decoded
+  image is the one place marking could miss a root the move stress mode's
+  schedule would not exercise.
+- Task 8 (`014f0ff`) — `bench --collector-statistics`, printed the way
+  `--cache-statistics` already is: collections, total pause and longest
+  pause, then live objects and live frames.
+- Task 9 (this entry) — the measurement, against `dc0ffe5` and `be3eb40`,
+  and the documents.
+
+**Measurement.** Two sittings by the protocol, eight sources, every binary
+built through `RUSTFLAGS` with `+crt-static` and the function-alignment pin.
+`vm::run` stayed one function, 5,732 instructions against 5,700 at closure
+conversion. **Peak working set is the point of the step**: `bench
+--iterations 10` on `bench_block.ns` falls from 228.8 MB at `dc0ffe5` to
+5.6 MB at the head, level with `bench_loop.ns` and `bench_send.ns`, which do
+not move. **Seven of the eight sources are level with `dc0ffe5`** (−2.1% to
++0.6%, every group overlapping) **and 5.3–18.0% below `be3eb40`.**
+`bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report zero
+collections and are exactly the three whose throughput does not move — the
+recorded expectation named the first two in advance, and `bench_megamorphic.ns`
+fits the same pattern. **`bench_block.ns` is not
+level: +12.2% against `dc0ffe5`, the only source whose groups do not
+overlap**, still 5.3% below `be3eb40`. It is the only source that allocates
+a closure per iteration, so the only one that collects enough to show: 269
+collections, 15.479 ms total pause, 0.202 ms longest, over
+`bench --iterations 10`. Pause accounts for roughly 1.4 ms of the 2.46 ms
+the head adds per round; the rest is recorded as unexplained rather than
+guessed at. See [execution.md](design/execution.md), "What the moving
+collector moved", and [memory.md](design/memory.md), "How the collector is
+measured", for the full tables.
+
+Gates: `cargo test --workspace` green (813 tests passing, one ignored);
+`parse-corpus` at **210/0/1/0** and `run-corpus` at **6/0/205**. The full
+stress-mode and clippy gates were run task by task as each was committed
+(tasks 1–8); this entry is documentation only, over code none of it changes.
+No recorded outcome moved.
 
 ## Notes
 
