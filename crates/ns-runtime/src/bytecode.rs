@@ -147,8 +147,10 @@ pub enum Instruction {
         code: Rc<CompiledCode>,
         /// The registers whose values the closure is handed, in the order
         /// the block's own registers take them
-        /// (`docs/design/execution.md`, "Representation"). Empty under both
-        /// of today's lowerings, which reach every variable by reference.
+        /// (`docs/design/execution.md`, "Representation"). Always empty
+        /// under the reference lowering, and under the optimized one for a
+        /// fallback closure, both of which reach every variable by
+        /// reference.
         copied: Vec<u16>,
     },
     MakeArray {

@@ -2642,10 +2642,13 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         let FrameKind::Closure(_) = &captured.kind else {
             panic!("the captured frame is a block activation")
         };
-        assert!(matches!(
-            captured.arguments.first(),
-            Some(Value::SmallInteger(5))
-        ));
+        // The optimized lowering converts `[ x ]`: `x` is copied into the
+        // inner closure when it is created, so the outer block's activation
+        // returned without copying its registers into its frame
+        // (`docs/design/execution.md`, "Lifecycle"). The value survives in
+        // the closure, not in the frame.
+        assert!(captured.arguments.is_empty());
+        assert!(matches!(inner.copied.first(), Some(Value::SmallInteger(5))));
         assert!(
             captured
                 .home

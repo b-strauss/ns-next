@@ -9,11 +9,6 @@
 //! variable read only inside an inlined block is not captured at all. The
 //! reference lowering reaches every variable by reference and never calls
 //! this.
-//!
-//! Nothing outside this module's own tests calls `analyze` yet -- a later
-//! task wires it into the lowerer -- so its public surface reads as dead
-//! code to a plain build until then.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -55,7 +50,10 @@ pub(crate) struct BodyCaptures {
     /// One entry per local: whether a block of an inlined conditional in this
     /// body assigns it, and so whether the fallback closure of that
     /// conditional can write its register at any later time ("Fallback
-    /// blocks"). What the protective copies read.
+    /// blocks"). What the protective copies read
+    /// (`docs/design/execution.md`, "Fewer protective copies", which is
+    /// designed and not built).
+    #[allow(dead_code)]
     pub(crate) branch_assigned: Vec<bool>,
     /// What this block is handed when it is created, in order; its registers
     /// are `argument_count + position`. Empty for `BodyKey::Root`.
@@ -74,6 +72,7 @@ impl Captures {
             .unwrap_or_else(|| panic!("internal: no capture analysis for body {key:?}"))
     }
 
+    #[cfg(test)]
     pub(crate) fn keys(&self) -> impl Iterator<Item = BodyKey> + '_ {
         self.bodies.keys().copied()
     }
@@ -235,14 +234,17 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// A read of a local: every real block between its declaring frame and
-    /// here needs it, and the outermost of those blocks is where it is
-    /// captured.
-    fn reference(&mut self, identifier: &ast::Identifier) {
-        let Some((depth, index)) = self.binding_of(identifier.span) else {
-            return;
-        };
-        let (declaring_key, declaring_position) = self.declaring(depth);
+    /// Every real block between the frame that declares a local and here
+    /// needs that local -- a middle block carries what an inner one needs --
+    /// and the outermost of those blocks is where it is captured. Answers
+    /// that outermost block, or `None` when the reference stands in the
+    /// declaring frame itself.
+    fn note_need(
+        &mut self,
+        declaring_key: BodyKey,
+        index: u16,
+        declaring_position: usize,
+    ) -> Option<BodyKey> {
         let blocks: Vec<BodyKey> = self.scopes[declaring_position + 1..]
             .iter()
             .filter_map(|scope| match scope {
@@ -250,9 +252,7 @@ impl<'a> Walker<'a> {
                 Scope::Inlined { .. } => None,
             })
             .collect();
-        let Some(outermost) = blocks.first().copied() else {
-            return;
-        };
+        let outermost = blocks.first().copied()?;
         for block in &blocks {
             let needs = self
                 .needs
@@ -262,6 +262,20 @@ impl<'a> Walker<'a> {
                 needs.push((declaring_key, index));
             }
         }
+        Some(outermost)
+    }
+
+    /// A read of a local: every real block between its declaring frame and
+    /// here needs it, and the outermost of those blocks is where it is
+    /// captured.
+    fn reference(&mut self, identifier: &ast::Identifier) {
+        let Some((depth, index)) = self.binding_of(identifier.span) else {
+            return;
+        };
+        let (declaring_key, declaring_position) = self.declaring(depth);
+        let Some(outermost) = self.note_need(declaring_key, index, declaring_position) else {
+            return;
+        };
         let (position, loops) = self
             .creation
             .get(&outermost)
@@ -284,6 +298,11 @@ impl<'a> Walker<'a> {
         let (current_key, current_position) = self.current_frame();
         self.position += 1;
         if current_key != declaring_key {
+            // A block that only ever *writes* an enclosing local still needs
+            // to reach it, so it is handed the vector exactly as a reading
+            // block would be -- and every block between it and the declaring
+            // frame has to carry that vector to it.
+            self.note_need(declaring_key, index, declaring_position);
             self.facts
                 .entry((declaring_key, index))
                 .or_default()
@@ -583,6 +602,40 @@ mod tests {
     fn a_variable_a_block_writes_goes_into_the_vector() {
         let captures = analyze_method("| count ::= 0. | ^[count:: count + 1]");
         assert_eq!(place(&captures, 0), Place::Vector(0));
+    }
+
+    /// A block that never reads the variable still has to be handed its
+    /// scope's vector: the write goes through it.
+    #[test]
+    fn a_block_that_only_writes_is_handed_the_vector() {
+        let captures = analyze_method("| count ::= 0. | ^[count:: 1]");
+        assert_eq!(place(&captures, 0), Place::Vector(0));
+        assert_eq!(
+            only_block(&captures).copied,
+            vec![Captured::Vector {
+                body: BodyKey::Root
+            }]
+        );
+    }
+
+    /// And so does every block between it and the declaring frame.
+    #[test]
+    fn a_middle_block_carries_a_vector_an_inner_block_only_writes() {
+        let captures = analyze_method("| count ::= 0. | ^[[count:: 1]]");
+        let blocks: Vec<&BodyCaptures> = captures
+            .keys()
+            .filter(|key| *key != BodyKey::Root)
+            .map(|key| captures.body(key))
+            .collect();
+        assert_eq!(blocks.len(), 2);
+        for block in blocks {
+            assert_eq!(
+                block.copied,
+                vec![Captured::Vector {
+                    body: BodyKey::Root
+                }]
+            );
+        }
     }
 
     #[test]

@@ -30,7 +30,8 @@ use crate::bytecode::{CodeKind, CompiledCode};
 use crate::mixin::Mixin;
 use crate::types::Binding;
 
-use lower::Lowerer;
+use capture::{BodyKey, RootBody};
+use lower::{Enclosing, Lowerer};
 
 /// `instantiate::pattern_parameter_count` narrowed to the `u16` `CompiledCode`
 /// stores an argument count in. A pattern's parameter count is bounded by
@@ -62,13 +63,24 @@ pub fn compile_method(
         return reference::compile_method(method, bindings);
     }
     let argument_count = argument_count_of(&method.pattern);
+    let captures = Rc::new(capture::analyze(
+        RootBody {
+            argument_count,
+            temporaries: &method.body.temporaries,
+            slot_initializers: Vec::new(),
+            statements: &method.body.statements,
+        },
+        bindings,
+    ));
     let mut lowerer = Lowerer::new(
         CodeKind::Method,
+        BodyKey::Root,
         argument_count,
         &method.body.temporaries,
         bindings,
-        vec![],
-        vec![],
+        captures,
+        false,
+        Enclosing::default(),
         0,
     );
     lowerer.lower_local_initializers(&method.body.temporaries);
@@ -114,13 +126,30 @@ pub(crate) fn compile_mixin_bodies(
 /// absolute index the instance array actually needs.
 fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>>) -> CompiledCode {
     let argument_count = factory_argument_count(mixin);
+    // The same expressions, in the same order, this function lowers below.
+    let slot_initializers: Vec<&Expression> = mixin
+        .slots
+        .iter()
+        .filter_map(|slot| slot.declaration.as_ref()?.initializer.as_ref())
+        .collect();
+    let captures = Rc::new(capture::analyze(
+        RootBody {
+            argument_count,
+            temporaries: &[],
+            slot_initializers,
+            statements: &mixin.initializer_expressions,
+        },
+        bindings,
+    ));
     let mut lowerer = Lowerer::new(
         CodeKind::Initializer,
+        BodyKey::Root,
         argument_count,
         &[],
         bindings,
-        vec![],
-        vec![],
+        captures,
+        false,
+        Enclosing::default(),
         0,
     );
     let mut source: Option<Span> = None;
@@ -159,13 +188,24 @@ fn compile_superclass_clause(
     let statements = vec![Statement::Return(
         crate::interpreter::nested::superclass_clause_expression(clause),
     )];
+    let captures = Rc::new(capture::analyze(
+        RootBody {
+            argument_count: 0,
+            temporaries: &[],
+            slot_initializers: Vec::new(),
+            statements: &statements,
+        },
+        bindings,
+    ));
     let mut lowerer = Lowerer::new(
         CodeKind::SuperclassClause,
+        BodyKey::Root,
         0,
         &[],
         bindings,
-        vec![],
-        vec![],
+        captures,
+        false,
+        Enclosing::default(),
         0,
     );
     lowerer.lower_body(&statements);
@@ -197,13 +237,24 @@ fn compile_superclass_message(
         crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
     let argument_count = factory_argument_count(mixin);
     let statements = vec![Statement::Return(arguments)];
+    let captures = Rc::new(capture::analyze(
+        RootBody {
+            argument_count,
+            temporaries: &[],
+            slot_initializers: Vec::new(),
+            statements: &statements,
+        },
+        bindings,
+    ));
     let mut lowerer = Lowerer::new(
         CodeKind::SuperclassMessage,
+        BodyKey::Root,
         argument_count,
         &[],
         bindings,
-        vec![],
-        vec![],
+        captures,
+        false,
+        Enclosing::default(),
         0,
     );
     lowerer.lower_body(&statements);
