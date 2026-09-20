@@ -51,9 +51,8 @@ pub(crate) struct BodyCaptures {
     /// body assigns it, and so whether the fallback closure of that
     /// conditional can write its register at any later time ("Fallback
     /// blocks"). What the protective copies read
-    /// (`docs/design/execution.md`, "Fewer protective copies", which is
-    /// designed and not built).
-    #[allow(dead_code)]
+    /// (`docs/design/execution.md`, "Fewer protective copies"): a send is a
+    /// write of a local's register only for a local this names.
     pub(crate) branch_assigned: Vec<bool>,
     /// What this block is handed when it is created, in order; its registers
     /// are `argument_count + position`. Empty for `BodyKey::Root`.
