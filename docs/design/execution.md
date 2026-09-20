@@ -2529,8 +2529,8 @@ through `bench_newarg.ns` above, means spanning −2.1% to +2.9% — **and
 5.3–18.0% below `be3eb40`.** Six of the seven overlap `dc0ffe5`'s group in
 both sittings; `bench_newarg.ns`, the narrowest of the seven at +2.9%
 pooled, is entirely above `dc0ffe5` in the second sitting and overlaps it by
-only 0.01 ms in the first — and of the seven it collects second most often,
-107 times over ten iterations. `bench_do.ns`,
+only 0.01 ms in the first — and it is the source with the second-most
+collections of the eight, 107. `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` are the four
 out-of-tree sources written out in "What spec-conformant lookup moved"
 above, copied from there rather than reconstructed, as that section

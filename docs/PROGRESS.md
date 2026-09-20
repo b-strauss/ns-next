@@ -206,7 +206,7 @@ full tables.
 closed one.** Pause accounts for roughly 1.4 ms of the 2.46 ms the head adds
 per round there; nothing in this measurement explains the rest. What the
 numbers do support: on the four other collecting sources the pause is
-3.8–5.4% of the median (`bench_new.ns` 0.24 ms of 6.39 ms; `bench_newarg.ns`
+1.7–5.4% of the median (`bench_do.ns` 0.12 ms of 7.06 ms; `bench_newarg.ns`
 0.49 ms of 9.13 ms) while the measured difference against `dc0ffe5` runs
 −2.1% to +2.9%, so on those four the pause is not simply additive to the
 median. On `bench_block.ns` roughly 1 ms per round remains beyond the
