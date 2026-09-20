@@ -1227,6 +1227,68 @@ statistics for every source and the inline check are in
 [execution.md](execution.md), "What the moving collector moved".
 
 
+### Payloads belong to the Rust allocator, and what that costs
+
+An object's slot is 56 bytes in the arena, but its variable-length part is a
+separate Rust allocation: `ObjectData::Instance`'s and `Array`'s
+`Vec<Value>`, `String`, `Box<ClassData>`, `ClosureData.copied`, and a reified
+frame's `arguments` and `temporaries`. A collection therefore does not merely
+reclaim slots; it drops those allocations, one call into the system allocator
+each, and the program allocates them again as it runs on. That is the
+structural difference between this collector and the ones it is modelled
+against, and it is the leading candidate for the part of `bench_block.ns`'s
+slowdown that the measured pause does not account for ("How the collector is
+measured" above; [execution.md](execution.md), "What the moving collector
+moved").
+
+**The address-based engines do not have this cost at all, and their
+OS-specific code is how they avoid it.** Primordial Soup reserves its spaces
+through a virtual-memory layer with one implementation per platform
+(`prior-art/primordialsoup/vm/virtual_memory_win.cc`, `_posix.cc`,
+`_fuchsia.cc`, `_emscripten.cc`, beside `os_win.cc`, `os_linux.cc`,
+`os_macos.cc` and the rest): `VirtualAlloc` with `MEM_COMMIT | MEM_RESERVE`
+on Windows, `mmap` with `MAP_PRIVATE | MAP_ANON` on POSIX, and `Protect` to
+make a from-space inaccessible. Inside a space, allocation is a bump pointer
+— `Heap::AllocateNormal` is `addr = top_; top_ = addr + size` — and an
+object's fields live inline in the space, variably sized. An object's death
+costs nothing there: no allocator call, no bookkeeping, just a space that is
+reused. Its `delete[]` calls are for the remembered set and the class table,
+never for objects. Spur and HotSpot have the same shape, and MMTk is
+essentially that layer offered as a library.
+
+**The Rust engines with an index arena do not, and neither do we.** Nova
+— the one reference implementation sharing this representation — contains
+no `mmap` and no `VirtualAlloc` anywhere in `nova_vm/src`; it keeps a `Vec`
+of heap data per type, exactly as `Heap` keeps `objects` and `frames`. The
+handle discipline, the lifetime brand and `#![forbid(unsafe_code)]` all rest
+on that choice, and so does "MMTk is out" in "The shape: mark, compact,
+forward" above.
+
+**Nova does mitigate the payload half, and that part is transferable.**
+`prior-art/nova/nova_vm/src/heap/element_array.rs` pools an object's
+element storage into size-classed arenas — `Empty`, `E1`, `E2`, `E3`,
+`E4`, `E6`, `E8`, `E10`, `E12`, `E16`, `E24`, `E32` and upward — so an
+object's variable-length part is a slot in a pool rather than an allocation
+of its own, and returning it is a pool operation rather than a `free`. The
+four sites that would move to such a pool here are the ones a collection
+drops in bulk: `Instance`, `Array`, `copied`, and a frame's registers.
+
+Three routes follow, and only two of them are open. Accept the cost where a
+program churns, which is what the branch that built the collector did. Pool
+the payloads as Nova does, which attacks the measured churn directly and
+needs neither `unsafe` nor a per-platform path, so it disturbs nothing the
+representation already decided. Or own the memory like Soup and Spur, which
+requires both, and is the same trade the MMTk decision already refused.
+
+**The ordering matters more than the choice.** Pooling addresses only the
+allocator-churn explanation. If the unaccounted cost is instead the cache
+after-effect of walking the whole live graph — which scales with how often
+a program collects rather than with what each collection costs, and which
+`bench_block.ns` leads on by collecting 269 times against the next source's
+107 — then pooling buys nothing. The experiments that discriminate are
+named in [PROGRESS.md](../PROGRESS.md)'s "Where the next session starts";
+run one before building anything here.
+
 ## Decisions
 
 - **Identity hashes come from a counter, not an address, and are assigned on
