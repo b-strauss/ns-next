@@ -20,6 +20,7 @@ use crate::mixin::{DispatchId, DispatchIds};
 use crate::types::*;
 use crate::Symbol;
 
+pub(crate) mod mark;
 mod world;
 pub(crate) use world::World;
 
@@ -2352,6 +2353,64 @@ impl<'gc> Heap<'gc> {
         }
         forwarder
     }
+
+    /// Marks the heap's own roots -- the activation stack's entries and its
+    /// registers, the canonical symbol table and the host roots -- and answers
+    /// the marker without draining it, so that the caller can add the step
+    /// state's roots (`World::mark_everything_reachable`) before the traversal
+    /// runs.
+    ///
+    /// The canonical symbol table is a root here and stops being one when it
+    /// becomes weak; the arenas are never roots, only what the roots reach.
+    pub(crate) fn begin_marking(&mut self) -> mark::Marker {
+        use crate::trace::{Trace, Tracer};
+        let mut marker = mark::Marker::new(self.objects.len(), self.frames.len());
+        for entry in &mut self.stack.entries {
+            entry.trace(&mut marker);
+        }
+        for value in &mut self.stack.values {
+            marker.value(value);
+        }
+        for object in self.canonical_symbols.iter_mut().flatten() {
+            marker.object(object);
+        }
+        let roots = self.host_roots.get_mut();
+        roots.sweep();
+        for slot in &roots.slots {
+            let mut value = slot.get();
+            marker.value(&mut value);
+            slot.set(value);
+        }
+        marker
+    }
+
+    /// Runs the marker's work lists empty. Each record is traced with the
+    /// arena borrowed field by field, which is what lets the marker be
+    /// borrowed at the same time.
+    pub(crate) fn drain_marking(&mut self, marker: &mut mark::Marker) {
+        use crate::trace::Trace;
+        let Heap {
+            objects, frames, ..
+        } = self;
+        while let Some(work) = marker.next() {
+            match work {
+                mark::Work::Object(index) => objects[index as usize].trace(marker),
+                // A married frame's registers are its entry's, already traced
+                // with the stack; `live` is a stack index and no entry moves.
+                mark::Work::Frame(index) => frames[index as usize].frame.trace(marker),
+            }
+        }
+    }
+
+    /// Marks from the heap's own roots and drains, for the heap's own tests.
+    /// A real collection goes through `World`, which owns the step state's
+    /// roots as well.
+    #[cfg(test)]
+    fn mark_from_roots_for_test(&mut self) -> crate::heap::mark::Marker {
+        let mut marker = self.begin_marking();
+        self.drain_marking(&mut marker);
+        marker
+    }
 }
 
 #[cfg(test)]
@@ -3259,5 +3318,56 @@ mod tests {
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {
         assert_eq!(std::mem::size_of::<Object>(), 56);
+    }
+
+    /// Liveness is reachability from the roots, and the roots are what the
+    /// heap holds, not what a Rust local happens to name. `unreachable` is a
+    /// perfectly valid object that nothing can get to, which is exactly the
+    /// case the collector exists for.
+    #[test]
+    fn marking_reaches_what_a_root_reaches_and_nothing_else() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let reachable = heap.allocate_object(class, ObjectData::String("live".to_string()));
+        let unreachable = heap.allocate_object(class, ObjectData::String("dead".to_string()));
+        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(reachable.index));
+        assert!(marker.objects.is_set(class.index));
+        assert!(!marker.objects.is_set(unreachable.index));
+        heap.pop_activation(activation);
+    }
+
+    /// An edge is followed, not just a root: the value inside a reachable
+    /// instance keeps its own target alive.
+    #[test]
+    fn marking_follows_an_edge_out_of_a_reachable_object() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let target = heap.allocate_object(class, ObjectData::String("target".to_string()));
+        let holder = heap.allocate_object(class, ObjectData::Instance(vec![Value::Object(target)]));
+        let activation = heap.push_activation(header(), &[Value::Object(holder)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(target.index));
+        heap.pop_activation(activation);
+    }
+
+    /// A reified frame is reachable from the entry it is married to, which is
+    /// what makes "a running activation's frame is never collected" fall out
+    /// of the root set instead of needing a rule of its own.
+    #[test]
+    fn marking_reaches_a_married_frame_through_its_entry() {
+        let mut heap = Heap::new();
+        let activation = heap.push_activation(header(), &[], 1);
+        let frame = heap.reify(activation);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.frames.is_set(frame.index));
+        heap.pop_activation(activation);
     }
 }

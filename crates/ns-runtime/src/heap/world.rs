@@ -125,6 +125,23 @@ impl World {
         }
     }
 
+    /// Marks everything reachable: the heap's own roots, then the step state's
+    /// -- the bootstrap's builtin classes and the `platform` singleton -- then
+    /// the traversal.
+    pub(crate) fn mark_everything_reachable(&mut self) -> crate::heap::mark::Marker {
+        use crate::trace::Tracer;
+        let mutator = &mut self.mutator;
+        let mut marker = mutator.heap.begin_marking();
+        for class in &mut mutator.builtin_classes {
+            marker.object(class);
+        }
+        if let Some(platform) = &mut mutator.platform_singleton {
+            marker.value(platform);
+        }
+        mutator.heap.drain_marking(&mut marker);
+        marker
+    }
+
     /// What must hold no handle when everything moves, because nothing
     /// traces it: the argument buffer, which a send fills and empties within
     /// one instruction, and the spare boxes finished instantiations leave
