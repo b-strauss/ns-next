@@ -288,6 +288,14 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match self.heap.class_builtin(class) {
+            // The VM mirror is a capability: there is exactly one, and it is
+            // the bootstrap's to hand out (`docs/design/core-library.md`, "The
+            // VM mirror is the whole Rust boundary").
+            Some(BuiltinClass::VmMirror) => Err(Signal::Error(NewspeakError {
+                selector: Symbol::NEW,
+                receiver: Value::Object(class),
+                message: "the VM mirror's class cannot be instantiated".to_string(),
+            })),
             // `Array`/`OrderedCollection`'s representation is
             // `ObjectData::Array`, not `decide_instantiation`'s
             // `ObjectData::Instance` -- `builtins::collections`' primitives

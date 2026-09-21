@@ -164,6 +164,12 @@ pub enum BuiltinClass {
     Nil,
     Block,
     Platform,
+    /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
+    /// is the whole Rust boundary"): one instance, built at bootstrap and
+    /// handed to the core library alone. No program can name it -- it is
+    /// not a bare builtin name, and the image format refuses its tag
+    /// wherever a program names a class.
+    VmMirror,
 }
 
 impl BuiltinClass {
@@ -171,7 +177,7 @@ impl BuiltinClass {
     /// indexes by discriminant, so the bootstrap builds them in this order,
     /// and the image's closing hash table writes them in it too -- it is also
     /// their wire-tag order (`image::encode::builtin_class_tag`).
-    pub const ALL: [BuiltinClass; 14] = [
+    pub const ALL: [BuiltinClass; 15] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -186,6 +192,7 @@ impl BuiltinClass {
         BuiltinClass::Nil,
         BuiltinClass::Block,
         BuiltinClass::Platform,
+        BuiltinClass::VmMirror,
     ];
 }
 

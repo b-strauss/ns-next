@@ -57,6 +57,11 @@ pub(crate) fn execute<'gc>(
         Primitive::Platform(primitive) => {
             platform::execute(mutator, primitive, receiver, arguments).map(wrap_error)
         }
+        // Always `Some`: a mirror primitive never passes its level over,
+        // because its failure path is the block the send carries.
+        Primitive::Mirror(row) => Some(crate::interpreter::mirror::execute_sent(
+            mutator, row, arguments,
+        )),
     }
 }
 

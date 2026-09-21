@@ -665,6 +665,7 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         11 => BuiltinClass::Nil,
         12 => BuiltinClass::Block,
         13 => BuiltinClass::Platform,
+        14 => BuiltinClass::VmMirror,
         _ => return None,
     })
 }
@@ -675,6 +676,21 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
         what: "builtin class",
         tag,
     })
+}
+
+/// A builtin class a *program* names: `LoadBuiltinClass`, a class reference
+/// in the graph, a root class's superclass. The VM mirror's class is refused
+/// here -- an artifact that could name it could instantiate or reach a second
+/// mirror, and so claim every primitive, which no source module can. Only
+/// the closing hash table names it, by tag, as it names every builtin.
+pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+    match read_builtin_class(reader)? {
+        BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 14,
+        }),
+        kind => Ok(kind),
+    }
 }
 
 /// The inverse of `encode::integer_operation_tag`. An unrecognized byte is
@@ -1482,7 +1498,7 @@ fn decode_instruction(
             let destination = reader.read_u16()?;
             Instruction::LoadBuiltinClass {
                 destination,
-                kind: read_builtin_class(reader)?,
+                kind: read_program_builtin_class(reader)?,
             }
         }
         OPCODE_MOVE => {
@@ -1822,7 +1838,9 @@ pub fn decode_class_tag<'gc>(
     tables: &Tables<'_, 'gc>,
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match reader.read_u8()? {
-        CLASS_BUILTIN => Ok(context.mutator.builtin_class(read_builtin_class(reader)?)),
+        CLASS_BUILTIN => Ok(context
+            .mutator
+            .builtin_class(read_program_builtin_class(reader)?)),
         CLASS_USER_ROOT => Ok(*context.root_class),
         CLASS_RECORD => decode_object_id(reader, tables),
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
@@ -2116,7 +2134,7 @@ pub fn build_root_class<'gc>(
 /// real one.
 fn read_root_superclass_tag(reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
     if reader.read_boolean()? {
-        Ok(Some(read_builtin_class(reader)?))
+        Ok(Some(read_program_builtin_class(reader)?))
     } else {
         Ok(None)
     }

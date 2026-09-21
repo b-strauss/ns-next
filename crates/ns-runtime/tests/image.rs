@@ -1062,6 +1062,39 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
+/// The VM mirror's class is refused wherever a program names a class, even
+/// though its tag decodes cleanly as a *builtin class tag*: `LoadBuiltinClass`
+/// goes through `read_program_builtin_class`, not `read_builtin_class`,
+/// specifically to keep an artifact from naming the mirror and reaching a
+/// second instance (`docs/design/core-library.md`, "The VM mirror is the
+/// whole Rust boundary").
+#[test]
+fn a_load_builtin_class_naming_the_mirror_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
+    writer.write_u16(0);
+    writer.write_u16(1);
+    writer.write_u16(0); // copied_count
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
+    writer.write_u32(1); // one instruction ...
+    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
+    writer.write_u16(0); // destination
+    writer.write_u8(14); // ... naming the VM mirror
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 14
+        })
+    );
+}
+
 #[test]
 fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     // An unknown operation byte must be refused, never defaulted to an
@@ -1128,6 +1161,7 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::Nil,
         BuiltinClass::Block,
         BuiltinClass::Platform,
+        BuiltinClass::VmMirror,
     ];
     for kind in all {
         assert_eq!(

@@ -24,6 +24,8 @@ pub enum Primitive {
     Collection(CollectionPrimitive),
     Block(BlockPrimitive),
     Platform(PlatformPrimitive),
+    /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
+    Mirror(MirrorPrimitive),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +326,440 @@ const PLATFORM: &[PrimitiveSelector] = &[
     public("newLine", Primitive::Platform(PlatformPrimitive::NewLine)),
 ];
 
+/// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
+/// `Resolved::Primitive` carries one, and its size is pinned
+/// (`interpreter::resolve`'s
+/// `a_resolution_stays_the_size_the_hot_path_was_measured_at`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MirrorPrimitive(u8);
+
+impl MirrorPrimitive {
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// One leaf, as the VM mirror answers it. The mirror selector's arguments
+/// are the subject (the kernel method's `self`), the leaf's own arguments,
+/// and the failure block, so it takes two more than `reported` does.
+#[derive(Debug, Clone, Copy)]
+pub struct MirrorEntry {
+    /// What `Kernel.ns` sends to the mirror.
+    pub selector: &'static str,
+    /// The kernel selector the leaf's error texts name -- the one the
+    /// program sent, so no text a program sees changes by moving behind the
+    /// mirror.
+    pub reported: &'static str,
+    /// The leaf itself; never a `Primitive::Mirror`.
+    pub primitive: Primitive,
+}
+
+impl MirrorEntry {
+    /// How many arguments the reported selector takes: one for a binary
+    /// selector, one per colon for a keyword selector, none for a unary one.
+    pub fn leaf_arity(&self) -> usize {
+        let binary = !self
+            .reported
+            .starts_with(|character: char| character.is_alphabetic());
+        if binary {
+            1
+        } else {
+            self.reported.matches(':').count()
+        }
+    }
+}
+
+const fn mirror(
+    selector: &'static str,
+    reported: &'static str,
+    primitive: Primitive,
+) -> MirrorEntry {
+    MirrorEntry {
+        selector,
+        reported,
+        primitive,
+    }
+}
+
+/// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
+/// "The VM mirror is the whole Rust boundary"; the plan's "The mirror
+/// table" names each row's index). `Array` and `OrderedCollection` share
+/// rows 49-53, as they share their primitives today; each kernel class
+/// declares only the selectors its own list above names.
+pub const MIRROR: &[MirrorEntry] = &[
+    mirror(
+        "objectClass:ifFail:",
+        "class",
+        Primitive::Object(ObjectPrimitive::Class),
+    ),
+    mirror(
+        "object:identicalTo:ifFail:",
+        "==",
+        Primitive::Object(ObjectPrimitive::Identical),
+    ),
+    mirror(
+        "object:equals:ifFail:",
+        "=",
+        Primitive::Object(ObjectPrimitive::Equal),
+    ),
+    mirror(
+        "objectHash:ifFail:",
+        "hash",
+        Primitive::Object(ObjectPrimitive::Hash),
+    ),
+    mirror(
+        "objectPrintString:ifFail:",
+        "printString",
+        Primitive::Object(ObjectPrimitive::PrintString),
+    ),
+    mirror(
+        "object:doesNotUnderstand:ifFail:",
+        "doesNotUnderstand:",
+        Primitive::Object(ObjectPrimitive::DoesNotUnderstand),
+    ),
+    mirror(
+        "boolean:ifTrue:ifFalse:ifFail:",
+        "ifTrue:ifFalse:",
+        Primitive::Boolean(BooleanPrimitive::IfTrueIfFalse),
+    ),
+    mirror(
+        "boolean:ifFalse:ifTrue:ifFail:",
+        "ifFalse:ifTrue:",
+        Primitive::Boolean(BooleanPrimitive::IfFalseIfTrue),
+    ),
+    mirror(
+        "boolean:ifTrue:ifFail:",
+        "ifTrue:",
+        Primitive::Boolean(BooleanPrimitive::IfTrue),
+    ),
+    mirror(
+        "boolean:ifFalse:ifFail:",
+        "ifFalse:",
+        Primitive::Boolean(BooleanPrimitive::IfFalse),
+    ),
+    mirror(
+        "booleanNot:ifFail:",
+        "not",
+        Primitive::Boolean(BooleanPrimitive::Not),
+    ),
+    mirror(
+        "boolean:logicalAnd:ifFail:",
+        "&",
+        Primitive::Boolean(BooleanPrimitive::And),
+    ),
+    mirror(
+        "boolean:and:ifFail:",
+        "and:",
+        Primitive::Boolean(BooleanPrimitive::And),
+    ),
+    mirror(
+        "boolean:logicalOr:ifFail:",
+        "|",
+        Primitive::Boolean(BooleanPrimitive::Or),
+    ),
+    mirror(
+        "boolean:or:ifFail:",
+        "or:",
+        Primitive::Boolean(BooleanPrimitive::Or),
+    ),
+    mirror(
+        "booleanPrintString:ifFail:",
+        "printString",
+        Primitive::Boolean(BooleanPrimitive::PrintString),
+    ),
+    mirror(
+        "integer:add:ifFail:",
+        "+",
+        Primitive::Integer(IntegerPrimitive::Add),
+    ),
+    mirror(
+        "integer:subtract:ifFail:",
+        "-",
+        Primitive::Integer(IntegerPrimitive::Subtract),
+    ),
+    mirror(
+        "integer:multiply:ifFail:",
+        "*",
+        Primitive::Integer(IntegerPrimitive::Multiply),
+    ),
+    mirror(
+        "integer:floorDivide:ifFail:",
+        "//",
+        Primitive::Integer(IntegerPrimitive::FloorDivide),
+    ),
+    mirror(
+        "integer:lessThan:ifFail:",
+        "<",
+        Primitive::Integer(IntegerPrimitive::Less),
+    ),
+    mirror(
+        "integer:greaterThan:ifFail:",
+        ">",
+        Primitive::Integer(IntegerPrimitive::Greater),
+    ),
+    mirror(
+        "integer:lessOrEqual:ifFail:",
+        "<=",
+        Primitive::Integer(IntegerPrimitive::LessOrEqual),
+    ),
+    mirror(
+        "integer:greaterOrEqual:ifFail:",
+        ">=",
+        Primitive::Integer(IntegerPrimitive::GreaterOrEqual),
+    ),
+    mirror(
+        "integer:equals:ifFail:",
+        "=",
+        Primitive::Integer(IntegerPrimitive::Equal),
+    ),
+    mirror(
+        "integerNegated:ifFail:",
+        "negated",
+        Primitive::Integer(IntegerPrimitive::Negated),
+    ),
+    mirror(
+        "integerAbsolute:ifFail:",
+        "abs",
+        Primitive::Integer(IntegerPrimitive::Absolute),
+    ),
+    mirror(
+        "integerPrintString:ifFail:",
+        "printString",
+        Primitive::Integer(IntegerPrimitive::PrintString),
+    ),
+    mirror(
+        "integerAsString:ifFail:",
+        "asString",
+        Primitive::Integer(IntegerPrimitive::PrintString),
+    ),
+    mirror(
+        "float:add:ifFail:",
+        "+",
+        Primitive::Float(FloatPrimitive::Add),
+    ),
+    mirror(
+        "float:subtract:ifFail:",
+        "-",
+        Primitive::Float(FloatPrimitive::Subtract),
+    ),
+    mirror(
+        "float:multiply:ifFail:",
+        "*",
+        Primitive::Float(FloatPrimitive::Multiply),
+    ),
+    mirror(
+        "float:divide:ifFail:",
+        "/",
+        Primitive::Float(FloatPrimitive::Divide),
+    ),
+    mirror(
+        "float:lessThan:ifFail:",
+        "<",
+        Primitive::Float(FloatPrimitive::Less),
+    ),
+    mirror(
+        "float:greaterThan:ifFail:",
+        ">",
+        Primitive::Float(FloatPrimitive::Greater),
+    ),
+    mirror(
+        "float:equals:ifFail:",
+        "=",
+        Primitive::Float(FloatPrimitive::Equal),
+    ),
+    mirror(
+        "floatPrintString:ifFail:",
+        "printString",
+        Primitive::Float(FloatPrimitive::PrintString),
+    ),
+    mirror(
+        "floatAsString:ifFail:",
+        "asString",
+        Primitive::Float(FloatPrimitive::PrintString),
+    ),
+    mirror(
+        "stringSize:ifFail:",
+        "size",
+        Primitive::String(StringPrimitive::Size),
+    ),
+    mirror(
+        "string:concatenate:ifFail:",
+        ",",
+        Primitive::String(StringPrimitive::Concatenate),
+    ),
+    mirror(
+        "string:equals:ifFail:",
+        "=",
+        Primitive::String(StringPrimitive::Equal),
+    ),
+    mirror(
+        "stringAsSymbol:ifFail:",
+        "asSymbol",
+        Primitive::String(StringPrimitive::AsSymbol),
+    ),
+    mirror(
+        "stringPrintString:ifFail:",
+        "printString",
+        Primitive::String(StringPrimitive::PrintString),
+    ),
+    mirror(
+        "symbolAsString:ifFail:",
+        "asString",
+        Primitive::Symbol(SymbolPrimitive::AsString),
+    ),
+    mirror(
+        "symbol:equals:ifFail:",
+        "=",
+        Primitive::Symbol(SymbolPrimitive::Equal),
+    ),
+    mirror(
+        "symbolPrintString:ifFail:",
+        "printString",
+        Primitive::Symbol(SymbolPrimitive::PrintString),
+    ),
+    mirror(
+        "characterAsInteger:ifFail:",
+        "asInteger",
+        Primitive::Character(CharacterPrimitive::AsInteger),
+    ),
+    mirror(
+        "characterAsString:ifFail:",
+        "asString",
+        Primitive::Character(CharacterPrimitive::AsString),
+    ),
+    mirror(
+        "character:equals:ifFail:",
+        "=",
+        Primitive::Character(CharacterPrimitive::Equal),
+    ),
+    mirror(
+        "collection:do:ifFail:",
+        "do:",
+        Primitive::Collection(CollectionPrimitive::Enumerate),
+    ),
+    mirror(
+        "collectionSize:ifFail:",
+        "size",
+        Primitive::Collection(CollectionPrimitive::Size),
+    ),
+    mirror(
+        "collection:at:ifFail:",
+        "at:",
+        Primitive::Collection(CollectionPrimitive::ElementAt),
+    ),
+    mirror(
+        "collection:at:put:ifFail:",
+        "at:put:",
+        Primitive::Collection(CollectionPrimitive::ElementAtPut),
+    ),
+    mirror(
+        "collection:add:ifFail:",
+        "add:",
+        Primitive::Collection(CollectionPrimitive::Add),
+    ),
+    mirror(
+        "blockValue:ifFail:",
+        "value",
+        Primitive::Block(BlockPrimitive::Value),
+    ),
+    mirror(
+        "block:value:ifFail:",
+        "value:",
+        Primitive::Block(BlockPrimitive::Value),
+    ),
+    mirror(
+        "block:value:value:ifFail:",
+        "value:value:",
+        Primitive::Block(BlockPrimitive::Value),
+    ),
+    mirror(
+        "block:value:value:value:ifFail:",
+        "value:value:value:",
+        Primitive::Block(BlockPrimitive::Value),
+    ),
+    mirror(
+        "blockNumArgs:ifFail:",
+        "numArgs",
+        Primitive::Block(BlockPrimitive::ArgumentCount),
+    ),
+    mirror(
+        "block:whileTrue:ifFail:",
+        "whileTrue:",
+        Primitive::Block(BlockPrimitive::WhileTrue),
+    ),
+    mirror(
+        "block:whileFalse:ifFail:",
+        "whileFalse:",
+        Primitive::Block(BlockPrimitive::WhileFalse),
+    ),
+    mirror(
+        "platformTranscript:ifFail:",
+        "transcript",
+        Primitive::Platform(PlatformPrimitive::Transcript),
+    ),
+    mirror(
+        "platformObject:ifFail:",
+        "Object",
+        Primitive::Platform(PlatformPrimitive::ObjectClass),
+    ),
+    mirror(
+        "platformArray:ifFail:",
+        "Array",
+        Primitive::Platform(PlatformPrimitive::ArrayClass),
+    ),
+    mirror(
+        "platformOrderedCollection:ifFail:",
+        "OrderedCollection",
+        Primitive::Platform(PlatformPrimitive::OrderedCollectionClass),
+    ),
+    mirror(
+        "platformString:ifFail:",
+        "String",
+        Primitive::Platform(PlatformPrimitive::StringClass),
+    ),
+    mirror(
+        "platformSymbol:ifFail:",
+        "Symbol",
+        Primitive::Platform(PlatformPrimitive::SymbolClass),
+    ),
+    mirror(
+        "platformCollections:ifFail:",
+        "collections",
+        Primitive::Platform(PlatformPrimitive::Collections),
+    ),
+    mirror(
+        "platformList:ifFail:",
+        "List",
+        Primitive::Platform(PlatformPrimitive::List),
+    ),
+    mirror(
+        "platform:show:ifFail:",
+        "show:",
+        Primitive::Platform(PlatformPrimitive::Show),
+    ),
+    mirror(
+        "platformNewLine:ifFail:",
+        "newLine",
+        Primitive::Platform(PlatformPrimitive::NewLine),
+    ),
+];
+
+const _: () = assert!(MIRROR.len() <= u8::MAX as usize + 1);
+
+/// The row `primitive` names.
+pub fn mirror_entry(primitive: MirrorPrimitive) -> &'static MirrorEntry {
+    &MIRROR[primitive.index()]
+}
+
+/// The row whose mirror selector is `selector`, for the compiler, which
+/// binds a recognized mirror send to its row once, at compile time.
+pub fn mirror_primitive_named(selector: &str) -> Option<MirrorPrimitive> {
+    MIRROR
+        .iter()
+        .position(|entry| entry.selector == selector)
+        .map(|index| MirrorPrimitive(index as u8))
+}
+
 /// The selectors `kind` answers natively, in the order its module lists them.
 pub fn primitives_of(kind: BuiltinClass) -> &'static [PrimitiveSelector] {
     match kind {
@@ -339,12 +775,32 @@ pub fn primitives_of(kind: BuiltinClass) -> &'static [PrimitiveSelector] {
         BuiltinClass::Block => BLOCK,
         BuiltinClass::Platform => PLATFORM,
         BuiltinClass::Nil => &[],
+        // The mirror's entries come from `MIRROR`, not from a
+        // `PrimitiveSelector` list -- `method_table` special-cases it below.
+        BuiltinClass::VmMirror => &[],
     }
 }
 
 /// The method table the bootstrap gives `kind`'s mixin: one
-/// `MethodEntry::Primitive` per selector `kind` answers natively.
+/// `MethodEntry::Primitive` per selector `kind` answers natively. The VM
+/// mirror's table comes from `MIRROR` directly, one row per entry, rather
+/// than from `primitives_of`, whose per-family lists it is not one of.
 pub fn method_table(kind: BuiltinClass) -> IdentityMap<Symbol, MethodEntry> {
+    if kind == BuiltinClass::VmMirror {
+        return MIRROR
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                (
+                    Symbol::intern(entry.selector),
+                    MethodEntry::Primitive(PrimitiveMethod {
+                        primitive: Primitive::Mirror(MirrorPrimitive(index as u8)),
+                        access: ast::AccessModifier::Public,
+                    }),
+                )
+            })
+            .collect();
+    }
     primitives_of(kind)
         .iter()
         .map(|entry| {
@@ -380,13 +836,15 @@ mod tests {
         }
     }
 
-    /// `Nil` has no natives of its own today; every other builtin does.
+    /// `Nil` has no natives of its own today; the VM mirror's come from
+    /// `MIRROR` rather than `primitives_of` (`method_table`'s special case);
+    /// every other builtin has a `primitives_of` list.
     #[test]
-    fn every_builtin_but_nil_has_primitives() {
+    fn every_builtin_but_nil_and_the_mirror_has_primitives() {
         for kind in BuiltinClass::ALL {
             assert_eq!(
                 primitives_of(kind).is_empty(),
-                kind == BuiltinClass::Nil,
+                kind == BuiltinClass::Nil || kind == BuiltinClass::VmMirror,
                 "{kind:?}"
             );
         }

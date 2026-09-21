@@ -198,6 +198,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Nil => 11,
         BuiltinClass::Block => 12,
         BuiltinClass::Platform => 13,
+        BuiltinClass::VmMirror => 14,
     }
 }
 
@@ -1215,6 +1216,18 @@ pub fn encode_graph_section<'gc>(
     writer.write_u32(u32_field("object table entry count", table.objects().len()));
     writer.write_u32(u32_field("frame table entry count", table.frames().len()));
     for object in table.objects() {
+        // The VM mirror is a capability the bootstrap hands to the core
+        // library alone (`docs/design/core-library.md`, "The VM mirror is
+        // the whole Rust boundary"); an artifact that carried it would hand
+        // it to whatever loaded it.
+        if heap.class_builtin(heap.class_of_object(*object)) == Some(BuiltinClass::VmMirror) {
+            return Err(
+                "image encoding refuses the VM mirror: it is a capability the \
+                 bootstrap hands to the core library alone, and an artifact that \
+                 carried it would hand it to whatever loaded it"
+                    .to_string(),
+            );
+        }
         encode_object(writer, *object, &context, symbols)?;
     }
     for frame in table.frames() {

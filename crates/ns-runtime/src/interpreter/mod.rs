@@ -8,6 +8,7 @@ pub(crate) mod inline_cache;
 pub mod instantiate;
 pub(crate) mod literals;
 pub(crate) mod locals;
+pub(crate) mod mirror;
 pub(crate) mod nested;
 pub(crate) mod resolve;
 mod safepoint;
@@ -207,6 +208,10 @@ pub struct Mutator<'gc> {
     /// building it; nothing can reach a `Mutator` in that state.
     pub(crate) builtin_classes: Vec<ClassReference<'gc>>,
     pub(crate) platform_singleton: Option<Value<'gc>>,
+    /// The VM mirror (`BuiltinClass::VmMirror`'s one instance), built with
+    /// the builtin classes and handed to the core library at bootstrap. A
+    /// capability: nothing hands it to a program.
+    pub(crate) vm_mirror: Option<Value<'gc>>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -630,6 +635,9 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
+        let class = self.builtin_class(BuiltinClass::VmMirror);
+        let mirror = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        self.vm_mirror = Some(Value::Object(mirror));
     }
 
     /// The next pair of dispatch ids, or `DispatchIds::NONE` once the counter
@@ -1283,6 +1291,30 @@ impl<'gc> Mutator<'gc> {
         let value = Value::Object(object);
         self.platform_singleton = Some(value);
         value
+    }
+
+    /// The VM mirror. Built by `bootstrap_builtin_classes`, before anything
+    /// can ask.
+    ///
+    /// Unreached by production code until the kernel phase sends to it
+    /// (`docs/superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md`,
+    /// Tasks 2-4); used from this crate's own tests today, which is why the
+    /// lint needs silencing rather than the method needing a caller yet.
+    #[allow(dead_code)]
+    pub(crate) fn vm_mirror(&self) -> Value<'gc> {
+        self.vm_mirror
+            .expect("internal: the VM mirror is built with the builtin classes")
+    }
+
+    /// Whether `value` is the VM mirror. Unreached until `interpreter::sends`
+    /// checks a `MirrorSend`'s receiver (same plan, Task 3); see `vm_mirror`'s
+    /// comment.
+    #[allow(dead_code)]
+    pub(crate) fn is_vm_mirror(&self, value: Value<'gc>) -> bool {
+        match (value, self.vm_mirror) {
+            (Value::Object(object), Some(Value::Object(mirror))) => object.same(mirror),
+            _ => false,
+        }
     }
 
     /// A `Transcript`-style stdout stream object -- see `crate::platform`'s
