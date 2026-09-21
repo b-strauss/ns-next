@@ -2628,6 +2628,149 @@ too and shows the identical pattern — zero collections, no measurable move —
 which is the expectation generalizing rather than a coincidence limited to
 the two sources it named.
 
+### What leaf inlining moved
+
+The compiler now recognizes the nine binary integer primitives
+(`+ - * // < > <= >= =`) at an ordinary explicit-receiver send and emits
+`Instruction::IntegerBinary` instead of a send, with the send kept as the
+fallback the instruction jumps to when either operand is not a
+`Value::SmallInteger` or the `checked_*` operation declines
+([compiler.md](compiler.md), "Arithmetic inlining"). This is the step
+[core-library.md](core-library.md) sequences ahead of the move to a VM
+mirror: once every builtin method is Newspeak over a mirror, a leaf send
+that costs an activation is paid for on every arithmetic operation in the
+library, so the fast path has to exist first.
+
+**The expectation, recorded before any binary was built.** Sources whose hot
+loop does integer arithmetic should improve, because an operation that was a
+full send becomes one instruction plus a guard; sources that do none should
+not move. Counting the eight sources first turned up the fact that **the
+second group is empty**: every one of them counts its iterations with
+`n < <limit>` and `n:: n + 1`, so every one gets at least two operations per
+iteration out of the send path. The prediction was therefore a ranking by
+how much non-arithmetic work surrounds those operations — large (>10%) for
+`bench_loop.ns`, whose loop body is arithmetic and slot sends and nothing
+else; moderate (4–10%) for `bench_send.ns`, `bench_megamorphic.ns` and
+`bench_do.ns`; small (0–4%) for `bench_block.ns`, `bench_new.ns`,
+`bench_new2.ns` and `bench_newarg.ns`, whose iterations were expected to be
+dominated by a closure allocation or an instantiation. No source was
+expected to get slower: the unconditional `Jump` past the fallback that
+every *successful* operation also executes makes two dispatches out of one
+send, which should show as a smaller gain than the send count suggests, not
+as a regression.
+
+**Measured 2026-09-21, against `6f5a5b1`, the commit on `master` the branch
+was cut from**, by the protocol of "What removing the re-entries moved"
+above: both binaries built with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
+the baseline in a throwaway worktree, neither importing `VCRUNTIME140.dll`
+and both checked to print the expected answer for all eight sources first;
+`ns-next bench <source> --iterations 30`, five rounds per sitting, the order
+of the two binaries alternating from round to round, two whole sittings,
+nothing else running.
+
+**`vm::run`'s step is still one function.** A release build with debug
+information, `dumpbin /disasm`: one function label matching `vm::run`
+(`ns_runtime::vm::run`) in each binary, no `vm::run::closure` of its own.
+The baseline measures **5,732 instructions**, the same figure recorded at
+the moving collector, and the head **5,866** — the `IntegerBinary` arm adds
+134, and the step did not split.
+
+Medians in ms per round, then each group's mean; sitting 1:
+
+| Source | Before (`6f5a5b1`), rounds 1–5 | mean | After, rounds 1–5 | mean | Change |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.29, 10.49, 10.49, 10.36, 10.52 | 10.43 | 7.17, 7.19, 7.42, 7.17, 7.21 | 7.23 | **−30.6%**, entirely below |
+| `bench_send.ns` | 11.54, 11.60, 11.76, 11.71, 11.72 | 11.67 | 8.69, 8.58, 8.59, 8.61, 8.77 | 8.65 | **−25.9%**, entirely below |
+| `bench_block.ns` | 20.18, 20.60, 20.35, 20.65, 20.59 | 20.48 | 17.96, 18.00, 18.20, 17.85, 17.82 | 17.97 | **−12.3%**, entirely below |
+| `bench_megamorphic.ns` | 16.70, 16.81, 16.77, 16.80, 17.06 | 16.83 | 11.77, 11.67, 11.64, 11.75, 11.95 | 11.76 | **−30.1%**, entirely below |
+| `bench_do.ns` | 7.09, 7.12, 7.05, 6.98, 7.06 | 7.06 | 5.82, 5.77, 5.84, 5.84, 5.78 | 5.81 | **−17.7%**, entirely below |
+| `bench_new.ns` | 6.24, 6.27, 6.30, 6.21, 6.34 | 6.27 | 5.08, 5.00, 4.97, 4.96, 4.97 | 5.00 | **−20.3%**, entirely below |
+| `bench_new2.ns` | 7.28, 7.33, 7.39, 7.34, 7.28 | 7.32 | 5.99, 6.05, 6.08, 6.08, 6.05 | 6.05 | **−17.4%**, entirely below |
+| `bench_newarg.ns` | 9.39, 10.03, 9.35, 9.59, 9.42 | 9.56 | 8.06, 8.15, 8.13, 8.20, 8.07 | 8.12 | **−15.0%**, entirely below |
+
+Sitting 2:
+
+| Source | Before (`6f5a5b1`), rounds 1–5 | mean | After, rounds 1–5 | mean | Change |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.52, 10.59, 10.39, 10.48, 10.51 | 10.50 | 7.15, 7.30, 7.14, 7.15, 7.27 | 7.20 | **−31.4%**, entirely below |
+| `bench_send.ns` | 11.58, 11.63, 11.78, 11.58, 11.83 | 11.68 | 8.57, 8.56, 8.50, 8.58, 8.57 | 8.55 | **−26.8%**, entirely below |
+| `bench_block.ns` | 20.39, 20.65, 20.64, 20.33, 20.57 | 20.52 | 18.27, 18.30, 18.34, 18.36, 18.34 | 18.32 | **−10.7%**, entirely below |
+| `bench_megamorphic.ns` | 16.72, 16.78, 17.05, 16.77, 16.98 | 16.86 | 11.66, 11.81, 11.95, 11.72, 11.91 | 11.81 | **−30.0%**, entirely below |
+| `bench_do.ns` | 7.05, 7.16, 7.21, 7.14, 7.05 | 7.12 | 5.75, 5.89, 5.95, 5.70, 5.89 | 5.84 | **−18.0%**, entirely below |
+| `bench_new.ns` | 6.20, 6.31, 6.19, 6.26, 6.30 | 6.25 | 4.99, 5.00, 5.01, 5.00, 5.02 | 5.01 | **−19.9%**, entirely below |
+| `bench_new2.ns` | 7.30, 7.33, 7.35, 7.32, 7.34 | 7.33 | 6.11, 6.08, 6.12, 6.14, 6.18 | 6.12 | **−16.4%**, entirely below |
+| `bench_newarg.ns` | 9.23, 9.30, 9.25, 9.24, 9.40 | 9.28 | 8.01, 8.11, 8.01, 8.07, 8.14 | 8.07 | **−13.1%**, entirely below |
+
+**Every one of the eight sources is faster, by 11.5% to 31.0%, and every
+after-group lies entirely below its before-group in both sittings** — the
+protocol's gate, met by all eight. The only earlier step to clear it across
+its whole suite was 3b, the inline caches, at 4.3–11.3% over seven sources
+("What the inline caches moved" above). Both sittings pooled:
+
+| Source | Before mean | After mean | Change |
+|---|---|---|---|
+| `bench_loop.ns` | 10.46 | 7.22 | **−31.0%** |
+| `bench_megamorphic.ns` | 16.84 | 11.78 | **−30.0%** |
+| `bench_send.ns` | 11.67 | 8.60 | **−26.3%** |
+| `bench_new.ns` | 6.26 | 5.00 | **−20.1%** |
+| `bench_do.ns` | 7.09 | 5.82 | **−17.8%** |
+| `bench_new2.ns` | 7.33 | 6.09 | **−16.9%** |
+| `bench_newarg.ns` | 9.42 | 8.09 | **−14.1%** |
+| `bench_block.ns` | 20.50 | 18.14 | **−11.5%** |
+
+**The expectation's ends were right and its middle was not, and every
+magnitude was under-predicted by three to five times.** `bench_loop.ns` did
+gain most and `bench_block.ns` least, as named in advance. But the whole
+"small" group — `bench_block.ns`, `bench_new.ns`, `bench_new2.ns` and
+`bench_newarg.ns` — landed between 11.5% and 20.1%, well inside and above
+the band predicted for the "moderate" group, and `bench_new.ns` at −20.1%
+came out ahead of `bench_do.ns` at −17.8%, which had been predicted
+moderate. `bench_megamorphic.ns` came second overall rather than in the
+middle of its group. The prediction's error was in its premise, not its arithmetic:
+it assumed an instantiation or a block activation dwarfs three arithmetic
+sends, and the measurement says three arithmetic sends are of the same order
+as an instantiation.
+
+**What the ordering does track is the share of a source's per-iteration
+sends the step removed, discounted by how expensive the sends left behind
+are.** Counting the send instructions `ns-next disasm` prints in each
+source's loop, on the path an iteration actually takes:
+
+| Source | sends per iteration before | after | share removed | measured |
+|---|---|---|---|---|
+| `bench_loop.ns` | 9 | 6 | 33% | −31.0% |
+| `bench_megamorphic.ns` | 12 | 7 | 42% | −30.0% |
+| `bench_send.ns` | 9 | 6 | 33% | −26.3% |
+| `bench_new.ns` | 8 | 5 | 38% | −20.1% |
+| `bench_do.ns` | 33 | 21 | 36% | −17.8% |
+| `bench_new2.ns` | 8 | 5 | 38% | −16.9% |
+| `bench_newarg.ns` | 8 | 5 | 38% | −14.1% |
+| `bench_block.ns` | 10 | 7 | 30% | −11.5% |
+
+`bench_loop.ns` is the clean case: its nine sends are six slot sends and
+three arithmetic leaves, all of the same order of cost, and removing a third
+of them takes off 31%. Wherever the remaining sends are dearer than a leaf
+the gain falls away from the share — `bench_do.ns` keeps 50,000 block
+activations through `do:`, the `bench_new*` sources an instantiation and a
+getter method each, and `bench_block.ns`, the extreme, keeps a method
+activation, a `MakeVector`, a `MakeClosure` and a block activation per
+iteration for 30% of its sends removed and 11.5% of its time. That reading
+is an inference from the instruction counts and the timings; no profile was
+taken of this step.
+
+**The `Jump` past the fallback does not show, and the data cannot bound it
+better than this.** Every successful operation executes `IntegerBinary` and
+then an unconditional `Jump` over the fallback send, so the hot path is two
+dispatches where an out-of-line fallback would leave one
+([compiler.md](compiler.md), "Arithmetic inlining"). `bench_loop.ns` removed
+33% of its sends and gained 31.0%, which is the tightest the suite gets: the
+2.3 points between them are everything the extra dispatches plus the guard
+plus any second-order effect could account for, and they are not separable
+from the difference between a slot send's cost and a leaf send's. Placing
+the fallback out of line is therefore a follow-up worth trying and not one
+this measurement makes a case for.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
