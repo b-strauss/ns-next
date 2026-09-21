@@ -3221,6 +3221,36 @@ the branch's last code commit — `cargo test --workspace`, `cargo clippy
 Markdown only, so none of them was re-run for it. No recorded outcome
 moved.
 
+**Carried forward, reviewed and deliberately not fixed.** The whole-branch
+review triaged each of these and judged none of them worth holding the merge
+for; they are recorded because a reviewed decision to leave something is worth
+more to a later reader than the silence that usually replaces it.
+
+- **`lower_cascade` does not route through `lower_send`**, so a cascade such as
+  `x + 1; + 2` keeps ordinary sends for its integer leaves. Behaviour is
+  identical; only the optimization is missed. Widening it means reworking the
+  cascade's shared receiver register, which is why it was not done here.
+- **The aliasing test hardcodes register 0** for the local it watches, with a
+  comment saying why that is the register. Deriving it from the emitted
+  `StoreLocal` would make the test self-describing; as written it fails loudly
+  rather than silently if the layout ever changes.
+- **No unit test pins the two patched jump targets.** The four `insta`
+  disassembly snapshots pin them exactly, and `patch_target`'s `unreachable!`
+  makes a missing arm loud rather than silent, so this is coverage breadth.
+- **The image round-trip fixture exercises `Add` only.** The tag mapping itself
+  is covered for all nine operations by `every_integer_operation_tag_round_trips`;
+  the instruction's other fields do not vary per operation.
+- **The standalone opcode-tag test duplicates the line added to
+  `instruction_tags_are_fixed`**, and reaches for a fully-qualified path where
+  the file glob-imports the module.
+- **`bench_megamorphic.ns` removed the largest send share (42%) and did not gain
+  the most.** The discount model in "What leaf inlining moved" accommodates it —
+  the sends it keeps are megamorphic and so dearer — but that discount has no
+  independent measurement, which leaves the model as stated unfalsifiable on this
+  row.
+- **"The only earlier step to clear it across its whole suite was 3b"** is true
+  for a step measured against its own baseline; several cumulative comparisons
+  against `be3eb40` also show every source entirely below in both sittings.
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
