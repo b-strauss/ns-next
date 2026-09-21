@@ -42,6 +42,15 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_MAKE_VECTOR, 30);
     assert_eq!(OPCODE_LOAD_VECTOR, 31);
     assert_eq!(OPCODE_STORE_VECTOR, 32);
+    assert_eq!(OPCODE_INTEGER_BINARY, 33);
+}
+
+#[test]
+fn the_integer_binary_opcode_keeps_its_tag() {
+    // A tag is assigned once and never renumbered: a stale artifact must hit
+    // an unknown tag and be refused, never decode into a different, valid
+    // program.
+    assert_eq!(ns_runtime::image::opcodes::OPCODE_INTEGER_BINARY, 33);
 }
 
 #[test]
@@ -89,6 +98,7 @@ fn no_two_tags_share_a_number() {
         OPCODE_JUMP_IF_NOT_BOOLEAN,
         OPCODE_BRANCH_IF_FALSE,
         OPCODE_BRANCH_IF_TRUE,
+        OPCODE_INTEGER_BINARY,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -149,6 +159,7 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_JUMP_IF_NOT_BOOLEAN,
         OPCODE_BRANCH_IF_FALSE,
         OPCODE_BRANCH_IF_TRUE,
+        OPCODE_INTEGER_BINARY,
     ];
     for retired in RETIRED_OPCODES {
         assert!(!live.contains(&retired), "tag {retired} is retired");

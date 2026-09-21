@@ -599,6 +599,11 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         // to say what it reads.
         Instruction::LoadVector { vector, .. } => vec![*vector],
         Instruction::StoreVector { vector, source, .. } => vec![*vector, *source],
+        // Unreachable in reference-lowered code: the reference lowering emits
+        // only the ordinary send for every integer leaf (`docs/design/compiler.md`,
+        // "The reference lowering"), never this instruction. Named here anyway,
+        // so a real addition still has to say what it reads.
+        Instruction::IntegerBinary { left, right, .. } => vec![*left, *right],
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
         | Instruction::LoadBuiltinClass { .. }
@@ -625,7 +630,8 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::MakeClosure { destination, .. }
         | Instruction::MakeArray { destination, .. }
         | Instruction::MakeVector { destination, .. }
-        | Instruction::LoadVector { destination, .. } => Some(*destination),
+        | Instruction::LoadVector { destination, .. }
+        | Instruction::IntegerBinary { destination, .. } => Some(*destination),
         Instruction::StoreLocal { .. }
         | Instruction::StoreOuterLocal { .. }
         | Instruction::StoreVector { .. }

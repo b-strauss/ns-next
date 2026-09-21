@@ -260,6 +260,22 @@ pub enum Instruction {
         register: u16,
         target: u32,
     },
+    /// An integer leaf's inlined fast path. Performs `operation` on `left` and
+    /// `right` into `destination` when both hold `Value::SmallInteger` and the
+    /// result does not overflow; otherwise jumps to `target`, where the ordinary
+    /// send stands. Every error -- overflow, a non-integer operand, a user
+    /// subclass -- is raised by that send's primitive, never here, so there is
+    /// one source for each of them.
+    ///
+    /// Reads and writes only registers of the activation executing it -- never
+    /// another frame's by reference -- so `outer_reach_of` does not name it.
+    IntegerBinary {
+        operation: IntegerOperation,
+        destination: u16,
+        left: u16,
+        right: u16,
+        target: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,6 +628,15 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::BranchIfTrue { register, target } => {
             format!("BranchIfTrue r{register} -> {target}")
         }
+        Instruction::IntegerBinary {
+            operation,
+            destination,
+            left,
+            right,
+            target,
+        } => format!(
+            "IntegerBinary {operation:?} r{destination} <- r{left}, r{right} else -> {target}"
+        ),
     }
 }
 

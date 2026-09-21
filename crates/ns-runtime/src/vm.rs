@@ -448,6 +448,12 @@ fn execute<'gc>(
                 Flow::Next
             }
         }
+        // No lowering emits `IntegerBinary` yet -- the compiler still lowers
+        // every integer leaf as an ordinary send. Wiring this arm to the
+        // fast path itself is the next task's job.
+        Instruction::IntegerBinary { .. } => {
+            unreachable!("internal: IntegerBinary is not emitted by any lowering yet")
+        }
     }
 }
 
