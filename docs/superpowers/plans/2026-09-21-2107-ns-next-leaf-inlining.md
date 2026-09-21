@@ -10,11 +10,11 @@ operation costs no send when both operands are integers.
 with a runtime guard and a fallback to a real send
 (`compiler/control_flow.rs` recognizes, `compiler/lower.rs` emits). This adds the
 same shape for the integer leaves: one new instruction that performs the
-operation when both operands are `Value::SmallInteger` and the result does not
-overflow, and jumps to a fallback otherwise. The fallback is the ordinary send
-that exists today, so overflow, non-integer receivers, user subclasses and every
-error text stay in `builtins/` and are never duplicated into `vm.rs` or
-`compiler/`. The reference lowering is untouched and keeps running every send
+operation when both operands are `Value::SmallInteger` and a `checked_*`
+operation yields a result, and jumps to a fallback otherwise. The fallback is
+the ordinary send that exists today, so overflow, a zero divisor, non-integer
+receivers, user subclasses and every error text stay in `builtins/` and are
+never duplicated into `vm.rs` or `compiler/`. The reference lowering is untouched and keeps running every send
 uncached, which is what makes it the oracle for this change.
 
 **Tech Stack:** Rust 1.98, edition 2021, no new dependencies.
@@ -67,32 +67,42 @@ inlining: `docs/design/compiler.md`, "Control-flow inlining".
 
 ## Which operations are inlined
 
-Eight selectors, all binary, all on `Integer`:
+**Every binary integer primitive there is.** `IntegerPrimitive`
+(`crates/ns-runtime/src/builtins/primitive.rs:52`) declares twelve operations,
+of which nine are binary; all nine are inlined. The other three — `Negated`,
+`Absolute`, `PrintString` — are unary and outside this plan's shape.
 
 | Selector | Operation | Result |
 |---|---|---|
 | `+` | `checked_add` | `Value::SmallInteger` |
 | `-` | `checked_sub` | `Value::SmallInteger` |
 | `*` | `checked_mul` | `Value::SmallInteger` |
+| `//` | `checked_div_euclid` | `Value::SmallInteger` |
 | `<` | `<` | `Value::Boolean` |
 | `>` | `>` | `Value::Boolean` |
 | `<=` | `<=` | `Value::Boolean` |
 | `>=` | `>=` | `Value::Boolean` |
 | `=` | `==` | `Value::Boolean` |
 
-Division is deliberately absent: `/` and `//` have a division-by-zero error and
-a rounding rule whose answers belong in `builtins/numbers.rs`, and inlining them
-would mean deciding here what that module already decides. They keep their
-ordinary send.
+**One rule covers every failure, and it is why no operation needs excluding.**
+Each `checked_*` answers `None` where the operation has no integer result —
+`checked_add` on overflow, `checked_div_euclid` on a zero divisor *and* on
+`i64::MIN // -1` — and `None` takes the fallback. So the error and its exact
+text are still decided by `builtins/numbers.rs` and raised by the primitive:
+"division by zero" for the zero divisor, the overflow message for the rest.
+Nothing about rounding, division by zero or overflow is restated here, which is
+what `vm.rs` must not do.
 
-`checked_add`, `checked_sub` and `checked_mul` answer `None` on overflow, and
-that takes the fallback, so the overflow error text stays in `builtins/` exactly
-as `docs/design/core-library.md`'s "Deviation: `i64` integers" describes it.
+**`/` is not in the table because it does not exist on `Integer`.** It is
+declared only as `FloatPrimitive::Divide`; an integer receiver has no `/` at
+all, so there is nothing to inline and a guard for it would be a fast path to
+a lookup failure. This is the plan's only exclusion, and it is about what the
+runtime has, not about what would be awkward.
 
 ## File Structure
 
 - `crates/ns-runtime/src/compiler/control_flow.rs` — gains the recognizer for
-  the eight binary selectors, beside the existing control-flow one. Recognition
+  the nine binary selectors, beside the existing control-flow one. Recognition
   only; no emission.
 - `crates/ns-runtime/src/bytecode.rs` — gains `Instruction::IntegerBinary` and
   its `IntegerOperation` enumeration, plus the `disassemble` arm.
@@ -106,7 +116,7 @@ as `docs/design/core-library.md`'s "Deviation: `i64` integers" describes it.
 
 ---
 
-### Task 1: Recognize the eight binary selectors
+### Task 1: Recognize the nine binary selectors
 
 **Files:**
 - Modify: `crates/ns-runtime/src/compiler/control_flow.rs`
@@ -124,11 +134,14 @@ Add to `control_flow.rs`'s test module. `parse_send` already exists there.
 
 ```rust
 #[test]
-fn every_inlinable_binary_selector_is_recognized() {
+fn every_binary_integer_primitive_is_recognized() {
+    // All nine binary members of `IntegerPrimitive`. If a tenth is ever
+    // added, this test is where its absence shows.
     let cases = [
         ("1 + 2", IntegerOperation::Add),
         ("1 - 2", IntegerOperation::Subtract),
         ("1 * 2", IntegerOperation::Multiply),
+        ("1 // 2", IntegerOperation::FloorDivide),
         ("1 < 2", IntegerOperation::Less),
         ("1 > 2", IntegerOperation::Greater),
         ("1 <= 2", IntegerOperation::LessOrEqual),
@@ -146,10 +159,11 @@ fn every_inlinable_binary_selector_is_recognized() {
 }
 
 #[test]
-fn division_and_keyword_sends_are_not_recognized() {
-    // Division keeps its ordinary send: the division-by-zero error and the
-    // rounding rule belong to `builtins/numbers.rs`, not to a guard here.
-    for source in ["1 / 2", "1 // 2", "1 max: 2", "1 printString"] {
+fn a_selector_without_an_integer_primitive_is_not_recognized() {
+    // `/` exists only as a float primitive, so an integer receiver has no `/`
+    // to reach: inlining it would be a fast path to a lookup failure. The
+    // others are not binary sends at all.
+    for source in ["1 / 2", "1 max: 2", "1 printString"] {
         let send = parse_send(source);
         assert_eq!(
             recognize_integer_binary(&send),
@@ -172,14 +186,16 @@ In `crates/ns-runtime/src/bytecode.rs`, beside the other bytecode types:
 
 ```rust
 /// The integer leaves the compiler emits inline, guarded, with the ordinary
-/// send as the fallback. Division is absent on purpose: its error and
-/// rounding rules live in `builtins/numbers.rs`, and a second copy here is
-/// exactly what `vm.rs` must not hold.
+/// send as the fallback: every binary member of `IntegerPrimitive`. Each one
+/// is computed with a `checked_*` operation, so the cases that have no
+/// integer result -- overflow, a zero divisor -- answer `None` and take the
+/// fallback, leaving every error and its text to `builtins/numbers.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerOperation {
     Add,
     Subtract,
     Multiply,
+    FloorDivide,
     Less,
     Greater,
     LessOrEqual,
@@ -208,6 +224,7 @@ pub(crate) fn recognize_integer_binary(send: &ast::Send) -> Option<IntegerOperat
         "+" => Some(IntegerOperation::Add),
         "-" => Some(IntegerOperation::Subtract),
         "*" => Some(IntegerOperation::Multiply),
+        "//" => Some(IntegerOperation::FloorDivide),
         "<" => Some(IntegerOperation::Less),
         ">" => Some(IntegerOperation::Greater),
         "<=" => Some(IntegerOperation::LessOrEqual),
@@ -437,6 +454,13 @@ Instruction::IntegerBinary {
         IntegerOperation::Multiply => {
             left_integer.checked_mul(right_integer).map(Value::SmallInteger)
         }
+        // `checked_div_euclid` answers `None` for a zero divisor as well as
+        // for `i64::MIN // -1`, so both take the fallback and the primitive
+        // raises its own "division by zero" or overflow error. No zero check
+        // is written here, because writing one would be the second copy.
+        IntegerOperation::FloorDivide => left_integer
+            .checked_div_euclid(right_integer)
+            .map(Value::SmallInteger),
         IntegerOperation::Less => Some(Value::Boolean(left_integer < right_integer)),
         IntegerOperation::Greater => Some(Value::Boolean(left_integer > right_integer)),
         IntegerOperation::LessOrEqual => Some(Value::Boolean(left_integer <= right_integer)),
@@ -689,7 +713,11 @@ class IntegerFallbacks usingPlatform: platform = Object new (
     p transcript show: (2 + 3.5) printString; newLine.
     (* A string operand: the fallback runs, the primitive fails, and the
        lookup ends where it ends today. *)
-    p transcript show: (2 = 'two') printString; newLine
+    p transcript show: (2 = 'two') printString; newLine.
+    (* Floor division on the fast path, and then its two fallbacks: a zero
+       divisor and `i64::MIN // -1`, both of which `checked_div_euclid`
+       declines so that the primitive raises its own error. *)
+    p transcript show: (7 // 2) printString; newLine
   )
 ) : ()
 ```
@@ -713,11 +741,12 @@ not here.
 Write the `.toml` beside it with the `status`, `stdout` and `stderr` the two
 lowerings agreed on, in the format the other goldens' `.toml` files use.
 
-- [ ] **Step 4: Write the overflow golden**
+- [ ] **Step 4: Write the two raising goldens**
 
-A second module, `goldens/arithmetic/integer_overflow.ns`, whose `main:args:`
-overflows an addition, so that the error text raised through the fallback is
-pinned:
+Each error path needs its own module, because the first uncaught error ends the
+run — one module cannot pin two of them.
+
+`goldens/arithmetic/integer_overflow.ns`, which pins the overflow message:
 
 ```
 Newspeak3
@@ -730,8 +759,24 @@ class IntegerOverflow usingPlatform: platform = Object new (
 ) : ()
 ```
 
-Record its `status`, `stdout` and `stderr` the same way, after checking both
-lowerings agree.
+`goldens/arithmetic/integer_division_by_zero.ns`, which pins the
+"division by zero" message reached through the inlined path's fallback:
+
+```
+Newspeak3
+'Arithmetic'
+class IntegerDivisionByZero usingPlatform: platform = Object new (
+) (
+  public main: p args: a = (
+    p transcript show: (7 // 0) printString; newLine
+  )
+) : ()
+```
+
+Record each one's `status`, `stdout` and `stderr` the same way, after checking
+both lowerings agree. These two are what show that inlining did not take the
+error away from `builtins/numbers.rs`: the recorded `stderr` must be the same
+text the primitive produced before this change.
 
 - [ ] **Step 5: Run the suite**
 
@@ -828,7 +873,17 @@ are lowered today", is Tasks 1 through 4. Cog's `bytecodePrimAdd`, named in
 `core-library.md` as the model, is the same shape. The specification's own
 requirement that an overflowing integer raise an error rather than wrap
 (`core-library.md`, "Deviation: `i64` integers") is preserved by routing
-overflow to the fallback, and pinned by Task 5's second golden.
+overflow to the fallback, and pinned by Task 5's overflow golden; the zero
+divisor is preserved the same way and pinned by its own golden beside it.
+
+**Coverage of the operations themselves.** All nine binary members of
+`IntegerPrimitive` are inlined, including `//`. An earlier draft of this plan
+excluded division on the grounds that its error and rounding rules belong to
+`builtins/numbers.rs` — which is true, and is equally true of `+`'s overflow,
+so it was not a reason. `checked_div_euclid` declines a zero divisor and
+`i64::MIN // -1` exactly as `checked_add` declines an overflow, and the same
+fallback handles both. The only selector left out is `/`, which has no integer
+primitive at all.
 
 **Not covered here, by design:** the VM mirror, `Kernel.ns`, the bootstrap
 change and the `Class`/`Behavior`/`Metaclass` work. Those are separate plans,
@@ -845,7 +900,7 @@ with the fallback named if `ns-runtime`'s tests do not have one.
 **Type consistency.** `IntegerOperation` is declared once, in `bytecode.rs`
 (Task 1 Step 3), used by `recognize_integer_binary` (Task 1 Step 4),
 `Instruction::IntegerBinary` (Task 2 Step 3), the VM arm (Task 3 Step 3) and
-`lower_integer_binary` (Task 4 Step 3), with the same eight variant names
+`lower_integer_binary` (Task 4 Step 3), with the same nine variant names
 throughout. `Instruction::IntegerBinary`'s field names — `operation`,
 `destination`, `left`, `right`, `target` — are identical in all four places.
 `OPCODE_INTEGER_BINARY = 33` appears in Task 2 Steps 1 and 5 with the same
