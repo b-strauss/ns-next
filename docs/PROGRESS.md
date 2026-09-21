@@ -274,6 +274,42 @@ arithmetic operation in those bodies into a send the interpreter dispatches;
 the numbers above are what that rewrite now has to spend before it shows as
 a regression against `6f5a5b1`, and the fast path is what supplies it.
 
+**What step 6 still needs, and it has a design but no plan yet.** The design
+is [core-library.md](design/core-library.md), "Planned: the core library as
+Newspeak source over a VM mirror", decided with the user on 2026-09-21 and
+written up in four parts: why the mirror is the whole Rust boundary (§8.3.1
+requires it — "A primitive call is a message send to the VM mirror" — which
+rules out the primitive pragma an earlier version of that document named as
+the target), how the bootstrap fills empty class placeholders from the
+compiled `Kernel.ns` before instantiating it, where the library source lives
+and how modules are found, and what the step must not break.
+
+It breaks into three plans, deliberately not one, for the reason the leaf
+inlining was split off first: each produces working, measured software on its
+own, and each one's measurement informs the next.
+
+1. **The vmMirror, `Kernel.ns` and the bootstrap.** The largest of the three.
+   The mirror is an object of a builtin class whose method table carries every
+   leaf as an enumerated primitive, so step 3a's machinery is kept whole and
+   only the class holding the entries changes. Expect the arithmetic-heavy
+   benchmarks to regress against `e2bb31e` by whatever the leaf inlining does
+   not absorb; that is the number this step is measured on.
+2. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2, which
+   [object-model.md](design/object-model.md) describes and which the
+   reflection work after step 6 cannot start without.
+3. **The payload space**, step 7 of the order of work, whose own measurements
+   are named under [memory.md](design/memory.md), "Payloads belong to the Rust
+   allocator, and what that costs". Run one of them before building anything
+   there.
+
+Two things are recorded as decided but unbuilt, and neither should be
+rediscovered: `Integer` has no `/` and step 6 has to settle what an exact
+quotient answers without a `Fraction` class
+([core-library.md](design/core-library.md), "Gap: an integer has no `/`"); and
+the arithmetic fast path can drop its `Jump` by inverting the branch sense,
+which requires retiring wire tag 33 and taking 34
+([compiler.md](design/compiler.md), "Arithmetic inlining").
+
 **The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
 `22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
 beside it, as every measurement since
