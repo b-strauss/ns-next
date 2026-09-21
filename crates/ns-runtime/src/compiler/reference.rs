@@ -791,6 +791,7 @@ mod tests {
                     | Instruction::JumpIfNotBoolean { .. }
                     | Instruction::BranchIfFalse { .. }
                     | Instruction::BranchIfTrue { .. }
+                    | Instruction::IntegerBinary { .. }
             )
         })
     }

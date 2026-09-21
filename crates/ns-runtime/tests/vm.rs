@@ -771,8 +771,9 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
 /// The inlined integer leaves (`Instruction::IntegerBinary`). Each one is
 /// checked through compiled source rather than a hand-built code object, so
 /// the test survives a change to the lowering, and each is checked against
-/// the answer the ordinary send gives -- the fast path exists to be
-/// indistinguishable from it.
+/// the literal answer the operation is known to produce. The goldens, run
+/// under both lowerings, are what checks the fast path against the ordinary
+/// send.
 #[test]
 fn an_inlined_integer_operation_answers_what_the_primitive_answers() {
     let source = indoc! {"
