@@ -522,6 +522,7 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
                     | Instruction::JumpIfNotBoolean { .. }
                     | Instruction::BranchIfFalse { .. }
                     | Instruction::BranchIfTrue { .. }
+                    | Instruction::IntegerBinary { .. }
             ),
             "internal: the reference lowering emitted a branch: {instruction:?}"
         );

@@ -1696,17 +1696,20 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
-        // Control-flow inlining is the only source of jumps, and every one of
-        // its labels is a `here()` that `finish_body`'s terminator guarantees
-        // is a real instruction index, so a target must be in range. This
-        // check does *not* catch a never-patched target: an unpatched
-        // `target` field stays `0`, which is always in range and would pass
-        // silently here. Completeness against that failure mode instead
-        // comes from each emitter's own emit/patch pairing (every `emit(...
-        // { target: 0 })` in this module is paired with a `patch_target`
-        // call before `finish` runs) -- an out-of-range target is a compiler
-        // bug, not a program error, so it is a `debug_assert!` -- checked on
-        // every debug test run, free in release.
+        // Control-flow inlining and the integer leaves' fast path are the two
+        // sources of a patched target, and every one of their labels is a
+        // `here()` that `finish_body`'s terminator guarantees is a real
+        // instruction index, so a target must be in range. Every instruction
+        // `patch_target` accepts is listed below, and the two lists are one
+        // defence: a third emitter that patches a target has to appear in
+        // both. This check does *not* catch a never-patched target: an
+        // unpatched `target` field stays `0`, which is always in range and
+        // would pass silently here. Completeness against that failure mode
+        // instead comes from each emitter's own emit/patch pairing (every
+        // `emit(... { target: 0 })` in this module is paired with a
+        // `patch_target` call before `finish` runs) -- an out-of-range target
+        // is a compiler bug, not a program error, so it is a `debug_assert!`
+        // -- checked on every debug test run, free in release.
         debug_assert!(
             self.instructions
                 .iter()
@@ -1714,7 +1717,8 @@ impl<'a> Lowerer<'a> {
                     Instruction::Jump { target }
                     | Instruction::JumpIfNotBoolean { target, .. }
                     | Instruction::BranchIfFalse { target, .. }
-                    | Instruction::BranchIfTrue { target, .. } => Some(*target as usize),
+                    | Instruction::BranchIfTrue { target, .. }
+                    | Instruction::IntegerBinary { target, .. } => Some(*target as usize),
                     _ => None,
                 })
                 .all(|target| target < self.instructions.len()),
