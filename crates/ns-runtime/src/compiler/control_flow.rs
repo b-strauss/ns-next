@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::bytecode::IntegerOperation;
 use crate::types::Binding;
 
 /// Whether `send` is an ordinary explicit-receiver send -- the gate in front
@@ -104,6 +105,36 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
     }
 }
 
+/// The arithmetic counterpart to `recognize`: which binary send has an
+/// inlined fast path. Pure recognition, like `recognize` above -- the
+/// emission is `lower.rs`'s `lower_integer_binary`.
+///
+/// The gate in front of this is the same `is_ordinary_send`: a `super` or
+/// lexical send is never inlined, because its lookup does not start where an
+/// explicit-receiver send's does.
+///
+/// Nothing outside this module's own tests calls it yet -- a later task
+/// wires it into `lower.rs` -- so it reads as dead code to a plain build
+/// until then.
+#[allow(dead_code)]
+pub(crate) fn recognize_integer_binary(send: &ast::Send) -> Option<IntegerOperation> {
+    let ast::Selector::Binary(selector) = &send.message.selector else {
+        return None;
+    };
+    match selector.as_str() {
+        "+" => Some(IntegerOperation::Add),
+        "-" => Some(IntegerOperation::Subtract),
+        "*" => Some(IntegerOperation::Multiply),
+        "//" => Some(IntegerOperation::FloorDivide),
+        "<" => Some(IntegerOperation::Less),
+        ">" => Some(IntegerOperation::Greater),
+        "<=" => Some(IntegerOperation::LessOrEqual),
+        ">=" => Some(IntegerOperation::GreaterOrEqual),
+        "=" => Some(IntegerOperation::Equal),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +201,45 @@ mod tests {
         assert!(recognize(&parse_send("x foo")).is_none());
         assert!(recognize(&parse_send("x + [1]")).is_none());
         assert!(recognize(&parse_send("x at: [1]")).is_none());
+    }
+
+    #[test]
+    fn every_binary_integer_primitive_is_recognized() {
+        // All nine binary members of `IntegerPrimitive`. If a tenth is ever
+        // added, this test is where its absence shows.
+        let cases = [
+            ("1 + 2", IntegerOperation::Add),
+            ("1 - 2", IntegerOperation::Subtract),
+            ("1 * 2", IntegerOperation::Multiply),
+            ("1 // 2", IntegerOperation::FloorDivide),
+            ("1 < 2", IntegerOperation::Less),
+            ("1 > 2", IntegerOperation::Greater),
+            ("1 <= 2", IntegerOperation::LessOrEqual),
+            ("1 >= 2", IntegerOperation::GreaterOrEqual),
+            ("1 = 2", IntegerOperation::Equal),
+        ];
+        for (source, expected) in cases {
+            let send = parse_send(source);
+            assert_eq!(
+                recognize_integer_binary(&send),
+                Some(expected),
+                "expected `{source}` to be recognized"
+            );
+        }
+    }
+
+    #[test]
+    fn a_selector_without_an_integer_primitive_is_not_recognized() {
+        // `/` exists only as a float primitive, so an integer receiver has no `/`
+        // to reach: inlining it would be a fast path to a lookup failure. The
+        // others are not binary sends at all.
+        for source in ["1 / 2", "1 max: 2", "1 printString"] {
+            let send = parse_send(source);
+            assert_eq!(
+                recognize_integer_binary(&send),
+                None,
+                "expected `{source}` not to be recognized"
+            );
+        }
     }
 }

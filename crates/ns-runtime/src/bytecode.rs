@@ -61,6 +61,24 @@ impl CallSite {
     pub const UNCACHED: CallSite = CallSite { number: u32::MAX };
 }
 
+/// The integer leaves the compiler emits inline, guarded, with the ordinary
+/// send as the fallback: every binary member of `IntegerPrimitive`. Each one
+/// is computed with a `checked_*` operation, so the cases that have no
+/// integer result -- overflow, a zero divisor -- answer `None` and take the
+/// fallback, leaving every error and its text to `builtins/numbers.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerOperation {
+    Add,
+    Subtract,
+    Multiply,
+    FloorDivide,
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    Equal,
+}
+
 /// Every register operand is a `u16` index into the frame's unified
 /// arguments-then-temporaries register file; every jump target is an instruction
 /// index into the owning `CompiledCode.instructions`.
