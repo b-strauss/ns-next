@@ -425,7 +425,13 @@ methods.
 The bootstrap fills each builtin mixin's method table from a static list per
 `BuiltinClass` of (selector, access, primitive) (`builtins/primitive.rs`'s
 `method_table`), as a `MethodEntry::Primitive` carrying the primitive and its
-access. Every primitive is `public`, except `Object`'s `doesNotUnderstand:`,
+access. **Where those entries sit is what step 6 changes**: they move onto the
+method table of one VM mirror object, which §8.3.1 requires and which
+`Kernel.ns` is handed, and the builtin classes get their behaviour from that
+Newspeak source instead ([core-library.md](core-library.md), "The VM mirror is
+the whole Rust boundary"). Everything else in this section — the enumeration,
+the lookup, the failure rule, the cache entry — is unchanged by that move,
+which is why it is a move and not a redesign. Every primitive is `public`, except `Object`'s `doesNotUnderstand:`,
 which §5.5 requires to be `protected`, so an explicit `x doesNotUnderstand: m`
 sent from outside the receiver itself ends in `doesNotUnderstand:`.
 

@@ -730,12 +730,18 @@ so nothing is lost by it going second.
 
 Then, after M4 and before the JIT tiers:
 
-6. **The core library in Newspeak, on Rust primitives** —
-   [core-library.md](design/core-library.md). Every builtin method that calls
-   back into Newspeak — `do:`, `whileTrue:`, `whileFalse:`, `collect:` and the
-   fallback bodies Rust reimplements today — becomes Newspeak source, the way
-   Primordial Soup's kernel is; the leaves (`+`, `<`, `at:put:`, `size`,
-   `show:`) stay Rust primitives, since a leaf is what a Rust primitive is good
+6. **The core library in Newspeak, over a VM mirror** —
+   [core-library.md](design/core-library.md). Every builtin method — `do:`,
+   `whileTrue:`, `collect:` and the bodies Rust reimplements today, and the
+   kernel classes with them — becomes Newspeak source in a `Kernel.ns`, the
+   way SOMns's kernel is; the leaves (`+`, `<`, `at:put:`, `size`, `show:`)
+   stay Rust primitives, but as entries of **one VM mirror object** that
+   `Kernel.ns` is handed, which §8.3.1 requires ("A primitive call is a
+   message send to the VM mirror") and which makes the Rust boundary a
+   capability rather than something any method can claim. The inlined fast
+   path for leaves is sequenced first, because without it every leaf send
+   costs an activation. Decided with the user on 2026-09-21; a leaf is what a
+   Rust primitive is good
    for and the artifact-size and trust arguments still hold for it. It is
    required so that every builtin method is a real method lookup, mirrors, the
    debugger and a JIT see: a `do:` in Rust is opaque to a JIT, which can

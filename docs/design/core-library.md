@@ -4,11 +4,17 @@
 > speculatively.
 > **Code:** `crates/ns-runtime/src/builtins/`, `platform.rs`.
 
-The core library is native Rust, not Newspeak source. That is the choice that
-lets an image stay small and keeps a hostile image from replacing a builtin
+The core library is native Rust today, not Newspeak source. That is the choice
+that lets an image stay small and keeps a hostile image from replacing a builtin
 class, and it is also the choice that means a modified platform is a different
 `ns-next` binary rather than a different artifact. See the comparison in
 [image-format.md](image-format.md).
+
+**Step 6 moves the library to Newspeak without giving either up**: the source
+ships with the runtime and is compiled at bootstrap rather than carried in an
+artifact, and the leaves stay Rust — reached through one VM mirror object, as
+§8.3.1 requires. "Planned: the core library as Newspeak source over a VM
+mirror" below is the design.
 
 ## What exists
 
@@ -86,7 +92,7 @@ whether a user chooses the numeric implementation — rather than settling it.
 A golden for the rule would have to be skipped behind a whole numeric tower,
 so the deviation is recorded here instead.
 
-## Planned: the core library as Newspeak source
+## Planned: the core library as Newspeak source over a VM mirror
 
 The shape of a real collections library, of arbitrary-precision integers, and of
 the mirror-based reflection protocol the platform would hand out are all open;
@@ -144,24 +150,162 @@ reason the end of this section gives. Everything else in `builtins/` — `size`,
 `at:`, `class`, `hash`, `printString`, the arithmetic, the comparisons,
 `asString`, `asSymbol` — is a leaf, and its computation stays in Rust.
 
-**Where this is going: the core library as Newspeak source, with Rust
-primitives underneath** (the user's direction, 2026-09-12). Primordial Soup
-holds its whole core library as Newspeak (`KernelForPrimordialSoup.ns`),
-compiled like any other class; a leaf is a Newspeak method that names a
-primitive by pragma and carries a Newspeak fallback body for when the primitive
-fails — `Closure>>value` is primitive 156 with a `numArgsError:` fallback,
-`True>>ifTrue: then` is simply `^then value`. ns-next's target is the same:
-every builtin method a real method that lookup, mirrors and the debugger see,
-the leaves backed by the Rust primitives that exist today. The computation of a
-leaf does not move; what changes is that it becomes reachable as a method. That
-is what lets a debugger step into `do:` and edit-and-continue reach library
-code ([liveness-and-reflection.md](liveness-and-reflection.md)), and what gives
-the JIT something to work with: every send inside library code gets a call site
-of its own, whose inline cache records what flows through it, where a Rust
-native records nothing. Library code is shared by every caller, so those sites
-are often megamorphic — `action value:` inside `do:` sees every block in the
-program — and the feedback pays off once the JIT inlines library methods into
-their callers, not from the caches alone.
+**Where this is going: the core library as Newspeak source over a VM mirror**
+(the user's direction, 2026-09-12; the mirror decided 2026-09-21). Every
+builtin method becomes a real method that lookup, mirrors and the debugger
+see. The computation of a leaf does not move; what changes is that it becomes
+reachable as a method, and that Rust is reached through exactly one object.
+That is what lets a debugger step into `do:` and edit-and-continue reach
+library code ([liveness-and-reflection.md](liveness-and-reflection.md)), and
+what gives the JIT something to work with: every send inside library code gets
+a call site of its own, whose inline cache records what flows through it,
+where a Rust native records nothing. Library code is shared by every caller,
+so those sites are often megamorphic — `action value:` inside `do:` sees every
+block in the program — and the feedback pays off once the JIT inlines library
+methods into their callers, not from the caches alone.
+
+### The VM mirror is the whole Rust boundary
+
+**§8.3.1 settles the shape, and it is not a matter of taste.** "The VM mirror
+supports the set of operations traditionally implemented as primitives in
+Smalltalk. *There is no syntax for a primitive call in Newspeak. A primitive
+call is a message send to the VM mirror.*" The caveat below it calls the
+canonical implementation's practice of reaching primitives through Squeak
+"a bug".
+
+So Primordial Soup's shape is the one ns-next does *not* take, although an
+earlier version of this document named it as the target. Soup marks a kernel
+method with a primitive pragma in a comment and carries a Newspeak fallback
+body for when the primitive fails — which is precisely the primitive-call
+syntax §8.3.1 rules out, written into a comment because the grammar has no
+place for it. SOMns takes the other shape, and it is the one required:
+`prior-art/somns/core-lib/Kernel.ns` declares
+`class Kernel vmMirror: vmMirror = Object` and writes each kernel method as a
+send to the mirror — `public + argument` answers
+`vmMirror int: self add: argument`, `public == other` answers
+`vmMirror object: self identicalTo: other`. The receiver is passed as an
+argument, because the mirror is always the receiver.
+
+**The mirror is an object of a builtin class whose method table carries every
+leaf as an enumerated primitive.** The machinery from step 3a is kept whole;
+what changes is only which class holds the entries. Today they sit on
+`Integer`, `String`, `Array` and `Object`; afterwards they sit on the mirror's
+class, and the builtin classes keep their identity — a value still needs a
+class for lookup and for its dispatch id — while their behaviour comes from
+`Kernel.ns`. SOMns builds its mirror the same way
+(`src/som/vm/ObjectSystem.java`, `constructVmMirror`): an object without
+fields over a synthetic class holding the primitives.
+
+**A mirror is a capability**, which is the second reason to prefer it and the
+one §8.2 gives for mirror-based reflection generally. Whoever is not handed
+the mirror cannot call a primitive. Under a pragma, any method anywhere can
+claim one and nothing marks where the VM surface lies. The CLI creates the
+mirror during the bootstrap and hands it to exactly one factory,
+`Kernel vmMirror: vmMirror`; every other module receives it only if `Kernel`
+or a configuration module passes it on.
+
+`platform.rs` keeps its separate role: §8.3 distinguishes the platform object,
+which is the environment, from the VM mirror, which is the virtual machine.
+Loading a module belongs on the mirror, as it does in SOMns, not on the
+platform.
+
+**The cost, stated plainly: an arithmetic operation becomes a Newspeak
+activation plus a send.** An integer addition costs one cached send today.
+Through the mirror it costs a send to `Integer>>+`, a real activation, a
+second send to the mirror, and the return. SOMns carries this because Graal
+optimizes it away; ns-next has no JIT yet. The answer is the inlined fast path
+this document already plans below — the compiler emits the arithmetic directly
+under a type guard and falls back to the ordinary send, the way `ifTrue:` and
+`whileTrue:` are lowered today. That is Cog's `bytecodePrimAdd`, and it is
+independent of which shape the slow path has, so it can be built and measured
+before the library moves. For a later JIT the mirror's two inlining steps are
+the easiest case an inliner meets: `Integer>>+` is a one-expression body, and
+the send to the mirror is monomorphic by construction, since the mirror is a
+single object — its guard folds away once the first step is inlined. That is
+Strongtalk's ordinary procedure, not an edge case.
+
+### The bootstrap: placeholders first, kernel second
+
+SOMns's procedure transfers directly, and ns-next already has both pieces it
+needs. `src/som/vm/ObjectSystem.java` pulls each nested mixin definition out
+of the compiled kernel module by name and initializes a pre-existing class
+object with it.
+
+1. **The runtime creates empty class placeholders** before any Newspeak is
+   read, because it must be able to answer what class an integer literal has
+   at any moment. `BuiltinClass::ALL` and `Mutator::builtin_class` are that
+   table today, and `trace.rs` already reaches it. New kernel classes are
+   appended to that list, never inserted, because its order is also the wire
+   tag order (`image::encode::builtin_class_tag`).
+2. **`Kernel.ns` is compiled but not instantiated.** Its nested mixin
+   definitions are pulled out by name and fill the placeholders, one
+   `Heap::set_class_application` each — the operation that already exists
+   because changing a class's application has to restamp its dispatch id —
+   followed by the existing stamping pass.
+3. **Only then is the kernel module instantiated**, at which point `Object` is
+   a complete class.
+
+`Kernel` is declared like any other module, without a `Value` mixin
+application. §6.4 makes a module *definition* a value object with nothing
+declared, and §3.1.1's second condition — the one that would make its
+*instances* values — exists for passing objects across actor boundaries.
+ns-next has no actors and no formal value objects
+([liveness-and-reflection.md](liveness-and-reflection.md), "Deviation: no
+formal value objects"), so the value semantics belong to the actor work,
+together with the `Value` class and the mixin application syntax that SOMns's
+declaration needs and that ns-next does not parse ([README.md](README.md),
+deviations).
+
+### Where the library source lives, and how modules are found
+
+The library is source the runtime ships, compiled at bootstrap as the Rust
+bootstrap is built today, so running a program from source is unchanged: the
+bootstrap gains a phase in front of it and nothing above that changes. Loading
+several *user* modules is a separate, later step and does not block this one.
+
+For the modules there are, **the namespace belongs on the mirror**: a
+primitive that looks a module up in a table the CLI filled in advance, rather
+than a namespace builtin of its own or an invented factory convention. Nothing
+touches the file system at run time, which is what linking statically means
+here (decided with the user on 2026-09-21). Later the same primitive falls
+back to the file system on a miss, so dynamic loading extends one primitive
+and changes neither `Kernel.ns` nor anything else on the Newspeak side.
+
+Two costs this introduces, both to be measured rather than assumed. The
+library is parsed and compiled at **every start**, where start-up cost was
+previously nil; whether that stays acceptable, or whether the compiled kernel
+should be embedded as an image, is a measurement, and the comparison must
+include what `image::load`'s two verification passes cost, since loading is
+not obviously cheaper than compiling. If it is embedded, it is generated at
+build time into the build script's output directory and included from there,
+never checked in: a checked-in image that nobody regenerated decodes into a
+different, perfectly valid kernel and runs it silently, which is the failure
+mode the wire-tag rule exists to prevent. Embedding does not conflict with
+[image-format.md](image-format.md)'s "never for the builtins", because that
+decision is about what an artifact arriving from outside may carry; bytes
+compiled into the binary are as trustworthy as the Rust beside them.
+
+### What this step must not break
+
+`crates/ns-cli/src/commands/build.rs` already records the hazard this step
+triggers: its `root_class_answers` check walks past the root level on the
+assumption that "every non-own mixin reachable from a root class's superclass
+chain today is a builtin's, and a builtin mixin's method table holds nothing
+but its primitives", and the comment names "a core-library superclass written
+in Newspeak" as what would break it — accepting a selector absent from the
+symbol table instead of refusing the build. It also records that no test
+catches it, because every fixture there inherits directly from `Object`. Once
+`Object` comes from `Kernel.ns`, every user module inherits from a Newspeak
+core library, so that test is owed by this step.
+
+The goldens are what make the move verifiable: if `Integer>>+`,
+`Boolean>>ifTrue:` and the rest move from Rust to Newspeak and every golden
+stays byte-identical in `status`, `stdout` and `stderr` under both
+lowerings — the reference lowering running uncached as the oracle — the
+semantics are intact. The gates are unchanged: `parse-corpus` at 210/0/1/0,
+`run-corpus` at ran 6 / failed 0 / skipped 205, and all three stress modes.
+
+### The ordering, and what it costs
 
 It is step 6 of M4's order of work ([PROGRESS.md](../PROGRESS.md)), for the
 reason "The ordering matters" gives for `do:`, and it does not change the image's decision to keep the builtins out
@@ -196,11 +340,12 @@ JIT will emit it inline. A native whose receiver has the wrong shape fails,
 and a failure passes its level over, so the lookup continues at `Object` and
 ends in `doesNotUnderstand:` if nothing answers. It is the first half of
 "Where this is going" above — every builtin
-method a real method — for the leaves that exist now; the second half,
-Newspeak fallback bodies and library code in Newspeak, is step 6 of M4's order
-of work. A leaf such as `+` will additionally get an inlined fast path in
-compiled code, guarded like the control-flow inlining, as Cog's
-`bytecodePrimAdd` does — not built yet, since it waits on the caches too.
+method a real method — for the leaves that exist now; the second half, the
+entries moving onto the VM mirror and the library becoming Newspeak, is step 6
+of M4's order of work. A leaf such as `+` will additionally get an inlined
+fast path in compiled code, guarded like the control-flow inlining, as Cog's
+`bytecodePrimAdd` does — not built yet, and step 6 sequences it first, because
+the move to the mirror costs an activation on every leaf send without it.
 
 ## Decisions
 
@@ -210,15 +355,37 @@ compiled code, guarded like the control-flow inlining, as Cog's
   than reversing it: the reasons for that decision — artifact size and the trust
   boundary — apply to leaves, which are almost all of the library.
 - **A native is bound as an enumerated primitive, not a function pointer**, so
-  a later JIT tier can emit it inline. Found as an entry of its builtin class's
-  method table, with an access modifier (§5.5 makes `Object`'s
-  `doesNotUnderstand:` protected).
-- **The core library is headed for Newspeak source with Rust primitives
-  underneath**, as Primordial Soup's is, so that every builtin method is a real
-  method. Planned as step 6 of M4's order of work ([PROGRESS.md](../PROGRESS.md)):
-  after the caches, closure conversion and the collector, and before the JIT
-  tiers, which need the library as real Newspeak code to optimize. Everything
-  that calls back into Newspeak moves; the leaves stay primitives.
+  a later JIT tier can emit it inline. Found as a method table entry with an
+  access modifier (§5.5 makes `Object`'s `doesNotUnderstand:` protected) — on
+  its builtin class today, on the VM mirror's class after step 6.
+- **The core library is headed for Newspeak source over a VM mirror**, as
+  SOMns's is, so that every builtin method is a real method. Planned as step 6
+  of M4's order of work ([PROGRESS.md](../PROGRESS.md)): after the caches,
+  closure conversion and the collector, and before the JIT tiers, which need
+  the library as real Newspeak code to optimize.
+- **The VM mirror is the whole Rust boundary** (decided with the user on
+  2026-09-21): one object holding every leaf, handed to `Kernel.ns`, and
+  nothing else crosses into Rust. §8.3.1 requires it — "There is no syntax for
+  a primitive call in Newspeak. A primitive call is a message send to the VM
+  mirror" — so Primordial Soup's primitive pragma, which this document
+  previously named as the target, is the shape the specification rules out,
+  and the specification calls the practice behind it a bug. A mirror is also a
+  capability, per §8.2: whoever is not handed it cannot call a primitive.
+  The cost is that an arithmetic operation becomes an activation plus a send
+  until the leaves get their inlined fast path.
+- **The inlined fast path for leaves comes before the library moves**, not
+  after. It is independent of what the slow path looks like — the compiler
+  emits the operation under a type guard and falls back to the ordinary send —
+  so it can be measured on its own and then cushions the move.
+- **`Kernel` is declared without a `Value` mixin application.** §6.4 already
+  makes a module definition a value object; §3.1.1's instance-side condition
+  serves actor boundaries, which do not exist here, so the value semantics go
+  with the actor work rather than with this step.
+- **Modules are linked statically, through a namespace on the mirror**
+  (decided with the user on 2026-09-21): the CLI fills a table in advance and
+  a mirror primitive looks names up in it, so nothing touches the file system
+  at run time. Dynamic loading later extends that one primitive rather than
+  changing the Newspeak side.
 - **The platform grows only against a whitelisted module**, so every capability
   has a test that would notice it breaking.
 - **`i64` with an error on overflow**, rather than silent wraparound or a bignum
