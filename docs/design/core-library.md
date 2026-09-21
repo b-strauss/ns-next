@@ -92,6 +92,34 @@ whether a user chooses the numeric implementation — rather than settling it.
 A golden for the rule would have to be skipped behind a whole numeric tower,
 so the deviation is recorded here instead.
 
+## Gap: an integer has no `/`
+
+`7 // 2` answers `3`; `7 / 2` ends in `doesNotUnderstand:`. The selector is
+registered only on `Float` (`builtins/primitive.rs`:
+`public("/", Primitive::Float(FloatPrimitive::Divide))`), while `Integer`
+carries `//` alone, as `FloorDivide`. So `7.0 / 2` works and `7 / 2` does not,
+which is asymmetric enough to surprise.
+
+**This is not a specification violation.** The specification mentions `Number`
+exactly twice — §3.1.1, listing it among the value objects, and §5.1.1, on
+non-integral *literals* — and fixes no arithmetic protocol anywhere. Which
+selectors `Integer` answers is a library question, and §8.3 leaves the
+platform's modules to provide classes "some of which are standard and mentioned
+in this specification". `/` is not one of them. Formally this is the on-demand
+rule doing its job: nothing on `corpus/runnable.toml` asks for it.
+
+It is recorded because **step 6 has to settle it rather than rediscover it**.
+Primordial Soup declares both on `Integer`
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`): `/` as a
+primitive falling back to `^other divideFromNumber: self`, and `//` beside it,
+commented "Integer division, rounded toward negative infinity". That works
+there because Soup has a `Fraction` class, which its comparison methods test
+for. ns-next has no `Fraction` and no exact decimal type, so writing
+`Integer>>/` into `Kernel.ns` means choosing: answer a `Float`, which diverges
+from Smalltalk and from Soup and quietly makes an exact quotient inexact; build
+the numeric tower the deviation above already defers; or keep the selector
+absent and say so. The choice belongs in step 6's plan, made deliberately.
+
 ## Planned: the core library as Newspeak source over a VM mirror
 
 The shape of a real collections library, of arbitrary-precision integers, and of

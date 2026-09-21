@@ -39,7 +39,7 @@ that cannot name its code is describing an intention, and should say so.
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers | JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Built — the arena, the activation stack, the safepoint, tracing, host roots, the stress modes, the lifetime brand and a mark-compact collector; a slot is reclaimed once nothing reaches it | generations |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
-| Builtins and the platform | [core-library.md](core-library.md) | Partial | the core library as Newspeak source |
+| Builtins and the platform | [core-library.md](core-library.md) | Partial; `Integer` answers `//` but not `/`, which is registered on `Float` alone | the core library as Newspeak source over a VM mirror, which has to settle `Integer>>/` |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
 ## Architecture

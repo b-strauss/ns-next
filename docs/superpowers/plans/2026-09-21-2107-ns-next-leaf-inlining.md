@@ -96,8 +96,12 @@ what `vm.rs` must not do.
 **`/` is not in the table because it does not exist on `Integer`.** It is
 declared only as `FloatPrimitive::Divide`; an integer receiver has no `/` at
 all, so there is nothing to inline and a guard for it would be a fast path to
-a lookup failure. This is the plan's only exclusion, and it is about what the
-runtime has, not about what would be awkward.
+a lookup failure — `7 / 2` ends in `doesNotUnderstand:` today. That is a known
+gap, recorded in `docs/design/core-library.md`, "Gap: an integer has no `/`",
+and it is **not** this plan's to close: adding `Integer>>/` means deciding what
+an exact quotient answers without a `Fraction` class, which belongs to step 6.
+Do not add it here, and do not treat its absence as an oversight to fix in
+passing.
 
 ## File Structure
 
