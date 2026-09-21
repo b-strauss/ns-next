@@ -1,47 +1,57 @@
 ---
 source: crates/ns-cli/tests/disasm_snapshots.rs
-expression: "disasm(\"while_loop.ns\", &[\"main:args:\"])"
+expression: "disasm(\"language/while_loop\", &[\"main:args:\"])"
 ---
 method main:args: (args 2, registers 13)
    0   stmt 0  LoadLiteral r2, nil
    1   stmt 0  SendLexical r3 <- depth 0 #n () @0
    2   stmt 0  LoadLiteral r4, 5
-   3   stmt 0  SendPublic r5 <- r3 #< (r4) @1
-   4   stmt 0  JumpIfNotBoolean r5 -> 15
-   5   stmt 0  BranchIfFalse r5 -> 17
-   6   stmt 0  SendLexical r6 <- depth 0 #sum () @2
-   7   stmt 0  SendLexical r7 <- depth 0 #n () @3
-   8   stmt 0  SendPublic r8 <- r6 #+ (r7) @4
-   9   stmt 0  SendLexical r9 <- depth 0 #sum: (r8) @5
-  10   stmt 0  SendLexical r6 <- depth 0 #n () @6
-  11   stmt 0  LoadLiteral r7, 1
-  12   stmt 0  SendPublic r8 <- r6 #+ (r7) @7
-  13   stmt 0  SendLexical r9 <- depth 0 #n: (r8) @8
-  14   stmt 0  Jump -> 1
-  15   stmt 0  SendPublic r10 <- r5 #mustBeBoolean () @9
-  16   stmt 0  Move r2, r10
-  17   stmt 1  LoadLiteral r2, nil
-  18   stmt 1  SendLexical r3 <- depth 0 #n () @10
-  19   stmt 1  LoadLiteral r4, 0
-  20   stmt 1  SendPublic r5 <- r3 #= (r4) @11
-  21   stmt 1  JumpIfNotBoolean r5 -> 28
-  22   stmt 1  BranchIfTrue r5 -> 30
-  23   stmt 1  SendLexical r6 <- depth 0 #n () @12
-  24   stmt 1  LoadLiteral r7, 1
-  25   stmt 1  SendPublic r8 <- r6 #- (r7) @13
-  26   stmt 1  SendLexical r9 <- depth 0 #n: (r8) @14
-  27   stmt 1  Jump -> 18
-  28   stmt 1  SendPublic r10 <- r5 #mustBeBoolean () @15
-  29   stmt 1  Move r2, r10
-  30   stmt 2  SendPublic r2 <- r0 #transcript () @16
-  31   stmt 2  SendLexical r3 <- depth 0 #sum () @17
-  32   stmt 2  SendPublic r4 <- r3 #printString () @18
-  33   stmt 2  SendPublic r5 <- r2 #show: (r4) @19
-  34   stmt 2  LoadLiteral r6, ' '
-  35   stmt 2  SendPublic r7 <- r2 #show: (r6) @20
-  36   stmt 2  SendLexical r8 <- depth 0 #n () @21
-  37   stmt 2  SendPublic r9 <- r8 #printString () @22
-  38   stmt 2  SendPublic r10 <- r2 #show: (r9) @23
-  39   stmt 2  SendPublic r11 <- r2 #newLine () @24
-  40        -  LoadSelf r12
-  41        -  ImplicitReturn r12
+   3   stmt 0  IntegerBinary Less r5 <- r3, r4 else -> 5
+   4   stmt 0  Jump -> 6
+   5   stmt 0  SendPublic r5 <- r3 #< (r4) @1
+   6   stmt 0  JumpIfNotBoolean r5 -> 21
+   7   stmt 0  BranchIfFalse r5 -> 23
+   8   stmt 0  SendLexical r6 <- depth 0 #sum () @2
+   9   stmt 0  SendLexical r7 <- depth 0 #n () @3
+  10   stmt 0  IntegerBinary Add r8 <- r6, r7 else -> 12
+  11   stmt 0  Jump -> 13
+  12   stmt 0  SendPublic r8 <- r6 #+ (r7) @4
+  13   stmt 0  SendLexical r9 <- depth 0 #sum: (r8) @5
+  14   stmt 0  SendLexical r6 <- depth 0 #n () @6
+  15   stmt 0  LoadLiteral r7, 1
+  16   stmt 0  IntegerBinary Add r8 <- r6, r7 else -> 18
+  17   stmt 0  Jump -> 19
+  18   stmt 0  SendPublic r8 <- r6 #+ (r7) @7
+  19   stmt 0  SendLexical r9 <- depth 0 #n: (r8) @8
+  20   stmt 0  Jump -> 1
+  21   stmt 0  SendPublic r10 <- r5 #mustBeBoolean () @9
+  22   stmt 0  Move r2, r10
+  23   stmt 1  LoadLiteral r2, nil
+  24   stmt 1  SendLexical r3 <- depth 0 #n () @10
+  25   stmt 1  LoadLiteral r4, 0
+  26   stmt 1  IntegerBinary Equal r5 <- r3, r4 else -> 28
+  27   stmt 1  Jump -> 29
+  28   stmt 1  SendPublic r5 <- r3 #= (r4) @11
+  29   stmt 1  JumpIfNotBoolean r5 -> 38
+  30   stmt 1  BranchIfTrue r5 -> 40
+  31   stmt 1  SendLexical r6 <- depth 0 #n () @12
+  32   stmt 1  LoadLiteral r7, 1
+  33   stmt 1  IntegerBinary Subtract r8 <- r6, r7 else -> 35
+  34   stmt 1  Jump -> 36
+  35   stmt 1  SendPublic r8 <- r6 #- (r7) @13
+  36   stmt 1  SendLexical r9 <- depth 0 #n: (r8) @14
+  37   stmt 1  Jump -> 24
+  38   stmt 1  SendPublic r10 <- r5 #mustBeBoolean () @15
+  39   stmt 1  Move r2, r10
+  40   stmt 2  SendPublic r2 <- r0 #transcript () @16
+  41   stmt 2  SendLexical r3 <- depth 0 #sum () @17
+  42   stmt 2  SendPublic r4 <- r3 #printString () @18
+  43   stmt 2  SendPublic r5 <- r2 #show: (r4) @19
+  44   stmt 2  LoadLiteral r6, ' '
+  45   stmt 2  SendPublic r7 <- r2 #show: (r6) @20
+  46   stmt 2  SendLexical r8 <- depth 0 #n () @21
+  47   stmt 2  SendPublic r9 <- r8 #printString () @22
+  48   stmt 2  SendPublic r10 <- r2 #show: (r9) @23
+  49   stmt 2  SendPublic r11 <- r2 #newLine () @24
+  50        -  LoadSelf r12
+  51        -  ImplicitReturn r12

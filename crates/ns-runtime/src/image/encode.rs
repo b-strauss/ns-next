@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal};
+use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::Heap;
 use crate::types::{
     BuiltinClass, ClassData, ClassReference, ClosureData, FrameKind, FrameReference, ObjectData,
@@ -586,6 +586,37 @@ fn encode_instruction(
             writer.write_u16(*register);
             writer.write_u32(*target);
         }
+        Instruction::IntegerBinary {
+            operation,
+            destination,
+            left,
+            right,
+            target,
+        } => {
+            writer.write_u8(OPCODE_INTEGER_BINARY);
+            writer.write_u8(integer_operation_tag(*operation));
+            writer.write_u16(*destination);
+            writer.write_u16(*left);
+            writer.write_u16(*right);
+            writer.write_u32(*target);
+        }
+    }
+}
+
+/// `IntegerOperation` as a wire byte. Exhaustive on purpose -- a tenth
+/// operation added later fails to compile here rather than silently encoding
+/// as one of the existing nine.
+pub fn integer_operation_tag(operation: IntegerOperation) -> u8 {
+    match operation {
+        IntegerOperation::Add => 0,
+        IntegerOperation::Subtract => 1,
+        IntegerOperation::Multiply => 2,
+        IntegerOperation::FloorDivide => 3,
+        IntegerOperation::Less => 4,
+        IntegerOperation::Greater => 5,
+        IntegerOperation::LessOrEqual => 6,
+        IntegerOperation::GreaterOrEqual => 7,
+        IntegerOperation::Equal => 8,
     }
 }
 

@@ -61,6 +61,24 @@ impl CallSite {
     pub const UNCACHED: CallSite = CallSite { number: u32::MAX };
 }
 
+/// The integer leaves the compiler emits inline, guarded, with the ordinary
+/// send as the fallback: every binary member of `IntegerPrimitive`. Each one
+/// is computed with a `checked_*` operation, so the cases that have no
+/// integer result -- overflow, a zero divisor -- answer `None` and take the
+/// fallback, leaving every error and its text to `builtins/numbers.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerOperation {
+    Add,
+    Subtract,
+    Multiply,
+    FloorDivide,
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    Equal,
+}
+
 /// Every register operand is a `u16` index into the frame's unified
 /// arguments-then-temporaries register file; every jump target is an instruction
 /// index into the owning `CompiledCode.instructions`.
@@ -240,6 +258,22 @@ pub enum Instruction {
     /// Symmetric to `BranchIfFalse`; used for `whileFalse:`'s exit.
     BranchIfTrue {
         register: u16,
+        target: u32,
+    },
+    /// An integer leaf's inlined fast path. Performs `operation` on `left` and
+    /// `right` into `destination` when both hold `Value::SmallInteger` and the
+    /// result does not overflow; otherwise jumps to `target`, where the ordinary
+    /// send stands. Every error -- overflow, a non-integer operand, a user
+    /// subclass -- is raised by that send's primitive, never here, so there is
+    /// one source for each of them.
+    ///
+    /// Reads and writes only registers of the activation executing it -- never
+    /// another frame's by reference -- so `outer_reach_of` does not name it.
+    IntegerBinary {
+        operation: IntegerOperation,
+        destination: u16,
+        left: u16,
+        right: u16,
         target: u32,
     },
 }
@@ -594,6 +628,15 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::BranchIfTrue { register, target } => {
             format!("BranchIfTrue r{register} -> {target}")
         }
+        Instruction::IntegerBinary {
+            operation,
+            destination,
+            left,
+            right,
+            target,
+        } => format!(
+            "IntegerBinary {operation:?} r{destination} <- r{left}, r{right} else -> {target}"
+        ),
     }
 }
 

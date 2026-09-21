@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::bytecode::{CompiledCode, Instruction, Literal};
+use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::ActivationReference;
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::literals::{
@@ -446,6 +446,63 @@ fn execute<'gc>(
                 Flow::Jump(*target as usize)
             } else {
                 Flow::Next
+            }
+        }
+        // The inlined fast path for an integer leaf. Not dispatch: it either
+        // computes the one answer the primitive would have computed, or
+        // declines and jumps to the ordinary send standing at `target`. Every
+        // case it declines -- a non-integer operand, an overflow, a zero
+        // divisor -- is that send's primitive to decide, so no error and no
+        // error text is raised here. It cannot fail for any operand, which is
+        // what lets a decoded image reach it safely.
+        Instruction::IntegerBinary {
+            operation,
+            destination,
+            left,
+            right,
+            target,
+        } => {
+            let left_value = read_local(&mutator.heap, activation, *left);
+            let right_value = read_local(&mutator.heap, activation, *right);
+            let (Value::SmallInteger(left_integer), Value::SmallInteger(right_integer)) =
+                (left_value, right_value)
+            else {
+                return Flow::Jump(*target as usize);
+            };
+            let result = match operation {
+                IntegerOperation::Add => left_integer
+                    .checked_add(right_integer)
+                    .map(Value::SmallInteger),
+                IntegerOperation::Subtract => left_integer
+                    .checked_sub(right_integer)
+                    .map(Value::SmallInteger),
+                IntegerOperation::Multiply => left_integer
+                    .checked_mul(right_integer)
+                    .map(Value::SmallInteger),
+                // `checked_div_euclid` answers `None` for a zero divisor as
+                // well as for `i64::MIN // -1`, so both take the fallback and
+                // the primitive raises its own "division by zero" or overflow
+                // error. No zero check is written here, because writing one
+                // would be the second copy.
+                IntegerOperation::FloorDivide => left_integer
+                    .checked_div_euclid(right_integer)
+                    .map(Value::SmallInteger),
+                IntegerOperation::Less => Some(Value::Boolean(left_integer < right_integer)),
+                IntegerOperation::Greater => Some(Value::Boolean(left_integer > right_integer)),
+                IntegerOperation::LessOrEqual => {
+                    Some(Value::Boolean(left_integer <= right_integer))
+                }
+                IntegerOperation::GreaterOrEqual => {
+                    Some(Value::Boolean(left_integer >= right_integer))
+                }
+                IntegerOperation::Equal => Some(Value::Boolean(left_integer == right_integer)),
+            };
+            match result {
+                Some(value) => {
+                    write_local(&mut mutator.heap, activation, *destination, value);
+                    Flow::Next
+                }
+                None => Flow::Jump(*target as usize),
             }
         }
     }

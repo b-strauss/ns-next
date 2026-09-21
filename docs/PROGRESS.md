@@ -249,6 +249,31 @@ because it raises what the space is worth, a Newspeak `List>>add:`
 allocating a fresh `Array` at every capacity overflow where a `Vec::push`
 amortizes to nothing.
 
+**Step 6's first part, the inlined fast path for the integer leaves, is
+done** (2026-09-21;
+[ns-next-leaf-inlining](superpowers/plans/2026-09-21-2107-ns-next-leaf-inlining.md);
+[compiler.md](design/compiler.md), "Arithmetic inlining"). The compiler
+recognizes the nine binary integer primitives (`+ - * // < > <= >= =`) at an
+ordinary explicit-receiver send and emits `Instruction::IntegerBinary`,
+which computes when both operands are `Value::SmallInteger` and the
+`checked_*` operation yields a result and otherwise jumps to the ordinary
+send standing beside it, so every error the operation can raise — a
+`doesNotUnderstand:`, an overflow, a zero divisor — still comes from
+`builtins/numbers.rs` and from nowhere else. **Measured by the protocol
+below against `6f5a5b1`, the commit on `master` the branch was cut from,
+every one of the eight sources is 11.5% to 31.0% faster, and every
+after-group lies entirely below its before-group in both sittings**. The
+only earlier step to clear that gate across its whole suite was 3b, the
+inline caches, at 4.3–11.3% over seven sources. `vm::run` grew from 5,732 to
+5,866 instructions and stayed one inlined function. See "Leaf inlining"
+below and [execution.md](design/execution.md), "What leaf inlining moved".
+
+**This is the cushion step 6's move to the VM mirror was sequenced to have.**
+Rewriting `do:`, `collect:` and the kernel classes as Newspeak turns every
+arithmetic operation in those bodies into a send the interpreter dispatches;
+the numbers above are what that rewrite now has to spend before it shows as
+a regression against `6f5a5b1`, and the fast path is what supplies it.
+
 **The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
 `22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
 beside it, as every measurement since
@@ -742,7 +767,13 @@ Then, after M4 and before the JIT tiers:
    path for leaves is sequenced first, because without it every leaf send
    costs an activation. Decided with the user on 2026-09-21; a leaf is what a
    Rust primitive is good
-   for and the artifact-size and trust arguments still hold for it. It is
+   for and the artifact-size and trust arguments still hold for it.
+   **That first part is done** (2026-09-21): the nine binary integer
+   primitives compile to `Instruction::IntegerBinary` under a run-time type
+   guard whose fallback is the ordinary send, and all eight measurement
+   sources came out 11.5–31.0% faster for it, each entirely below its
+   baseline group in both sittings — the cushion the rest of this step
+   spends. See "Leaf inlining" below. It is
    required so that every builtin method is a real method lookup, mirrors, the
    debugger and a JIT see: a `do:` in Rust is opaque to a JIT, which can
    neither inline its block nor compile the loop as a unit. Where it sits is
@@ -3123,6 +3154,103 @@ stress-mode and clippy gates were run task by task as each was committed
 (tasks 1–8); this entry is documentation only, over code none of it changes.
 No recorded outcome moved.
 
+## Leaf inlining (2026-09-21)
+
+Plan:
+[ns-next-leaf-inlining](superpowers/plans/2026-09-21-2107-ns-next-leaf-inlining.md),
+six tasks. Branch `feature/leaf-inlining`, started from `6f5a5b1` on
+`master`, on the checked-out tree throughout. The first part of step 6 of
+the order of work above, and sequenced ahead of the rest of it
+([core-library.md](design/core-library.md)): once the library is Newspeak
+over a VM mirror, every arithmetic operation in it is a send, so the fast
+path has to exist before the rewrite rather than after.
+
+**What changed, commit by commit:**
+
+- `07b8d92` — `recognize_integer_binary` (`compiler/control_flow.rs`), the
+  arithmetic counterpart to `recognize`, answering an `IntegerOperation` for
+  the nine binary integer selectors behind the same `is_ordinary_send` gate.
+  `/` is left out because an integer has no `/` primitive at all.
+- `dd15105`, `a0fa984` — `Instruction::IntegerBinary`, wire tag 33, and a
+  round trip over every `IntegerOperation` through the image format.
+- `b0b9d6e`, `c87645e`, `2b52b7c` — the VM arm and the lowering. The arm
+  computes or declines and raises nothing; the lowering emits the
+  instruction, an unconditional `Jump` past the fallback, and the ordinary
+  `SendPublic` as the fallback, which carries a call site of its own.
+- `e586db9`, `88d86d9` — the goldens: `goldens/arithmetic/` for the fast
+  path beside the two ways the guard declines on ordinary values and floor
+  division on the fast path, and two under `goldens/errors/` pinning that an
+  `i64` overflow and a zero divisor still carry the primitive's own message.
+- This entry — the measurement and the documents.
+
+**Measurement.** Two sittings by the protocol, eight sources, both binaries
+built through `RUSTFLAGS` with `+crt-static` and the function-alignment pin,
+the baseline `6f5a5b1` in a throwaway worktree. `vm::run` stayed one
+function: 5,732 instructions at the baseline — the same figure recorded at
+the moving collector — and 5,866 at the head, the `IntegerBinary` arm's 134.
+**Every one of the eight sources is faster, by 11.5% to 31.0%, and every
+after-group lies entirely below its before-group in both sittings**:
+`bench_loop.ns` −31.0%, `bench_megamorphic.ns` −30.0%, `bench_send.ns`
+−26.3%, `bench_new.ns` −20.1%, `bench_do.ns` −17.8%, `bench_new2.ns`
+−16.9%, `bench_newarg.ns` −14.1%, `bench_block.ns` −11.5%. The expectation
+was recorded before any binary was built, and it was right at its ends and
+wrong in its middle: it named `bench_loop.ns` as the largest gain and
+`bench_block.ns` as the smallest, both of which held, but it predicted
+3–5x smaller magnitudes throughout and put the whole "small" group — which
+landed at 11.5–20.1% — below a "moderate" group that came out at 17.8–30.0%. Its premise was the error —
+it assumed an instantiation dwarfs three arithmetic sends, and the numbers
+say the two are of the same order. What the ordering does track is the share
+of a source's per-iteration sends the step removed, discounted by how
+expensive the ones left behind are; `bench_block.ns`, which keeps a method
+activation, a closure allocation and a block activation, is the extreme.
+See [execution.md](design/execution.md), "What leaf inlining moved", for the
+tables and for what is left unexplained.
+
+**A known cost, carried forward, not paid.** A successful operation also
+executes the unconditional `Jump` past the fallback, so the hot path is two
+dispatches where an out-of-line fallback would leave one. It does not show
+above the noise — `bench_loop.ns` removed 33% of its per-iteration sends and
+gained 31.0%, which is the tightest the suite gets — so moving the fallback
+out of line is a follow-up worth trying rather than one these numbers
+demand.
+
+Gates: run task by task as each code commit landed, and green at `88d86d9`,
+the branch's last code commit — `cargo test --workspace`, `cargo clippy
+--workspace --all-targets` clean, `parse-corpus` at **210/0/1/0** and
+`run-corpus` at **6/0/205**, the stress modes included. This entry changes
+Markdown only, so none of them was re-run for it. No recorded outcome
+moved.
+
+**Carried forward, reviewed and deliberately not fixed.** The whole-branch
+review triaged each of these and judged none of them worth holding the merge
+for; they are recorded because a reviewed decision to leave something is worth
+more to a later reader than the silence that usually replaces it.
+
+- **`lower_cascade` does not route through `lower_send`**, so a cascade such as
+  `x + 1; + 2` keeps ordinary sends for its integer leaves. Behaviour is
+  identical; only the optimization is missed. Widening it means reworking the
+  cascade's shared receiver register, which is why it was not done here.
+- **The aliasing test hardcodes register 0** for the local it watches, with a
+  comment saying why that is the register. Deriving it from the emitted
+  `StoreLocal` would make the test self-describing; as written it fails loudly
+  rather than silently if the layout ever changes.
+- **No unit test pins the two patched jump targets.** The four `insta`
+  disassembly snapshots pin them exactly, and `patch_target`'s `unreachable!`
+  makes a missing arm loud rather than silent, so this is coverage breadth.
+- **The image round-trip fixture exercises `Add` only.** The tag mapping itself
+  is covered for all nine operations by `every_integer_operation_tag_round_trips`;
+  the instruction's other fields do not vary per operation.
+- **The standalone opcode-tag test duplicates the line added to
+  `instruction_tags_are_fixed`**, and reaches for a fully-qualified path where
+  the file glob-imports the module.
+- **`bench_megamorphic.ns` removed the largest send share (42%) and did not gain
+  the most.** The discount model in "What leaf inlining moved" accommodates it —
+  the sends it keeps are megamorphic and so dearer — but that discount has no
+  independent measurement, which leaves the model as stated unfalsifiable on this
+  row.
+- **"The only earlier step to clear it across its whole suite was 3b"** is true
+  for a step measured against its own baseline; several cumulative comparisons
+  against `be3eb40` also show every source entirely below in both sittings.
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of

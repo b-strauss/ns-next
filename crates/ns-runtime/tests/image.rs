@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal};
+use ns_runtime::bytecode::{
+    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+};
 use ns_runtime::image;
 use ns_runtime::image::opcodes::*;
 use ns_runtime::image::{decode, encode, mixins, symbols};
@@ -503,10 +505,17 @@ fn every_instruction_once() -> CompiledCode {
                 register: 1,
                 target: 6,
             },
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Add,
+                destination: 6,
+                left: 1,
+                right: 2,
+                target: 3,
+            },
         ],
         argument_count: 2,
         register_count: 12,
-        statement_program_counter: vec![(0, 0..3), (1, 3..24)],
+        statement_program_counter: vec![(0, 0..3), (1, 3..25)],
         // One past the highest number among its own sends (0..=3, in
         // emission order -- what `number_call_site_families` assigns on the
         // decoded side too) and the block's `family_size` (0): the same
@@ -916,14 +925,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(33); // ... one past the last real tag
+    writer.write_u8(34); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 33
+            tag: 34
         })
     );
 }
@@ -1054,6 +1063,35 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
 }
 
 #[test]
+fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
+    // An unknown operation byte must be refused, never defaulted to an
+    // operation: an image is untrusted input, and a stale or corrupt byte
+    // must not silently decode as one of the nine real operations.
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
+    writer.write_u16(0);
+    writer.write_u16(1);
+    writer.write_u16(0); // copied_count
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
+    writer.write_u32(1); // one instruction ...
+    writer.write_u8(OPCODE_INTEGER_BINARY);
+    writer.write_u8(200); // ... naming no integer operation
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "integer operation",
+            tag: 200
+        })
+    );
+}
+
+#[test]
 fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
     let (mut interpreter, class) = load(RICH);
     let (table, bytes) = interpreter.enter(|mutator| {
@@ -1105,6 +1143,39 @@ fn every_builtin_class_tag_round_trips() {
     tags.sort_unstable();
     tags.dedup();
     assert_eq!(tags.len(), all.len(), "every builtin class has its own tag");
+}
+
+#[test]
+fn every_integer_operation_tag_round_trips() {
+    let all = [
+        IntegerOperation::Add,
+        IntegerOperation::Subtract,
+        IntegerOperation::Multiply,
+        IntegerOperation::FloorDivide,
+        IntegerOperation::Less,
+        IntegerOperation::Greater,
+        IntegerOperation::LessOrEqual,
+        IntegerOperation::GreaterOrEqual,
+        IntegerOperation::Equal,
+    ];
+    for operation in all {
+        assert_eq!(
+            decode::integer_operation_from_tag(encode::integer_operation_tag(operation)),
+            Some(operation)
+        );
+    }
+    assert_eq!(decode::integer_operation_from_tag(200), None);
+    let mut tags: Vec<u8> = all
+        .iter()
+        .map(|operation| encode::integer_operation_tag(*operation))
+        .collect();
+    tags.sort_unstable();
+    tags.dedup();
+    assert_eq!(
+        tags.len(),
+        all.len(),
+        "every integer operation has its own tag"
+    );
 }
 
 /// A body's parameters and copied values share one register file, and
@@ -3431,6 +3502,13 @@ fn every_conditional_jump_target_is_checked_too() {
         },
         Instruction::BranchIfTrue {
             register: 0,
+            target: 9,
+        },
+        Instruction::IntegerBinary {
+            operation: IntegerOperation::Add,
+            destination: 0,
+            left: 0,
+            right: 0,
             target: 9,
         },
     ] {

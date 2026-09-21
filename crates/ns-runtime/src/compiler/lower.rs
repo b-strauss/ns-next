@@ -12,7 +12,9 @@ use ns_syntax::Span;
 
 use super::capture::{BodyKey, Captured, Captures, Place};
 use super::control_flow::{self, InlineForm};
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral};
+use crate::bytecode::{
+    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal as BytecodeLiteral,
+};
 use crate::interpreter::literals::parse_integer_literal;
 use crate::types::Binding;
 
@@ -851,6 +853,11 @@ impl<'a> Lowerer<'a> {
     /// code, and so does every recognized inlinable form -- through the real
     /// send its guard-failure path makes (`lower_fallback_send`,
     /// `emit_must_be_boolean`).
+    ///
+    /// An inlined integer leaf is deliberately not named here: its fallback
+    /// *is* the ordinary send, over the same registers, so it falls through
+    /// to the ordinary-send answer below. Giving it a case of its own would
+    /// be a second, weaker answer to the same question.
     fn send_writes_register(&self, send: &ast::Send, register: u16, inlined_depth: u16) -> bool {
         if self.a_send_can_write(register) {
             return true;
@@ -1298,6 +1305,9 @@ impl<'a> Lowerer<'a> {
                 }
             };
         }
+        if let Some(operation) = control_flow::recognize_integer_binary(send) {
+            return self.lower_integer_binary(send, operation);
+        }
         // The receiver is read by the send instruction, so it has to
         // survive its own arguments' lowering.
         let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
@@ -1368,6 +1378,12 @@ impl<'a> Lowerer<'a> {
                 ..
             }
             | Instruction::BranchIfTrue {
+                target: jump_target,
+                ..
+            }
+            // The fast path's own guard: its `target` is where the fallback
+            // send stands, patched exactly like a jump's.
+            | Instruction::IntegerBinary {
                 target: jump_target,
                 ..
             } => *jump_target = target,
@@ -1541,6 +1557,62 @@ impl<'a> Lowerer<'a> {
         destination
     }
 
+    /// An integer leaf's inlined fast path: two ways where
+    /// `emit_guarded_branch` has three, because the instruction is its own
+    /// guard and its `target` is the fallback.
+    ///
+    /// The receiver is lowered with `lower_operand` against the argument,
+    /// because whatever the argument lowers to may write the receiver's
+    /// register -- the same question `lower_arguments` asks for every send.
+    ///
+    /// The fallback reads the two registers the guard already filled instead
+    /// of lowering the message a second time: re-lowering it would evaluate
+    /// the argument's own side effects twice whenever the guard fails. What
+    /// it emits is therefore exactly the `SendPublic` the ordinary lowering
+    /// would have emitted for this send, over exactly the same registers --
+    /// which is what makes the inlining a pure optimization, with every
+    /// error and its text still coming from that send's primitive. It lands
+    /// its result in the same `destination` the fast path writes, rather
+    /// than in a scratch register of its own that a `Move` then copies: the
+    /// two paths are mutually exclusive, and `destination` was allocated
+    /// after both operands, so neither can be reading it.
+    fn lower_integer_binary(&mut self, send: &ast::Send, operation: IntegerOperation) -> u16 {
+        // The parser gives a binary selector exactly one argument; name the
+        // invariant so a mismatch surfaces here rather than as a bare
+        // slice-index panic, as `control_flow::recognize` does for its own.
+        debug_assert_eq!(
+            send.message.arguments.len(),
+            1,
+            "internal: a binary selector takes exactly one argument, got {}",
+            send.message.arguments.len()
+        );
+        let argument = &send.message.arguments[0];
+        let left_register = self.lower_operand(&send.receiver, std::slice::from_ref(argument));
+        let right_register = self.lower_expression(argument);
+        let destination = self.allocate_scratch();
+        let fallback_jump = self.emit(Instruction::IntegerBinary {
+            operation,
+            destination,
+            left: left_register,
+            right: right_register,
+            target: 0,
+        });
+        let after_fast_path_jump = self.emit(Instruction::Jump { target: 0 });
+        let fallback_label = self.here();
+        self.patch_target(fallback_jump, fallback_label);
+        let call_site = self.take_call_site();
+        self.emit(Instruction::SendPublic {
+            selector: selector_of(&send.message),
+            receiver_register: left_register,
+            argument_registers: vec![right_register],
+            destination,
+            call_site,
+        });
+        let end_label = self.here();
+        self.patch_target(after_fast_path_jump, end_label);
+        destination
+    }
+
     /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
     /// value, the other arm the block's value coerced by `truthy`'s rule.
     /// The coercion only chooses which literal becomes the send's result, so
@@ -1624,17 +1696,20 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
-        // Control-flow inlining is the only source of jumps, and every one of
-        // its labels is a `here()` that `finish_body`'s terminator guarantees
-        // is a real instruction index, so a target must be in range. This
-        // check does *not* catch a never-patched target: an unpatched
-        // `target` field stays `0`, which is always in range and would pass
-        // silently here. Completeness against that failure mode instead
-        // comes from each emitter's own emit/patch pairing (every `emit(...
-        // { target: 0 })` in this module is paired with a `patch_target`
-        // call before `finish` runs) -- an out-of-range target is a compiler
-        // bug, not a program error, so it is a `debug_assert!` -- checked on
-        // every debug test run, free in release.
+        // Control-flow inlining and the integer leaves' fast path are the two
+        // sources of a patched target, and every one of their labels is a
+        // `here()` that `finish_body`'s terminator guarantees is a real
+        // instruction index, so a target must be in range. Every instruction
+        // `patch_target` accepts is listed below, and the two lists are one
+        // defence: a third emitter that patches a target has to appear in
+        // both. This check does *not* catch a never-patched target: an
+        // unpatched `target` field stays `0`, which is always in range and
+        // would pass silently here. Completeness against that failure mode
+        // instead comes from each emitter's own emit/patch pairing (every
+        // `emit(... { target: 0 })` in this module is paired with a
+        // `patch_target` call before `finish` runs) -- an out-of-range target
+        // is a compiler bug, not a program error, so it is a `debug_assert!`
+        // -- checked on every debug test run, free in release.
         debug_assert!(
             self.instructions
                 .iter()
@@ -1642,7 +1717,8 @@ impl<'a> Lowerer<'a> {
                     Instruction::Jump { target }
                     | Instruction::JumpIfNotBoolean { target, .. }
                     | Instruction::BranchIfFalse { target, .. }
-                    | Instruction::BranchIfTrue { target, .. } => Some(*target as usize),
+                    | Instruction::BranchIfTrue { target, .. }
+                    | Instruction::IntegerBinary { target, .. } => Some(*target as usize),
                     _ => None,
                 })
                 .all(|target| target < self.instructions.len()),
@@ -2323,13 +2399,16 @@ mod tests {
 
     #[test]
     fn an_ordinary_send_evaluates_receiver_then_arguments() {
+        // `~=` rather than `+`: an integer leaf lowers to the inlined fast
+        // path instead, which is a shape of its own
+        // (`an_integer_addition_lowers_to_the_inlined_fast_path`).
         let (method, bindings) = resolve_method(
             indoc! {"
                 Newspeak3
                 'T'
                 class X = Object new (
                 ) (
-                  foo: x = ( ^3 + x )
+                  foo: x = ( ^3 ~= x )
                 ) : ()
             "},
             0,
@@ -2345,7 +2424,7 @@ mod tests {
                     literal: BytecodeLiteral::SmallInteger(3)
                 },
                 Instruction::SendPublic {
-                    selector: crate::Symbol::intern("+"),
+                    selector: crate::Symbol::intern("~="),
                     receiver_register: 1,
                     argument_registers: vec![0],
                     destination: 2,
@@ -3480,7 +3559,8 @@ mod tests {
         );
         lowerer.lower_slot_initializer(initializer, 4);
         let code = lowerer.finish(method.span);
-        // `6`, `7`, the `*` send, then the field write: four instructions.
+        // `6`, `7`, the inlined `*` with its guard and its fallback send,
+        // then the field write: six instructions, all one statement.
         assert!(matches!(
             code.instructions.last(),
             Some(Instruction::InitializeSlot {
@@ -3488,7 +3568,7 @@ mod tests {
                 own_index: 4
             })
         ));
-        assert_eq!(code.statement_program_counter, vec![(0, 0..4)]);
+        assert_eq!(code.statement_program_counter, vec![(0, 0..6)]);
     }
 
     /// Compiles `foo: x = ( ^<body> )` and returns the method's code.
@@ -3575,6 +3655,130 @@ mod tests {
             instruction,
             Instruction::MakeClosure { code, .. } if code.register_count - code.argument_count >= 1
         )));
+    }
+
+    #[test]
+    fn an_integer_addition_lowers_to_the_inlined_fast_path() {
+        let code = compile_foo("1 + 2");
+        assert!(
+            has(&code, |instruction| matches!(
+                instruction,
+                Instruction::IntegerBinary {
+                    operation: IntegerOperation::Add,
+                    ..
+                }
+            )),
+            "{:#?}",
+            code.instructions
+        );
+    }
+
+    #[test]
+    fn the_inlined_fast_path_keeps_the_ordinary_send_as_its_fallback() {
+        // The fallback is what raises every error the fast path declines to
+        // handle, so it must still be emitted -- and it must be a real send,
+        // not a second copy of the arithmetic.
+        let code = compile_foo("1 + 2");
+        assert!(has(&code, |instruction| matches!(
+            instruction,
+            Instruction::SendPublic { selector, .. } if selector.as_str() == "+"
+        )));
+    }
+
+    /// The whole design rests on the fallback being the very send the
+    /// ordinary lowering would have emitted, over the very registers the
+    /// guard already read: lowering the message a second time would evaluate
+    /// the argument's own side effects twice whenever the guard fails.
+    #[test]
+    fn the_inlined_fast_paths_fallback_reuses_the_registers_the_guard_read() {
+        let code = compile_foo("x + (x bump)");
+        let Some(Instruction::IntegerBinary { left, right, .. }) = code
+            .instructions
+            .iter()
+            .find(|instruction| matches!(instruction, Instruction::IntegerBinary { .. }))
+        else {
+            panic!("expected the fast path: {:#?}", code.instructions)
+        };
+        let Some(Instruction::SendPublic {
+            receiver_register,
+            argument_registers,
+            ..
+        }) = code.instructions.iter().find(
+            |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "+"),
+        ) else {
+            panic!("expected the fallback send: {:#?}", code.instructions)
+        };
+        assert_eq!(*receiver_register, *left);
+        assert_eq!(*argument_registers, vec![*right]);
+        assert_eq!(
+            code.instructions
+                .iter()
+                .filter(|instruction| matches!(
+                    instruction,
+                    Instruction::SendPublic { selector, .. } if selector.as_str() == "bump"
+                ))
+                .count(),
+            1,
+            "the argument is evaluated once, on both paths: {:#?}",
+            code.instructions
+        );
+    }
+
+    #[test]
+    fn a_super_send_of_an_inlinable_selector_is_not_inlined() {
+        // `super + x` starts its lookup above the receiver's class, which the
+        // guard cannot reproduce, so it stays an ordinary send.
+        let code = compile_foo("super + 2");
+        assert!(!has(&code, |instruction| matches!(
+            instruction,
+            Instruction::IntegerBinary { .. }
+        )));
+    }
+
+    /// The inlined form must ask the same question about its receiver's
+    /// register that the ordinary send asks. `total` is assigned inside an
+    /// inlinable conditional's block, so the fallback closure that
+    /// conditional's guard failure builds writes `total` by reference, and
+    /// any later send may be the one that runs it -- including the
+    /// argument's own send and the fast path's fallback. The guard must
+    /// therefore read a copy, not `total`'s own register. Getting this wrong
+    /// is silent wrong output at exit status 0.
+    #[test]
+    fn a_local_read_across_an_inlined_arithmetic_fallback_is_copied() {
+        let code = lower_whole_method(
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  bump: value = ( ^value + 1 )
+                  foo = (
+                    | total |
+                    total:: 1.
+                    true ifTrue: [total:: 2].
+                    ^total + (self bump: total)
+                  )
+                ) : ()
+            "},
+            1,
+        );
+        // `foo` takes no parameters, so its only local `total` is register 0.
+        let Some(Instruction::IntegerBinary { left, .. }) = code
+            .instructions
+            .iter()
+            .find(|instruction| matches!(instruction, Instruction::IntegerBinary { .. }))
+        else {
+            panic!("expected the fast path: {:#?}", code.instructions)
+        };
+        assert_ne!(*left, 0, "`total` can be written before the guard reads it");
+        assert!(
+            code.instructions.contains(&Instruction::Move {
+                destination: *left,
+                source: 0
+            }),
+            "the guard reads the copy of `total`: {:#?}",
+            code.instructions
+        );
     }
 
     #[test]

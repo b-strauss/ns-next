@@ -96,13 +96,18 @@ identity".
 **Branches**
 
 - `Jump { target }`, `BranchIfFalse { register, target }`, `BranchIfTrue { register, target }`,
-  `JumpIfNotBoolean { register, target }`.
+  `JumpIfNotBoolean { register, target }`, `IntegerBinary { operation, destination, left, right, target }`.
 
-**Nothing but control-flow inlining emits a branch.** Every other construct in the
-language is a send, so a jump in the instruction stream is always the trace of an
-inlining decision. `JumpIfNotBoolean` is the inlining guard: for the unboxed
-`Value::Boolean` representation, "is the receiver's class exactly `True`/`False`?" is
-precisely "is this register a `Boolean` at all".
+**Nothing but control-flow inlining and arithmetic inlining emits a branch.**
+Every other construct in the language is a send, so a jump in the instruction
+stream is always the trace of one of the two inlining decisions.
+`JumpIfNotBoolean` is the control-flow guard: for the unboxed `Value::Boolean`
+representation, "is the receiver's class exactly `True`/`False`?" is precisely
+"is this register a `Boolean` at all". `IntegerBinary` is both the arithmetic
+guard and the operation itself: it computes in place and falls through on
+success, or jumps to `target` -- the ordinary send -- when either operand is
+not a `Value::SmallInteger` or the `checked_*` operation declines ("Arithmetic
+inlining" below).
 
 ## Compiled code
 
@@ -386,6 +391,106 @@ native loop and a `^` out of an inlined loop body;
 `goldens/language/control_flow_fallback.ns` runs a user
 `ifTrue:ifFalse:`; and the compiler's own tests (`compiler/lower.rs`,
 `crates/ns-runtime/tests/compiler.rs`) pin the guarded shape the gate emits.
+
+## Arithmetic inlining
+
+The same idea as control-flow inlining, applied to the nine binary integer
+primitives: `+`, `-`, `*`, `//`, `<`, `>`, `<=`, `>=` and `=`. A send of one
+of them is worth an instruction of its own because a leaf send is the
+cheapest kind of send there is — no user method body to run, nothing to do
+but read two registers and answer — so its activation is almost all of its
+cost. Cog makes the arithmetic and comparison selectors bytecodes of their
+own — `bytecodePrimAdd` and its neighbours — for the same reason, and
+[core-library.md](core-library.md) names it as this step's model.
+
+**The step is sequenced ahead of the core library's move to a VM mirror**
+([core-library.md](core-library.md)). Once `do:`, `collect:` and the rest
+are Newspeak over a mirror, every arithmetic operation those bodies perform
+is a send the interpreter has to dispatch; without the fast path, moving the
+library to Newspeak would pay an activation for each one. See
+[execution.md](execution.md), "What leaf inlining moved", for what it
+measured: every one of the eight benchmark sources 11.5% to 31.0% faster.
+
+**Recognition is syntactic and shares control-flow inlining's gate.**
+`recognize_integer_binary` (`compiler/control_flow.rs`) answers an
+`IntegerOperation` for a binary selector in the list and `None` otherwise;
+it sits beside `recognize`, behind the same `is_ordinary_send`, so a `super`
+or lexical send is never inlined — their lookups do not start where an
+explicit-receiver send's does. Nothing about the operands is inspected:
+whether they are integers is a run-time question, and asking it at compile
+time would be a type inference this compiler does not do. `/` is not in the
+list because an integer has no `/` primitive at all.
+
+**The emission is a guarded fast path with the ordinary send as its
+fallback**, the shape `lower_integer_binary` emits:
+
+```
+IntegerBinary <operation> dest <- left, right   else -> fallback
+Jump -> after
+fallback:
+SendPublic dest <- left #<selector> (right)
+after:
+```
+
+The instruction computes only when both operands are `Value::SmallInteger`
+and, for the four arithmetic operations, when the `checked_*` operation
+yields a result; on either failure it branches to the fallback. The five
+comparisons cannot fail once the operands are integers. So a non-integer
+operand, an overflow and a zero divisor all leave by the same door, and what
+they reach is the send the compiler would have emitted anyway.
+
+**That is the point of the fallback, and the reason it is a real send rather
+than an error raised in the VM.** Every error message an integer operation
+can produce — `doesNotUnderstand:`, the overflow the specification requires
+instead of wrapping ([core-library.md](core-library.md), "Deviation: `i64`
+integers"), division by zero — is worded and raised in `builtins/numbers.rs`,
+and stays there. The VM arm never raises anything. A second copy of those
+errors in `vm.rs` is exactly the drift `CLAUDE.md`'s "`vm.rs` holds no
+dispatch logic" exists to prevent, and it would have to be kept in step with
+the reference lowering, which compiles the plain send and reaches the
+builtin directly. Because the fallback is an ordinary `SendPublic` it also
+observes a user class that implements `+` exactly as an uninlined send
+would — the same virtuality-preserving argument control-flow inlining
+makes.
+
+The fallback carries a call site of its own, so a program that takes it
+repeatedly still gets an inline cache there. The fast path carries none: it
+is not a send and decides nothing.
+
+**A known cost, not yet paid down.** A *successful* operation executes the
+`Jump` past the fallback as well, so the hot path is two dispatches where an
+out-of-line fallback block would leave one. It did not show above the noise
+in the measurement ([execution.md](execution.md), "What leaf inlining
+moved"), and moving the fallback out of line is a follow-up rather than
+something the numbers demand.
+
+**Planned: inverting the branch sense to drop the `Jump`.** An out-of-line
+fallback block is not the cheaper form -- it would make `statement_program_counter`
+ranges non-contiguous. The cheaper form inverts what `target` means:
+`IntegerBinary` would jump to `target` on *success*, landing past the send,
+and fall through into the immediately following `SendPublic` when it
+declines. `vm::run` polls a safepoint only on a backward jump (`target <=
+program_counter`), so the forward jump costs no safepoint, and the hot path
+becomes one dispatch with no `Jump` instruction at all. **This requires
+retiring tag 33 and taking 34 for the changed instruction**, because the
+meaning of `target` changes and a stale artifact would otherwise decode into
+a different, perfectly valid program and run it silently
+(`CLAUDE.md`, "A wire tag is assigned once and never renumbered or reused").
+`patch_target`, `finish`, `jump_target`, `check_shape` and `no_branch` need
+no change, because the field itself is unchanged.
+
+**Testing.** The paths the guard declines are pinned by recorded answers,
+since a fast path that quietly answered where the primitive would have
+raised passes every other test there is.
+`goldens/arithmetic/integer_leaves_fast_path_and_fallback_agree.ns` runs
+the fast path beside the two ways the guard declines on ordinary values —
+a `Float` receiver and a non-integer argument to `=` — and floor division on
+the fast path, and `goldens/errors/` holds the two the primitive turns into
+errors, an `i64`
+overflow on `+` and `//` by zero, with the primitive's own message as the
+recorded `stderr`. The reference lowering compiles every one of these as a
+plain send and is held to the same recorded answers, which is what makes it
+the oracle for this step.
 
 ## Safepoints and call-site identity
 
@@ -810,6 +915,11 @@ signatures is a design change to the image module's interface, not a migration.
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run
   time**, with a fallback to a real send, so virtuality is never actually lost.
+- **The integer leaves are inlined under a run-time type guard whose
+  fallback is the ordinary send**, so every error an integer operation can
+  raise — a `doesNotUnderstand:`, an overflow, a zero divisor — is still
+  raised by the primitive in `builtins/` and by nothing else
+  ("Arithmetic inlining").
 - **`whileTrue:` with a non-Boolean condition sends `mustBeBoolean`** rather than
   falling back to a re-send, because a re-send would duplicate the condition's
   side effects and the inlined loop would diverge from the native one.

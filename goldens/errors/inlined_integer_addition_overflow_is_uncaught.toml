@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: Integer overflow computing 9223372036854775807 + 1
+'''

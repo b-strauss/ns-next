@@ -767,3 +767,196 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
         error.message
     );
 }
+
+/// The inlined integer leaves (`Instruction::IntegerBinary`). Each one is
+/// checked through compiled source rather than a hand-built code object, so
+/// the test survives a change to the lowering, and each is checked against
+/// the literal answer the operation is known to produce. The goldens, run
+/// under both lowerings, are what checks the fast path against the ordinary
+/// send.
+#[test]
+fn an_inlined_integer_operation_answers_what_the_primitive_answers() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Arithmetic = Object new (
+        ) (
+          public add: left to: right = ( ^left + right )
+          public subtract: left from: right = ( ^right - left )
+          public multiply: left by: right = ( ^left * right )
+          public divide: left by: right = ( ^left // right )
+          public less: left than: right = ( ^left < right )
+          public greater: left than: right = ( ^left > right )
+          public atMost: left of: right = ( ^left <= right )
+          public atLeast: left of: right = ( ^left >= right )
+          public equal: left to: right = ( ^left = right )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let seven = interpreter.stash(Value::SmallInteger(7));
+    let three = interpreter.stash(Value::SmallInteger(3));
+
+    let integer_answer = |interpreter: &mut Interpreter, selector: &str| {
+        let result = send(
+            interpreter,
+            &instance,
+            selector,
+            &[seven.clone(), three.clone()],
+        );
+        let root = expect_ok(result, selector);
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&root)))
+    };
+    assert_eq!(integer_answer(&mut interpreter, "add:to:"), 10);
+    assert_eq!(integer_answer(&mut interpreter, "subtract:from:"), -4);
+    assert_eq!(integer_answer(&mut interpreter, "multiply:by:"), 21);
+    assert_eq!(integer_answer(&mut interpreter, "divide:by:"), 2);
+
+    let boolean_answer = |interpreter: &mut Interpreter, selector: &str| {
+        let result = send(
+            interpreter,
+            &instance,
+            selector,
+            &[seven.clone(), three.clone()],
+        );
+        let root = expect_ok(result, selector);
+        interpreter.enter(|mutator| match mutator.fetch(&root) {
+            Value::Boolean(boolean) => boolean,
+            other => panic!(
+                "expected a Boolean, got {}",
+                mutator.heap().describe(&other)
+            ),
+        })
+    };
+    assert!(!boolean_answer(&mut interpreter, "less:than:"));
+    assert!(boolean_answer(&mut interpreter, "greater:than:"));
+    assert!(!boolean_answer(&mut interpreter, "atMost:of:"));
+    assert!(boolean_answer(&mut interpreter, "atLeast:of:"));
+    assert!(!boolean_answer(&mut interpreter, "equal:to:"));
+}
+
+/// The three cases the fast path declines although both operands are
+/// integers. Each must reach the ordinary send standing at the guard's
+/// target and raise that primitive's own error, unchanged -- `vm.rs` raises
+/// none of its own.
+#[test]
+fn an_inlined_integer_operation_leaves_overflow_and_division_by_zero_to_the_primitive() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Arithmetic = Object new (
+        ) (
+          public add: left to: right = ( ^left + right )
+          public divide: left by: right = ( ^left // right )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+
+    let maximum = interpreter.stash(Value::SmallInteger(i64::MAX));
+    let one = interpreter.stash(Value::SmallInteger(1));
+    let result = send(
+        &mut interpreter,
+        &instance,
+        "add:to:",
+        &[maximum, one.clone()],
+    );
+    let error = expect_error(&mut interpreter, result, "overflowing addition");
+    assert!(
+        error.message.contains("Integer overflow"),
+        "{}",
+        error.message
+    );
+
+    let zero = interpreter.stash(Value::SmallInteger(0));
+    let result = send(&mut interpreter, &instance, "divide:by:", &[one, zero]);
+    let error = expect_error(&mut interpreter, result, "division by zero");
+    assert_eq!(error.message, "division by zero");
+
+    // `i64::MIN // -1` has no `i64` result either, and `checked_div_euclid`
+    // declines it for the same reason a zero divisor is declined.
+    let minimum = interpreter.stash(Value::SmallInteger(i64::MIN));
+    let minus_one = interpreter.stash(Value::SmallInteger(-1));
+    let result = send(
+        &mut interpreter,
+        &instance,
+        "divide:by:",
+        &[minimum, minus_one],
+    );
+    let error = expect_error(&mut interpreter, result, "overflowing division");
+    assert!(
+        error.message.contains("Integer overflow"),
+        "{}",
+        error.message
+    );
+}
+
+/// A non-integer operand is the guard's other failure, and the primitive
+/// decides it too: `+` is a type mismatch, while `=` deliberately answers
+/// `false` rather than raising (`builtins/numbers.rs`'s module note). The
+/// fast path must reproduce neither decision itself.
+#[test]
+fn an_inlined_integer_operation_with_a_non_integer_operand_falls_back_to_the_send() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Arithmetic = Object new (
+        ) (
+          public add: left to: right = ( ^left + right )
+          public equal: left to: right = ( ^left = right )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let one = interpreter.stash(Value::SmallInteger(1));
+    let text = interpreter.enter(|mutator| {
+        let string = mutator.new_string("one".to_string());
+        mutator.stash(Value::Object(string))
+    });
+
+    let result = send(
+        &mut interpreter,
+        &instance,
+        "add:to:",
+        &[one.clone(), text.clone()],
+    );
+    let error = expect_error(&mut interpreter, result, "a String argument to `+`");
+    assert!(
+        error.message.contains("requires a numeric argument"),
+        "the primitive's own type-mismatch message, unchanged: {}",
+        error.message
+    );
+
+    let result = send(&mut interpreter, &instance, "equal:to:", &[one, text]);
+    let answer = expect_ok(result, "1 = 'one'");
+    interpreter.enter(|mutator| match mutator.fetch(&answer) {
+        Value::Boolean(false) => {}
+        other => panic!(
+            "expected `false` from the primitive, got {}",
+            mutator.heap().describe(&other)
+        ),
+    });
+}
+
+/// The fallback reads the registers the guard already filled, so the
+/// argument's own side effects happen once whichever path runs. Lowering the
+/// message a second time for the fallback would run `tick` twice here --
+/// silent wrong output at exit status 0.
+#[test]
+fn an_inlined_integer_operation_evaluates_its_argument_once_on_the_fallback_path() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Counting = Object new (
+          | ticks ::= 0. |
+        ) (
+          tick = ( ticks:: ticks + 1. ^'not an integer' )
+          public run = ( 1 = self tick. ^ticks )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = send(&mut interpreter, &instance, "run", &[]);
+    let ticks = expect_ok(result, "run");
+    interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&ticks)), 1));
+}

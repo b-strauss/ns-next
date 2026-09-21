@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal};
+use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::mixin::DispatchId;
@@ -677,6 +677,33 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
     })
 }
 
+/// The inverse of `encode::integer_operation_tag`. An unrecognized byte is
+/// refused rather than defaulted to an operation -- an image is untrusted
+/// input, and a stale or corrupt byte must not decode into a different,
+/// perfectly valid `IntegerBinary`.
+pub fn integer_operation_from_tag(tag: u8) -> Option<IntegerOperation> {
+    Some(match tag {
+        0 => IntegerOperation::Add,
+        1 => IntegerOperation::Subtract,
+        2 => IntegerOperation::Multiply,
+        3 => IntegerOperation::FloorDivide,
+        4 => IntegerOperation::Less,
+        5 => IntegerOperation::Greater,
+        6 => IntegerOperation::LessOrEqual,
+        7 => IntegerOperation::GreaterOrEqual,
+        8 => IntegerOperation::Equal,
+        _ => return None,
+    })
+}
+
+fn read_integer_operation(reader: &mut Reader) -> Result<IntegerOperation, DecodeError> {
+    let tag = reader.read_u8()?;
+    integer_operation_from_tag(tag).ok_or(DecodeError::InvalidTag {
+        what: "integer operation",
+        tag,
+    })
+}
+
 /// The decoded code table: every compiled body the image carries, flat and
 /// in the order it was written. Which body belongs to which declaration is
 /// the mixin table's business (`image::mixins`), which names these by index.
@@ -1228,6 +1255,12 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
         | Instruction::BranchIfFalse { register, .. }
         | Instruction::BranchIfTrue { register, .. } => vec![*register],
         Instruction::Jump { .. } => vec![],
+        Instruction::IntegerBinary {
+            destination,
+            left,
+            right,
+            ..
+        } => vec![*destination, *left, *right],
     }
 }
 
@@ -1239,7 +1272,8 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         Instruction::Jump { target }
         | Instruction::JumpIfNotBoolean { target, .. }
         | Instruction::BranchIfFalse { target, .. }
-        | Instruction::BranchIfTrue { target, .. } => Some(*target),
+        | Instruction::BranchIfTrue { target, .. }
+        | Instruction::IntegerBinary { target, .. } => Some(*target),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
         | Instruction::LoadBuiltinClass { .. }
@@ -1621,6 +1655,19 @@ fn decode_instruction(
             let register = reader.read_u16()?;
             Instruction::BranchIfTrue {
                 register,
+                target: reader.read_u32()?,
+            }
+        }
+        OPCODE_INTEGER_BINARY => {
+            let operation = read_integer_operation(reader)?;
+            let destination = reader.read_u16()?;
+            let left = reader.read_u16()?;
+            let right = reader.read_u16()?;
+            Instruction::IntegerBinary {
+                operation,
+                destination,
+                left,
+                right,
                 target: reader.read_u32()?,
             }
         }

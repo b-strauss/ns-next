@@ -27,7 +27,7 @@
 // retired at 11 and reassigned to 29 for the same reason: closure
 // conversion gave it a list of copied registers, so its old bytes describe
 // a different instruction.
-// Next free number: 33.
+// Next free number: 34.
 
 /// Loads a literal into a register; a string, symbol, character or array
 /// literal allocates a fresh object every time it runs.
@@ -96,6 +96,8 @@ pub const OPCODE_MAKE_VECTOR: u8 = 30;
 pub const OPCODE_LOAD_VECTOR: u8 = 31;
 /// Writes one slot of an indirection vector.
 pub const OPCODE_STORE_VECTOR: u8 = 32;
+/// An integer leaf's inlined fast path (`Instruction::IntegerBinary`).
+pub const OPCODE_INTEGER_BINARY: u8 = 33;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction

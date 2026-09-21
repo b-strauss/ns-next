@@ -128,8 +128,10 @@ passing.
 
 **Interfaces:**
 - Consumes: `control_flow::is_ordinary_send`, which already gates inlining.
-- Produces: `pub(crate) enum IntegerOperation` (re-exported from `bytecode.rs`
-  in Task 2 — in this task it is declared in `bytecode.rs` and used here) and
+- Produces: `pub enum IntegerOperation`, declared in `bytecode.rs` and used
+  here. It must be `pub`, not `pub(crate)`: Task 2 makes it a field of
+  `Instruction`, which is `pub enum Instruction`, and a `pub(crate)` field type
+  in a public enum does not compile. Also
   `pub(crate) fn recognize_integer_binary(send: &ast::Send) -> Option<IntegerOperation>`.
 
 - [ ] **Step 1: Write the failing test**
@@ -486,9 +488,10 @@ Instruction::IntegerBinary {
 }
 ```
 
-Match the surrounding arms' exact helper names: this file reads a register with
-`read_local` and writes one with whatever its neighbours use — copy that call,
-do not invent a name.
+The helper names are verified: `vm.rs` reads a register with
+`read_local(&mutator.heap, activation, *register)` and writes one with
+`write_local(&mut mutator.heap, activation, *destination, value)`, as the
+`Instruction::Move` arm does. Use those exactly.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -637,13 +640,28 @@ that is a defect, and the test in Step 7 is what shows it.
 
 - [ ] **Step 7: Write the aliasing test**
 
+`compile_foo` wraps its argument as `foo: x = ( ^<body> )`, which has a
+parameter but no temporaries, so it cannot express this test. Use
+`lower_whole_method`, which the module's other tests use for a full source:
+
 ```rust
 #[test]
 fn a_local_read_across_an_inlined_arithmetic_fallback_is_copied() {
     // The fallback send runs user code, which can assign to a local through
     // its setter, so a local's register read afterwards must be a copy.
     // Getting this wrong is silent wrong output at exit status 0.
-    let code = compile_foo_with_locals("| x | x:: 1. ^(x + (self bump: x)) + x");
+    let code = lower_whole_method(
+        indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              bump: value = ( ^value + 1 )
+              foo = ( | total | total:: 1. ^(total + (self bump: total)) + total )
+            ) : ()
+        "},
+        1,
+    );
     assert!(has(&code, |instruction| matches!(
         instruction,
         Instruction::Move { .. }
@@ -651,9 +669,10 @@ fn a_local_read_across_an_inlined_arithmetic_fallback_is_copied() {
 }
 ```
 
-Adapt the helper name to whatever `lower.rs`'s tests use for a method with
-temporaries; `an_assignment_two_inlined_levels_deep_in_a_method_copies_the_operand`
-in the same module shows the shape.
+The second argument of `lower_whole_method` is the method index within the
+class, so `1` selects `foo`, not `bump:`.
+`an_assignment_two_inlined_levels_deep_in_a_method_copies_the_operand` in the
+same module shows the same helper in use.
 
 - [ ] **Step 8: Run the whole suite**
 
