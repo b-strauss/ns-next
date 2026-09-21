@@ -1,26 +1,26 @@
 Newspeak3
 'Arithmetic'
-(* The inlined integer leaves (`Instruction::IntegerBinary`): two sends whose
-   operands are both literal small integers, which the fast path computes
-   itself, then three whose guard declines -- a Float receiver, a non-integer
-   argument to `=`, and floor division on two integers again -- each answered
-   by the ordinary send `IntegerBinary` falls back to, unchanged. *)
+(* The inlined integer leaves (`Instruction::IntegerBinary`): three sends
+   whose operands are both literal small integers, which the fast path
+   computes itself, then two whose guard declines -- a Float receiver and a
+   non-integer argument to `=` -- each answered by the ordinary send
+   `IntegerBinary` falls back to, unchanged. *)
 class IntegerLeaves usingPlatform: platform = Object new (
 ) (
-  public main: p args: a = (
-    (* Both operands are literal small integers: the fast path computes
-       these itself. *)
-    p transcript show: (2 + 3) printString; newLine.
-    p transcript show: (7 < 9) printString; newLine.
-    (* The receiver is a Float, not a SmallInteger, so the guard declines and
-       the ordinary send runs: Float's `+` widens the Integer argument and
-       answers 5.5. *)
-    p transcript show: (3.5 + 2) printString; newLine.
-    (* The argument is a String, not a SmallInteger: the guard declines and
-       Integer's `=` answers `false` rather than raising -- the deliberate
-       exception documented in `builtins/numbers.rs`. *)
-    p transcript show: (2 = 'two') printString; newLine.
-    (* Floor division of two literal integers: the fast path again. *)
-    p transcript show: (7 // 2) printString; newLine
-  )
+    public main: p args: a = (
+        (* Both operands are literal small integers: the fast path computes
+           these itself. *)
+        p transcript show: (2 + 3) printString; newLine.
+        p transcript show: (7 < 9) printString; newLine.
+        (* The receiver is a Float, not a SmallInteger, so the guard declines
+           and the ordinary send runs: Float's `+` widens the Integer
+           argument and answers 5.5. *)
+        p transcript show: (3.5 + 2) printString; newLine.
+        (* The argument is a String, not a SmallInteger: the guard declines
+           and Integer's `=` answers `false` rather than raising -- the
+           deliberate exception documented in `builtins/numbers.rs`. *)
+        p transcript show: (2 = 'two') printString; newLine.
+        (* Floor division of two literal integers: the fast path again. *)
+        p transcript show: (7 // 2) printString; newLine
+    )
 ) : ()

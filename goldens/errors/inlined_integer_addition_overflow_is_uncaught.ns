@@ -1,5 +1,5 @@
 Newspeak3
-'Arithmetic'
+'T'
 (* Both operands are literal small integers, so `IntegerBinary`'s guard
    passes and the fast path runs `checked_add` itself -- which declines an
    overflowing result and falls back to the ordinary `+` send, whose
@@ -7,7 +7,7 @@ Newspeak3
    take this error away from the primitive. *)
 class IntegerOverflow usingPlatform: platform = Object new (
 ) (
-  public main: p args: a = (
-    p transcript show: (9223372036854775807 + 1) printString; newLine
-  )
+    public main: p args: a = (
+        p transcript show: (9223372036854775807 + 1) printString; newLine
+    )
 ) : ()
