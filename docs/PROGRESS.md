@@ -240,8 +240,14 @@ whether the remainder is the reallocation cost above or something the
 trigger's comparison itself costs. Not yet run.
 
 **M4's numbered steps are now complete.** What comes next, after M4 and
-before the JIT tiers, is step 6: the core library in Newspeak (the order of
-work below).
+before the JIT tiers, is **step 6, the core library in Newspeak, and then
+step 7, the payload space** (the order of work below). That ordering was
+decided with the user on 2026-09-21: step 6 first because it removes the
+one constraint that complicates the space -- a payload that grows in place,
+which exists only because `OrderedCollection` is a Rust builtin -- and
+because it raises what the space is worth, a Newspeak `List>>add:`
+allocating a fresh `Array` at every capacity overflow where a `Vec::push`
+amortizes to nothing.
 
 **The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
 `22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
@@ -750,6 +756,47 @@ Then, after M4 and before the JIT tiers:
    mirrors need and that nothing before this step does
    ([object-model.md](design/object-model.md), "Class sides and
    metaclasses").
+
+7. **The payload space** — [memory.md](design/memory.md), "Payloads belong to
+   the Rust allocator, and what that costs". An object's variable-length part
+   is a separate Rust allocation today: `Instance`'s and `Array`'s
+   `Vec<Value>`, `ClosureData.copied`, and a reified frame's `arguments` and
+   `temporaries`. Moving those four into one `Value` space the collector
+   compacts beside the arenas makes an allocation a bump and reclamation free,
+   and lays a payload next to its object, which nothing does today. Decided
+   with the user on 2026-09-21 to sit here: **after step 6, before the tiers.**
+
+   Step 6 removes the one constraint that would complicate it. `Heap::array_push`
+   grows a payload in place only because `OrderedCollection` is a Rust builtin
+   (`builtins/collections.rs`'s own design note calls that a deliberate
+   simplification); both reference runtimes implement a growable collection in
+   Newspeak over a **fixed** `Array` — Primordial Soup's `List`
+   (`prior-art/primordialsoup/newspeak/Collections.ns`) and SOMns's `Vector`
+   (`prior-art/somns/core-lib/Kernel.ns`) each allocate a larger `Array` and
+   copy on overflow, as `java.util.ArrayList` does, and neither VM has a
+   primitive that resizes a payload. Step 6 also makes the space worth more: a
+   `List>>add:` written in Newspeak allocates a fresh `Array` and payload at
+   every capacity overflow, where a `Vec::push` amortizes to nothing.
+
+   What the space must still support after step 6 is reflective, not hot:
+   edit-and-continue adding locals to a live activation, and a MirrorBuilder
+   adding or removing slots of live instances (requirements 2 and 3 of
+   [liveness-and-reflection.md](design/liveness-and-reflection.md)). Each takes
+   a fresh region and orphans the old one, so the space needs a fill-level
+   trigger of its own beside the two arena limits. `become:` exchanges the
+   payload reference along with the rest of the object, and the space belongs
+   to a `Heap` — never to a thread or the process — because an actor is meant
+   to be a per-heap scope.
+
+   **Measure before building.** The three experiments named under "Where the
+   next session starts" above still apply, and a fourth is cheaper than any of
+   them: a `#[global_allocator]` swap in `ns-cli` says whether payload
+   allocation costs measurable time at all. It is needed because the
+   allocator-churn reading of `bench_block.ns`'s unexplained remainder is
+   weaker than it looks — against `dc0ffe5` the head allocates exactly as many
+   payloads as the baseline did, since the baseline reclaimed none; what the
+   collector added is the frees, and `compact_arena`'s `truncate` drops those
+   inside the span `World::collect` times.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
 computation and serializing it needed the trampoline and the removal of the

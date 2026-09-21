@@ -1262,7 +1262,8 @@ no `mmap` and no `VirtualAlloc` anywhere in `nova_vm/src`; it keeps a `Vec`
 of heap data per type, exactly as `Heap` keeps `objects` and `frames`. The
 handle discipline, the lifetime brand and `#![forbid(unsafe_code)]` all rest
 on that choice, and so does "MMTk is out" in "The shape: mark, compact,
-forward" above.
+forward" above -- the last of those now for what it would replace rather than
+for the lint, which is revisitable (see "Decisions").
 
 **Nova does mitigate the payload half, and that part is transferable.**
 `prior-art/nova/nova_vm/src/heap/element_array.rs` pools an object's
@@ -1273,21 +1274,88 @@ of its own, and returning it is a pool operation rather than a `free`. The
 four sites that would move to such a pool here are the ones a collection
 drops in bulk: `Instance`, `Array`, `copied`, and a frame's registers.
 
-Three routes follow, and only two of them are open. Accept the cost where a
-program churns, which is what the branch that built the collector did. Pool
-the payloads as Nova does, which attacks the measured churn directly and
-needs neither `unsafe` nor a per-platform path, so it disturbs nothing the
-representation already decided. Or own the memory like Soup and Spur, which
-requires both, and is the same trade the MMTk decision already refused.
+Three routes follow, and all three are open. Accept the cost where a program
+churns, which is what the branch that built the collector did. Pool the
+payloads as Nova does. Or own the memory like Soup and Spur, through
+`VirtualAlloc`/`mmap` under a space of our own. The third is no longer ruled
+out by the lint: `unsafe` is acceptable on a performance-critical path where
+the abstraction over it is safe again (decided with the user on 2026-09-21),
+which for a page layer means roughly a hundred lines behind an interface of
+three methods, or a crate such as `region` in their place. What still argues
+against it is the second half of the MMTk decision, which the lint never
+carried: a space of raw addresses replaces the index arena, the origin
+guards, the epoch check and the brand's proof along with the allocator.
 
-**The ordering matters more than the choice.** Pooling addresses only the
-allocator-churn explanation. If the unaccounted cost is instead the cache
-after-effect of walking the whole live graph — which scales with how often
-a program collects rather than with what each collection costs, and which
-`bench_block.ns` leads on by collecting 269 times against the next source's
-107 — then pooling buys nothing. The experiments that discriminate are
-named in [PROGRESS.md](../PROGRESS.md)'s "Where the next session starts";
-run one before building anything here.
+**No existing arena crate does what this needs**, and `unsafe` does not
+change that, because the obstacle was never `unsafe`. Every arena crate
+models one lifetime pattern -- everything lives until a reset. This wants
+another: a tracer decides per object, and what lives is *moved*. `bumpalo`
+offers no individual deallocation at all, only `reset`, and its chunked
+layout has no linear address space for an offset to mean anything in;
+`typed-arena` hands out `&mut T` that pins its contents for the arena's
+life; `slab`, `slotmap`, `generational-arena` and `id-arena` are fixed-slot
+object arenas that do not address the payload question; and an
+`allocator-api2` bump allocator behind `Vec<Value, _>` would make allocation
+free but leave the space growing monotonically, which is the never-reclaim
+interim over again. Compaction is not an allocator feature -- it needs to
+know the references -- so it stays ours, in `compact_arena`'s shape. The one
+level where a crate does fit is pages, not arenas.
+
+**A payload is size-stable on every hot path, and the two exceptions are
+reflective.** This decides more of the design than the allocator question
+does. Both reference runtimes implement a growable collection *in Newspeak
+over a fixed `Array`*: Primordial Soup's `List`
+(`prior-art/primordialsoup/newspeak/Collections.ns`) holds `data ::= Array
+new: capacity` and on overflow does `data:: data copyWithSize: (capacity >>
+1 + capacity | 7)`, where `copyWithSize:` is itself Newspeak over `Array
+new:` and `replaceFrom:to:with:startingAt:`; SOMns's `Vector`
+(`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage
+size` and copies. Neither VM has a primitive that resizes a payload --
+the shape `java.util.ArrayList` has. `Heap::array_push`, which grows one in
+place here, exists only because `OrderedCollection` is a Rust builtin, a
+simplification `builtins/collections.rs` flags as such; step 6 of
+[PROGRESS.md](../PROGRESS.md)'s order of work retires it.
+
+What remains after that is reflective and rare: edit-and-continue adding
+locals to a live activation, and a MirrorBuilder adding or removing slots of
+live instances (requirements 2 and 3 of
+[liveness-and-reflection.md](liveness-and-reflection.md)). Each takes a fresh
+region and orphans the old one, which is why the space needs a fill-level
+trigger of its own beside the two arena limits. `become:` exchanges the
+payload reference along with the rest of the object. And the space belongs
+to a `Heap`, never to a thread or the process, because an actor is meant to
+be a per-heap scope -- which by itself rules out every allocator that keeps
+its state in a `static` or a thread local.
+
+**The ordering matters more than the choice**, and it now has two parts.
+The space is step 7 of the order of work, after the core library in Newspeak
+and before the tiers, because step 6 both removes the in-place growth above
+and raises what the space is worth: a Newspeak `List>>add:` allocates a
+fresh `Array` and payload at every capacity overflow, where a `Vec::push`
+amortizes to nothing.
+
+Before building it, measure. Pooling, and the space with it, addresses only
+the allocator-churn explanation. If the unaccounted cost is instead the
+cache after-effect of walking the whole live graph — which scales with how
+often a program collects rather than with what each collection costs, and
+which `bench_block.ns` leads on by collecting 269 times against the next
+source's 107 — then neither buys anything. The experiments that discriminate
+are named in [PROGRESS.md](../PROGRESS.md)'s "Where the next session
+starts", and one more is cheaper than all of them: a `#[global_allocator]`
+swap in `ns-cli` answers whether payload allocation costs measurable time at
+all, without a line of design changing.
+
+That fourth experiment is not optional, because the churn reading is weaker
+than the paragraphs above make it sound. **Against `dc0ffe5` the head
+allocates exactly as many payloads as the baseline did** — the baseline
+reclaimed none, so every `Vec`, `Box` and boxed slice was allocated there
+too. What the collector added is the *frees*, and `compact_arena`'s
+`truncate` drops those inside the span `World::collect` times. The allocator
+difference that remains is one of behaviour, not of count: a heap that grows
+monotonically against one that recycles freed blocks, and recycling can be
+the faster of the two. The paragraph opening this section argues against a
+bump-space engine, where the comparison is sound; it does not carry to this
+measurement's baseline.
 
 ## Decisions
 
@@ -1359,10 +1427,20 @@ run one before building anything here.
   already built and under test. Nova, the one engine with this representation,
   compacts; Strongtalk, Spur and HotSpot compact or evacuate their old
   generation, and HotSpot removed the one free-list old space it had.
-- **MMTk is ruled out by `#![forbid(unsafe_code)]`**, not by a comparison of
+- **MMTk is ruled out by what it would replace**, not by a comparison of
   collectors. It works on raw addresses, so adopting it would replace the arena,
   the origin guards, the epoch check and the brand's proof along with the
-  collector.
+  collector. The lint was the first half of this argument and no longer carries
+  it (see the entry below); this half never depended on it.
+- **`unsafe` is acceptable on a performance-critical path where the abstraction
+  over it is safe again** (decided with the user on 2026-09-21). `ns-runtime`
+  carries `#![forbid(unsafe_code)]` today and no change to that is pending, but
+  the lint is an engineering choice rather than an axiom, so an option is not
+  dismissed for needing `unsafe` alone -- the argument has to be about what the
+  option dismantles. Where a path does take it, the shape is `deny` at the crate
+  level with a narrowly scoped `#[allow(unsafe_code)]` on the one module that
+  needs it, so every unsafe block stays local and the rest of the crate -- the
+  brand's proof above all -- keeps the compiler-checked guarantee.
 - **The canonical symbol table is the system's only weak structure.** §5.1.6
   survives it because `Mutator::new_symbol` is the only way to make a symbol
   object, so one that is collected was held by nothing.
@@ -1379,3 +1457,13 @@ run one before building anything here.
   `NS_NEXT_STRESS_COLLECT`, kept beside the move stress rather than replacing
   it, because moving everything without liveness is what separates a missing
   root from a mistake in marking.
+- **The payload space comes after the core library in Newspeak and before the
+  JIT tiers** (decided with the user on 2026-09-21), as step 7 of
+  [PROGRESS.md](../PROGRESS.md)'s order of work. Step 6 retires the one payload
+  that grows in place -- `Heap::array_push`, which exists only because
+  `OrderedCollection` is a Rust builtin where both reference runtimes write a
+  growable collection in Newspeak over a fixed `Array` -- and raises what the
+  space is worth, since a Newspeak `List>>add:` allocates a fresh `Array` at
+  every capacity overflow. A measurement decides whether it is built at all:
+  the three experiments in [PROGRESS.md](../PROGRESS.md), and a
+  `#[global_allocator]` swap that is cheaper than any of them.
