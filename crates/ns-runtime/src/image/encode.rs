@@ -606,7 +606,7 @@ fn encode_instruction(
 /// `IntegerOperation` as a wire byte. Exhaustive on purpose -- a tenth
 /// operation added later fails to compile here rather than silently encoding
 /// as one of the existing nine.
-fn integer_operation_tag(operation: IntegerOperation) -> u8 {
+pub fn integer_operation_tag(operation: IntegerOperation) -> u8 {
     match operation {
         IntegerOperation::Add => 0,
         IntegerOperation::Subtract => 1,

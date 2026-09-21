@@ -1145,6 +1145,39 @@ fn every_builtin_class_tag_round_trips() {
     assert_eq!(tags.len(), all.len(), "every builtin class has its own tag");
 }
 
+#[test]
+fn every_integer_operation_tag_round_trips() {
+    let all = [
+        IntegerOperation::Add,
+        IntegerOperation::Subtract,
+        IntegerOperation::Multiply,
+        IntegerOperation::FloorDivide,
+        IntegerOperation::Less,
+        IntegerOperation::Greater,
+        IntegerOperation::LessOrEqual,
+        IntegerOperation::GreaterOrEqual,
+        IntegerOperation::Equal,
+    ];
+    for operation in all {
+        assert_eq!(
+            decode::integer_operation_from_tag(encode::integer_operation_tag(operation)),
+            Some(operation)
+        );
+    }
+    assert_eq!(decode::integer_operation_from_tag(200), None);
+    let mut tags: Vec<u8> = all
+        .iter()
+        .map(|operation| encode::integer_operation_tag(*operation))
+        .collect();
+    tags.sort_unstable();
+    tags.dedup();
+    assert_eq!(
+        tags.len(),
+        all.len(),
+        "every integer operation has its own tag"
+    );
+}
+
 /// A body's parameters and copied values share one register file, and
 /// `push_step` sizes an activation as `register_count - argument_count`, so
 /// a `copied_count` that does not fit would leave `fill_copied_values`

@@ -681,7 +681,7 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// refused rather than defaulted to an operation -- an image is untrusted
 /// input, and a stale or corrupt byte must not decode into a different,
 /// perfectly valid `IntegerBinary`.
-fn integer_operation_from_tag(tag: u8) -> Option<IntegerOperation> {
+pub fn integer_operation_from_tag(tag: u8) -> Option<IntegerOperation> {
     Some(match tag {
         0 => IntegerOperation::Add,
         1 => IntegerOperation::Subtract,
