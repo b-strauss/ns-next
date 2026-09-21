@@ -96,13 +96,18 @@ identity".
 **Branches**
 
 - `Jump { target }`, `BranchIfFalse { register, target }`, `BranchIfTrue { register, target }`,
-  `JumpIfNotBoolean { register, target }`.
+  `JumpIfNotBoolean { register, target }`, `IntegerBinary { operation, destination, left, right, target }`.
 
-**Nothing but control-flow inlining emits a branch.** Every other construct in the
-language is a send, so a jump in the instruction stream is always the trace of an
-inlining decision. `JumpIfNotBoolean` is the inlining guard: for the unboxed
-`Value::Boolean` representation, "is the receiver's class exactly `True`/`False`?" is
-precisely "is this register a `Boolean` at all".
+**Nothing but control-flow inlining and arithmetic inlining emits a branch.**
+Every other construct in the language is a send, so a jump in the instruction
+stream is always the trace of one of the two inlining decisions.
+`JumpIfNotBoolean` is the control-flow guard: for the unboxed `Value::Boolean`
+representation, "is the receiver's class exactly `True`/`False`?" is precisely
+"is this register a `Boolean` at all". `IntegerBinary` is both the arithmetic
+guard and the operation itself: it computes in place and falls through on
+success, or jumps to `target` -- the ordinary send -- when either operand is
+not a `Value::SmallInteger` or the `checked_*` operation declines ("Arithmetic
+inlining" below).
 
 ## Compiled code
 
@@ -459,13 +464,29 @@ in the measurement ([execution.md](execution.md), "What leaf inlining
 moved"), and moving the fallback out of line is a follow-up rather than
 something the numbers demand.
 
+**Planned: inverting the branch sense to drop the `Jump`.** An out-of-line
+fallback block is not the cheaper form -- it would make `statement_program_counter`
+ranges non-contiguous. The cheaper form inverts what `target` means:
+`IntegerBinary` would jump to `target` on *success*, landing past the send,
+and fall through into the immediately following `SendPublic` when it
+declines. `vm::run` polls a safepoint only on a backward jump (`target <=
+program_counter`), so the forward jump costs no safepoint, and the hot path
+becomes one dispatch with no `Jump` instruction at all. **This requires
+retiring tag 33 and taking 34 for the changed instruction**, because the
+meaning of `target` changes and a stale artifact would otherwise decode into
+a different, perfectly valid program and run it silently
+(`CLAUDE.md`, "A wire tag is assigned once and never renumbered or reused").
+`patch_target`, `finish`, `jump_target`, `check_shape` and `no_branch` need
+no change, because the field itself is unchanged.
+
 **Testing.** The paths the guard declines are pinned by recorded answers,
 since a fast path that quietly answered where the primitive would have
 raised passes every other test there is.
 `goldens/arithmetic/integer_leaves_fast_path_and_fallback_agree.ns` runs
-the fast path beside the three ways the guard declines on ordinary values —
-a `Float` receiver, a non-integer argument to `=`, and floor division — and
-`goldens/errors/` holds the two the primitive turns into errors, an `i64`
+the fast path beside the two ways the guard declines on ordinary values —
+a `Float` receiver and a non-integer argument to `=` — and floor division on
+the fast path, and `goldens/errors/` holds the two the primitive turns into
+errors, an `i64`
 overflow on `+` and `//` by zero, with the primitive's own message as the
 recorded `stderr`. The reference lowering compiles every one of these as a
 plain send and is held to the same recorded answers, which is what makes it

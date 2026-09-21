@@ -202,7 +202,9 @@ Instructions:
   method and the last value from a block; it runs exactly like `Return`.
 - 16 `NonLocalReturn`: returns from a block's home method, a `^` inside a block,
   unwinding every activation above that method.
-- 17 `Jump`: jumps unconditionally; emitted only by control-flow inlining.
+- 17 `Jump`: jumps unconditionally; emitted by control-flow inlining and by
+  `lower_integer_binary`, past the fallback send it emits for a successful
+  arithmetic leaf.
 - 18 `JumpIfNotBoolean`: jumps when a register holds no Boolean at all: the
   guard in front of inlined control flow, whose target handles any other receiver.
 - 19 `BranchIfFalse`: jumps when a register holds exactly `false`, and falls
@@ -225,8 +227,18 @@ Instructions:
   a block writes live in; emitted once, as the body's first instruction.
 - 31 `LoadVector`: reads one slot of an indirection vector.
 - 32 `StoreVector`: writes one slot of an indirection vector.
+- 33 `IntegerBinary`: an integer leaf's inlined fast path (`operation`,
+  `destination`, `left`, `right`, `target`), encoded as the operation byte,
+  three `u16` registers (destination, left, right) and the `u32` jump target,
+  in that order. The operation byte is `IntegerOperation` as
+  `image::encode::integer_operation_tag` maps it, exhaustively: 0 `Add`, 1
+  `Subtract`, 2 `Multiply`, 3 `FloorDivide`, 4 `Less`, 5 `Greater`, 6
+  `LessOrEqual`, 7 `GreaterOrEqual`, 8 `Equal`. This byte is its own space,
+  not an instruction tag -- assigned once and never renumbered or reused by
+  the same rule, but nine values wide rather than one, since nothing outside
+  `lower_integer_binary` and the VM arm ever reads it standalone.
 
-The next free instruction number is 33. A send's `CallSite` -- its number
+The next free instruction number is 34. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see

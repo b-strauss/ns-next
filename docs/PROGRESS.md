@@ -3178,9 +3178,9 @@ path has to exist before the rewrite rather than after.
   instruction, an unconditional `Jump` past the fallback, and the ordinary
   `SendPublic` as the fallback, which carries a call site of its own.
 - `e586db9`, `88d86d9` — the goldens: `goldens/arithmetic/` for the fast
-  path beside the three ways the guard declines on ordinary values, and two
-  under `goldens/errors/` pinning that an `i64` overflow and a zero divisor
-  still carry the primitive's own message.
+  path beside the two ways the guard declines on ordinary values and floor
+  division on the fast path, and two under `goldens/errors/` pinning that an
+  `i64` overflow and a zero divisor still carry the primitive's own message.
 - This entry — the measurement and the documents.
 
 **Measurement.** Two sittings by the protocol, eight sources, both binaries

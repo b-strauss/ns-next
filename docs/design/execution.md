@@ -2729,8 +2729,9 @@ came out ahead of `bench_do.ns` at −17.8%, which had been predicted
 moderate. `bench_megamorphic.ns` came second overall rather than in the
 middle of its group. The prediction's error was in its premise, not its arithmetic:
 it assumed an instantiation or a block activation dwarfs three arithmetic
-sends, and the measurement says three arithmetic sends are of the same order
-as an instantiation.
+sends, and the aggregate timing deltas read as three arithmetic sends being
+of the same order as an instantiation -- an inference from those deltas, not
+something isolated; no profile was taken of this step.
 
 **What the ordering does track is the share of a source's per-iteration
 sends the step removed, discounted by how expensive the sends left behind
@@ -3445,8 +3446,9 @@ Tags follow "assigned once, never renumbered or reused"
 `crates/ns-runtime/tests/opcode_tags.rs`):
 
 - `MakeClosure`'s payload changed, so tag 11 is **retired** and `MakeClosure`
-  is 29; `MakeVector`, `LoadVector` and `StoreVector` are 30, 31 and 32, and
-  the next free instruction number is 33.
+  is 29; `MakeVector`, `LoadVector` and `StoreVector` are 30, 31 and 32.
+  `IntegerBinary` ("What leaf inlining moved", above) took the next number,
+  33, and the next free instruction number is now 34.
 - A closure's object record carries its copied values and no longer its
   parameter names or home, so `OBJECT_CLOSURE` 4 is retired
   (`RETIRED_OBJECT_BODIES`, the first retired body tag) and the record is 6.

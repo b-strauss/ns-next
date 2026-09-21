@@ -370,10 +370,12 @@ ends in `doesNotUnderstand:` if nothing answers. It is the first half of
 "Where this is going" above — every builtin
 method a real method — for the leaves that exist now; the second half, the
 entries moving onto the VM mirror and the library becoming Newspeak, is step 6
-of M4's order of work. A leaf such as `+` will additionally get an inlined
-fast path in compiled code, guarded like the control-flow inlining, as Cog's
-`bytecodePrimAdd` does — not built yet, and step 6 sequences it first, because
-the move to the mirror costs an activation on every leaf send without it.
+of M4's order of work. A leaf such as `+` additionally gets an inlined
+fast path in compiled code (`Instruction::IntegerBinary`), guarded like the
+control-flow inlining, as Cog's `bytecodePrimAdd` does
+([compiler.md](compiler.md), "Arithmetic inlining") — built ahead of step 6,
+because the move to the mirror would cost an activation on every leaf send
+without it.
 
 ## Decisions
 
