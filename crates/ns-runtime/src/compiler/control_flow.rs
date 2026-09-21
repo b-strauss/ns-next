@@ -112,11 +112,6 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
 /// The gate in front of this is the same `is_ordinary_send`: a `super` or
 /// lexical send is never inlined, because its lookup does not start where an
 /// explicit-receiver send's does.
-///
-/// Nothing outside this module's own tests calls it yet -- a later task
-/// wires it into `lower.rs` -- so it reads as dead code to a plain build
-/// until then.
-#[allow(dead_code)]
 pub(crate) fn recognize_integer_binary(send: &ast::Send) -> Option<IntegerOperation> {
     let ast::Selector::Binary(selector) = &send.message.selector else {
         return None;

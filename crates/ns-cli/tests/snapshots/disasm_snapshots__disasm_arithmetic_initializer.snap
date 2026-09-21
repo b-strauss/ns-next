@@ -1,11 +1,13 @@
 ---
 source: crates/ns-cli/tests/disasm_snapshots.rs
-expression: "disasm(\"arithmetic.ns\", &[\"--initializer\"])"
+expression: "disasm(\"language/arithmetic\", &[\"--initializer\"])"
 ---
 initializer Arithmetic (args 1, registers 5)
    0   stmt 0  LoadLiteral r1, 6
    1   stmt 0  LoadLiteral r2, 7
-   2   stmt 0  SendPublic r3 <- r1 #* (r2) @0
-   3   stmt 0  InitSlot own 0 <- r3
-   4        -  LoadSelf r4
-   5        -  ImplicitReturn r4
+   2   stmt 0  IntegerBinary Multiply r3 <- r1, r2 else -> 4
+   3   stmt 0  Jump -> 5
+   4   stmt 0  SendPublic r3 <- r1 #* (r2) @0
+   5   stmt 0  InitSlot own 0 <- r3
+   6        -  LoadSelf r4
+   7        -  ImplicitReturn r4
