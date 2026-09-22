@@ -142,6 +142,10 @@ pub struct PrimitiveSelector {
     pub primitive: Primitive,
 }
 
+// No remaining family list uses this once `Platform`'s moved into
+// `Kernel.ns` (Task 12); it stays, like `protected` below, until Task 13
+// deletes the per-family lists (and both) entirely.
+#[allow(dead_code)]
 const fn public(selector: &'static str, primitive: Primitive) -> PrimitiveSelector {
     PrimitiveSelector {
         selector,
@@ -194,36 +198,8 @@ const ORDERED_COLLECTION: &[PrimitiveSelector] = &[];
 // `Block`'s methods moved into `Kernel.ns` (Task 11).
 const BLOCK: &[PrimitiveSelector] = &[];
 
-const PLATFORM: &[PrimitiveSelector] = &[
-    public(
-        "transcript",
-        Primitive::Platform(PlatformPrimitive::Transcript),
-    ),
-    public(
-        "Object",
-        Primitive::Platform(PlatformPrimitive::ObjectClass),
-    ),
-    public("Array", Primitive::Platform(PlatformPrimitive::ArrayClass)),
-    public(
-        "OrderedCollection",
-        Primitive::Platform(PlatformPrimitive::OrderedCollectionClass),
-    ),
-    public(
-        "String",
-        Primitive::Platform(PlatformPrimitive::StringClass),
-    ),
-    public(
-        "Symbol",
-        Primitive::Platform(PlatformPrimitive::SymbolClass),
-    ),
-    public(
-        "collections",
-        Primitive::Platform(PlatformPrimitive::Collections),
-    ),
-    public("List", Primitive::Platform(PlatformPrimitive::List)),
-    public("show:", Primitive::Platform(PlatformPrimitive::Show)),
-    public("newLine", Primitive::Platform(PlatformPrimitive::NewLine)),
-];
+// `Platform`'s methods moved into `Kernel.ns` (Task 12).
+const PLATFORM: &[PrimitiveSelector] = &[];
 
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
 /// `Resolved::Primitive` carries one, and its size is pinned
@@ -741,9 +717,10 @@ mod tests {
     /// 6, inherited by `True` and `False`, which declare none of their
     /// own), `Integer`'s (Task 7), `Float`'s (Task 8), the three text
     /// families' (`String`, `Symbol`, `Character`, Task 9), `Array`'s and
-    /// `OrderedCollection`'s (Task 10) and `Block`'s (Task 11), so their
-    /// lists are empty too; every other builtin still has a `primitives_of`
-    /// list.
+    /// `OrderedCollection`'s (Task 10), `Block`'s (Task 11) and `Platform`'s
+    /// (Task 12), so their lists are empty too -- every builtin now answers
+    /// an empty `primitives_of` list; the per-family lists themselves stay
+    /// until Task 13 removes them along with this test's reason to exist.
     #[test]
     fn every_builtin_but_nil_the_mirror_and_the_kernel_families_has_primitives() {
         for kind in BuiltinClass::ALL {
@@ -765,6 +742,7 @@ mod tests {
                         | BuiltinClass::Array
                         | BuiltinClass::OrderedCollection
                         | BuiltinClass::Block
+                        | BuiltinClass::Platform
                 ),
                 "{kind:?}"
             );

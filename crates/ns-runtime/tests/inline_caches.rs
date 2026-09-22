@@ -638,10 +638,12 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
     assert_eq!(interpreter.cache_statistics().site_entries, 4);
 }
 
-/// A cached primitive that fails on a receiver of its own class -- the
+/// A cached kernel method that fails on a receiver of its own class -- the
 /// `transcript` stream shares the `Platform` class with the platform object
 /// -- keeps its entry, and the send continues uncached into
-/// `doesNotUnderstand:`.
+/// `doesNotUnderstand:`. `transcript` is a kernel primitive method now
+/// (`Kernel.ns`, Task 12), so the site's target is a
+/// `CachedTargetKind::Method`, not a `CachedTargetKind::Primitive`.
 #[test]
 fn a_failing_primitive_keeps_its_entry() {
     let source = indoc! {"
@@ -667,7 +669,7 @@ fn a_failing_primitive_keeps_its_entry() {
         ),
         _ => panic!("the stream does not understand `transcript`"),
     }
-    let primitive = CallSiteState::Monomorphic(public(CachedTargetKind::Primitive));
+    let transcript = CallSiteState::Monomorphic(method("transcript"));
     assert_eq!(
         states(
             &mut interpreter,
@@ -676,7 +678,7 @@ fn a_failing_primitive_keeps_its_entry() {
             "run:",
             "transcript"
         ),
-        vec![primitive.clone(), primitive]
+        vec![transcript.clone(), transcript]
     );
 }
 
