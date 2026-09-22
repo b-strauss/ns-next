@@ -173,14 +173,28 @@ pub enum BuiltinClass {
     /// not a bare builtin name, and the image format refuses its tag
     /// wherever a program names a class.
     VmMirror,
+    /// §3.2's empty class, the root of the whole chain: it has no
+    /// superclass and declares nothing, so that all code, `Object`'s
+    /// included, resides in a mixin. Only `Object` may name it, which is
+    /// why it is not a bare builtin name either.
+    Top,
+    /// §3.1.1: a value object's class inherits from `Value`.
+    Value,
+    /// §3.1.1 lists `Number` among the classes whose instances are values;
+    /// `Integer` and `Float` are its subclasses.
+    Number,
 }
 
 impl BuiltinClass {
     /// Every builtin class, in declaration order. `Mutator::builtin_class`
     /// indexes by discriminant, so the bootstrap builds them in this order,
     /// and the image's closing hash table writes them in it too -- it is also
-    /// their wire-tag order (`image::encode::builtin_class_tag`).
-    pub const ALL: [BuiltinClass; 15] = [
+    /// their wire-tag order (`image::encode::builtin_class_tag`), which is
+    /// why a class added later is appended rather than slotted in beside its
+    /// siblings. So this is *not* a superclass-first order: the kernel phase
+    /// sorts the kinds by their depth below `Top` before it fills them
+    /// (`interpreter::kernel::fill_order`).
+    pub const ALL: [BuiltinClass; 18] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -196,6 +210,9 @@ impl BuiltinClass {
         BuiltinClass::Block,
         BuiltinClass::Platform,
         BuiltinClass::VmMirror,
+        BuiltinClass::Top,
+        BuiltinClass::Value,
+        BuiltinClass::Number,
     ];
 }
 

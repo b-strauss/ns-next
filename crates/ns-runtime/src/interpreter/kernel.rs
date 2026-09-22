@@ -80,6 +80,9 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Nil => "Nil",
         BuiltinClass::Block => "Block",
         BuiltinClass::Platform => "Platform",
+        BuiltinClass::Top => "Top",
+        BuiltinClass::Value => "Value",
+        BuiltinClass::Number => "Number",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -119,11 +122,11 @@ impl Interpreter {
 
 impl<'gc> Mutator<'gc> {
     /// Every placeholder gets the application of its kernel class, over its
-    /// superclass's -- `BuiltinClass::ALL` lists a superclass before its
-    /// subclasses (`check_kernel_shape`), so that one is filled already --
-    /// and the mirror's class, which `Kernel.ns` does not declare, keeps its
-    /// mixin over the filled `Object`. Then the kernel's own class is built
-    /// over the filled `Object`, and answered for the host to instantiate.
+    /// superclass's -- `fill_order` puts every superclass ahead of its
+    /// subclasses, so that one is filled already -- and the mirror's class,
+    /// which `Kernel.ns` does not declare, keeps its mixin over the filled
+    /// `Object`. Then the kernel's own class is built over the filled
+    /// `Object`, and answered for the host to instantiate.
     ///
     /// Nothing has run yet, so no inline cache, metaclass or instance built
     /// before this phase can still hold a placeholder application:
@@ -132,19 +135,17 @@ impl<'gc> Mutator<'gc> {
         let declaration = &resolved.module.root_class;
         let root_mixin = self.build_mixin(declaration, &resolved.bindings);
         check_kernel_shape(&root_mixin, resolved);
-        for kind in BuiltinClass::ALL {
+        for kind in fill_order(&root_mixin) {
             let class = self.builtin_class(kind);
-            let (mixin, superclass) = if kind == BuiltinClass::VmMirror {
-                let placeholder = self
-                    .heap
+            let mixin = if kind == BuiltinClass::VmMirror {
+                self.heap
                     .class_application(class)
                     .map(|application| application.mixin.clone())
-                    .expect("internal: the mirror's class has its placeholder application");
-                (placeholder, Some(BuiltinClass::Object))
+                    .expect("internal: the mirror's class has its placeholder application")
             } else {
-                let nested = nested_named(&root_mixin, kernel_class_name(kind));
-                (nested.clone(), superclass_kind(nested))
+                nested_named(&root_mixin, kernel_class_name(kind)).clone()
             };
+            let superclass = superclass_of_kind(&root_mixin, kind);
             let super_application = superclass
                 .and_then(|superclass| self.heap.class_application(self.builtin_class(superclass)));
             let application = self.apply_mixin(&mixin, super_application.as_ref());
@@ -233,8 +234,56 @@ fn nested_named<'mixin>(root: &'mixin Rc<Mixin>, name: &str) -> &'mixin Rc<Mixin
         .unwrap_or_else(|| panic!("internal: Kernel.ns declares no class {name}"))
 }
 
+/// The order the fill walks: every superclass before its subclasses.
+/// `BuiltinClass::ALL` is the wire-tag order, and a tag is assigned once and
+/// never renumbered, so a class declared later is appended rather than
+/// slotted in beside its siblings -- `Value` follows `Platform` there while
+/// standing above `Boolean`. Filling in that order would apply a mixin over
+/// a superclass whose application is still the empty placeholder. Sorting by
+/// depth below `Top` puts every superclass first whatever order `ALL` grows
+/// in, and is stable, so classes at one depth keep `ALL`'s order.
+fn fill_order(root: &Rc<Mixin>) -> Vec<BuiltinClass> {
+    let mut order: Vec<BuiltinClass> = BuiltinClass::ALL.into_iter().collect();
+    order.sort_by_key(|kind| depth_below_top(root, *kind));
+    order
+}
+
+/// How many superclass links separate `kind` from `Top`, which is 0 links
+/// from itself. A chain that repeats a class or ends anywhere but `Top` is a
+/// defect in `Kernel.ns`, not in a program, so it panics naming where the
+/// walk went wrong: a subclass whose chain does not reach the root would be
+/// filled over a placeholder, and a cycle would not terminate.
+fn depth_below_top(root: &Rc<Mixin>, kind: BuiltinClass) -> usize {
+    let mut walked: Vec<BuiltinClass> = Vec::with_capacity(BuiltinClass::ALL.len());
+    let mut current = kind;
+    while let Some(superclass) = superclass_of_kind(root, current) {
+        assert!(
+            !walked.contains(&superclass),
+            "internal: Kernel.ns's superclass chain from {kind:?} returns to {superclass:?}"
+        );
+        walked.push(current);
+        current = superclass;
+    }
+    assert_eq!(
+        current,
+        BuiltinClass::Top,
+        "internal: Kernel.ns's superclass chain from {kind:?} ends at {current:?}, not at Top"
+    );
+    walked.len()
+}
+
+/// The builtin that `kind`'s class names as its superclass; `None` for
+/// `Top`, which has none. The mirror's class is not in `Kernel.ns` at all,
+/// and sits under `Object` (`interpreter::mod`'s `builtin_mixin`).
+fn superclass_of_kind(root: &Rc<Mixin>, kind: BuiltinClass) -> Option<BuiltinClass> {
+    if kind == BuiltinClass::VmMirror {
+        return Some(BuiltinClass::Object);
+    }
+    superclass_kind(nested_named(root, kernel_class_name(kind)))
+}
+
 /// The builtin a kernel class's clause names, read off the declaration and
-/// never run; `None` for `Object`.
+/// never run; `None` for `Top`.
 fn superclass_kind(nested: &Rc<Mixin>) -> Option<BuiltinClass> {
     let declaration = nested.declaration.as_ref()?;
     let clause = declaration.superclass.as_ref()?;
@@ -257,10 +306,11 @@ fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 /// class per builtin but the mirror's, named as `kernel_class_name` says,
 /// each declaring no slots and the default factory `new`; a root class with
 /// exactly one slot, the immutable `vmMirror`; a clause on every class but
-/// `Object`, a bare name with no message arguments -- it is read, never run
-/// -- naming a class that comes earlier in `BuiltinClass::ALL`, so that it
-/// is filled first. And every mirror send passes a literal block only as
-/// its failure block (`check_mirror_send_arguments`).
+/// `Top`, a bare name with no message arguments -- it is read, never run --
+/// naming a kernel class, from which the chain reaches `Top` without
+/// repeating, so that `fill_order` can sort by depth. And every mirror send
+/// passes a literal block only as its failure block
+/// (`check_mirror_send_arguments`).
 fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
     check_mirror_send_arguments(resolved);
     let kinds: Vec<BuiltinClass> = BuiltinClass::ALL
@@ -278,7 +328,7 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         kinds.len(),
         "internal: Kernel.ns must declare exactly one nested class per builtin class"
     );
-    for kind in kinds {
+    for kind in kinds.iter().copied() {
         let name = kernel_class_name(kind);
         let matching = root
             .nested
@@ -303,18 +353,27 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             "internal: Kernel.ns's {name} declares a factory; a builtin's is `new`"
         );
         match (&declaration.superclass, kind) {
-            (None, BuiltinClass::Object) => {}
-            (Some(_), BuiltinClass::Object) => {
-                panic!("internal: Kernel.ns's Object declares a superclass clause")
+            (None, BuiltinClass::Top) => {}
+            (Some(_), BuiltinClass::Top) => {
+                panic!("internal: Kernel.ns's Top declares a superclass clause")
             }
             (None, _) => panic!("internal: Kernel.ns's {name} declares no superclass clause"),
             (Some(clause), _) => check_clause(name, kind, clause),
         }
     }
+    // Every chain ends at `Top` without repeating, which is what lets
+    // `fill_order` sort the kinds by depth. Checked once the clauses are
+    // known to be readable, so a malformed one is reported as itself rather
+    // than as a broken chain.
+    for kind in kinds {
+        depth_below_top(root, kind);
+    }
 }
 
 /// A kernel class's clause is read, never run: a bare name, no message
-/// arguments, and a class `BuiltinClass::ALL` lists before `kind`.
+/// arguments, and a kernel class. §3.2 reserves `Top` for `Object` alone,
+/// so no other class may name it -- and, since `Top` is the one private
+/// class here, no module outside the kernel can either.
 fn check_clause(name: &str, kind: BuiltinClass, clause: &ast::SuperclassClause) {
     assert!(
         clause.prefix.is_none()
@@ -331,9 +390,8 @@ fn check_clause(name: &str, kind: BuiltinClass, clause: &ast::SuperclassClause) 
         )
     });
     assert!(
-        (superclass as usize) < (kind as usize),
-        "internal: Kernel.ns's {name} names {}, which BuiltinClass::ALL does not list before it",
-        clause.receiver.name
+        superclass != BuiltinClass::Top || kind == BuiltinClass::Object,
+        "internal: Kernel.ns's {name} names Top, which only Object may have as its superclass"
     );
 }
 
@@ -570,9 +628,10 @@ mod tests {
 
     /// §6.3.1 defaults an undeclared member to protected, and a protected
     /// nested class is unreachable from outside the module that declares it,
-    /// so every kernel class has to say `public` for a program to name it.
+    /// so every kernel class has to say `public` for a program to name it --
+    /// every one but `Top`, which §3.2 lets only `Object` name.
     #[test]
-    fn every_kernel_class_is_public() {
+    fn only_top_is_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(Value::Object(kernel)) = mutator.kernel else {
@@ -585,32 +644,58 @@ mod tests {
                 "the kernel declares one class per builtin but the mirror's"
             );
             for nested in &application.mixin.nested {
+                let expected = if nested.name.as_str() == "Top" {
+                    ns_syntax::ast::AccessModifier::Private
+                } else {
+                    ns_syntax::ast::AccessModifier::Public
+                };
                 assert_eq!(
-                    nested.access,
-                    ns_syntax::ast::AccessModifier::Public,
-                    "the kernel class {} must be public",
+                    nested.access, expected,
+                    "the kernel class {} must be {expected:?}",
                     nested.name
                 );
             }
         });
     }
 
+    /// §3.2: `Top` is the empty class, and only `Object` may have it as its
+    /// superclass. §3.1.1's value classes hang under `Value`.
     #[test]
-    fn true_and_false_inherit_from_boolean() {
+    fn the_hierarchy_follows_the_specification() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let boolean = mutator.builtin_class(BuiltinClass::Boolean);
-            for kind in [BuiltinClass::True, BuiltinClass::False] {
-                let superclass = mutator
+            let expected = [
+                (BuiltinClass::Object, Some(BuiltinClass::Top)),
+                (BuiltinClass::Value, Some(BuiltinClass::Object)),
+                (BuiltinClass::Boolean, Some(BuiltinClass::Value)),
+                (BuiltinClass::True, Some(BuiltinClass::Boolean)),
+                (BuiltinClass::False, Some(BuiltinClass::Boolean)),
+                (BuiltinClass::Number, Some(BuiltinClass::Value)),
+                (BuiltinClass::Integer, Some(BuiltinClass::Number)),
+                (BuiltinClass::Float, Some(BuiltinClass::Number)),
+                (BuiltinClass::String, Some(BuiltinClass::Value)),
+                (BuiltinClass::Symbol, Some(BuiltinClass::Value)),
+                (BuiltinClass::Character, Some(BuiltinClass::Value)),
+                (BuiltinClass::Nil, Some(BuiltinClass::Value)),
+                (BuiltinClass::Array, Some(BuiltinClass::Object)),
+                (BuiltinClass::OrderedCollection, Some(BuiltinClass::Object)),
+                (BuiltinClass::Block, Some(BuiltinClass::Object)),
+                (BuiltinClass::Platform, Some(BuiltinClass::Object)),
+                (BuiltinClass::Top, None),
+            ];
+            for (kind, superclass) in expected {
+                let actual = mutator
                     .heap()
                     .class_superclass(mutator.builtin_class(kind))
-                    .expect("True and False have a superclass");
-                assert!(superclass.same(boolean), "{kind:?}");
+                    .map(|class| mutator.heap().class_builtin(class));
+                match superclass {
+                    Some(expected) => assert!(
+                        matches!(actual, Some(Some(found)) if found == expected),
+                        "{kind:?}'s superclass must be {expected:?}"
+                    ),
+                    None => assert!(actual.is_none(), "{kind:?} has no superclass"),
+                }
             }
-            let object = mutator.builtin_class(BuiltinClass::Object);
-            let above_boolean = mutator.heap().class_superclass(boolean);
-            assert!(above_boolean.is_some_and(|class| class.same(object)));
-            assert!(mutator.heap().class_superclass(object).is_none());
         });
     }
 

@@ -744,12 +744,18 @@ fn argument_list<'gc>(
 /// catch-all default, because a caller must be able to tell "unrecognized
 /// name" apart from a genuine `Object` match; the match arms are the one
 /// list of builtin names, so no caller keeps a second one to guard with.
+///
+/// `Top` is deliberately absent: §3.2 lets only `Object` have it as its
+/// superclass, so no program may name it. `Platform` is absent for the
+/// reason `kernel::kernel_class_name` gives.
 pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     Some(match name {
         "Object" => BuiltinClass::Object,
+        "Value" => BuiltinClass::Value,
         "Boolean" => BuiltinClass::Boolean,
         "True" => BuiltinClass::True,
         "False" => BuiltinClass::False,
+        "Number" => BuiltinClass::Number,
         "Integer" => BuiltinClass::Integer,
         "Float" => BuiltinClass::Float,
         "String" => BuiltinClass::String,

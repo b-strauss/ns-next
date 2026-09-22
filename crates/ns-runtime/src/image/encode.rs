@@ -199,6 +199,9 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Block => 12,
         BuiltinClass::Platform => 13,
         BuiltinClass::VmMirror => 14,
+        BuiltinClass::Top => 15,
+        BuiltinClass::Value => 16,
+        BuiltinClass::Number => 17,
     }
 }
 

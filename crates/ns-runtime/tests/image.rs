@@ -1162,6 +1162,9 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::Block,
         BuiltinClass::Platform,
         BuiltinClass::VmMirror,
+        BuiltinClass::Top,
+        BuiltinClass::Value,
+        BuiltinClass::Number,
     ];
     for kind in all {
         assert_eq!(

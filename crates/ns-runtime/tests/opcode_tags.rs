@@ -293,4 +293,7 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Block), 12);
     assert_eq!(builtin_class_tag(BuiltinClass::Platform), 13);
     assert_eq!(builtin_class_tag(BuiltinClass::VmMirror), 14);
+    assert_eq!(builtin_class_tag(BuiltinClass::Top), 15);
+    assert_eq!(builtin_class_tag(BuiltinClass::Value), 16);
+    assert_eq!(builtin_class_tag(BuiltinClass::Number), 17);
 }

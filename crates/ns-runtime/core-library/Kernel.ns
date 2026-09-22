@@ -9,16 +9,24 @@ Newspeak3
 
    A superclass clause below names a sibling by its bare name and nothing
    else: the bootstrap reads the name and never runs the clause, because the
-   classes it names must exist before any clause could run. `Object` declares
+   classes it names must exist before any clause could run. `Top` declares
    none: it has no superclass.
 
    Every class here says `public`: §6.3.1 makes an undeclared member
    protected, and a protected class is unreachable from another module, so
-   the accessibility has to be written out for a program to name it. *)
+   the accessibility has to be written out for a program to name it. `Top`
+   is the exception, for the reason its own comment gives. *)
 class Kernel vmMirror: theMirror = Object new (
     | private vmMirror = theMirror. |
 ) (
-    public class Object = () (
+    (* §3.2: "A class is either the empty class `Top` or the application of
+       a mixin to another class known as its superclass", and "Only the
+       class `Object` may have `Top` as its superclass" -- which is why it
+       is the one private class here: no other module may name it. It stays
+       empty, so that all code, `Object`'s included, resides in a mixin. *)
+    private class Top = () (
+    )
+    public class Object = Top new () (
         public class = ( ^vmMirror objectClass: self ifFail: [^super class] )
         public == other = ( ^vmMirror object: self identicalTo: other ifFail: [^super == other] )
         public = other = ( ^vmMirror object: self equals: other ifFail: [^super = other] )
@@ -29,7 +37,21 @@ class Kernel vmMirror: theMirror = Object new (
            walk that invokes it for the failing send itself. *)
         protected doesNotUnderstand: message = ( ^vmMirror object: self doesNotUnderstand: message ifFail: [^super doesNotUnderstand: message] )
     )
-    public class Boolean = Object new () (
+    (* §3.1.1: an object is a value object -- deeply immutable and globally
+       unique -- only if "its class inherits from class `Value`", so every
+       class whose instances are values hangs below this one. What `Value`
+       itself declares (`=`, `hash`, the identity method §3.1.1 constrains)
+       comes later; the hierarchy moves first, so that each step changes one
+       kind of thing. *)
+    public class Value = Object new () (
+    )
+    (* §3.1.1 names `Number` among the classes whose instances are values,
+       and §5.1.1's numeric literals are its instances. It is empty for now,
+       like `Value`: what the two share between `Integer` and `Float` moves
+       up here once there is a body to move. *)
+    public class Number = Value new () (
+    )
+    public class Boolean = Value new () (
         public ifTrue: trueBlock ifFalse: falseBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFalse: falseBlock ifFail: [^super ifTrue: trueBlock ifFalse: falseBlock] )
         public ifFalse: falseBlock ifTrue: trueBlock = ( ^vmMirror boolean: self ifFalse: falseBlock ifTrue: trueBlock ifFail: [^super ifFalse: falseBlock ifTrue: trueBlock] )
         public ifTrue: trueBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFail: [^super ifTrue: trueBlock] )
@@ -45,7 +67,7 @@ class Kernel vmMirror: theMirror = Object new (
     )
     public class False = Boolean new () (
     )
-    public class Integer = Object new () (
+    public class Integer = Number new () (
         public + other = ( ^vmMirror integer: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror integer: self subtract: other ifFail: [^super - other] )
         public * other = ( ^vmMirror integer: self multiply: other ifFail: [^super * other] )
@@ -60,7 +82,7 @@ class Kernel vmMirror: theMirror = Object new (
         public printString = ( ^vmMirror integerPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror integerAsString: self ifFail: [^super asString] )
     )
-    public class Float = Object new () (
+    public class Float = Number new () (
         public + other = ( ^vmMirror float: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror float: self subtract: other ifFail: [^super - other] )
         public * other = ( ^vmMirror float: self multiply: other ifFail: [^super * other] )
@@ -71,19 +93,19 @@ class Kernel vmMirror: theMirror = Object new (
         public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )
     )
-    public class String = Object new () (
+    public class String = Value new () (
         public size = ( ^vmMirror stringSize: self ifFail: [^super size] )
         public , other = ( ^vmMirror string: self concatenate: other ifFail: [^super , other] )
         public = other = ( ^vmMirror string: self equals: other ifFail: [^super = other] )
         public asSymbol = ( ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol] )
         public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
     )
-    public class Symbol = Object new () (
+    public class Symbol = Value new () (
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
         public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
         public printString = ( ^vmMirror symbolPrintString: self ifFail: [^super printString] )
     )
-    public class Character = Object new () (
+    public class Character = Value new () (
         public asInteger = ( ^vmMirror characterAsInteger: self ifFail: [^super asInteger] )
         public asString = ( ^vmMirror characterAsString: self ifFail: [^super asString] )
         public = other = ( ^vmMirror character: self equals: other ifFail: [^super = other] )
@@ -100,7 +122,7 @@ class Kernel vmMirror: theMirror = Object new (
         public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
-    public class Nil = Object new () (
+    public class Nil = Value new () (
     )
     public class Block = Object new () (
         public value = ( ^vmMirror blockValue: self ifFail: [^super value] )

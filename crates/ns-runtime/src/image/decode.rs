@@ -666,6 +666,9 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         12 => BuiltinClass::Block,
         13 => BuiltinClass::Platform,
         14 => BuiltinClass::VmMirror,
+        15 => BuiltinClass::Top,
+        16 => BuiltinClass::Value,
+        17 => BuiltinClass::Number,
         _ => return None,
     })
 }
