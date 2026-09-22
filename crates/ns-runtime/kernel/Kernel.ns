@@ -99,6 +99,13 @@ class Kernel vmMirror: theMirror = Object new (
     class Nil = Object new () (
     )
     class Block = Object new () (
+        public value = ( ^vmMirror blockValue: self ifFail: [^super value] )
+        public value: first = ( ^vmMirror block: self value: first ifFail: [^super value: first] )
+        public value: first value: second = ( ^vmMirror block: self value: first value: second ifFail: [^super value: first value: second] )
+        public value: first value: second value: third = ( ^vmMirror block: self value: first value: second value: third ifFail: [^super value: first value: second value: third] )
+        public numArgs = ( ^vmMirror blockNumArgs: self ifFail: [^super numArgs] )
+        public whileTrue: body = ( ^vmMirror block: self whileTrue: body ifFail: [^super whileTrue: body] )
+        public whileFalse: body = ( ^vmMirror block: self whileFalse: body ifFail: [^super whileFalse: body] )
     )
     class Platform = Object new () (
     )

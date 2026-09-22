@@ -191,18 +191,8 @@ const CHARACTER: &[PrimitiveSelector] = &[];
 const ARRAY: &[PrimitiveSelector] = &[];
 const ORDERED_COLLECTION: &[PrimitiveSelector] = &[];
 
-const BLOCK: &[PrimitiveSelector] = &[
-    public("value", Primitive::Block(BlockPrimitive::Value)),
-    public("value:", Primitive::Block(BlockPrimitive::Value)),
-    public("value:value:", Primitive::Block(BlockPrimitive::Value)),
-    public(
-        "value:value:value:",
-        Primitive::Block(BlockPrimitive::Value),
-    ),
-    public("numArgs", Primitive::Block(BlockPrimitive::ArgumentCount)),
-    public("whileTrue:", Primitive::Block(BlockPrimitive::WhileTrue)),
-    public("whileFalse:", Primitive::Block(BlockPrimitive::WhileFalse)),
-];
+// `Block`'s methods moved into `Kernel.ns` (Task 11).
+const BLOCK: &[PrimitiveSelector] = &[];
 
 const PLATFORM: &[PrimitiveSelector] = &[
     public(
@@ -750,9 +740,10 @@ mod tests {
     /// `Object`'s methods moved into `Kernel.ns` (Task 5), `Boolean`'s (Task
     /// 6, inherited by `True` and `False`, which declare none of their
     /// own), `Integer`'s (Task 7), `Float`'s (Task 8), the three text
-    /// families' (`String`, `Symbol`, `Character`, Task 9) and `Array`'s and
-    /// `OrderedCollection`'s (Task 10), so their lists are empty too; every
-    /// other builtin still has a `primitives_of` list.
+    /// families' (`String`, `Symbol`, `Character`, Task 9), `Array`'s and
+    /// `OrderedCollection`'s (Task 10) and `Block`'s (Task 11), so their
+    /// lists are empty too; every other builtin still has a `primitives_of`
+    /// list.
     #[test]
     fn every_builtin_but_nil_the_mirror_and_the_kernel_families_has_primitives() {
         for kind in BuiltinClass::ALL {
@@ -773,6 +764,7 @@ mod tests {
                         | BuiltinClass::Character
                         | BuiltinClass::Array
                         | BuiltinClass::OrderedCollection
+                        | BuiltinClass::Block
                 ),
                 "{kind:?}"
             );
