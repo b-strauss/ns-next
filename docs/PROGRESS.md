@@ -288,12 +288,23 @@ It breaks into three plans, deliberately not one, for the reason the leaf
 inlining was split off first: each produces working, measured software on its
 own, and each one's measurement informs the next.
 
-1. **The vmMirror, `Kernel.ns` and the bootstrap.** The largest of the three.
-   The mirror is an object of a builtin class whose method table carries every
-   leaf as an enumerated primitive, so step 3a's machinery is kept whole and
-   only the class holding the entries changes. Expect the arithmetic-heavy
-   benchmarks to regress against `e2bb31e` by whatever the leaf inlining does
-   not absorb; that is the number this step is measured on.
+1. **The vmMirror, `Kernel.ns` and the bootstrap — done** (2026-09-22;
+   [ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md)).
+   Every builtin method is a forwarder in `crates/ns-runtime/kernel/Kernel.ns`
+   over the one VM mirror, whose method table carries every leaf as an
+   enumerated primitive; a kernel method whose body forwards to one mirror
+   row is a primitive method, whose leaf `act` runs without an activation.
+   **Measured against `e2bb31e` over the eight sources, two sittings: with
+   primitive methods −4.5% to +2.1%, no group entirely above in either
+   sitting — the move cost nothing measurable.** Without them
+   (`NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary) −2.0% to +23.6%:
+   `bench_megamorphic.ns` +23.6%, `bench_block.ns` +21.3% and `bench_do.ns`
+   +5.5%, the three that send a leaf the fast path does not absorb in their
+   loop. Against `be3eb40` the head is 24.7–40.2% faster. Start-up (`run` of
+   a module that returns at once) is 0.5 ms slower, 4.07 ms against 3.56 ms.
+   `vm::run` grew from 5,866 to 6,385 instructions and stayed one inlined
+   function. See [execution.md](design/execution.md), "What the core
+   library's move cost".
 2. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2, which
    [object-model.md](design/object-model.md) describes and which the
    reflection work after step 6 cannot start without.
