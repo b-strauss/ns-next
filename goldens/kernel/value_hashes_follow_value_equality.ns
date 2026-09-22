@@ -1,0 +1,42 @@
+Newspeak3
+'Kernel'
+(* A value object has no observable identity -- §3.1.1 lets a value be
+   copied across an actor boundary, so a copy must be equal to, and hash
+   like, its original. Primordial Soup states the contract `hash` is held
+   to: it "should be overridden if the method `=` is overridden ... if
+   `x = y` evaluates to true then `x hash = y hash` must evaluate to true."
+
+   Each `report:` line builds its two values separately, so neither pair
+   shares an object, and prints whether they are equal and whether they
+   hash alike: both must be `true` for every value class. The bare lines
+   after them are the hashes the contract fixes exactly, then two
+   inequalities showing a content hash is a hash of the content and not a
+   constant, and one line for the one float pair whose bits differ while
+   their values are equal. *)
+class ValueHashes usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    report: label for: first and: second = (
+        transcript show: label; show: ' '; show: (first = second) printString;
+            show: ' '; show: (first hash = second hash) printString; newLine
+    )
+    show: value = (
+        transcript show: value printString; newLine
+    )
+    public main: ignoredPlatform args: arguments = (
+        report: 'Integer' for: 1 + 2 and: 3.
+        report: 'Float' for: 1.0 + 1.5 and: 2.5.
+        report: 'String' for: 'ab' , 'c' and: 'abc'.
+        report: 'Symbol' for: 'abc' asSymbol and: #abc.
+        report: 'Character' for: "a" and: "a".
+        report: 'Boolean' for: 1 < 2 and: true.
+        show: 3 hash.
+        show: 0 hash.
+        show: "a" hash.
+        show: true hash.
+        show: false hash.
+        show: 'abc' hash = 'abd' hash.
+        show: #abc hash = #abd hash.
+        show: ((0.0 - 1.0) * 0.0) hash = 0.0 hash.
+    )
+) : ()

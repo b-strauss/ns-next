@@ -588,8 +588,21 @@ mod tests {
         });
     }
 
+    /// The kernel methods that answer without reaching Rust at all, and so
+    /// are ordinary methods rather than forwarders: the value each one
+    /// answers is already at hand, and a leaf for it would be a mirror row
+    /// that only repeats what `Kernel.ns` can say. Listed here so that a
+    /// forwarder the recognizer silently missed still fails the test below;
+    /// an entry is (class, selector).
+    const NOT_FORWARDERS: &[(BuiltinClass, &str)] = &[
+        (BuiltinClass::Boolean, "hash"),
+        (BuiltinClass::Integer, "hash"),
+        (BuiltinClass::Character, "hash"),
+    ];
+
     /// Every kernel method is a forwarder the compiler recognized, and is
-    /// named after its row's reported selector. A method the recognizer
+    /// named after its row's reported selector -- every one but the handful
+    /// `NOT_FORWARDERS` names, which reach no leaf. A method the recognizer
     /// misses -- a swapped parameter, a temporary, a failure block that is
     /// not a literal -- still runs correctly as an ordinary method, so
     /// nothing else would notice: a leaf would lose its fast path, and a
@@ -617,6 +630,13 @@ mod tests {
                     .flat_map(|side| side.compiled_methods());
                 for method in mixin.compiled_methods().chain(class_side) {
                     let selector = method.selector.as_str();
+                    if NOT_FORWARDERS.contains(&(kind, selector)) {
+                        assert!(
+                            method.primitive.is_none(),
+                            "{kind:?}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
+                        );
+                        continue;
+                    }
                     let Some(row) = method.primitive else {
                         panic!("{kind:?}>>{selector} is not recognized as a primitive method");
                     };

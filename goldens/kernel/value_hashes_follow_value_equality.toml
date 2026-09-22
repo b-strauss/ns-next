@@ -1,0 +1,16 @@
+stdout = '''
+Integer true true
+Float true true
+String true true
+Symbol true true
+Character true true
+Boolean true true
+3
+0
+97
+1
+0
+false
+false
+true
+'''

@@ -74,6 +74,7 @@ pub enum FloatPrimitive {
     Less,
     Greater,
     Equal,
+    Hash,
     PrintString,
 }
 
@@ -82,6 +83,7 @@ pub enum StringPrimitive {
     Size,
     Concatenate,
     Equal,
+    Hash,
     AsSymbol,
     PrintString,
 }
@@ -90,6 +92,7 @@ pub enum StringPrimitive {
 pub enum SymbolPrimitive {
     AsString,
     Equal,
+    Hash,
     PrintString,
 }
 
@@ -207,7 +210,7 @@ const fn mirror(
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"); a row's index is its
 /// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
-/// rows 49-53, as they share their payload; each of their kernel classes
+/// rows 52-56, as they share their payload; each of their kernel classes
 /// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(
@@ -391,6 +394,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Float(FloatPrimitive::Equal),
     ),
     mirror(
+        "floatHash:ifFail:",
+        "hash",
+        Primitive::Float(FloatPrimitive::Hash),
+    ),
+    mirror(
         "floatPrintString:ifFail:",
         "printString",
         Primitive::Float(FloatPrimitive::PrintString),
@@ -416,6 +424,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::String(StringPrimitive::Equal),
     ),
     mirror(
+        "stringHash:ifFail:",
+        "hash",
+        Primitive::String(StringPrimitive::Hash),
+    ),
+    mirror(
         "stringAsSymbol:ifFail:",
         "asSymbol",
         Primitive::String(StringPrimitive::AsSymbol),
@@ -434,6 +447,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         "symbol:equals:ifFail:",
         "=",
         Primitive::Symbol(SymbolPrimitive::Equal),
+    ),
+    mirror(
+        "symbolHash:ifFail:",
+        "hash",
+        Primitive::Symbol(SymbolPrimitive::Hash),
     ),
     mirror(
         "symbolPrintString:ifFail:",

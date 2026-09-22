@@ -23,6 +23,52 @@ fn argument_string<'gc>(heap: &Heap<'gc>, argument: Option<&Value<'gc>>) -> Opti
     }
 }
 
+/// `String>>=` and `Character>>=`'s rule: the argument is equal when it
+/// carries the same text, whichever of the two payload-sharing classes it
+/// belongs to. Named rather than written twice, so that `builtins::value`'s
+/// derived equality decides a string exactly as the class's own `=` does
+/// instead of growing a second copy of the rule.
+pub(crate) fn text_equals<'gc>(
+    heap: &Heap<'gc>,
+    text: &str,
+    argument: Option<&Value<'gc>>,
+) -> bool {
+    argument_string(heap, argument).as_deref() == Some(text)
+}
+
+/// `Symbol>>=`'s rule: equal symbols are one interned symbol.
+pub(crate) fn symbol_equals<'gc>(
+    heap: &Heap<'gc>,
+    symbol: Symbol,
+    argument: Option<&Value<'gc>>,
+) -> bool {
+    match argument {
+        Some(Value::Object(object)) => heap.symbol_value(*object) == Some(symbol),
+        _ => false,
+    }
+}
+
+/// A string's content hash: its text, not its address, since two separately
+/// built strings of the same text are equal and so must hash alike.
+pub(crate) fn string_hash(text: &str) -> i64 {
+    crate::hash::content_hash(text)
+}
+
+/// A symbol's hash: its interned number. §5.1.6 makes equal symbols one
+/// object, so the number is as stable as the symbol is and agrees with
+/// `Symbol>>=` by construction. It is a `u32`, so it is already the
+/// non-negative sub-2^32 answer a `hash` gives.
+pub(crate) fn symbol_hash(symbol: Symbol) -> i64 {
+    symbol.index() as i64
+}
+
+/// The one `char` a `Character`'s payload holds. The invariant comes from
+/// `Mutator::new_character`; a payload that ever violated it falls back to
+/// `'\0'` rather than panicking, because this is on a Newspeak-input path.
+pub(crate) fn character_of(text: &str) -> char {
+    text.chars().next().unwrap_or('\0')
+}
+
 /// Mirrors `ns_syntax::lexer`'s string-literal escaping (`lex_string`): a
 /// string literal is delimited by `'`, and an embedded `'` is written as two
 /// consecutive `'` characters (no other escapes exist for Newspeak strings).
@@ -69,9 +115,12 @@ pub(crate) fn execute_string<'gc>(
                 }),
             })
         }
-        StringPrimitive::Equal => Some(Ok(Value::Boolean(
-            argument_string(&mutator.heap, arguments.first()).as_deref() == Some(string.as_str()),
-        ))),
+        StringPrimitive::Equal => Some(Ok(Value::Boolean(text_equals(
+            &mutator.heap,
+            &string,
+            arguments.first(),
+        )))),
+        StringPrimitive::Hash => Some(Ok(Value::SmallInteger(string_hash(&string)))),
         StringPrimitive::AsSymbol => Some(Ok(mutator.new_symbol(Symbol::intern(&string)))),
         StringPrimitive::PrintString => {
             Some(Ok(Value::Object(mutator.new_string(quote_string(&string)))))
@@ -93,12 +142,12 @@ pub(crate) fn execute_symbol<'gc>(
         SymbolPrimitive::AsString => Some(Ok(Value::Object(
             mutator.new_string(symbol.as_str().to_string()),
         ))),
-        SymbolPrimitive::Equal => Some(Ok(Value::Boolean(match arguments.first() {
-            Some(Value::Object(argument_object)) => {
-                mutator.heap.symbol_value(*argument_object) == Some(symbol)
-            }
-            _ => false,
-        }))),
+        SymbolPrimitive::Equal => Some(Ok(Value::Boolean(symbol_equals(
+            &mutator.heap,
+            symbol,
+            arguments.first(),
+        )))),
+        SymbolPrimitive::Hash => Some(Ok(Value::SmallInteger(symbol_hash(symbol)))),
         SymbolPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(format!("#{}", symbol.as_str())),
         ))),
@@ -115,17 +164,16 @@ pub(crate) fn execute_character<'gc>(
         return None;
     };
     let string = mutator.heap.str_value(*object)?;
-    // Invariant from `Mutator::new_character`: this payload is always
-    // exactly one `char`. Fall back to `'\0'` rather than panicking if that
-    // invariant is ever violated -- never panic on a Newspeak-input path.
-    let character = string.chars().next().unwrap_or('\0');
+    let character = character_of(&string);
     match primitive {
         CharacterPrimitive::AsInteger => Some(Ok(Value::SmallInteger(character as i64))),
         CharacterPrimitive::AsString => {
             Some(Ok(Value::Object(mutator.new_string(character.to_string()))))
         }
-        CharacterPrimitive::Equal => Some(Ok(Value::Boolean(
-            argument_string(&mutator.heap, arguments.first()).as_deref() == Some(string.as_str()),
-        ))),
+        CharacterPrimitive::Equal => Some(Ok(Value::Boolean(text_equals(
+            &mutator.heap,
+            &string,
+            arguments.first(),
+        )))),
     }
 }
