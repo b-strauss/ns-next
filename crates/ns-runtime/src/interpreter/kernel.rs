@@ -149,6 +149,15 @@ impl<'gc> Mutator<'gc> {
             let super_application = superclass
                 .and_then(|superclass| self.heap.class_application(self.builtin_class(superclass)));
             let application = self.apply_mixin(&mixin, super_application.as_ref());
+            // Recorded as `Value` itself is filled, not after the loop:
+            // `fill_order` puts `Value` ahead of every class below it, and
+            // each of those asks `apply_mixin` whether its superclass
+            // application is this one (§3.1.1's "its class inherits from
+            // class `Value`"). Recorded afterwards, `String` and every
+            // other value class would answer that it does not.
+            if kind == BuiltinClass::Value {
+                self.value_application = Some(application.clone());
+            }
             if !self.heap.set_class_application(class, application) {
                 unreachable!("internal: a builtin class is a class object");
             }
@@ -751,6 +760,42 @@ mod tests {
                     }
                     None => assert!(actual.is_none(), "{kind:?} has no superclass"),
                 }
+            }
+        });
+    }
+
+    /// §3.1.1's "its class inherits from class `Value`", as the flag the two
+    /// refusals read. It is recorded as `Value` itself is filled, so every
+    /// class filled after it in the same pass sees it -- recorded after the
+    /// pass, `String` and every other value class would answer `false` and a
+    /// `String` in a value's slot would be refused as if it were mutable.
+    #[test]
+    fn every_value_classs_application_inherits_value() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            for (kind, expected) in [
+                (BuiltinClass::String, true),
+                (BuiltinClass::Symbol, true),
+                (BuiltinClass::Character, true),
+                (BuiltinClass::Integer, true),
+                (BuiltinClass::Float, true),
+                (BuiltinClass::True, true),
+                (BuiltinClass::Nil, true),
+                (BuiltinClass::Number, true),
+                (BuiltinClass::Array, false),
+                (BuiltinClass::OrderedCollection, false),
+                (BuiltinClass::Block, false),
+                (BuiltinClass::Object, false),
+                // `Value` inherits itself no more than `Object` does, and
+                // declares no slot for the rule to be about.
+                (BuiltinClass::Value, false),
+            ] {
+                let class = mutator.builtin_class(kind);
+                assert_eq!(
+                    mutator.heap().class_inherits_value(class),
+                    expected,
+                    "{kind:?}"
+                );
             }
         });
     }

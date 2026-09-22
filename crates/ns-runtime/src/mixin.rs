@@ -444,10 +444,35 @@ impl Mixin {
     }
 }
 
+/// A mutable slot declared by a class that inherits `Value`, which §3.1.1
+/// forbids: a value object is deeply immutable, so an instance of such a
+/// class could never be one. Both names are recorded because the class that
+/// declares the slot need not be the class being instantiated -- the
+/// refusal has to say which level is at fault.
+#[derive(Debug, Clone, Copy)]
+pub struct MutableValueSlot {
+    pub class: Symbol,
+    pub slot: Symbol,
+}
+
 #[derive(Debug)]
 pub struct MixinApplication {
     pub mixin: Rc<Mixin>,
     pub superclass: Option<Rc<MixinApplication>>,
+    /// §3.1.1: whether this application's superclass chain reaches `Value`,
+    /// which is what makes its instances value objects -- deeply immutable,
+    /// equal by their state and free to be copied across an actor boundary.
+    /// Computed once per application (`Mutator::apply_mixin`), because the
+    /// same mixin applied over a superclass that is no value is no value
+    /// either.
+    ///
+    /// `Value`'s own application answers `false`: it inherits nothing, and
+    /// `Kernel.ns` gives it no slots for the rule below to be about.
+    pub inherits_value: bool,
+    /// The first mutable slot anywhere in this application's chain below
+    /// `Value`, if any: the refusal `interpreter::instantiate` raises when
+    /// something asks for an instance.
+    pub mutable_value_slot: Option<MutableValueSlot>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached
     /// nested class object; accessing it is a slot read rather than a

@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before
+'''
+stderr = '''
+Uncaught Newspeak error: cannot instantiate Counter: a value object is deeply immutable, and it declares the mutable slot count
+'''

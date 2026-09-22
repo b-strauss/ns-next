@@ -16,6 +16,7 @@ use std::rc::Rc;
 use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::ActivationReference;
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
+use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
@@ -437,13 +438,20 @@ fn execute<'gc>(
             let value = read_local(&mutator.heap, activation, *source);
             let receiver = mutator.heap.activation_receiver(activation);
             let base = mutator.heap.activation_slot_base(activation);
-            store_instance_field(
-                &mut mutator.heap,
-                &receiver,
-                base + *own_index as usize,
-                value,
-            );
-            Flow::Next
+            // §3.1.1's rule about what a value's slot may hold is decided in
+            // `interpreter/`, as every error is; this only calls it.
+            match check_value_slot(mutator, activation, receiver, *own_index as usize, value) {
+                Ok(()) => {
+                    store_instance_field(
+                        &mut mutator.heap,
+                        &receiver,
+                        base + *own_index as usize,
+                        value,
+                    );
+                    Flow::Next
+                }
+                Err(signal) => unwind(mutator, signal, floor),
+            }
         }
         Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
             let value = read_local(&mutator.heap, activation, *register);

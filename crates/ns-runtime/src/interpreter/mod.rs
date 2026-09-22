@@ -229,6 +229,16 @@ pub struct Mutator<'gc> {
     /// move or a collection can invalidate, so it needs no root and nothing
     /// traces it.
     pub(crate) value_equality_method: Option<Rc<crate::mixin::MixinMethod>>,
+    /// `Value`'s own application, recorded by the bootstrap's kernel phase
+    /// as `Value`'s class object is filled: what `apply_mixin` compares a
+    /// superclass application against to answer §3.1.1's "its class
+    /// inherits from class `Value`". Compared by `Rc` identity, never by
+    /// name -- any module may declare a class called `Value`.
+    ///
+    /// `None` until that moment, so the placeholder applications the world
+    /// is built with inherit nothing; every application built afterwards,
+    /// `Value`'s own subclasses in the same fill included, sees it.
+    pub(crate) value_application: Option<Rc<crate::mixin::MixinApplication>>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -1430,10 +1440,38 @@ impl<'gc> Mutator<'gc> {
             nested_slot.insert(crate::mixin::mixin_key(nested), next);
             next += 1;
         }
+        // §3.1.1's two questions about a value class, asked once here rather
+        // than per instance: does this chain reach `Value`, and does any
+        // level of it declare a mutable slot while it does. The answer
+        // belongs to the *application*, not to the mixin -- the same mixin
+        // over a superclass that is no value declares an ordinary mutable
+        // slot and is perfectly legal.
+        let inherits_value = superclass.is_some_and(|application| {
+            application.inherits_value
+                || self
+                    .value_application
+                    .as_ref()
+                    .is_some_and(|value| Rc::ptr_eq(application, value))
+        });
+        let mutable_value_slot = superclass
+            .and_then(|application| application.mutable_value_slot)
+            .or_else(|| {
+                if !inherits_value {
+                    return None;
+                }
+                mixin.slots.iter().find(|slot| slot.mutable).map(|slot| {
+                    crate::mixin::MutableValueSlot {
+                        class: mixin.name,
+                        slot: slot.name,
+                    }
+                })
+            });
         let dispatch_ids = self.mint_dispatch_ids();
         let application = Rc::new(crate::mixin::MixinApplication {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
+            inherits_value,
+            mutable_value_slot,
             slot_count: next,
             nested_slot,
             own_slot_base: inherited,

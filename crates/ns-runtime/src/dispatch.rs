@@ -450,6 +450,8 @@ mod tests {
                 ..crate::mixin::Mixin::empty(Symbol::intern(name))
             }),
             superclass: super_application,
+            inherits_value: false,
+            mutable_value_slot: None,
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,

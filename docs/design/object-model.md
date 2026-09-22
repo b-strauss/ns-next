@@ -349,6 +349,36 @@ walked the superclass chain upward and ran every level's slots and initializer
 expressions in the *subclass's* activation with the subclass's factory arguments,
 which §6.2 does not permit.
 
+### A value object's two conditions
+
+§3.1.1 makes an object a value object when "it is deeply immutable ... and its
+class inherits from class `Value`", and both halves are enforced as the instance
+is built — the one place every instance of every class comes from, whether its
+class was loaded from source, materialized as a nested class or rebuilt from an
+image:
+
+- **Step 1 refuses a mutable slot.** A class that inherits `Value` and declares
+  one could never have a value object for an instance, so there is no instance
+  to make and nothing is allocated. `Mutator::apply_mixin` answers both
+  questions once per application — whether the chain reaches `Value`
+  (`inherits_value`) and whether any level of it declares a mutable slot while
+  it does (`mutable_value_slot`) — because the same mixin applied over a
+  superclass that is no value declares an ordinary mutable slot and is perfectly
+  legal.
+- **Step 4 refuses a slot that is not a value.** *Deeply* immutable means "all
+  objects reachable from it are also deeply immutable", so `InitializeSlot`
+  refuses to store anything but a value in an instance of a value class: an
+  immediate, a `String`, a `Symbol`, a `Character`, or an instance whose class
+  inherits `Value`. An `Array` stored there would make the whole value mutable
+  through it, and two copies of the value would stop being equal the moment one
+  array was written. The decision and its text live in
+  `interpreter/instantiate.rs`; `vm.rs` only calls it, so both lowerings raise
+  the same error.
+
+Both are ordinary Newspeak errors naming the class and the slot, raised at run
+time — a class nothing instantiates never fails, as a method nothing runs never
+does.
+
 ## Class sides and metaclasses
 
 The metaclass mixin is the class side *together with the primary factory

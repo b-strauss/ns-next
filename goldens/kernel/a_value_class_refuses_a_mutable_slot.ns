@@ -1,0 +1,23 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: "An object is a value object if it is deeply
+   immutable ... and its class inherits from class Value." A mutable slot
+   is state something can write after the fact, so a class below `Value`
+   that declares one could never have a value object for an instance --
+   and a value that could change would stop being equal to the copy an
+   actor boundary made of it.
+
+   The refusal is an ordinary Newspeak error raised where the instance
+   would come into being, so the line before it still prints: nothing about
+   the class is wrong until something asks for an instance of it. *)
+class ValueMutableSlot usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    public class Counter = Value new (
+        | public count ::= 1. |
+    ) ()
+    public main: ignoredPlatform args: arguments = (
+        transcript show: 'before'; newLine.
+        transcript show: Counter new printString; newLine.
+    )
+) : ()

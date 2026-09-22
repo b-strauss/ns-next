@@ -1600,6 +1600,18 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// §3.1.1's "its class inherits from class `Value`", read off the
+    /// application without cloning the `Rc` that holds it: this is asked of
+    /// every slot an initializer writes, and a refcount bump per slot is
+    /// the whole cost of the question.
+    pub fn class_inherits_value(&self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.application.inherits_value,
+            _ => false,
+        }
+    }
+
     pub fn class_enclosing(&self, class: ClassReference<'gc>) -> Option<ObjectReference<'gc>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -3014,6 +3026,8 @@ mod tests {
         let application = std::rc::Rc::new(crate::mixin::MixinApplication {
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
+            inherits_value: false,
+            mutable_value_slot: None,
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,

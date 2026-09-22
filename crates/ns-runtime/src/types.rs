@@ -521,6 +521,8 @@ mod tests {
         Rc::new(crate::mixin::MixinApplication {
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
+            inherits_value: false,
+            mutable_value_slot: None,
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
