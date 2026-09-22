@@ -283,9 +283,9 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The `doesNotUnderstand:` defined for `class`. A user-overridden one
-    /// arrives as a method; `Object`'s own primitive one, which every class
-    /// that does not override it inherits, as a primitive, run like any
-    /// other.
+    /// arrives as a method; so does `Object`'s own, a kernel method every
+    /// class that does not override it inherits -- `act` runs its mirror
+    /// row's leaf before activating it, like any primitive method.
     fn resolve_handler(&mut self, class: ClassReference<'gc>, chain: Chain) -> Resolved<'gc> {
         match dispatch::lookup_defined_for(&self.heap, class, Symbol::DOES_NOT_UNDERSTAND) {
             // A nested declaration can never be the handler: `walk` matches
@@ -752,6 +752,7 @@ fn unhandled_error<'gc>(receiver: Value<'gc>, selector: Symbol) -> Signal<'gc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins::primitive::mirror_primitive_named;
     use crate::{HostResult, HostSignal, Interpreter, Root, SourceOrigin};
     use indoc::indoc;
     use std::path::PathBuf;
@@ -829,13 +830,20 @@ mod tests {
                     ..
                 }
             ));
-            assert!(matches!(
-                mutator.resolve_public(receiver, Symbol::intern("zork")),
-                Resolved::Primitive {
+            // `Object`'s `doesNotUnderstand:` is a kernel primitive method
+            // now (`Kernel.ns`), found as a `Resolved::Method` whose
+            // `MixinMethod.primitive` names the mirror row.
+            match mutator.resolve_public(receiver, Symbol::intern("zork")) {
+                Resolved::Method {
+                    method,
                     chain: Chain::DoesNotUnderstand,
                     ..
-                }
-            ));
+                } => assert_eq!(
+                    method.primitive,
+                    mirror_primitive_named("object:doesNotUnderstand:ifFail:")
+                ),
+                _ => panic!("an unhandled selector must resolve to Object's doesNotUnderstand:"),
+            }
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
         });
     }

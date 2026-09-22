@@ -150,6 +150,10 @@ const fn public(selector: &'static str, primitive: Primitive) -> PrimitiveSelect
     }
 }
 
+// No remaining family list uses this once `Object`'s moved into `Kernel.ns`
+// (Task 5); it stays for the families still ahead until Task 13 deletes the
+// per-family lists (and this) entirely.
+#[allow(dead_code)]
 const fn protected(selector: &'static str, primitive: Primitive) -> PrimitiveSelector {
     PrimitiveSelector {
         selector,
@@ -158,24 +162,13 @@ const fn protected(selector: &'static str, primitive: Primitive) -> PrimitiveSel
     }
 }
 
-const OBJECT: &[PrimitiveSelector] = &[
-    public("class", Primitive::Object(ObjectPrimitive::Class)),
-    public("==", Primitive::Object(ObjectPrimitive::Identical)),
-    public("=", Primitive::Object(ObjectPrimitive::Equal)),
-    public("hash", Primitive::Object(ObjectPrimitive::Hash)),
-    public(
-        "printString",
-        Primitive::Object(ObjectPrimitive::PrintString),
-    ),
-    // `newspeak-spec.pdf` §5.5: `Object`'s `doesNotUnderstand:` must be
-    // protected, so an explicit-receiver send of it finds nothing through
-    // `lookupPublic` and falls to the access-blind "defined for" walk that
-    // invokes it for the failing send itself.
-    protected(
-        "doesNotUnderstand:",
-        Primitive::Object(ObjectPrimitive::DoesNotUnderstand),
-    ),
-];
+// `Object`'s methods moved into `Kernel.ns` (Task 5): each is now a kernel
+// primitive method whose body forwards to the mirror row of the same
+// `Primitive`. `newspeak-spec.pdf` §5.5 is why `doesNotUnderstand:` is
+// `protected` there -- an explicit-receiver send of it finds nothing through
+// `lookupPublic` and falls to the access-blind "defined for" walk that
+// invokes it for the failing send itself.
+const OBJECT: &[PrimitiveSelector] = &[];
 
 const BOOLEAN: &[PrimitiveSelector] = &[
     public(
@@ -838,13 +831,17 @@ mod tests {
 
     /// `Nil` has no natives of its own today; the VM mirror's come from
     /// `MIRROR` rather than `primitives_of` (`method_table`'s special case);
-    /// every other builtin has a `primitives_of` list.
+    /// `Object`'s methods moved into `Kernel.ns` (Task 5), so its list is
+    /// empty too; every other builtin still has a `primitives_of` list.
     #[test]
-    fn every_builtin_but_nil_and_the_mirror_has_primitives() {
+    fn every_builtin_but_nil_the_mirror_and_object_has_primitives() {
         for kind in BuiltinClass::ALL {
             assert_eq!(
                 primitives_of(kind).is_empty(),
-                kind == BuiltinClass::Nil || kind == BuiltinClass::VmMirror,
+                matches!(
+                    kind,
+                    BuiltinClass::Nil | BuiltinClass::VmMirror | BuiltinClass::Object
+                ),
                 "{kind:?}"
             );
         }

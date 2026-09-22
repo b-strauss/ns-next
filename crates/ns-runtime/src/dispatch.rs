@@ -421,7 +421,7 @@ fn next_level<'gc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::primitive::{IntegerPrimitive, ObjectPrimitive, Primitive};
+    use crate::builtins::primitive::{mirror_primitive_named, IntegerPrimitive, Primitive};
     use indoc::formatdoc;
     use std::collections::HashMap;
 
@@ -595,6 +595,8 @@ mod tests {
 
     /// `Integer` has no `==`; the ordinary walk reaches `Object`'s, since
     /// `Integer`'s superclass is `Object` -- no hand-restored inheritance.
+    /// `Object`'s `==` is a kernel primitive method (`Kernel.ns`), found as a
+    /// `Lookup::Method` whose `MixinMethod.primitive` names the mirror row.
     #[test]
     fn a_primitive_a_builtin_lacks_is_found_at_objects_level() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -602,7 +604,11 @@ mod tests {
             let integer = mutator.builtin_class(BuiltinClass::Integer);
             let object = mutator.builtin_class(BuiltinClass::Object);
             match lookup_public(&mutator.heap, integer, Symbol::intern("==")) {
-                Lookup::Primitive(Primitive::Object(ObjectPrimitive::Identical), level) => {
+                Lookup::Method(method, level) => {
+                    assert_eq!(
+                        method.primitive,
+                        mirror_primitive_named("object:identicalTo:ifFail:")
+                    );
                     assert!(level.same(object))
                 }
                 _ => panic!("`3 == 3` must find Object's `==`"),
@@ -611,14 +617,20 @@ mod tests {
     }
 
     /// What a failed primitive passes to: the same lookup, from the level
-    /// above the one that declared it.
+    /// above the one that declared it. `Object`'s `=` is a kernel primitive
+    /// method now (`Kernel.ns`), found as a `Lookup::Method`.
     #[test]
     fn a_lookup_continued_above_a_level_passes_that_levels_entry_over() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let string = mutator.builtin_class(BuiltinClass::String);
             match lookup_above(&mutator.heap, Rule::Public, string, Symbol::intern("=")) {
-                Lookup::Primitive(Primitive::Object(ObjectPrimitive::Equal), _) => {}
+                Lookup::Method(method, _) => {
+                    assert_eq!(
+                        method.primitive,
+                        mirror_primitive_named("object:equals:ifFail:")
+                    )
+                }
                 _ => panic!("above String, `=` is Object's"),
             }
             let object = mutator.builtin_class(BuiltinClass::Object);
@@ -630,7 +642,9 @@ mod tests {
     }
 
     /// §5.5: `Object`'s `doesNotUnderstand:` is protected -- lookupPublic
-    /// stops at it, lookupProtected and the "defined for" walk accept it.
+    /// stops at it, lookupProtected and the "defined for" walk accept it. It
+    /// is a kernel primitive method now (`Kernel.ns`), found as a
+    /// `Lookup::Method` whose `MixinMethod.primitive` names the mirror row.
     #[test]
     fn objects_does_not_understand_is_protected() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -641,14 +655,15 @@ mod tests {
                 lookup_public(&mutator.heap, integer, selector),
                 Lookup::NotFound
             ));
-            assert!(matches!(
-                lookup_protected(&mutator.heap, integer, selector),
-                Lookup::Primitive(Primitive::Object(ObjectPrimitive::DoesNotUnderstand), _)
-            ));
-            assert!(matches!(
-                lookup_defined_for(&mutator.heap, integer, selector),
-                Lookup::Primitive(Primitive::Object(ObjectPrimitive::DoesNotUnderstand), _)
-            ));
+            let expected = mirror_primitive_named("object:doesNotUnderstand:ifFail:");
+            match lookup_protected(&mutator.heap, integer, selector) {
+                Lookup::Method(method, _) => assert_eq!(method.primitive, expected),
+                _ => panic!("lookupProtected must find Object's doesNotUnderstand:"),
+            }
+            match lookup_defined_for(&mutator.heap, integer, selector) {
+                Lookup::Method(method, _) => assert_eq!(method.primitive, expected),
+                _ => panic!("the \"defined for\" walk must find Object's doesNotUnderstand:"),
+            }
         });
     }
 }

@@ -15,6 +15,15 @@ class Kernel vmMirror: theMirror = Object new (
     | private vmMirror = theMirror. |
 ) (
     class Object = () (
+        public class = ( ^vmMirror objectClass: self ifFail: [^super class] )
+        public == other = ( ^vmMirror object: self identicalTo: other ifFail: [^super == other] )
+        public = other = ( ^vmMirror object: self equals: other ifFail: [^super = other] )
+        public hash = ( ^vmMirror objectHash: self ifFail: [^super hash] )
+        public printString = ( ^vmMirror objectPrintString: self ifFail: [^super printString] )
+        (* §5.5: protected, so an explicit-receiver send of it finds nothing
+           through lookupPublic and falls to the access-blind "defined for"
+           walk that invokes it for the failing send itself. *)
+        protected doesNotUnderstand: message = ( ^vmMirror object: self doesNotUnderstand: message ifFail: [^super doesNotUnderstand: message] )
     )
     class Boolean = Object new () (
     )

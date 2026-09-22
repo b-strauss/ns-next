@@ -28,31 +28,30 @@ use crate::source;
 /// preserve (`docs/design/image-format.md`, "The consistency guarantee,
 /// stated precisely").
 ///
-/// Walking past the root level (`application = a.superclass.clone()`) is safe
-/// only because of an invariant this function relies on but does not check:
-/// every non-own mixin reachable from a root class's superclass chain today is
-/// a builtin's, and a builtin mixin's method table holds nothing but its
-/// primitives (`MethodEntry::Primitive`), with empty `nested` -- and
-/// `mixins::encode` never writes a primitive, so the check counts only an
-/// entry that is not one. Cross-module inheritance does not exist yet, so the
-/// ancestor branch can never actually return `true` today; the loop climbs
-/// `superclass` only to stay correct if a root class's chain ever grows past
-/// one level of builtin mixin. If ns-next later gains cross-module
-/// inheritance, or a core-library superclass written in Newspeak, an
-/// ancestor mixin could carry real `methods`/`nested` entries
-/// that `mixins::encode` never interns for *this* module's symbol table (it
-/// only walks the module's own declaration tree) -- and this check would then
-/// accept a selector absent from that table, silently breaking the guarantee
-/// above instead of refusing the build. No test catches that today: every
-/// fixture here inherits directly from `Object`.
+/// The walk stops at the first level whose `class_builtin` is `Some`: since
+/// `Object`'s methods moved into `Kernel.ns`
+/// (`docs/design/core-library.md`, "The VM mirror is the whole Rust
+/// boundary"), a builtin's own level can hold a real `MethodEntry::Compiled`
+/// entry, not only `MethodEntry::Primitive` -- `Object`'s `printString`, for
+/// one. Every builtin level is the kernel's, which `mixins::encode` never
+/// walks (it interns only the module's own declaration tree), so accepting a
+/// selector found there would accept one absent from the image's symbol
+/// table, breaking the byte-identity guarantee above instead of refusing the
+/// build -- `build_refuses_an_entry_only_a_builtin_answers` pins this.
 fn root_class_answers<'gc>(
     heap: &ns_runtime::Heap<'gc>,
     class: ns_runtime::ClassReference<'gc>,
     selector: &str,
 ) -> bool {
     let symbol = ns_runtime::Symbol::intern(selector);
-    let mut level = heap.class_application(class);
-    while let Some(application) = level {
+    let mut level = Some(class);
+    while let Some(current) = level {
+        if heap.class_builtin(current).is_some() {
+            return false;
+        }
+        let Some(application) = heap.class_application(current) else {
+            return false;
+        };
         let declared = application
             .mixin
             .methods
@@ -69,7 +68,7 @@ fn root_class_answers<'gc>(
         {
             return true;
         }
-        level = application.superclass.clone();
+        level = heap.class_superclass(current);
     }
     false
 }
