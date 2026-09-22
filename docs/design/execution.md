@@ -2776,12 +2776,12 @@ this measurement makes a case for.
 
 Every builtin method now lives in `crates/ns-runtime/kernel/Kernel.ns` as a
 forwarder over the one VM mirror ([core-library.md](core-library.md),
-"Planned: the core library as Newspeak source over a VM mirror"). A kernel
+"The core library as Newspeak source over a VM mirror"). A kernel
 method whose whole body forwards to one mirror row is a primitive method: a
 send of it runs the row's leaf in `act`, without an activation, and
 activates the body only when the leaf declines
-(`crates/ns-runtime/src/compiler/primitive_method.rs`). `NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel
-without them, for measuring only, so the same binary shows what they
+([dispatch.md](dispatch.md), "Primitive methods").
+`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without them, for measuring only, so the same binary shows what they
 recover.
 
 **The expectation, recorded before any binary was built.** With primitive
@@ -3011,8 +3011,10 @@ Three things the trampoline settles on its own:
   the static nesting of `and:` and `while` blocks, so no fixed native stack
   would guarantee that the count trips before the native stack under both
   lowerings. `do:` answers its block as a step too ("No re-entry from Rust"
-  below), and moves to Newspeak in step 6 of M4's order of
-  work ([core-library.md](core-library.md), [PROGRESS.md](../PROGRESS.md)).
+  below). Since step 6 each of these is the leaf a `Kernel.ns` method
+  forwards to; rewriting them as Newspeak loops and branches is a separate
+  step before the JIT tiers ([core-library.md](core-library.md), "Planned:
+  real bodies for control flow and `do:`, before the JIT tiers").
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
@@ -3072,7 +3074,9 @@ yet.
   superclass clause or its message — are counted by construction.
 - **The exemption is marked by the arguments.** A block a control-flow native
   activates carries `StepArguments::ControlFlow` — it has no arguments, and only
-  those natives build that variant — and `push_step` exempts it when the send
+  those natives and a sent mirror send whose leaf declined, activating its
+  failure block ([compiler.md](compiler.md), "Mirror sends"), build that
+  variant — and `push_step` exempts it when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through
@@ -3194,8 +3198,8 @@ when these paths ran in nested runs of the loop.
   "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and
   every other primitive's leaf result is lifted into a step through
   `leaf_step`. `Array` and `OrderedCollection` share this one function; which
-  of them answers `at:put:` and which `add:` is decided by their own lists in
-  `builtins/primitive.rs`, not here. Each element's activation is counted, like any block a `value`
+  of them answers `at:put:` and which `add:` is decided by the methods their
+  classes declare in `Kernel.ns`, not here. Each element's activation is counted, like any block a `value`
   send activates; a `^` in it unwinds like any other activation's, and its
   arity is checked by the same `check_block_arity`. Its argument is a
   one-element vector, allocated per element: a `StepArguments` variant that carried
@@ -3402,8 +3406,10 @@ walking that chain (`ActivationMirrorTesting.ns`, `describeActivation:to:`),
 the creator is still answered after its method has returned
 (`testClosureActivation`, on a block `seven` returned), and a block evaluated
 directly in its method has `sender = enclosingActivation`
-(`testEnclosingActivationEquality`). Once the core library is Newspeak (step
-6), every block a collection iterator runs is such an entry.
+(`testEnclosingActivationEquality`). Once the collection iterators are
+Newspeak loops rather than forwarders to a leaf ([core-library.md](core-library.md),
+"Planned: real bodies for control flow and `do:`, before the JIT tiers"),
+every block one runs is such an entry.
 
 The alternative — reify nothing for a block without `^`, carry only what it
 captured, as the JVM does (a lambda holds its captured values and no frame;

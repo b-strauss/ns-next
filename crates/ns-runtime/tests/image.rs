@@ -7791,7 +7791,7 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     // `apply:`'s family is two sends (`keep`, `value:`); the decoded block's
     // is one (`+`, numbered 0 in `prepare`'s family, before the `keep:`
     // setter that takes the block as its argument). `value:` is a kernel
-    // primitive method now (`Kernel.ns`, Task 11): caching its call site as
+    // primitive method (`Kernel.ns`): caching its call site as
     // a `CachedTargetKind::Method` also reserves the target's own family --
     // `Block>>value:`'s two sends (the lexical read of `vmMirror` and its
     // `block:value:ifFail:` send) -- so the total is 5, not 3.

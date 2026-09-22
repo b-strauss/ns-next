@@ -17,7 +17,7 @@ use crate::source;
 /// names, because those are exactly what `mixins::encode` interns into the
 /// symbol table while walking this same superclass chain over `mixin.methods`
 /// and `mixin.nested`. Accepting anything wider -- a slot's implicit *setter*,
-/// a builtin's native method -- would accept a selector the code and mixin
+/// a core-library (kernel) method -- would accept a selector the code and mixin
 /// tables never interned: a slot's *getter* is interned (`mixins::encode`
 /// writes every slot name), but the setter selector it is derived from at
 /// dispatch time is not a name `mixins::encode` ever writes. Accepting it

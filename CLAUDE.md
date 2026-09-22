@@ -9,8 +9,11 @@ Rust 1.98.0, edition 2021, three crates:
   with the reference lowering it is checked against in `compiler/reference.rs`),
   the VM (`vm.rs`) and the send machinery it calls (`interpreter/`, the inline
   caches in `interpreter/inline_cache.rs` in front of the lookups in
-  `interpreter/resolve.rs`), core library
-  (`builtins/`), image format (`image/`). Objects live in an arena owned by one
+  `interpreter/resolve.rs`), the core library -- `kernel/Kernel.ns`, Newspeak
+  source the bootstrap compiles into the builtin classes
+  (`interpreter/kernel.rs`), whose methods reach Rust only through the one VM
+  mirror object and its leaves (`builtins/`, `interpreter/mirror.rs`) -- and
+  the image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
   activation stack in the same `Heap` and are reified into the frame arena only
   when a block captures one. A mark-compact collector reclaims a slot once
@@ -47,7 +50,9 @@ dispatch and raise the same errors, and a second copy is how they would drift. I
 need something private there, widen it to `pub(crate)`. The inline caches live in
 `interpreter/` too: a send in `vm.rs` hands the running activation's `feedback_base`, its
 code's `family_size` and the instruction's `CallSite` to `interpreter/inline_cache.rs` and
-does nothing else with them.
+does nothing else with them. Likewise `SendMirror`'s arm reads its registers, calls
+`interpreter::mirror::send_inlined`, and jumps to the failure block or delivers what it was
+handed; which leaf runs, and whether the receiver is the mirror, are decided there.
 
 **Compiling an already-resolved module can never raise a `NewspeakError`.** Compilation
 is a total, deterministic lowering; a compiler-invariant violation is `panic!` /
@@ -235,6 +240,20 @@ nesting boundary runs with the class that lexically declares it, not the receive
 class — using the receiver's class instead silently resolves `outer` to the wrong
 enclosing object.
 
+**The VM mirror is a capability.** Whoever holds the one VM mirror object can run every
+leaf, so it reaches `Kernel.ns` and nothing else (`docs/design/core-library.md`, "The VM
+mirror is the whole Rust boundary"). Six things keep it there, and loosening any one of them
+lets a program claim every primitive: only `resolver::resolve_kernel` records
+`Binding::MirrorSend`, the mark `SendMirror` and primitive methods are compiled from, and
+only `Kernel.ns` is resolved with it -- a user module goes through `resolve`; the bootstrap
+checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
+(`interpreter::kernel`); no bare name resolves to the mirror's class
+(`instantiate::builtin_kind_from_name` omits it); the image decoder refuses builtin class tag
+14 wherever a program names a class (`read_program_builtin_class`); the encoder refuses an
+image whose graph reaches the mirror; and `decide_factory` refuses to instantiate the
+mirror's class. `SendMirror` has no wire tag for the same reason. Never add a way for a
+program to obtain the mirror, its class or a `MirrorSend` binding.
+
 **A cache records what the lookup decided; it never decides.** A send's lookup is
 `resolve_*` (`interpreter/resolve.rs`), and `act` is the one place that runs what it
 found; an inline-cache hit is `act` on the resolution `resolve` answered for the same
@@ -245,8 +264,11 @@ read afresh in `act` on every send, never trusted from the entry; today that is
 `ClassData.builtin`, which `instantiate::decide_factory` reads off the receiver to
 tell `Array` and `OrderedCollection` from an ordinary instance, a primitive's
 payload check, which `builtins::execute` re-runs, and a class object's own
-`class` field, which `resolve_public` and `act_above` re-read to fall through
-to `Object`'s primitives after a metaclass miss. Add such a read and its per-send
+`class` field, which `resolve_public` re-reads to fall through to `Object`'s
+methods after a metaclass miss. A primitive method's fast path is decided the same way:
+the entry records a `Method`, and `act` reads the mirror row off that method
+(`MixinMethod.primitive`) on every send, hit or miss, never from anything the entry
+decided (`docs/design/dispatch.md`, "Primitive methods"). Add such a read and its per-send
 re-check goes with it. The reference lowering runs every send uncached, so it
 is the oracle a cache defect shows against (`docs/design/dispatch.md`, "3b — The
 caches").

@@ -4,8 +4,8 @@
 //! `transcript`, a handful of class-name accessors, the `collections`
 //! namespace, and the stream's `show:`/`newLine` -- nothing else.
 //!
-//! `Platform`'s methods are kernel primitive methods now (`Kernel.ns`, Task
-//! 12): each is a forwarder to a row of `MIRROR` with a super-send fallback,
+//! `Platform`'s methods are kernel primitive methods (`Kernel.ns`): each is
+//! a forwarder to a row of `MIRROR` with a super-send fallback,
 //! so a program reaches every leaf here through the mirror send, never a
 //! direct `Primitive::Platform` lookup on `BuiltinClass::Platform`. §8.3
 //! still separates the platform, which is the environment, from the VM

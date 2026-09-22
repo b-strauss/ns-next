@@ -661,8 +661,8 @@ mod tests {
                     ..
                 }
             ));
-            // `Integer`'s `+` is a kernel primitive method now (`Kernel.ns`,
-            // Task 7), found as a `Resolved::Method` whose
+            // `Integer`'s `+` is a kernel primitive method (`Kernel.ns`),
+            // found as a `Resolved::Method` whose
             // `MixinMethod.primitive` names the mirror row.
             match mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+")) {
                 Resolved::Method {

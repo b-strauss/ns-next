@@ -97,10 +97,13 @@ pub struct ClassData<'gc> {
     /// method runs in.
     pub superclass: Option<ClassReference<'gc>>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
-    /// core-library classes `builtins/` implements natively, for the image's
-    /// class tags and for `decide_factory`, which instantiates `Array` and
-    /// `OrderedCollection` with their own payload. Lookup does not read it:
-    /// a builtin's primitives are entries of its mixin's method table.
+    /// core-library classes the bootstrap fills from `Kernel.ns` (or the VM
+    /// mirror's class), for the image's class tags and for `decide_factory`,
+    /// which instantiates `Array` and `OrderedCollection` with their own
+    /// payload and refuses the mirror's class. Lookup does not read it: a
+    /// builtin's methods are `Kernel.ns`'s, found in its mixin's method table
+    /// like any other class's, and the only primitive entries are the VM
+    /// mirror's.
     pub builtin: Option<BuiltinClass>,
     /// The metaclass built from this class's mixin's `class_side` together
     /// with its primary factory (§6.3), created on first use and cached here

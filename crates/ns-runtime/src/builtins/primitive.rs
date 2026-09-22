@@ -189,8 +189,8 @@ const fn mirror(
 }
 
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
-/// "The VM mirror is the whole Rust boundary"; the plan's "The mirror
-/// table" names each row's index). `Array` and `OrderedCollection` share
+/// "The VM mirror is the whole Rust boundary"); a row's index is its
+/// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
 /// rows 49-53, as they share their payload; each of their kernel classes
 /// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
@@ -590,7 +590,7 @@ pub fn mirror_method_table() -> IdentityMap<Symbol, MethodEntry> {
 mod tests {
     use super::*;
 
-    /// `Integer`'s `+` moved into `Kernel.ns` (Task 7): the leaf it forwards
+    /// `Integer`'s `+` is a `Kernel.ns` method: the leaf it forwards
     /// to is the mirror row named `integer:add:ifFail:`, still the same
     /// `IntegerPrimitive::Add` the family's module executes.
     #[test]

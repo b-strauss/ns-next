@@ -1,8 +1,7 @@
 //! The bootstrap's kernel phase (`docs/design/core-library.md`, "The
-//! bootstrap: placeholders first, kernel second"): `Kernel.ns`, compiled,
-//! fills the builtin class objects `World::new` built as placeholders, and is
-//! then instantiated with the VM mirror. See this plan's "The bootstrap, step
-//! by step" -- the design documents carry it once Task 16 lands.
+//! bootstrap: placeholders first, kernel second", which lists its steps):
+//! `Kernel.ns`, compiled, fills the builtin class objects `World::new` built
+//! as placeholders, and is then instantiated with the VM mirror.
 
 use std::rc::Rc;
 
@@ -14,7 +13,8 @@ use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 
 /// `Kernel.ns`, compiled into the binary: the library is source the runtime
-/// ships (`docs/design/core-library.md`, "Where the library source lives").
+/// ships (`docs/design/core-library.md`, "Where the library source lives,
+/// and how modules are found").
 pub(crate) const KERNEL_SOURCE: &str = include_str!("../../kernel/Kernel.ns");
 
 thread_local! {

@@ -15,6 +15,12 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
+**The next piece of work is step 6's second plan, `Class`, `Behavior` and
+`Metaclass` in `Kernel.ns`**, which has no plan yet and only the outline
+[object-model.md](design/object-model.md)'s "Class sides and metaclasses"
+gives; its first plan, the core library over a VM mirror, is done. Both are described below,
+from "Step 6's first part" on, after the account of how M4 got here.
+
 M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
 "Checked roots and a collector"). **2a, no re-entry from Rust** — `do:`,
@@ -269,57 +275,89 @@ inline caches, at 4.3–11.3% over seven sources. `vm::run` grew from 5,732 to
 below and [execution.md](design/execution.md), "What leaf inlining moved".
 
 **This is the cushion step 6's move to the VM mirror was sequenced to have.**
-Rewriting `do:`, `collect:` and the kernel classes as Newspeak turns every
-arithmetic operation in those bodies into a send the interpreter dispatches;
-the numbers above are what that rewrite now has to spend before it shows as
-a regression against `6f5a5b1`, and the fast path is what supplies it.
+Moving the library into Newspeak, and later rewriting `do:` and the
+control-flow methods as Newspeak loops, turns arithmetic in those bodies into
+sends the interpreter dispatches; the numbers above are what that work has to
+spend before it shows as a regression against `6f5a5b1`, and the fast path is
+what supplies it.
 
-**What step 6 still needs, and it has a design but no plan yet.** The design
-is [core-library.md](design/core-library.md), "Planned: the core library as
-Newspeak source over a VM mirror", decided with the user on 2026-09-21 and
-written up in four parts: why the mirror is the whole Rust boundary (§8.3.1
-requires it — "A primitive call is a message send to the VM mirror" — which
-rules out the primitive pragma an earlier version of that document named as
-the target), how the bootstrap fills empty class placeholders from the
-compiled `Kernel.ns` before instantiating it, where the library source lives
-and how modules are found, and what the step must not break.
+**The rest of step 6 breaks into three plans, and the first — the core
+library over a VM mirror — is done** (2026-09-22;
+[ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md);
+[core-library.md](design/core-library.md), "The core library as Newspeak
+source over a VM mirror"). Every builtin method is a one-line forwarder in
+`crates/ns-runtime/kernel/Kernel.ns` — `^vmMirror integer: self add: other
+ifFail: [^super + other]` — over the one VM mirror, a builtin object whose
+method table carries every leaf as an enumerated primitive, one row of
+`builtins/primitive.rs`'s `MIRROR` each; the per-class primitive lists and
+the pass-over a failing primitive used to take are gone. The bootstrap
+compiles `Kernel.ns`, fills the builtin class objects it had built as
+placeholders from its nested classes, `True` and `False` now under
+`Boolean`, and instantiates it with the mirror, which nothing else can
+obtain: only `resolver::resolve_kernel` marks a send to it, the image format
+refuses it both ways, and its class cannot be instantiated. Inside a kernel
+method the mirror send's failure block is lowered inline
+(`Instruction::SendMirror`, no wire tag; [compiler.md](design/compiler.md),
+"Mirror sends"), and a kernel method whose body only forwards is a
+primitive method, whose leaf `act` runs without an activation under both
+lowerings ([dispatch.md](design/dispatch.md), "Primitive methods").
+**No recorded outcome moved.** The one observable difference — a builtin
+subclass's own `doesNotUnderstand:` is now passed by, as §5.10 says — was
+decided with the user and is pinned by a new golden under `goldens/kernel/`
+([core-library.md](design/core-library.md), "The one observable
+difference"). **Measured against `e2bb31e` over the eight sources, two
+sittings: with primitive methods −4.5% to +2.1%, no group entirely above in
+either sitting — the move cost nothing measurable.** Without them
+(`NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary) −2.0% to +23.6%:
+`bench_megamorphic.ns` +23.6%, `bench_block.ns` +21.3% and `bench_do.ns`
++5.5%, the three that send a leaf the fast path does not absorb in their
+loop. Against `be3eb40` the head is 24.7–40.2% faster. Start-up (`run` of a
+module that returns at once) is 0.5 ms slower, 4.07 ms against 3.56 ms.
+`vm::run` grew from 5,866 to 6,385 instructions and stayed one inlined
+function. See [execution.md](design/execution.md), "What the core library's
+move cost".
 
-It breaks into three plans, deliberately not one, for the reason the leaf
-inlining was split off first: each produces working, measured software on its
-own, and each one's measurement informs the next.
+**What comes next is the other two plans, in this order**, deliberately not
+one, for the reason the leaf inlining was split off first: each produces
+working, measured software on its own, and each one's measurement informs the
+next.
 
-1. **The vmMirror, `Kernel.ns` and the bootstrap — done** (2026-09-22;
-   [ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md)).
-   Every builtin method is a forwarder in `crates/ns-runtime/kernel/Kernel.ns`
-   over the one VM mirror, whose method table carries every leaf as an
-   enumerated primitive; a kernel method whose body forwards to one mirror
-   row is a primitive method, whose leaf `act` runs without an activation.
-   **Measured against `e2bb31e` over the eight sources, two sittings: with
-   primitive methods −4.5% to +2.1%, no group entirely above in either
-   sitting — the move cost nothing measurable.** Without them
-   (`NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary) −2.0% to +23.6%:
-   `bench_megamorphic.ns` +23.6%, `bench_block.ns` +21.3% and `bench_do.ns`
-   +5.5%, the three that send a leaf the fast path does not absorb in their
-   loop. Against `be3eb40` the head is 24.7–40.2% faster. Start-up (`run` of
-   a module that returns at once) is 0.5 ms slower, 4.07 ms against 3.56 ms.
-   `vm::run` grew from 5,866 to 6,385 instructions and stayed one inlined
-   function. See [execution.md](design/execution.md), "What the core
-   library's move cost".
-2. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2, which
-   [object-model.md](design/object-model.md) describes and which the
-   reflection work after step 6 cannot start without.
-3. **The payload space**, step 7 of the order of work, whose own measurements
-   are named under [memory.md](design/memory.md), "Payloads belong to the Rust
-   allocator, and what that costs". Run one of them before building anything
-   there.
+2. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2: the three
+   become declared classes of `Kernel.ns`, and a class object's own class
+   becomes its metaclass instead of the builtin `Object` class
+   ([object-model.md](design/object-model.md), "Class sides and
+   metaclasses", its deviation paragraph; [core-library.md](design/core-library.md),
+   "The core library as Newspeak source over a VM mirror"). The reflection
+   work after step 6 cannot start without the reified instance-of relation,
+   and the decoder's placeholder scheme and the class-side `doesNotUnderstand:`
+   deviation ([dispatch.md](design/dispatch.md)) both change with it. No plan
+   exists yet; write one from those sections.
+3. **The payload space**, step 7 of the order of work below, whose own
+   measurements are named under [memory.md](design/memory.md), "Payloads
+   belong to the Rust allocator, and what that costs". Run one of them before
+   building anything there. **Open, and to settle before planning it:** the
+   space was ordered after step 6 because a Newspeak `OrderedCollection` over
+   a fixed `Array` removes the one payload that grows in place
+   (`Heap::array_push`). The first plan kept `OrderedCollection>>add:` a
+   forwarder to that leaf, as it kept every body a forwarder, so the
+   constraint is still there, and no plan yet names the step that removes
+   it.
+
+**A separate step, created by this plan, sits before the JIT tiers**:
+rewriting the kernel's control-flow methods and `do:` as real Newspeak loops
+and branches instead of forwarders to today's leaves (decided with the user
+on 2026-09-22). It pays off only with a JIT, so it comes right before the
+tiers rather than now, and it owns four semantic decisions already recorded
+with their goldens and code ([core-library.md](design/core-library.md),
+"Planned: real bodies for control flow and `do:`, before the JIT tiers").
 
 Two things are recorded as decided but unbuilt, and neither should be
-rediscovered: `Integer` has no `/` and step 6 has to settle what an exact
-quotient answers without a `Fraction` class
-([core-library.md](design/core-library.md), "Gap: an integer has no `/`"); and
-the arithmetic fast path can drop its `Jump` by inverting the branch sense,
-which requires retiring wire tag 33 and taking 34
-([compiler.md](design/compiler.md), "Arithmetic inlining").
+rediscovered: `Integer` has no `/`, which step 6 left open deliberately and
+which still has to be settled — what an exact quotient answers without a
+`Fraction` class ([core-library.md](design/core-library.md), "Gap: an
+integer has no `/`"); and the arithmetic fast path can drop its `Jump` by
+inverting the branch sense, a separate step that requires retiring wire tag
+33 and taking 34 ([compiler.md](design/compiler.md), "Arithmetic inlining").
 
 **The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
 `22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
@@ -370,9 +408,9 @@ The measurement, and the template for the next, is
   builtin names resolve statically rather than as sends to the accessors
   §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
   class name is loaded, not sent").
-- **`nil printString` answers `'an Object'`**: `Object>>printString` is a
-  stub (`crates/ns-runtime/src/builtins/object_class.rs`, `an Object` for
-  every receiver); no golden pins the correct answer yet.
+- **`nil printString` answers `'an Object'`**: the leaf `Object>>printString`
+  forwards to is a stub (`crates/ns-runtime/src/builtins/object_class.rs`,
+  `an Object` for every receiver); no golden pins the correct answer yet.
 
 **The two specification audits' other findings are closed**, in "M4 — The
 specification gaps" below: the member-set fix, the symbol-identity fix and
@@ -803,43 +841,38 @@ so nothing is lost by it going second.
 Then, after M4 and before the JIT tiers:
 
 6. **The core library in Newspeak, over a VM mirror** —
-   [core-library.md](design/core-library.md). Every builtin method — `do:`,
-   `whileTrue:`, `collect:` and the bodies Rust reimplements today, and the
-   kernel classes with them — becomes Newspeak source in a `Kernel.ns`, the
-   way SOMns's kernel is; the leaves (`+`, `<`, `at:put:`, `size`, `show:`)
-   stay Rust primitives, but as entries of **one VM mirror object** that
-   `Kernel.ns` is handed, which §8.3.1 requires ("A primitive call is a
-   message send to the VM mirror") and which makes the Rust boundary a
-   capability rather than something any method can claim. The inlined fast
-   path for leaves is sequenced first, because without it every leaf send
-   costs an activation. Decided with the user on 2026-09-21; a leaf is what a
-   Rust primitive is good
-   for and the artifact-size and trust arguments still hold for it.
-   **That first part is done** (2026-09-21): the nine binary integer
+   [core-library.md](design/core-library.md). Every builtin method becomes
+   Newspeak source in `Kernel.ns`, the way SOMns's kernel is; the leaves
+   (`+`, `<`, `at:put:`, `size`, `show:`) stay Rust primitives, but as entries
+   of **one VM mirror object** that `Kernel.ns` is handed, which §8.3.1
+   requires ("A primitive call is a message send to the VM mirror") and which
+   makes the Rust boundary a capability rather than something any method can
+   claim. Decided with the user on 2026-09-21; a leaf is what a Rust primitive
+   is good for and the artifact-size and trust arguments still hold for it.
+   It is required so that every builtin method is a real method lookup,
+   mirrors, the debugger and a JIT see. Where it sits is fixed from both
+   ends: before the caches it made the numbers worse, and it must come before
+   the tiers, which need the library as real Newspeak code to optimize at all.
+   **The inlined fast path for leaves came first** (2026-09-21), because
+   without it every leaf send costs an activation: the nine binary integer
    primitives compile to `Instruction::IntegerBinary` under a run-time type
    guard whose fallback is the ordinary send, and all eight measurement
    sources came out 11.5–31.0% faster for it, each entirely below its
    baseline group in both sittings — the cushion the rest of this step
-   spends. See "Leaf inlining" below. It is
-   required so that every builtin method is a real method lookup, mirrors, the
-   debugger and a JIT see: a `do:` in Rust is opaque to a JIT, which can
-   neither inline its block nor compile the loop as a unit. Where it sits is
-   fixed from both ends. Before the steps above it makes the numbers worse; a
-   `do:` written in Newspeak pays for its block until the caches and a JIT can
-   inline it. After them it costs nothing, and it must come before the tiers,
-   which need the library as real Newspeak code to optimize at all. M4 owed it
-   only that the rewrite not deepen the investment in Rust callbacks, and step
-   2a took the last callback away, as a trampoline step rather than as
-   Newspeak. What it still needs: the kernel classes loadable as Newspeak
-   source without the bootstrap depending on it, and the leaves reachable as
-   primitives from that source — which 3a prepared, a primitive being a method
-   table entry carrying a number. **It also carries the rest of §3.2**
-   (decided 2026-09-18): `Class`, `Behavior` and `Metaclass` become declared
-   kernel classes, as they are in both references, and a class object's own
-   class becomes its metaclass — the reified instance-of relation that
-   mirrors need and that nothing before this step does
+   spends. See "Leaf inlining" below. **The core library over the mirror is
+   done** (2026-09-22): every builtin method a forwarder in
+   `crates/ns-runtime/kernel/Kernel.ns`, primitive methods absorbing what the
+   forwarding costs, and no source measurably slower; see "Where the next
+   session starts" above. **Still to come in this step: `Class`, `Behavior`
+   and `Metaclass`** — the rest of §3.2 (decided 2026-09-18), declared kernel
+   classes as they are in both references, with a class object's own class
+   becoming its metaclass: the reified instance-of relation that mirrors need
+   and that nothing before this step does
    ([object-model.md](design/object-model.md), "Class sides and
-   metaclasses").
+   metaclasses"). The kernel's control-flow methods and `do:` stay forwarders
+   over today's leaves; rewriting them as Newspeak loops is a separate step
+   right before the tiers ([core-library.md](design/core-library.md),
+   "Planned: real bodies for control flow and `do:`, before the JIT tiers").
 
 7. **The payload space** — [memory.md](design/memory.md), "Payloads belong to
    the Rust allocator, and what that costs". An object's variable-length part

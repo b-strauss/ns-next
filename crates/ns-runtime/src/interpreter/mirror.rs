@@ -4,8 +4,10 @@
 //! that turns a send's arguments into that leaf's receiver and arguments, and
 //! a leaf's failure into the failure block's activation, whichever of the
 //! three ways the send ran: sent to the mirror object (`execute_sent`), with
-//! its failure block lowered inline (`send_inlined`, Task 3), or as the
-//! primitive of a kernel method (`execute_method`, Task 4).
+//! its failure block lowered inline (`send_inlined`,
+//! `docs/design/compiler.md`, "Mirror sends"), or as the primitive of a
+//! kernel method (`execute_method`, `docs/design/dispatch.md`, "Primitive
+//! methods").
 
 use crate::builtins::primitive::{mirror_entry, MirrorEntry, MirrorPrimitive, MIRROR};
 use crate::interpreter::{Signal, Step, StepArguments};

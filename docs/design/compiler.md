@@ -6,8 +6,9 @@
 > (lowering, register allocation, the scope stack, the converted register
 > layout), `compiler/capture.rs` (the capture analysis closure conversion runs
 > ahead of the optimized lowering), `compiler/control_flow.rs`
-> (inlining), `compiler/reference.rs` (the reference lowering). CLI: `ns-next
-> disasm`.
+> (inlining, and `recognize_mirror_send`), `compiler/primitive_method.rs`
+> (which kernel methods are primitive methods), `compiler/reference.rs` (the
+> reference lowering). CLI: `ns-next disasm`.
 
 This is the producer side. How the bytecode is then run — activations, the VM,
 the dispatch loop — is [execution.md](execution.md).
@@ -60,6 +61,12 @@ identity".
   kth-enclosing object is computed at run time.
 - `SendSuper { selector, argument_registers, destination, call_site }` — receiver is `self`, lookup
   starts at the current activation's `current_class`'s superclass.
+- `SendMirror { primitive, mirror_register, subject_register, argument_registers, destination, failure }`
+  — a send to the VM mirror whose failure block is lowered inline at
+  `failure`: it runs the mirror row `primitive`, bound at compile time, with
+  no lookup and no call site, and jumps to `failure` when the leaf declines.
+  Emitted only into `Kernel.ns`, which no image carries, so it has **no wire
+  tag**; see "Mirror sends".
 
 **Construction**
 
@@ -98,9 +105,11 @@ identity".
 - `Jump { target }`, `BranchIfFalse { register, target }`, `BranchIfTrue { register, target }`,
   `JumpIfNotBoolean { register, target }`, `IntegerBinary { operation, destination, left, right, target }`.
 
-**Nothing but control-flow inlining and arithmetic inlining emits a branch.**
-Every other construct in the language is a send, so a jump in the instruction
-stream is always the trace of one of the two inlining decisions.
+**Nothing but control-flow inlining, arithmetic inlining and a mirror send's
+inlined failure block emits a branch.** Every other construct in the language
+is a send, so a jump in the instruction stream is always the trace of one of
+the three inlining decisions; `SendMirror` is a branch too, to its failure
+block ("Mirror sends").
 `JumpIfNotBoolean` is the control-flow guard: for the unboxed `Value::Boolean`
 representation, "is the receiver's class exactly `True`/`False`?" is precisely
 "is this register a `Boolean` at all". `IntegerBinary` is both the arithmetic
@@ -403,11 +412,11 @@ cost. Cog makes the arithmetic and comparison selectors bytecodes of their
 own — `bytecodePrimAdd` and its neighbours — for the same reason, and
 [core-library.md](core-library.md) names it as this step's model.
 
-**The step is sequenced ahead of the core library's move to a VM mirror**
-([core-library.md](core-library.md)). Once `do:`, `collect:` and the rest
-are Newspeak over a mirror, every arithmetic operation those bodies perform
-is a send the interpreter has to dispatch; without the fast path, moving the
-library to Newspeak would pay an activation for each one. See
+**The step was sequenced ahead of the core library's move to a VM mirror**
+([core-library.md](core-library.md)). With the library Newspeak over a
+mirror, `Integer>>+` is a kernel method, and every arithmetic send the fast
+path does not absorb costs a send to it; without the fast path, moving the
+library to Newspeak would have paid that on every one. See
 [execution.md](execution.md), "What leaf inlining moved", for what it
 measured: every one of the eight benchmark sources 11.5% to 31.0% faster.
 
@@ -491,6 +500,101 @@ overflow on `+` and `//` by zero, with the primitive's own message as the
 recorded `stderr`. The reference lowering compiles every one of these as a
 plain send and is held to the same recorded answers, which is what makes it
 the oracle for this step.
+
+## Mirror sends
+
+Every method of the core library is a send to the VM mirror whose last
+argument is a literal failure block — `^vmMirror stringSize: self ifFail:
+[^super size]` ([core-library.md](core-library.md), "The shape of a kernel
+method"). Compiled as an ordinary send, that block would be a closure built on
+every call and activated only when the leaf declines. The optimized lowering
+instead lowers it inline, the way an inlined conditional's blocks are, behind
+an instruction that runs the leaf: `Instruction::SendMirror`.
+
+**Recognition is `control_flow::recognize_mirror_send`**, which answers the
+mirror row and the failure block for a send that is:
+
+- marked `Binding::MirrorSend` — which only `resolver::resolve_kernel`
+  records, on a plain explicit-receiver send whose receiver is the bare
+  identifier `vmMirror` naming the module root's member, so only `Kernel.ns`
+  ever has one (a cascade to `vmMirror` is not marked, and compiles as
+  ordinary sends);
+- a keyword send whose selector names a `MIRROR` row
+  (`builtins::primitive::mirror_primitive_named`); and
+- ending in a literal block the inlining gate would accept, with no
+  parameters and no temporaries.
+
+Anything else carrying the mark compiles as an ordinary send to the mirror
+object, which still runs the row, sent ([dispatch.md](dispatch.md), "A
+primitive can fail") — so a kernel source defect the recognizer does not
+accept is a slower send, never a compile error. A test checks that every
+send to `vmMirror` in `Kernel.ns` carries the mark.
+
+**Three places ask it, the same three that ask `recognize`**, so the lowering
+and the capture analysis agree about which block literals are closures:
+`lower_send`, which lowers it; `send_writes_register`, the protective-copy
+walk, for which the block's body is lowered into this one and can write its
+registers like any inlined block's; and `capture::Walker::send`, for which
+the block is an inlined scope and no closure. The block is not
+`conditional` there: that flag says a fallback closure built from the block
+can write this frame later, and a `SendMirror` builds none. Each asks
+`is_ordinary_send` first, as it does for `recognize`, although a
+`MirrorSend` is never on a `super` or lexical send. Outside the compiler,
+`compiler::primitive_method` asks it too, to recognize a primitive method
+([dispatch.md](dispatch.md), "Primitive methods"), and the reference
+lowering asks it, below.
+
+**The lowering** (`lower_mirror_send`):
+
+```
+SendMirror dest <- mirror #<row> (subject, arguments)   else -> failure
+Jump -> after
+failure:
+<the failure block's body, lowered inline>
+Move dest <- <its value>
+after:
+```
+
+The receiver, the subject and the leaf's arguments are lowered in order, each
+protected against what is lowered after it, as a send's arguments are. The
+block is code at `failure`, not a value: it runs only when the leaf declines,
+its value lands in the same destination the leaf writes, and a `^` in it
+returns from the kernel method — which is what the failure path of a
+primitive method's body should do. Unlike an inlined conditional there is no
+fallback send: the mirror's class and method table are fixed at bootstrap
+([dispatch.md](dispatch.md), "Primitives"), so nothing but this block can
+answer the leaf's failure, and no closure is ever built out of it.
+
+`SendMirror` carries the row, bound at compile time, and no call site: there
+is no lookup to cache. The VM arm reads the registers, calls
+`interpreter::mirror::send_inlined`, and either jumps to `failure` or
+delivers the leaf's answer — a value, or a step such as a block to activate —
+exactly as a send's decision is delivered. Whether the receiver register
+holds the mirror is `send_inlined`'s check, standing in for the lookup; only
+`Kernel.ns` has a `SendMirror` and the bootstrap checks that its `vmMirror`
+holds the mirror, so the check's error is unreachable while that holds. The
+instruction reads and writes only its own activation's registers, so
+`bytecode::outer_reach_of` does not name it.
+
+**It has no wire tag**, and the encoder treats one as unreachable. It is
+emitted only for a `MirrorSend`, so only into `Kernel.ns`, and no image
+carries the kernel: an image names a builtin class by tag and the bootstrap of
+the loading process supplies it ([image-format.md](image-format.md), "What is
+*not* serialized"). A tag would be a wire form nothing legitimate writes, and
+a decoder that accepted one would hand an artifact a way to run any leaf with
+no lookup.
+
+**The reference lowering emits the ordinary send**, with a real closure for
+the block, and marks it `SendInlinable` when `recognize_mirror_send` accepts
+it, as it marks every send the optimized lowering inlines. So the failure
+block's activation under the reference lowering — `execute_sent` answers it
+as a control-flow block — is exempt from the depth count under the same
+condition as `ifTrue:`'s, which is what the optimized lowering, never
+activating it, needs ("How the limit counts" below). Because the mark covers
+the whole send, it would exempt a literal block the leaf itself activates
+just as well; so `Kernel.ns` passes a literal block only as the final
+`ifFail:` argument, which the bootstrap enforces
+(`interpreter::kernel`'s `check_mirror_send_arguments`).
 
 ## Safepoints and call-site identity
 
@@ -646,8 +750,11 @@ against code nothing had checked.
    count is the resolver's depth unchanged.
 4. Every send is a real send, receiver then arguments from left to right.
    Nothing is inlined. Every send the optimized lowering inlines — exactly the
-   sends `control_flow::recognize` accepts — is a `SendInlinable`, and every
-   other explicit-receiver send a `SendPublic` ("How the limit counts" below).
+   sends `control_flow::recognize` accepts, and the mirror sends
+   `recognize_mirror_send` accepts — is a `SendInlinable`, and every other
+   explicit-receiver send a `SendPublic` ("How the limit counts" below). A
+   mirror send is therefore an ordinary send to the mirror object here, its
+   failure block a real closure ("Mirror sends").
 5. An assignment evaluates its value into a fresh register, then stores it or
    sends the setter. The assignment's value is that register, never the local.
 6. A cascade evaluates its receiver once into a fresh register and sends every
@@ -755,9 +862,11 @@ by exempting it from the comparison:
   See [object-model.md](object-model.md).
 - **The recursion-depth limit**, below.
 
-Everything else was checked and agrees: all eight inlined forms exist as natives
-that follow the rules the inlined code reproduces (`builtins::boolean::truthy`
-for `and:` and `or:`, `mustBeBoolean` for a non-Boolean loop condition); a
+Everything else was checked and agrees: all eight inlined forms exist as
+kernel methods over leaves that follow the rules the inlined code reproduces
+(`builtins::boolean::truthy` for `and:` and `or:`, `mustBeBoolean` for a
+non-Boolean loop condition); a mirror send's failure block runs the same code
+whether it is inlined or activated; a
 method's `^` inside a block the optimized lowering inlines is a `Return` there
 and a `NonLocalReturn` here, whose unwind ends at the method's activation, with
 the same result, and
@@ -778,16 +887,31 @@ level optimized and two under the reference lowering.
 
 **The limit counts every activation on the activation stack — method, block,
 initializer level, superclass clause and message — except a block activation
-that a builtin control-flow native performs for a `SendInlinable`.** The natives
-are `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and
-`or:` on a Boolean, and `whileTrue:` and `whileFalse:` on a block.
-`SendInlinable` is an ordinary public send that only the reference lowering
-emits, for exactly the sends `control_flow::recognize` accepts.
+that a builtin control-flow leaf performs for a `SendInlinable`, and a mirror
+send's failure block activated for one.** The leaves are `ifTrue:`,
+`ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and `or:` on a
+Boolean, and `whileTrue:` and `whileFalse:` on a block, reached through their
+kernel methods; the failure block is the one `interpreter::mirror`'s
+`execute_sent` activates when a sent mirror send's leaf declines, which it
+marks as a control-flow block. `SendInlinable` is an ordinary public send
+that only the reference lowering emits, for exactly the sends
+`control_flow::recognize` and `recognize_mirror_send` accept.
 
 - **The count agrees at every point of every program.** The optimized lowering
   omits exactly these activations and no others. On a non-Boolean receiver both
   lowerings make the same real send with real closures, and from there count
   alike; the `mustBeBoolean` send is made alike too.
+- **The agreement depends on primitive methods, which is why they apply under
+  both lowerings.** The reference lowering's `SendInlinable` of `ifTrue:`
+  reaches `Boolean>>ifTrue:`, a kernel method. Activated, that method would
+  be counted, and the literal block its leaf activates would fail the
+  captured-frame condition below, since that activation did not create it —
+  two counted where the optimized lowering counts none. As a primitive method
+  it is never activated when its leaf succeeds: the leaf answers the block
+  straight to the `SendInlinable`'s sender, and the exemption applies as it
+  always did ([dispatch.md](dispatch.md), "Primitive methods").
+  `NS_NEXT_NO_PRIMITIVE_METHODS=1`, which compiles the kernel without them,
+  breaks the agreement, and is for measuring only.
 - **Depth stays bounded.** A literal block can run again only if the body
   enclosing it runs again, so every recursive cycle contains a counted
   activation, and the uncounted activations per counted one are bounded by the
@@ -803,8 +927,9 @@ emits, for exactly the sends `control_flow::recognize` accepts.
   So the block must also have been created by the activation that sends: its
   `captured_frame` is that activation's reified frame. Every block the
   reference lowering passes to a `SendInlinable` is a literal created right
-  before the send, so the condition holds for every program either lowering
-  compiles, and a chain of exempt activations is then bounded by how deeply
+  before the send — a mirror send's failure block included, and `Kernel.ns`
+  passes no other literal block to one ("Mirror sends") — so the condition
+  holds for every program either lowering compiles, and a chain of exempt activations is then bounded by how deeply
   blocks nest in the artifact — which the decoder caps at the parser's
   ceiling of 128 ([image-format.md](image-format.md), "Verification"), so an
   artifact stacks no more exempt activations above a counted one than source
@@ -830,7 +955,8 @@ and its body arms, for an initializer level, a superclass clause or its
 message, record `counted: true`. The flag
 rides on the stack entry, and `Mutator::push` refuses a counted push at the
 limit. A block is exempt when it carries
-`StepArguments::ControlFlow` — the arguments only the control-flow natives build —
+`StepArguments::ControlFlow` — the arguments only the control-flow leaves and a
+declining sent mirror send build —
 the send that led to it was a `SendInlinable`, and its `captured_frame` is the
 sending activation's reified frame. The VM decides a `SendInlinable` exactly as
 it does a `SendPublic` and only hands `push_step` the fact that it was one. A
@@ -915,6 +1041,11 @@ signatures is a design change to the image module's interface, not a migration.
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run
   time**, with a fallback to a real send, so virtuality is never actually lost.
+- **A mirror send's failure block is lowered inline, behind `SendMirror`,
+  with no fallback send** (decided with the user on 2026-09-21), because the
+  mirror's class and table are fixed at bootstrap and nothing but the block
+  can answer a leaf's failure. It has no wire tag, since only `Kernel.ns`,
+  which no image carries, contains one ("Mirror sends").
 - **The integer leaves are inlined under a run-time type guard whose
   fallback is the ordinary send**, so every error an integer operation can
   raise — a `doesNotUnderstand:`, an overflow, a zero divisor — is still

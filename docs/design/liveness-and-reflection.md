@@ -154,6 +154,19 @@ A **MirrorBuilder** applies class changes:
 Edit-and-continue is then a special case: a mirror on the suspended activation,
 plus a method replacement, plus the ability to resume.
 
+**The VM mirror's class must be sealed against it.** The compiler binds a
+kernel mirror send to its leaf at compile time (`Instruction::SendMirror`),
+and a primitive method carries its leaf on the method, both on the ground
+that the mirror's class and table are fixed at bootstrap
+([dispatch.md](dispatch.md), "Primitives"). A MirrorBuilder that added or
+replaced a method there would be seen by a sent mirror send and bypassed by
+both, so the two paths would disagree. **Open:** how a replaced *kernel*
+method is compiled. Its primitive-method mark and its `SendMirror` rest on
+`Binding::MirrorSend`, which only `Kernel.ns`'s resolution records, and
+recording it for an edit would hand that edit the whole Rust boundary
+([core-library.md](core-library.md), "The VM mirror is the whole Rust
+boundary").
+
 ### The obstacle: `Mixin` has no interior mutability
 
 Editing a live class's method table today re-applies a *fresh* mixin. Existing

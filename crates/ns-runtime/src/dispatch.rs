@@ -543,10 +543,10 @@ mod tests {
         assert_eq!(effective_access(None), ast::AccessModifier::Protected);
     }
 
-    /// A builtin's own native is an entry of its own method table.
-    /// `Integer`'s `+` is a kernel primitive method now (`Kernel.ns`, Task
-    /// 7), found as a `Lookup::Method` whose `MixinMethod.primitive` names
-    /// the mirror row.
+    /// A builtin's method is an entry of its own method table:
+    /// `Integer`'s `+` is a kernel primitive method (`Kernel.ns`), found as
+    /// a `Lookup::Method` whose `MixinMethod.primitive` names the mirror
+    /// row.
     #[test]
     fn a_builtins_own_primitive_is_found_at_its_own_level() {
         let mut interpreter = crate::Interpreter::bootstrap();

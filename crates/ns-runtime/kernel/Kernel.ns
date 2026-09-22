@@ -1,7 +1,7 @@
 Newspeak3
 'Kernel'
-(* The core library (`docs/design/core-library.md`, "Planned: the core library
-   as Newspeak source over a VM mirror"). One nested class per builtin class;
+(* The core library (`docs/design/core-library.md`, "The core library as
+   Newspeak source over a VM mirror"). One nested class per builtin class;
    the bootstrap fills the builtin class objects from them before it
    instantiates this module, so a nested class here *is* the class a literal
    has. Every method reaches Rust through `vmMirror`, the one object that

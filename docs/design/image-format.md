@@ -97,7 +97,12 @@ surface is.
   wherever a class object appears — an object's `.class`, a class-valued slot, a
   frame's `current_class` — never structurally encoded. On load a tag resolves to
   the live class the bootstrap produced. The bootstrap itself is the fixed
-  root/special-objects table.
+  root/special-objects table. So is the core library: a builtin class's
+  methods are the loading process's own `Kernel.ns`, compiled at its
+  bootstrap ([core-library.md](core-library.md)), and no image carries the
+  kernel's code, its instance or the VM mirror — which is also why
+  `Instruction::SendMirror`, emitted only into `Kernel.ns`, has no wire tag
+  ([compiler.md](compiler.md), "Mirror sends").
 - **`nil`, `true` and `false`** are unboxed `Value` scalars with no heap identity
   to preserve, encoded as scalar tags.
 - **The `platform` singleton** gets its own tag, resolved to the loading
@@ -525,6 +530,26 @@ class is refused with `DecodeError::SymbolOfWrongClass`
 (`a_symbol_recorded_with_a_class_other_than_symbol_is_refused`), since
 entering it under the wrong class would make every later literal of that
 text answer the mis-classed object too.
+
+**The VM mirror is refused on both sides of the format.** The mirror is a
+capability: whoever holds it can run any leaf, and the bootstrap hands it to
+`Kernel.ns` alone ([core-library.md](core-library.md), "The VM mirror is the
+whole Rust boundary"). Its class has builtin class tag **14**
+(`BuiltinClass::VmMirror`, appended to `BuiltinClass::ALL` after `Platform`'s
+13), which `builtin_class_from_tag` knows so that the closing table of
+tag-named hashes can name it as it names every builtin. **Everywhere a
+program names a class — a `LoadBuiltinClass`, a class reference in the graph,
+a root class's superclass — the decoder reads the tag through
+`read_program_builtin_class`, which refuses 14** as an invalid tag: an
+artifact that could name the mirror's class could instantiate a second mirror
+or reach the one there is, and so claim every primitive, which no source
+module can (`a_load_builtin_class_naming_the_mirror_is_refused` in
+`crates/ns-runtime/tests/image.rs`). The encoder refuses the other direction:
+an image whose graph reaches the mirror object is not written at all, since
+it would hand the capability to whatever loaded it
+(`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`).
+Neither can happen to a program built from source, which cannot obtain the
+mirror; both are there for the day something could.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns

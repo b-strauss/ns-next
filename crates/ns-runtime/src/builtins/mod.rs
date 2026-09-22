@@ -22,8 +22,9 @@ use crate::{platform, Mutator, Symbol};
 /// Runs `primitive` on `receiver`. `None` means a leaf declines: the
 /// receiver is not of the shape it works on, and the answer goes back to the
 /// mirror code, which runs the failure block (`interpreter::mirror`) -- or,
-/// for a kernel primitive method, activates the method, whose body is that
-/// failure path. `selector` is the send's, for the error texts
+/// for a kernel primitive method, to `act`, which then activates the method,
+/// whose body is that failure path (`docs/design/dispatch.md`, "Primitive
+/// methods"). `selector` is the send's, for the error texts
 /// that name it. No primitive calls a block: the control-flow ones, `value`
 /// and `do:` answer a `Step` (`docs/design/execution.md`, "The trampoline").
 pub(crate) fn execute<'gc>(
