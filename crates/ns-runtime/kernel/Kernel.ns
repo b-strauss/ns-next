@@ -68,10 +68,21 @@ class Kernel vmMirror: theMirror = Object new (
         public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )
     )
     class String = Object new () (
+        public size = ( ^vmMirror stringSize: self ifFail: [^super size] )
+        public , other = ( ^vmMirror string: self concatenate: other ifFail: [^super , other] )
+        public = other = ( ^vmMirror string: self equals: other ifFail: [^super = other] )
+        public asSymbol = ( ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol] )
+        public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
     )
     class Symbol = Object new () (
+        public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
+        public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
+        public printString = ( ^vmMirror symbolPrintString: self ifFail: [^super printString] )
     )
     class Character = Object new () (
+        public asInteger = ( ^vmMirror characterAsInteger: self ifFail: [^super asInteger] )
+        public asString = ( ^vmMirror characterAsString: self ifFail: [^super asString] )
+        public = other = ( ^vmMirror character: self equals: other ifFail: [^super = other] )
     )
     class Array = Object new () (
     )

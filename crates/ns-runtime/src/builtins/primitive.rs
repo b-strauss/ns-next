@@ -180,37 +180,11 @@ const INTEGER: &[PrimitiveSelector] = &[];
 // `Float`'s methods moved into `Kernel.ns` (Task 8).
 const FLOAT: &[PrimitiveSelector] = &[];
 
-const STRING: &[PrimitiveSelector] = &[
-    public("size", Primitive::String(StringPrimitive::Size)),
-    public(",", Primitive::String(StringPrimitive::Concatenate)),
-    public("=", Primitive::String(StringPrimitive::Equal)),
-    public("asSymbol", Primitive::String(StringPrimitive::AsSymbol)),
-    public(
-        "printString",
-        Primitive::String(StringPrimitive::PrintString),
-    ),
-];
-
-const SYMBOL: &[PrimitiveSelector] = &[
-    public("asString", Primitive::Symbol(SymbolPrimitive::AsString)),
-    public("=", Primitive::Symbol(SymbolPrimitive::Equal)),
-    public(
-        "printString",
-        Primitive::Symbol(SymbolPrimitive::PrintString),
-    ),
-];
-
-const CHARACTER: &[PrimitiveSelector] = &[
-    public(
-        "asInteger",
-        Primitive::Character(CharacterPrimitive::AsInteger),
-    ),
-    public(
-        "asString",
-        Primitive::Character(CharacterPrimitive::AsString),
-    ),
-    public("=", Primitive::Character(CharacterPrimitive::Equal)),
-];
+// `String`'s, `Symbol`'s and `Character`'s methods moved into `Kernel.ns`
+// (Task 9).
+const STRING: &[PrimitiveSelector] = &[];
+const SYMBOL: &[PrimitiveSelector] = &[];
+const CHARACTER: &[PrimitiveSelector] = &[];
 
 const ARRAY: &[PrimitiveSelector] = &[
     public("do:", Primitive::Collection(CollectionPrimitive::Enumerate)),
@@ -787,10 +761,11 @@ mod tests {
     /// `MIRROR` rather than `primitives_of` (`method_table`'s special case);
     /// `Object`'s methods moved into `Kernel.ns` (Task 5), `Boolean`'s (Task
     /// 6, inherited by `True` and `False`, which declare none of their
-    /// own), `Integer`'s (Task 7) and `Float`'s (Task 8), so their lists are
-    /// empty too; every other builtin still has a `primitives_of` list.
+    /// own), `Integer`'s (Task 7), `Float`'s (Task 8) and the three text
+    /// families' (`String`, `Symbol`, `Character`, Task 9), so their lists
+    /// are empty too; every other builtin still has a `primitives_of` list.
     #[test]
-    fn every_builtin_but_nil_the_mirror_object_boolean_integer_and_float_has_primitives() {
+    fn every_builtin_but_nil_the_mirror_and_the_kernel_families_has_primitives() {
         for kind in BuiltinClass::ALL {
             assert_eq!(
                 primitives_of(kind).is_empty(),
@@ -804,6 +779,9 @@ mod tests {
                         | BuiltinClass::False
                         | BuiltinClass::Integer
                         | BuiltinClass::Float
+                        | BuiltinClass::String
+                        | BuiltinClass::Symbol
+                        | BuiltinClass::Character
                 ),
                 "{kind:?}"
             );

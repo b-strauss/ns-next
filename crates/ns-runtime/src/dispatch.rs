@@ -623,14 +623,29 @@ mod tests {
         });
     }
 
-    /// What a failed primitive passes to: the same lookup, from the level
-    /// above the one that declared it. `Object`'s `=` is a kernel primitive
-    /// method now (`Kernel.ns`), found as a `Lookup::Method`.
+    /// `String`'s `=` is a kernel primitive method now (`Kernel.ns`, Task
+    /// 9): an ordinary lookup finds it at `String`'s own level, carrying the
+    /// mirror row its forwarder sends -- its failure path is its own body's
+    /// `super =`, not a runtime pass-over, so "a failed primitive passes its
+    /// level over" no longer describes what happens here. `lookup_above`
+    /// itself is untouched by that move and still skips a level to continue
+    /// the search above it; the pass-over mechanism it once stood in for is
+    /// left to Task 13, which removes it.
     #[test]
     fn a_lookup_continued_above_a_level_passes_that_levels_entry_over() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let string = mutator.builtin_class(BuiltinClass::String);
+            match lookup_public(&mutator.heap, string, Symbol::intern("=")) {
+                Lookup::Method(method, level) => {
+                    assert_eq!(
+                        method.primitive,
+                        mirror_primitive_named("string:equals:ifFail:")
+                    );
+                    assert!(level.same(string), "found at String's own level")
+                }
+                _ => panic!("String's own `=` must be found at its own level"),
+            }
             match lookup_above(&mutator.heap, Rule::Public, string, Symbol::intern("=")) {
                 Lookup::Method(method, _) => {
                     assert_eq!(
