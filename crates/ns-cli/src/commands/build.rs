@@ -3,8 +3,6 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use ns_runtime::mixin::MethodEntry;
-
 use crate::source;
 
 /// Whether the root class can answer `selector`: a method anywhere up its
@@ -28,16 +26,17 @@ use crate::source;
 /// preserve (`docs/design/image-format.md`, "The consistency guarantee,
 /// stated precisely").
 ///
-/// The walk stops at the first level whose `class_builtin` is `Some`: since
-/// `Object`'s methods moved into `Kernel.ns`
-/// (`docs/design/core-library.md`, "The VM mirror is the whole Rust
-/// boundary"), a builtin's own level can hold a real `MethodEntry::Compiled`
-/// entry, not only `MethodEntry::Primitive` -- `Object`'s `printString`, for
-/// one. Every builtin level is the kernel's, which `mixins::encode` never
-/// walks (it interns only the module's own declaration tree), so accepting a
-/// selector found there would accept one absent from the image's symbol
-/// table, breaking the byte-identity guarantee above instead of refusing the
-/// build -- `build_refuses_an_entry_only_a_builtin_answers` pins this.
+/// The walk stops at the first level whose `class_builtin` is `Some`: every
+/// builtin's methods are `Kernel.ns`'s (`docs/design/core-library.md`, "The
+/// VM mirror is the whole Rust boundary"), so a builtin level holds real
+/// compiled entries -- `Object`'s `printString`, for one. Every builtin
+/// level is the kernel's, which `mixins::encode` never walks (it interns
+/// only the module's own declaration tree), so accepting a selector found
+/// there would accept one absent from the image's symbol table, breaking the
+/// byte-identity guarantee above instead of refusing the build --
+/// `build_refuses_an_entry_only_a_builtin_answers` pins this. Below that
+/// level every entry is the module's own: the only primitive entries are the
+/// VM mirror's, and the mirror is a builtin.
 fn root_class_answers<'gc>(
     heap: &ns_runtime::Heap<'gc>,
     class: ns_runtime::ClassReference<'gc>,
@@ -52,12 +51,7 @@ fn root_class_answers<'gc>(
         let Some(application) = heap.class_application(current) else {
             return false;
         };
-        let declared = application
-            .mixin
-            .methods
-            .get(&symbol)
-            .is_some_and(|entry| !matches!(entry, MethodEntry::Primitive(_)));
-        if declared {
+        if application.mixin.methods.contains_key(&symbol) {
             return true;
         }
         if application

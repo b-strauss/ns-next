@@ -41,9 +41,10 @@ fn build_refuses_an_entry_the_root_class_does_not_have() {
 
 /// `build` accepts an entry only where `mixins::encode` has interned its
 /// selector (`commands/build.rs`, `root_class_answers`): a method or nested
-/// class of the module's own. `printString` is answered only by a builtin's
-/// primitive, which no table of the module names, so it stays refused now
-/// that primitives are method-table entries too.
+/// class of the module's own. The root class inherits from `Object` and
+/// declares no `printString`, which only `Object`'s kernel method answers --
+/// a method `Kernel.ns` declares and no table of the module names -- so the
+/// walk stops at `Object`'s builtin level and the build is refused.
 #[test]
 fn build_refuses_an_entry_only_a_builtin_answers() {
     let directory = ScratchDirectory::new("builtin-entry");
