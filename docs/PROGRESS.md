@@ -351,7 +351,7 @@ tiers rather than now, and it owns four semantic decisions already recorded
 with their goldens and code ([core-library.md](design/core-library.md),
 "Planned: real bodies for control flow and `do:`, before the JIT tiers").
 
-Two things are recorded as decided but unbuilt, and neither should be
+Two things are recorded and not yet built, and neither should be
 rediscovered: `Integer` has no `/`, which step 6 left open deliberately and
 which still has to be settled — what an exact quotient answers without a
 `Fraction` class ([core-library.md](design/core-library.md), "Gap: an
@@ -3331,6 +3331,72 @@ more to a later reader than the silence that usually replaces it.
 - **"The only earlier step to clear it across its whole suite was 3b"** is true
   for a step measured against its own baseline; several cumulative comparisons
   against `be3eb40` also show every source entirely below in both sittings.
+
+## The core library over a VM mirror (2026-09-22)
+
+Plan:
+[ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md),
+sixteen tasks over nine decisions taken with the user on 2026-09-21 and
+2026-09-22 ([core-library.md](design/core-library.md), "The core library as
+Newspeak source over a VM mirror"). Branch `feature/kernel-over-vm-mirror`,
+started from `ef4a9da` on `master`, on the checked-out tree throughout. The
+first of step 6's three remaining plans.
+
+**What changed, commit by commit:**
+
+- `fc94e84` — `VmMirror`, a builtin class with builtin class tag 14, whose
+  method table carries every leaf as one row of `builtins/primitive.rs`'s
+  `MIRROR`, and its one instance, created at bootstrap.
+- `f5a5efc` — `crates/ns-runtime/kernel/Kernel.ns`, resolved by
+  `resolver::resolve_kernel`, the only resolver that records
+  `Binding::MirrorSend`; the bootstrap fills the builtin class objects it
+  built as placeholders from the kernel's nested classes and instantiates
+  `Kernel vmMirror:` with the mirror.
+- `da695fd`, `f58b84c` — `Instruction::SendMirror`: a mirror send's literal
+  `ifFail:` block lowered inline, with no fallback send and no wire tag
+  ([compiler.md](design/compiler.md), "Mirror sends").
+- `604a023` — primitive methods: a kernel method whose body only forwards
+  runs its row's leaf in `act` without an activation, under both lowerings,
+  and `NS_NEXT_NO_PRIMITIVE_METHODS=1` to measure without them
+  ([dispatch.md](design/dispatch.md), "Primitive methods").
+- `ed6a93f` to `ff7f543` — one family per commit: `Object`; `Boolean`, with
+  `True` and `False` now under it; `Integer`; `Float`; the text classes; the
+  collections; `Block`; `Platform`.
+- `90632b1` — the per-class primitive lists and the pass-over a failing
+  primitive took are gone, and the one observable difference is pinned.
+- `52c242b` — `build` refuses an entry only the core library answers, since
+  its entry check now stops at the first builtin level.
+- `094db4a`, `5c76345` — the measurement and the documents; `3e0ac9f` — the
+  whole-branch review's fixes, among them a test that every kernel method is
+  a recognized primitive method named after its row.
+
+**Measurement.** Two sittings by the protocol, eight sources, against
+`e2bb31e`, the merge of leaf inlining, and `be3eb40`, every binary built
+through `RUSTFLAGS` with `+crt-static` and the function-alignment pin.
+**With primitive methods the move cost nothing measurable: −4.5% to +2.1%
+against `e2bb31e`, no group entirely above in either sitting**, and 24.7% to
+40.2% faster than `be3eb40`. Without them, on the same binary, the three
+sources named in advance were clearly slower — `bench_megamorphic.ns`
++23.6%, `bench_block.ns` +21.3%, `bench_do.ns` +5.5% — which is what the
+primitive methods recover. Start-up is 0.5 ms slower, the kernel's parse,
+resolution, compilation and instantiation. `vm::run` grew from 5,866 to
+6,385 instructions and stayed one function. See
+[execution.md](design/execution.md), "What the core library's move cost",
+for the tables and what is left unexplained.
+
+**One observable difference, decided (Decision 9).** A builtin subclass's
+own `doesNotUnderstand:` is now passed by, as §5.10 says: a declining leaf's
+failure block sends `super …`, which ends in `Object`'s handler rather than
+continuing the receiver's lookup. No golden had pinned the old behaviour;
+`goldens/kernel/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
+pins the new one ([core-library.md](design/core-library.md), "The one
+observable difference"). No other recorded outcome moved.
+
+Gates, at `3e0ac9f`: `cargo test --workspace` green (868 tests passing, one
+ignored), also under each of the three stress modes; `cargo clippy
+--workspace --all-targets` clean; `parse-corpus` at **210/0/1/0** and
+`run-corpus` at **6/0/205**, under each stress mode too.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of

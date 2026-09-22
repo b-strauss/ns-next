@@ -3073,10 +3073,10 @@ yet.
   an instantiation or a nested-class accessor runs — an initializer level, a
   superclass clause or its message — are counted by construction.
 - **The exemption is marked by the arguments.** A block a control-flow native
-  activates carries `StepArguments::ControlFlow` — it has no arguments, and only
-  those natives and a sent mirror send whose leaf declined, activating its
-  failure block ([compiler.md](compiler.md), "Mirror sends"), build that
-  variant — and `push_step` exempts it when the send
+  activates, and the failure block a sent mirror send activates when its leaf
+  declines ([compiler.md](compiler.md), "Mirror sends"), carry
+  `StepArguments::ControlFlow` — neither has arguments, and only those two
+  build that variant — and `push_step` exempts one when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through

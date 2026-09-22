@@ -753,8 +753,11 @@ chain says which class object the defining class is counted from. A
   class-side chains and nowhere else;
 - `Unhandled` — nothing handles the send, not even `doesNotUnderstand:`.
 
-A `doesNotUnderstand:` handler is a `Method`, `Slot` or `Primitive` on a
-handler chain rather than a variant of its own. `act` turns a `Resolved`
+A `doesNotUnderstand:` handler is a `Method` or `Slot` on a handler chain
+rather than a variant of its own. It is never a `Primitive`: `Object`'s
+handler is a kernel method, and the mirror answers no `doesNotUnderstand:` of
+its own, so a `Primitive` on a handler chain, which only a crafted image could
+arrange, is the unhandled send's error (`act`, `interpreter/resolve.rs`). `act` turns a `Resolved`
 into the `Step`, value or signal. The uncached path is literally
 `act(resolve(…))` (`Mutator::decide_send`, `sends::decide_lexical_send`,
 `sends::decide_super_send`), the cached one `act` on a `Resolved` rebuilt

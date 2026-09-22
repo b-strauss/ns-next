@@ -247,11 +247,12 @@ lets a program claim every primitive: only `resolver::resolve_kernel` records
 `Binding::MirrorSend`, the mark `SendMirror` and primitive methods are compiled from, and
 only `Kernel.ns` is resolved with it -- a user module goes through `resolve`; the bootstrap
 checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
-(`interpreter::kernel`); no bare name resolves to the mirror's class
-(`instantiate::builtin_kind_from_name` omits it); the image decoder refuses builtin class tag
-14 wherever a program names a class (`read_program_builtin_class`); the encoder refuses an
-image whose graph reaches the mirror; and `decide_factory` refuses to instantiate the
-mirror's class. `SendMirror` has no wire tag for the same reason. Never add a way for a
+(`interpreter::kernel`); no program can name the mirror's class -- no bare name resolves to
+it (`instantiate::builtin_kind_from_name` omits it), and the image decoder refuses builtin
+class tag 14 wherever a program names a class (`read_program_builtin_class`); the encoder
+refuses an image whose graph reaches the mirror; `decide_factory` refuses to instantiate the
+mirror's class; and `SendMirror`, which runs a leaf with no lookup, is emitted only for a
+`MirrorSend` and has no wire tag, so no artifact can carry one. Never add a way for a
 program to obtain the mirror, its class or a `MirrorSend` binding.
 
 **A cache records what the lookup decided; it never decides.** A send's lookup is

@@ -1041,11 +1041,13 @@ signatures is a design change to the image module's interface, not a migration.
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run
   time**, with a fallback to a real send, so virtuality is never actually lost.
-- **A mirror send's failure block is lowered inline, behind `SendMirror`,
-  with no fallback send** (decided with the user on 2026-09-21), because the
-  mirror's class and table are fixed at bootstrap and nothing but the block
-  can answer a leaf's failure. It has no wire tag, since only `Kernel.ns`,
-  which no image carries, contains one ("Mirror sends").
+- **A mirror primitive's failure path is an explicit `ifFail:` block, which
+  the compiler inlines** (decided with the user on 2026-09-21), behind
+  `SendMirror`. Two things follow from that rather than being decided on
+  their own: the inlined send needs no fallback send, because the mirror's
+  class and table are fixed at bootstrap and nothing but the block can answer
+  a leaf's failure; and `SendMirror` needs no wire tag, since only
+  `Kernel.ns`, which no image carries, contains one ("Mirror sends").
 - **The integer leaves are inlined under a run-time type guard whose
   fallback is the ordinary send**, so every error an integer operation can
   raise — a `doesNotUnderstand:`, an overflow, a zero divisor — is still

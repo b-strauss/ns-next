@@ -145,8 +145,9 @@ methods test for. ns-next has no `Fraction` and no exact decimal type, so
 writing `Integer>>/` into `Kernel.ns` means choosing: answer a `Float`, which
 diverges from Smalltalk and from Soup and quietly makes an exact quotient
 inexact; build the numeric tower the deviation above already defers; or keep
-the selector absent and say so. The choice is to be made deliberately, in a
-plan of its own, not in passing.
+the selector absent and say so. What was decided is only that it has to be
+settled eventually, deliberately rather than in passing; when, and by which
+step, is not.
 
 ## The core library as Newspeak source over a VM mirror
 
