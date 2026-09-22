@@ -85,8 +85,16 @@ class Kernel vmMirror: theMirror = Object new (
         public = other = ( ^vmMirror character: self equals: other ifFail: [^super = other] )
     )
     class Array = Object new () (
+        public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
+        public at: index put: value = ( ^vmMirror collection: self at: index put: value ifFail: [^super at: index put: value] )
+        public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
+        public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
     class OrderedCollection = Object new () (
+        public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
+        public add: element = ( ^vmMirror collection: self add: element ifFail: [^super add: element] )
+        public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
+        public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
     class Nil = Object new () (
     )

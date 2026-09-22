@@ -607,9 +607,14 @@ fn a_tiny_global_cache_answers_like_a_full_one() {
     }
 }
 
-/// Only the families that ran take room in the table: `used`'s two sends
+/// Only the families that ran take room in the table: `used`'s own two sends
 /// (`+` in its block, `do:`), and nothing for `unused` or for an initializer
-/// with no sends.
+/// with no sends. `do:` is a kernel primitive method now (`Kernel.ns`, Task
+/// 10): caching its call site as a `CachedTargetKind::Method` also reserves
+/// the target's own family -- `Array>>do:`'s two sends (the lexical read of
+/// `vmMirror` and its `collection:do:ifFail:` send) -- which a
+/// `CachedTargetKind::Primitive` target never did, so the table holds four
+/// entries, not two.
 #[test]
 fn only_the_families_that_ran_take_room_in_the_cache_table() {
     let source = indoc! {"
@@ -630,7 +635,7 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
     assert_eq!(interpreter.cache_statistics().site_entries, 0);
     let answer = send(&mut interpreter, &instance, "used", &[]);
     assert_eq!(small_integer(&mut interpreter, &answer), 3);
-    assert_eq!(interpreter.cache_statistics().site_entries, 2);
+    assert_eq!(interpreter.cache_statistics().site_entries, 4);
 }
 
 /// A cached primitive that fails on a receiver of its own class -- the
