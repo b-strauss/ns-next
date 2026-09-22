@@ -79,6 +79,26 @@ it a private selector, and both sides have to go through the same leaf.
 Naming the subject is also what costs those two the primitive-method fast
 path, which only the declining path pays.
 
+**What `==` on a value now costs.** It used to be one primitive method:
+`Object`'s `==`, whose leaf compares two handles and answers. It is now an
+*activation* of `Value>>==`, which sends `=` — a second dispatch, to a
+primitive method whose leaf walks the two values' state — and, where that
+leaf declines, a third activation for `valueEquals:` and a send of `=` per
+slot below it. So the cheapest case is two sends and a state walk where it
+was one send and a pointer comparison, and the declining case is Newspeak
+code in a loop.
+
+That is not a cost worth removing by hand: §3.1.1's agreement rule leaves
+no cheaper answer that is also the right one, since a value has no identity
+for `==` to report. It is a cost worth *recording*, because it is on the
+path of every `==` a program writes about a number, a string or a symbol —
+the common shapes decide inside the leaf, without unfolding anything, and
+the later tiers are where it is meant to come back: `Value>>==`'s body is
+one send, exactly the shape an inliner folds into its callee, and the leaf
+is a primitive a JIT can emit inline for a receiver whose type feedback
+says `SmallInteger`. Until then, a program that compares immediates in a
+hot loop pays two dispatches where Milestone 1 paid one.
+
 The leaves are the 78 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,

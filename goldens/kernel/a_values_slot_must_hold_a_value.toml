@@ -3,5 +3,5 @@ stdout = '''
 an Object
 '''
 stderr = '''
-Uncaught Newspeak error: cannot store an Array of 2 in Holder's slot elements: a value object is deeply immutable, so every slot of one holds a value
+Uncaught Newspeak error: cannot store an Array of 2 in Holder's slot elements: a value object is deeply immutable, so every slot it declares holds a value
 '''

@@ -2,9 +2,17 @@ Newspeak3
 'Test'
 (* A primitive that fails where its entry was recorded: `=` and
    `printString` on a user subclass of `String`, whose instances carry no
-   string, fall to `Object`'s; `show:` answers two transcript streams and
-   fails on the platform object, which shares their class, so the third send
-   at the same site -- the same dispatch id -- ends in `doesNotUnderstand:`
+   string, fall through the failure block's `super` send -- `printString`
+   to `Object`'s, and `=` to `Value`'s, since §3.1.1 puts `String` under
+   `Value`. `Value`'s leaf declines a `Text` too (its `=` is `String`'s,
+   not `Value`'s), so the Newspeak walk answers, comparing the classes and
+   then zero slots. The recorded `true` is unchanged only because every
+   line here compares an object with *itself*: two distinct `Text`
+   instances would now answer `true` as well, where `Object`'s identity `=`
+   answered `false` (`goldens/kernel/a_value_has_no_identity.ns` records
+   that). `show:` answers two transcript streams and fails on the platform
+   object, which shares their class, so the third send at the same site --
+   the same dispatch id -- ends in `doesNotUnderstand:`
    (`docs/design/dispatch.md`, "A primitive can fail"). *)
 class CacheFailingPrimitive usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
     class Text = String new () (

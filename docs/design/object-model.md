@@ -365,15 +365,22 @@ image:
   it does (`mutable_value_slot`) — because the same mixin applied over a
   superclass that is no value declares an ordinary mutable slot and is perfectly
   legal.
-- **Step 4 refuses a slot that is not a value.** *Deeply* immutable means "all
-  objects reachable from it are also deeply immutable", so `InitializeSlot`
-  refuses to store anything but a value in an instance of a value class: an
-  immediate, a `String`, a `Symbol`, a `Character`, or an instance whose class
-  inherits `Value`. An `Array` stored there would make the whole value mutable
-  through it, and two copies of the value would stop being equal the moment one
-  array was written. The decision and its text live in
+- **Step 4 refuses a declared slot that is not a value.** *Deeply* immutable
+  means "all objects reachable from it are also deeply immutable", so
+  `InitializeSlot` refuses to store anything but a value in an instance of a
+  value class: an immediate, a `String`, a `Symbol`, a `Character`, or an
+  instance whose class inherits `Value`. An `Array` stored there would make the
+  whole value mutable through it, and two copies of the value would stop being
+  equal the moment one array was written. The decision and its text live in
   `interpreter/instantiate.rs`; `vm.rs` only calls it, so both lowerings raise
   the same error.
+
+  The rule is about the slots a class **declares**. The hidden nested-class
+  cache slot ("The nested-class accessor" above) is written by the accessor,
+  not by `InitializeSlot`, so it never meets the check — and should not: it
+  holds a class object, which is no value, but it is the implementation of a
+  member §6 defines rather than state of the value. A value class may declare a
+  nested class without ceasing to be one.
 
 Both are ordinary Newspeak errors naming the class and the slot, raised at run
 time — a class nothing instantiates never fails, as a method nothing runs never

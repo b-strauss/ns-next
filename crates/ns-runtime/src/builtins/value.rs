@@ -151,6 +151,13 @@ enum Node<'gc> {
 ///
 /// Compared by `Rc::ptr_eq`, never by selector: any class may declare `=`,
 /// and only the method's identity says the lookup landed on `Value`'s.
+///
+/// **The one predicate both walks ask**, and deliberately one function: if
+/// the equality walk and the hash walk ever decided "this is a value I can
+/// unfold" differently, two instances `=` answered `true` for could take
+/// the declining path on one side of `hash` only and hash apart -- the one
+/// thing §3.1.1 does not allow. `the_equality_and_the_hash_decline_on_the_same_shapes`
+/// pins that they agree, shape by shape.
 fn state_is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
     let Some(recorded) = mutator.value_equality_method.as_ref() else {
         return false;
@@ -699,6 +706,80 @@ mod tests {
                 "an instance whose class declares its own ="
             ),
             None
+        );
+    }
+
+    /// The two derivations decline on exactly the same shapes. They ask one
+    /// predicate about an instance -- `state_is_a_value`, which is one
+    /// function for this reason -- and each shape's own rule decides the
+    /// rest. If the two ever diverged, a pair `=` answers `true` for could
+    /// reach `Value`'s Newspeak walk on one side of `hash` only, and two
+    /// equal values would hash apart: exactly the contract
+    /// `goldens/kernel/value_hashes_follow_value_equality.ns` asserts, and
+    /// one a change to either walk alone could break silently.
+    #[test]
+    fn the_equality_and_the_hash_decline_on_the_same_shapes() {
+        let (mut interpreter, fixture) = a_fixture();
+        record_marker_as_values_equality(&mut interpreter, &fixture);
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let two = interpreter.stash(Value::SmallInteger(2));
+        let a_class = interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(crate::BuiltinClass::String);
+            mutator.stash(Value::Object(class))
+        });
+        let subjects: Vec<(&str, Root)> = vec![
+            (
+                "an instance whose = is the recorded one",
+                send(&mut interpreter, &fixture, "pair:and:", &[one.clone(), two]),
+            ),
+            (
+                "an instance with no slots",
+                send(&mut interpreter, &fixture, "marker", &[]),
+            ),
+            (
+                "an instance that overrides =",
+                send(&mut interpreter, &fixture, "overriding", &[]),
+            ),
+            (
+                "an instance that reaches itself",
+                send(&mut interpreter, &fixture, "cyclic", &[]),
+            ),
+            ("a String", a_string(&mut interpreter, "abc")),
+            ("an Array", an_array(&mut interpreter)),
+            ("a class object", a_class),
+            ("an Integer", one),
+            ("nil", interpreter.stash(Value::Nil)),
+            ("a Boolean", interpreter.stash(Value::Boolean(true))),
+            ("a Float", interpreter.stash(Value::Float(1.5))),
+        ];
+        let mut declined = 0;
+        let mut answered = 0;
+        for (what, subject) in subjects {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                &subject,
+                std::slice::from_ref(&subject),
+            );
+            let equality_declined = answered_boolean(&mut interpreter, compared, what).is_none();
+            let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &subject, &[]);
+            let hash_declined = answered_integer(&mut interpreter, hashed, what) == DECLINED;
+            assert_eq!(
+                equality_declined, hash_declined,
+                "{what}: the equality leaf and the hash leaf must decline together"
+            );
+            if equality_declined {
+                declined += 1;
+            } else {
+                answered += 1;
+            }
+        }
+        // Without this the test would pass just as well if every shape
+        // declined, or none did -- agreement is only worth pinning over a
+        // list that reaches both answers.
+        assert!(
+            declined >= 3 && answered >= 6,
+            "the list must exercise both outcomes: {declined} declined, {answered} answered"
         );
     }
 

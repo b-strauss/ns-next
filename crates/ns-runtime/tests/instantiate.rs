@@ -523,3 +523,91 @@ fn new_answers_the_instance_its_initializers_ran_on() {
         }
     }
 }
+
+/// The `HostError` a refused instantiation carries, for the two §3.1.1
+/// refusals below: anything else leaks the wrong signal loudly.
+fn expect_error(result: HostResult, what: &str) -> ns_runtime::HostError {
+    match result {
+        Ok(_) => panic!("{what}: answered an instance instead of refusing"),
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(error)) => error,
+    }
+}
+
+/// §3.1.1: a value object is deeply immutable, so a class that inherits
+/// `Value` and declares a mutable slot can have no instance at all. The
+/// refusal names the class, the slot, and the selector the program sent --
+/// the class's own primary factory, never `new`, which a class declaring
+/// `start:` does not understand.
+#[test]
+fn a_value_class_that_declares_a_mutable_slot_cannot_be_instantiated() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Counter start: first = Value new (
+            | public count ::= first. |
+        ) () : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let one = interpreter.stash(Value::SmallInteger(1));
+    let error = expect_error(interpreter.instantiate(&class, &[one]), "Counter start: 1");
+    assert_eq!(error.selector, Symbol::intern("start:"));
+    assert!(
+        error.message.contains("Counter") && error.message.contains("count"),
+        "the refusal names the class and the slot: {}",
+        error.message
+    );
+}
+
+/// §3.1.1's other half: *deeply* immutable, so a slot of a value may hold
+/// only another value. A class object is not one -- its own class is
+/// `Object` -- so storing one is refused as the slot is initialized, under
+/// the factory's selector.
+#[test]
+fn a_value_class_refuses_a_slot_that_is_not_a_value() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder on: contents = Value new (
+            | public contents = contents. |
+        ) () : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let error = expect_error(
+        interpreter.instantiate(&class, std::slice::from_ref(&class)),
+        "Holder on: Holder",
+    );
+    assert_eq!(error.selector, Symbol::intern("on:"));
+    assert!(
+        error.message.contains("Holder") && error.message.contains("contents"),
+        "the refusal names the class and the slot: {}",
+        error.message
+    );
+}
+
+/// The same class over `Object` instead of `Value` accepts both: the two
+/// refusals are about the application's chain reaching `Value`, not about
+/// the mixin, which is why `Mutator::apply_mixin` answers them per
+/// application.
+#[test]
+fn the_same_declarations_are_ordinary_below_object() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder on: contents = Object new (
+            | public contents = contents. public count ::= 1. |
+        ) () : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(
+        interpreter.instantiate(&class, std::slice::from_ref(&class)),
+        "Holder on: Holder",
+    );
+    let contents = expect_ok(
+        interpreter.send(&instance, Symbol::intern("contents"), &[]),
+        "contents",
+    );
+    interpreter.enter(|mutator| {
+        assert!(object(mutator, &contents).same(object(mutator, &class)));
+    });
+}

@@ -1602,8 +1602,9 @@ impl<'gc> Heap<'gc> {
 
     /// §3.1.1's "its class inherits from class `Value`", read off the
     /// application without cloning the `Rc` that holds it: this is asked of
-    /// every slot an initializer writes, and a refcount bump per slot is
-    /// the whole cost of the question.
+    /// every slot an initializer writes, and going through
+    /// `class_application` would pay a refcount bump per slot for one
+    /// `bool`. That bump is what this accessor exists to avoid.
     pub fn class_inherits_value(&self, class: ClassReference<'gc>) -> bool {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {

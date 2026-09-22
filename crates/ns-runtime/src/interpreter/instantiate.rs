@@ -361,12 +361,16 @@ impl<'gc> Mutator<'gc> {
         // never have a value object for an instance, so there is no
         // instance to make. The answer was computed once, when the
         // application was built (`Mutator::apply_mixin`).
-        if let Some(violation) = application.as_ref().and_then(|application| {
+        if let Some((application, violation)) = application.as_ref().and_then(|application| {
             application
                 .mutable_value_slot
-                .map(|slot| (application.mixin.name, slot))
+                .map(|violation| (application, violation))
         }) {
-            return Err(Signal::Error(mutable_value_slot_error(class, violation)));
+            return Err(Signal::Error(mutable_value_slot_error(
+                class,
+                application,
+                violation,
+            )));
         }
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
@@ -786,17 +790,23 @@ pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
 /// immutable", and a mutable slot is state anything holding the object can
 /// write afterwards. The class being instantiated and the class declaring
 /// the slot are named apart, because a subclass inherits the fault.
+///
+/// The selector is the class's own primary factory, which is the selector
+/// the send that got here carried -- a class declaring `x:y:` understands
+/// no `new` -- defaulted the way `mixin::factory_entry` defaults it.
 fn mutable_value_slot_error<'gc>(
     class: ClassReference<'gc>,
-    (instantiated, violation): (Symbol, crate::mixin::MutableValueSlot),
+    application: &crate::mixin::MixinApplication,
+    violation: crate::mixin::MutableValueSlot,
 ) -> NewspeakError<'gc> {
+    let instantiated = application.mixin.name;
     let declares = if instantiated == violation.class {
         "it declares".to_string()
     } else {
         format!("{} declares", violation.class)
     };
     NewspeakError {
-        selector: Symbol::NEW,
+        selector: factory_selector(application),
         receiver: Value::Object(class),
         message: format!(
             "cannot instantiate {instantiated}: a value object is deeply immutable, and \
@@ -880,14 +890,29 @@ fn non_value_slot_error<'gc>(
         .and_then(|level| level.mixin.slots.get(own_index))
         .map_or_else(|| "a slot".to_string(), |slot| slot.name.to_string());
     NewspeakError {
-        selector: Symbol::NEW,
+        // The initializer running is the one the level's own primary
+        // factory started, so that is the selector the program sent.
+        selector: level
+            .as_ref()
+            .map_or(Symbol::NEW, |level| factory_selector(level)),
         receiver,
         message: format!(
-            "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, so \
-             every slot of one holds a value",
+            "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, \
+             so every slot it declares holds a value",
             mutator.heap().describe(&value)
         ),
     }
+}
+
+/// A class's primary factory selector, defaulted to `new` for a class that
+/// declares none -- `mixin::factory_entry`'s rule, which is what puts the
+/// entry in the metaclass's method table, asked again here so that a
+/// refusal names the selector the program actually sent.
+fn factory_selector(application: &crate::mixin::MixinApplication) -> Symbol {
+    application
+        .mixin
+        .factory
+        .map_or(Symbol::NEW, |factory| factory.selector)
 }
 
 /// A `MessagePattern` rendered as the selector string it declares. Also the

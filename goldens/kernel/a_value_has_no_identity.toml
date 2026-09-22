@@ -6,4 +6,5 @@ Integer true true
 Nil true true
 Float/Integer true true
 Integer/Float false false
+Text true true
 '''
