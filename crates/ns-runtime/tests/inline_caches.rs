@@ -183,7 +183,9 @@ fn a_site_goes_polymorphic_then_megamorphic() {
 }
 
 /// `true` and `false` are instances of two classes: a site that is not
-/// inlined and sees both is bimorphic.
+/// inlined and sees both is bimorphic. `not` is a kernel primitive method
+/// now (`Kernel.ns`, Task 6), so each entry's target is a
+/// `CachedTargetKind::Method`, not a `CachedTargetKind::Primitive`.
 #[test]
 fn a_site_on_true_and_false_is_bimorphic() {
     let source = indoc! {"
@@ -202,13 +204,10 @@ fn a_site_on_true_and_false_is_bimorphic() {
     let instance = instantiate(&mut interpreter, &class);
     let answer = send(&mut interpreter, &instance, "run", &[]);
     assert_eq!(small_integer(&mut interpreter, &answer), 1);
-    let primitive = public(CachedTargetKind::Primitive);
+    let not = method("not");
     assert_eq!(
         states(&mut interpreter, &class, MethodSide::Instance, "run", "not"),
-        vec![CallSiteState::Polymorphic(vec![
-            primitive.clone(),
-            primitive
-        ])]
+        vec![CallSiteState::Polymorphic(vec![not.clone(), not])]
     );
 }
 

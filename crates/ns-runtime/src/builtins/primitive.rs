@@ -170,27 +170,9 @@ const fn protected(selector: &'static str, primitive: Primitive) -> PrimitiveSel
 // invokes it for the failing send itself.
 const OBJECT: &[PrimitiveSelector] = &[];
 
-const BOOLEAN: &[PrimitiveSelector] = &[
-    public(
-        "ifTrue:ifFalse:",
-        Primitive::Boolean(BooleanPrimitive::IfTrueIfFalse),
-    ),
-    public(
-        "ifFalse:ifTrue:",
-        Primitive::Boolean(BooleanPrimitive::IfFalseIfTrue),
-    ),
-    public("ifTrue:", Primitive::Boolean(BooleanPrimitive::IfTrue)),
-    public("ifFalse:", Primitive::Boolean(BooleanPrimitive::IfFalse)),
-    public("not", Primitive::Boolean(BooleanPrimitive::Not)),
-    public("&", Primitive::Boolean(BooleanPrimitive::And)),
-    public("and:", Primitive::Boolean(BooleanPrimitive::And)),
-    public("|", Primitive::Boolean(BooleanPrimitive::Or)),
-    public("or:", Primitive::Boolean(BooleanPrimitive::Or)),
-    public(
-        "printString",
-        Primitive::Boolean(BooleanPrimitive::PrintString),
-    ),
-];
+// `Boolean`'s methods moved into `Kernel.ns` (Task 6), inherited by `True`
+// and `False`, which declare none of their own.
+const BOOLEAN: &[PrimitiveSelector] = &[];
 
 const INTEGER: &[PrimitiveSelector] = &[
     public("+", Primitive::Integer(IntegerPrimitive::Add)),
@@ -831,16 +813,23 @@ mod tests {
 
     /// `Nil` has no natives of its own today; the VM mirror's come from
     /// `MIRROR` rather than `primitives_of` (`method_table`'s special case);
-    /// `Object`'s methods moved into `Kernel.ns` (Task 5), so its list is
-    /// empty too; every other builtin still has a `primitives_of` list.
+    /// `Object`'s methods moved into `Kernel.ns` (Task 5) and `Boolean`'s
+    /// (Task 6, inherited by `True` and `False`, which declare none of
+    /// their own), so their lists are empty too; every other builtin still
+    /// has a `primitives_of` list.
     #[test]
-    fn every_builtin_but_nil_the_mirror_and_object_has_primitives() {
+    fn every_builtin_but_nil_the_mirror_object_and_boolean_has_primitives() {
         for kind in BuiltinClass::ALL {
             assert_eq!(
                 primitives_of(kind).is_empty(),
                 matches!(
                     kind,
-                    BuiltinClass::Nil | BuiltinClass::VmMirror | BuiltinClass::Object
+                    BuiltinClass::Nil
+                        | BuiltinClass::VmMirror
+                        | BuiltinClass::Object
+                        | BuiltinClass::Boolean
+                        | BuiltinClass::True
+                        | BuiltinClass::False
                 ),
                 "{kind:?}"
             );

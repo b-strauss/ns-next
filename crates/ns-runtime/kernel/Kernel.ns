@@ -26,6 +26,16 @@ class Kernel vmMirror: theMirror = Object new (
         protected doesNotUnderstand: message = ( ^vmMirror object: self doesNotUnderstand: message ifFail: [^super doesNotUnderstand: message] )
     )
     class Boolean = Object new () (
+        public ifTrue: trueBlock ifFalse: falseBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFalse: falseBlock ifFail: [^super ifTrue: trueBlock ifFalse: falseBlock] )
+        public ifFalse: falseBlock ifTrue: trueBlock = ( ^vmMirror boolean: self ifFalse: falseBlock ifTrue: trueBlock ifFail: [^super ifFalse: falseBlock ifTrue: trueBlock] )
+        public ifTrue: trueBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFail: [^super ifTrue: trueBlock] )
+        public ifFalse: falseBlock = ( ^vmMirror boolean: self ifFalse: falseBlock ifFail: [^super ifFalse: falseBlock] )
+        public not = ( ^vmMirror booleanNot: self ifFail: [^super not] )
+        public & other = ( ^vmMirror boolean: self logicalAnd: other ifFail: [^super & other] )
+        public and: alternative = ( ^vmMirror boolean: self and: alternative ifFail: [^super and: alternative] )
+        public | other = ( ^vmMirror boolean: self logicalOr: other ifFail: [^super | other] )
+        public or: alternative = ( ^vmMirror boolean: self or: alternative ifFail: [^super or: alternative] )
+        public printString = ( ^vmMirror booleanPrintString: self ifFail: [^super printString] )
     )
     class True = Boolean new () (
     )
