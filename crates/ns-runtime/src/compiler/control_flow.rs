@@ -140,7 +140,13 @@ pub(crate) fn recognize_integer_binary(send: &ast::Send) -> Option<IntegerOperat
 /// Asked by the same three places `recognize` is (`lower_send`,
 /// `send_writes_register`, `capture::Walker::send`), so the lowering and the
 /// capture analysis agree about which block literals are closures. The
-/// reference lowering asks it too, to mark the send `SendInlinable`.
+/// reference lowering asks it too, to mark the send `SendInlinable`, so that
+/// the failure block's activation is exempt from the depth count as the
+/// optimized lowering, which never activates it, would have it. That mark
+/// covers the whole send, so it would exempt a block the leaf itself
+/// activates just as well; the kernel therefore passes a literal block only
+/// as the final `ifFail:` argument, which the bootstrap enforces
+/// (`interpreter::kernel`'s `check_mirror_send_arguments`).
 ///
 /// `MirrorSend` is never on a `super` or lexical send, so a recognized send
 /// is always ordinary; each caller still asks `is_ordinary_send` first, as it

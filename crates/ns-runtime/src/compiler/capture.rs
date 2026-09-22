@@ -386,15 +386,18 @@ impl<'a> Walker<'a> {
     fn send(&mut self, send: &ast::Send) {
         if control_flow::is_ordinary_send(self.bindings, send) {
             // A mirror send's failure block is lowered inline
-            // (`lower_mirror_send`), so it is no closure here either. It runs
-            // at most once and only on one path, as an `ifTrue:` block does.
+            // (`lower_mirror_send`), so it is no closure here either. It is
+            // not `conditional`: that flag says a fallback closure built out
+            // of the block can write this frame later, and a `SendMirror`
+            // builds none -- a receiver that is not the mirror is an internal
+            // error, not a send (`interpreter::mirror::send_inlined`).
             if let Some((_, block)) = control_flow::recognize_mirror_send(self.bindings, send) {
                 self.expression(&send.receiver);
                 let arguments = &send.message.arguments;
                 for argument in &arguments[..arguments.len() - 1] {
                     self.expression(argument);
                 }
-                self.inlined_block(block, true, None);
+                self.inlined_block(block, false, None);
                 return;
             }
             if let Some(form) = control_flow::recognize(send) {
@@ -680,6 +683,48 @@ mod tests {
         let uncaptured = analyze_method("| x ::= 1. | true ifTrue: [x:: 2]. ^x");
         assert_eq!(place(&uncaptured, 0), Place::Register);
         assert!(uncaptured.body(BodyKey::Root).branch_assigned[0]);
+    }
+
+    /// A mirror send's failure block is inlined but builds no fallback
+    /// closure, so a local it assigns is not `branch_assigned`: no later
+    /// send can write it, and it stays in its register.
+    #[test]
+    fn a_write_in_a_mirror_sends_failure_block_is_not_branch_assigned() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                foo = ( | x ::= 1. | vmMirror stringSize: self ifFail: [x:: 2]. ^x )
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(PathBuf::from("t.ns")),
+        ) else {
+            panic!("the kernel-shaped module resolves");
+        };
+        let method = &resolved.module.root_class.instance_side.nested_classes[0]
+            .instance_side
+            .methods[0];
+        let captures = analyze(
+            RootBody {
+                argument_count: 0,
+                temporaries: &method.body.temporaries,
+                slot_initializers: Vec::new(),
+                statements: &method.body.statements,
+            },
+            &resolved.bindings,
+        );
+        assert_eq!(place(&captures, 0), Place::Register);
+        assert!(!captures.body(BodyKey::Root).branch_assigned[0]);
+        // The failure block is no closure: the root is the only body.
+        assert_eq!(captures.bodies.len(), 1);
     }
 
     #[test]

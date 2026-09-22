@@ -408,7 +408,8 @@ fn encode_instruction(
         // unreachable by construction: a panic here is a defect in this
         // process, not a property of any input.
         Instruction::SendMirror { .. } => unreachable!(
-            "internal: SendMirror is emitted only into Kernel.ns, and an image              carries only its own module's code"
+            "internal: SendMirror is emitted only into Kernel.ns, and an image \
+             carries only its own module's code"
         ),
         Instruction::LoadLiteral {
             destination,

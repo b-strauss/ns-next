@@ -131,7 +131,7 @@ impl<'gc> Mutator<'gc> {
     fn fill_builtin_classes(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
         let root_mixin = self.build_mixin(declaration, &resolved.bindings);
-        check_kernel_shape(&root_mixin);
+        check_kernel_shape(&root_mixin, resolved);
         for kind in BuiltinClass::ALL {
             let class = self.builtin_class(kind);
             let (mixin, superclass) = if kind == BuiltinClass::VmMirror {
@@ -277,8 +277,10 @@ fn merged_with_remaining_primitives(nested: &Rc<Mixin>, kind: BuiltinClass) -> R
 /// exactly one slot, the immutable `vmMirror`; a clause on every class but
 /// `Object`, a bare name with no message arguments -- it is read, never run
 /// -- naming a class that comes earlier in `BuiltinClass::ALL`, so that it
-/// is filled first.
-fn check_kernel_shape(root: &Rc<Mixin>) {
+/// is filled first. And every mirror send passes a literal block only as
+/// its failure block (`check_mirror_send_arguments`).
+fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
+    check_mirror_send_arguments(resolved);
     let kinds: Vec<BuiltinClass> = BuiltinClass::ALL
         .into_iter()
         .filter(|kind| *kind != BuiltinClass::VmMirror)
@@ -393,6 +395,40 @@ fn kernel_application<'gc>(
         .expect("internal: the kernel's class is a class object")
 }
 
+/// A mirror send in the kernel passes a literal block only as its final,
+/// `ifFail:` argument. A literal block anywhere before it would be a block
+/// the leaf itself activates (`boolean:ifTrue:ifFail:`'s, say), and the
+/// reference lowering, which marks the whole send `SendInlinable` because
+/// its failure block is inlined by the optimized lowering, would exempt
+/// that block's activation from the depth count too -- while the optimized
+/// lowering counts it. The two lowerings would then count activations
+/// differently (`docs/design/compiler.md`, "How the limit counts"), so the
+/// shape is refused rather than the count special-cased. Such a block is
+/// passed through a local or an argument instead, which neither lowering
+/// marks.
+fn check_mirror_send_arguments(resolved: &ResolvedModule) {
+    for_each_send(resolved, |send| {
+        if !matches!(resolved.bindings.get(&send.span), Some(Binding::MirrorSend)) {
+            return;
+        }
+        let arguments = &send.message.arguments;
+        let leading = &arguments[..arguments.len().saturating_sub(1)];
+        if leading
+            .iter()
+            .any(|argument| matches!(argument, ast::Expression::Block(_)))
+        {
+            panic!(
+                "internal: Kernel.ns passes a literal block to the mirror's {} before its \
+                 failure block; only the final ifFail: argument may be a literal block, since \
+                 the reference lowering would exempt that block's activation from the depth \
+                 count and the optimized lowering would count it \
+                 (docs/design/compiler.md, \"How the limit counts\")",
+                crate::compiler::lower::selector_of(&send.message)
+            );
+        }
+    });
+}
+
 /// Calls `visit` on every explicit-receiver send in `resolved` whose
 /// receiver is the bare identifier `vmMirror`, for the test that checks the
 /// resolver marked them all.
@@ -401,6 +437,20 @@ pub(super) fn for_each_send_to_vm_mirror(
     resolved: &ResolvedModule,
     mut visit: impl FnMut(&ast::Send),
 ) {
+    for_each_send(resolved, |send| {
+        let to_the_mirror = matches!(
+            &send.receiver,
+            ast::Expression::Identifier(identifier) if identifier.name == "vmMirror"
+        );
+        if to_the_mirror {
+            visit(send);
+        }
+    });
+}
+
+/// Calls `visit` on every send in `resolved`, blocks and every nested class
+/// included.
+fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
     fn class(declaration: &ast::ClassDeclaration, visit: &mut dyn FnMut(&ast::Send)) {
         let sides = std::iter::once(&declaration.instance_side).chain(&declaration.class_side);
         for side in sides {
@@ -439,13 +489,7 @@ pub(super) fn for_each_send_to_vm_mirror(
         match node {
             ast::Expression::Identifier(_) | ast::Expression::Literal(_) => {}
             ast::Expression::Send(send) => {
-                let to_the_mirror = matches!(
-                    &send.receiver,
-                    ast::Expression::Identifier(identifier) if identifier.name == "vmMirror"
-                );
-                if to_the_mirror {
-                    visit(send);
-                }
+                visit(send);
                 expression(&send.receiver, visit);
                 for argument in &send.message.arguments {
                     expression(argument, visit);
@@ -563,6 +607,56 @@ mod tests {
                 .instance_field(kernel, super::mirror_slot_of(mutator, kernel));
             assert!(held.is_some_and(|value| mutator.is_vm_mirror(value)));
         });
+    }
+
+    /// A kernel-shaped module resolved by `resolve_kernel`, for the checks
+    /// that read only the resolved source.
+    fn resolve_kernel_fixture(source: &str) -> crate::ResolvedModule {
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("fixture.ns")),
+        ) else {
+            panic!("the fixture resolves");
+        };
+        resolved
+    }
+
+    #[test]
+    fn a_mirror_send_whose_only_literal_block_is_its_failure_block_is_accepted() {
+        let resolved = resolve_kernel_fixture(indoc::indoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                public ifTrue: action = ( ^vmMirror boolean: self ifTrue: action ifFail: [^nil] )
+              )
+            ) : ()
+        "});
+        super::check_mirror_send_arguments(&resolved);
+    }
+
+    /// A literal block before the failure block would be exempt from the
+    /// depth count under the reference lowering and counted under the
+    /// optimized one, so the kernel may not contain one.
+    #[test]
+    #[should_panic(expected = "only the final ifFail: argument may be a literal block")]
+    fn a_mirror_send_with_a_literal_block_before_its_failure_block_is_refused() {
+        let resolved = resolve_kernel_fixture(indoc::indoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                public probe = ( ^[vmMirror boolean: self ifTrue: [1] ifFail: [^nil]] value )
+              )
+            ) : ()
+        "});
+        super::check_mirror_send_arguments(&resolved);
     }
 
     /// `Kernel.ns` resolves in kernel mode, and every send to `vmMirror` in
