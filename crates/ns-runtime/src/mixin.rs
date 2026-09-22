@@ -504,6 +504,45 @@ pub struct MixinApplication {
     pub dispatch_ids: DispatchIds,
 }
 
+impl MixinApplication {
+    /// The absolute field indices of the slots this application's classes
+    /// **declare**, superclass level first and in declaration order within
+    /// a level -- which is the order the fields themselves are laid out in.
+    ///
+    /// An instance's field vector is not all declared slots: each level
+    /// lays out its own slots at `own_slot_base`, then one hidden
+    /// nested-class cache slot per nested declaration (`nested_slot`,
+    /// `Mutator::apply_mixin`), so the declared slots of a chain are
+    /// interleaved with hidden ones rather than being a prefix.
+    ///
+    /// **This is what a value's state is**, and the one answer to that
+    /// question: §3.1.1 derives equality and hash from the state a class
+    /// declares, and a nested class's cache slot is not state -- it holds
+    /// a class object, it is per enclosing instance, and it is written by
+    /// the accessor rather than by any initializer. Counting it made two
+    /// equal values answer `false` once the accessor had run on both,
+    /// because each side cached *its own* class object there
+    /// (`docs/design/core-library.md`, "What is still unchecked").
+    /// `builtins/value.rs`'s walks and the `slotCount`/`slotAt:` leaves the
+    /// Newspeak fallback reads through all go through this, so the leaf and
+    /// the fallback cannot disagree about which slots exist or what order
+    /// they come in.
+    pub fn declared_slot_indices(&self) -> Vec<usize> {
+        let mut levels = Vec::new();
+        let mut level = Some(self);
+        while let Some(application) = level {
+            levels.push(application);
+            level = application.superclass.as_deref();
+        }
+        let mut indices = Vec::new();
+        for application in levels.into_iter().rev() {
+            let base = application.own_slot_base;
+            indices.extend(base..base + application.mixin.slots.len());
+        }
+        indices
+    }
+}
+
 /// Unlinks the superclass list in a loop rather than through the stack.
 ///
 /// An application chain is as long as the class chain it mirrors, and once

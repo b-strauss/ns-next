@@ -75,19 +75,24 @@ pub(crate) fn execute<'gc>(
             derived_hash(mutator, receiver).map(|hash| Ok(Value::SmallInteger(hash)))
         }
         ValuePrimitive::SlotCount => {
-            let count = own_slot_count(mutator, receiver)?;
+            let count = declared_slots(mutator, receiver)?.len();
             Some(Ok(Value::SmallInteger(count as i64)))
         }
         ValuePrimitive::SlotAt => {
             let Value::Object(object) = receiver else {
                 return None;
             };
-            let count = own_slot_count(mutator, receiver)?;
+            let declared = declared_slots(mutator, receiver)?;
+            let count = declared.len();
             Some(match arguments.first() {
                 Some(Value::SmallInteger(index)) if *index >= 1 && (*index as usize) <= count => {
+                    // Indexed through `declared`, never straight into the
+                    // field vector: the two differ as soon as a level
+                    // declares a nested class, and the leaf must answer the
+                    // same slot the walks compare.
                     Ok(mutator
                         .heap
-                        .instance_field(object, (*index as usize) - 1)
+                        .instance_field(object, declared[(*index as usize) - 1])
                         .unwrap_or(Value::Nil))
                 }
                 // An index outside the range is the program's mistake, not a
@@ -115,17 +120,39 @@ pub(crate) fn execute<'gc>(
     }
 }
 
-/// How many slots `receiver` lays out, when it is an ordinary instance --
-/// the only shape whose state is slots at all. `None` for anything else,
-/// which is the decline.
-fn own_slot_count<'gc>(mutator: &Mutator<'gc>, receiver: Value<'gc>) -> Option<usize> {
+/// The field indices of the slots `receiver`'s classes **declare**, when it
+/// is an ordinary instance -- the only shape whose state is slots at all.
+/// `None` for anything else, which is the decline.
+///
+/// **The one place this question is answered**, for the same reason
+/// `state_is_a_value` is one function: the equality walk, the hash walk and
+/// the two leaves the Newspeak fallback reads a slot through
+/// (`valueSlotCount:ifFail:`, `value:slotAt:ifFail:`) must agree on which
+/// slots exist and on their order. If they did not, the fallback would
+/// compare different slots than the leaf does, and `=` would answer one
+/// thing when the leaf decided and another when it declined.
+///
+/// A hidden nested-class cache slot is not declared state and is skipped
+/// (`MixinApplication::declared_slot_indices`, which says why).
+fn declared_slots<'gc>(mutator: &Mutator<'gc>, receiver: Value<'gc>) -> Option<Vec<usize>> {
     let Value::Object(object) = receiver else {
         return None;
     };
     if mutator.heap().is_class(object) {
         return None;
     }
-    mutator.heap().instance_field_count(object)
+    // The shape test stays what it was -- an ordinary instance has a field
+    // count, a String, a Symbol, an Array and a closure do not -- so a
+    // shape this leaf does not serve still declines rather than answering
+    // an empty state.
+    mutator.heap().instance_field_count(object)?;
+    let class = mutator.heap().class_of_object(object);
+    Some(
+        mutator
+            .heap()
+            .class_application(class)
+            .map_or_else(Vec::new, |application| application.declared_slot_indices()),
+    )
 }
 
 /// What a walk found at one node of a value: either a verdict the shape's
@@ -172,11 +199,14 @@ fn state_is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -
     }
 }
 
-/// The slots of `object`, copied out so the walk holds no borrow of the
-/// heap while it goes on.
+/// The **declared** slots of `object`, in declaration order, copied out so
+/// the walk holds no borrow of the heap while it goes on. Read through
+/// `declared_slots`, which is also what the two leaves answer from, so a
+/// walk and the Newspeak fallback see the same state.
 fn slots_of<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> Vec<Value<'gc>> {
-    let count = mutator.heap().instance_field_count(object).unwrap_or(0);
-    (0..count)
+    declared_slots(mutator, Value::Object(object))
+        .unwrap_or_default()
+        .into_iter()
         .map(|index| {
             mutator
                 .heap()
@@ -434,11 +464,25 @@ mod tests {
                     public = other = ( ^false )
                 )
                 class Cyclic = Marker new (| public me = self. |) ()
+                class Nesting first: firstValue second: secondValue = Marker new (
+                    | public first = firstValue. public second = secondValue. |
+                ) (
+                    class Tag = Object new () ()
+                    public touch = ( ^Tag )
+                )
+                class Deeper first: firstValue second: secondValue third: thirdValue
+                    = Nesting first: firstValue second: secondValue (
+                    | public third = thirdValue. |
+                ) ()
                 public marker = ( ^Marker new )
                 public pair: firstValue and: secondValue = ( ^Pair first: firstValue second: secondValue )
                 public couple: firstValue and: secondValue = ( ^Couple first: firstValue second: secondValue )
                 public overriding = ( ^Overriding new )
                 public cyclic = ( ^Cyclic new )
+                public nesting: firstValue and: secondValue = ( ^Nesting first: firstValue second: secondValue )
+                public deeper: firstValue and: secondValue and: thirdValue = (
+                    ^Deeper first: firstValue second: secondValue third: thirdValue
+                )
             ) : ()
         "};
         let module = ns_syntax::parse(source).expect("the fixture parses");
@@ -781,6 +825,113 @@ mod tests {
             declined >= 3 && answered >= 6,
             "the list must exercise both outcomes: {declined} declined, {answered} answered"
         );
+    }
+
+    /// A nested class declaration is not a value's state. §6 gives every
+    /// instance "a distinct nested class for each nested class
+    /// declaration", cached in a hidden slot of the enclosing instance, so
+    /// two equal values hold *different* class objects there once each has
+    /// been sent its own accessor. Counting that slot made them answer
+    /// `false`, at exit status 0. Both walks and both reflective leaves
+    /// read `declared_slots`, which is why one test covers all four.
+    #[test]
+    fn a_nested_classs_cache_slot_is_not_part_of_a_values_state() {
+        let (mut interpreter, fixture) = a_fixture();
+        record_marker_as_values_equality(&mut interpreter, &fixture);
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let two = interpreter.stash(Value::SmallInteger(2));
+        // Three shapes: neither accessor run, one run, both run. The
+        // one-sided case is the one a fix that merely ignored a *differing*
+        // class object would still get wrong, since one side's slot is nil.
+        for touches in 0..=2 {
+            let first = send(
+                &mut interpreter,
+                &fixture,
+                "nesting:and:",
+                &[one.clone(), two.clone()],
+            );
+            let second = send(
+                &mut interpreter,
+                &fixture,
+                "nesting:and:",
+                &[one.clone(), two.clone()],
+            );
+            if touches >= 1 {
+                send(&mut interpreter, &first, "touch", &[]);
+            }
+            if touches == 2 {
+                send(&mut interpreter, &second, "touch", &[]);
+            }
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                &first,
+                std::slice::from_ref(&second),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, "two equal nesting values"),
+                Some(true),
+                "{touches} of the two accessors run: the values are equal"
+            );
+            let first_hash = leaf(&mut interpreter, "valueHash:ifFail:", &first, &[]);
+            let first_hash = answered_integer(&mut interpreter, first_hash, "the first hash");
+            let second_hash = leaf(&mut interpreter, "valueHash:ifFail:", &second, &[]);
+            let second_hash = answered_integer(&mut interpreter, second_hash, "the second hash");
+            assert_ne!(first_hash, DECLINED, "{touches} run: the hash decides");
+            assert_eq!(
+                first_hash, second_hash,
+                "{touches} of the two accessors run: two equal values hash alike"
+            );
+            // The count the Newspeak fallback would iterate: the two
+            // declared slots, never the hidden third.
+            let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", &first, &[]);
+            assert_eq!(
+                answered_integer(&mut interpreter, count, "the declared slot count"),
+                2,
+                "{touches} run: only the declared slots count"
+            );
+        }
+    }
+
+    /// The declared slots of a chain are not a prefix of the fields: each
+    /// level lays its own slots down and then one hidden slot per nested
+    /// declaration, so `Deeper`'s `third` sits *after* `Nesting`'s cache
+    /// slot. The leaves must index past it, which is what keeps them in
+    /// step with the walks -- both go through `declared_slots`.
+    #[test]
+    fn a_hidden_slot_between_two_levels_does_not_shift_the_reflective_leaves() {
+        let (mut interpreter, fixture) = a_fixture();
+        record_marker_as_values_equality(&mut interpreter, &fixture);
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let two = interpreter.stash(Value::SmallInteger(2));
+        let three = interpreter.stash(Value::SmallInteger(3));
+        let deeper = send(
+            &mut interpreter,
+            &fixture,
+            "deeper:and:and:",
+            &[one, two, three],
+        );
+        send(&mut interpreter, &deeper, "touch", &[]);
+        let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", &deeper, &[]);
+        assert_eq!(
+            answered_integer(&mut interpreter, count, "Deeper's declared slot count"),
+            3,
+            "first, second and third -- not the inherited cache slot"
+        );
+        for (index, expected) in [(1, 1), (2, 2), (3, 3)] {
+            let position = interpreter.stash(Value::SmallInteger(index));
+            let slot = leaf(
+                &mut interpreter,
+                "value:slotAt:ifFail:",
+                &deeper,
+                &[position],
+            );
+            assert_eq!(
+                answered_integer(&mut interpreter, slot, "a declared slot"),
+                expected,
+                "slot {index} is the declared one, not the hidden slot beside it"
+            );
+        }
     }
 
     #[test]

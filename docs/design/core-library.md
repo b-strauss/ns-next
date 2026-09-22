@@ -132,6 +132,26 @@ it a private selector, and both sides have to go through the same leaf.
 Naming the subject is also what costs those two the primitive-method fast
 path, which only the declining path pays.
 
+**A value's state is the slots its classes *declare*, and nothing else.**
+An instance's field vector holds more than that: each level lays its own
+slots down at its `own_slot_base` and then one hidden cache slot per nested
+class declaration ([object-model.md](object-model.md), "The nested-class
+accessor"), so the declared slots of a chain are interleaved with hidden ones
+rather than forming a prefix. A nested class's cache slot is not state — §6
+gives every instance a class object of its own for each nested declaration,
+so two equal values hold *different* objects there as soon as each has been
+sent its accessor, and counting the slot made them answer `false` at exit
+status 0. One function decides which indices are state,
+`MixinApplication::declared_slot_indices`, and everything that asks goes
+through it: both Rust walks, and the `slotCount` and `slotAt:` leaves the
+Newspeak fallback reads a slot through. That is what keeps the leaf and the
+fallback comparing the same slots in the same order — if they disagreed, `=`
+would answer one thing when the leaf decided and another when it declined.
+`goldens/kernel/a_values_nested_class_is_not_part_of_its_state.ns` pins it,
+including the case where only one of the two instances has been touched and
+a class that *inherits* the declaration from a value superclass while
+declaring a slot of its own after it.
+
 **What `==` on a value now costs.** It used to be one primitive method:
 `Object`'s `==`, whose leaf compares two handles and answers. It is now an
 *activation* of `Value>>==`, which sends `=` — a second dispatch, to a
@@ -205,24 +225,6 @@ silently allowing a value that is not one:
   its own class's `=`, and the missing numeric tower is what would
   reconcile them ("Deviation: `i64` integers" and "Gap: an integer has no
   `/`" above).
-- **A value class that declares a nested class compares wrongly once that
-  class has been accessed.** *Open defect, found 2026-09-23.* The hidden
-  nested-class cache slot ("The nested-class accessor",
-  [object-model.md](object-model.md)) is a field of the instance like any
-  other, and both the derivation's walk and `valueSlotCount:` count it. While
-  it is still nil the comparison is right. Once the accessor has run on both
-  sides, each side's slot holds *that instance's own* class object — a nested
-  class object is per enclosing instance — the leaf declines it as no value,
-  and `valueEquals:` then sends `=` to the two class objects, which is
-  `Object`'s identity `=` and answers false. So two values built from the
-  same arguments answer `true`, and `false` after each has been sent its own
-  nested-class accessor, which §3.1.1 forbids. **The fix is to walk only the
-  slots a class *declares***: the application already knows which indices are
-  nested-class cache slots (`MixinApplication::nested_slot`), so
-  `builtins/value.rs`'s `slots_of` and the `slotCount`/`slotAt:` rows should
-  skip them, exactly as `InitializeSlot`'s check never sees them. Nothing
-  pins the behaviour either way yet; a golden goes in with the fix.
-
 The builtin value classes' own immutability rests on there being no mutating
 leaf for a `String`, a `Symbol` or a `Character` — their state is a Rust
 payload, not slots, so neither check above is about them. And the actor

@@ -15,15 +15,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**First, one open defect on the current branch**
-(`feature/kernel-over-vm-mirror`, 2026-09-23): a value class that declares a
-nested class compares wrongly once the nested-class accessor has run, because
-the hidden cache slot is counted as state. The cause, the fix and the golden
-it needs are in [core-library.md](design/core-library.md), "What is still
-unchecked", and under "`Top`, `Value` and the value semantics" below. It is
-small and self-contained.
-
-**Then the next piece of work is step 6's third plan, `Class`, `Behavior`
+**The next piece of work is step 6's third plan, `Class`, `Behavior`
 and `Metaclass` in `Kernel.ns`**, which has no plan yet and only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
 gives. Step 6's first two plans are done: the core library over a VM mirror,
@@ -3466,6 +3458,8 @@ gives it the specification's *object model*
   ([object-model.md](design/object-model.md), "A value object's two
   conditions").
 - `a6edb79` — the measurement below.
+- The fix below: a value's state is the slots its classes declare, so a
+  nested class's hidden cache slot is no longer compared or hashed.
 
 **Measurement.** Two sittings by the protocol, eight sources, against
 `b0a771d` -- this branch's head before the work started, and documentation
@@ -3504,16 +3498,21 @@ declines what it cannot decide; and nothing canonicalizes two equal
 object identity. All three are recorded in
 [core-library.md](design/core-library.md), "What is still unchecked".
 
-**One open defect, found while writing that section up (2026-09-23).** A
-value class that declares a nested class compares wrongly once the
-nested-class accessor has run on both sides: the hidden cache slot is a
-field like any other, both the derivation's walk and `valueSlotCount:` count
-it, and each instance's own class object lands there, so `valueEquals:`
-sends `=` to two different class objects and answers false for two values
-built from the same arguments. The fix is to walk only the slots a class
-declares, which the application already distinguishes; it is written up with
-the rest in [core-library.md](design/core-library.md), "What is still
-unchecked", and is the first thing to do on this branch.
+**One defect, found while writing that section up and fixed the same day.**
+A value class that declares a nested class compared wrongly
+once the nested-class accessor had run: the hidden cache slot is a field
+like any other, both the derivation's walk and `valueSlotCount:` counted it,
+and each instance's own class object lands there — so `valueEquals:` sent
+`=` to two different class objects and answered false for two values built
+from the same arguments, at exit status 0. **The rule now is that a value's
+state is the slots its classes declare and nothing else**, decided in one
+place (`MixinApplication::declared_slot_indices`) that both Rust walks and
+both reflective leaves go through, so the leaf and the Newspeak fallback
+cannot disagree about which slots exist or in what order.
+`goldens/kernel/a_values_nested_class_is_not_part_of_its_state.ns` and two
+unit tests beside the walks pin it, the one-sided and the inherited case
+included ([core-library.md](design/core-library.md), "A value's state is the
+slots its classes *declare*").
 
 Gates, at `ab692b7`: `cargo test --workspace` green (885 tests passing, one
 ignored), also under each of the three stress modes; `cargo clippy
