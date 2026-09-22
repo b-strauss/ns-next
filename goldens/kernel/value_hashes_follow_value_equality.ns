@@ -6,10 +6,23 @@ Newspeak3
    to: it "should be overridden if the method `=` is overridden ... if
    `x = y` evaluates to true then `x hash = y hash` must evaluate to true."
 
-   Each `report:` line builds its two values separately, so neither pair
-   shares an object, and prints whether they are equal and whether they
-   hash alike: both must be `true` for every value class. The bare lines
-   after them are the hashes the contract fixes exactly, then two
+   Each `report:` line prints whether its two values are equal and whether
+   they hash alike: both must be `true` for every value class. Where the
+   class has separate instances at all -- `Float`, `String` -- the two are
+   built separately, so a hash by identity would show up as `true false`.
+   The rest cannot be: a `Symbol` is interned to one object (§5.1.6), and
+   an `Integer`, a `Boolean` and a `Character` literal are immediates or
+   one-`char` payloads the two sides need not keep apart. Those lines pin
+   that the answers agree, not that two objects were compared.
+
+   The `cross:` lines are the other half of the contract: `String` and
+   `Character` share a payload and `Symbol` carries the same text, so each
+   pair below *looks* equal and hashes apart. `=` therefore has to answer
+   `false`, which is the class check in `builtins::text`. The second column
+   is informational -- the contract says nothing about how unequal values
+   hash -- and records that the two are in fact told apart.
+
+   The bare lines are the hashes the contract fixes exactly, then two
    inequalities showing a content hash is a hash of the content and not a
    constant, and one line for the one float pair whose bits differ while
    their values are equal. *)
@@ -17,6 +30,10 @@ class ValueHashes usingPlatform: platform = Object new (
     | transcript = platform transcript. |
 ) (
     report: label for: first and: second = (
+        transcript show: label; show: ' '; show: (first = second) printString;
+            show: ' '; show: (first hash = second hash) printString; newLine
+    )
+    cross: label for: first and: second = (
         transcript show: label; show: ' '; show: (first = second) printString;
             show: ' '; show: (first hash = second hash) printString; newLine
     )
@@ -30,6 +47,10 @@ class ValueHashes usingPlatform: platform = Object new (
         report: 'Symbol' for: 'abc' asSymbol and: #abc.
         report: 'Character' for: "a" and: "a".
         report: 'Boolean' for: 1 < 2 and: true.
+        cross: 'Character/String' for: "a" and: 'a'.
+        cross: 'String/Character' for: 'a' and: "a".
+        cross: 'Symbol/String' for: #a and: 'a'.
+        cross: 'String/Symbol' for: 'a' and: #a.
         show: 3 hash.
         show: 0 hash.
         show: "a" hash.

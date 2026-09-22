@@ -13,8 +13,8 @@
 //! decoded value reaches is the image's to choose, so both walks run an
 //! explicit work stack; the equality walk remembers the pairs it has
 //! already assumed equal, so a cycle terminates in `true` rather than
-//! running forever, and both stop after `NODE_BUDGET` nodes, so no graph
-//! costs unbounded time.
+//! running forever, and both stop once they have taken `NODE_BUDGET` nodes
+//! off that stack, so neither runs for as long as the input likes.
 //!
 //! What a leaf cannot decide it declines, and the `ifFail:` block of
 //! `Value`'s method answers instead. It never asks the receiver: a native
@@ -37,12 +37,21 @@ use crate::dispatch::{self, Lookup};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-/// How many nodes either walk visits before it stops unfolding. It bounds
-/// what one `=` or `hash` can cost on a graph the input chose, and it is
-/// also what keeps a truncated hash *consistent*: two equal values unfold
-/// to the same nodes in the same order, so cutting both off at the same
-/// count cuts them off alike. Every node contributes a hash below 2^32 plus
-/// a slot count below 2^16, so a sum of this many stays far inside an
+/// How many nodes either walk takes off its work stack before it stops
+/// unfolding.
+///
+/// It is checked when a node is taken, not when one is pushed, so a node
+/// already taken pushes all of its slots before the next check: the work is
+/// bounded by `NODE_BUDGET` times the widest class's slot count, and the
+/// work vector itself by what the heap holds, not by this number. What the
+/// budget does rule out is a walk that runs for as long as the input likes
+/// -- a wide graph still costs a bounded multiple of it, and a deep or
+/// cyclic one stops here.
+///
+/// It is also what keeps a truncated hash *consistent*: two equal values
+/// unfold to the same nodes in the same order, so cutting both off at the
+/// same count cuts them off alike. Every node contributes a hash below 2^32
+/// plus a slot count below 2^16, so a sum of this many stays far inside an
 /// `i64`.
 const NODE_BUDGET: usize = 4096;
 
@@ -193,6 +202,7 @@ fn compare_node<'gc>(
             if let Some(symbol) = mutator.heap().symbol_value(left) {
                 return Some(Pair::Decided(text::symbol_equals(
                     mutator.heap(),
+                    left,
                     symbol,
                     Some(&second),
                 )));
@@ -200,6 +210,7 @@ fn compare_node<'gc>(
             if let Some(payload) = mutator.heap().str_value(left) {
                 return Some(Pair::Decided(text::text_equals(
                     mutator.heap(),
+                    left,
                     &payload,
                     Some(&second),
                 )));
@@ -265,10 +276,10 @@ fn derived_equality<'gc>(
     let mut visited = 0usize;
     while let Some((first, second)) = work.pop() {
         if visited == NODE_BUDGET {
-            // Out of budget, with nothing decided: decline rather than
-            // claim an equality that was never checked. `Value`'s `ifFail:`
-            // block then answers, as it does for any other shape this leaf
-            // will not rule on.
+            // Out of budget, with pairs still unexamined: decline rather
+            // than claim an equality that was never checked. `Value`'s
+            // `ifFail:` block then answers, as it does for any other shape
+            // this leaf will not rule on.
             return None;
         }
         visited += 1;

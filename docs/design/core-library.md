@@ -27,17 +27,39 @@ comparison in [image-format.md](image-format.md).
 `Object`, `Boolean` with `True` and `False` beneath it, `Integer`, `Float`,
 `String`, `Symbol`, `Character`, `Array`, `OrderedCollection`, `Nil`,
 `Block` and `Platform`, every one but `True` and `False` directly under
-`Object`. Every method is a one-line forwarder to the mirror ("The shape of
-a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
+`Object`. Almost every method is a one-line forwarder to the mirror ("The
+shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 `printString` and protected `doesNotUnderstand:`; `Boolean`'s conditionals,
 `not`, `&`, `and:`, `|`, `or:` and `printString`; `Integer`'s `+ - * // < >
 <= >= =`, `negated`, `abs`, `printString` and `asString`; `Float`'s
-`+ - * / < > =`, `printString` and `asString`; `String`'s `size`, `,`, `=`,
-`asSymbol` and `printString`; `Symbol`'s and `Character`'s few;
+`+ - * / < > =`, `hash`, `printString` and `asString`; `String`'s `size`,
+`,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
+`hash` and `printString`; `Character`'s `asInteger`, `asString` and `=`;
 `Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
 `add:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
 `numArgs`, `whileTrue:` and `whileFalse:`; and the platform's accessors.
 `Nil`, `True` and `False` declare nothing of their own.
+
+The three exceptions are `hash` on `Integer` (`^self`), on `Character`
+(`^self asInteger`) and on `Boolean` (`^self ifTrue: [1] ifFalse: [0]`):
+ordinary methods, because the value each answers is already at hand and a
+row for it would only repeat what `Kernel.ns` can say. Every value class
+declares the `hash` its own `=` demands — §3.1.1 lets a value be copied
+across an actor boundary, so a copy has to hash like its original, and none
+of them may inherit `Object`'s identity hash. `String`'s, `Character`'s and
+`Symbol`'s `=` each require an argument of the receiver's own class:
+`String` and `Character` share an `ObjectData::String` payload, so a rule
+that read the payload alone would make `"a" = 'a'` true while the two hash
+apart.
+
+Four further rows serve `Value` itself rather than one builtin:
+`value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
+`valueSlotCount:ifFail:` (`slotCount`) and `value:slotAt:ifFail:`
+(`slotAt:`). The first two are the equality and hash `builtins/value.rs`
+derives from an instance's state, for a class that inherits `Value`'s `=`
+rather than declaring one; they decline anything else, and `Value`'s
+`ifFail:` block answers instead. Neither walk recurses or calls back into
+Newspeak.
 
 The leaves are the 78 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported

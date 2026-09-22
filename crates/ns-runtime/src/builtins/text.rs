@@ -16,6 +16,10 @@ use crate::{Heap, Mutator, Symbol};
 /// object (covers both `String` and `Character` arguments, since they share a
 /// payload representation). `None` for anything else, including `Symbol` (a
 /// distinct payload) and non-`Object` values.
+///
+/// Concatenation's rule, and only concatenation's: `'ab' , "c"` is meant to
+/// work. Equality reads the class instead (`of_the_same_class`), which is
+/// what keeps `"a" = 'a'` false.
 fn argument_string<'gc>(heap: &Heap<'gc>, argument: Option<&Value<'gc>>) -> Option<String> {
     match argument {
         Some(Value::Object(object)) => heap.str_value(*object),
@@ -23,28 +27,60 @@ fn argument_string<'gc>(heap: &Heap<'gc>, argument: Option<&Value<'gc>>) -> Opti
     }
 }
 
-/// `String>>=` and `Character>>=`'s rule: the argument is equal when it
-/// carries the same text, whichever of the two payload-sharing classes it
-/// belongs to. Named rather than written twice, so that `builtins::value`'s
-/// derived equality decides a string exactly as the class's own `=` does
-/// instead of growing a second copy of the rule.
+/// Whether `argument` is an object of `receiver`'s own class -- the guard
+/// every `=` in this module opens with, and the reason each of them names
+/// one class rather than one payload.
+///
+/// `String` and `Character` share an `ObjectData::String` payload, so a
+/// rule that compared payloads alone made `"a" = 'a'` true. That was
+/// tolerable only while both hashed by identity: once each class hashes by
+/// its own content -- a character by its code point, a string by its text
+/// -- a cross-class equality breaks the one rule a `hash` has, that `x = y`
+/// implies `x hash = y hash`. A character equals only a character, a
+/// string only a string, and a symbol only a symbol.
+fn of_the_same_class<'gc>(
+    heap: &Heap<'gc>,
+    receiver: ObjectReference<'gc>,
+    argument: Option<&Value<'gc>>,
+) -> Option<ObjectReference<'gc>> {
+    let Some(Value::Object(other)) = argument else {
+        return None;
+    };
+    heap.class_of_object(*other)
+        .same(heap.class_of_object(receiver))
+        .then_some(*other)
+}
+
+/// `String>>=` and `Character>>=`'s rule: an argument of the receiver's own
+/// class carrying the same text. Named rather than written twice, so that
+/// `builtins::value`'s derived equality decides one exactly as the class's
+/// own `=` does instead of growing a second copy of the rule.
 pub(crate) fn text_equals<'gc>(
     heap: &Heap<'gc>,
+    receiver: ObjectReference<'gc>,
     text: &str,
     argument: Option<&Value<'gc>>,
 ) -> bool {
-    argument_string(heap, argument).as_deref() == Some(text)
+    match of_the_same_class(heap, receiver, argument) {
+        Some(other) => heap.str_value(other).as_deref() == Some(text),
+        None => false,
+    }
 }
 
-/// `Symbol>>=`'s rule: equal symbols are one interned symbol.
+/// `Symbol>>=`'s rule: equal symbols are one interned symbol. A `Symbol`
+/// payload only ever belongs to the one `Symbol` class, so the class guard
+/// decides nothing here on its own; it is written out so that the three
+/// rules read alike and a later payload that is shared the way `String`'s
+/// is cannot quietly reopen the cross-class hole.
 pub(crate) fn symbol_equals<'gc>(
     heap: &Heap<'gc>,
+    receiver: ObjectReference<'gc>,
     symbol: Symbol,
     argument: Option<&Value<'gc>>,
 ) -> bool {
-    match argument {
-        Some(Value::Object(object)) => heap.symbol_value(*object) == Some(symbol),
-        _ => false,
+    match of_the_same_class(heap, receiver, argument) {
+        Some(other) => heap.symbol_value(other) == Some(symbol),
+        None => false,
     }
 }
 
@@ -117,6 +153,7 @@ pub(crate) fn execute_string<'gc>(
         }
         StringPrimitive::Equal => Some(Ok(Value::Boolean(text_equals(
             &mutator.heap,
+            *object,
             &string,
             arguments.first(),
         )))),
@@ -144,6 +181,7 @@ pub(crate) fn execute_symbol<'gc>(
         ))),
         SymbolPrimitive::Equal => Some(Ok(Value::Boolean(symbol_equals(
             &mutator.heap,
+            *object,
             symbol,
             arguments.first(),
         )))),
@@ -172,6 +210,7 @@ pub(crate) fn execute_character<'gc>(
         }
         CharacterPrimitive::Equal => Some(Ok(Value::Boolean(text_equals(
             &mutator.heap,
+            *object,
             &string,
             arguments.first(),
         )))),
