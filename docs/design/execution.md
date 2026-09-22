@@ -2969,7 +2969,7 @@ the kernel grows until it is.
 ### What `Top`, `Value` and `Number` cost
 
 Giving the core library the specification's object model
-([core-library.md](core-library.md), "The hierarchy"; §3.2 and §3.1.1) changed
+([core-library.md](core-library.md), "What exists"; §3.2 and §3.1.1) changed
 three things a release build runs. The hierarchy gained two levels -- `Top`
 above `Object`, and `Value`, with `Number` under it, between `Object` and the
 value classes -- so a *failed* lookup walks two levels more before it reaches

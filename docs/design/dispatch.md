@@ -488,6 +488,25 @@ platform objects keep their shared class: a class of their own each would be
 observable (`platform transcript class` answers `Platform`) and is not needed
 for correctness.
 
+**Four rows serve `Value` rather than one builtin class**, and they are where
+the rule that a leaf may not send shows most plainly:
+`value:sameAs:ifFail:` (reported `=`) and `valueHash:ifFail:` (`hash`) derive
+a value's equality and hash from its state, and `valueSlotCount:ifFail:`
+(`slotCount`) and `value:slotAt:ifFail:` (`slotAt:`) read that state
+(`builtins/value.rs`). **The derivation declines; it never sends.** Comparing
+two values means comparing their slots, and a slot's class may bring its own
+`=` — user Newspeak the leaf would have to run, which no native may do
+([core-library.md](core-library.md), "The rule: a native that calls back into
+Newspeak must not stay a Rust native"). So the leaf decides only the shapes
+it can decide without sending — the immediates, the text payloads, and slots
+whose classes it knows answer the derived `=` — and declines everything
+else, including a graph wider or deeper than its node budget, which is an
+ordinary primitive failure taking the ordinary path above:
+`Value`'s `ifFail:` block runs `valueEquals:` or `valueHashOfSlots`, which
+walk the slots from Newspeak and send `=` or `hash` to each. The cost of the
+decline is an activation and a Newspeak loop, paid only by the values that
+need it; the common shapes never leave the leaf.
+
 Bytecode and image are unaffected: the mirror's mixin is built by the
 bootstrap and never serialized, so primitive numbers never reach the wire,
 and neither does `Kernel.ns`, whose classes an image names only by tag.

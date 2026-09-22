@@ -551,6 +551,23 @@ it would hand the capability to whatever loaded it
 Neither can happen to a program built from source, which cannot obtain the
 mirror; both are there for the day something could.
 
+**`Top` is refused the same way, for the same kind of reason.** The three
+classes the object model gained carry tags **15** (`Top`), **16** (`Value`)
+and **17** (`Number`), appended after the mirror's 14 rather than slotted in
+beside their siblings, because a tag is assigned once and never renumbered
+("A tag is assigned once and never changes" above) — so `BuiltinClass::ALL`
+is a tag order and not a superclass order. `Value` and `Number` are ordinary nameable classes:
+a program may write `Value` or `Number` in a superclass clause, so an image
+may carry their tags. `Top` may not. §3.2 lets only `Object` have `Top` as
+its superclass, and `Kernel.ns` enforces that by making `Top` the one
+private class it declares, so no source module can name it —
+`read_program_builtin_class` refuses tag 15 exactly as it refuses 14, so no
+artifact can name what no source can
+(`a_load_builtin_class_naming_top_is_refused`,
+`crates/ns-runtime/tests/image.rs`). An artifact naming `Top` would
+otherwise build a class outside §3.2's hierarchy that inherits nothing at
+all, not even `doesNotUnderstand:`.
+
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
 `DecodeError::TrailingBytes` if not. With two artifact shapes sharing one

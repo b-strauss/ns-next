@@ -39,7 +39,7 @@ that cannot name its code is describing an intention, and should say so.
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers | JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Built — the arena, the activation stack, the safepoint, tracing, host roots, the stress modes, the lifetime brand and a mark-compact collector; a slot is reclaimed once nothing reaches it | generations |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
-| Builtins and the platform | [core-library.md](core-library.md) | **Partial:** no `Class`, `Behavior` or `Metaclass`, and `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is a forwarder in `crates/ns-runtime/core-library/Kernel.ns`, and the leaves are the mirror's `MIRROR` rows | `Class`, `Behavior` and `Metaclass` (step 6's second plan); real bodies for control flow and `do:` before the JIT tiers; settling `Integer>>/` |
+| Builtins and the platform | [core-library.md](core-library.md) | **Partial:** no `Class`, `Behavior` or `Metaclass`, and `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is a forwarder in `crates/ns-runtime/core-library/Kernel.ns`, and the leaves are the mirror's `MIRROR` rows. Its hierarchy is §3.2's and §3.1.1's — `Top`, then `Object`, then `Value` over the value classes with `Number` among them — and `Value` derives `=`, `==` and `hash` from an instance's state | `Class`, `Behavior` and `Metaclass` (step 6's third plan); real bodies for control flow and `do:` before the JIT tiers; settling `Integer>>/` and the numeric tower `Number` is the place for |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
 ## Architecture
@@ -51,7 +51,7 @@ plugs into:
 crates/
   ns-syntax/    lexer, tokens, AST, spans, diagnostics
   ns-runtime/   resolver, object model, dispatch, compiler, VM, the leaves, image;
-                kernel/Kernel.ns, the core library in Newspeak
+                core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary
 ```
 
@@ -84,8 +84,8 @@ should change for runtime work.
 
 ```
 Interpreter::bootstrap          the builtin classes, the VM mirror, and
-                                kernel/Kernel.ns compiled into them and
-                                instantiated with the mirror
+                                core-library/Kernel.ns compiled into them
+                                and instantiated with the mirror
 source bytes
   -> ns-syntax::lex             Vec<Token>
   -> ns-syntax::parse           Module (AST + spans)
@@ -146,7 +146,7 @@ since the harness keeps a passing test quiet.
 | `capture/` | what a block captures: copied variables, indirection vectors, the fallback closures of an inlined conditional |
 | `class-side/` | class sides: an implicit one, `outer` from one, class-side `super` |
 | `errors/` | a program that raises, where the error text and the exit status are the point |
-| `kernel/` | the core library in `Kernel.ns`: what a user subclass of a builtin inherits, the one outcome the move defined, and a recursion through kernel methods the two lowerings count alike |
+| `kernel/` | the core library in `Kernel.ns`: what a user subclass of a builtin inherits, the one outcome the move defined, a recursion through kernel methods the two lowerings count alike, and §3.1.1's value semantics — a value's derived equality and hash, its lack of identity, and the two conditions refused at instantiation |
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
 | `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
 | `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
@@ -216,7 +216,7 @@ four before trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
-| No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the builtin `Object` class; scheduled for step 6's second plan, `Class`, `Behavior` and `Metaclass` in `Kernel.ns` | §3.2 | [object-model.md](object-model.md) |
+| No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the builtin `Object` class; scheduled for step 6's third plan, `Class`, `Behavior` and `Metaclass` in `Kernel.ns` | §3.2 | [object-model.md](object-model.md) |
 | Value objects exist and both of §3.1.1's conditions are enforced, but nothing copies one across an actor boundary, and a module definition is not one | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |

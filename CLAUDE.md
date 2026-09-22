@@ -9,9 +9,11 @@ Rust 1.98.0, edition 2021, three crates:
   with the reference lowering it is checked against in `compiler/reference.rs`),
   the VM (`vm.rs`) and the send machinery it calls (`interpreter/`, the inline
   caches in `interpreter/inline_cache.rs` in front of the lookups in
-  `interpreter/resolve.rs`), the core library -- `kernel/Kernel.ns`, Newspeak
-  source the bootstrap compiles into the builtin classes
-  (`interpreter/kernel.rs`), whose methods reach Rust only through the one VM
+  `interpreter/resolve.rs`), the core library -- `core-library/Kernel.ns`,
+  Newspeak source the bootstrap compiles into the builtin classes
+  (`interpreter/kernel.rs`), in §3.2's and §3.1.1's hierarchy (`Top`, then
+  `Object`, then `Value` over the value classes), whose methods reach Rust
+  only through the one VM
   mirror object and its leaves (`builtins/`, `interpreter/mirror.rs`) -- and
   the image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
@@ -249,7 +251,9 @@ only `Kernel.ns` is resolved with it -- a user module goes through `resolve`; th
 checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
 (`interpreter::kernel`); no program can name the mirror's class -- no bare name resolves to
 it (`instantiate::builtin_kind_from_name` omits it), and the image decoder refuses builtin
-class tag 14 wherever a program names a class (`read_program_builtin_class`); the encoder
+class tag 14 wherever a program names a class (`read_program_builtin_class`, which refuses
+`Top`'s tag 15 the same way and for the same kind of reason -- §3.2 lets only `Object` name
+it, so no source module can and no artifact may either); the encoder
 refuses an image whose graph reaches the mirror; `decide_factory` refuses to instantiate the
 mirror's class; and `SendMirror`, which runs a leaf with no lookup, is emitted only for a
 `MirrorSend` and has no wire tag, so no artifact can carry one. Never add a way for a
@@ -320,8 +324,12 @@ boundary: in PowerShell,
 before the build and `Remove-Item Env:RUSTFLAGS` after it (`RUSTFLAGS` replaces the
 configuration's flags, so `+crt-static` must be repeated; a Linux or macOS build carries
 the alignment flag alone). Step 2c measured identical machine code 1–2% apart through a
-64-byte phase shift of every hot function; pinned, a comparison measures code, not
-placement. The shipped build does not carry the pin: it costs about 110 KB (5.6%) and
+64-byte phase shift of every hot function; pinned, that phase shift is gone. The pin is
+not the whole story, though: `bench_block.ns` has since measured **16% apart between two
+builds of the same tree** with the pin in place, each build stable to about 1%, so for
+that source one build per commit measures the build rather than the commit — build
+several of each tree and pool them, or the comparison is noise. The shipped build does
+not carry the pin: it costs about 110 KB (5.6%) and
 measured no faster. `docs/design/execution.md`'s measurement protocol ("What removing the
 re-entries moved") spells it out. `vm::run`'s per-instruction step sits near LLVM's
 inlining threshold and is forced inline; before timing a change to a send's path, check

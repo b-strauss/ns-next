@@ -2,7 +2,7 @@
 
 > **Status:** partial — the core library is built as Newspeak source,
 > `Kernel.ns`, over one VM mirror; missing are `Class`, `Behavior` and
-> `Metaclass` (step 6's second plan) and `Integer>>/`, and the surface grows
+> `Metaclass` (step 6's third plan) and `Integer>>/`, and the surface grows
 > on demand, not speculatively.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
@@ -24,11 +24,54 @@ comparison in [image-format.md](image-format.md).
 ## What exists
 
 `Kernel.ns` declares one nested class per builtin class but the mirror's:
-the private `Top`, `Object` beneath it, then `Value` and, under `Value`,
-`Boolean` with `True` and `False`, `Number` with `Integer` and `Float`,
-`String`, `Symbol`, `Character` and `Nil` — §3.1.1's value classes — while
-`Array`, `OrderedCollection`, `Block` and `Platform` stay directly under
-`Object`. Almost every method is a one-line forwarder to the mirror ("The
+
+```
+Top                     (private; no superclass, declares nothing)
+└── Object              class, ==, =, hash, printString, doesNotUnderstand:
+    ├── Value           =, ==, hash, and the two slot-reading leaves
+    │   ├── Boolean     ├── True
+    │   │               └── False
+    │   ├── Number      ├── Integer
+    │   │               └── Float
+    │   ├── String
+    │   ├── Symbol
+    │   ├── Character
+    │   └── Nil
+    ├── Array
+    ├── OrderedCollection
+    ├── Block
+    └── Platform
+```
+
+That is §3.2's shape and §3.1.1's, taken literally. §3.2 says "a class is
+either the empty class `Top` or the application of a mixin to another class",
+and "only the class `Object` may have `Top` as its superclass", so `Top`
+exists, declares nothing, and is the one class `Kernel.ns` keeps private —
+every other class says `public`, because §6.3.1 makes an undeclared member
+protected and a protected class is unreachable from any other module, which
+is where a program's `Integer` or `String` has to come from. §3.1.1 says a
+value object's "class inherits from class `Value`", so every class whose
+instances are values hangs below `Value`, and `Number` sits between it and
+`Integer` and `Float` because §3.1.1 names `Number` among them.
+
+**This is not SOMns's shape, and the difference is the one rule SOMns does
+not keep.** `prior-art/somns/core-lib/Kernel.ns` has `Top` and `Value`, and
+its value classes hang below `Value` exactly as they do here — its `=` is
+even the same leaf, `vmMirror value: self sameAs: other`. What it does
+differently is insert a class between: `Top` → `Thing`, which declares
+`doesNotUnderstand:`, `asString`, `isNil` and the rest, and then `Object`
+and `Value` as **siblings** under `Thing`, `Object` declaring only `==` and
+`~=` and `Value` only `=`, `<>` and `copy`. So in SOMns a value is not an
+`Object`. §3.2 is explicit that it must be — "except for `Top` all classes
+are subclasses of class `Object`" — so `Value` is a subclass of `Object`
+here, and the behaviour SOMns puts on `Thing` is on `Object`. The cost of
+the rule is that `Value` must *override* what `Object` declares, `=`, `==`
+and `hash`, rather than declaring them where nothing else has; the benefit
+is that `3 doesNotUnderstand: …` and `'a' printString` need no second
+declaration, and that a program may assume of any receiver what §3.2 says it
+may.
+
+Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 `printString` and protected `doesNotUnderstand:`; `Boolean`'s conditionals,
 `not`, `&`, `and:`, `|`, `or:` and `printString`; `Integer`'s `+ - * // < >
@@ -61,6 +104,16 @@ derives from an instance's state, for a class that inherits `Value`'s `=`
 rather than declaring one; they decline anything else, and `Value`'s
 `ifFail:` block answers instead. Neither walk recurses or calls back into
 Newspeak.
+
+The last two are the first *reflective* leaves the mirror carries: given an
+object, how many slots its class's application declares, and what the slot
+at an index holds. They exist because the Newspeak fallback has to read
+state from a receiver it cannot send a private selector to, but they are
+the same two questions an object mirror asks
+([liveness-and-reflection.md](liveness-and-reflection.md)), and the mirror
+work is meant to reuse them rather than declare a second pair. What they do
+not yet answer is a slot's *name*, which `Value` does not need and a mirror
+does; that is the shape to extend when it is built.
 
 `Value` is where §3.1.1's "a value object is globally unique, in the sense
 that no other object is equal to it" is written down. It declares `=` as a
@@ -97,7 +150,85 @@ the later tiers are where it is meant to come back: `Value>>==`'s body is
 one send, exactly the shape an inliner folds into its callee, and the leaf
 is a primitive a JIT can emit inline for a receiver whose type feedback
 says `SmallInteger`. Until then, a program that compares immediates in a
-hot loop pays two dispatches where Milestone 1 paid one.
+hot loop pays two dispatches where Milestone 1 paid one. **The measurement
+does not bound this**: none of the eight benchmark sources sends `=` or
+`==` in its loop, which was recorded before measuring
+([execution.md](execution.md), "What `Top`, `Value` and `Number` cost"). A
+source that does is what would show it, and there is none yet.
+
+**§3.1.1's conditions are enforced, and where.** "An object is a value
+object if it is deeply immutable ... and all objects reachable from it are
+also deeply immutable" is two separate checks, both refusing rather than
+silently allowing a value that is not one:
+
+- **A mutable slot below `Value` means no instance.** `Mutator::apply_mixin`
+  computes `inherits_value` and the first `mutable_value_slot` of the whole
+  chain once, when it builds the application;
+  `instantiate::instantiate_class` refuses before it allocates anything, and
+  names both the class asked and the class that declares the slot, since a
+  subclass inherits the fault. §6.3.2's immutable slot is what makes this
+  checkable at all: a value class may declare `| held = … |`, never
+  `| held ::= … |`.
+- **A slot of a value may hold only a value.** `Instruction::InitializeSlot`
+  asks `instantiate::check_value_slot` on every store into an instance whose
+  class inherits `Value`; anything that is not itself a value — an `Array`,
+  an ordinary instance, a class object — is refused with the slot named.
+  Deep immutability is then transitive by induction: whatever a value's slot
+  holds was itself checked when it was made.
+
+**What is still unchecked.**
+
+- **A value class nothing instantiates is accepted.** Both refusals sit
+  where an instance comes into being, not where the class does. A class that
+  inherits `Value` and declares a mutable slot is a defect the moment it is
+  written, and it is reported the moment something asks for an instance —
+  never before. The alternative was making class creation fallible, which
+  would turn the public `load_module` into a fallible API at every call site
+  that builds a class, to report a fault that cannot yet have done anything.
+- **A ready-made instance decoded from an image is not re-checked.** The
+  decoder rebuilds an instance's slots from the artifact's bytes without
+  going through `InitializeSlot`, so a crafted image can hand back something
+  whose class inherits `Value` while a slot holds an `Array`. That is a
+  wrong answer for a crafted artifact, not a crash: the decoder stays
+  panic-free, and the derivation declines any shape it cannot rule on rather
+  than guessing ([image-format.md](image-format.md), "Verification", on what
+  the two passes do and do not guarantee).
+- **`=` and `hash` are expected to agree, not checked to.** A subclass that
+  overrides one and not the other breaks the contract silently, as it does
+  in every Smalltalk.
+- **Identity is not globally unique.** §3.1.1's "globally unique, in the
+  sense that no other object is equal to it" is met for `=` and `==`, which
+  the derivation makes state-based, but two equal `String`s remain two
+  distinct objects to the collector. Canonicalization is not required for
+  the derived equality and was left out deliberately.
+- **`1 = 1.0` and `1.0 = 1` still disagree**, as they did before: each is
+  its own class's `=`, and the missing numeric tower is what would
+  reconcile them ("Deviation: `i64` integers" and "Gap: an integer has no
+  `/`" above).
+- **A value class that declares a nested class compares wrongly once that
+  class has been accessed.** *Open defect, found 2026-09-23.* The hidden
+  nested-class cache slot ("The nested-class accessor",
+  [object-model.md](object-model.md)) is a field of the instance like any
+  other, and both the derivation's walk and `valueSlotCount:` count it. While
+  it is still nil the comparison is right. Once the accessor has run on both
+  sides, each side's slot holds *that instance's own* class object — a nested
+  class object is per enclosing instance — the leaf declines it as no value,
+  and `valueEquals:` then sends `=` to the two class objects, which is
+  `Object`'s identity `=` and answers false. So two values built from the
+  same arguments answer `true`, and `false` after each has been sent its own
+  nested-class accessor, which §3.1.1 forbids. **The fix is to walk only the
+  slots a class *declares***: the application already knows which indices are
+  nested-class cache slots (`MixinApplication::nested_slot`), so
+  `builtins/value.rs`'s `slots_of` and the `slotCount`/`slotAt:` rows should
+  skip them, exactly as `InitializeSlot`'s check never sees them. Nothing
+  pins the behaviour either way yet; a golden goes in with the fix.
+
+The builtin value classes' own immutability rests on there being no mutating
+leaf for a `String`, a `Symbol` or a `Character` — their state is a Rust
+payload, not slots, so neither check above is about them. And the actor
+boundary that gives all of this its purpose does not exist
+([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
+exist; the boundary they cross does not").
 
 The leaves are the 78 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
@@ -195,8 +326,14 @@ rule doing its job: nothing on `corpus/runnable.toml` asks for it.
 
 **Step 6's first plan left it open deliberately** (decided with the user on
 2026-09-21): moving the library into `Kernel.ns` kept every recorded outcome,
-and adding `Integer>>/` would have been a new one. **It still has to be
-settled**, and the choice is as it was. Primordial Soup declares both on
+and adding `Integer>>/` would have been a new one. The second plan's `Number`
+class did not settle it either: `Number` is declared, empty, as the place
+between `Value` and `Integer`/`Float` that §3.1.1 names, and **it is where
+the numeric tower goes when there is one** — what `Integer` and `Float`
+share moves up to it, and a `Fraction` would hang beside them. Declaring it
+empty first is what makes that a later addition rather than a later
+restructuring. **The question still has to be settled**, and the choice is as
+it was. Primordial Soup declares both on
 `Integer` (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`):
 `/` as a primitive falling back to `^other divideFromNumber: self`, and `//`
 beside it, commented "Integer division, rounded toward negative infinity".
@@ -220,7 +357,7 @@ when a whitelisted module demands it" still governs what gets added.
 **Step 6 also carries the rest of §3.2** (decided 2026-09-18): `Class`,
 `Behavior` and `Metaclass` become declared kernel classes rather than objects
 hand-built in Rust, and a class object's own class becomes its metaclass. That
-is its second plan, not built yet. Both references declare exactly these three
+is its third plan, not built yet. Both references declare exactly these three
 in their kernel source
 (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
 `prior-art/newspeak/KernelForJS.ns`); the reflection work right after this
@@ -421,26 +558,32 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    has at any moment. `BuiltinClass::ALL` and `Mutator::builtin_class` are
    that table, and `trace.rs` reaches it. A new builtin is appended to
    `BuiltinClass::ALL`, never inserted, because its order is also the wire tag
-   order (`image::encode::builtin_class_tag`) and the order the placeholders
-   are filled in. `VmMirror`'s class, whose mixin already holds the `MIRROR`
-   rows, and its one instance are built here too.
+   order (`image::encode::builtin_class_tag`). `VmMirror`'s class, whose mixin
+   already holds the `MIRROR` rows, and its one instance are built here too.
 2. **`Kernel.ns` is compiled but not instantiated.** Its root mixin and its
    nested mixins are built with `Mutator::build_mixin`, compiled under the
    interpreter's lowering like any module, and `check_kernel_shape` checks
    what the phase relies on: one nested class per builtin, named as
    `kernel_class_name` says, each with no slots and the default factory; the
    one immutable `vmMirror` slot on the root; a superclass clause on every
-   class but `Object` that is a bare sibling name, read and never run, naming
-   a class `BuiltinClass::ALL` lists earlier; and the literal-block rule
+   class but `Top` that is a bare sibling name, read and never run, naming a
+   kernel class, from which the chain reaches `Top` without repeating; that
+   only `Object` names `Top`, as §3.2 allows; and the literal-block rule
    above. A kernel that breaks it is a defect in the binary, and panics.
-3. **Each placeholder gets its kernel application**, in `BuiltinClass::ALL`
-   order, so a superclass is always filled before its subclass: the nested
-   mixin named like the class, applied to the application of the class its
-   clause names — `Object`'s to none, `True`'s and `False`'s to `Boolean`'s,
-   every other to `Object`'s — installed with `Heap::set_class_application`,
-   which restamps the dispatch id of the few objects that exist this early,
-   and the class object's superclass link set to match. `VmMirror` keeps its
-   own Rust mixin, re-applied over the filled `Object`.
+3. **Each placeholder gets its kernel application**, in `fill_order`, which
+   sorts the kinds by how many superclass links separate them from `Top`, so
+   a superclass is always filled before its subclasses. `BuiltinClass::ALL`
+   is no longer that order and cannot become it again: a class added later is
+   appended, because its position is a wire tag, so `Value` and `Number` sit
+   at the end of `ALL` and in the middle of the hierarchy. Each class gets
+   the nested mixin named like it, applied to the application of the class
+   its clause names — `Top`'s to none, `Object`'s to `Top`'s, and so on down
+   — installed with `Heap::set_class_application`, which restamps the
+   dispatch id of the few objects that exist this early, and the class
+   object's superclass link set to match. `Value`'s application is recorded
+   as it is filled rather than after the loop, because every class below it
+   asks `apply_mixin` whether its superclass application is that one.
+   `VmMirror` keeps its own Rust mixin, re-applied over the filled `Object`.
 4. **The immediate dispatch-id table is refreshed**, because an immediate's
    ids are read off its class's application, which just changed.
 5. **The kernel class is built and instantiated** from the host, with the
@@ -472,16 +615,15 @@ declared no factory at all, let any count through. `Array new` and
 `OrderedCollection new` still build their own payload
 (`instantiate::decide_factory`).
 
-`Kernel` is declared like any other module, without a `Value` mixin
-application. §6.4 makes a module *definition* a value object with nothing
-declared, and §3.1.1's second condition — the one that would make its
-*instances* values — exists for passing objects across actor boundaries.
-ns-next has no actors and no formal value objects
-([liveness-and-reflection.md](liveness-and-reflection.md), "Deviation: no
-formal value objects"), so the value semantics belong to the actor work,
-together with the `Value` class and the mixin application syntax that SOMns's
-declaration needs and that ns-next does not parse ([README.md](README.md),
-deviations).
+`Kernel` is declared like any other module, `= Object new (…)`, where SOMns
+writes `= Object <: Value`. The `Value` class exists here now, so what is
+missing is only the syntax: `<:`, a mixin application in a superclass
+clause, is not parsed ([README.md](README.md), deviations). Nothing depends
+on it. §6.4 makes a module *definition* a value object with nothing
+declared, and §3.1.1's conditions on its *instances* exist for passing
+objects across actor boundaries, which ns-next has none of
+([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
+exist; the boundary they cross does not").
 
 ### Where the library source lives, and how modules are found
 
@@ -503,6 +645,9 @@ module yet, so the primitive belongs with the step that does.
 **Start-up was measured, not assumed: the kernel costs about 0.5 ms** —
 `ns-next run` of a module that answers at once, 4.07 ms against 3.56 ms
 before the move ([execution.md](execution.md), "What the core library's move
+cost"). Adding `Top`, `Value` and `Number` and `Value`'s seven methods to it
+did not move that measurably, which is the figure to watch as the library
+grows ([execution.md](execution.md), "What `Top`, `Value` and `Number`
 cost"). That does not call for embedding the compiled kernel as an image,
 which stays the next step if the kernel grows until it does, and the
 comparison must then include what `image::load`'s two verification passes
@@ -582,6 +727,15 @@ slower — `bench_megamorphic.ns` +23.6%, `bench_block.ns` +21.3%,
 `bench_do.ns` +5.5% — which is what the primitive methods recover. See
 [execution.md](execution.md), "What the core library's move cost", for the
 tables and what is left unexplained.
+
+**Giving it the specification's object model cost about as little**,
+measured the same way against the commit before it: seven of the eight
+sources level, `bench_new2.ns` 3.6% slower and recorded as an open finding
+with the change that would recover it
+([execution.md](execution.md), "What `Top`, `Value` and `Number` cost").
+That measurement also found that `bench_block.ns` spreads 16% between builds
+of the same tree, which is a fact about the protocol rather than about this
+work.
 
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers
 

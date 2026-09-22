@@ -285,12 +285,29 @@ been read, and then gives it its kernel class's application with
 literal has had from the first instruction on, and its behaviour is the
 kernel's.
 
-- **Superclasses follow the kernel's clauses.** `Object` has none; `True` and
-  `False` are subclasses of `Boolean` (decided with the user on 2026-09-22),
-  as both references declare them, so the conditionals and logic are
-  `Boolean`'s methods, inherited; every other builtin is a direct subclass of
-  `Object`. The clause is read by name at bootstrap, never run, and the class
-  object's `superclass` link is set to match its application's.
+- **Superclasses follow the kernel's clauses.** `Top` has none — §3.2's
+  empty class, which declares nothing so that all code, `Object`'s included,
+  resides in a mixin, and which only `Object` may name as its superclass.
+  `Object` is below it, and every other class is below `Object`, as §3.2
+  requires ("except for `Top` all classes are subclasses of class
+  `Object`"). `Value` is below `Object`, and below `Value` are §3.1.1's value
+  classes: `Boolean` with `True` and `False` (decided with the user on
+  2026-09-22, as both references declare them, so the conditionals and logic
+  are `Boolean`'s methods, inherited), `Number` with `Integer` and `Float`,
+  and `String`, `Symbol`, `Character` and `Nil`. `Number` is empty; it is the
+  place §3.1.1 names, and where the numeric tower goes when there is one
+  ([core-library.md](core-library.md), "Gap: an integer has no `/`").
+  `Array`, `OrderedCollection`, `Block` and `Platform` stay directly under
+  `Object`, since their instances are not values. The clause is read by name
+  at bootstrap, never run, and the class object's `superclass` link is set to
+  match its application's.
+- **`Top` is not nameable.** It is the one class of `Kernel.ns` declared
+  private, so §6.3.1 keeps it out of every other module's reach; no bare name
+  resolves to it (`instantiate::builtin_kind_from_name` omits it), and the
+  image decoder refuses its tag wherever an artifact names a class, as it
+  refuses the mirror's ([image-format.md](image-format.md), "Verification").
+  A program can reach it only as `Object`'s superclass, which is what §3.2
+  allows and nothing more.
 - **A builtin class's enclosing object is the kernel instance** — the one
   instance of `Kernel.ns`'s root class, instantiated with the VM mirror — and
   its `declaring_class` is the kernel class, as for any nested class. That is
@@ -459,12 +476,12 @@ superclass's application (§6.2) — a fresh mixin per class object would give
 every enclosing instance its own behaviour and send every `X new` site
 megamorphic.
 
-**Deviation from §3.2, scheduled for step 6's second plan.** The specification also makes
+**Deviation from §3.2, scheduled for step 6's third plan.** The specification also makes
 every class formally an instance of its metaclass, which is in turn an instance
 of `Metaclass` and a subclass of `Class`. That reified hierarchy is not built:
 what exists is the lazily created metaclass above, which carries class-side
 behaviour and nothing more, and a class object's own class is the builtin
-`Object` class. It lands with step 6's second plan, the next part of the
+`Object` class. It lands with step 6's third plan, the next part of the
 core library in Newspeak ([core-library.md](core-library.md)), which is
 where `Class`, `Behavior` and `Metaclass` become declared kernel classes
 rather than objects hand-built in Rust — both references declare them exactly there

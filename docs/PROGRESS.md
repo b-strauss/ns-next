@@ -15,11 +15,23 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**The next piece of work is step 6's second plan, `Class`, `Behavior` and
-`Metaclass` in `Kernel.ns`**, which has no plan yet and only the outline
+**First, one open defect on the current branch**
+(`feature/kernel-over-vm-mirror`, 2026-09-23): a value class that declares a
+nested class compares wrongly once the nested-class accessor has run, because
+the hidden cache slot is counted as state. The cause, the fix and the golden
+it needs are in [core-library.md](design/core-library.md), "What is still
+unchecked", and under "`Top`, `Value` and the value semantics" below. It is
+small and self-contained.
+
+**Then the next piece of work is step 6's third plan, `Class`, `Behavior`
+and `Metaclass` in `Kernel.ns`**, which has no plan yet and only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
-gives; its first plan, the core library over a VM mirror, is done. Both are described below,
-from "Step 6's first part" on, after the account of how M4 got here.
+gives. Step 6's first two plans are done: the core library over a VM mirror,
+which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
+which gave it the specification's object model
+([core-library.md](design/core-library.md), "What exists"). All three are
+described below, from "Step 6's first part" on, after the account of how M4
+got here.
 
 M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
@@ -281,8 +293,9 @@ sends the interpreter dispatches; the numbers above are what that work has to
 spend before it shows as a regression against `6f5a5b1`, and the fast path is
 what supplies it.
 
-**The rest of step 6 breaks into three plans, and the first — the core
-library over a VM mirror — is done** (2026-09-22;
+**The rest of step 6 breaks into three plans, and the first two are done.**
+The first — the core
+library over a VM mirror — is done (2026-09-22;
 [ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md);
 [core-library.md](design/core-library.md), "The core library as Newspeak
 source over a VM mirror"). Every builtin method is a one-line forwarder in
@@ -317,12 +330,28 @@ module that returns at once) is 0.5 ms slower, 4.07 ms against 3.56 ms.
 function. See [execution.md](design/execution.md), "What the core library's
 move cost".
 
-**What comes next is the other two plans, in this order**, deliberately not
-one, for the reason the leaf inlining was split off first: each produces
+**The second — `Top`, `Value` and `Number` — is done too** (2026-09-23;
+[ns-next-value-and-top](superpowers/plans/2026-09-22-2112-ns-next-value-and-top.md);
+[core-library.md](design/core-library.md), "What exists"). It gave the core
+library the specification's *object model* where the first gave it the
+specification's *dispatch*: §3.2's empty class `Top` above `Object`, with
+every other class below `Object`; §3.1.1's `Value` over the value classes,
+`Number` among them, empty and waiting for the numeric tower; the value
+classes hashing by content rather than by identity; `Value` deriving `=`,
+`==` and `hash` from an instance's state through `builtins/value.rs`, with a
+Newspeak fallback for what that leaf declines; and §3.1.1's two conditions
+refused at instantiation. Every class but `Top` is public, because §6.3.1
+would otherwise leave them unreachable from any other module. **Measured,
+seven of the eight sources are level and `bench_new2.ns` is 3.6% slower**;
+see "`Top`, `Value` and the value semantics" below, which also carries one
+open defect and a finding about the measurement protocol itself.
+
+**What comes next is the third plan and then step 7**, deliberately not one
+plan, for the reason the leaf inlining was split off first: each produces
 working, measured software on its own, and each one's measurement informs the
 next.
 
-2. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2: the three
+3. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2: the three
    become declared classes of `Kernel.ns`, and a class object's own class
    becomes its metaclass instead of the builtin `Object` class
    ([object-model.md](design/object-model.md), "Class sides and
@@ -332,7 +361,7 @@ next.
    and the decoder's placeholder scheme and the class-side `doesNotUnderstand:`
    deviation ([dispatch.md](design/dispatch.md)) both change with it. No plan
    exists yet; write one from those sections.
-3. **The payload space**, step 7 of the order of work below, whose own
+4. **The payload space**, step 7 of the order of work below, whose own
    measurements are named under [memory.md](design/memory.md), "Payloads
    belong to the Rust allocator, and what that costs". Run one of them before
    building anything there. **Open, and to settle before planning it:** the
@@ -1114,8 +1143,8 @@ runs also went from ~38 ms to ~117 ms, which the arena's `Vec` doubling would
 explain — an inference from the shape of the growth curve rather than a measured
 cause, and one the next step contradicted for this benchmark (below). The
 conditions the peak figures were taken under, and the control that would settle
-the doubling attribution, are in [memory.md](design/memory.md), "Open: what the
-collector owns"; the tree-walk figures, retired with the engine, are recorded
+the doubling attribution, are in [memory.md](design/memory.md), "The interim cost, and
+the one question still open"; the tree-walk figures, retired with the engine, are recorded
 only here.
 
 ## M4 — The activation stack (2026-09-10)
@@ -1226,8 +1255,8 @@ inline caches'. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which
 the arena's `Vec` doubling was thought to explain, survived under a binary that
 retains nothing for that benchmark — 4.6 MB across all twenty-two entry sends —
 so that explanation does not hold for it; its cause was never found. What the
-bytecode maxima do and do not show is in [memory.md](design/memory.md), "Open:
-what the collector owns".
+bytecode maxima do and do not show is in [memory.md](design/memory.md), "The
+interim cost, and the one question still open".
 
 ## M4 — Retiring the tree-walker (2026-09-11)
 
@@ -3399,6 +3428,45 @@ ignored), also under each of the three stress modes; `cargo clippy
 
 ## `Top`, `Value` and the value semantics (2026-09-23)
 
+Plan:
+[ns-next-value-and-top](superpowers/plans/2026-09-22-2112-ns-next-value-and-top.md),
+eight tasks over the decisions taken with the user on 2026-09-22, the central
+one being that a value object has no observable identity: a value may be
+copied across an actor boundary, so its equality and hash are derived from
+its state and its identity method is a send of `=`. Branch
+`feature/kernel-over-vm-mirror`, on the checked-out tree throughout. Step 6's
+first plan gave the core library the specification's *dispatch*; this one
+gives it the specification's *object model*
+([core-library.md](design/core-library.md), "What exists";
+[object-model.md](design/object-model.md), "The builtin classes").
+
+**What changed, commit by commit:**
+
+- `1dc548a` — `crates/ns-runtime/kernel/` is `crates/ns-runtime/core-library/`,
+  since `kernel` named only the bootstrap phase that installs it, and every
+  nested class of `Kernel.ns` says `public`: §6.3.1 defaults a member to
+  protected, which would leave a kernel class unreachable from any other
+  module.
+- `7d7026d` — `Top`, `Value` and `Number`, and with them §3.2's and §3.1.1's
+  hierarchy. `BuiltinClass::ALL` is a wire-tag order and no longer a
+  superclass order, so the bootstrap fills the placeholders in `fill_order`,
+  sorted by depth below `Top`.
+- `1932c0e` — `Top` is refused wherever an artifact names a class, as the
+  mirror's tag is: §3.2 lets only `Object` name it, so no source module can
+  and no image may either ([image-format.md](design/image-format.md)).
+- `39fb961` — the builtin value classes hash by their value rather than by
+  identity, which §3.1.1 requires of anything a copy must hash like.
+- `d011a57`, `8b53296`, `7cfdee3` — the derivation: `builtins/value.rs`
+  answers a value's equality and hash from its state without ever sending,
+  four new `MIRROR` rows carry it, and `Value` declares `=`, `hash` and
+  `==` over them with a Newspeak fallback for what the leaf declines.
+- `55d3f60`, `ab692b7` — §3.1.1's two conditions, refused where an instance
+  comes into being: a mutable slot below `Value` means no instance, and a
+  slot of a value may hold only a value
+  ([object-model.md](design/object-model.md), "A value object's two
+  conditions").
+- `a6edb79` — the measurement below.
+
 **Measurement.** Two sittings by the protocol, eight sources, against
 `b0a771d` -- this branch's head before the work started, and documentation
 only, so its tree is the code as it stood before. **Seven of the eight are
@@ -3422,6 +3490,36 @@ commit boundary. On that source one build per commit measures the build, not
 the commit; the protocol paragraph in
 [execution.md](design/execution.md), "What removing the re-entries moved",
 now says so.
+
+**What is enforced, and what is not.** §3.1.1's two conditions are refused
+where an instance comes into being, which is every instance of every class,
+whether its class came from source, from a nested declaration or from an
+image. Three things are deliberately outside that: a value class with a
+mutable slot that nothing ever instantiates is accepted silently, because
+the refusal sits at instantiation rather than at class creation; a
+ready-made instance decoded from an image is not re-checked, so a crafted
+artifact can produce a wrong answer, never a crash, since the derivation
+declines what it cannot decide; and nothing canonicalizes two equal
+`String`s, so §3.1.1's "globally unique" holds for `=` and `==` but not for
+object identity. All three are recorded in
+[core-library.md](design/core-library.md), "What is still unchecked".
+
+**One open defect, found while writing that section up (2026-09-23).** A
+value class that declares a nested class compares wrongly once the
+nested-class accessor has run on both sides: the hidden cache slot is a
+field like any other, both the derivation's walk and `valueSlotCount:` count
+it, and each instance's own class object lands there, so `valueEquals:`
+sends `=` to two different class objects and answers false for two values
+built from the same arguments. The fix is to walk only the slots a class
+declares, which the application already distinguishes; it is written up with
+the rest in [core-library.md](design/core-library.md), "What is still
+unchecked", and is the first thing to do on this branch.
+
+Gates, at `ab692b7`: `cargo test --workspace` green (885 tests passing, one
+ignored), also under each of the three stress modes; `cargo clippy
+--workspace --all-targets` clean; `parse-corpus` at **210/0/1/0** and
+`run-corpus` at **6/0/205**, under each stress mode too. The two commits
+after it are documentation only.
 
 ## Notes
 
