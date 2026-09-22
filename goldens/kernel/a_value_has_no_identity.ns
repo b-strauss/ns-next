@@ -1,0 +1,33 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: "A value object is globally unique, in the
+   sense that no other object is equal to it", and a value's class "does
+   not define an identity method (==) ... if such a method is defined, that
+   method must return the same results as Value's equality method (=)".
+   `Value` declares `==` as a send of `=`, which makes the two agree by
+   construction for every value class -- a value has no observable
+   identity, so there is nothing else for `==` to answer.
+
+   Each line prints the pair's `==` and then its `=`, so the agreement is
+   visible column by column: the two are never allowed to differ.
+
+   `Integer/Float` answers false in both columns, and that is the rule
+   holding rather than breaking: `Integer>>=` takes only an Integer, so
+   `1 = 1.0` is false and `==` must answer exactly that. *)
+class ValueIdentity usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    report: label for: first and: second = (
+        transcript show: label; show: ' '; show: (first == second) printString;
+            show: ' '; show: (first = second) printString; newLine
+    )
+    public main: ignoredPlatform args: arguments = (
+        report: 'String' for: 'a' and: 'a'.
+        report: 'Character' for: "a" and: "a".
+        report: 'Symbol' for: #a and: #a.
+        report: 'Integer' for: 3 and: 3.
+        report: 'Nil' for: nil and: nil.
+        report: 'Float/Integer' for: 1.0 and: 1.
+        report: 'Integer/Float' for: 1 and: 1.0.
+    )
+) : ()

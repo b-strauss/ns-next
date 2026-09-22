@@ -24,9 +24,10 @@ comparison in [image-format.md](image-format.md).
 ## What exists
 
 `Kernel.ns` declares one nested class per builtin class but the mirror's:
-`Object`, `Boolean` with `True` and `False` beneath it, `Integer`, `Float`,
-`String`, `Symbol`, `Character`, `Array`, `OrderedCollection`, `Nil`,
-`Block` and `Platform`, every one but `True` and `False` directly under
+the private `Top`, `Object` beneath it, then `Value` and, under `Value`,
+`Boolean` with `True` and `False`, `Number` with `Integer` and `Float`,
+`String`, `Symbol`, `Character` and `Nil` — §3.1.1's value classes — while
+`Array`, `OrderedCollection`, `Block` and `Platform` stay directly under
 `Object`. Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 `printString` and protected `doesNotUnderstand:`; `Boolean`'s conditionals,
@@ -60,6 +61,23 @@ derives from an instance's state, for a class that inherits `Value`'s `=`
 rather than declaring one; they decline anything else, and `Value`'s
 `ifFail:` block answers instead. Neither walk recurses or calls back into
 Newspeak.
+
+`Value` is where §3.1.1's "a value object is globally unique, in the sense
+that no other object is equal to it" is written down. It declares `=` as a
+forwarder to `value:sameAs:ifFail:`, `hash` to `valueHash:ifFail:`, and the
+identity method `==` as `^self = other` — an ordinary method, since §3.1.1
+requires an identity method a value's class declares to "return the same
+results as `Value`'s equality method", and a send of `=` makes that true by
+construction for every subclass. Where a leaf declines — a slot whose class
+brings its own `=`, a shape it does not handle, its node budget — the
+failure block runs `valueEquals:` or `valueHashOfSlots`, which walk the
+slots from Newspeak and send `=` or `hash` to each. Those two read a slot
+through `valueSlotCountOf:` and `valueSlotOf:at:`, which name their subject
+rather than forwarding `self`: a private member is reachable only through a
+lexical send (§5.9), so the *other* side's state cannot be read by sending
+it a private selector, and both sides have to go through the same leaf.
+Naming the subject is also what costs those two the primitive-method fast
+path, which only the declining path pays.
 
 The leaves are the 78 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported

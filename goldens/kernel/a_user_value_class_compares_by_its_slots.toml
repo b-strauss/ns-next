@@ -1,0 +1,6 @@
+stdout = '''
+equal true true true
+different false false false
+other class false false true
+nested true true true
+'''

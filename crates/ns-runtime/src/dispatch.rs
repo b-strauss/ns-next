@@ -565,17 +565,17 @@ mod tests {
         });
     }
 
-    /// `Integer` has no `==`; the ordinary walk reaches `Object`'s, since
-    /// `Integer`'s superclass is `Object` -- no hand-restored inheritance.
+    /// `Block` has no `==`; the ordinary walk reaches `Object`'s, since
+    /// `Block`'s superclass is `Object` -- no hand-restored inheritance.
     /// `Object`'s `==` is a kernel primitive method (`Kernel.ns`), found as a
     /// `Lookup::Method` whose `MixinMethod.primitive` names the mirror row.
     #[test]
     fn a_primitive_a_builtin_lacks_is_found_at_objects_level() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let integer = mutator.builtin_class(BuiltinClass::Integer);
+            let block = mutator.builtin_class(BuiltinClass::Block);
             let object = mutator.builtin_class(BuiltinClass::Object);
-            match lookup_public(&mutator.heap, integer, Symbol::intern("==")) {
+            match lookup_public(&mutator.heap, block, Symbol::intern("==")) {
                 Lookup::Method(method, level) => {
                     assert_eq!(
                         method.primitive,
@@ -583,7 +583,27 @@ mod tests {
                     );
                     assert!(level.same(object))
                 }
-                _ => panic!("`3 == 3` must find Object's `==`"),
+                _ => panic!("a Block's `==` must find Object's `==`"),
+            }
+        });
+    }
+
+    /// §3.1.1: a value has no observable identity, so `Value` declares the
+    /// identity method as a send of `=` -- an ordinary method, carrying no
+    /// primitive -- and a value receiver finds it below `Object`'s identity
+    /// `==`, which it must never reach.
+    #[test]
+    fn a_value_finds_values_identity_method_before_objects() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let integer = mutator.builtin_class(BuiltinClass::Integer);
+            let value = mutator.builtin_class(BuiltinClass::Value);
+            match lookup_public(&mutator.heap, integer, Symbol::intern("==")) {
+                Lookup::Method(method, level) => {
+                    assert_eq!(method.primitive, None);
+                    assert!(level.same(value))
+                }
+                _ => panic!("`3 == 3` must find Value's `==`"),
             }
         });
     }

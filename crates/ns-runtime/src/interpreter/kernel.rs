@@ -612,6 +612,20 @@ mod tests {
         (BuiltinClass::Boolean, "hash"),
         (BuiltinClass::Integer, "hash"),
         (BuiltinClass::Character, "hash"),
+        // §3.1.1's identity method on a value: a send of `=`, which is what
+        // makes the two agree for every subclass. No leaf could answer it
+        // without sending `=` back into Newspeak.
+        (BuiltinClass::Value, "=="),
+        // The Newspeak side of the derivation, which runs when a leaf
+        // declines: both send `=` or `hash` to a slot, which a leaf may not.
+        (BuiltinClass::Value, "valueEquals:"),
+        (BuiltinClass::Value, "valueHashOfSlots"),
+        // Forwarders in shape, but of their subject rather than of `self`:
+        // §5.9 reaches a private member only through a lexical send, so the
+        // other side's state has to be read by naming it as an argument,
+        // which a primitive method may not do.
+        (BuiltinClass::Value, "valueSlotCountOf:"),
+        (BuiltinClass::Value, "valueSlotOf:at:"),
     ];
 
     /// Every kernel method is a forwarder the compiler recognized, and is

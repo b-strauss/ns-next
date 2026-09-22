@@ -93,12 +93,13 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
     });
 }
 
-/// `3 == 3`: `Object`'s identity `==`, reached from an `Integer` receiver.
+/// `3 == 3`: `Value`'s `==`, reached from an `Integer` receiver -- a send
+/// of `=`, since §3.1.1 leaves a value no identity to answer from.
 /// `3 hash` does *not* reach `Object`'s: `Integer` declares its own, which
 /// answers the integer itself, since a value hashes by its value rather
 /// than by an identity it does not have.
 #[test]
-fn a_builtin_receiver_inherits_objects_identity_and_hashes_by_its_value() {
+fn a_builtin_receiver_compares_and_hashes_by_its_value() {
     let mut interpreter = Interpreter::bootstrap();
 
     let same = interpreter.send(

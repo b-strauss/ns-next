@@ -670,15 +670,17 @@ mod tests {
         );
     }
 
-    /// Task 4 as it ships: `Value` declares no `=`, nothing is recorded,
-    /// and every instance is a decline. Task 5's `Value>>=` is what turns
-    /// the instance case on.
+    /// The bootstrap records `Value>>=` itself, and the derivation asks
+    /// whether an instance's `=` *is* that method. The fixture's classes
+    /// inherit `Object` through a `Marker` that declares its own `=`, so
+    /// they are no values at all and the leaf declines them -- which is
+    /// what keeps the derivation off every ordinary object.
     #[test]
-    fn an_instance_declines_while_value_declares_no_equality() {
+    fn an_instance_whose_equality_is_not_values_declines() {
         let (mut interpreter, fixture) = a_fixture();
         assert!(
-            interpreter.enter(|mutator| mutator.value_equality_method.is_none()),
-            "a bootstrapped interpreter records no Value>>= yet"
+            interpreter.enter(|mutator| mutator.value_equality_method.is_some()),
+            "the bootstrap records Kernel.ns's Value>>="
         );
         let one = interpreter.stash(Value::SmallInteger(1));
         let two = interpreter.stash(Value::SmallInteger(2));
@@ -694,7 +696,7 @@ mod tests {
             answered_boolean(
                 &mut interpreter,
                 compared,
-                "an instance with nothing recorded"
+                "an instance whose class declares its own ="
             ),
             None
         );

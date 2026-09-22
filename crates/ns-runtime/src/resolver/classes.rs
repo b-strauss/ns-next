@@ -18,11 +18,19 @@ use crate::Symbol;
 /// clause (in practice, just the class *names* below matter for superclass
 /// resolution -- Object's own instance-side selectors matter for implicit
 /// sends that fall all the way through to Object).
+/// `Top` is deliberately absent: §3.2 reserves it for `Object` alone, and
+/// `Kernel.ns` declares it private for that reason, so no module may name
+/// it. Every other name here is one `instantiate::builtin_kind_from_name`
+/// answers -- the two lists are the same question asked before and during
+/// execution, and a name in one but not the other resolves as an implicit
+/// send and fails with "does not understand".
 pub(super) const BUILTIN_CLASS_NAMES: &[&str] = &[
     "Object",
+    "Value",
     "Boolean",
     "True",
     "False",
+    "Number",
     "Integer",
     "Float",
     "String",

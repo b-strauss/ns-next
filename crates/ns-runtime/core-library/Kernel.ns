@@ -39,10 +39,7 @@ class Kernel vmMirror: theMirror = Object new (
     )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
-       class whose instances are values hangs below this one. What `Value`
-       itself declares (`=`, `hash`, the identity method §3.1.1 constrains)
-       comes later; the hierarchy moves first, so that each step changes one
-       kind of thing.
+       class whose instances are values hangs below this one.
 
        Each class below it already declares the `hash` its own `=` demands.
        Primordial Soup states the contract: `hash` "should be overridden if
@@ -54,6 +51,47 @@ class Kernel vmMirror: theMirror = Object new (
        the value they answer is already at hand, and the activation costs
        only a program that hashes. *)
     public class Value = Object new () (
+        (* §3.1.1: a value object is globally unique, in the sense that no
+           other object is equal to it -- so equality is derived from state,
+           and a value has no observable identity. The leaf declines when a
+           slot's class brings its own `=`, because a leaf may not send;
+           `valueEquals:` then sends it. *)
+        public = other = ( ^vmMirror value: self sameAs: other ifFail: [^self valueEquals: other] )
+        (* §3.1.1: where `Value` declares an identity method, "that method
+           must return the same results as `Value`'s equality method". A send
+           of `=` makes that true by construction, for every subclass. *)
+        public == other = ( ^self = other )
+        public hash = ( ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots] )
+        private valueEquals: other = (
+            | index count |
+            (self class == other class) ifFalse: [^false].
+            count:: self valueSlotCountOf: self.
+            (count = (self valueSlotCountOf: other)) ifFalse: [^false].
+            index:: 1.
+            [index <= count] whileTrue: [
+                ((self valueSlotOf: self at: index) = (self valueSlotOf: other at: index))
+                    ifFalse: [^false].
+                index:: index + 1].
+            ^true
+        )
+        private valueHashOfSlots = (
+            | index count result |
+            count:: self valueSlotCountOf: self.
+            result:: count.
+            index:: 1.
+            [index <= count] whileTrue: [
+                result:: result + (self valueSlotOf: self at: index) hash.
+                index:: index + 1].
+            ^result
+        )
+        (* Both name their subject rather than forwarding `self`: §5.9
+           reaches a private member only through a lexical send, so
+           `other valueSlotCount` would find nothing, and the other side's
+           state has to be read through the same leaf as this side's. That
+           costs each of them the primitive-method fast path, which only
+           the declining path pays. *)
+        private valueSlotCountOf: subject = ( ^vmMirror valueSlotCount: subject ifFail: [^0] )
+        private valueSlotOf: subject at: index = ( ^vmMirror value: subject slotAt: index ifFail: [^nil] )
     )
     (* §3.1.1 names `Number` among the classes whose instances are values,
        and §5.1.1's numeric literals are its instances. It is empty for now,
