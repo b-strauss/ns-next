@@ -174,27 +174,8 @@ const OBJECT: &[PrimitiveSelector] = &[];
 // and `False`, which declare none of their own.
 const BOOLEAN: &[PrimitiveSelector] = &[];
 
-const INTEGER: &[PrimitiveSelector] = &[
-    public("+", Primitive::Integer(IntegerPrimitive::Add)),
-    public("-", Primitive::Integer(IntegerPrimitive::Subtract)),
-    public("*", Primitive::Integer(IntegerPrimitive::Multiply)),
-    public("//", Primitive::Integer(IntegerPrimitive::FloorDivide)),
-    public("<", Primitive::Integer(IntegerPrimitive::Less)),
-    public(">", Primitive::Integer(IntegerPrimitive::Greater)),
-    public("<=", Primitive::Integer(IntegerPrimitive::LessOrEqual)),
-    public(">=", Primitive::Integer(IntegerPrimitive::GreaterOrEqual)),
-    public("=", Primitive::Integer(IntegerPrimitive::Equal)),
-    public("negated", Primitive::Integer(IntegerPrimitive::Negated)),
-    public("abs", Primitive::Integer(IntegerPrimitive::Absolute)),
-    public(
-        "printString",
-        Primitive::Integer(IntegerPrimitive::PrintString),
-    ),
-    public(
-        "asString",
-        Primitive::Integer(IntegerPrimitive::PrintString),
-    ),
-];
+// `Integer`'s methods moved into `Kernel.ns` (Task 7).
+const INTEGER: &[PrimitiveSelector] = &[];
 
 const FLOAT: &[PrimitiveSelector] = &[
     public("+", Primitive::Float(FloatPrimitive::Add)),
@@ -813,12 +794,12 @@ mod tests {
 
     /// `Nil` has no natives of its own today; the VM mirror's come from
     /// `MIRROR` rather than `primitives_of` (`method_table`'s special case);
-    /// `Object`'s methods moved into `Kernel.ns` (Task 5) and `Boolean`'s
-    /// (Task 6, inherited by `True` and `False`, which declare none of
-    /// their own), so their lists are empty too; every other builtin still
-    /// has a `primitives_of` list.
+    /// `Object`'s methods moved into `Kernel.ns` (Task 5), `Boolean`'s (Task
+    /// 6, inherited by `True` and `False`, which declare none of their
+    /// own), and `Integer`'s (Task 7), so their lists are empty too; every
+    /// other builtin still has a `primitives_of` list.
     #[test]
-    fn every_builtin_but_nil_the_mirror_object_and_boolean_has_primitives() {
+    fn every_builtin_but_nil_the_mirror_object_boolean_and_integer_has_primitives() {
         for kind in BuiltinClass::ALL {
             assert_eq!(
                 primitives_of(kind).is_empty(),
@@ -830,19 +811,21 @@ mod tests {
                         | BuiltinClass::Boolean
                         | BuiltinClass::True
                         | BuiltinClass::False
+                        | BuiltinClass::Integer
                 ),
                 "{kind:?}"
             );
         }
     }
 
+    /// `Integer`'s `+` moved into `Kernel.ns` (Task 7): the leaf it forwards
+    /// to is the mirror row named `integer:add:ifFail:`, still the same
+    /// `IntegerPrimitive::Add` the family's module executes.
     #[test]
-    fn integer_addition_is_its_own_primitive() {
-        let entry = primitives_of(BuiltinClass::Integer)
-            .iter()
-            .find(|entry| entry.selector == "+")
-            .expect("Integer lists `+`");
+    fn integer_addition_is_its_own_mirror_primitive() {
+        let primitive = mirror_primitive_named("integer:add:ifFail:").expect("row exists");
+        let entry = mirror_entry(primitive);
         assert_eq!(entry.primitive, Primitive::Integer(IntegerPrimitive::Add));
-        assert_eq!(entry.access, ast::AccessModifier::Public);
+        assert_eq!(entry.reported, "+");
     }
 }

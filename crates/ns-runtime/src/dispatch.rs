@@ -421,7 +421,7 @@ fn next_level<'gc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::primitive::{mirror_primitive_named, IntegerPrimitive, Primitive};
+    use crate::builtins::primitive::mirror_primitive_named;
     use indoc::formatdoc;
     use std::collections::HashMap;
 
@@ -579,13 +579,20 @@ mod tests {
     }
 
     /// A builtin's own native is an entry of its own method table.
+    /// `Integer`'s `+` is a kernel primitive method now (`Kernel.ns`, Task
+    /// 7), found as a `Lookup::Method` whose `MixinMethod.primitive` names
+    /// the mirror row.
     #[test]
     fn a_builtins_own_primitive_is_found_at_its_own_level() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let integer = mutator.builtin_class(BuiltinClass::Integer);
             match lookup_public(&mutator.heap, integer, Symbol::intern("+")) {
-                Lookup::Primitive(Primitive::Integer(IntegerPrimitive::Add), level) => {
+                Lookup::Method(method, level) => {
+                    assert_eq!(
+                        method.primitive,
+                        mirror_primitive_named("integer:add:ifFail:")
+                    );
                     assert!(level.same(integer), "found above Integer's own level")
                 }
                 _ => panic!("`3 + 4` must find Integer's own `+`"),

@@ -823,13 +823,20 @@ mod tests {
                     ..
                 }
             ));
-            assert!(matches!(
-                mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+")),
-                Resolved::Primitive {
+            // `Integer`'s `+` is a kernel primitive method now (`Kernel.ns`,
+            // Task 7), found as a `Resolved::Method` whose
+            // `MixinMethod.primitive` names the mirror row.
+            match mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+")) {
+                Resolved::Method {
+                    method,
                     chain: Chain::Public,
                     ..
-                }
-            ));
+                } => assert_eq!(
+                    method.primitive,
+                    mirror_primitive_named("integer:add:ifFail:")
+                ),
+                _ => panic!("`3 + 4` must resolve to Integer's `+`"),
+            }
             // `Object`'s `doesNotUnderstand:` is a kernel primitive method
             // now (`Kernel.ns`), found as a `Resolved::Method` whose
             // `MixinMethod.primitive` names the mirror row.
