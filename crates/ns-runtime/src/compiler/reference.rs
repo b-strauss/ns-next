@@ -402,10 +402,15 @@ impl<'a> Body<'a> {
             // An ordinary send. The ones the optimized lowering inlines are
             // marked `SendInlinable`, which only the depth count reads
             // (`docs/design/compiler.md`, "How the limit counts"). A send to
-            // the kernel's `vmMirror` is an ordinary send here.
+            // the kernel's `vmMirror` is an ordinary send here, its failure
+            // block a real closure; one whose block the optimized lowering
+            // lowers inline is marked too, so that the block's activation is
+            // exempt under the same condition as `ifTrue:`'s.
             Some(Binding::Local(_) | Binding::OuterLocal { .. } | Binding::MirrorSend) | None => {
                 let receiver_register = self.value(&send.receiver);
-                if control_flow::recognize(send).is_some() {
+                if control_flow::recognize(send).is_some()
+                    || control_flow::recognize_mirror_send(self.bindings, send).is_some()
+                {
                     self.inlinable_send(receiver_register, &send.message)
                 } else {
                     self.public_send(receiver_register, &send.message)
@@ -606,6 +611,18 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         // "The reference lowering"), never this instruction. Named here anyway,
         // so a real addition still has to say what it reads.
         Instruction::IntegerBinary { left, right, .. } => vec![*left, *right],
+        // Unreachable in reference-lowered code, for the same reason: the
+        // reference lowering sends a mirror send as `SendInlinable`, its
+        // failure block a real closure. Named so an addition still decides.
+        Instruction::SendMirror {
+            mirror_register,
+            subject_register,
+            argument_registers,
+            ..
+        } => [*mirror_register, *subject_register]
+            .into_iter()
+            .chain(argument_registers.iter().copied())
+            .collect(),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
         | Instruction::LoadBuiltinClass { .. }
@@ -633,7 +650,8 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::MakeArray { destination, .. }
         | Instruction::MakeVector { destination, .. }
         | Instruction::LoadVector { destination, .. }
-        | Instruction::IntegerBinary { destination, .. } => Some(*destination),
+        | Instruction::IntegerBinary { destination, .. }
+        | Instruction::SendMirror { destination, .. } => Some(*destination),
         Instruction::StoreLocal { .. }
         | Instruction::StoreOuterLocal { .. }
         | Instruction::StoreVector { .. }
@@ -793,8 +811,94 @@ mod tests {
                     | Instruction::BranchIfFalse { .. }
                     | Instruction::BranchIfTrue { .. }
                     | Instruction::IntegerBinary { .. }
+                    | Instruction::SendMirror { .. }
             )
         })
+    }
+
+    /// Compiles `declaration` as the method of a nested class in a
+    /// kernel-shaped module that `resolve_kernel` resolved, so that its sends
+    /// to `vmMirror` carry `Binding::MirrorSend`.
+    fn compile_kernel_method(declaration: &str) -> CompiledCode {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                {declaration}
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(&source).expect("parse");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            Rc::from(source.as_str()),
+            crate::SourceOrigin::File(PathBuf::from("t.ns")),
+        ) else {
+            panic!("the kernel-shaped module resolves");
+        };
+        compile_method(
+            &resolved.module.root_class.instance_side.nested_classes[0]
+                .instance_side
+                .methods[0],
+            &resolved.bindings,
+        )
+    }
+
+    /// The mirror send the optimized lowering lowers inline is a real send
+    /// here, its failure block a real closure, and it is marked
+    /// `SendInlinable` so that the depth count exempts the block's
+    /// activation as it exempts `ifTrue:`'s.
+    #[test]
+    fn a_mirror_send_with_a_literal_failure_block_is_a_send_inlinable_over_a_real_closure() {
+        let code = compile_kernel_method(
+            "foo: argument = ( ^vmMirror string: self concatenate: argument ifFail: [^nil] )",
+        );
+        assert!(no_branch(&code), "{code:?}");
+        assert_eq!(code.instructions.len(), 6, "{code:?}");
+        assert!(matches!(
+            code.instructions[0],
+            Instruction::SendLexical { destination: 1, .. }
+        ));
+        assert_eq!(
+            code.instructions[1],
+            Instruction::LoadSelf { destination: 2 }
+        );
+        assert_eq!(
+            code.instructions[2],
+            Instruction::Move {
+                destination: 3,
+                source: 0
+            }
+        );
+        assert!(matches!(
+            code.instructions[3],
+            Instruction::MakeClosure { destination: 4, .. }
+        ));
+        assert_eq!(
+            code.instructions[4],
+            inlinable("string:concatenate:ifFail:", 1, vec![2, 3, 4], 5)
+        );
+        assert_eq!(code.instructions[5], Instruction::Return { register: 5 });
+    }
+
+    /// A failure argument that is not a literal block is not lowered inline
+    /// by the optimized lowering, so it is not marked here either.
+    #[test]
+    fn a_mirror_send_whose_failure_argument_is_not_a_block_stays_a_send_public() {
+        let code = compile_kernel_method(
+            "foo: argument = ( ^vmMirror stringSize: self ifFail: argument )",
+        );
+        assert!(code.instructions.iter().any(|instruction| matches!(
+            instruction,
+            Instruction::SendPublic { selector, .. } if selector.as_str() == "stringSize:ifFail:"
+        )));
+        assert!(!code
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. })));
     }
 
     #[test]

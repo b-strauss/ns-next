@@ -1245,6 +1245,21 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             registers.push(*destination);
             registers
         }
+        // The decoder never produces one -- it has no wire tag -- but the
+        // match is total, and answering its real registers keeps it so.
+        Instruction::SendMirror {
+            mirror_register,
+            subject_register,
+            argument_registers,
+            destination,
+            ..
+        } => {
+            let mut registers = argument_registers.clone();
+            registers.push(*mirror_register);
+            registers.push(*subject_register);
+            registers.push(*destination);
+            registers
+        }
         Instruction::MakeArray {
             destination,
             element_registers,
@@ -1290,6 +1305,8 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::BranchIfFalse { target, .. }
         | Instruction::BranchIfTrue { target, .. }
         | Instruction::IntegerBinary { target, .. } => Some(*target),
+        // Never decoded (it has no wire tag); its target is still one.
+        Instruction::SendMirror { failure, .. } => Some(*failure),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
         | Instruction::LoadBuiltinClass { .. }

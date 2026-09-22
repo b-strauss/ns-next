@@ -262,6 +262,46 @@ fn execute<'gc>(
                 |mutator, arguments| mutator.decide_send(receiver, *selector, arguments),
             )
         }
+        // A send to the VM mirror with its failure block inline: the leaf
+        // runs, or declines and the block runs at `failure`. What the leaf
+        // decided is delivered as any send's decision is. Which leaf, and
+        // whether the receiver is the mirror, is `interpreter::mirror`'s.
+        Instruction::SendMirror {
+            primitive,
+            mirror_register,
+            subject_register,
+            argument_registers,
+            destination,
+            failure,
+        } => {
+            let mirror = read_local(&mutator.heap, activation, *mirror_register);
+            let subject = read_local(&mutator.heap, activation, *subject_register);
+            let mut arguments = mutator.take_argument_buffer();
+            arguments.extend(
+                argument_registers
+                    .iter()
+                    .map(|register| read_local(&mutator.heap, activation, *register)),
+            );
+            mutator
+                .heap
+                .set_activation_program_counter(activation, program_counter);
+            let flow = match crate::interpreter::mirror::send_inlined(
+                mutator, *primitive, mirror, subject, &arguments,
+            ) {
+                None => Flow::Jump(*failure as usize),
+                Some(decided) => deliver(
+                    mutator,
+                    activation,
+                    decided,
+                    &arguments,
+                    *destination,
+                    floor,
+                    false,
+                ),
+            };
+            mutator.return_argument_buffer(arguments);
+            flow
+        }
         Instruction::SendLexical {
             depth,
             selector,
@@ -535,12 +575,40 @@ fn send<'gc>(
     mutator
         .heap
         .set_activation_program_counter(activation, program_counter);
-    let flow = match decide(mutator, &arguments) {
+    let decided = decide(mutator, &arguments);
+    let flow = deliver(
+        mutator,
+        activation,
+        decided,
+        &arguments,
+        destination,
+        floor,
+        inlinable,
+    );
+    mutator.return_argument_buffer(arguments);
+    flow
+}
+
+/// What a send decided, run: a value written to `destination`, or an
+/// activation pushed and switched to, its window filled from
+/// `send_arguments`. Shared by `send` and `SendMirror`, so a mirror leaf's
+/// decision is delivered exactly as any send's is.
+#[inline(always)]
+fn deliver<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    decided: Result<Step<'gc>, Signal<'gc>>,
+    send_arguments: &[Value<'gc>],
+    destination: u16,
+    floor: usize,
+    inlinable: bool,
+) -> Flow {
+    match decided {
         Ok(Step::Value(value)) => {
             write_local(&mut mutator.heap, activation, destination, value);
             Flow::Next
         }
-        Ok(step) => match mutator.push_step(step, &arguments, Some(activation), inlinable) {
+        Ok(step) => match mutator.push_step(step, send_arguments, Some(activation), inlinable) {
             Ok(callee) => Flow::Switch {
                 activation: callee,
                 code: mutator.heap.activation_code(callee),
@@ -550,9 +618,7 @@ fn send<'gc>(
             Err(signal) => unwind(mutator, signal, floor),
         },
         Err(signal) => unwind(mutator, signal, floor),
-    };
-    mutator.return_argument_buffer(arguments);
-    flow
+    }
 }
 
 /// `activation` has returned `value`: pop it and do what its continuation says.
@@ -681,7 +747,10 @@ fn send_destination(instruction: &Instruction) -> u16 {
         Instruction::SendPublic { destination, .. }
         | Instruction::SendInlinable { destination, .. }
         | Instruction::SendLexical { destination, .. }
-        | Instruction::SendSuper { destination, .. } => *destination,
+        | Instruction::SendSuper { destination, .. }
+        // A leaf that activates a block (`value:`, `do:`) resumes its
+        // caller here.
+        | Instruction::SendMirror { destination, .. } => *destination,
         other => unreachable!(
             "internal: a caller resumed at an instruction that is not a send: {other:?}"
         ),

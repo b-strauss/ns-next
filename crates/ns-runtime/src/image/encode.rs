@@ -403,6 +403,13 @@ fn encode_instruction(
     symbols: &mut symbols::Builder,
 ) {
     match instruction {
+        // The code table is collected from the module's own mixin tree
+        // (`mixins::plan`), which never contains a kernel mixin, so this is
+        // unreachable by construction: a panic here is a defect in this
+        // process, not a property of any input.
+        Instruction::SendMirror { .. } => unreachable!(
+            "internal: SendMirror is emitted only into Kernel.ns, and an image              carries only its own module's code"
+        ),
         Instruction::LoadLiteral {
             destination,
             literal,

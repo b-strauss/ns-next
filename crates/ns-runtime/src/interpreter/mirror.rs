@@ -50,6 +50,38 @@ pub(crate) fn execute_sent<'gc>(
     }
 }
 
+/// `Instruction::SendMirror`: the leaf of `primitive`, when `mirror` is the
+/// VM mirror; `None` when the leaf does not recognize its subject, which
+/// the VM answers by jumping to the inlined failure block.
+///
+/// `leaf_arguments` are the send's own arguments here -- the instruction
+/// passes neither the subject nor the block as one -- so a leaf that
+/// activates a block "with the send's arguments" is right as it stands.
+pub(crate) fn send_inlined<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: MirrorPrimitive,
+    mirror: Value<'gc>,
+    subject: Value<'gc>,
+    leaf_arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    if !mutator.is_vm_mirror(mirror) {
+        return Some(Err(not_the_mirror(primitive, mirror)));
+    }
+    run_leaf(mutator, primitive, subject, leaf_arguments)
+}
+
+/// Only `Kernel.ns` contains a `SendMirror`, and the bootstrap checks that
+/// its `vmMirror` holds the mirror, so this is unreachable while that holds.
+/// It is an error rather than a panic so that it stays one if it ever does
+/// not.
+fn not_the_mirror<'gc>(primitive: MirrorPrimitive, receiver: Value<'gc>) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern(mirror_entry(primitive).selector),
+        receiver,
+        message: "internal: a mirror send's receiver is not the VM mirror".to_string(),
+    })
+}
+
 /// The leaf of `row`, on `subject` with `leaf_arguments`; `None` when it
 /// does not recognize the subject's shape.
 pub(crate) fn run_leaf<'gc>(
@@ -271,6 +303,71 @@ mod tests {
             interpreter.send(&class, Symbol::NEW, &[]),
             Err(HostSignal::Error(_))
         ));
+    }
+
+    /// A kernel-shaped module's mirror send, run end to end: under the
+    /// optimized lowering its failure block is inlined (`SendMirror`), under
+    /// the reference lowering it is a real closure sent to the mirror
+    /// (`SendInlinable`), and both answer the leaf's value when the leaf
+    /// recognizes its subject and the block's `^` when it does not.
+    #[test]
+    fn an_inlined_mirror_send_runs_its_leaf_and_its_failure_block() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class Probe = Object new () (
+                public sizeOf: text = ( ^vmMirror stringSize: text ifFail: [^-1] )
+              )
+              public probe = ( ^Probe new )
+            ) : ()
+        "};
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let module = ns_syntax::parse(source).expect("parse");
+            let Ok(resolved) = crate::resolver::resolve_kernel(
+                module,
+                std::rc::Rc::from(source),
+                crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            ) else {
+                panic!("the kernel-shaped module resolves");
+            };
+            let mut interpreter = Interpreter::bootstrap_with(lowering);
+            let class = interpreter.load_module(&resolved);
+            let mirror = the_mirror(&mut interpreter);
+            let instance = expect_ok(
+                interpreter.instantiate(&class, &[mirror]),
+                "K vmMirror: the mirror",
+            );
+            let probe = expect_ok(
+                interpreter.send(&instance, Symbol::intern("probe"), &[]),
+                "probe",
+            );
+            let text = interpreter.enter(|mutator| {
+                let string = mutator.new_string("abc".to_string());
+                mutator.stash(Value::Object(string))
+            });
+            let size = expect_ok(
+                interpreter.send(&probe, Symbol::intern("sizeOf:"), &[text]),
+                "sizeOf: 'abc'",
+            );
+            let nothing = interpreter.stash(Value::Nil);
+            let declined = expect_ok(
+                interpreter.send(&probe, Symbol::intern("sizeOf:"), &[nothing]),
+                "sizeOf: nil",
+            );
+            interpreter.enter(|mutator| {
+                assert!(
+                    matches!(mutator.fetch(&size), Value::SmallInteger(3)),
+                    "{lowering:?}: the leaf answers the string's size"
+                );
+                assert!(
+                    matches!(mutator.fetch(&declined), Value::SmallInteger(-1)),
+                    "{lowering:?}: the failure block answers for nil"
+                );
+            });
+        }
     }
 
     #[test]

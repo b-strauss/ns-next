@@ -385,6 +385,18 @@ impl<'a> Walker<'a> {
     /// `super` send has no receiver expression to walk.
     fn send(&mut self, send: &ast::Send) {
         if control_flow::is_ordinary_send(self.bindings, send) {
+            // A mirror send's failure block is lowered inline
+            // (`lower_mirror_send`), so it is no closure here either. It runs
+            // at most once and only on one path, as an `ifTrue:` block does.
+            if let Some((_, block)) = control_flow::recognize_mirror_send(self.bindings, send) {
+                self.expression(&send.receiver);
+                let arguments = &send.message.arguments;
+                for argument in &arguments[..arguments.len() - 1] {
+                    self.expression(argument);
+                }
+                self.inlined_block(block, true, None);
+                return;
+            }
             if let Some(form) = control_flow::recognize(send) {
                 self.inlined(send, form);
                 return;

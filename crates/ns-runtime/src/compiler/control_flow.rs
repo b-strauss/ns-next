@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::IntegerOperation;
 use crate::types::Binding;
 
@@ -130,6 +131,35 @@ pub(crate) fn recognize_integer_binary(send: &ast::Send) -> Option<IntegerOperat
     }
 }
 
+/// A send to the VM mirror whose failure block the optimized lowering lowers
+/// inline (`lower.rs`'s `lower_mirror_send`): marked `Binding::MirrorSend` by
+/// `resolve_kernel`, its selector a row of `MIRROR` -- which fixes its last
+/// keyword as `ifFail:` -- and its last argument a literal block with no
+/// parameters and no temporaries, the condition every inlined block meets.
+///
+/// Asked by the same three places `recognize` is (`lower_send`,
+/// `send_writes_register`, `capture::Walker::send`), so the lowering and the
+/// capture analysis agree about which block literals are closures. The
+/// reference lowering asks it too, to mark the send `SendInlinable`.
+///
+/// `MirrorSend` is never on a `super` or lexical send, so a recognized send
+/// is always ordinary; each caller still asks `is_ordinary_send` first, as it
+/// does for `recognize`.
+pub(crate) fn recognize_mirror_send<'a>(
+    bindings: &HashMap<Span, Binding>,
+    send: &'a ast::Send,
+) -> Option<(MirrorPrimitive, &'a ast::BlockExpression)> {
+    if !matches!(bindings.get(&send.span), Some(Binding::MirrorSend)) {
+        return None;
+    }
+    let ast::Selector::Keyword(selector) = &send.message.selector else {
+        return None;
+    };
+    let row = crate::builtins::primitive::mirror_primitive_named(selector)?;
+    let block = as_inlinable_block(send.message.arguments.last()?)?;
+    Some((row, block))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +179,68 @@ mod tests {
             ast::Statement::Return(ast::Expression::Send(send)) => (**send).clone(),
             other => panic!("expected a return-of-send statement, got {other:?}"),
         }
+    }
+
+    /// `source` as the body of a method in a kernel-shaped module, resolved
+    /// by `resolve_kernel`; answers the send it returns and the bindings.
+    fn kernel_send(source: &str) -> (ast::Send, std::rc::Rc<HashMap<Span, Binding>>) {
+        let full = formatdoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                foo: argument = ( ^{source} )
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(&full).expect("parse");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            std::rc::Rc::from(full.as_str()),
+            crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        ) else {
+            panic!("the kernel-shaped module resolves");
+        };
+        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
+        let send = match &nested.instance_side.methods[0].body.statements[0] {
+            ast::Statement::Return(ast::Expression::Send(send)) => (**send).clone(),
+            other => panic!("expected a return-of-send statement, got {other:?}"),
+        };
+        (send, resolved.bindings.clone())
+    }
+
+    #[test]
+    fn recognizes_a_mirror_send_with_a_literal_failure_block() {
+        let (send, bindings) = kernel_send("vmMirror stringSize: self ifFail: [^nil]");
+        let recognized = recognize_mirror_send(&bindings, &send).map(|(row, _)| row.index());
+        assert_eq!(
+            recognized,
+            crate::builtins::primitive::mirror_primitive_named("stringSize:ifFail:")
+                .map(|row| row.index())
+        );
+        assert!(recognized.is_some());
+    }
+
+    #[test]
+    fn does_not_recognize_a_mirror_send_whose_failure_argument_is_not_a_literal_block() {
+        let (send, bindings) = kernel_send("vmMirror stringSize: self ifFail: argument");
+        assert!(recognize_mirror_send(&bindings, &send).is_none());
+    }
+
+    #[test]
+    fn does_not_recognize_a_selector_the_mirror_does_not_have() {
+        let (send, bindings) = kernel_send("vmMirror frobnicate: self ifFail: [^nil]");
+        assert!(recognize_mirror_send(&bindings, &send).is_none());
+    }
+
+    /// The same text in a module `resolve` resolved is an ordinary send:
+    /// only the kernel's `vmMirror` is known to hold the mirror.
+    #[test]
+    fn does_not_recognize_a_mirror_send_outside_the_kernel() {
+        let send = parse_send("vmMirror stringSize: self ifFail: [^nil]");
+        assert!(recognize_mirror_send(&HashMap::new(), &send).is_none());
     }
 
     #[test]
