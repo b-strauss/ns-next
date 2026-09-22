@@ -499,6 +499,7 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
 
 #[cfg(test)]
 mod tests {
+    use crate::builtins::primitive::mirror_entry;
     use crate::{BuiltinClass, Interpreter, Value};
 
     /// Every builtin class but the mirror's is the kernel class of its name.
@@ -521,6 +522,48 @@ mod tests {
                     .as_ref()
                     .unwrap_or_else(|| panic!("{kind:?} is still a placeholder"));
                 assert_eq!(declaration.name.name, super::kernel_class_name(kind));
+            }
+        });
+    }
+
+    /// Every kernel method is a forwarder the compiler recognized, and is
+    /// named after its row's reported selector. A method the recognizer
+    /// misses -- a swapped parameter, a temporary, a failure block that is
+    /// not a literal -- still runs correctly as an ordinary method, so
+    /// nothing else would notice: a leaf would lose its fast path, and a
+    /// missed `ifTrue:`, `and:` or `whileTrue:` would count against the depth
+    /// limit under one lowering and not the other. The fast path's error
+    /// texts name the row's reported selector, so they would also drift from
+    /// the selector the program sent if the two differed.
+    #[test]
+    fn every_kernel_method_is_a_primitive_method_named_after_its_row() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            for kind in BuiltinClass::ALL {
+                if kind == BuiltinClass::VmMirror {
+                    continue;
+                }
+                let class = mutator.builtin_class(kind);
+                let application = mutator
+                    .heap()
+                    .class_application(class)
+                    .expect("a builtin class has an application");
+                let mixin = &application.mixin;
+                let class_side = mixin
+                    .class_side
+                    .iter()
+                    .flat_map(|side| side.compiled_methods());
+                for method in mixin.compiled_methods().chain(class_side) {
+                    let selector = method.selector.as_str();
+                    let Some(row) = method.primitive else {
+                        panic!("{kind:?}>>{selector} is not recognized as a primitive method");
+                    };
+                    assert_eq!(
+                        mirror_entry(row).reported,
+                        selector,
+                        "{kind:?}>>{selector} forwards to a row reported under another selector"
+                    );
+                }
             }
         });
     }

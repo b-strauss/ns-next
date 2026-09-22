@@ -14,7 +14,9 @@
 //! Adding an instruction is expected to add a line here with the next free
 //! number. Changing a line that already exists is the thing being prevented.
 
+use ns_runtime::image::encode::builtin_class_tag;
 use ns_runtime::image::opcodes::*;
+use ns_runtime::BuiltinClass;
 
 #[test]
 fn instruction_tags_are_fixed() {
@@ -266,4 +268,29 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
         seen.dedup();
         assert_eq!(seen.len(), family.len(), "duplicate tag within a family");
     }
+}
+
+/// A builtin class's tag is how an image names a builtin class -- in a
+/// `LoadBuiltinClass` instruction, a `CLASS_BUILTIN` record and the hashed
+/// table -- so renumbering one would decode a stale image's reference into a
+/// different, perfectly valid builtin class. The tags are a match in
+/// `encode::builtin_class_tag` rather than constants in `opcodes.rs`, and are
+/// pinned here all the same.
+#[test]
+fn builtin_class_tags_are_fixed() {
+    assert_eq!(builtin_class_tag(BuiltinClass::Object), 0);
+    assert_eq!(builtin_class_tag(BuiltinClass::Boolean), 1);
+    assert_eq!(builtin_class_tag(BuiltinClass::True), 2);
+    assert_eq!(builtin_class_tag(BuiltinClass::False), 3);
+    assert_eq!(builtin_class_tag(BuiltinClass::Integer), 4);
+    assert_eq!(builtin_class_tag(BuiltinClass::Float), 5);
+    assert_eq!(builtin_class_tag(BuiltinClass::String), 6);
+    assert_eq!(builtin_class_tag(BuiltinClass::Symbol), 7);
+    assert_eq!(builtin_class_tag(BuiltinClass::Character), 8);
+    assert_eq!(builtin_class_tag(BuiltinClass::Array), 9);
+    assert_eq!(builtin_class_tag(BuiltinClass::OrderedCollection), 10);
+    assert_eq!(builtin_class_tag(BuiltinClass::Nil), 11);
+    assert_eq!(builtin_class_tag(BuiltinClass::Block), 12);
+    assert_eq!(builtin_class_tag(BuiltinClass::Platform), 13);
+    assert_eq!(builtin_class_tag(BuiltinClass::VmMirror), 14);
 }

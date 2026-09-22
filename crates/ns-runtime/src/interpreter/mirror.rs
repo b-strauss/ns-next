@@ -332,11 +332,6 @@ mod tests {
         ));
     }
 
-    /// A kernel-shaped module's mirror send, run end to end: under the
-    /// optimized lowering its failure block is inlined (`SendMirror`), under
-    /// the reference lowering it is a real closure sent to the mirror
-    /// (`SendInlinable`), and both answer the leaf's value when the leaf
-    /// recognizes its subject and the block's `^` when it does not.
     /// A kernel-shaped module, resolved by `resolve_kernel` when `kernel`
     /// and by plain `resolve` otherwise: its `Probe` sends the mirror inline
     /// (`sizeOf:`) and declares two primitive methods, one whose leaf accepts
@@ -365,7 +360,8 @@ mod tests {
             crate::resolve(module, std::rc::Rc::from(source), origin)
         };
         let Ok(resolved) = resolved else {
-            panic!("the kernel-shaped module resolves");
+            let resolver = if kernel { "resolve_kernel" } else { "resolve" };
+            panic!("the kernel-shaped module does not resolve under `{resolver}`");
         };
         let mut interpreter = Interpreter::bootstrap_with(lowering);
         let class = interpreter.load_module(&resolved);

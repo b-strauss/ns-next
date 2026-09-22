@@ -201,8 +201,8 @@ pub struct SlotAccessor {
 
 /// A primitive entry (`docs/design/dispatch.md`, "Primitives"): the
 /// primitive it runs and its §6.3.1 accessibility. Only the VM mirror's
-/// method table holds any -- one per `MIRROR` row. Found by the same lookups as a compiled method; it runs no
-/// code and pushes no activation.
+/// method table holds any -- one per `MIRROR` row. Found by the same lookups
+/// as a compiled method; it runs no code and pushes no activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrimitiveMethod {
     pub primitive: crate::builtins::primitive::Primitive,

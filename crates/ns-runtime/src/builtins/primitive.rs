@@ -159,21 +159,36 @@ pub struct MirrorEntry {
     pub reported: &'static str,
     /// The leaf itself; never a `Primitive::Mirror`.
     pub primitive: Primitive,
+    /// How many arguments `reported` takes, counted once when the table is
+    /// built rather than on every mirror send that checks its arguments.
+    leaf_arity: usize,
 }
 
 impl MirrorEntry {
     /// How many arguments the reported selector takes: one for a binary
     /// selector, one per colon for a keyword selector, none for a unary one.
     pub fn leaf_arity(&self) -> usize {
-        let binary = !self
-            .reported
-            .starts_with(|character: char| character.is_alphabetic());
-        if binary {
-            1
-        } else {
-            self.reported.matches(':').count()
-        }
+        self.leaf_arity
     }
+}
+
+/// `MirrorEntry::leaf_arity`'s count, as a byte scan so the table can run it
+/// at compile time. Every reported selector is ASCII, so a byte that is not
+/// an ASCII letter opens a binary selector.
+const fn selector_arity(selector: &str) -> usize {
+    let bytes = selector.as_bytes();
+    if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
+        return 1;
+    }
+    let mut colons = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b':' {
+            colons += 1;
+        }
+        index += 1;
+    }
+    colons
 }
 
 const fn mirror(
@@ -185,6 +200,7 @@ const fn mirror(
         selector,
         reported,
         primitive,
+        leaf_arity: selector_arity(reported),
     }
 }
 

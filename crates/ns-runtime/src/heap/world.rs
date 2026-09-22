@@ -159,8 +159,8 @@ impl World {
 
     /// One collection: mark everything reachable, compact both arenas, and
     /// forward what the step state holds beside the heap -- the bootstrap's
-    /// builtin classes, the `platform` singleton, the VM mirror and the kernel -- exactly
-    /// as a move does.
+    /// builtin classes, the `platform` singleton, the VM mirror and the
+    /// kernel -- exactly as a move does.
     ///
     /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
     /// `Heap`'s counters by `record_collection`. That timing call costs
@@ -192,10 +192,10 @@ impl World {
     }
 
     /// Forwards what the step state holds beside the heap: the bootstrap's
-    /// builtin classes, the `platform` singleton, the VM mirror and the kernel. Shared by
-    /// `move_everything` and `collect`, which forward the same roots
-    /// after the heap has forwarded its own -- one copy so a root added
-    /// here later cannot land in one caller's walk and not the other's.
+    /// builtin classes, the `platform` singleton, the VM mirror and the
+    /// kernel. Shared by `move_everything` and `collect`, which forward the
+    /// same roots after the heap has forwarded its own -- one copy so a root
+    /// added here later cannot land in one caller's walk and not the other's.
     fn forward_step_state<M: crate::heap::Relocation>(
         &mut self,
         forwarder: &mut crate::heap::Forwarder<M>,
