@@ -57,6 +57,15 @@ class Kernel vmMirror: theMirror = Object new (
         public asString = ( ^vmMirror integerAsString: self ifFail: [^super asString] )
     )
     class Float = Object new () (
+        public + other = ( ^vmMirror float: self add: other ifFail: [^super + other] )
+        public - other = ( ^vmMirror float: self subtract: other ifFail: [^super - other] )
+        public * other = ( ^vmMirror float: self multiply: other ifFail: [^super * other] )
+        public / other = ( ^vmMirror float: self divide: other ifFail: [^super / other] )
+        public < other = ( ^vmMirror float: self lessThan: other ifFail: [^super < other] )
+        public > other = ( ^vmMirror float: self greaterThan: other ifFail: [^super > other] )
+        public = other = ( ^vmMirror float: self equals: other ifFail: [^super = other] )
+        public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
+        public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )
     )
     class String = Object new () (
     )
