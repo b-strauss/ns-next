@@ -141,12 +141,16 @@ rather than forming a prefix. A nested class's cache slot is not state — §6
 gives every instance a class object of its own for each nested declaration,
 so two equal values hold *different* objects there as soon as each has been
 sent its accessor, and counting the slot made them answer `false` at exit
-status 0. One function decides which indices are state,
-`MixinApplication::declared_slot_indices`, and everything that asks goes
-through it: both Rust walks, and the `slotCount` and `slotAt:` leaves the
+status 0. Which indices are state is decided once, when the application is
+built: `MixinApplication::declared_slots`, computed in `apply_mixin` beside
+`nested_slot` and `inherits_value` because nothing about an application
+changes afterwards. Everything that asks borrows that one list through one
+wrapper — both Rust walks, and the `slotCount` and `slotAt:` leaves the
 Newspeak fallback reads a slot through. That is what keeps the leaf and the
 fallback comparing the same slots in the same order — if they disagreed, `=`
-would answer one thing when the leaf decided and another when it declined.
+would answer one thing when the leaf decided and another when it declined —
+and it is why the declining path, which asks once per slot read, allocates
+nothing to ask.
 `goldens/kernel/a_values_nested_class_is_not_part_of_its_state.ns` pins it,
 including the case where only one of the two instances has been touched and
 a class that *inherits* the declaration from a value superclass while

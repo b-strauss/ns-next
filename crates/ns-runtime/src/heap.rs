@@ -1613,6 +1613,27 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Runs `read` over the field indices of the slots `class` and its
+    /// superclasses **declare** (`MixinApplication::declared_slots`), for
+    /// the same reason `class_inherits_value` reads its `bool` here: the
+    /// derivation asks this once per slot on its declining path, and
+    /// `class_application` would pay a refcount bump each time.
+    ///
+    /// A closure rather than a returned `&[usize]`, so the borrow of the
+    /// arena ends here and nothing reaches past an accessor ("The seam",
+    /// `docs/design/memory.md`). `None` when `class` is no class object.
+    pub fn with_class_declared_slots<T>(
+        &self,
+        class: ClassReference<'gc>,
+        read: impl FnOnce(&[usize]) -> T,
+    ) -> Option<T> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => Some(read(&data.application.declared_slots)),
+            _ => None,
+        }
+    }
+
     pub fn class_enclosing(&self, class: ClassReference<'gc>) -> Option<ObjectReference<'gc>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -2533,8 +2554,7 @@ impl<'gc> Heap<'gc> {
     /// hold, the caller forwards with the answer: the interpreter's own
     /// roots (`World::move_everything`). A compacting collection that
     /// treats everything as live; the stress mode runs one at the run loop's
-    /// safepoints (`docs/design/memory.md`, "Checking the roots before a
-    /// collector exists").
+    /// safepoints (`docs/design/memory.md`, "The move stress mode").
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between runs.
@@ -3030,6 +3050,7 @@ mod tests {
             inherits_value: false,
             mutable_value_slot: None,
             nested_slot: crate::hash::IdentityMap::default(),
+            declared_slots: Vec::new(),
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,

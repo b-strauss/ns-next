@@ -524,6 +524,7 @@ mod tests {
             inherits_value: false,
             mutable_value_slot: None,
             nested_slot: crate::hash::IdentityMap::default(),
+            declared_slots: Vec::new(),
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,

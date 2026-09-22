@@ -1046,7 +1046,9 @@ the alignment flag alone. Why the pin: step 2c's brand commit changed no
 instruction of the run loop and still measured 1–2% slower than its parent,
 because smaller cold code ahead of the hot functions moved every one of them
 into a different 64-byte phase ("What 2c moved" below). With every function
-start pinned, a comparison measures code, not placement. Why the shipped
+start pinned, that phase shift is gone — which is not the same as a
+comparison measuring code rather than placement; the paragraph below says
+what the pin does not cover. Why the shipped
 build does not carry it: the pin costs about 110 KB of padding, 5.6% of the
 release binary, and measured no faster — the unpinned build was level or up
 to 1.8% faster than the pinned one — so `.cargo/config.toml` carries only
@@ -2990,10 +2992,16 @@ and `bench_newarg.ns`, the three that run one or two initializers per
 iteration, 20,000 iterations each. Every one of their stores is an immediate,
 so the check returns on its first test.
 
-**Measured 2026-09-23, against `b0a771d`, by the protocol of "What removing the
-re-entries moved" above.** `b0a771d` is this branch's head before the first
-commit of the work (`1dc548a`) and is itself documentation only, so its tree is
-the code as it stood before. Every binary built with
+**Measured 2026-09-23, `ab692b7` against `b0a771d`, by the protocol of "What
+removing the re-entries moved" above.** `b0a771d` is this branch's head before
+the first commit of the work (`1dc548a`) and is itself documentation only, so
+its tree is the code as it stood before; `ab692b7` is the last commit of the
+work, the one the figures below were taken at. `2ad6f30` landed afterwards --
+a value's state is the slots its classes declare, so a nested class's cache
+slot is no longer compared or hashed -- and touches no path any of the eight
+sources runs: none of them declares a value class, and the change is confined
+to `builtins/value.rs`'s walks and the two reflective leaves. The figures
+stand for the head. Every binary built with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
 neither imports `VCRUNTIME140.dll` (`dumpbin -dependents`); each checked to
 print the expected answer for all eight sources first;

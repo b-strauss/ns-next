@@ -487,6 +487,34 @@ pub struct MixinApplication {
     /// entries onto one index and make whichever was resolved first the
     /// answer to both.
     pub nested_slot: IdentityMap<usize, usize>,
+    /// The absolute field indices of the slots this application's classes
+    /// **declare**, superclass level first and in declaration order within a
+    /// level -- which is the order the fields themselves are laid out in.
+    ///
+    /// An instance's field vector is not all declared slots: each level lays
+    /// its own slots down at `own_slot_base`, then one hidden nested-class
+    /// cache slot per nested declaration (`nested_slot`, above), so the
+    /// declared slots of a chain are interleaved with hidden ones rather
+    /// than forming a prefix.
+    ///
+    /// **This is what a value's state is**, and the one answer to that
+    /// question: §3.1.1 derives equality and hash from the state a class
+    /// declares, and a nested class's cache slot is not state -- it holds a
+    /// class object, it is per enclosing instance, and it is written by the
+    /// accessor rather than by any initializer. Counting it made two equal
+    /// values answer `false` once the accessor had run on both, because each
+    /// side cached *its own* class object there
+    /// (`docs/design/core-library.md`, "A value's state is the slots its
+    /// classes *declare*, and nothing else").
+    ///
+    /// Computed once here, like `nested_slot` and `inherits_value`, because
+    /// nothing about an application changes after it is built and the
+    /// declining path reads it once per slot: `builtins/value.rs`'s walks
+    /// and the `slotCount`/`slotAt:` leaves the Newspeak fallback reads
+    /// through all borrow this slice, so the leaf and the fallback cannot
+    /// disagree about which slots exist or what order they come in, and
+    /// neither allocates to ask.
+    pub declared_slots: Vec<usize>,
     pub slot_count: usize,
     /// Where this application's *own* slots start -- `superclass.slot_count`,
     /// or 0 with none. Read at run time (`Mutator::initializer_body`, into the
@@ -504,43 +532,20 @@ pub struct MixinApplication {
     pub dispatch_ids: DispatchIds,
 }
 
-impl MixinApplication {
-    /// The absolute field indices of the slots this application's classes
-    /// **declare**, superclass level first and in declaration order within
-    /// a level -- which is the order the fields themselves are laid out in.
-    ///
-    /// An instance's field vector is not all declared slots: each level
-    /// lays out its own slots at `own_slot_base`, then one hidden
-    /// nested-class cache slot per nested declaration (`nested_slot`,
-    /// `Mutator::apply_mixin`), so the declared slots of a chain are
-    /// interleaved with hidden ones rather than being a prefix.
-    ///
-    /// **This is what a value's state is**, and the one answer to that
-    /// question: §3.1.1 derives equality and hash from the state a class
-    /// declares, and a nested class's cache slot is not state -- it holds
-    /// a class object, it is per enclosing instance, and it is written by
-    /// the accessor rather than by any initializer. Counting it made two
-    /// equal values answer `false` once the accessor had run on both,
-    /// because each side cached *its own* class object there
-    /// (`docs/design/core-library.md`, "What is still unchecked").
-    /// `builtins/value.rs`'s walks and the `slotCount`/`slotAt:` leaves the
-    /// Newspeak fallback reads through all go through this, so the leaf and
-    /// the fallback cannot disagree about which slots exist or what order
-    /// they come in.
-    pub fn declared_slot_indices(&self) -> Vec<usize> {
-        let mut levels = Vec::new();
-        let mut level = Some(self);
-        while let Some(application) = level {
-            levels.push(application);
-            level = application.superclass.as_deref();
-        }
-        let mut indices = Vec::new();
-        for application in levels.into_iter().rev() {
-            let base = application.own_slot_base;
-            indices.extend(base..base + application.mixin.slots.len());
-        }
-        indices
-    }
+/// `MixinApplication::declared_slots` for a level being built: the
+/// superclass's list, which is already in this order, and then this level's
+/// own declared slots. Extending the inherited list is what keeps this
+/// linear over a chain -- each level pays for its own slots once, when the
+/// application is built, rather than re-walking its ancestors.
+pub fn declared_slots_of(
+    superclass: Option<&Rc<MixinApplication>>,
+    own_slot_base: usize,
+    own_slot_count: usize,
+) -> Vec<usize> {
+    let mut declared =
+        superclass.map_or_else(Vec::new, |superclass| superclass.declared_slots.clone());
+    declared.extend(own_slot_base..own_slot_base + own_slot_count);
+    declared
 }
 
 /// Unlinks the superclass list in a loop rather than through the stack.

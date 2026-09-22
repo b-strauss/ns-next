@@ -1466,6 +1466,14 @@ impl<'gc> Mutator<'gc> {
                     }
                 })
             });
+        // The declared slots, in field order, computed here for the same
+        // reason `nested_slot` is: nothing about an application changes
+        // after it is built, and `builtins/value.rs` reads this per slot on
+        // the declining path. Declared and hidden slots interleave -- this
+        // level's own slots sit at `inherited`, its cache slots after them
+        // -- so a value's state is not a prefix of its fields.
+        let declared_slots =
+            crate::mixin::declared_slots_of(superclass, inherited, mixin.slots.len());
         let dispatch_ids = self.mint_dispatch_ids();
         let application = Rc::new(crate::mixin::MixinApplication {
             mixin: mixin.clone(),
@@ -1474,6 +1482,7 @@ impl<'gc> Mutator<'gc> {
             mutable_value_slot,
             slot_count: next,
             nested_slot,
+            declared_slots,
             own_slot_base: inherited,
             dispatch_ids,
         });

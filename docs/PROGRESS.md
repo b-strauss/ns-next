@@ -3461,9 +3461,12 @@ gives it the specification's *object model*
 - The fix below: a value's state is the slots its classes declare, so a
   nested class's hidden cache slot is no longer compared or hashed.
 
-**Measurement.** Two sittings by the protocol, eight sources, against
-`b0a771d` -- this branch's head before the work started, and documentation
-only, so its tree is the code as it stood before. **Seven of the eight are
+**Measurement.** Two sittings by the protocol, eight sources, `ab692b7`
+against `b0a771d` -- the last commit of the work against this branch's head
+before it started, which is documentation only, so its tree is the code as it
+stood before. The value-state fix below came after the figures were taken and
+touches no path any of the eight sources runs, so they stand for the head.
+**Seven of the eight are
 level: −0.7% to +1.9%, inside the scatter those sources show between builds
 of the same tree.** `bench_new2.ns` is **3.6% slower**, all three head builds
 above both baseline builds in both sittings; it was one of the three sources
@@ -3505,20 +3508,23 @@ like any other, both the derivation's walk and `valueSlotCount:` counted it,
 and each instance's own class object lands there — so `valueEquals:` sent
 `=` to two different class objects and answered false for two values built
 from the same arguments, at exit status 0. **The rule now is that a value's
-state is the slots its classes declare and nothing else**, decided in one
-place (`MixinApplication::declared_slot_indices`) that both Rust walks and
-both reflective leaves go through, so the leaf and the Newspeak fallback
-cannot disagree about which slots exist or in what order.
+state is the slots its classes declare and nothing else**, computed once per
+application (`MixinApplication::declared_slots`, beside `nested_slot` and
+`inherits_value`) and read by both Rust walks and both reflective leaves
+through one wrapper, so the leaf and the Newspeak fallback cannot disagree
+about which slots exist or in what order.
 `goldens/kernel/a_values_nested_class_is_not_part_of_its_state.ns` and two
 unit tests beside the walks pin it, the one-sided and the inherited case
 included ([core-library.md](design/core-library.md), "A value's state is the
 slots its classes *declare*").
 
-Gates, at `ab692b7`: `cargo test --workspace` green (885 tests passing, one
-ignored), also under each of the three stress modes; `cargo clippy
---workspace --all-targets` clean; `parse-corpus` at **210/0/1/0** and
-`run-corpus` at **6/0/205**, under each stress mode too. The two commits
-after it are documentation only.
+**Gates, at this branch's head** — not at `ab692b7`, since the value-state
+fix above is code and tests: `cargo test --workspace` green, **887 tests
+passing and one ignored**, also under each of the three stress modes;
+`cargo clippy --workspace --all-targets` clean; `parse-corpus` at
+**210/0/1/0**; `run-corpus` at **6/0/205** in all four lanes. Every commit
+from `ab692b7` on has seen the per-commit group, and the end-of-batch group
+was re-run at the head.
 
 ## Notes
 

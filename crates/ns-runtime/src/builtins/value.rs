@@ -75,54 +75,61 @@ pub(crate) fn execute<'gc>(
             derived_hash(mutator, receiver).map(|hash| Ok(Value::SmallInteger(hash)))
         }
         ValuePrimitive::SlotCount => {
-            let count = declared_slots(mutator, receiver)?.len();
+            let count = with_declared_slots(mutator, receiver, <[usize]>::len)?;
             Some(Ok(Value::SmallInteger(count as i64)))
         }
         ValuePrimitive::SlotAt => {
             let Value::Object(object) = receiver else {
                 return None;
             };
-            let declared = declared_slots(mutator, receiver)?;
-            let count = declared.len();
-            Some(match arguments.first() {
-                Some(Value::SmallInteger(index)) if *index >= 1 && (*index as usize) <= count => {
-                    // Indexed through `declared`, never straight into the
-                    // field vector: the two differ as soon as a level
-                    // declares a nested class, and the leaf must answer the
-                    // same slot the walks compare.
-                    Ok(mutator
-                        .heap
-                        .instance_field(object, declared[(*index as usize) - 1])
-                        .unwrap_or(Value::Nil))
-                }
+            // Resolved to a field index inside the borrow, never by
+            // copying the list out: the declared slots and the fields
+            // differ as soon as a level declares a nested class, and the
+            // leaf must answer the same slot the walks compare.
+            let (count, field) = with_declared_slots(mutator, receiver, |declared| {
+                let field = match arguments.first() {
+                    Some(Value::SmallInteger(index)) if *index >= 1 => {
+                        declared.get((*index as usize) - 1).copied()
+                    }
+                    _ => None,
+                };
+                (declared.len(), field)
+            })?;
+            let Some(field) = field else {
                 // An index outside the range is the program's mistake, not a
                 // shape this leaf does not serve, so it is an ordinary
                 // Newspeak error in the words `Array>>at:` already uses --
                 // never a decline, which would answer the `ifFail:` block
                 // and hide it.
-                Some(Value::SmallInteger(index)) => Err(NewspeakError {
-                    selector,
-                    receiver,
-                    message: format!(
-                        "index {index} out of range: valid indices are 1..{count} (size {count})"
-                    ),
-                }),
-                other => Err(NewspeakError {
-                    selector,
-                    receiver,
-                    message: format!(
-                        "{selector} requires an Integer index, got {}",
-                        mutator.heap.describe_argument(other)
-                    ),
-                }),
-            })
+                return Some(Err(match arguments.first() {
+                    Some(Value::SmallInteger(index)) => NewspeakError {
+                        selector,
+                        receiver,
+                        message: format!(
+                            "index {index} out of range: valid indices are 1..{count} (size {count})"
+                        ),
+                    },
+                    other => NewspeakError {
+                        selector,
+                        receiver,
+                        message: format!(
+                            "{selector} requires an Integer index, got {}",
+                            mutator.heap.describe_argument(other)
+                        ),
+                    },
+                }));
+            };
+            Some(Ok(mutator
+                .heap
+                .instance_field(object, field)
+                .unwrap_or(Value::Nil)))
         }
     }
 }
 
-/// The field indices of the slots `receiver`'s classes **declare**, when it
-/// is an ordinary instance -- the only shape whose state is slots at all.
-/// `None` for anything else, which is the decline.
+/// Runs `read` over the field indices of the slots `receiver`'s classes
+/// **declare**, when it is an ordinary instance -- the only shape whose
+/// state is slots at all. `None` for anything else, which is the decline.
 ///
 /// **The one place this question is answered**, for the same reason
 /// `state_is_a_value` is one function: the equality walk, the hash walk and
@@ -132,9 +139,17 @@ pub(crate) fn execute<'gc>(
 /// compare different slots than the leaf does, and `=` would answer one
 /// thing when the leaf decided and another when it declined.
 ///
-/// A hidden nested-class cache slot is not declared state and is skipped
-/// (`MixinApplication::declared_slot_indices`, which says why).
-fn declared_slots<'gc>(mutator: &Mutator<'gc>, receiver: Value<'gc>) -> Option<Vec<usize>> {
+/// A hidden nested-class cache slot is not declared state and is not in the
+/// list (`MixinApplication::declared_slots`, which says why). It is
+/// computed once, when the application is built, so this hands the caller a
+/// borrow of it rather than a copy: the declining path asks once per slot
+/// read, and the old shape -- a chain walk and a `Vec` per ask -- made a
+/// Newspeak-side slot walk allocate per index.
+fn with_declared_slots<'gc, T>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
+    read: impl FnOnce(&[usize]) -> T,
+) -> Option<T> {
     let Value::Object(object) = receiver else {
         return None;
     };
@@ -147,12 +162,10 @@ fn declared_slots<'gc>(mutator: &Mutator<'gc>, receiver: Value<'gc>) -> Option<V
     // an empty state.
     mutator.heap().instance_field_count(object)?;
     let class = mutator.heap().class_of_object(object);
-    Some(
-        mutator
-            .heap()
-            .class_application(class)
-            .map_or_else(Vec::new, |application| application.declared_slot_indices()),
-    )
+    // `None` here would mean the receiver's class is not a class object,
+    // which nothing an image can encode should produce -- and if it ever
+    // did, declining is the safe answer, not a panic on untrusted input.
+    mutator.heap().with_class_declared_slots(class, read)
 }
 
 /// What a walk found at one node of a value: either a verdict the shape's
@@ -200,20 +213,23 @@ fn state_is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -
 }
 
 /// The **declared** slots of `object`, in declaration order, copied out so
-/// the walk holds no borrow of the heap while it goes on. Read through
-/// `declared_slots`, which is also what the two leaves answer from, so a
-/// walk and the Newspeak fallback see the same state.
+/// the walk holds no borrow of the heap while it goes on. The *indices*
+/// are never copied out: they are read through `with_declared_slots`, which
+/// is also what the two leaves answer from, so a walk and the Newspeak
+/// fallback see the same state.
 fn slots_of<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> Vec<Value<'gc>> {
-    declared_slots(mutator, Value::Object(object))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|index| {
-            mutator
-                .heap()
-                .instance_field(object, index)
-                .unwrap_or(Value::Nil)
-        })
-        .collect()
+    with_declared_slots(mutator, Value::Object(object), |declared| {
+        declared
+            .iter()
+            .map(|index| {
+                mutator
+                    .heap()
+                    .instance_field(object, *index)
+                    .unwrap_or(Value::Nil)
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// One node of the equality walk: `None` declines the whole comparison.
