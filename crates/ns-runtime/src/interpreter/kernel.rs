@@ -163,6 +163,20 @@ impl<'gc> Mutator<'gc> {
                 unreachable!("internal: a builtin class is a class object");
             }
         }
+        // Recorded once the classes are filled, because it is read off
+        // `Value`'s own filled application: `builtins::value` tells an
+        // instance that inherits this `=` from one that overrides it by the
+        // method's identity, and while `Value` declares none the derivation
+        // declines every instance.
+        self.value_equality_method = self
+            .heap
+            .class_application(self.builtin_class(BuiltinClass::Value))
+            .and_then(|application| {
+                application
+                    .mixin
+                    .compiled_method(crate::Symbol::EQUALS)
+                    .cloned()
+            });
         self.refresh_immediate_dispatch_ids();
         let object = self.builtin_class(BuiltinClass::Object);
         let object_application = self.heap.class_application(object);

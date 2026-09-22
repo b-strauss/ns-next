@@ -218,6 +218,17 @@ pub struct Mutator<'gc> {
     /// enclosing object of every builtin class. `None` only until the
     /// bootstrap's kernel phase has run.
     pub(crate) kernel: Option<Value<'gc>>,
+    /// The `=` the core library's `Value` declares, recorded by the
+    /// bootstrap's kernel phase. `builtins::value`'s derived equality
+    /// compares against it to tell an inherited `=` from an overridden one:
+    /// only an instance whose lookup of `=` lands on this very method has a
+    /// state the derivation may read. `None` while `Value` declares none,
+    /// and the derivation then declines every instance.
+    ///
+    /// An `Rc<MixinMethod>`, not a heap handle: a method holds nothing a
+    /// move or a collection can invalidate, so it needs no root and nothing
+    /// traces it.
+    pub(crate) value_equality_method: Option<Rc<crate::mixin::MixinMethod>>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing

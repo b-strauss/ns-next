@@ -54,6 +54,24 @@ fn type_mismatch<'gc>(
     }
 }
 
+/// `Integer>>=`'s rule: an argument of any other type is plainly unequal,
+/// never an error (this module's known-gap note says why). Named so that
+/// `builtins::value`'s derived equality decides an integer exactly as
+/// `Integer>>=` does rather than growing a second copy of the rule.
+pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<&Value<'gc>>) -> bool {
+    matches!(argument, Some(Value::SmallInteger(other)) if *other == receiver)
+}
+
+/// `Float>>=`'s rule, the same way: an `Integer` argument widens
+/// losslessly, anything else is unequal.
+pub(crate) fn float_equals<'gc>(receiver: f64, argument: Option<&Value<'gc>>) -> bool {
+    match argument {
+        Some(Value::Float(other)) => *other == receiver,
+        Some(Value::SmallInteger(other)) => *other as f64 == receiver,
+        _ => false,
+    }
+}
+
 /// A float's content hash: its bits, mixed and folded to 32 bits. `-0.0` is
 /// normalized to `0.0` first -- the two have different bits but compare
 /// equal, and a `hash` that told them apart would break the one rule a
@@ -134,9 +152,10 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::GreaterOrEqual => Some(compare(">=", |left, right| left >= right)),
         // Deliberately *not* an error on a type mismatch -- see the
         // module-level note.
-        IntegerPrimitive::Equal => Some(Ok(Value::Boolean(
-            argument_integer() == Some(receiver_integer),
-        ))),
+        IntegerPrimitive::Equal => Some(Ok(Value::Boolean(integer_equals(
+            receiver_integer,
+            arguments.first(),
+        )))),
         IntegerPrimitive::Negated => Some(
             receiver_integer
                 .checked_neg()
@@ -196,7 +215,10 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::Less => Some(compare("<", |left, right| left < right)),
         FloatPrimitive::Greater => Some(compare(">", |left, right| left > right)),
         // Same exception as `Integer`'s `=`: never an error.
-        FloatPrimitive::Equal => Some(Ok(Value::Boolean(argument_float() == Some(receiver_float)))),
+        FloatPrimitive::Equal => Some(Ok(Value::Boolean(float_equals(
+            receiver_float,
+            arguments.first(),
+        )))),
         FloatPrimitive::Hash => Some(Ok(Value::SmallInteger(float_hash(receiver_float)))),
         FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),

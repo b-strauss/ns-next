@@ -53,6 +53,7 @@ well_known_symbols! {
     CLASS_SIDE => "class side",
     AN_OBJECT => "an object",
     UNKNOWN => "unknown",
+    EQUALS => "=",
 }
 
 struct Interner {

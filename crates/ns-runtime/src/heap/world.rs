@@ -29,6 +29,7 @@ impl World {
                 platform_singleton: None,
                 vm_mirror: None,
                 kernel: None,
+                value_equality_method: None,
                 applications: IdentityMap::default(),
                 metaclass_mixins: IdentityMap::default(),
                 #[cfg(debug_assertions)]

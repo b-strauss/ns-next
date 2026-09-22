@@ -39,13 +39,13 @@ a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 `numArgs`, `whileTrue:` and `whileFalse:`; and the platform's accessors.
 `Nil`, `True` and `False` declare nothing of their own.
 
-The leaves are the 71 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 78 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
 `ifFail:`; its arguments are the subject (the kernel method's `self`), the
 leaf's own arguments, and the failure block. `Array` and `OrderedCollection`
-share rows 49–53, as they share their payload.
+share rows 56–60, as they share their payload.
 
 A minimal `platform` object exposes the builtin classes, a `collections`
 namespace and a stdout stream object, enough for transcript-style output.

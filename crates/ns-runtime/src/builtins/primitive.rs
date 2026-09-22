@@ -14,6 +14,7 @@ use crate::Symbol;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Primitive {
     Object(ObjectPrimitive),
+    Value(ValuePrimitive),
     Boolean(BooleanPrimitive),
     Integer(IntegerPrimitive),
     Float(FloatPrimitive),
@@ -35,6 +36,16 @@ pub enum ObjectPrimitive {
     Hash,
     PrintString,
     DoesNotUnderstand,
+}
+
+/// §3.1.1's value objects: the equality and hash `Value` derives from an
+/// instance's state, and the two reflective leaves that read that state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValuePrimitive {
+    SameAs,
+    Hash,
+    SlotCount,
+    SlotAt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,7 +221,7 @@ const fn mirror(
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"); a row's index is its
 /// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
-/// rows 52-56, as they share their payload; each of their kernel classes
+/// rows 56-60, as they share their payload; each of their kernel classes
 /// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(
@@ -242,6 +253,26 @@ pub const MIRROR: &[MirrorEntry] = &[
         "object:doesNotUnderstand:ifFail:",
         "doesNotUnderstand:",
         Primitive::Object(ObjectPrimitive::DoesNotUnderstand),
+    ),
+    mirror(
+        "value:sameAs:ifFail:",
+        "=",
+        Primitive::Value(ValuePrimitive::SameAs),
+    ),
+    mirror(
+        "valueHash:ifFail:",
+        "hash",
+        Primitive::Value(ValuePrimitive::Hash),
+    ),
+    mirror(
+        "valueSlotCount:ifFail:",
+        "slotCount",
+        Primitive::Value(ValuePrimitive::SlotCount),
+    ),
+    mirror(
+        "value:slotAt:ifFail:",
+        "slotAt:",
+        Primitive::Value(ValuePrimitive::SlotAt),
     ),
     mirror(
         "boolean:ifTrue:ifFalse:ifFail:",
