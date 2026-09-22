@@ -246,6 +246,15 @@ pub enum Binding {
     /// A `super m` send (`newspeak-spec.pdf` §5.10) -- resolved at runtime
     /// against the current activation's `current_class`, not by depth.
     SuperSend,
+    /// An explicit-receiver send whose receiver is the core library's
+    /// `vmMirror` slot. Recorded only by `resolver::resolve_kernel`, so no
+    /// user module ever carries it. Every consumer treats it as an ordinary
+    /// send with no binding; the two recognizers that inline a mirror send
+    /// (`control_flow::recognize_mirror_send`,
+    /// `primitive_method::recognize`) read it, because only the kernel's
+    /// `vmMirror` is known to hold the mirror (`docs/design/core-library.md`,
+    /// "The VM mirror is the whole Rust boundary").
+    MirrorSend,
 }
 
 pub struct ResolvedModule {

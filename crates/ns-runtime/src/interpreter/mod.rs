@@ -6,6 +6,7 @@
 
 pub(crate) mod inline_cache;
 pub mod instantiate;
+pub(crate) mod kernel;
 pub(crate) mod literals;
 pub(crate) mod locals;
 pub(crate) mod mirror;
@@ -212,6 +213,11 @@ pub struct Mutator<'gc> {
     /// the builtin classes and handed to the core library at bootstrap. A
     /// capability: nothing hands it to a program.
     pub(crate) vm_mirror: Option<Value<'gc>>,
+    /// The core library's one instance, `Kernel.ns`'s root class
+    /// instantiated with the VM mirror (`interpreter::kernel`): the
+    /// enclosing object of every builtin class. `None` only until the
+    /// bootstrap's kernel phase has run.
+    pub(crate) kernel: Option<Value<'gc>>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -339,6 +345,9 @@ impl Interpreter {
                 interpreter.set_global_cache_size(entries);
             }
         }
+        // Last, after the stress modes are set up: the kernel's own
+        // instantiation is a run like any other, and they should see it.
+        interpreter.install_kernel();
         interpreter
     }
 
@@ -617,10 +626,19 @@ impl<'gc> Mutator<'gc> {
     /// calls it once, in the first entry the world makes.
     pub(crate) fn bootstrap_builtin_classes(&mut self) {
         self.builtin_classes = build_builtin_classes(self);
-        // An immediate has no class field to read a dispatch id from, so the
-        // ids `dispatch_id` answers for one are read once, here, off the
-        // builtin class objects that were just built, and kept in a table of
-        // their own (`Heap::set_immediate_dispatch_ids`).
+        self.refresh_immediate_dispatch_ids();
+        let class = self.builtin_class(BuiltinClass::VmMirror);
+        let mirror = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        self.vm_mirror = Some(Value::Object(mirror));
+    }
+
+    /// An immediate has no class field to read a dispatch id from, so the
+    /// ids `dispatch_id` answers for one are read off the builtin class
+    /// objects and kept in a table of their own
+    /// (`Heap::set_immediate_dispatch_ids`) -- once when the placeholders
+    /// are built, and again when the kernel phase gives them their
+    /// applications (`interpreter::kernel`).
+    pub(crate) fn refresh_immediate_dispatch_ids(&mut self) {
         let instances = |mutator: &Mutator<'gc>, kind| {
             mutator
                 .heap
@@ -635,9 +653,6 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
-        let class = self.builtin_class(BuiltinClass::VmMirror);
-        let mirror = self.new_instance_object(class, ObjectData::Instance(vec![]));
-        self.vm_mirror = Some(Value::Object(mirror));
     }
 
     /// The next pair of dispatch ids, or `DispatchIds::NONE` once the counter
@@ -1294,22 +1309,14 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The VM mirror. Built by `bootstrap_builtin_classes`, before anything
-    /// can ask.
-    ///
-    /// Unreached by production code until the kernel phase sends to it
-    /// (`docs/superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md`,
-    /// Tasks 2-4); used from this crate's own tests today, which is why the
-    /// lint needs silencing rather than the method needing a caller yet.
-    #[allow(dead_code)]
+    /// can ask; the kernel phase hands it to `Kernel.ns`.
     pub(crate) fn vm_mirror(&self) -> Value<'gc> {
         self.vm_mirror
             .expect("internal: the VM mirror is built with the builtin classes")
     }
 
-    /// Whether `value` is the VM mirror. Unreached until `interpreter::sends`
-    /// checks a `MirrorSend`'s receiver (same plan, Task 3); see `vm_mirror`'s
-    /// comment.
-    #[allow(dead_code)]
+    /// Whether `value` is the VM mirror: the kernel phase checks that
+    /// `Kernel.ns`'s `vmMirror` slot holds it.
     pub(crate) fn is_vm_mirror(&self, value: Value<'gc>) -> bool {
         match (value, self.vm_mirror) {
             (Value::Object(object), Some(Value::Object(mirror))) => object.same(mirror),
@@ -1509,13 +1516,13 @@ fn recursion_too_deep<'gc>(header: &ActivationHeader<'gc>) -> Signal<'gc> {
 /// §3.2 deviation in `docs/design/object-model.md`, "Class sides and
 /// metaclasses").
 ///
-/// Every non-`Object` builtin's superclass below is `Object` directly, a
-/// simplification of the real class hierarchy
-/// (`newspeak-spec.pdf` places `Boolean` above `True`/`False`, for
-/// instance): `builtins::boolean` must not rely on `True`/`False`
-/// actually inheriting from a `Boolean` superclass node, since they do not
-/// yet. Fix this only if a corpus module or fixture test needs real
-/// `Boolean`/`True`/`False` inheritance to observe correct behavior.
+/// These are placeholders: every non-`Object` builtin's superclass below is
+/// `Object` directly, and each mixin holds its primitives alone. They exist
+/// so that a literal has its class from the first allocation on; the
+/// bootstrap's kernel phase (`interpreter::kernel`) then gives each the
+/// application of its `Kernel.ns` class and the superclass that class's
+/// clause names -- `Boolean` above `True` and `False` -- before any code
+/// runs.
 fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<'gc>> {
     // NOTE: deliberately *not* `use BuiltinClass::*;` here --
     // `BuiltinClass::Object` and `crate::types::Object`

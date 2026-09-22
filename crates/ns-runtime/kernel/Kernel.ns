@@ -1,0 +1,45 @@
+Newspeak3
+'Kernel'
+(* The core library (`docs/design/core-library.md`, "Planned: the core library
+   as Newspeak source over a VM mirror"). One nested class per builtin class;
+   the bootstrap fills the builtin class objects from them before it
+   instantiates this module, so a nested class here *is* the class a literal
+   has. Every method reaches Rust through `vmMirror`, the one object that
+   holds the leaves, and nothing else here does.
+
+   A superclass clause below names a sibling by its bare name and nothing
+   else: the bootstrap reads the name and never runs the clause, because the
+   classes it names must exist before any clause could run. `Object` declares
+   none: it has no superclass. *)
+class Kernel vmMirror: theMirror = Object new (
+    | private vmMirror = theMirror. |
+) (
+    class Object = () (
+    )
+    class Boolean = Object new () (
+    )
+    class True = Boolean new () (
+    )
+    class False = Boolean new () (
+    )
+    class Integer = Object new () (
+    )
+    class Float = Object new () (
+    )
+    class String = Object new () (
+    )
+    class Symbol = Object new () (
+    )
+    class Character = Object new () (
+    )
+    class Array = Object new () (
+    )
+    class OrderedCollection = Object new () (
+    )
+    class Nil = Object new () (
+    )
+    class Block = Object new () (
+    )
+    class Platform = Object new () (
+    )
+) : ()

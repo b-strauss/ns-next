@@ -335,8 +335,8 @@ impl<'a> Body<'a> {
             // unresolved-identifier error (`docs/design/compiler.md`,
             // "Compilation cannot fail"). A bare identifier bound `SuperSend`
             // is a `super`-prefixed superclass-clause receiver, which falls to
-            // the same case.
-            Some(Binding::SuperSend) | None => {
+            // the same case. `MirrorSend` marks a send, never an identifier.
+            Some(Binding::SuperSend | Binding::MirrorSend) | None => {
                 let destination = self.fresh();
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
                     Some(kind) => self.emit(Instruction::LoadBuiltinClass { destination, kind }),
@@ -369,7 +369,7 @@ impl<'a> Body<'a> {
                     call_site,
                 });
             }
-            Some(Binding::SuperSend) | None => panic!(
+            Some(Binding::SuperSend | Binding::MirrorSend) | None => panic!(
                 "internal: unresolved assignment target `{}` (the resolver should have rejected this)",
                 target.name
             ),
@@ -401,8 +401,9 @@ impl<'a> Body<'a> {
             }
             // An ordinary send. The ones the optimized lowering inlines are
             // marked `SendInlinable`, which only the depth count reads
-            // (`docs/design/compiler.md`, "How the limit counts").
-            Some(Binding::Local(_) | Binding::OuterLocal { .. }) | None => {
+            // (`docs/design/compiler.md`, "How the limit counts"). A send to
+            // the kernel's `vmMirror` is an ordinary send here.
+            Some(Binding::Local(_) | Binding::OuterLocal { .. } | Binding::MirrorSend) | None => {
                 let receiver_register = self.value(&send.receiver);
                 if control_flow::recognize(send).is_some() {
                     self.inlinable_send(receiver_register, &send.message)

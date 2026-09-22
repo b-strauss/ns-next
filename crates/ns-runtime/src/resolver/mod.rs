@@ -22,9 +22,33 @@ pub fn resolve(
     source: Rc<str>,
     origin: SourceOrigin,
 ) -> Result<ResolvedModule, Vec<ResolveError>> {
+    resolve_with(module, source, origin, false)
+}
+
+/// `resolve`, for `Kernel.ns` alone: additionally marks each send to the
+/// root class's `vmMirror` with `Binding::MirrorSend`. Only the bootstrap
+/// (`interpreter::kernel`) and crate-internal tests call it.
+pub(crate) fn resolve_kernel(
+    module: ast::Module,
+    source: Rc<str>,
+    origin: SourceOrigin,
+) -> Result<ResolvedModule, Vec<ResolveError>> {
+    resolve_with(module, source, origin, true)
+}
+
+/// The one body of `resolve` and `resolve_kernel`: `kernel` is the only
+/// thing that differs, so a user module and the kernel can never be resolved
+/// by two drifting copies of the walk.
+fn resolve_with(
+    module: ast::Module,
+    source: Rc<str>,
+    origin: SourceOrigin,
+    kernel: bool,
+) -> Result<ResolvedModule, Vec<ResolveError>> {
     let mut resolver = Resolver {
         bindings: HashMap::new(),
         errors: Vec::new(),
+        kernel,
     };
     resolver.resolve_class(&module.root_class, &[]);
     if resolver.errors.is_empty() {
@@ -42,6 +66,9 @@ pub fn resolve(
 struct Resolver {
     bindings: HashMap<Span, Binding>,
     errors: Vec<ResolveError>,
+    /// Whether this is `Kernel.ns`, whose sends to `vmMirror` are marked
+    /// (`resolve_kernel`). `false` for every user module.
+    kernel: bool,
 }
 
 impl Resolver {
@@ -332,7 +359,11 @@ impl Resolver {
         // Ordinary explicit-receiver send: resolve the receiver
         // sub-expression on its own merits; the send itself needs no
         // binding (dispatch.rs's lookupPublic runs on the receiver's
-        // actual runtime class).
+        // actual runtime class). In the kernel, a send to `vmMirror` is
+        // marked for the recognizers that inline a mirror send.
+        if self.kernel && is_the_mirror_slot(&send.receiver, scope, chain) {
+            self.bindings.insert(send.span, Binding::MirrorSend);
+        }
         self.resolve_expression(&send.receiver, scope, chain);
         self.resolve_message_send(&send.message, scope, chain);
     }
@@ -441,6 +472,23 @@ impl Resolver {
             }
         }
     }
+}
+
+/// The bare identifier `vmMirror`, not a local, naming a member of the
+/// module's root class -- the outermost entry of `chain`. That it is an
+/// immutable slot holding the mirror is the bootstrap's to check
+/// (`interpreter::kernel`), since the resolver cannot know what a slot holds.
+fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[EnclosingClass]) -> bool {
+    let Expression::Identifier(identifier) = receiver else {
+        return false;
+    };
+    if identifier.name != "vmMirror" {
+        return false;
+    }
+    let name = Symbol::intern(&identifier.name);
+    scope.resolve(name).is_none()
+        && sends::find_member_depth(chain, name)
+            .is_some_and(|depth| usize::from(depth) + 1 == chain.len())
 }
 
 fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {

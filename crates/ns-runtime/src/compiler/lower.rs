@@ -788,7 +788,7 @@ impl<'a> Lowerer<'a> {
         let (depth, index) = match self.bindings.get(&target.span)? {
             Binding::Local(index) => (0, *index),
             Binding::OuterLocal { depth, index } => (*depth, *index),
-            Binding::LexicalSend { .. } | Binding::SuperSend => return None,
+            Binding::LexicalSend { .. } | Binding::SuperSend | Binding::MirrorSend => return None,
         };
         // The inlining gate admits no block with temporaries or parameters,
         // so a binding inside an inlined block never names that block's own
@@ -1093,8 +1093,8 @@ impl<'a> Lowerer<'a> {
             // place: a `super`-prefixed superclass-clause receiver (the known
             // gap in `docs/design/dispatch.md`, "Binding variants"). It is
             // grouped with `None` because both fall to the same builtin-name
-            // fallback.
-            Some(Binding::SuperSend) | None => {
+            // fallback. `MirrorSend` marks a send, never an identifier.
+            Some(Binding::SuperSend | Binding::MirrorSend) | None => {
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
                     Some(kind) => {
                         let destination = self.allocate_scratch();
@@ -1190,7 +1190,7 @@ impl<'a> Lowerer<'a> {
                 let setter = crate::Symbol::intern(&format!("{}:", target.name));
                 self.emit_lexical_send(depth, setter, vec![value_register]);
             }
-            Some(Binding::SuperSend) | None => panic!(
+            Some(Binding::SuperSend | Binding::MirrorSend) | None => panic!(
                 "internal: unresolved setter target `{}` (the resolver should have rejected this)",
                 target.name
             ),

@@ -164,7 +164,7 @@ impl<'gc> Mutator<'gc> {
     /// -- a nested mixin has no class object of its own until something
     /// materializes it (the accessor), and a class side until
     /// `Mutator::metaclass_of` builds the metaclass that applies it.
-    fn build_mixin(
+    pub(crate) fn build_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
