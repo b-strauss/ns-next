@@ -1,9 +1,10 @@
 //! The native ("primitive") methods of the core library classes: one module
 //! per `BuiltinClass` family -- `object_class` for `Object` itself, then
 //! `boolean`, `numbers`, `text`, `collections` and `block`. `primitive` names
-//! every one of them as a `Primitive` and lists each builtin's as the entries
-//! of its method table, where the ordinary lookups find them
-//! (`dispatch::Lookup::Primitive`); `execute` runs the one a lookup found.
+//! every one of them as a `Primitive` and lists them as the rows of the VM
+//! mirror, the one builtin whose method table holds primitive entries
+//! (`dispatch::Lookup::Primitive`); every other builtin's methods are
+//! `Kernel.ns`'s, which forward to those rows. `execute` runs one leaf.
 pub mod block;
 pub mod boolean;
 pub mod collections;
@@ -18,9 +19,11 @@ use crate::interpreter::{Signal, Step};
 use crate::types::*;
 use crate::{platform, Mutator, Symbol};
 
-/// Runs `primitive` on `receiver`. `None` is a primitive failure: the
-/// receiver is not of the shape the primitive works on (`docs/design/dispatch.md`,
-/// "A primitive can fail"). `selector` is the send's, for the error texts
+/// Runs `primitive` on `receiver`. `None` means a leaf declines: the
+/// receiver is not of the shape it works on, and the answer goes back to the
+/// mirror code, which runs the failure block (`interpreter::mirror`) -- or,
+/// for a kernel primitive method, activates the method, whose body is that
+/// failure path. `selector` is the send's, for the error texts
 /// that name it. No primitive calls a block: the control-flow ones, `value`
 /// and `do:` answer a `Step` (`docs/design/execution.md`, "The trampoline").
 pub(crate) fn execute<'gc>(
@@ -57,8 +60,8 @@ pub(crate) fn execute<'gc>(
         Primitive::Platform(primitive) => {
             platform::execute(mutator, primitive, receiver, arguments).map(wrap_error)
         }
-        // Always `Some`: a mirror primitive never passes its level over,
-        // because its failure path is the block the send carries.
+        // Always `Some`: a leaf that declines here runs the failure block
+        // the send carries, so a mirror row never answers `None`.
         Primitive::Mirror(row) => Some(crate::interpreter::mirror::execute_sent(
             mutator, row, arguments,
         )),

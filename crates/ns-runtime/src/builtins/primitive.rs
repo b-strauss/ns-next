@@ -7,7 +7,6 @@ use ns_syntax::ast;
 
 use crate::hash::IdentityMap;
 use crate::mixin::{MethodEntry, PrimitiveMethod};
-use crate::types::BuiltinClass;
 use crate::Symbol;
 
 /// One native operation. Grouped by the builtin family whose module executes
@@ -134,73 +133,6 @@ pub enum PlatformPrimitive {
     NewLine,
 }
 
-/// One selector a builtin class answers natively.
-#[derive(Debug, Clone, Copy)]
-pub struct PrimitiveSelector {
-    pub selector: &'static str,
-    pub access: ast::AccessModifier,
-    pub primitive: Primitive,
-}
-
-// No remaining family list uses this once `Platform`'s moved into
-// `Kernel.ns` (Task 12); it stays, like `protected` below, until Task 13
-// deletes the per-family lists (and both) entirely.
-#[allow(dead_code)]
-const fn public(selector: &'static str, primitive: Primitive) -> PrimitiveSelector {
-    PrimitiveSelector {
-        selector,
-        access: ast::AccessModifier::Public,
-        primitive,
-    }
-}
-
-// No remaining family list uses this once `Object`'s moved into `Kernel.ns`
-// (Task 5); it stays for the families still ahead until Task 13 deletes the
-// per-family lists (and this) entirely.
-#[allow(dead_code)]
-const fn protected(selector: &'static str, primitive: Primitive) -> PrimitiveSelector {
-    PrimitiveSelector {
-        selector,
-        access: ast::AccessModifier::Protected,
-        primitive,
-    }
-}
-
-// `Object`'s methods moved into `Kernel.ns` (Task 5): each is now a kernel
-// primitive method whose body forwards to the mirror row of the same
-// `Primitive`. `newspeak-spec.pdf` §5.5 is why `doesNotUnderstand:` is
-// `protected` there -- an explicit-receiver send of it finds nothing through
-// `lookupPublic` and falls to the access-blind "defined for" walk that
-// invokes it for the failing send itself.
-const OBJECT: &[PrimitiveSelector] = &[];
-
-// `Boolean`'s methods moved into `Kernel.ns` (Task 6), inherited by `True`
-// and `False`, which declare none of their own.
-const BOOLEAN: &[PrimitiveSelector] = &[];
-
-// `Integer`'s methods moved into `Kernel.ns` (Task 7).
-const INTEGER: &[PrimitiveSelector] = &[];
-
-// `Float`'s methods moved into `Kernel.ns` (Task 8).
-const FLOAT: &[PrimitiveSelector] = &[];
-
-// `String`'s, `Symbol`'s and `Character`'s methods moved into `Kernel.ns`
-// (Task 9).
-const STRING: &[PrimitiveSelector] = &[];
-const SYMBOL: &[PrimitiveSelector] = &[];
-const CHARACTER: &[PrimitiveSelector] = &[];
-
-// `Array`'s and `OrderedCollection`'s methods moved into `Kernel.ns` (Task
-// 10).
-const ARRAY: &[PrimitiveSelector] = &[];
-const ORDERED_COLLECTION: &[PrimitiveSelector] = &[];
-
-// `Block`'s methods moved into `Kernel.ns` (Task 11).
-const BLOCK: &[PrimitiveSelector] = &[];
-
-// `Platform`'s methods moved into `Kernel.ns` (Task 12).
-const PLATFORM: &[PrimitiveSelector] = &[];
-
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
 /// `Resolved::Primitive` carries one, and its size is pinned
 /// (`interpreter::resolve`'s
@@ -259,8 +191,8 @@ const fn mirror(
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"; the plan's "The mirror
 /// table" names each row's index). `Array` and `OrderedCollection` share
-/// rows 49-53, as they share their primitives today; each kernel class
-/// declares only the selectors its own list above names.
+/// rows 49-53, as they share their payload; each of their kernel classes
+/// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(
         "objectClass:ifFail:",
@@ -635,55 +567,19 @@ pub fn mirror_primitive_named(selector: &str) -> Option<MirrorPrimitive> {
         .map(|index| MirrorPrimitive(index as u8))
 }
 
-/// The selectors `kind` answers natively, in the order its module lists them.
-pub fn primitives_of(kind: BuiltinClass) -> &'static [PrimitiveSelector] {
-    match kind {
-        BuiltinClass::Object => OBJECT,
-        BuiltinClass::Boolean | BuiltinClass::True | BuiltinClass::False => BOOLEAN,
-        BuiltinClass::Integer => INTEGER,
-        BuiltinClass::Float => FLOAT,
-        BuiltinClass::String => STRING,
-        BuiltinClass::Symbol => SYMBOL,
-        BuiltinClass::Character => CHARACTER,
-        BuiltinClass::Array => ARRAY,
-        BuiltinClass::OrderedCollection => ORDERED_COLLECTION,
-        BuiltinClass::Block => BLOCK,
-        BuiltinClass::Platform => PLATFORM,
-        BuiltinClass::Nil => &[],
-        // The mirror's entries come from `MIRROR`, not from a
-        // `PrimitiveSelector` list -- `method_table` special-cases it below.
-        BuiltinClass::VmMirror => &[],
-    }
-}
-
-/// The method table the bootstrap gives `kind`'s mixin: one
-/// `MethodEntry::Primitive` per selector `kind` answers natively. The VM
-/// mirror's table comes from `MIRROR` directly, one row per entry, rather
-/// than from `primitives_of`, whose per-family lists it is not one of.
-pub fn method_table(kind: BuiltinClass) -> IdentityMap<Symbol, MethodEntry> {
-    if kind == BuiltinClass::VmMirror {
-        return MIRROR
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                (
-                    Symbol::intern(entry.selector),
-                    MethodEntry::Primitive(PrimitiveMethod {
-                        primitive: Primitive::Mirror(MirrorPrimitive(index as u8)),
-                        access: ast::AccessModifier::Public,
-                    }),
-                )
-            })
-            .collect();
-    }
-    primitives_of(kind)
+/// The VM mirror's method table: one public `MethodEntry::Primitive` per
+/// row of `MIRROR`. It is the only method table the bootstrap builds in
+/// Rust -- every other builtin's methods are `Kernel.ns`'s.
+pub fn mirror_method_table() -> IdentityMap<Symbol, MethodEntry> {
+    MIRROR
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(index, entry)| {
             (
                 Symbol::intern(entry.selector),
                 MethodEntry::Primitive(PrimitiveMethod {
-                    primitive: entry.primitive,
-                    access: entry.access,
+                    primitive: Primitive::Mirror(MirrorPrimitive(index as u8)),
+                    access: ast::AccessModifier::Public,
                 }),
             )
         })
@@ -693,61 +589,6 @@ pub fn method_table(kind: BuiltinClass) -> IdentityMap<Symbol, MethodEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-
-    /// A method table holds one entry per selector, so a list that names a
-    /// selector twice would silently keep only one of its primitives.
-    #[test]
-    fn no_builtin_lists_a_selector_twice() {
-        for kind in BuiltinClass::ALL {
-            let mut seen = HashSet::new();
-            for entry in primitives_of(kind) {
-                assert!(
-                    seen.insert(entry.selector),
-                    "{kind:?} lists `{}` twice",
-                    entry.selector
-                );
-            }
-        }
-    }
-
-    /// `Nil` has no natives of its own today; the VM mirror's come from
-    /// `MIRROR` rather than `primitives_of` (`method_table`'s special case);
-    /// `Object`'s methods moved into `Kernel.ns` (Task 5), `Boolean`'s (Task
-    /// 6, inherited by `True` and `False`, which declare none of their
-    /// own), `Integer`'s (Task 7), `Float`'s (Task 8), the three text
-    /// families' (`String`, `Symbol`, `Character`, Task 9), `Array`'s and
-    /// `OrderedCollection`'s (Task 10), `Block`'s (Task 11) and `Platform`'s
-    /// (Task 12), so their lists are empty too -- every builtin now answers
-    /// an empty `primitives_of` list; the per-family lists themselves stay
-    /// until Task 13 removes them along with this test's reason to exist.
-    #[test]
-    fn every_builtin_but_nil_the_mirror_and_the_kernel_families_has_primitives() {
-        for kind in BuiltinClass::ALL {
-            assert_eq!(
-                primitives_of(kind).is_empty(),
-                matches!(
-                    kind,
-                    BuiltinClass::Nil
-                        | BuiltinClass::VmMirror
-                        | BuiltinClass::Object
-                        | BuiltinClass::Boolean
-                        | BuiltinClass::True
-                        | BuiltinClass::False
-                        | BuiltinClass::Integer
-                        | BuiltinClass::Float
-                        | BuiltinClass::String
-                        | BuiltinClass::Symbol
-                        | BuiltinClass::Character
-                        | BuiltinClass::Array
-                        | BuiltinClass::OrderedCollection
-                        | BuiltinClass::Block
-                        | BuiltinClass::Platform
-                ),
-                "{kind:?}"
-            );
-        }
-    }
 
     /// `Integer`'s `+` moved into `Kernel.ns` (Task 7): the leaf it forwards
     /// to is the mirror row named `integer:add:ifFail:`, still the same

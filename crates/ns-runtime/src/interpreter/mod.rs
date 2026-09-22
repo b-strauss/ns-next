@@ -776,7 +776,7 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let resolved = self.resolve_public(receiver, selector);
-        self.act(resolved, receiver, None, selector, arguments)
+        self.act(resolved, receiver, selector, arguments)
     }
 
     pub(crate) fn take_argument_buffer(&mut self) -> Vec<Value<'gc>> {
@@ -1570,14 +1570,21 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
     classes
 }
 
-/// The mixin behind one `BuiltinClass`: its method table holds `kind`'s
-/// primitives (`builtins::primitive::method_table`), and nothing else. A
-/// fresh `Rc` per call, so the application cache keys the builtins apart from
-/// each other even where several -- `Boolean`, `True` and `False` -- hold the
-/// same primitives.
+/// The mixin behind one `BuiltinClass` until the kernel phase runs. The VM
+/// mirror's holds its rows (`builtins::primitive::mirror_method_table`) and
+/// keeps them: `Kernel.ns` declares no mirror class. Every other kind's is a
+/// placeholder with an empty table, which the kernel phase replaces with its
+/// kernel class's mixin before anything runs (`interpreter::kernel`). A
+/// fresh `Rc` per call, so the application cache keys the placeholders
+/// apart from each other.
 fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
+    let methods = if kind == BuiltinClass::VmMirror {
+        crate::builtins::primitive::mirror_method_table()
+    } else {
+        crate::hash::IdentityMap::default()
+    };
     Rc::new(crate::mixin::Mixin {
-        methods: crate::builtins::primitive::method_table(kind),
+        methods,
         ..crate::mixin::Mixin::empty(Symbol::intern(&format!("{kind:?}")))
     })
 }

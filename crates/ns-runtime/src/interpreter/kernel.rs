@@ -143,10 +143,7 @@ impl<'gc> Mutator<'gc> {
                 (placeholder, Some(BuiltinClass::Object))
             } else {
                 let nested = nested_named(&root_mixin, kernel_class_name(kind));
-                (
-                    merged_with_remaining_primitives(nested, kind),
-                    superclass_kind(nested),
-                )
+                (nested.clone(), superclass_kind(nested))
             };
             let super_application = superclass
                 .and_then(|superclass| self.heap.class_application(self.builtin_class(superclass)));
@@ -254,21 +251,6 @@ fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
     BuiltinClass::ALL
         .into_iter()
         .find(|kind| *kind != BuiltinClass::VmMirror && kernel_class_name(*kind) == name)
-}
-
-/// Until its family's task moves it, a family's Rust primitives are merged
-/// into its kernel class's table, the kernel's own entries first. Task 13
-/// deletes this once nothing is left to merge.
-fn merged_with_remaining_primitives(nested: &Rc<Mixin>, kind: BuiltinClass) -> Rc<Mixin> {
-    let remaining = crate::builtins::primitive::method_table(kind);
-    if remaining.is_empty() {
-        return nested.clone();
-    }
-    let mut merged = (**nested).clone();
-    for (selector, entry) in remaining {
-        merged.methods.entry(selector).or_insert(entry);
-    }
-    Rc::new(merged)
 }
 
 /// The shape the phase relies on and the resolver cannot check: one nested

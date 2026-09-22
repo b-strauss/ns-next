@@ -1,0 +1,32 @@
+Newspeak3
+'Kernel'
+(* A user subclass of a builtin inherits its kernel methods but none of its
+   payload, so each leaf those methods forward to declines, and the failure
+   block's `super` send reaches Object's method: `=` is identity and
+   `printString` the generic default, family by family. *)
+class FallThrough usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    class MyBoolean = Boolean new () ()
+    class MyInteger = Integer new () ()
+    class MyFloat = Float new () ()
+    class MySymbol = Symbol new () ()
+    class MyCharacter = Character new () ()
+    class MyArray = Array new () ()
+    class MyOrderedCollection = OrderedCollection new () ()
+    class MyBlock = Block new () ()
+    report: instance = (
+        transcript show: (instance = instance) printString; show: ' '; show: instance printString; newLine
+    )
+    public main: p args: a = (
+        report: MyBoolean new.
+        report: MyInteger new.
+        report: MyFloat new.
+        report: MySymbol new.
+        report: MyCharacter new.
+        report: MyArray new.
+        report: MyOrderedCollection new.
+        report: MyBlock new.
+        transcript show: MyArray new size printString; newLine
+    )
+) : ()

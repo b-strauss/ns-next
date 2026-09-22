@@ -94,7 +94,7 @@ pub struct ClassData<'gc> {
     /// The per-instance class-object chain, parallel to the application
     /// chain. `outer` and `super` need it, and lookup steps it beside the
     /// application chain for each level's class object -- the level a found
-    /// method runs in, and the one a failed primitive passes over.
+    /// method runs in.
     pub superclass: Option<ClassReference<'gc>>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// core-library classes `builtins/` implements natively, for the image's

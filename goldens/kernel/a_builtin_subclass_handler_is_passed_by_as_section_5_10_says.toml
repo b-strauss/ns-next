@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before
+'''
+stderr = '''
+Uncaught Newspeak error: an object does not understand #size
+'''

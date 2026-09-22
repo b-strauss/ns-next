@@ -495,7 +495,6 @@ mod tests {
                 },
                 crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
                 receiver,
-                None,
                 Symbol::intern("same:"),
                 &[receiver],
             );
@@ -511,7 +510,6 @@ mod tests {
                 },
                 crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
                 receiver,
-                None,
                 Symbol::intern("size"),
                 &[],
             );

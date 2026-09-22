@@ -26,9 +26,11 @@ pub enum Lookup<'gc> {
     /// object itself does not exist until `interpreter::nested::nested_class`
     /// materializes it for a particular receiver.
     NestedClass(Rc<Mixin>, ClassReference<'gc>),
-    /// A builtin's primitive, with the class object of the level whose
-    /// method table holds it: a primitive that fails passes that level over,
-    /// and the lookup continues from its superclass (`lookup_above`).
+    /// A primitive entry -- a row of the VM mirror, the only builtin whose
+    /// method table holds any -- with the class object of the level whose
+    /// method table holds it, which an inline cache counts its level from.
+    /// A row never passes its level over: its failure path is the failure
+    /// block its send carries.
     Primitive(Primitive, ClassReference<'gc>),
     /// §6.3's primary factory, found on the receiver's metaclass. It carries
     /// no level: §6.3 instantiates the *receiver* of the factory message,
@@ -238,43 +240,6 @@ pub fn lookup_defined_for<'gc>(
     walk(heap, class, selector, Rule::DefinedFor)
 }
 
-/// The lookup `rule` names, of `selector`, from `class`: `class`'s own level
-/// first, then each superclass in turn.
-///
-/// The three lookups above name their rule as a literal, so that each gets
-/// its own copy of `walk` with the verdict table folded away. This one,
-/// which carries the rule as a value, therefore branches to one of them
-/// rather than handing `walk` a run-time rule -- a fourth copy of the walk
-/// with a live `rule` register in its inner loop is what a run-time rule
-/// would mean, and its only caller is the cold `lookup_above`.
-pub fn lookup<'gc>(
-    heap: &Heap<'gc>,
-    rule: Rule,
-    class: ClassReference<'gc>,
-    selector: Symbol,
-) -> Lookup<'gc> {
-    match rule {
-        Rule::Public => lookup_public(heap, class, selector),
-        Rule::Protected => lookup_protected(heap, class, selector),
-        Rule::DefinedFor => lookup_defined_for(heap, class, selector),
-    }
-}
-
-/// The same lookup, continued from the level above `level`: where a
-/// primitive found at `level` that failed passes the send on. `NotFound`
-/// above the root.
-pub fn lookup_above<'gc>(
-    heap: &Heap<'gc>,
-    rule: Rule,
-    level: ClassReference<'gc>,
-    selector: Symbol,
-) -> Lookup<'gc> {
-    match heap.class_superclass(level) {
-        Some(superclass) => lookup(heap, rule, superclass, selector),
-        None => Lookup::NotFound,
-    }
-}
-
 /// Walks `class`'s superclass chain for a declaration of `selector`, asking
 /// `rule` what to do with each one it finds.
 ///
@@ -357,7 +322,7 @@ fn walk<'gc>(
 /// with its field resolved against that level's application -- the level
 /// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
 /// `InitializeSlot` places a slot's initial value) -- a primitive with
-/// that level, which its failure passes over, or the primary factory, which
+/// that level, which an inline cache counts from, or the primary factory, which
 /// needs no level at all because §6.3 instantiates the receiver.
 fn found_entry<'gc>(
     entry: &MethodEntry,
@@ -623,16 +588,12 @@ mod tests {
         });
     }
 
-    /// `String`'s `=` is a kernel primitive method now (`Kernel.ns`, Task
-    /// 9): an ordinary lookup finds it at `String`'s own level, carrying the
-    /// mirror row its forwarder sends -- its failure path is its own body's
-    /// `super =`, not a runtime pass-over, so "a failed primitive passes its
-    /// level over" no longer describes what happens here. `lookup_above`
-    /// itself is untouched by that move and still skips a level to continue
-    /// the search above it; the pass-over mechanism it once stood in for is
-    /// left to Task 13, which removes it.
+    /// `String`'s `=` is a kernel primitive method (`Kernel.ns`): an
+    /// ordinary lookup finds it at `String`'s own level, carrying the mirror
+    /// row its forwarder sends. Its failure path is its own body's `super =`,
+    /// so nothing passes a level over at run time.
     #[test]
-    fn a_lookup_continued_above_a_level_passes_that_levels_entry_over() {
+    fn strings_equality_is_a_kernel_primitive_method_at_its_own_level() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let string = mutator.builtin_class(BuiltinClass::String);
@@ -646,20 +607,6 @@ mod tests {
                 }
                 _ => panic!("String's own `=` must be found at its own level"),
             }
-            match lookup_above(&mutator.heap, Rule::Public, string, Symbol::intern("=")) {
-                Lookup::Method(method, _) => {
-                    assert_eq!(
-                        method.primitive,
-                        mirror_primitive_named("object:equals:ifFail:")
-                    )
-                }
-                _ => panic!("above String, `=` is Object's"),
-            }
-            let object = mutator.builtin_class(BuiltinClass::Object);
-            assert!(matches!(
-                lookup_above(&mutator.heap, Rule::Public, object, Symbol::intern("=")),
-                Lookup::NotFound
-            ));
         });
     }
 
