@@ -286,7 +286,7 @@ library over a VM mirror — is done** (2026-09-22;
 [ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md);
 [core-library.md](design/core-library.md), "The core library as Newspeak
 source over a VM mirror"). Every builtin method is a one-line forwarder in
-`crates/ns-runtime/kernel/Kernel.ns` — `^vmMirror integer: self add: other
+`crates/ns-runtime/core-library/Kernel.ns` — `^vmMirror integer: self add: other
 ifFail: [^super + other]` — over the one VM mirror, a builtin object whose
 method table carries every leaf as an enumerated primitive, one row of
 `builtins/primitive.rs`'s `MIRROR` each; the per-class primitive lists and
@@ -861,7 +861,7 @@ Then, after M4 and before the JIT tiers:
    baseline group in both sittings — the cushion the rest of this step
    spends. See "Leaf inlining" below. **The core library over the mirror is
    done** (2026-09-22): every builtin method a forwarder in
-   `crates/ns-runtime/kernel/Kernel.ns`, primitive methods absorbing what the
+   `crates/ns-runtime/core-library/Kernel.ns`, primitive methods absorbing what the
    forwarding costs, and no source measurably slower; see "Where the next
    session starts" above. **Still to come in this step: `Class`, `Behavior`
    and `Metaclass`** — the rest of §3.2 (decided 2026-09-18), declared kernel
@@ -3347,7 +3347,7 @@ first of step 6's three remaining plans.
 - `fc94e84` — `VmMirror`, a builtin class with builtin class tag 14, whose
   method table carries every leaf as one row of `builtins/primitive.rs`'s
   `MIRROR`, and its one instance, created at bootstrap.
-- `f5a5efc` — `crates/ns-runtime/kernel/Kernel.ns`, resolved by
+- `f5a5efc` — `crates/ns-runtime/core-library/Kernel.ns`, resolved by
   `resolver::resolve_kernel`, the only resolver that records
   `Binding::MirrorSend`; the bootstrap fills the builtin class objects it
   built as placeholders from the kernel's nested classes and instantiates

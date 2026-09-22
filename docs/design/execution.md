@@ -2774,7 +2774,7 @@ this measurement makes a case for.
 
 ### What the core library's move cost
 
-Every builtin method now lives in `crates/ns-runtime/kernel/Kernel.ns` as a
+Every builtin method now lives in `crates/ns-runtime/core-library/Kernel.ns` as a
 forwarder over the one VM mirror ([core-library.md](core-library.md),
 "The core library as Newspeak source over a VM mirror"). A kernel
 method whose whole body forwards to one mirror row is a primitive method: a

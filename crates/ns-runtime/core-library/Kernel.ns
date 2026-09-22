@@ -10,11 +10,15 @@ Newspeak3
    A superclass clause below names a sibling by its bare name and nothing
    else: the bootstrap reads the name and never runs the clause, because the
    classes it names must exist before any clause could run. `Object` declares
-   none: it has no superclass. *)
+   none: it has no superclass.
+
+   Every class here says `public`: §6.3.1 makes an undeclared member
+   protected, and a protected class is unreachable from another module, so
+   the accessibility has to be written out for a program to name it. *)
 class Kernel vmMirror: theMirror = Object new (
     | private vmMirror = theMirror. |
 ) (
-    class Object = () (
+    public class Object = () (
         public class = ( ^vmMirror objectClass: self ifFail: [^super class] )
         public == other = ( ^vmMirror object: self identicalTo: other ifFail: [^super == other] )
         public = other = ( ^vmMirror object: self equals: other ifFail: [^super = other] )
@@ -25,7 +29,7 @@ class Kernel vmMirror: theMirror = Object new (
            walk that invokes it for the failing send itself. *)
         protected doesNotUnderstand: message = ( ^vmMirror object: self doesNotUnderstand: message ifFail: [^super doesNotUnderstand: message] )
     )
-    class Boolean = Object new () (
+    public class Boolean = Object new () (
         public ifTrue: trueBlock ifFalse: falseBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFalse: falseBlock ifFail: [^super ifTrue: trueBlock ifFalse: falseBlock] )
         public ifFalse: falseBlock ifTrue: trueBlock = ( ^vmMirror boolean: self ifFalse: falseBlock ifTrue: trueBlock ifFail: [^super ifFalse: falseBlock ifTrue: trueBlock] )
         public ifTrue: trueBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFail: [^super ifTrue: trueBlock] )
@@ -37,11 +41,11 @@ class Kernel vmMirror: theMirror = Object new (
         public or: alternative = ( ^vmMirror boolean: self or: alternative ifFail: [^super or: alternative] )
         public printString = ( ^vmMirror booleanPrintString: self ifFail: [^super printString] )
     )
-    class True = Boolean new () (
+    public class True = Boolean new () (
     )
-    class False = Boolean new () (
+    public class False = Boolean new () (
     )
-    class Integer = Object new () (
+    public class Integer = Object new () (
         public + other = ( ^vmMirror integer: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror integer: self subtract: other ifFail: [^super - other] )
         public * other = ( ^vmMirror integer: self multiply: other ifFail: [^super * other] )
@@ -56,7 +60,7 @@ class Kernel vmMirror: theMirror = Object new (
         public printString = ( ^vmMirror integerPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror integerAsString: self ifFail: [^super asString] )
     )
-    class Float = Object new () (
+    public class Float = Object new () (
         public + other = ( ^vmMirror float: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror float: self subtract: other ifFail: [^super - other] )
         public * other = ( ^vmMirror float: self multiply: other ifFail: [^super * other] )
@@ -67,38 +71,38 @@ class Kernel vmMirror: theMirror = Object new (
         public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )
     )
-    class String = Object new () (
+    public class String = Object new () (
         public size = ( ^vmMirror stringSize: self ifFail: [^super size] )
         public , other = ( ^vmMirror string: self concatenate: other ifFail: [^super , other] )
         public = other = ( ^vmMirror string: self equals: other ifFail: [^super = other] )
         public asSymbol = ( ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol] )
         public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
     )
-    class Symbol = Object new () (
+    public class Symbol = Object new () (
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
         public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
         public printString = ( ^vmMirror symbolPrintString: self ifFail: [^super printString] )
     )
-    class Character = Object new () (
+    public class Character = Object new () (
         public asInteger = ( ^vmMirror characterAsInteger: self ifFail: [^super asInteger] )
         public asString = ( ^vmMirror characterAsString: self ifFail: [^super asString] )
         public = other = ( ^vmMirror character: self equals: other ifFail: [^super = other] )
     )
-    class Array = Object new () (
+    public class Array = Object new () (
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
         public at: index put: value = ( ^vmMirror collection: self at: index put: value ifFail: [^super at: index put: value] )
         public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
-    class OrderedCollection = Object new () (
+    public class OrderedCollection = Object new () (
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
         public add: element = ( ^vmMirror collection: self add: element ifFail: [^super add: element] )
         public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
-    class Nil = Object new () (
+    public class Nil = Object new () (
     )
-    class Block = Object new () (
+    public class Block = Object new () (
         public value = ( ^vmMirror blockValue: self ifFail: [^super value] )
         public value: first = ( ^vmMirror block: self value: first ifFail: [^super value: first] )
         public value: first value: second = ( ^vmMirror block: self value: first value: second ifFail: [^super value: first value: second] )
@@ -111,7 +115,7 @@ class Kernel vmMirror: theMirror = Object new (
        this class and are told apart by payload shape (`platform.rs`), so a
        leaf declines a platform object that is not the one it serves, and the
        failure block's `super` send ends in Object's doesNotUnderstand:. *)
-    class Platform = Object new () (
+    public class Platform = Object new () (
         public transcript = ( ^vmMirror platformTranscript: self ifFail: [^super transcript] )
         public Object = ( ^vmMirror platformObject: self ifFail: [^super Object] )
         public Array = ( ^vmMirror platformArray: self ifFail: [^super Array] )

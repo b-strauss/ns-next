@@ -4,14 +4,14 @@
 > `Kernel.ns`, over one VM mirror; missing are `Class`, `Behavior` and
 > `Metaclass` (step 6's second plan) and `Integer>>/`, and the surface grows
 > on demand, not speculatively.
-> **Code:** `crates/ns-runtime/kernel/Kernel.ns` (the library),
+> **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table),
 > `compiler/primitive_method.rs`, `platform.rs`.
 
 The core library is Newspeak source the runtime ships:
-`crates/ns-runtime/kernel/Kernel.ns`, compiled into the binary
+`crates/ns-runtime/core-library/Kernel.ns`, compiled into the binary
 (`include_str!`) and compiled again at every bootstrap, never carried in an
 artifact. Its methods reach Rust through exactly one object, the VM mirror,
 as §8.3.1 requires, and the leaves — the arithmetic, the comparisons,

@@ -15,7 +15,7 @@ use crate::types::*;
 /// `Kernel.ns`, compiled into the binary: the library is source the runtime
 /// ships (`docs/design/core-library.md`, "Where the library source lives,
 /// and how modules are found").
-pub(crate) const KERNEL_SOURCE: &str = include_str!("../../kernel/Kernel.ns");
+pub(crate) const KERNEL_SOURCE: &str = include_str!("../../core-library/Kernel.ns");
 
 thread_local! {
     /// The kernel, parsed and resolved once per thread: the AST and its
@@ -564,6 +564,33 @@ mod tests {
                         "{kind:?}>>{selector} forwards to a row reported under another selector"
                     );
                 }
+            }
+        });
+    }
+
+    /// §6.3.1 defaults an undeclared member to protected, and a protected
+    /// nested class is unreachable from outside the module that declares it,
+    /// so every kernel class has to say `public` for a program to name it.
+    #[test]
+    fn every_kernel_class_is_public() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let Some(Value::Object(kernel)) = mutator.kernel else {
+                panic!("the kernel is instantiated at bootstrap");
+            };
+            let application = super::kernel_application(mutator, kernel);
+            assert_eq!(
+                application.mixin.nested.len(),
+                BuiltinClass::ALL.len() - 1,
+                "the kernel declares one class per builtin but the mirror's"
+            );
+            for nested in &application.mixin.nested {
+                assert_eq!(
+                    nested.access,
+                    ns_syntax::ast::AccessModifier::Public,
+                    "the kernel class {} must be public",
+                    nested.name
+                );
             }
         });
     }
