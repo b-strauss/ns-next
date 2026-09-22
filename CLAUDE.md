@@ -276,34 +276,40 @@ caches").
 
 ## Working in this repository
 
+**The gates are staggered.** Everything below still gates the work; what
+changed is how often. Running all of it before every commit means a batch of
+three small changes runs the suite twelve times, which is why the per-commit
+gate is the first group and the rest runs once, at the end of a stretch of
+work, before it is handed on. Nothing here is optional: a commit that never
+saw the second group is not finished work, it is work in progress.
+
 ```bash
-# build every crate
-cargo build --workspace
+# --- before every commit ---
+cargo fmt --all
+# must be warning-free
+cargo clippy --workspace --all-targets
 # the full suite, including every golden under both lowerings
 cargo test --workspace
+# non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
+cargo run -p ns-cli -- parse-corpus corpus/modules
+
+# --- once at the end of a batch of work, before handing it on ---
 # the same suite with every object moved at the run loop's safepoints
 # (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace
 # the same suite with every inline cache vacated at every safepoint
-# (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_CACHES=1 cargo test --workspace
 # the same suite with a collection at every safepoint
-# (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_COLLECT=1 cargo test --workspace
-# before every commit
-cargo fmt --all
-# must be warning-free
-cargo clippy --workspace --all-targets
-# non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
-cargo run -p ns-cli -- parse-corpus corpus/modules
 # non-regression gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
-# non-regression gate under the stress mode, same report
+# the same report under each stress mode
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
-# non-regression gate under the cache stress mode, same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
-# non-regression gate under the collect stress mode, same report
 NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
+
+# build every crate
+cargo build --workspace
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
