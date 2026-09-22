@@ -1057,6 +1057,13 @@ expected output for every source; a linker map (`-C link-arg=/MAP:<file>`)
 shows every function of the crate at a multiple of 64 — the only symbols off
 the boundary are the static C runtime's own objects.
 
+The pin removes the 64-byte phase shift and nothing else. `bench_block.ns` has
+since shown a **16% spread between builds of the same tree** with the pin in
+place, stable to about 1% within each build, so on that source one build per
+commit measures the build rather than the commit; pool several builds of each
+tree instead ("What `Top`, `Value` and `Number` cost" below, which found it).
+The other seven sources stay within 0.3–2.3% between builds.
+
 Medians in ms from the first sitting, each group's mean, and the change of
 the mean in both sittings:
 
@@ -2958,6 +2965,148 @@ millisecond, so embedding the compiled kernel as an image generated at
 build time ([core-library.md](core-library.md), "Where the library source
 lives, and how modules are found") is not called for by this figure; it stays the named next step if
 the kernel grows until it is.
+
+### What `Top`, `Value` and `Number` cost
+
+Giving the core library the specification's object model
+([core-library.md](core-library.md), "The hierarchy"; §3.2 and §3.1.1) changed
+three things a release build runs. The hierarchy gained two levels -- `Top`
+above `Object`, and `Value`, with `Number` under it, between `Object` and the
+value classes -- so a *failed* lookup walks two levels more before it reaches
+`doesNotUnderstand:`. `Instruction::InitializeSlot` gained a branch, the
+deep-immutability check of §3.1.1's second condition
+(`instantiate::check_value_slot`). And `==` on a value is no longer `Object`'s
+identity leaf but `Value`'s `^self = other`, two dispatches where there was
+one.
+
+**The expectation, recorded before any binary was built.** Level on all eight
+sources. No send in any of the eight loops fails, so the two extra levels
+cannot show. **None of the eight compares values in its loop** -- no `=` and
+no `==` appears in any of them, in the loop or outside it -- so the two
+dispatches cannot show either, and this measurement does not bound them; what
+a value comparison costs is stated from the source instead. That leaves the
+`InitializeSlot` branch, which can show only on `bench_new.ns`, `bench_new2.ns`
+and `bench_newarg.ns`, the three that run one or two initializers per
+iteration, 20,000 iterations each. Every one of their stores is an immediate,
+so the check returns on its first test.
+
+**Measured 2026-09-23, against `b0a771d`, by the protocol of "What removing the
+re-entries moved" above.** `b0a771d` is this branch's head before the first
+commit of the work (`1dc548a`) and is itself documentation only, so its tree is
+the code as it stood before. Every binary built with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
+neither imports `VCRUNTIME140.dll` (`dumpbin -dependents`); each checked to
+print the expected answer for all eight sources first;
+`ns-next bench <source> --iterations 30`, five rounds a sitting, the binaries
+rotating by one position from round to round, two whole sittings, nothing else
+running.
+
+**Five binaries rather than two, and why.** The first pairing -- one build of
+the baseline against one build of the head -- put `bench_block.ns` 13.4%
+*faster* at the head, every group entirely below, which nothing the change
+touches can explain: `bench_block.ns` instantiates nothing, and its loop sends
+`<`, `+`, `value:` and `bump:`. Two further builds of the baseline and two of
+the head, from the same trees with the same flags, showed what it was. On
+`bench_block.ns` alone the five builds sit at five separate levels --
+17.21 ms, 18.86 (baseline) and 16.49, 19.13, 19.13 (head) -- each stable to
+about 1% across ten rounds, with the fastest and the two slowest all being
+head builds. The spread is 16%, it straddles the commit boundary, and it is
+therefore a property of the build, not of the change. The other seven sources
+show 0.3% to 2.3% between builds of the same tree. `bench_block.ns` is the
+longest-running source and the only one whose loop activates a block through a
+primitive method; what in the layout decides which level a build lands on was
+not isolated. **One build per commit is not enough for `bench_block.ns`**, and
+the comparison below pools the builds of each commit instead.
+
+**`vm::run`'s step is still one function.** A release build with debug
+information of each tree (the timed build's `RUSTFLAGS` plus
+`CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`), then
+`dumpbin -disasm`: one function label matching `vm::run`
+(`ns_runtime::vm::run`) in each, no `vm::run::closure` of its own. The
+baseline measures **6,389 instructions** and the head **6,506** -- 117 more,
+the inlined `check_value_slot` in the `InitializeSlot` arm. `check_value_slot`
+has no label of its own in either listing, so it is inlined rather than
+called; the only new function is the `#[cold]`
+`instantiate::non_value_slot_error`, which builds the refusal. The step did not
+split, so no remedy was needed.
+
+Means in ms per build, over that sitting's five rounds; sitting 1, then
+sitting 2. `base1` and `base2` are the two baseline builds, `head1` to `head3`
+the three head builds:
+
+| Source | `base1` | `base2` | `head1` | `head2` | `head3` |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.16 | 7.10 | 7.14 | 7.08 | 7.14 |
+| `bench_send.ns` | 8.45 | 8.45 | 8.49 | 8.74 | 8.45 |
+| `bench_block.ns` | 18.68 | 17.17 | 16.44 | 19.01 | 19.05 |
+| `bench_megamorphic.ns` | 11.56 | 11.52 | 11.57 | 11.60 | 11.62 |
+| `bench_do.ns` | 5.73 | 5.81 | 5.79 | 5.85 | 5.95 |
+| `bench_new.ns` | 5.01 | 5.04 | 4.97 | 4.97 | 4.98 |
+| `bench_new2.ns` | 5.80 | 5.90 | 6.02 | 6.01 | 6.05 |
+| `bench_newarg.ns` | 8.10 | 8.08 | 8.05 | 8.06 | 7.96 |
+
+| Source | `base1` | `base2` | `head1` | `head2` | `head3` |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.14 | 7.14 | 7.18 | 7.17 | 7.15 |
+| `bench_send.ns` | 8.53 | 8.45 | 8.54 | 8.50 | 8.51 |
+| `bench_block.ns` | 19.05 | 17.25 | 16.54 | 19.24 | 19.21 |
+| `bench_megamorphic.ns` | 11.60 | 11.56 | 11.63 | 11.65 | 11.65 |
+| `bench_do.ns` | 5.77 | 5.79 | 5.87 | 5.87 | 5.98 |
+| `bench_new.ns` | 5.00 | 5.07 | 5.00 | 5.04 | 5.00 |
+| `bench_new2.ns` | 5.86 | 5.83 | 6.05 | 6.08 | 6.13 |
+| `bench_newarg.ns` | 8.05 | 8.11 | 8.08 | 8.08 | 8.03 |
+
+Both sittings pooled, the baseline's two builds against the head's three:
+
+| Source | Baseline | Head | Change, pooled | Change, sitting 1 / 2 |
+|---|---|---|---|---|
+| `bench_loop.ns` | 7.13 | 7.14 | +0.1% | −0.1% / +0.3% |
+| `bench_send.ns` | 8.47 | 8.54 | +0.8% | +1.3% / +0.3% |
+| `bench_block.ns` | 18.04 | 18.25 | +1.2% | +1.3% / +1.0% |
+| `bench_megamorphic.ns` | 11.56 | 11.62 | +0.5% | +0.4% / +0.5% |
+| `bench_do.ns` | 5.78 | 5.88 | +1.9% | +1.6% / +2.2% |
+| `bench_new.ns` | 5.03 | 4.99 | −0.7% | −1.0% / −0.5% |
+| `bench_new2.ns` | 5.85 | **6.06** | **+3.6%** | +3.0% / +4.2% |
+| `bench_newarg.ns` | 8.08 | 8.05 | −0.5% | −0.8% / −0.2% |
+
+**Seven of the eight are level, and the expectation held for them**: −0.7% to
++1.9%, inside the 0.3–2.3% these sources show between builds of the same tree.
+`bench_block.ns`'s +1.2% is not a figure at all -- the build-to-build spread on
+that source is 16%, and both the fastest and the slowest builds are head
+builds, so this measurement says nothing about it either way.
+
+**Open finding: `bench_new2.ns` is 3.6% slower**, and that is a real
+regression, not scatter. All three head builds (6.02, 6.01, 6.05 and 6.05,
+6.08, 6.13) lie above both baseline builds (5.80, 5.90 and 5.86, 5.83) in both
+sittings, and the source's build-to-build spread is 0.7%. It was one of the
+three the expectation named. What does not follow is why it is the only one:
+`bench_newarg.ns` runs the same two initializers per instantiation over the
+same two levels and is −0.5%, and `bench_new.ns`, with one, is −0.7%. So the
+per-store check alone does not explain it -- all three store immediates, where
+the check returns on its first test. The other two candidates on that path are
+the `Ok`/`Err` match the `InitializeSlot` arm now carries, which is new
+control flow inside `vm::run` where there was a straight store, and
+`MixinApplication` having grown two fields (`inherits_value` and
+`mutable_value_slot`), which `instantiate_class` reads once per instantiation
+for §3.1.1's first condition. Neither was profiled, and nothing was bisected
+between them. **What would recover it**: deciding the check once per
+activation instead of once per store. The application already knows
+`inherits_value`, and the executing activation already reads its level's
+application for `slot_base`, so `InitializeSlot` could branch on a flag the
+frame carries rather than walking `receiver -> class -> application` on every
+store; that is the change to make if the figure ever matters, and it was left
+undone because 3.6% on one instantiation benchmark did not warrant it before
+`Class`, `Behavior` and `Metaclass` land and change the same path again.
+
+**Start-up did not move measurably.** The whole `ns-next run` of a module whose
+`main:args:` answers `0` at once, wall-clock from the parent process, 100 runs
+of each binary over two sittings, the four binaries rotating: baseline medians
+5.10 ms and 5.13 ms (10th to 90th percentile 4.89–5.49 and 4.91–5.53), head
+4.94 ms and 5.26 ms (4.67–5.36 and 5.00–5.70). The two head builds straddle
+the two baseline builds, so the three classes and seven methods the kernel
+gained cost less than the scatter between builds. These figures are not
+comparable with the core library's move above, which was a different sitting on
+a differently loaded machine.
 
 ## The trampoline
 

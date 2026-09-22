@@ -3397,6 +3397,32 @@ ignored), also under each of the three stress modes; `cargo clippy
 --workspace --all-targets` clean; `parse-corpus` at **210/0/1/0** and
 `run-corpus` at **6/0/205**, under each stress mode too.
 
+## `Top`, `Value` and the value semantics (2026-09-23)
+
+**Measurement.** Two sittings by the protocol, eight sources, against
+`b0a771d` -- this branch's head before the work started, and documentation
+only, so its tree is the code as it stood before. **Seven of the eight are
+level: −0.7% to +1.9%, inside the scatter those sources show between builds
+of the same tree.** `bench_new2.ns` is **3.6% slower**, all three head builds
+above both baseline builds in both sittings; it was one of the three sources
+the expectation named, but the two others that run the same initializers are
+level, so the per-store check alone does not explain it. `vm::run` grew from
+6,389 to 6,506 instructions and stayed one function, with
+`instantiate::check_value_slot` inlined into its `InitializeSlot` arm.
+Start-up did not move measurably. See
+[execution.md](design/execution.md), "What `Top`, `Value` and `Number` cost",
+for the tables, the open finding and what would recover it.
+
+**A protocol finding.** `bench_block.ns` spreads 16% between builds of the
+same tree, with the function-alignment pin in place and each build stable to
+about 1% -- found because the first pairing put it 13.4% *faster* at the head,
+which nothing the change touches could explain. Five builds, two of the
+baseline and three of the head, land at five separate levels that straddle the
+commit boundary. On that source one build per commit measures the build, not
+the commit; the protocol paragraph in
+[execution.md](design/execution.md), "What removing the re-entries moved",
+now says so.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
