@@ -1095,6 +1095,40 @@ fn a_load_builtin_class_naming_the_mirror_is_refused() {
     );
 }
 
+/// `Top` is refused wherever a program names a class, for the same reason
+/// the mirror's class is: §3.2 lets only `Object` have `Top` as its
+/// superclass, and no source module can name it at all
+/// (`instantiate::builtin_kind_from_name`). A class named over `Top` would
+/// decode into a perfectly valid program that sits outside `Object`'s chain
+/// and inherits none of its methods, which is exactly the kind of stale or
+/// hand-built artifact the tag discipline exists to refuse.
+#[test]
+fn a_load_builtin_class_naming_top_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
+    writer.write_u16(0);
+    writer.write_u16(1);
+    writer.write_u16(0); // copied_count
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
+    writer.write_u32(1); // one instruction ...
+    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
+    writer.write_u16(0); // destination
+    writer.write_u8(15); // ... naming Top
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 15
+        })
+    );
+}
+
 #[test]
 fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     // An unknown operation byte must be refused, never defaulted to an

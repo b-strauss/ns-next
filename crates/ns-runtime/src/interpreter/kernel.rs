@@ -242,9 +242,13 @@ fn nested_named<'mixin>(root: &'mixin Rc<Mixin>, name: &str) -> &'mixin Rc<Mixin
 /// a superclass whose application is still the empty placeholder. Sorting by
 /// depth below `Top` puts every superclass first whatever order `ALL` grows
 /// in, and is stable, so classes at one depth keep `ALL`'s order.
+///
+/// `sort_by_cached_key`, not `sort_by_key`: `depth_below_top` walks the
+/// chain and allocates, and every bootstrap runs this -- the test suite
+/// bootstraps well over a hundred interpreters.
 fn fill_order(root: &Rc<Mixin>) -> Vec<BuiltinClass> {
     let mut order: Vec<BuiltinClass> = BuiltinClass::ALL.into_iter().collect();
-    order.sort_by_key(|kind| depth_below_top(root, *kind));
+    order.sort_by_cached_key(|kind| depth_below_top(root, *kind));
     order
 }
 
@@ -644,7 +648,8 @@ mod tests {
                 "the kernel declares one class per builtin but the mirror's"
             );
             for nested in &application.mixin.nested {
-                let expected = if nested.name.as_str() == "Top" {
+                let top = super::kernel_class_name(BuiltinClass::Top);
+                let expected = if nested.name.as_str() == top {
                     ns_syntax::ast::AccessModifier::Private
                 } else {
                     ns_syntax::ast::AccessModifier::Public
@@ -684,15 +689,18 @@ mod tests {
                 (BuiltinClass::Top, None),
             ];
             for (kind, superclass) in expected {
-                let actual = mutator
-                    .heap()
-                    .class_superclass(mutator.builtin_class(kind))
-                    .map(|class| mutator.heap().class_builtin(class));
+                let actual = mutator.heap().class_superclass(mutator.builtin_class(kind));
                 match superclass {
-                    Some(expected) => assert!(
-                        matches!(actual, Some(Some(found)) if found == expected),
-                        "{kind:?}'s superclass must be {expected:?}"
-                    ),
+                    // The class object itself, not just a class reporting
+                    // that builtin: a second class object of the same mixin
+                    // would answer the same kind and be the wrong class.
+                    Some(expected) => {
+                        let expected_class = mutator.builtin_class(expected);
+                        assert!(
+                            actual.is_some_and(|class| class.same(expected_class)),
+                            "{kind:?}'s superclass must be {expected:?}"
+                        );
+                    }
                     None => assert!(actual.is_none(), "{kind:?} has no superclass"),
                 }
             }

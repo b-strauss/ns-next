@@ -682,15 +682,26 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 }
 
 /// A builtin class a *program* names: `LoadBuiltinClass`, a class reference
-/// in the graph, a root class's superclass. The VM mirror's class is refused
-/// here -- an artifact that could name it could instantiate or reach a second
-/// mirror, and so claim every primitive, which no source module can. Only
-/// the closing hash table names it, by tag, as it names every builtin.
+/// in the graph, a root class's superclass. Two tags are refused here,
+/// because no source module can produce them and an artifact that carried
+/// one would decode into a program the language does not admit. The VM
+/// mirror's class: there is exactly one mirror, and an artifact that could
+/// name its class could instantiate or reach a second one, and so claim
+/// every primitive. `Top`: §3.2 lets only `Object` have it as a superclass,
+/// so a class named over `Top` would sit outside `Object`'s chain and
+/// inherit none of its methods. `instantiate::builtin_kind_from_name` leaves
+/// both out for the same reasons, which is what keeps source and artifact
+/// agreed on the names a program has. Only the closing hash table names
+/// them, by tag, as it names every builtin.
 pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     match read_builtin_class(reader)? {
         BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
             tag: 14,
+        }),
+        BuiltinClass::Top => Err(DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 15,
         }),
         kind => Ok(kind),
     }

@@ -746,8 +746,10 @@ fn argument_list<'gc>(
 /// list of builtin names, so no caller keeps a second one to guard with.
 ///
 /// `Top` is deliberately absent: §3.2 lets only `Object` have it as its
-/// superclass, so no program may name it. `Platform` is absent for the
-/// reason `kernel::kernel_class_name` gives.
+/// superclass, so no program may name it -- and no artifact may either,
+/// which is why `image::decode::read_program_builtin_class` refuses its tag
+/// as it refuses the mirror's. `Platform` is absent for the reason
+/// `kernel::kernel_class_name` gives.
 pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     Some(match name {
         "Object" => BuiltinClass::Object,
