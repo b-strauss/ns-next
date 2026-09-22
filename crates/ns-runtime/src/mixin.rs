@@ -113,6 +113,12 @@ pub struct MixinMethod {
     /// (`newspeak-spec.pdf` §6.2). Never replaced: editing a method builds a
     /// new `MixinMethod`.
     pub code: Rc<CompiledCode>,
+    /// The mirror row this method forwards to, when it is a primitive
+    /// method (`compiler::primitive_method`): `act` runs the row's leaf
+    /// first and activates the method only when the leaf declines. `None`
+    /// for every method outside the kernel, and for every method decoded
+    /// from an image, which never carries a kernel method.
+    pub primitive: Option<crate::builtins::primitive::MirrorPrimitive>,
 }
 
 impl MixinMethod {
@@ -136,6 +142,7 @@ impl MixinMethod {
                 bindings,
                 lowering,
             )),
+            primitive: crate::compiler::primitive_method::recognize(&declaration, bindings),
             declaration: Some(declaration),
         }
     }

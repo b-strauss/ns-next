@@ -413,13 +413,25 @@ impl<'gc> Mutator<'gc> {
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
                     self.act_handler_method(method, defining_class, receiver, selector, arguments)
                 }
-                _ => Ok(Step::Method {
-                    receiver,
-                    method,
-                    defining_class,
-                    arguments: StepArguments::Send,
-                    feedback_base,
-                }),
+                _ => {
+                    // Read off the method on every send, hit or miss: the
+                    // cache records `Target::Method` and never decides
+                    // whether its leaf runs.
+                    if let Some(primitive) = method.primitive {
+                        if let Some(result) = crate::interpreter::mirror::execute_method(
+                            self, primitive, receiver, selector, arguments,
+                        ) {
+                            return result;
+                        }
+                    }
+                    Ok(Step::Method {
+                        receiver,
+                        method,
+                        defining_class,
+                        arguments: StepArguments::Send,
+                        feedback_base,
+                    })
+                }
             },
             Resolved::Slot { kind, field, chain } => match chain {
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
@@ -576,6 +588,20 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let message = self.handler_message(selector, arguments);
+        // A primitive method as the handler runs its leaf on the message
+        // exactly as a handler that is a primitive does
+        // (`act_handler_primitive`).
+        if let Some(primitive) = method.primitive {
+            if let Some(result) = crate::interpreter::mirror::execute_method(
+                self,
+                primitive,
+                receiver,
+                Symbol::DOES_NOT_UNDERSTAND,
+                std::slice::from_ref(&message),
+            ) {
+                return result;
+            }
+        }
         Ok(handler_method_step(
             receiver,
             method,

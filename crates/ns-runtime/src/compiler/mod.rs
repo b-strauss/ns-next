@@ -8,6 +8,7 @@
 pub(crate) mod capture;
 pub(crate) mod control_flow;
 pub(crate) mod lower;
+pub(crate) mod primitive_method;
 pub(crate) mod reference;
 
 /// Which lowering compiles a module: the optimized one every program runs

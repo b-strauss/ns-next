@@ -100,6 +100,31 @@ pub(crate) fn run_leaf<'gc>(
     )
 }
 
+/// A primitive method's leaf, on the send's own receiver and arguments --
+/// the method forwards exactly those, which `primitive_method::recognize`
+/// checked. `None` when the leaf declines, and the method is then activated
+/// as any method is.
+///
+/// `selector` is the send's, which is the method's own and so the row's
+/// reported selector for every send but a `doesNotUnderstand:` handler's,
+/// which passes `Symbol::DOES_NOT_UNDERSTAND`.
+#[inline(always)]
+pub(crate) fn execute_method<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: MirrorPrimitive,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    crate::builtins::execute(
+        mutator,
+        mirror_entry(primitive).primitive,
+        receiver,
+        selector,
+        arguments,
+    )
+}
+
 /// A leaf that activates a block with "the send's own arguments" means the
 /// kernel send's -- the leaf's arguments -- not the mirror send's, which
 /// also carry the subject and the failure block.
@@ -310,8 +335,12 @@ mod tests {
     /// the reference lowering it is a real closure sent to the mirror
     /// (`SendInlinable`), and both answer the leaf's value when the leaf
     /// recognizes its subject and the block's `^` when it does not.
-    #[test]
-    fn an_inlined_mirror_send_runs_its_leaf_and_its_failure_block() {
+    /// A kernel-shaped module, resolved by `resolve_kernel` when `kernel`
+    /// and by plain `resolve` otherwise: its `Probe` sends the mirror inline
+    /// (`sizeOf:`) and declares two primitive methods, one whose leaf accepts
+    /// any receiver (`same:`) and one whose leaf never accepts a `Probe`
+    /// (`size`). Answers the interpreter and a `Probe`.
+    fn a_probe(lowering: crate::Lowering, kernel: bool) -> (Interpreter, Root) {
         let source = indoc::indoc! {"
             Newspeak3
             'T'
@@ -320,30 +349,64 @@ mod tests {
             ) (
               class Probe = Object new () (
                 public sizeOf: text = ( ^vmMirror stringSize: text ifFail: [^-1] )
+                public same: other = ( ^vmMirror object: self identicalTo: other ifFail: [^-1] )
+                public size = ( ^vmMirror stringSize: self ifFail: [^-1] )
               )
               public probe = ( ^Probe new )
             ) : ()
         "};
-        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
-            let module = ns_syntax::parse(source).expect("parse");
-            let Ok(resolved) = crate::resolver::resolve_kernel(
-                module,
-                std::rc::Rc::from(source),
-                crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
-            ) else {
-                panic!("the kernel-shaped module resolves");
+        let module = ns_syntax::parse(source).expect("parse");
+        let origin = crate::SourceOrigin::File(std::path::PathBuf::from("t.ns"));
+        let resolved = if kernel {
+            crate::resolver::resolve_kernel(module, std::rc::Rc::from(source), origin)
+        } else {
+            crate::resolve(module, std::rc::Rc::from(source), origin)
+        };
+        let Ok(resolved) = resolved else {
+            panic!("the kernel-shaped module resolves");
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let mirror = the_mirror(&mut interpreter);
+        let instance = expect_ok(
+            interpreter.instantiate(&class, &[mirror]),
+            "K vmMirror: the mirror",
+        );
+        let probe = expect_ok(
+            interpreter.send(&instance, Symbol::intern("probe"), &[]),
+            "probe",
+        );
+        (interpreter, probe)
+    }
+
+    /// `selector`'s compiled method on the class of the value `probe` holds.
+    fn probe_method(
+        interpreter: &mut Interpreter,
+        probe: &Root,
+        selector: &str,
+    ) -> std::rc::Rc<crate::mixin::MixinMethod> {
+        interpreter.enter(|mutator| {
+            let receiver = mutator.fetch(probe);
+            let class = mutator.class_of(&receiver);
+            let Some(application) = mutator.heap().class_application(class) else {
+                panic!("a Probe's class is a class");
             };
-            let mut interpreter = Interpreter::bootstrap_with(lowering);
-            let class = interpreter.load_module(&resolved);
-            let mirror = the_mirror(&mut interpreter);
-            let instance = expect_ok(
-                interpreter.instantiate(&class, &[mirror]),
-                "K vmMirror: the mirror",
-            );
-            let probe = expect_ok(
-                interpreter.send(&instance, Symbol::intern("probe"), &[]),
-                "probe",
-            );
+            let Some(method) = application.mixin.compiled_method(Symbol::intern(selector)) else {
+                panic!("Probe declares {selector}");
+            };
+            method.clone()
+        })
+    }
+
+    /// A kernel-shaped module's mirror send, run end to end: under the
+    /// optimized lowering its failure block is inlined (`SendMirror`), under
+    /// the reference lowering it is a real closure sent to the mirror
+    /// (`SendInlinable`), and both answer the leaf's value when the leaf
+    /// recognizes its subject and the block's `^` when it does not.
+    #[test]
+    fn an_inlined_mirror_send_runs_its_leaf_and_its_failure_block() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let (mut interpreter, probe) = a_probe(lowering, true);
             let text = interpreter.enter(|mutator| {
                 let string = mutator.new_string("abc".to_string());
                 mutator.stash(Value::Object(string))
@@ -367,6 +430,111 @@ mod tests {
                     "{lowering:?}: the failure block answers for nil"
                 );
             });
+        }
+    }
+
+    /// A primitive method answers from its leaf when the leaf accepts the
+    /// receiver, and through its activated body -- the failure block --
+    /// when it does not, alike under both lowerings.
+    #[test]
+    fn a_primitive_method_runs_its_leaf_and_its_body_only_when_the_leaf_declines() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let (mut interpreter, probe) = a_probe(lowering, true);
+            for selector in ["same:", "size"] {
+                let method = probe_method(&mut interpreter, &probe, selector);
+                assert!(
+                    method.primitive.is_some(),
+                    "{lowering:?}: {selector} is a primitive method"
+                );
+            }
+            let inline = probe_method(&mut interpreter, &probe, "sizeOf:");
+            assert!(
+                inline.primitive.is_none(),
+                "{lowering:?}: sizeOf: forwards a parameter as the subject, not self"
+            );
+            let same = expect_ok(
+                interpreter.send(
+                    &probe,
+                    Symbol::intern("same:"),
+                    std::slice::from_ref(&probe),
+                ),
+                "aProbe same: aProbe",
+            );
+            let size = expect_ok(
+                interpreter.send(&probe, Symbol::intern("size"), &[]),
+                "aProbe size",
+            );
+            interpreter.enter(|mutator| {
+                assert!(
+                    matches!(mutator.fetch(&same), Value::Boolean(true)),
+                    "{lowering:?}: the leaf answers identity"
+                );
+                assert!(
+                    matches!(mutator.fetch(&size), Value::SmallInteger(-1)),
+                    "{lowering:?}: the activated body's failure block answers"
+                );
+            });
+        }
+    }
+
+    /// `act` itself answers an accepting leaf without an activation, and
+    /// hands a declining one's method on to be activated.
+    #[test]
+    fn act_answers_an_accepting_primitive_method_without_an_activation() {
+        let (mut interpreter, probe) = a_probe(crate::Lowering::Optimized, true);
+        let same = probe_method(&mut interpreter, &probe, "same:");
+        let size = probe_method(&mut interpreter, &probe, "size");
+        interpreter.enter(|mutator| {
+            let receiver = mutator.fetch(&probe);
+            let class = mutator.class_of(&receiver);
+            let accepted = mutator.act_with_base(
+                crate::interpreter::resolve::Resolved::Method {
+                    method: same,
+                    defining_class: class,
+                    chain: crate::interpreter::resolve::Chain::Public,
+                },
+                crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
+                receiver,
+                None,
+                Symbol::intern("same:"),
+                &[receiver],
+            );
+            assert!(matches!(
+                accepted,
+                Ok(crate::interpreter::Step::Value(Value::Boolean(true)))
+            ));
+            let declined = mutator.act_with_base(
+                crate::interpreter::resolve::Resolved::Method {
+                    method: size,
+                    defining_class: class,
+                    chain: crate::interpreter::resolve::Chain::Public,
+                },
+                crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
+                receiver,
+                None,
+                Symbol::intern("size"),
+                &[],
+            );
+            assert!(matches!(
+                declined,
+                Ok(crate::interpreter::Step::Method { .. })
+            ));
+        });
+    }
+
+    /// The same forwarders in a module plain `resolve` resolved are ordinary
+    /// methods: only the kernel's `vmMirror` is known to hold the mirror.
+    #[test]
+    fn forwarders_outside_the_kernel_are_ordinary_methods() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let (mut interpreter, probe) = a_probe(lowering, false);
+            for selector in ["same:", "size"] {
+                let method = probe_method(&mut interpreter, &probe, selector);
+                assert!(
+                    method.primitive.is_none(),
+                    "{lowering:?}: {selector} outside the kernel"
+                );
+            }
         }
     }
 

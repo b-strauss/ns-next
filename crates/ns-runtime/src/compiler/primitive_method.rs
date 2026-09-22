@@ -1,0 +1,257 @@
+//! Primitive methods (`docs/design/dispatch.md`, "Primitive methods"): a
+//! kernel method whose whole body forwards `self` and its own parameters to
+//! one mirror row runs that row's leaf when it is sent, without an
+//! activation, and is activated -- its body running the failure block --
+//! only when the leaf declines. Cog's primitive methods, with the primitive
+//! recognized from a body that means exactly what it says rather than
+//! declared by a pragma that replaces what the body says.
+
+use std::collections::HashMap;
+
+use ns_syntax::ast;
+use ns_syntax::Span;
+
+use crate::builtins::primitive::MirrorPrimitive;
+use crate::compiler::control_flow;
+use crate::types::Binding;
+
+/// The row `declaration` forwards to, when its body is exactly
+/// `^vmMirror <row>: self <its parameters, in order> ifFail: [<anything>]`
+/// and the send is a recognized mirror send (`recognize_mirror_send`, which
+/// only `resolve_kernel`'s bindings can satisfy). Anything else -- a
+/// temporary, a second statement, a subject other than `self`, a parameter
+/// out of place, an arity the row does not have -- is an ordinary method.
+pub(crate) fn recognize(
+    declaration: &ast::MethodDeclaration,
+    bindings: &HashMap<Span, Binding>,
+) -> Option<MirrorPrimitive> {
+    let body = &declaration.body;
+    if !body.temporaries.is_empty() || body.statements.len() != 1 {
+        return None;
+    }
+    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+        return None;
+    };
+    let (row, _) = control_flow::recognize_mirror_send(bindings, send)?;
+    // Read only once a kernel mirror send is found, so that no method outside
+    // the kernel ever consults the environment.
+    if disabled() {
+        return None;
+    }
+    let arguments = &send.message.arguments;
+    let forwarded = &arguments[..arguments.len() - 1];
+    let [subject, rest @ ..] = forwarded else {
+        return None;
+    };
+    if !is_self(subject) {
+        return None;
+    }
+    let parameters = parameter_names(&declaration.pattern);
+    if rest.len() != parameters.len() {
+        return None;
+    }
+    // The leaf receives the send's own arguments in place of the forwarded
+    // ones, so each forwarded argument must be the parameter at its own
+    // position: the name alone is not enough, since the binding is what says
+    // the resolver found that parameter and not something that shadows it.
+    let in_order = rest
+        .iter()
+        .zip(&parameters)
+        .enumerate()
+        .all(|(position, (argument, name))| {
+            let ast::Expression::Identifier(identifier) = argument else {
+                return false;
+            };
+            identifier.name == *name
+                && matches!(
+                    bindings.get(&identifier.span),
+                    Some(Binding::Local(local)) if usize::from(*local) == position
+                )
+        });
+    in_order.then_some(row)
+}
+
+/// `NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without primitive
+/// methods, so a measurement can run the same binary with and without them
+/// (`docs/design/execution.md`, "What the core library's move cost"). Read
+/// once per process. **For measuring only**: without primitive methods the
+/// two lowerings no longer count activations alike
+/// (`docs/design/compiler.md`, "How the limit counts"), so the goldens'
+/// overflow comparisons are not valid under it.
+pub(crate) fn disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("NS_NEXT_NO_PRIMITIVE_METHODS").is_ok_and(|value| value == "1")
+    })
+}
+
+/// An explicit `self`. The resolver's implicit-receiver marker is a `self`
+/// too, but only ever in a receiver position, never as an argument.
+fn is_self(expression: &ast::Expression) -> bool {
+    matches!(expression, ast::Expression::Identifier(identifier) if identifier.name == "self")
+}
+
+/// The method's parameters in declaration order -- the order the resolver
+/// numbers them in (`resolver::scope::LocalScope::new`).
+fn parameter_names(pattern: &ast::MessagePattern) -> Vec<&str> {
+    match pattern {
+        ast::MessagePattern::Unary { .. } => Vec::new(),
+        ast::MessagePattern::Binary { parameter, .. } => vec![parameter.name.as_str()],
+        ast::MessagePattern::Keyword { parts } => parts
+            .iter()
+            .map(|(_, parameter)| parameter.name.as_str())
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::primitive::mirror_primitive_named;
+    use indoc::formatdoc;
+
+    fn module_source(method: &str) -> String {
+        formatdoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                {method}
+              )
+            ) : ()
+        "}
+    }
+
+    /// `method` as the one method of a nested class in a kernel-shaped
+    /// module resolved by `resolve_kernel`, and what `recognize` answers for
+    /// it, as a row index.
+    fn recognized_in_the_kernel(method: &str) -> Option<usize> {
+        let source = module_source(method);
+        let module = ns_syntax::parse(&source).expect("parse");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            std::rc::Rc::from(source.as_str()),
+            crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        ) else {
+            panic!("the kernel-shaped module resolves");
+        };
+        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
+        recognize(&nested.instance_side.methods[0], &resolved.bindings).map(MirrorPrimitive::index)
+    }
+
+    fn row(selector: &str) -> Option<usize> {
+        let found = mirror_primitive_named(selector).map(MirrorPrimitive::index);
+        assert!(found.is_some(), "{selector} is a mirror row");
+        found
+    }
+
+    #[test]
+    fn recognizes_a_unary_forwarder() {
+        assert_eq!(
+            recognized_in_the_kernel("size = ( ^vmMirror stringSize: self ifFail: [^super size] )"),
+            row("stringSize:ifFail:")
+        );
+    }
+
+    #[test]
+    fn recognizes_a_binary_forwarder() {
+        assert_eq!(
+            recognized_in_the_kernel(
+                ", other = ( ^vmMirror string: self concatenate: other ifFail: [^super , other] )"
+            ),
+            row("string:concatenate:ifFail:")
+        );
+    }
+
+    #[test]
+    fn recognizes_a_keyword_forwarder() {
+        assert_eq!(
+            recognized_in_the_kernel(
+                "at: index put: value = ( ^vmMirror collection: self at: index put: value ifFail: [^nil] )"
+            ),
+            row("collection:at:put:ifFail:")
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_parameters_out_of_order() {
+        assert_eq!(
+            recognized_in_the_kernel(
+                "at: index put: value = ( ^vmMirror collection: self at: value put: index ifFail: [^nil] )"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_subject_other_than_self() {
+        assert_eq!(
+            recognized_in_the_kernel("size = ( ^vmMirror stringSize: 3 ifFail: [^nil] )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_method_with_a_temporary() {
+        assert_eq!(
+            recognized_in_the_kernel(
+                "size = ( | temporary | ^vmMirror stringSize: self ifFail: [^nil] )"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_method_with_more_than_one_statement() {
+        assert_eq!(
+            recognized_in_the_kernel(
+                "size = ( self foo. ^vmMirror stringSize: self ifFail: [^nil] )"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_body_that_does_not_return_the_send() {
+        assert_eq!(
+            recognized_in_the_kernel("size = ( vmMirror stringSize: self ifFail: [^nil] )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_failure_block_that_takes_a_parameter() {
+        assert_eq!(
+            recognized_in_the_kernel(
+                "size = ( ^vmMirror stringSize: self ifFail: [:reason | ^nil] )"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_row_whose_arity_is_not_the_method_s() {
+        assert_eq!(
+            recognized_in_the_kernel(", other = ( ^vmMirror stringSize: self ifFail: [^nil] )"),
+            None
+        );
+    }
+
+    /// Outside the kernel there is no `MirrorSend`, so the same text is an
+    /// ordinary method.
+    #[test]
+    fn does_not_recognize_a_forwarder_outside_the_kernel() {
+        let source = module_source("size = ( ^vmMirror stringSize: self ifFail: [^super size] )");
+        let module = ns_syntax::parse(&source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            std::rc::Rc::from(source.as_str()),
+            crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
+        assert!(recognize(&nested.instance_side.methods[0], &resolved.bindings).is_none());
+    }
+}
