@@ -15,55 +15,29 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**The next piece of work is the strict enforcement of §3.1.1's value
-conditions ("Plan B")**, which has no plan yet. It enforces all four
-conditions §3.1.1 names — a value's slots are immutable; they are initialized
-and hold values; its enclosing objects are values; and its class inherits
-`Value` and declares no `==` — where today only the slot half is refused
-([core-library.md](design/core-library.md), "What is still unchecked";
-[object-model.md](design/object-model.md), "A value object's two
-conditions"). **§6.2's mixin application, built on 2026-09-23 as its
-prerequisite, is done** — a module can now declare itself a value,
-`class M = Object <: Value (…)` — see "Mixin application" below and
-[object-model.md](design/object-model.md), "Mixin application". The user
-took two decisions for Plan B on 2026-09-23:
-
-1. **The two goldens that declare `class Text = String new` in an ordinary
-   module** —
-   `goldens/errors/native_that_fails_on_its_receiver_falls_to_objects` and
-   `goldens/cache/cached_primitive_that_fails_on_a_receiver_of_the_same_class`
-   — **are restructured so that their modules are themselves values**:
-   `= Object <: Value`, with the transcript passed as an argument rather than
-   held in a slot. They keep their recorded outcomes rather than being
-   re-recorded as refusals.
-2. **`<:` is implemented fully per §6.2**, which the mixin-application branch
-   did.
-
-**Plan B is designed (2026-09-23) and has no implementation plan yet**;
-writing it is the next step. The design is
-[object-model.md](design/object-model.md)'s "Planned: all four conditions,
-enforced strictly": `Kernel` becomes `= Object <: Value` and the VM mirror a
-value by moving its class below `Value`; the identity-method and
-enclosing-object conditions are checked where a class object is created
-(`after_clause`), the latter walking the superclass chain with an early stop
-at a class already checked; the mutable-slot check covers the whole chain,
-since a `<:` clause can put `Value`'s level below a class with slots; a
-module's root may name only `Object` or `Value`, or write `Object <: Value`,
-and every other root clause is a defect recorded on the root mixin, refused
-at instantiation and refused by the encoder; and every golden that declares
-a value class inside an ordinary module becomes a value module, keeping its
-outcome. The plan follows the order the design gives.
-
-**After Plan B comes step 6's third plan, `Class`, `Behavior` and
-`Metaclass` in `Kernel.ns`**, which was next before mixin application was
-put ahead of it and has no plan yet, only the outline
+**The next piece of work is step 6's third plan, `Class`, `Behavior` and
+`Metaclass` in `Kernel.ns`**, which has no plan yet, only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
 gives. Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
-([core-library.md](design/core-library.md), "What exists"). All three are
-described below, from "Step 6's first part" on, after the account of how M4
-got here.
+([core-library.md](design/core-library.md), "What exists"). Two pieces of
+work were put ahead of the third plan on 2026-09-23 and are done too:
+§6.2's mixin application, so that a module can declare itself a value, and
+the strict enforcement of §3.1.1's value conditions and the root rule that
+goes with it ("Mixin application" and "The value conditions" below;
+[object-model.md](design/object-model.md), "A value object's four
+conditions"). All are described below, from "Step 6's first part" on, after
+the account of how M4 got here.
+
+**One gap the value conditions left open: a value module's root class is not
+checked for `==`.** The identity-method verdict is taken only where
+`nested::after_clause` creates a class object, and `load_root_class` asks
+nothing, so `class M = Object <: Value (…) ( public == other = (…) )`
+instantiates ([core-library.md](design/core-library.md), "What is still
+unchecked"). It is a deviation from §3.1.1, so it needs fixing, not only
+recording; `MixinApplication::identity_method` already holds the answer for
+the root's application.
 
 M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
@@ -378,20 +352,14 @@ seven of the eight sources are level and `bench_new2.ns` is 3.6% slower**;
 see "`Top`, `Value` and the value semantics" below, which also carries one
 open defect and a finding about the measurement protocol itself.
 
-**What comes next is Plan B, then the third plan and then step 7**,
-deliberately not one plan, for the reason the leaf inlining was split off
-first: each produces working, measured software on its own, and each one's
-measurement informs the next. §6.2's mixin application was inserted ahead of
-the third plan on 2026-09-23, because §3.1.1's strict enforcement needs a
-module that can declare itself a value, and is done ("Mixin application"
-below).
-
-**Plan B, §3.1.1's four conditions enforced strictly**, comes first, with the
-two decisions recorded at the top of this section. No plan exists yet; write
-one from [core-library.md](design/core-library.md), "What is still
-unchecked", and [object-model.md](design/object-model.md), "A value object's
-two conditions" and "Mixin application". Then step 6's third plan and step 7,
-numbered as step 6's plans are:
+**What comes next is the third plan and then step 7**, deliberately not
+one plan, for the reason the leaf inlining was split off first: each
+produces working, measured software on its own, and each one's measurement
+informs the next. §6.2's mixin application and the strict enforcement of
+§3.1.1's value conditions were inserted ahead of the third plan on
+2026-09-23, because §3.1.1's enclosing-object condition needs a module that
+can declare itself a value, and both are done ("Mixin application" and "The
+value conditions" below). Numbered as step 6's plans are:
 
 3. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2: the three
    become declared classes of `Kernel.ns`, and a class object's own class
@@ -3621,8 +3589,8 @@ are values; a module can be a value only if it can be declared one, which
 SOMns writes as a mixin application (`class Kernel vmMirror: vmMirror =
 Object <: Value (`). So `<:`, a recorded deviation since Milestone 1, came
 first, as a language feature in its own right, and **what it unlocks is
-§3.1.1's enclosing-object condition, which Plan B enforces** ("Where the
-next session starts" above). The design is
+§3.1.1's enclosing-object condition, which the value conditions enforce**
+("The value conditions" below). The design is
 [object-model.md](design/object-model.md), "Mixin application".
 
 **What changed, commit by commit:**
@@ -3732,6 +3700,90 @@ At the branch's final state the whole end-of-batch group ran at `56ecf79`, the l
 `NS_NEXT_STRESS_COLLECT=1`; `run-corpus` reported "ran 6, failed 0, skipped
 205" plain and under each of the three; and `parse-corpus` reported "parsed
 210, failed 0, expected-fail 1, stale 0".
+
+## The value conditions (2026-09-24)
+
+Plan:
+[ns-next-value-conditions](superpowers/plans/2026-09-23-2252-ns-next-value-conditions.md),
+eight tasks. Branch `feature/value-conditions`, off `master` at `cdc0257`,
+on the checked-out tree throughout. It enforces all four conditions of
+§3.1.1's second bullet strictly — a value's slots are immutable, they hold
+values, its enclosing objects are values, and its class inherits `Value` and
+does not define `==` — where the `Top`/`Value` plan had refused only the
+slot half, and it adds the root rule, which closes the root-clause gap the
+mixin-application branch recorded. The design is
+[object-model.md](design/object-model.md), "A value object's four
+conditions" and "Mixin application", "The root rule".
+
+**Decisions, each taken with the user:**
+
+- **Strict enforcement of every condition** (2026-09-23), in the order the
+  design gives, each step leaving the suite green.
+- **`Kernel` and the VM mirror are values, as in SOMns** (2026-09-23):
+  `Kernel.ns` is `= Object <: Value` and the mirror's class sits below
+  `Value`, so every builtin value class passes the enclosing-object condition
+  by construction and the mirror is a value by the ordinary rule.
+- **The root rule, deferred** (2026-09-23): a module's root may name only
+  `Object` or `Value`, or write `Object <: Value`; every other root clause,
+  including those the resolver used to refuse, is a defect recorded on the
+  root mixin and refused at instantiation, so a module with a wrong root
+  still loads and can be fixed live. The encoder refuses such a root, and the
+  decoder a root section the rule forbids.
+- **Every golden declaring a value class inside an ordinary module becomes a
+  value module and keeps its outcome** (2026-09-23), the rule decided for the
+  two `class Text = String new` goldens, extended to every such module.
+- **The two class conditions are decided at class creation and refused at
+  instantiation** (2026-09-24), changed from the plan's refusal at creation
+  because §2.3's own example creates a `String` subclass enclosed by a
+  mutable object and never instantiates it
+  (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which passes as
+  transcribed).
+
+**What changed, commit by commit:**
+
+- `7cc5467` — the root rule: the resolver binds no root clause receiver,
+  `build_root_mixin` records a `RootClauseDefect`, `apply_mixin` folds it and
+  the mutable-slot refusal into one `instantiation_refusal`, and
+  `decide_instantiation` refuses it; the encoder and the root-section reader
+  refuse it too. Ten goldens under `goldens/errors/root_*`.
+- `727a613` — `Kernel` is `= Object <: Value`, its `Value` level built with
+  `build_applied_levels` like a user root's, and its root mixin with
+  `build_root_mixin`; the mirror's class moves below `Value`.
+- `c8c2ab2` — every golden and inline test module declaring a value class
+  declares itself a value, the transcript read where it is used or the
+  module's methods moved into a nested `Script` class that is no value; no
+  recorded outcome moved.
+- `f3c2bd4`, `74e9e8e` — the mutable-slot check covers the whole chain,
+  since a `<:` clause can put `Value`'s level below a class with slots
+  (`first_mutable_slot`).
+- `7c460fa` — a value class that defines `==` below `Value` is refused
+  (`MixinApplication::identity_method`), a level a `<:` clause adds
+  included.
+- `d1032c9`, `4912499` — the enclosing-object condition, over every level of
+  the class chain with an early stop at a class already checked, decided in
+  `interpreter/value_class.rs` from `after_clause`, recorded on the class
+  object (`ClassData::value_class_refusal`) and refused, with the identity
+  method, at instantiation. `goldens/nesting/nested_override.ns`, which
+  instantiated a `String` subclass enclosed by a mutable object, starts its
+  overriding slot at `OrderedCollection` instead; its recorded outcome did
+  not change.
+- `866fddb`, `ef61c03` — the review's fix: the early stop reads the
+  stopped-at class's own recorded refusal and inherits it, since a refused
+  class still exists; and a decoded class object's verdict is recomputed on
+  load, in a pass of its own after every application is installed, so a
+  snapshot of a refused value class decodes refused.
+- this entry's commit — the documents.
+
+**Measurement.** Measured in Task 8: see below.
+
+**Known gaps**, each recorded where it applies:
+
+- **A value module's root class is not checked for `==`**
+  ([core-library.md](design/core-library.md), "What is still unchecked";
+  "Where the next session starts" above).
+- **A ready-made instance decoded from an image is not re-checked**, as
+  before; a decoded class object now is
+  ([image-format.md](design/image-format.md), "Verification").
 
 ## Notes
 

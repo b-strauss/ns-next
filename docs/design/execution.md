@@ -3095,7 +3095,7 @@ the check returns on its first test. The other two candidates on that path are
 the `Ok`/`Err` match the `InitializeSlot` arm now carries, which is new
 control flow inside `vm::run` where there was a straight store, and
 `MixinApplication` having grown two fields (`inherits_value` and
-`mutable_value_slot`), which `instantiate_class` reads once per instantiation
+the first mutable slot), which `decide_instantiation` reads once per instantiation
 for §3.1.1's first condition. Neither was profiled, and nothing was bisected
 between them. **What would recover it**: deciding the check once per
 activation instead of once per store. The application already knows

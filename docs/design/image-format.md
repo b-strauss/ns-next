@@ -344,12 +344,13 @@ reference, so the old class-record tag 5 is retired
 
 **Root class.** The class the root inherits from, as an optional builtin tag,
 then the root's own `<:` levels, lowest first, each as its clause's position in
-row 0 and the builtin that clause named. A root clause can name only a builtin,
-by the rule that resolves the root's superclass (`load_root_class`), so builtin
-tags are enough; the position is written because a root clause naming anything
-else adds no level. `load` rebuilds these levels with the root class, before
-the graph, so the graph names one by its position (`CLASS_ROOT_LEVEL`, class
-tag 3) rather than as a record.
+row 0 and the builtin that clause named. The root rule lets a root inherit
+only `Object` or `Value` and apply only `Value` over `Object`
+([object-model.md](object-model.md), "Mixin application", "The root rule"), so
+builtin tags are enough, and there is at most one level; a root the rule
+refuses is never written ("Verification" below). `load` rebuilds the level
+with the root class, before the graph, so the graph names it by its position
+(`CLASS_ROOT_LEVEL`, class tag 3) rather than as a record.
 
 **Object table.** Every heap object reachable from the roots — instances,
 strings, symbols, arrays, closures — decoded in two passes (placeholder, then
@@ -531,6 +532,32 @@ What is not checked is that a level sits directly above a class of its applying
 row; the instantiation walk re-checks a clause body's arity against the
 arguments it is given and raises a Newspeak error rather than indexing past
 them.
+
+**A root the root rule forbids is refused on both sides.** The encoder refuses
+a module whose root mixin carries a root defect, at `build` and `snapshot`
+alike, with "image encoding cannot serialize `M`: a module's root class may
+inherit only Object or Value, or write Object <: Value, and …" — the reason
+the instantiation refusal gives: such a root can never be instantiated, so an
+artifact of it could only fail, and refusing it needs no wire field. The
+root-section reader (`decode_root_section`) refuses what the encoder cannot
+write: a superclass tag other than `Object`'s or `Value`'s, and a level naming
+anything but `Value`, as `InvalidTag` ("invalid builtin class a module's root
+may inherit tag *n*", "… may apply tag *n*"); a second level, or a level over
+anything but `Object`, as `BadMixinApplicationClause`. So a crafted artifact
+cannot bring back a root the rule refuses, and no decoded mixin carries a
+root defect.
+
+**A decoded value class is re-decided; a decoded instance is not re-checked.**
+§3.1.1's two conditions on a value class — no `==`, every enclosing object a
+value — are a verdict on the class object, not a wire field, so
+`rebuild_applications` recomputes it with `check_value_class` for every
+decoded class whose application inherits `Value`, once every decoded class
+has its real application ([object-model.md](object-model.md), "A value
+object's four conditions"): a snapshot of a refused value class decodes
+refused. A ready-made *instance*, by contrast, is rebuilt from its record
+without its slots passing through `InitializeSlot`, so a crafted image can
+hand back a value whose slot holds an `Array` — a wrong answer, never a crash
+([core-library.md](core-library.md), "What is still unchecked").
 
 The mixin tree's nesting depth is input-controlled, so building it is iterative —
 the "bound any recursion whose depth the input controls" case. Symbol ids, mixin

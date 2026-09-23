@@ -5,7 +5,8 @@
 > and write of one), `types.rs` (`Object`, `ObjectData`, `Value`),
 > `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
 > nested-class accessor and `build_applied_levels`, §6.2's levels),
-> `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`).
+> `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`),
+> `interpreter/value_class.rs` (§3.1.1's conditions on a value class).
 
 ## Values and objects
 
@@ -305,7 +306,9 @@ kernel's.
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
   `Array`, `OrderedCollection`, `Block` and `Platform` stay directly under
-  `Object`, since their instances are not values. The clause is read by name
+  `Object`, since their instances are not values. The VM mirror's class,
+  which `Kernel.ns` does not declare, sits below `Value`, so the mirror is a
+  value ("A value object's four conditions" below). The clause is read by name
   at bootstrap, never run, and the class object's `superclass` link is set to
   match its application's.
 - **`Top` is not nameable.** It is the one class of `Kernel.ns` declared
@@ -373,30 +376,41 @@ walked the superclass chain upward and ran every level's slots and initializer
 expressions in the *subclass's* activation with the subclass's factory arguments,
 which §6.2 does not permit.
 
-### A value object's two conditions
+### A value object's four conditions
 
 §3.1.1 makes an object a value object when "it is deeply immutable ... and its
-class inherits from class `Value`", and the two halves of that — the mutable
-slot and the slot that is not a value — are enforced as the instance is built,
-the one place every instance of every class comes from, whether its class was
-loaded from source, materialized as a nested class or rebuilt from an image.
-The same bullet of §3.1.1 asks two further things that nothing here checks:
-that a value's enclosing objects (§3.3) are values, and that its class does
-not define `==` ([core-library.md](core-library.md), "What is still
-unchecked"). Both are to be enforced strictly by the next plan, which mixin
-application ("Mixin application" below) was built for: a module can now
-declare itself a value, `class M = Object <: Value (…)`, so a value class it
-declares can have an enclosing object that is one. The two halves enforced
-today:
+class inherits from class `Value`", and its second bullet spells that out as
+four conditions: all its slots "are immutable, have been initialized and
+contain value objects"; "its enclosing objects (3.3) are all value objects";
+and "its class inherits from class `Value` and does not define an identity
+method (`==`)". All four are enforced strictly (designed with the user on
+2026-09-23). Two are about an instance's slots and are decided as the
+instance is built, the one place every instance of every class comes from,
+whether its class was loaded from source, materialized as a nested class or
+rebuilt from an image. Two are about the class, and are decided once, where
+its class object is created. **Every one of them is refused where an instance
+would come into being**, and so is a fifth: a module root that breaks the root
+rule ("Mixin application", at its end), which decides what a module that
+declares itself a value may write. Every refusal is an ordinary Newspeak error
+named under the primary factory of the class being instantiated, defaulted to
+`new`, raised at run time — a class nothing instantiates never fails, as a
+method nothing runs never does — and every text lives in
+`interpreter/instantiate.rs`, so both lowerings raise the same errors.
 
-- **Step 1 refuses a mutable slot.** A class that inherits `Value` and declares
-  one could never have a value object for an instance, so there is no instance
-  to make and nothing is allocated. `Mutator::apply_mixin` answers both
-  questions once per application — whether the chain reaches `Value`
-  (`inherits_value`) and whether any level of it declares a mutable slot while
-  it does (`mutable_value_slot`) — because the same mixin applied over a
-  superclass that is no value declares an ordinary mutable slot and is perfectly
-  legal.
+- **Step 1 refuses a mutable slot anywhere in the chain.** A class that
+  inherits `Value` and has one could never have a value object for an
+  instance, so there is no instance to make and nothing is allocated.
+  `Mutator::apply_mixin` answers both questions once per application —
+  whether the chain reaches `Value` (`inherits_value`) and the first mutable
+  slot of the whole chain, whatever the level (`first_mutable_slot`) — and
+  folds the refusal into `instantiation_refusal` only when the chain inherits
+  `Value`, because the same mixin applied over a superclass that is no value
+  declares an ordinary mutable slot and is perfectly legal. The slot is
+  looked for above the `Value` level too, not only below it: a `<:` clause
+  puts `Value`'s level below an arbitrary class, so in `P → [Value] → Foo` a
+  `| counter ::= 0 |` of `Foo`'s is state of every `P`, and `P new` would
+  otherwise answer a "value" with a mutable slot
+  (`goldens/kernel/a_mutable_slot_above_the_value_level_is_refused.ns`).
 - **Step 4 refuses a declared slot that is not a value.** *Deeply* immutable
   means "all objects reachable from it are also deeply immutable", so
   `InitializeSlot` refuses to store anything but a value in an instance of a
@@ -404,8 +418,7 @@ today:
   instance whose class inherits `Value`. An `Array` stored there would make the
   whole value mutable through it, and two copies of the value would stop being
   equal the moment one array was written. The decision and its text live in
-  `interpreter/instantiate.rs`; `vm.rs` only calls it, so both lowerings raise
-  the same error.
+  `interpreter/instantiate.rs`; `vm.rs` only calls it.
 
   The rule is about the slots a class **declares**. The hidden nested-class
   cache slot ("The nested-class accessor" above) is written by the accessor,
@@ -414,174 +427,133 @@ today:
   member §6 defines rather than state of the value. A value class may declare a
   nested class without ceasing to be one.
 
-Both are ordinary Newspeak errors naming the class and the slot, raised at run
-time — a class nothing instantiates never fails, as a method nothing runs never
-does.
-
-### Planned: all four conditions, enforced strictly ("Plan B")
-
-Designed with the user on 2026-09-23; not built yet. It enforces every
-condition of §3.1.1's second bullet and closes the root-clause gap ("Mixin
-application", at its end). Each decision below was taken with the user.
-
-**`Kernel` and the VM mirror become values, as in SOMns.** `Kernel.ns`'s
-module is declared `class Kernel vmMirror: theMirror = Object <: Value (…)`,
-the header `prior-art/somns/core-lib/Kernel.ns` writes, and its one slot is
-already immutable. The mirror's class moves from `Object` to below `Value`
-(`interpreter/kernel.rs`, `superclass_of_kind`), so the mirror is a value by
-the ordinary rule — no slots, no `==` of its own, its class inherits
-`Value` — rather than by an exception in `check_value_slot`; SOMns asserts
-the same (`vm/ObjectSystem.java`, `assert vmMirror.isValue()`). Every
-capability guarantee of the mirror stays as it is: nothing names it, the
-encoder refuses it, `decide_factory` refuses to instantiate its class, and
-`SendMirror` has no wire tag. With the kernel instance a value, every builtin
-value class passes the enclosing-object condition by construction; the
-builtin classes are built by the bootstrap rather than by the nested-class
-accessor, so a test pins that the kernel instance is a value.
-
 **The two new conditions are decided where a class object is created and
-refused where an instance is made.** They are decided once, cold, in
-`interpreter/nested.rs`'s `after_clause`, after `apply_mixin` answers the
-application, and the verdict is recorded on the class object
-(`ClassData`); `decide_instantiation` refuses an instance of a class that
-carries one, as it refuses a mutable slot. A class that does not inherit
-`Value` pays one flag test at creation, and a value class one more test per
-instantiation. SOMns refuses at class creation
+refused where an instance is made**, the two about the class rather than its
+slots. They are decided once, cold, by
+`interpreter/value_class.rs`'s `check_value_class`, which `interpreter/nested.rs`'s
+`after_clause` calls after `apply_mixin` answers the application, and only
+for an application that inherits `Value`; the verdict is recorded on the
+class object (`ClassData::value_class_refusal`, a `ValueClassRefusal`), and
+`decide_instantiation` refuses an instance of a class that carries one, beside
+the refusals it makes from `instantiation_refusal`. A class that does not
+inherit `Value` pays one flag test at creation, and a value class one more
+test per instantiation. The class object is where both answers are known:
+the identity method is a property of the application, and the enclosing
+objects are fixed per class object, since a nested class object exists per
+enclosing instance — so asking once there costs nothing per instance. SOMns
+refuses at class creation
 (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`), and
 this runtime did too until §2.3's own example ruled it out (decided with the
 user on 2026-09-24): with `GrandChildOfOuter`'s slot `Inner ::= String`,
 "`g Nested` returns a subclass of `String`" — a value class whose enclosing
 object `g` is mutable, which the specification creates and never
-instantiates (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`).
-§3.1.1 defines when an *object* is a value; what must never exist is an
-instance that passes for a value and is not one. Both refusals are ordinary
-Newspeak errors named under the class's primary factory, like the other
-instantiation refusals, and the texts live in `interpreter/`, so both
-lowerings raise the same errors.
+instantiates (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which
+passes as transcribed). §3.1.1 defines when an *object* is a value; what
+must never exist is an instance that passes for a value and is not one. The
+texts are "cannot instantiate `C`: a value class may not define ==, and `D`
+defines it" and "cannot instantiate `C`: a value class's enclosing objects
+must be values, and its enclosing object, …, is not one" (or "`L`'s enclosing
+object" for a level above `C`).
 
 - **No identity method.** `apply_mixin` records, once per application and in
-  the way it records `mutable_value_slot`, the first level that declares an
+  the way it records `first_mutable_slot`, the first level that declares an
   instance-side `==` while the chain inherits `Value`, excluding `Value`'s own
-  mixin. Only levels **below** `Value` count: an `==` above it, `Object`'s
-  included, is overridden by `Value>>==`, so the class does not define it, and
-  `Value>>==` itself is the declaration §3.1.1's next sentence allows. A level
-  a `<:` clause adds below `Value` counts like any other.
-- **Enclosing objects are values.** The walk climbs the new class object's
-  superclass chain. At each level: a class that inherits `Value` and was
-  created as a class of its own — by `after_clause`, as a builtin or as a
-  module root, not a level a `<:` clause added — stops the walk **only if it
-  carries no recorded refusal of its own** (`ClassData::value_class_refusal`),
-  because it was checked the same way when it was created and everything
-  above it holds by induction. If it does carry one, the walk does not trust
-  it blindly: since the redesign records a refusal rather than raising it, a
-  refused class still exists, so the new class inherits the fault instead —
-  propagating an `IdentityMethod` unchanged, or answering a
-  `NonValueEnclosingObject` that names the stopping level, with the
-  `described` text taken from that level's own verdict. Any other level —
-  one that does not inherit `Value`, or a `<:` level, which is never created
-  through `after_clause` — has its enclosing object checked with
-  `instantiate.rs`'s `is_a_value`, the predicate the slot check uses, and the
-  walk continues. Checking every level and not only the class's own enclosing
-  object matters because an inherited method reaches its own level's
-  enclosing objects through `outer`: in `class P = Foo new <: Value`, `P`
-  inherits `Value`, `Foo` does not, and a method of `Foo` whose enclosing
-  object is mutable would make `P`'s instances reach mutable state. Requiring
-  `Foo` itself to inherit `Value` would be stricter than §3.1.1: a slotless
-  `Foo` in a value module meets every condition, and `Foo new <: Value` is
-  how a value variant of it is made. A module's root class has `nil` for its
-  enclosing object and a chain of builtins and at most `<: Value`, so
-  `load_root_class` needs no error path, only a `debug_assert!`.
+  mixin (`MixinApplication::identity_method`). Only levels **below** `Value`
+  count: an `==` above it, `Object`'s included, is overridden by `Value>>==`,
+  so the class does not define it, and `Value>>==` itself is the declaration
+  §3.1.1's next sentence allows. A level a `<:` clause adds below `Value`
+  counts like any other
+  (`goldens/kernel/an_identity_method_from_an_applied_mixin_is_refused.ns`).
+- **Enclosing objects are values.** The class's own enclosing object is
+  checked first, then the walk climbs the new class object's superclass
+  chain. At each level: a class that inherits `Value` and was created as a
+  class of its own — by `after_clause`, as a builtin or as a module root, not
+  a level a `<:` clause added — stops the walk **only if it carries no
+  recorded refusal of its own**, because it was checked the same way when it
+  was created and everything above it holds by induction. If it does carry
+  one, the walk does not trust it: a refused class still exists, since the
+  refusal is recorded rather than raised, so the new class inherits the
+  fault instead — an `IdentityMethod` unchanged, or a
+  `NonValueEnclosingObject` that names the level the walk stopped at, with
+  the `described` text taken from that level's own verdict
+  (`goldens/kernel/a_value_subclass_of_a_refused_value_class_is_refused.ns`).
+  Any other level — one that does not inherit `Value`, or a `<:` level, which
+  is never created through `after_clause` — has its enclosing object checked
+  with `instantiate.rs`'s `is_a_value`, the predicate the slot check uses,
+  and the walk continues. Checking every level and not only the class's own
+  enclosing object matters because an inherited method reaches its own
+  level's enclosing objects through `outer`: in `class P = Foo new <: Value`,
+  `P` inherits `Value`, `Foo` does not, and a method of `Foo` whose enclosing
+  object is mutable would make `P`'s instances reach mutable state
+  (`goldens/kernel/a_value_over_a_class_with_a_mutable_enclosing_object_is_refused.ns`).
+  Requiring `Foo` itself to inherit `Value` would be stricter than §3.1.1: a
+  slotless `Foo` in a value module meets every condition, and
+  `Foo new <: Value` is how a value variant of it is made
+  (`goldens/kernel/a_value_over_a_slotless_class_in_a_value_module_is_accepted.ns`).
+  A module's root class has `nil` for its enclosing object and a chain of
+  builtins with at most `<: Value`, so its enclosing objects hold by
+  construction, and `load_root_class` does not call the check.
 
   A decoded class object starts with no verdict — `ClassData::new` defaults
-  `value_class_refusal` to `None`, and a legitimate snapshot can hold a class
-  that was created carrying one — so `image::decode::rebuild_applications`
-  recomputes it for every decoded class whose application inherits `Value`
-  and which is not an applied level, using the same `check_value_class`. It
-  does this in a pass of its own, after every decoded class's real
-  application is installed, not folded into the pass that installs them: the
-  walk reads an *enclosing* class's application too (`is_a_value`,
-  `Heap::describe`), which is a different axis than the superclass chain the
-  install pass orders, so an enclosing class can still hold its placeholder
-  application at the point a superclass chain reaches it. The recompute pass
-  itself still runs superclass first — reusing the install pass's own
-  order — since the walk reads an ancestor's `value_class_refusal`, which has
-  to already be the recomputed one.
+  `value_class_refusal` to `None`, the wire carries none, and a legitimate
+  snapshot can hold a class that was created carrying one — so
+  `image::decode::rebuild_applications` recomputes it for every decoded
+  class whose application inherits `Value`, which has an enclosing object and
+  which is neither a metaclass nor an applied level, using the same
+  `check_value_class`. It does this in a pass of its own, after every decoded
+  class's real application is installed, not folded into the pass that
+  installs them: the walk reads an *enclosing* class's application too
+  (`is_a_value`, `Heap::describe`), which is a different axis than the
+  superclass chain the install pass orders, so an enclosing class can still
+  hold its placeholder application at the point a superclass chain reaches
+  it. The recompute pass itself still runs superclass first — reusing the
+  install pass's own order — since the walk reads an ancestor's
+  `value_class_refusal`, which has to already be the recomputed one. A
+  crafted artifact gets the verdict its decoded structure implies, like any
+  other decoded class; a ready-made *instance* decoded from an image is not
+  re-checked ("What is still unchecked" in [core-library.md](core-library.md)).
 
-**A mutable slot above the `Value` level is refused too.** Today
-`apply_mixin` records a mutable slot only on a level that already inherits
-`Value`, which was complete while only `Object` and `Top`, neither with
-slots, could sit above `Value`. A `<:` clause puts `Value`'s level below an
-arbitrary class, so in `P → [Value] → Foo` a `| counter ::= 0 |` of `Foo`'s
-goes unrecorded and `P new` answers a "value" with a mutable slot. The fix
-records the first mutable slot of the whole chain whatever the level, and
-`instantiate_class` refuses only when the class inherits `Value`, so a class
-with no value in its chain keeps its mutable slots legally. The mutable-slot
-check stays at instantiation.
+**Gap: a module's root class may define `==`.** The identity-method verdict
+is taken only where `after_clause` creates a class object, and a root class
+is created by `load_root_class`, which calls no check, so a value module whose
+root class declares `==` is instantiated, and its instances are values whose
+class defines an identity method. `MixinApplication::identity_method` already
+records the fault on the root's application; nothing reads it for a root.
 
-**The root rule: only `Object`, `Value` or `Object <: Value`.** A module's
-root class may omit its superclass clause (which is `Object`), name `Object`
-or `Value` unprefixed, or write `Object <: Value`; its message part is
-unaffected and checked at instantiation as today. Everything else is a root
-defect: any prefix, any other name — the other builtins and `Top` included —
-and any other `<:` clause, `Value <: Value` and several clauses among them.
-The corpus has such roots — `Newspeak2SqueakCompilation`'s
-`= NewspeakCompilation usingPlatform: platform`, `UISessionManager`'s
-`= NewspeakObject new` — which the Squeak-hosted implementation accepts and
-§6.1 says "will almost certainly fail"; none is on `corpus/runnable.toml`.
-**Every root defect is deferred, including the ones the resolver refuses
-today** — `= Foo new`, `= Top new`, `= outer Bar …` and the same receivers
-after `<:` are resolve errors now (`resolver/mod.rs`,
-`resolve_superclass_clause`), while `= self Object new` or `= Array new`
-run. Decided with the user on 2026-09-23: one rule, one path, and the
-deferred one, because a module whose root is wrong still loads, so its class
-exists to be inspected and fixed in a live system before anything
-instantiates it. The resolver stops binding a root clause's receivers at
-all; compiling stays total, since a receiver with no binding already lowers
-to `LoadBuiltinClass` or a deferred `UnresolvedIdentifier`, and a root's
-clause receiver is never run. Nested declarations keep their resolve errors.
-Because the rule is syntactic, `build_mixin` records the defect on the root
-mixin (`root_clause_defect`, naming the clause and the reason);
-`load_root_class` builds the class without the defective level, so
-`load_module` stays total; and `instantiate_class` refuses to instantiate
-it, from one cold `Option` on the application that holds both refusals it
-makes before allocating — the mutable slot and the root defect — so the
-instantiation path gains no test. `run` and `load` always instantiate the
-root, so every program with a defective root meets the error at start, under
-both lowerings with the same text. `Kernel.ns` goes through the same path.
-**The encoder refuses a module with a root defect**, at `build` and
-`snapshot`, with the same text: such a root can never be instantiated, so an
-artifact of it could only fail, and refusing it needs no wire field and no
-tag. The decoder's root-section reader refuses what the encoder can no
-longer write — a superclass tag other than `Object` or `Value`, a level
-naming anything but `Value`, a second level, or a level over anything but
-`Object` — so a crafted artifact cannot bring the rule back.
+**`Kernel` and the VM mirror are values, as in SOMns** (decided with the user
+on 2026-09-23). `Kernel.ns`'s module is declared
+`class Kernel vmMirror: theMirror = Object <: Value (…)`, the header
+`prior-art/somns/core-lib/Kernel.ns` writes, and its one slot is immutable.
+The mirror's class sits below `Value` (`interpreter/kernel.rs`,
+`superclass_of_kind`), so the mirror is a value by the ordinary rule — no
+slots, no `==` of its own, its class inherits `Value` — rather than by an
+exception in `check_value_slot`; SOMns asserts the same
+(`vm/ObjectSystem.java`, `assert vmMirror.isValue()`). Every capability
+guarantee of the mirror is unchanged by it: nothing names it, the encoder
+refuses it, `decide_factory` refuses to instantiate its class, and
+`SendMirror` has no wire tag. With the kernel instance a value, every
+builtin value class passes the enclosing-object condition by construction;
+the builtin classes are built by the bootstrap rather than by the
+nested-class accessor, so `interpreter/kernel.rs`'s
+`the_kernel_and_the_mirror_are_values` pins that the kernel instance and the
+mirror are values ([core-library.md](core-library.md), "The bootstrap:
+placeholders first, kernel second").
 
-**Not re-checked: a class object decoded from an image**, as a ready-made
-instance is not ("What is still unchecked" in
-[core-library.md](core-library.md)); a crafted artifact gets a wrong answer,
-not a crash.
-
-**Goldens.** Every golden and inline test module that declares a value class
-inside an ordinary module becomes a value module, `= Object <: Value`, with
-`platform` or the transcript passed as an argument rather than held in a
-slot, and keeps its recorded outcome — the rule decided on 2026-09-23 for the
-two goldens declaring `class Text = String new`, extended to every such
-module: those two, `kernel/a_subclass_of_a_builtin_falls_to_objects_methods`,
-`kernel/a_user_value_class_compares_by_its_slots`,
-`kernel/a_value_class_refuses_a_mutable_slot` (still refused for its own
-reason), `kernel/a_value_has_no_identity`,
-`kernel/a_values_nested_class_is_not_part_of_its_state` and
-`kernel/a_values_slot_must_hold_a_value`. Each rule above gets a golden of
-its own, the accepted `Foo new <: Value` over a slotless `Foo` in a value
-module included, and each root defect one.
-
-**Order**, each step leaving the suite green: the root defect; `Kernel` and
-the mirror as values; restructuring the goldens and inline modules, which is
-legal today and changes no outcome; the mutable slot over the whole chain;
-the identity method; the enclosing objects with their early stop; the
-documents. A release measurement against `cdc0257` follows the protocol in
-[execution.md](execution.md); the only new test on a hot path is the flag
-test in `after_clause`, once per class created.
+**A value class needs a value module.** Since a value class's enclosing
+object must be a value, a value class nested in an ordinary module is refused
+on instantiation
+(`goldens/kernel/a_value_class_in_an_ordinary_module_is_refused.ns`). Every
+golden and inline test module that declares a value class therefore declares
+itself a value, `= Object <: Value`, and keeps its recorded outcome — the
+rule decided with the user on 2026-09-23 for the two goldens declaring
+`class Text = String new`, extended to every such module. A value's slot may
+not hold the platform or the transcript, so such a module reads the
+transcript where it uses it, or keeps its former module methods in a nested
+`Script` class that is no value. `goldens/nesting/nested_override.ns`, which
+instantiates a class whose superclass clause reads an overridden slot, starts
+that slot at `OrderedCollection` rather than `String`, so the class it
+instantiates is no value class in an ordinary module; its recorded outcome
+did not change.
 
 ## Mixin application
 
@@ -689,26 +661,51 @@ module's class inherit `Value`, which is §3.1.1's condition for its instances
 to be values, and it is the form §3.1.1's other conditions need — a value
 class's enclosing objects must be values, and the outermost one is the module
 — and the one SOMns's `Kernel.ns` writes. It is a sanctioned form, not a side
-effect of how a root clause is resolved, and it stays allowed when the gap
-below is closed (`goldens/mixin/mixin_module_declares_itself_a_value.ns`).
+effect of how a root clause is resolved
+(`goldens/mixin/mixin_module_declares_itself_a_value.ns`).
 
-**Gap: every other root `<:` clause is accepted or dropped instead of
-refused.** A root class has no enclosing object to evaluate a receiver in, so
-`load_root_class` resolves each `<:` receiver as it resolves the root's
-superclass (`resolve_superclass_receiver`): by builtin name alone. A root
-clause naming another builtin adds a level for it; one prefixed `self` or
-`super` that names anything but a builtin adds no level, silently; and
-`builtin_kind_from_name` ignores the prefix, so `<: self Value` is taken as
-the builtin `Value`. §6.1 evaluates such a clause "as if it was a top level
-expression", where it "will almost certainly fail". The root superclass clause
-has the same prefix gap — a prefixed one naming anything but a builtin is
-dropped, and a prefix before a builtin's name is ignored — while resolving a
-builtin such as `Object` by name is what it should do. Plan B closes the gap
-("Planned: all four conditions, enforced strictly" above, "The root rule"):
-a root may name only `Object` or `Value`, or write `Object <: Value`, and
-every other root clause becomes a defect refused when the root is
-instantiated. Until then the runtime only over-accepts a program the rule refuses
-([README.md](README.md), deviations).
+**The root rule: only `Object`, `Value` or `Object <: Value`.** A module's
+root class may omit its superclass clause (which is `Object`), name `Object`
+or `Value` unprefixed, or write `Object <: Value`; its message part is
+unaffected and checked at instantiation like any other. Everything else is a
+root defect: any prefix, any other name — the other builtins, `Top` and a
+name nothing declares included — and any other `<:` clause, `Value <: Value`
+and several clauses among them. A root class has no enclosing object to
+evaluate a receiver in: §6.1 evaluates its clause "as if it was a top level
+expression", where it "will almost certainly fail", so the only classes a
+root can reach are the ones the rule names. The corpus has such roots —
+`Newspeak2SqueakCompilation`'s `= NewspeakCompilation usingPlatform:
+platform`, `UISessionManager`'s `= NewspeakObject new` — which the
+Squeak-hosted implementation accepts; none is on `corpus/runnable.toml`.
+
+**Every root defect is deferred to instantiation** (decided with the user on
+2026-09-23): one rule, one path, and the deferred one, because a module whose
+root is wrong still loads, so its class exists to be inspected and fixed in a
+live system before anything instantiates it. The resolver binds none of a
+root clause's receivers (`resolver/mod.rs`), so `= Missing new` is no resolve
+error; compiling stays total, since a receiver with no binding lowers to
+`LoadBuiltinClass` or a deferred `UnresolvedIdentifier`, and a root's clause
+receiver is never run. Nested declarations keep their resolve errors. The
+rule is syntactic, so `Mutator::build_root_mixin` — which builds every
+module's root mixin, `Kernel.ns`'s included — records the defect on the root
+mixin (`instantiate::root_clause_defect`, `Mixin::root_clause_defect`,
+naming the clause as written and the reason); `load_root_class` builds a
+defective root over `Object` with no level, so `load_module` stays total; and
+`apply_mixin` folds the defect into `instantiation_refusal`, inherited by
+every class built on the root, the one cold `Option` `decide_instantiation`
+tests for both refusals it makes before allocating — the mutable slot and the
+root defect. `run` and `load` always instantiate the root, so every program
+with a defective root meets the error at start, under both lowerings with the
+same text: "cannot instantiate `M`: a module's root class may inherit only
+Object or Value, or write Object <: Value, and its superclass clause names
+`…`" (or "its mixin application clause *n* names `…`", or "it applies Value to
+Value"). **The encoder refuses a module with a root defect**, at `build` and
+`snapshot`, with "image encoding cannot serialize `M`:" and the same reason:
+such a root can never be instantiated, so an artifact of it could only fail,
+and refusing it needs no wire field and no tag. The decoder's root-section
+reader refuses what the encoder cannot write
+([image-format.md](image-format.md), "Verification"), so a crafted artifact
+cannot bring the rule back. `goldens/errors/root_*` pin one defect each.
 
 ## Class sides and metaclasses
 
@@ -876,6 +873,18 @@ stays blocked on that, not on the collector.
   clause, so lookup, `super`, `outer`, the dispatch ids and the caches reach
   them with no new machinery; only building them, initializing them and
   carrying them through the image are new ("Mixin application" above).
+- **All four of §3.1.1's value conditions are enforced strictly, and each is
+  refused where an instance is made** (designed with the user on 2026-09-23;
+  refusing at instantiation rather than at class creation decided on
+  2026-09-24, because §2.3's own example creates a value class with a mutable
+  enclosing object and never instantiates it). The two class conditions are
+  still *decided* once, where the class object is created ("A value object's
+  four conditions" above).
+- **A module's root may name only `Object` or `Value`, or write
+  `Object <: Value`, and every other root is a defect deferred to
+  instantiation** (decided with the user on 2026-09-23), so a module with a
+  wrong root still loads and can be fixed live ("Mixin application", "The
+  root rule").
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
