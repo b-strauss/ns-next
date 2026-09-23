@@ -78,6 +78,18 @@ pub enum ObjectData<'gc> {
 /// application is installed, so a legitimate snapshot of a value class
 /// created carrying a refusal decodes carrying the same one rather than
 /// becoming instantiable.
+///
+/// The enclosing-objects walk (`check_value_class`) climbs a new class
+/// object's superclass chain and stops early only at a class that inherits
+/// `Value`, is not a level a `<:` clause added, and carries **no** recorded
+/// refusal of its own -- such a class was checked the same way when it was
+/// created, so everything above it holds by induction. A class that does
+/// carry one is not trusted blindly: the new class inherits the fault
+/// instead, naming the level the walk stopped at (an `IdentityMethod`
+/// unchanged, since its `declaring` already names the right level; a
+/// `NonValueEnclosingObject` rebuilt with `level: Some(<the stopping
+/// class's name>)`, its `described` carried over from that class's own
+/// verdict).
 #[derive(Debug, Clone)]
 pub enum ValueClassRefusal {
     /// The level below `Value` that declares `==`.
