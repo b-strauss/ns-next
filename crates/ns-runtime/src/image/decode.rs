@@ -181,6 +181,14 @@ pub enum DecodeError {
     /// invariant when the clause carries none -- the same refusal, for the
     /// same reason, as `MissingSuperclassMessage`.
     MissingMixinApplicationMessage,
+    /// A mixin-table row's `<:` clause passes no factory arguments, yet names
+    /// a compiled message body. The compiler fills a clause's body only when
+    /// its message has arguments, and the walk never runs one for a clause
+    /// without them (`instantiate::applied_clause_message_body`), so such a
+    /// body is code the row says nothing runs -- while a frame of kind
+    /// `MixinApplicationMessage` could still name it. Refused so a row and the
+    /// frames running its clauses cannot disagree about what a clause runs.
+    UnexpectedMixinApplicationMessage,
     /// A mixin-table row declares `<:` clauses but no superclass clause. The
     /// grammar admits `<:` only after a superclass clause, and it is the
     /// superclass clause's body that evaluates every clause's receiver
@@ -405,6 +413,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MissingMixinApplicationMessage => write!(
                 f,
                 "the image's mixin application clause passes factory arguments it has no compiled code for"
+            ),
+            DecodeError::UnexpectedMixinApplicationMessage => write!(
+                f,
+                "the image's mixin application clause passes no factory arguments but carries compiled code for them"
             ),
             DecodeError::MixinApplicationWithoutSuperclass => write!(
                 f,
@@ -968,6 +980,9 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
         }
         for (index, clause) in mixin.mixin_applications.iter().enumerate() {
             match &clause.message_code {
+                Some(_) if !clause.has_arguments => {
+                    return Err(DecodeError::UnexpectedMixinApplicationMessage)
+                }
                 // §6.2 evaluates a `<:` clause's message in the applying
                 // declaration's instance initializer, as it does the superclass
                 // clause's, so its body takes this mixin's factory arguments --

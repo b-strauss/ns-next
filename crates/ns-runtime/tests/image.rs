@@ -8740,6 +8740,32 @@ fn a_clause_message_with_arguments_and_no_body_is_refused_at_load() {
     );
 }
 
+/// A clause whose message passes no arguments has no body to run, so one
+/// that names a body anyway -- here the other clause's, of the right kind
+/// and arity, so nothing but the mismatch is wrong -- is refused rather than
+/// carried as code the row says nothing runs.
+#[test]
+fn a_clause_message_without_arguments_that_carries_a_body_is_refused_at_load() {
+    let error = verify_doctored_applied(|applied| {
+        let mut clauses = applied.mixin_applications.clone();
+        assert!(!clauses[1].has_arguments, "<: Stamp sends new");
+        clauses[1].message_code = clauses[0].message_code.clone();
+        Mixin {
+            mixin_applications: clauses,
+            ..applied
+        }
+    })
+    .expect_err("a body for a message without arguments");
+    assert_eq!(
+        error,
+        decode::DecodeError::UnexpectedMixinApplicationMessage
+    );
+    assert_eq!(
+        error.to_string(),
+        "the image's mixin application clause passes no factory arguments but carries compiled code for them"
+    );
+}
+
 /// `<:` follows a superclass clause in the grammar, and it is the superclass
 /// clause's body that evaluates every `<:` receiver; a row with clauses but
 /// no superclass clause describes a declaration no source has.

@@ -517,7 +517,9 @@ than any other wrong answer a mutated program's own code can produce.
 `<:` clause's message body is a clause-message body taking exactly the row's
 factory arity, since §6.2 evaluates it with the applying declaration's factory
 arguments (`CodeArityMismatch`, `WrongCodeKind`), and a clause whose message
-takes arguments has one (`MissingMixinApplicationMessage`); a row with `<:`
+takes arguments has one (`MissingMixinApplicationMessage`) and a clause whose
+message takes none has none (`UnexpectedMixinApplicationMessage`), so a row and
+the frames running its clauses agree on what each clause runs; a row with `<:`
 clauses but no superclass clause is refused
 (`MixinApplicationWithoutSuperclass`). A level's record names an applying row
 and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`), and the
