@@ -3704,6 +3704,22 @@ isolated. `vm::run` is 6,508 instructions in both trees and one function. See
   "Verification").
 - **Type arguments on a clause's receiver are dropped**, as elsewhere
   ([frontend.md](design/frontend.md), "What is parsed and dropped").
+- **A private slot of a mixin applied twice in one chain** has no pinned
+  answer: §5.9's private-access rule does not say which application's slot a
+  method of the lower application reads when both applications declare it.
+  `goldens/mixin/mixin_same_mixin_applied_twice_in_one_chain` pins the
+  protected case only. Settle it from the specification (and SOMns) before a
+  golden records either answer.
+
+**Left as they are**, judged not worth a change on their own by the
+whole-branch review and recorded so a later pass through the same code can
+take them: `MixinApplicationClause` (`mixin.rs`) repeats `SuperclassClause`'s
+fields rather than holding one; `nested::after_clause` looks the superclass's
+application up twice on the `<:` path; the not-a-class error names a `<:`
+clause by position ("clause 1") rather than by its source text;
+`image::encode`'s `encode_class_tag` scans the root levels twice; and
+`build_root_class` maps every `build_applied_levels` error to
+`NotAClassReference`, which is unreachable today.
 
 **Gates.** Every commit that changed code or tests saw the per-commit group.
 At the branch's final state the whole end-of-batch group ran at `56ecf79`, the last commit that changed code or tests:
