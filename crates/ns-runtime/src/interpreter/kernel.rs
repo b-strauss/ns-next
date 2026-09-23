@@ -133,7 +133,7 @@ impl<'gc> Mutator<'gc> {
     /// `wire_kernel_in` checks the metaclasses.
     fn fill_builtin_classes(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let root_mixin = self.build_mixin(declaration, &resolved.bindings);
+        let root_mixin = self.build_root_mixin(declaration, &resolved.bindings);
         check_kernel_shape(&root_mixin, resolved);
         for kind in fill_order(&root_mixin) {
             let class = self.builtin_class(kind);
@@ -190,10 +190,27 @@ impl<'gc> Mutator<'gc> {
                     .cloned()
             });
         self.refresh_immediate_dispatch_ids();
+        // `Object <: Value`: the level is built as a user root's is, from
+        // the filled `Value`, and its lexical context is set once the kernel
+        // instance exists (`wire_kernel_in`), as every builtin class's is.
+        assert!(
+            root_mixin.root_clause_defect.is_none() && declaration.mixin_applications.len() == 1,
+            "internal: Kernel.ns's root must be `Object <: Value`"
+        );
         let object = self.builtin_class(BuiltinClass::Object);
-        let object_application = self.heap.class_application(object);
-        let application = self.apply_mixin(&root_mixin, object_application.as_ref());
-        self.new_class_object(application, None, None, Some(object))
+        let value = self.builtin_class(BuiltinClass::Value);
+        let level = match super::nested::build_applied_levels(
+            self,
+            &root_mixin,
+            Some(object),
+            &[(0, Value::Object(value))],
+        ) {
+            Ok(Some(level)) => level,
+            Ok(None) | Err(_) => panic!("internal: the kernel's Value level is a class object"),
+        };
+        let level_application = self.heap.class_application(level);
+        let application = self.apply_mixin(&root_mixin, level_application.as_ref());
+        self.new_class_object(application, None, None, Some(level))
     }
 
     /// The kernel instance becomes every kernel class's enclosing object,
@@ -246,6 +263,21 @@ impl<'gc> Mutator<'gc> {
                 self.heap.class_metaclass(class).is_none(),
                 "internal: a metaclass built before the kernel was wired in borrowed the placeholder's context"
             );
+        }
+        // The kernel's own `Value` level was built before the kernel
+        // instance existed, over `Value`'s then-empty context.
+        let mut level = self.heap.class_superclass(kernel_class);
+        while let Some(class) = level {
+            if !self.heap.class_is_applied_level(class) {
+                break;
+            }
+            if !self
+                .heap
+                .set_class_lexical_context(class, Some(kernel), Some(kernel_class))
+            {
+                unreachable!("internal: an applied level is a class object");
+            }
+            level = self.heap.class_superclass(class);
         }
         self.kernel = Some(Value::Object(kernel));
     }
@@ -304,10 +336,13 @@ fn depth_below_top(root: &Rc<Mixin>, kind: BuiltinClass) -> usize {
 
 /// The builtin that `kind`'s class names as its superclass; `None` for
 /// `Top`, which has none. The mirror's class is not in `Kernel.ns` at all,
-/// and sits under `Object` (`interpreter::mod`'s `builtin_mixin`).
+/// and sits under `Value`, so the mirror is a value by the ordinary rule,
+/// with no slots and no `==`, as SOMns asserts (`vm/ObjectSystem.java`,
+/// `assert vmMirror.isValue()`). `fill_order` sorts by depth, so `Value` is
+/// still filled first.
 fn superclass_of_kind(root: &Rc<Mixin>, kind: BuiltinClass) -> Option<BuiltinClass> {
     if kind == BuiltinClass::VmMirror {
-        return Some(BuiltinClass::Object);
+        return Some(BuiltinClass::Value);
     }
     superclass_kind(nested_named(root, kernel_class_name(kind)))
 }
@@ -798,6 +833,7 @@ mod tests {
                 // `state_is_a_value`, the other predicate, had always said
                 // it was one.
                 (BuiltinClass::Value, true),
+                (BuiltinClass::VmMirror, true),
             ] {
                 let class = mutator.builtin_class(kind);
                 assert_eq!(
@@ -853,6 +889,54 @@ mod tests {
                 .heap()
                 .instance_field(kernel, super::mirror_slot_of(mutator, kernel));
             assert!(held.is_some_and(|value| mutator.is_vm_mirror(value)));
+        });
+    }
+
+    /// §3.1.1 asks a value's enclosing objects to be values, and every
+    /// builtin value class is nested in the kernel, so the kernel instance
+    /// is one -- `Object <: Value`, as SOMns's `Kernel.ns` declares it --
+    /// and so is the mirror its one slot holds, by the ordinary rule.
+    #[test]
+    fn the_kernel_and_the_mirror_are_values() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let Some(Value::Object(kernel)) = mutator.kernel else {
+                panic!("the kernel is instantiated at bootstrap");
+            };
+            let kernel_class = mutator.heap().class_of_object(kernel);
+            assert!(mutator.heap().class_inherits_value(kernel_class));
+            let Value::Object(mirror) = mutator.vm_mirror() else {
+                panic!("the mirror is an object");
+            };
+            let mirror_class = mutator.heap().class_of_object(mirror);
+            assert!(mutator.heap().class_inherits_value(mirror_class));
+        });
+    }
+
+    /// The kernel's `Value` level is an applied level like any other, and
+    /// it too is enclosed by the kernel instance: a method of `Value` run on
+    /// the kernel reaches `vmMirror` through it.
+    #[test]
+    fn the_kernels_value_level_is_enclosed_by_the_kernel() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let Some(Value::Object(kernel)) = mutator.kernel else {
+                panic!("the kernel is instantiated at bootstrap");
+            };
+            let kernel_class = mutator.heap().class_of_object(kernel);
+            let level = mutator
+                .heap()
+                .class_superclass(kernel_class)
+                .expect("the kernel class has its Value level");
+            assert!(mutator.heap().class_is_applied_level(level));
+            assert!(mutator
+                .heap()
+                .class_enclosing(level)
+                .is_some_and(|enclosing| enclosing.same(kernel)));
+            assert!(mutator
+                .heap()
+                .class_declaring(level)
+                .is_some_and(|declaring| declaring.same(kernel_class)));
         });
     }
 

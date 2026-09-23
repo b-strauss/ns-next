@@ -15,8 +15,12 @@ Newspeak3
    Every class here says `public`: §6.3.1 makes an undeclared member
    protected, and a protected class is unreachable from another module, so
    the accessibility has to be written out for a program to name it. `Top`
-   is the exception, for the reason its own comment gives. *)
-class Kernel vmMirror: theMirror = Object new (
+   is the exception, for the reason its own comment gives.
+
+   The kernel declares itself a value so that every builtin value class,
+   nested here, meets §3.1.1's enclosing-object condition, as SOMns's
+   `Kernel.ns` does. *)
+class Kernel vmMirror: theMirror = Object <: Value (
     | private vmMirror = theMirror. |
 ) (
     (* §3.2: "A class is either the empty class `Top` or the application of
