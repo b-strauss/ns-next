@@ -1,0 +1,25 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1 and 6.2: an inherited method reaches its own
+   level's enclosing objects through `outer`, so they are part of what a
+   value can reach. `Stamped` is declared in a value module and inherits
+   `Value` through `<:`, but its superclass `Counter` is enclosed by a
+   `Holder`, whose `count` is mutable -- `bump` would change it through any
+   `Stamped`. Every level's enclosing object is asked, not only the class's
+   own. Decided where `Stamped` is created, refused where an instance is
+   made -- both here in the one send, `Stamped new`. *)
+class ValueOverAMutableLevel usingPlatform: platformAtCreation = Object <: Value () (
+    public class Holder = Object new (
+        | public count ::= 0. |
+    ) (
+        public class Counter = Object new () (
+            public bump = ( count:: count + 1. ^count )
+        )
+    )
+    public MutableCounter = ( ^Holder new Counter )
+    public class Stamped = MutableCounter new <: Value () ()
+    public main: platform args: arguments = (
+        platform transcript show: 'before'; newLine.
+        platform transcript show: Stamped new bump printString; newLine.
+    )
+) : ()

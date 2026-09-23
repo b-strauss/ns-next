@@ -97,6 +97,7 @@ impl Trace for ClassData<'_> {
             dispatch_id: _, // not a handle
             // A clause and its compiled message: code, which holds no handle.
             applied_clause: _,
+            value_class_refusal: _, // a Symbol and a String, neither a handle
         } = self;
         trace_optional_object(enclosing, tracer);
         trace_optional_object(declaring_class, tracer);

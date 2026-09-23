@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1 and 6.2: the conditions are on the value, not on
+   every class above it. `Describer` is no value -- it does not inherit
+   `Value` -- but it has no slots and its enclosing object is a value, so
+   `Describer new <: Value` is a value class, and making a value variant of
+   an ordinary class is what `<: Value` is for. Requiring `Describer` itself
+   to inherit `Value` would refuse a program 3.1.1 allows. *)
+class ValueOverASlotlessClass usingPlatform: platformAtCreation = Object <: Value () (
+    public class Describer = Object new () (
+        public describe = ( ^'described' )
+    )
+    public class Described = Describer new <: Value () ()
+    public main: platform args: arguments = (
+        platform transcript show: Described new describe; newLine.
+        platform transcript show: (Described new = Described new) printString; newLine.
+    )
+) : ()

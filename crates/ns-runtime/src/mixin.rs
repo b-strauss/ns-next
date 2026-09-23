@@ -596,8 +596,10 @@ pub struct MixinApplication {
     /// §3.1.1: a value's class "does not define an identity method (==)".
     /// The class, if any, that declares one below `Value` -- `Value`'s own
     /// excluded, which the specification's next sentence allows, and every
-    /// level above `Value` too, whose `==` `Value` overrides. Refused where a
-    /// class object is created (`interpreter::value_class`).
+    /// level above `Value` too, whose `==` `Value` overrides. Decided where
+    /// the class object is created (`interpreter::value_class`), but
+    /// refused only where an instance is made
+    /// (`ClassData::value_class_refusal`, `interpreter::instantiate`).
     pub identity_method: Option<Symbol>,
     /// What `interpreter::instantiate` refuses before allocating an
     /// instance, computed once per application by `Mutator::apply_mixin`:

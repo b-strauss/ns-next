@@ -3,5 +3,5 @@ stdout = '''
 true
 '''
 stderr = '''
-Uncaught Newspeak error: cannot create Mixed: a value class may not define ==, and Identity defines it
+Uncaught Newspeak error: cannot instantiate Mixed: a value class may not define ==, and Identity defines it
 '''

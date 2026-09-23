@@ -62,6 +62,29 @@ pub enum ObjectData<'gc> {
     Class(Box<ClassData<'gc>>),
 }
 
+/// §3.1.1's two conditions on a value class -- no identity method, and every
+/// enclosing object a value -- decided once, where the class object is
+/// created (`interpreter::value_class::check_value_class`, called from
+/// `interpreter::nested::after_clause`), and recorded on `ClassData` rather
+/// than raised there: `decide_instantiation` is what refuses, since the
+/// specification's own §2.3 example creates such a class and never
+/// instantiates it (`docs/design/object-model.md`, "The two new conditions
+/// are decided where a class object is created and refused where an
+/// instance is made"). Holds no handle -- a `Symbol` and a `String`, both
+/// already rendered at creation time -- so it survives a move and an image
+/// never needs to carry it: a decoded class object is not re-checked.
+#[derive(Debug, Clone)]
+pub enum ValueClassRefusal {
+    /// The level below `Value` that declares `==`.
+    IdentityMethod { declaring: Symbol },
+    /// `level` is `None` for the class's own enclosing object; `described`
+    /// is `Heap::describe` of the offending object, taken at creation.
+    NonValueEnclosingObject {
+        level: Option<Symbol>,
+        described: String,
+    },
+}
+
 /// A class object is *identity*; everything a class object can *do* lives
 /// on its `MixinApplication`. Two class objects built from the same mixin
 /// and the same superclass application share one `application`, which is
@@ -144,6 +167,14 @@ pub struct ClassData<'gc> {
     /// three: the instantiation walk and the collector read this struct for
     /// every class object, applied level or not.
     pub applied_clause: Option<Box<crate::mixin::AppliedClause>>,
+    /// `ValueClassRefusal`'s own doc comment says where this is decided and
+    /// where it is refused. `None` for every class that is no value and for
+    /// a value class whose two conditions both hold -- which is most of
+    /// them, so `decide_instantiation` pays this read only behind
+    /// `application.inherits_value`. `ClassData::new` defaults it to `None`;
+    /// `interpreter::nested::after_clause` is the only place that ever sets
+    /// it to `Some`, right after creating the class object it is about.
+    pub value_class_refusal: Option<ValueClassRefusal>,
 }
 
 impl<'gc> ClassData<'gc> {
@@ -165,6 +196,7 @@ impl<'gc> ClassData<'gc> {
             builtin,
             metaclass: None,
             applied_clause: None,
+            value_class_refusal: None,
         }
     }
 }

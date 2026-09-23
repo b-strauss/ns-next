@@ -147,3 +147,78 @@ fn an_unknown_root_superclass_is_a_deferred_defect_not_a_resolve_error() {
         "{message}"
     );
 }
+
+/// The walk stops at the first class that was itself created as a value
+/// class, so a subclass of a checked value class is not refused for a level
+/// above it that was already vouched for -- and a subclass declared in an
+/// ordinary module still has its own enclosing object checked. §2.3's own
+/// example creates such a class and never instantiates it, so the class
+/// object itself comes into being without complaint
+/// (`docs/design/object-model.md`, "The two new conditions are decided
+/// where a class object is created and refused where an instance is
+/// made"); only `Derived new` is refused.
+#[test]
+fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Outer = Object <: Value () (
+            public class Base = Value new () ()
+            public class Inner = Object new () (
+                public class Derived = Base new () ()
+            )
+            public class Sibling = Base new () ()
+        ) : ()
+    "};
+    let (mut interpreter, class, _resolved) = load(source);
+    let outer = expect_ok(interpreter.instantiate(&class, &[]), "Outer new");
+    expect_ok(
+        interpreter.send(&outer, Symbol::intern("Sibling"), &[]),
+        "Sibling",
+    );
+    let inner_class = expect_ok(
+        interpreter.send(&outer, Symbol::intern("Inner"), &[]),
+        "Inner",
+    );
+    let inner = expect_ok(interpreter.instantiate(&inner_class, &[]), "Inner new");
+    let derived = expect_ok(
+        interpreter.send(&inner, Symbol::intern("Derived"), &[]),
+        "Derived",
+    );
+    let message = expect_error(interpreter.instantiate(&derived, &[]), "Derived new");
+    assert_eq!(
+        message,
+        "cannot instantiate Derived: a value class's enclosing objects must be values, and its \
+         enclosing object, an instance of Inner, is not one"
+    );
+}
+
+/// §2.3's own point, pinned directly: a value class whose enclosing object
+/// is not a value can still be *created* -- the send answers a class
+/// object, with no error -- and only instantiating it is refused.
+/// `docs/design/object-model.md`, "The two new conditions...", names the
+/// specification's own worked example this follows
+/// (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which creates
+/// such a class and never instantiates it).
+#[test]
+fn a_value_class_over_a_non_value_enclosing_object_is_created_but_not_instantiated() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Root = Object new () (
+            public class Described = Object new <: Value () ()
+        ) : ()
+    "};
+    let (mut interpreter, class, _resolved) = load(source);
+    let root = expect_ok(interpreter.instantiate(&class, &[]), "Root new");
+    let described = expect_ok(
+        interpreter.send(&root, Symbol::intern("Described"), &[]),
+        "Described",
+    );
+    let message = expect_error(interpreter.instantiate(&described, &[]), "Described new");
+    assert_eq!(
+        message,
+        "cannot instantiate Described: a value class's enclosing objects must be values, and \
+         its enclosing object, an instance of Root, is not one"
+    );
+}

@@ -1494,11 +1494,14 @@ impl<'gc> Mutator<'gc> {
         // §3.1.1's third condition on a value class, recorded here like
         // `first_mutable_slot`: the first level below `Value` -- `Value`'s
         // own excluded, since its next sentence allows that one -- whose
-        // mixin declares an instance-side `==`. Checked once per application
-        // rather than per instance, and refused where the class object comes
-        // into being (`interpreter::value_class`), not where an instance is
-        // made: unlike a mutable slot, a redefined `==` is wrong about the
-        // class itself, whether or not anything is ever instantiated.
+        // mixin declares an instance-side `==`. Checked once per
+        // application rather than per instance -- unlike the enclosing-object
+        // condition, which depends on which instance encloses the class,
+        // this one does not. `interpreter::value_class::check_value_class`
+        // reads it back when the class object is created, but only records
+        // the verdict (`ClassData::value_class_refusal`); `decide_instantiation`
+        // is what refuses, where an instance would come into being
+        // (`docs/design/object-model.md`, "The two new conditions...").
         let identity_method = superclass
             .and_then(|application| application.identity_method)
             .or_else(|| {

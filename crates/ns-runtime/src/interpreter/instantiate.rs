@@ -420,6 +420,25 @@ impl<'gc> Mutator<'gc> {
                     refusal,
                 )));
             }
+            // §3.1.1's other two conditions on a value class -- no identity
+            // method, and every enclosing object a value
+            // (`interpreter::value_class::check_value_class`) -- decided
+            // when `class` was created and only recorded then
+            // (`ClassData::value_class_refusal`); refused here, not there,
+            // because the specification's own §2.3 example creates such a
+            // class and never instantiates it
+            // (`docs/design/object-model.md`, "The two new conditions...").
+            // Behind `inherits_value` so a class that is no value pays
+            // nothing beyond the flag it already carries.
+            if application.inherits_value {
+                if let Some(refusal) = self.heap.class_value_refusal(class) {
+                    return Err(Signal::Error(value_class_refusal_error(
+                        class,
+                        application,
+                        &refusal,
+                    )));
+                }
+            }
         }
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
@@ -1265,6 +1284,44 @@ fn mutable_value_slot_error<'gc>(
     }
 }
 
+/// §3.1.1's other two conditions on a value class -- decided when the class
+/// object was created (`interpreter::value_class::check_value_class`), and
+/// refused here rather than there (`docs/design/object-model.md`, "The two
+/// new conditions..."). Named under the class's own primary factory, like
+/// every other instantiation refusal.
+fn value_class_refusal_error<'gc>(
+    class: ClassReference<'gc>,
+    application: &crate::mixin::MixinApplication,
+    refusal: &ValueClassRefusal,
+) -> NewspeakError<'gc> {
+    let instantiated = application.mixin.name;
+    let message = match refusal {
+        ValueClassRefusal::IdentityMethod { declaring } => format!(
+            "cannot instantiate {instantiated}: a value class may not define ==, and \
+             {declaring} defines it"
+        ),
+        ValueClassRefusal::NonValueEnclosingObject {
+            level: None,
+            described,
+        } => format!(
+            "cannot instantiate {instantiated}: a value class's enclosing objects must be \
+             values, and its enclosing object, {described}, is not one"
+        ),
+        ValueClassRefusal::NonValueEnclosingObject {
+            level: Some(level),
+            described,
+        } => format!(
+            "cannot instantiate {instantiated}: a value class's enclosing objects must be \
+             values, and {level}'s enclosing object, {described}, is not one"
+        ),
+    };
+    NewspeakError {
+        selector: factory_selector(application),
+        receiver: Value::Object(class),
+        message,
+    }
+}
+
 /// §3.1.1's second condition, asked of every slot an initializer writes on
 /// an instance of a value class: a value object is *deeply* immutable, "all
 /// objects reachable from it are also deeply immutable", so a slot of one
@@ -1315,7 +1372,7 @@ pub(crate) fn check_value_slot<'gc>(
 /// of whether an instance's `=` is still `Value`'s own; the two must agree
 /// about everything this one accepts and that one unfolds, and they
 /// disagreed about `Value new` until 2026-09-23.
-fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
+pub(crate) fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
     !mutator.heap().is_class(object)
         && mutator
             .heap()
