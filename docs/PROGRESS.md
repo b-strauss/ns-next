@@ -3784,8 +3784,14 @@ conditions" and "Mixin application", "The root rule".
   round-trip test pin a value module whose root defines `==`; every other
   recorded outcome held.
 
-**Measurement.** (Placeholder: filled in by the release measurement at the
-end of this plan.)
+**Measurement.** Against `cdc0257`, over three sittings and three layouts per
+tree (varied with `-C metadata`, because three plain builds of one tree were
+the same binary), six of nine sources are level (−0.6% to +0.6%),
+`bench_newvalue.ns` is 3.3% faster, start-up did not move, and `vm::run` is
+6,507 instructions against 6,508. **Open finding:** `bench_block.ns` is 4.5%
+slower and `bench_new.ns` 2.2% slower, every head layout above every base
+layout in every sitting, with causes not isolated. See
+[execution.md](design/execution.md), "What the value conditions cost".
 
 **Known gaps**, each recorded where it applies:
 
