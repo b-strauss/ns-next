@@ -10,6 +10,10 @@ use std::rc::Rc;
 use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value};
 
 fn load(source: &str) -> (Interpreter, Root) {
+    load_with(source, ns_runtime::Lowering::Optimized)
+}
+
+fn load_with(source: &str, lowering: ns_runtime::Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -17,7 +21,7 @@ fn load(source: &str) -> (Interpreter, Root) {
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interpreter = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
 }
@@ -943,6 +947,7 @@ const APPLIED_ENCLOSING_SOURCE: &str = indoc! {"
         public label = ( ^'host' )
         public markOfApplied = ( ^Library new Inner new Applied new markOf: nil )
         public hostLabelOfApplied = ( ^Library new Inner new Applied new hostLabel )
+        public appliedClass = ( ^Library new Inner new Applied )
     )
 "};
 
@@ -1006,18 +1011,89 @@ fn a_mixin_clause_that_is_not_a_class_is_a_program_error() {
             public appliedClass = ( ^Applied )
         )
     "};
-    let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
-    let outer = expect_ok(
-        interpreter.instantiate(&class, &[platform]),
-        "instantiate Outer",
-    );
-    let message = expect_error(
-        interpreter.send(&outer, Symbol::intern("appliedClass"), &[]),
-        "appliedClass",
-    );
-    assert!(
-        message.contains("mixin application clause 1 of class Applied"),
-        "message was: {message}"
-    );
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let (mut interpreter, class) = load_with(source, lowering);
+        let platform = interpreter.platform();
+        let outer = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "instantiate Outer",
+        );
+        let message = expect_error(
+            interpreter.send(&outer, Symbol::intern("appliedClass"), &[]),
+            "appliedClass",
+        );
+        assert!(
+            message.contains("mixin application clause 1 of class Applied"),
+            "{lowering:?}: message was: {message}"
+        );
+    }
+}
+
+/// CLAUDE.md's "the application cache is keyed by the superclass's
+/// *application*": an applied level's class object is per enclosing
+/// instance, like any nested class's, but its behaviour is not. Two `Host`s
+/// give two `Library`s, so two `Marker` class objects and two levels -- and
+/// one `MixinApplication` for both levels, and one for both levels'
+/// declaring classes. Keyed by class object instead, every instance would
+/// mint its own and no call site through a level would ever be monomorphic.
+#[test]
+fn applied_levels_of_two_enclosing_instances_share_their_applications() {
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let (mut interpreter, class) = load_with(APPLIED_ENCLOSING_SOURCE, lowering);
+        let applied_classes: Vec<Root> = (0..2)
+            .map(|_| {
+                let platform = interpreter.platform();
+                let host = expect_ok(
+                    interpreter.instantiate(&class, &[platform]),
+                    "instantiate Host",
+                );
+                expect_ok(
+                    interpreter.send(&host, Symbol::intern("appliedClass"), &[]),
+                    "appliedClass",
+                )
+            })
+            .collect();
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let level_of = |root: &Root| {
+                let Value::Object(applied) = mutator.fetch(root) else {
+                    panic!("appliedClass answers a class object")
+                };
+                heap.class_superclass(applied)
+                    .expect("Applied has a superclass")
+            };
+            let (first, second) = (level_of(&applied_classes[0]), level_of(&applied_classes[1]));
+            assert!(
+                !first.same(second),
+                "{lowering:?}: each enclosing instance has a level of its own"
+            );
+            let application_of = |level| heap.class_application(level).expect("a class object");
+            assert!(
+                Rc::ptr_eq(&application_of(first), &application_of(second)),
+                "{lowering:?}: both levels share one application"
+            );
+            let declaring_of = |level| {
+                heap.class_declaring(level)
+                    .expect("Marker's declaring class")
+            };
+            let (first_declaring, second_declaring) = (declaring_of(first), declaring_of(second));
+            assert!(
+                !first_declaring.same(second_declaring),
+                "{lowering:?}: each level's declaring class is its own Library's"
+            );
+            assert!(
+                Rc::ptr_eq(
+                    &application_of(first_declaring),
+                    &application_of(second_declaring)
+                ),
+                "{lowering:?}: both declaring classes share one application"
+            );
+        });
+    }
 }

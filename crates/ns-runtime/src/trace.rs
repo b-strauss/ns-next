@@ -203,6 +203,8 @@ impl Trace for Instantiation<'_> {
         let Instantiation {
             instance,
             levels,
+            // An index into `levels`, which is traced below.
+            applying: _,
             phase,
         } = self;
         tracer.value(instance);

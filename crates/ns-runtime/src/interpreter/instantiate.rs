@@ -431,11 +431,13 @@ impl<'gc> Mutator<'gc> {
         match self.spare_walks.pop() {
             Some(mut state) => {
                 state.instance = instance;
+                state.applying = 0;
                 state
             }
             None => Box::new(Instantiation {
                 instance,
                 levels: Vec::new(),
+                applying: 0,
                 // Never read: the phase is written wherever the box is handed
                 // to a continuation, the one place that reads it.
                 phase: InstantiationPhase::Descending { index: 0 },
@@ -487,7 +489,7 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The upward walk, from `level` with `arguments`: each level's factory
-    /// arity checked, then its superclass clause's message evaluated to the
+    /// arity checked, then the message into its superclass evaluated to the
     /// superclass's arguments (step 3's first half). A message with arguments
     /// is code, so the walk stops there and answers its activation, and
     /// `advance_instantiation` resumes it with the value. Walked with a loop
@@ -496,6 +498,20 @@ impl<'gc> Mutator<'gc> {
     /// activation limit would not see a long chain of them
     /// (`docs/design/execution.md`, "A superclass chain is walked
     /// iteratively"). At the top of the chain, the downward walk begins.
+    ///
+    /// §6.2's mixin application is the one thing that bends this shape. For
+    /// `class C = S ms <: M1 m1 <: M2 m2`, the chain is `C`, `I2`, `I1`, `S`,
+    /// and every message on the way from `C` to `S` is written in `C`'s
+    /// declaration: `m2` into `I2`, `m1` into `I1`, `ms` into `S`, each
+    /// evaluated with `C`'s factory arguments. So the message into an applied
+    /// level is the clause that level was built for, and the message out of
+    /// the last applied level is `C`'s own superclass clause -- which is why
+    /// the walk keeps the index of `C` (`Instantiation::applying`) while it
+    /// climbs through `C`'s levels. An ordinary level is its own applying
+    /// level, so for it this is exactly the walk it always was: its own
+    /// clause, with its own arguments. Nothing on the way down changes at all:
+    /// each applied level's own initializer -- its named class's -- runs with
+    /// the arguments the message into it answered, as every level's does.
     fn climb_levels(
         &mut self,
         mut state: Box<Instantiation<'gc>>,
@@ -509,23 +525,53 @@ impl<'gc> Mutator<'gc> {
                 let above_top = state.levels.len();
                 return self.descend_levels(state, above_top);
             };
-            let message = self.clause_message_body(level, superclass)?;
+            let applying_index = state.applying;
+            state.levels.push((level, arguments));
+            let applying = state.levels[applying_index].0;
+            let applied_clause = self.heap.class_applied_clause(superclass);
+            // The superclass begins a declaration of its own unless it is one
+            // of the applying declaration's levels, whose messages are still
+            // the applying declaration's.
+            if applied_clause.is_none() {
+                state.applying = state.levels.len();
+            }
+            let message = self.clause_message_body(applying, superclass, applied_clause)?;
             let Some(code) = message else {
                 // `Object new` and every other argument-free clause: nothing
                 // to run, and the superclass gets no arguments.
-                state.levels.push((level, arguments));
                 level = superclass;
                 arguments = Vec::new();
                 continue;
             };
             // The message is evaluated on the instance being initialized and
-            // with *this* level's factory arguments -- §6.3 runs each level's
-            // slot clauses and statement "in the context of *i*".
-            let message_arguments = arguments.clone();
-            state.levels.push((level, arguments));
-            state.phase = InstantiationPhase::Climbing { level, superclass };
+            // with the factory arguments of the declaration it is written in
+            // -- §6.3 runs each level's slot clauses and statement "in the
+            // context of *i*".
+            let message_arguments = state.levels[applying_index].1.clone();
+            // Its arity is that declaration's, which is what the arguments
+            // were checked against when the walk reached it -- unless an
+            // applied level sits above a class that is not the declaration it
+            // was built for, which no source can build. Refused rather than
+            // pushed, since the activation would lay its registers out from
+            // the wrong count.
+            if usize::from(code.argument_count) != message_arguments.len() {
+                return Err(Signal::Error(NewspeakError {
+                    selector: Symbol::NEW,
+                    receiver: Value::Object(superclass),
+                    message: format!(
+                        "a clause message of class {} takes {} factory arguments, got {}",
+                        class_name(&self.heap, applying),
+                        code.argument_count,
+                        message_arguments.len()
+                    ),
+                }));
+            }
+            state.phase = InstantiationPhase::Climbing {
+                level: applying,
+                superclass,
+            };
             return Ok(Step::ClauseMessage {
-                level,
+                level: applying,
                 code,
                 arguments: message_arguments,
                 // Its value is the superclass's arguments: the walk has
@@ -657,29 +703,59 @@ impl<'gc> Mutator<'gc> {
 
     /// Step 3's first half, up to running anything: §6.3's "evaluation of the
     /// message clause given in the class' superclass clause in the context of
-    /// *i*" (`newspeak-spec.pdf`).
+    /// *i*" (`newspeak-spec.pdf`), for the message into `superclass` written
+    /// in `applying`'s declaration.
     /// Answers the compiled body that evaluates the message's arguments, or
     /// `None` when there are none.
+    ///
+    /// Into a level a mixin application added, the message is the `<:`
+    /// clause that level was built for (`applied_clause`): §6.2 gives the
+    /// level "a primary factory method with the same selector as" that
+    /// clause's message, and the named class's initializer takes its
+    /// arguments. Into any other class, it is `applying`'s superclass clause.
     ///
     /// §6.1 makes two things run time errors here. That the clause's
     /// expression is not a class object is caught where the clause's
     /// *receiver* is evaluated -- once, when the declaration is evaluated
     /// (`interpreter::nested`), not per instantiation. That the message's
     /// selector is not the superclass's primary factory selector is caught
-    /// here, because only here are both halves known.
+    /// here, because only here are both halves known. An applied level's
+    /// primary factory is its named class's, so a `<:` clause is checked
+    /// against that.
     ///
     /// The selector is checked *before* the arguments are evaluated: a clause
     /// that cannot be satisfied should not first run its arguments' side
     /// effects.
     fn clause_message_body(
         &self,
-        class: ClassReference<'gc>,
+        applying: ClassReference<'gc>,
         superclass: ClassReference<'gc>,
+        applied_clause: Option<crate::mixin::MixinApplicationClause>,
     ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal<'gc>> {
+        let expected = primary_factory_selector(&self.heap, superclass);
+        if let Some(clause) = applied_clause {
+            if Some(clause.selector) != expected {
+                return Err(not_the_primary_factory_error(
+                    &self.heap,
+                    ClauseKind::MixinApplication,
+                    applying,
+                    superclass,
+                    clause.selector,
+                    expected,
+                ));
+            }
+            if !clause.has_arguments {
+                return Ok(None);
+            }
+            let code = clause.message_code.unwrap_or_else(|| {
+                panic!("internal: mixin application clause whose message takes arguments carries no compiled form for it (a level built from source always does)")
+            });
+            return Ok(Some(code));
+        }
         // One lookup of the application for both questions below: the clause
         // this class was declared with, and the mixin its compiled message
         // body lives on.
-        let application = self.heap.class_application(class);
+        let application = self.heap.class_application(applying);
         let clause = application
             .as_ref()
             .and_then(|application| application.mixin.superclass);
@@ -692,10 +768,14 @@ impl<'gc> Mutator<'gc> {
         // spurious "not the primary factory message" error on the first
         // instantiation after a load.
         let selector = clause.map_or(Symbol::NEW, |clause| clause.selector);
-        let expected = primary_factory_selector(&self.heap, superclass);
         if Some(selector) != expected {
             return Err(not_the_primary_factory_error(
-                &self.heap, class, superclass, selector, expected,
+                &self.heap,
+                ClauseKind::Superclass,
+                applying,
+                superclass,
+                selector,
+                expected,
             ));
         }
         if !clause.is_some_and(|clause| clause.has_arguments) {
@@ -709,6 +789,14 @@ impl<'gc> Mutator<'gc> {
             });
         Ok(Some(code))
     }
+}
+
+/// Which of a declaration's clauses a message was written in, for the error
+/// that names it.
+#[derive(Clone, Copy)]
+enum ClauseKind {
+    Superclass,
+    MixinApplication,
 }
 
 /// The selector of `class`'s primary factory message: the selector its mixin
@@ -741,12 +829,17 @@ fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {
 /// primary factory of the class *C*."
 fn not_the_primary_factory_error<'gc>(
     heap: &Heap<'gc>,
+    clause: ClauseKind,
     class: ClassReference<'gc>,
     superclass: ClassReference<'gc>,
     selector: Symbol,
     expected: Option<Symbol>,
 ) -> Signal<'gc> {
     let subclass_name = class_name(heap, class);
+    let clause = match clause {
+        ClauseKind::Superclass => "the superclass clause",
+        ClauseKind::MixinApplication => "a mixin application clause",
+    };
     let superclass_name = class_name(heap, superclass);
     let expected = match expected {
         Some(expected) => format!("#{expected}"),
@@ -759,7 +852,7 @@ fn not_the_primary_factory_error<'gc>(
         selector,
         receiver: Value::Object(superclass),
         message: format!(
-            "the superclass clause of class {subclass_name} sends #{selector}, \
+            "{clause} of class {subclass_name} sends #{selector}, \
              but the primary factory of class {superclass_name} is {expected}"
         ),
     })

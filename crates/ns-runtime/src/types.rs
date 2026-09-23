@@ -437,15 +437,26 @@ pub struct Instantiation<'gc> {
     /// Nearest level first: the class instantiated, then its superclass, and
     /// so on up, as the upward walk reaches them.
     pub(crate) levels: Vec<(ClassReference<'gc>, Vec<Value<'gc>>)>,
+    /// The index in `levels` of the level whose declaration the upward walk
+    /// is climbing through: the last level reached that is no level a mixin
+    /// application added. §6.2 writes every message on the way from a
+    /// declaration up through its applied levels -- each `<:` clause's and
+    /// the superclass clause's -- in that one declaration, so each is
+    /// evaluated with its factory arguments, which `levels` still holds
+    /// while the walk climbs (`Mutator::climb_levels`).
+    pub(crate) applying: usize,
     pub(crate) phase: InstantiationPhase<'gc>,
 }
 
 /// Which way an instantiation's walk is going.
 #[derive(Debug, Clone, Copy)]
 pub enum InstantiationPhase<'gc> {
-    /// Upward. A body running for this instantiation is the clause message
-    /// of `level`, the last in `levels`, and its value is the factory
-    /// arguments of `superclass`, `level`'s superclass.
+    /// Upward. A body running for this instantiation is a clause message
+    /// written in `level`'s declaration -- the message into the last level
+    /// in `levels`'s superclass, `superclass` -- and its value is the factory
+    /// arguments of `superclass`. `level` is the last level in `levels`
+    /// unless that one is a level a mixin application added, whose messages
+    /// are the applying declaration's (`Instantiation::applying`).
     Climbing {
         level: ClassReference<'gc>,
         superclass: ClassReference<'gc>,
