@@ -476,11 +476,34 @@ mod tests {
         })
     }
 
+    /// The boolean an ordinary Newspeak send answered.
+    fn answered_flag(interpreter: &mut Interpreter, root: &Root, what: &str) -> bool {
+        interpreter.enter(|mutator| match mutator.fetch(root) {
+            Value::Boolean(flag) => flag,
+            other => panic!("{what} answered {}", mutator.heap().describe(&other)),
+        })
+    }
+
+    /// The integer an ordinary Newspeak send answered.
+    fn answered_number(interpreter: &mut Interpreter, root: &Root, what: &str) -> i64 {
+        interpreter.enter(|mutator| match mutator.fetch(root) {
+            Value::SmallInteger(integer) => integer,
+            other => panic!("{what} answered {}", mutator.heap().describe(&other)),
+        })
+    }
+
     /// A module whose `Marker` declares the `=` these tests record as
-    /// `Value`'s. `Value` declares none yet, so the derivation would
-    /// decline every instance; recording `Marker`'s puts the leaf in the
-    /// state Task 5's `Value>>=` will put it in for real, without changing
-    /// `Kernel.ns` ahead of that task.
+    /// `Value`'s (`record_marker_as_values_equality`), standing in for
+    /// `Kernel.ns`'s.
+    ///
+    /// `Value` declares the real one, and `a_value_fixture` below goes
+    /// through it. This fixture's classes sit below `Object` instead,
+    /// because that is the only way to *build* every shape the walks have
+    /// to decline: a real value class refuses an instance whose slot holds
+    /// an `Array` or reaches any other non-value
+    /// (`instantiate::check_value_slot`), and a mutable slot makes the
+    /// class uninstantiable altogether. Recording `Marker`'s method is what
+    /// makes the leaf treat these instances as values all the same.
     fn a_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
             Newspeak3
@@ -563,6 +586,51 @@ mod tests {
             };
             mutator.value_equality_method = Some(method.clone());
         });
+    }
+
+    /// A module of real value classes -- declared `= Value new`, so the
+    /// bootstrap's own `Value>>=` is the method the leaf recognizes and the
+    /// `inherits_value` flag is the one `check_value_slot` reads. Nothing
+    /// is recorded by hand here: this is the state a program is in.
+    ///
+    /// `Tag` overrides `=` and `hash`, which a value class may do -- it is
+    /// still a value, so a slot may hold one -- and which takes the leaf
+    /// out of the decision, since the leaf recognizes `Value`'s method by
+    /// identity. `Boxed` is the one class whose instances therefore reach
+    /// both paths, depending on what their slot holds.
+    fn a_value_fixture() -> (Interpreter, Root) {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class ValueFixture = Object new () (
+                class Point x: xValue y: yValue = Value new (
+                    | public x = xValue. public y = yValue. |
+                ) ()
+                class Tag = Value new () (
+                    public = other = ( ^self class == other class )
+                    public hash = ( ^7 )
+                )
+                class Boxed on: contents = Value new (
+                    | public contents = contents. |
+                ) ()
+                public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
+                public tag = ( ^Tag new )
+                public boxed: contents = ( ^Boxed on: contents )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the value fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("value_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the value fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "ValueFixture new");
+        (interpreter, fixture)
     }
 
     fn send(
@@ -840,6 +908,147 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// A value class below the real `Value`, which exercises the recorded
+    /// method and the `inherits_value` flag together: the flag is what lets
+    /// the instance be built with slots at all
+    /// (`instantiate::check_value_slot`), and the method the bootstrap
+    /// recorded off `Value`'s own application is what makes the leaf unfold
+    /// the instance instead of declining it. Every other test here records
+    /// a stand-in by hand, so nothing else would notice the bootstrap
+    /// recording the wrong method.
+    #[test]
+    fn two_points_below_the_real_value_class_are_one_value() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let two = interpreter.stash(Value::SmallInteger(2));
+        let three = interpreter.stash(Value::SmallInteger(3));
+        let first = send(
+            &mut interpreter,
+            &fixture,
+            "pointX:y:",
+            &[one.clone(), two.clone()],
+        );
+        let same = send(&mut interpreter, &fixture, "pointX:y:", &[one.clone(), two]);
+        let different = send(&mut interpreter, &fixture, "pointX:y:", &[one, three]);
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &first,
+            std::slice::from_ref(&same),
+        );
+        assert_eq!(
+            answered_boolean(&mut interpreter, compared, "the leaf on two Points"),
+            Some(true),
+            "the leaf decides a value class below the real `Value`"
+        );
+        for (argument, expected, what) in [
+            (&same, true, "two Points of one state"),
+            (&different, false, "two Points of different states"),
+        ] {
+            let equal = send(
+                &mut interpreter,
+                &first,
+                "=",
+                std::slice::from_ref(argument),
+            );
+            assert_eq!(answered_flag(&mut interpreter, &equal, what), expected);
+            let identical = send(
+                &mut interpreter,
+                &first,
+                "==",
+                std::slice::from_ref(argument),
+            );
+            assert_eq!(
+                answered_flag(&mut interpreter, &identical, what),
+                expected,
+                "{what}: `Value>>==` answers what `=` answers"
+            );
+        }
+        let first_hash = send(&mut interpreter, &first, "hash", &[]);
+        let first_hash = answered_number(&mut interpreter, &first_hash, "a Point's hash");
+        let same_hash = send(&mut interpreter, &same, "hash", &[]);
+        let same_hash = answered_number(&mut interpreter, &same_hash, "a Point's hash");
+        assert_eq!(first_hash, same_hash, "two equal Points hash alike");
+    }
+
+    /// `hash_node` hashes an `Integer` slot with `hash::content_hash` while
+    /// `Integer>>hash`, which the Newspeak fallback sums, answers the
+    /// integer itself. The two are allowed to differ only because a value
+    /// the leaf hashes and a value the fallback hashes can never be equal:
+    /// the leaf's decision is a question about the slots' classes, and two
+    /// values of one class whose slots' classes differ are unequal slot by
+    /// slot.
+    ///
+    /// Both shapes of one class are built here -- a `Boxed` holding an
+    /// `Integer`, which the leaf hashes, and a `Boxed` holding a `Tag`,
+    /// whose own `=` takes the leaf out of the decision -- and pinned
+    /// unequal in both directions, each shape hashing consistently within
+    /// itself. A change that let the leaf decide for one of an equal pair
+    /// would fail here rather than silently making two equal values hash
+    /// apart.
+    #[test]
+    fn a_leaf_hashed_value_and_a_fallback_hashed_value_are_never_equal() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let decided = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&one),
+        );
+        let other_decided = send(&mut interpreter, &fixture, "boxed:", &[one]);
+        let tag = send(&mut interpreter, &fixture, "tag", &[]);
+        let declined = send(&mut interpreter, &fixture, "boxed:", &[tag]);
+        let other_tag = send(&mut interpreter, &fixture, "tag", &[]);
+        let other_declined = send(&mut interpreter, &fixture, "boxed:", &[other_tag]);
+
+        let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &decided, &[]);
+        assert_ne!(
+            answered_integer(&mut interpreter, hashed, "a Boxed holding an Integer"),
+            DECLINED,
+            "an Integer slot is a shape the leaf hashes itself"
+        );
+        let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &declined, &[]);
+        assert_eq!(
+            answered_integer(&mut interpreter, hashed, "a Boxed holding a Tag"),
+            DECLINED,
+            "a slot whose class brings its own `=` leaves the decision to Newspeak"
+        );
+
+        for (receiver, argument) in [(&decided, &declined), (&declined, &decided)] {
+            let equal = send(
+                &mut interpreter,
+                receiver,
+                "=",
+                std::slice::from_ref(argument),
+            );
+            assert!(
+                !answered_flag(
+                    &mut interpreter,
+                    &equal,
+                    "a leaf-hashed against a fallback-hashed"
+                ),
+                "the two hashing rules never have to agree, because the two values are unequal"
+            );
+        }
+
+        for (first, second, what) in [
+            (&decided, &other_decided, "two leaf-hashed values"),
+            (&declined, &other_declined, "two fallback-hashed values"),
+        ] {
+            let equal = send(&mut interpreter, first, "=", std::slice::from_ref(second));
+            assert!(
+                answered_flag(&mut interpreter, &equal, what),
+                "{what} are equal"
+            );
+            let first_hash = send(&mut interpreter, first, "hash", &[]);
+            let first_hash = answered_number(&mut interpreter, &first_hash, what);
+            let second_hash = send(&mut interpreter, second, "hash", &[]);
+            let second_hash = answered_number(&mut interpreter, &second_hash, what);
+            assert_eq!(first_hash, second_hash, "{what} hash alike");
+        }
     }
 
     /// The two derivations decline on exactly the same shapes. They ask one
