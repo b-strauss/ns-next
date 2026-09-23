@@ -244,11 +244,18 @@ The notion itself is built. `Kernel.ns` declares `Value` with the value classes
 beneath it; `Value` derives `=` and `hash` from an instance's state and declares
 §3.1.1's identity method as a send of `=`, so a copy of a value is equal to, and
 hashes like, its original — a value has no observable identity
-([core-library.md](core-library.md)). Both of §3.1.1's conditions are enforced
-as a value object is built: instantiating a class that inherits `Value` and
-declares a mutable slot is refused, and an initializer that stores anything but
-a value in such an instance's slot is refused
-([object-model.md](object-model.md), "A value object's two conditions").
+([core-library.md](core-library.md)). The slot half of §3.1.1's second bullet
+is enforced as a value object is built: instantiating a class that inherits
+`Value` and declares a mutable slot is refused, and an initializer that stores
+anything but a value in such an instance's slot is refused
+([object-model.md](object-model.md), "A value object's two conditions"). The
+other half of that bullet is not enforced — §3.1.1 also requires that a
+value's *enclosing objects* (§3.3) are values and that its class does not
+define an identity method `==`, and nothing checks either. By the letter of
+the first of those, a value class a module declares has no value instances at
+all, since a module instance is an ordinary object; what to do about it is an
+open decision ([core-library.md](core-library.md), "What is still
+unchecked").
 
 What is missing is the boundary: there are no actors, so nothing copies a value
 across one, and a module definition is not yet a value object (§8.1). Neither is

@@ -90,11 +90,20 @@ ordinary methods, because the value each answers is already at hand and a
 row for it would only repeat what `Kernel.ns` can say. Every value class
 declares the `hash` its own `=` demands — §3.1.1 lets a value be copied
 across an actor boundary, so a copy has to hash like its original, and none
-of them may inherit `Object`'s identity hash. `String`'s, `Character`'s and
-`Symbol`'s `=` each require an argument of the receiver's own class:
-`String` and `Character` share an `ObjectData::String` payload, so a rule
-that read the payload alone would make `"a" = 'a'` true while the two hash
-apart.
+of them may inherit `Object`'s identity hash. `String`'s, `Character`'s, `Symbol`'s and — since 2026-09-23 — `Float`'s `=`
+each require an argument of the receiver's own class: `String` and
+`Character` share an `ObjectData::String` payload, so a rule that read the
+payload alone would make `"a" = 'a'` true while the two hash apart, and
+`Float`'s widening did make `1.0 = 1` true while `1.0 hash` and `1 hash`
+differ ("What is still unchecked" below).
+
+**A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
+makes equal symbols one object, so it agrees with `Symbol>>=` by
+construction and is a dense small integer. It is stable only within one
+process — the interner numbers symbols in the order they are first seen —
+so it does **not** survive a snapshot: the same symbol in a reloaded image
+can hash to another number, and a hash a program recorded in an artifact
+cannot be compared against one computed after the load.
 
 Four further rows serve `Value` itself rather than one builtin:
 `value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
@@ -180,10 +189,14 @@ does not bound this**: none of the eight benchmark sources sends `=` or
 ([execution.md](execution.md), "What `Top`, `Value` and `Number` cost"). A
 source that does is what would show it, and there is none yet.
 
-**§3.1.1's conditions are enforced, and where.** "An object is a value
-object if it is deeply immutable ... and all objects reachable from it are
-also deeply immutable" is two separate checks, both refusing rather than
-silently allowing a value that is not one:
+**The slot half of §3.1.1's conditions is enforced, and where.** §3.1.1's
+second bullet asks four things of an object taken to be a value: that all
+its slots "are immutable, have been initialized and contain value objects",
+that "its enclosing objects (3.3) are all value objects", and that "its
+class inherits from class `Value` and does not define an identity method
+(`==`)". The slot half is two checks, both refusing rather than silently
+allowing a value that is not one; the enclosing objects and the absent `==`
+are **not** checked, and are listed under "What is still unchecked" below:
 
 - **A mutable slot below `Value` means no instance.** `Mutator::apply_mixin`
   computes `inherits_value` and the first `mutable_value_slot` of the whole
@@ -202,6 +215,30 @@ silently allowing a value that is not one:
 
 **What is still unchecked.**
 
+- **A value's enclosing objects are not checked to be values, and by the
+  letter of §3.1.1 none of the user value classes here has an instance that
+  is a value.** A class declared in a module lives inside that module's
+  instance (§3.3), and a module class is written `= Object new (…)`, so the
+  enclosing object is an ordinary mutable object — including in every
+  golden under `goldens/kernel/` that declares a value class. The condition
+  is not vacuous: SOMns keeps it by declaring its module itself a value,
+  `class Kernel vmMirror: vmMirror = Object <: Value (`
+  (`prior-art/somns/core-lib/Kernel.ns`), a mixin application `<:` that
+  ns-next's grammar does not parse. **This is an open decision for the
+  user**, and the options are the shape of the answer: parse and apply `<:`
+  so a module can be declared a value, check the enclosing chain at
+  instantiation without it (which would refuse every value class a module
+  declares today), or record the deviation deliberately. Nothing is
+  decided; what is decided is that the documents must not claim the
+  condition holds.
+- **A value class that defines `==` is accepted.** §3.1.1's third
+  requirement is that a value's class "does not define an identity method
+  (`==`)"; nothing refuses a subclass of `Value` that declares one, and such
+  a class silently loses the agreement `Value>>==` gives every other value
+  class. `Value`'s own `==` is the declaration the specification's next
+  sentence allows ("If the class `Value` declares an identity method, that
+  method must return the same results as `Value`'s equality method"), which
+  is why it is not itself the deviation.
 - **A value class nothing instantiates is accepted.** Both refusals sit
   where an instance comes into being, not where the class does. A class that
   inherits `Value` and declares a mutable slot is a defect the moment it is
@@ -605,9 +642,12 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    its clause names — `Top`'s to none, `Object`'s to `Top`'s, and so on down
    — installed with `Heap::set_class_application`, which restamps the
    dispatch id of the few objects that exist this early, and the class
-   object's superclass link set to match. `Value`'s application is recorded
-   as it is filled rather than after the loop, because every class below it
-   asks `apply_mixin` whether its superclass application is that one.
+   object's superclass link set to match. `Value`'s *mixin* is recorded just
+   before `Value` is filled, rather than its application after the loop:
+   `apply_mixin` asks whether the mixin it is applying is that one, so that
+   `Value`'s own application also carries `inherits_value` (§3.2's "subclass
+   of" is inclusive, so `Value new` is a value), and every class below it
+   reads the flag off its superclass.
    `VmMirror` keeps its own Rust mixin, re-applied over the filled `Object`.
 4. **The immediate dispatch-id table is refreshed**, because an immediate's
    ids are read off its class's application, which just changed.
@@ -828,7 +868,10 @@ and a Newspeak body would have to settle again, visibly:
 - **`Kernel` is declared without a `Value` mixin application.** §6.4 already
   makes a module definition a value object; §3.1.1's instance-side condition
   serves actor boundaries, which do not exist here, so the value semantics go
-  with the actor work rather than with this step.
+  with the actor work rather than with this step. The same syntax is what
+  §3.1.1's enclosing-object condition would need for a module's value
+  classes, which is why that condition is now an open decision rather than a
+  settled one ("What is still unchecked" above).
 - **Modules are to be linked statically, through a namespace on the mirror**
   (decided with the user on 2026-09-21, not built): the CLI fills a table in
   advance and a mirror primitive looks names up in it, so nothing touches the

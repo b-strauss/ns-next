@@ -3496,10 +3496,21 @@ the commit; the protocol paragraph in
 [execution.md](design/execution.md), "What removing the re-entries moved",
 now says so.
 
-**What is enforced, and what is not.** §3.1.1's two conditions are refused
-where an instance comes into being, which is every instance of every class,
+**What is enforced, and what is not.** The slot half of §3.1.1's second
+bullet — no mutable slot, and no slot holding a non-value — is refused where
+an instance comes into being, which is every instance of every class,
 whether its class came from source, from a nested declaration or from an
-image. Three things are deliberately outside that: a value class with a
+image. **The other half of the bullet is not checked at all**: §3.1.1 also
+requires that a value's enclosing objects (§3.3) are values and that its
+class does not define `==`. By the letter of the first, a value class a
+module declares has no value instances, since a module instance is an
+ordinary object — which is true of every user value class in the goldens
+here. SOMns keeps the condition by declaring its module a value
+(`class Kernel vmMirror: vmMirror = Object <: Value (`), a mixin
+application ns-next does not parse. **What to do about it is an open
+decision for the user**, recorded in
+[core-library.md](design/core-library.md), "What is still unchecked".
+Three further things are deliberately outside the checks: a value class with a
 mutable slot that nothing ever instantiates is accepted silently, because
 the refusal sits at instantiation rather than at class creation; a
 ready-made instance decoded from an image is not re-checked, so a crafted

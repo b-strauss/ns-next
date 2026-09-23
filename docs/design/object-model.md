@@ -369,10 +369,15 @@ which §6.2 does not permit.
 ### A value object's two conditions
 
 §3.1.1 makes an object a value object when "it is deeply immutable ... and its
-class inherits from class `Value`", and both halves are enforced as the instance
-is built — the one place every instance of every class comes from, whether its
-class was loaded from source, materialized as a nested class or rebuilt from an
-image:
+class inherits from class `Value`", and the two halves of that — the mutable
+slot and the slot that is not a value — are enforced as the instance is built,
+the one place every instance of every class comes from, whether its class was
+loaded from source, materialized as a nested class or rebuilt from an image.
+The same bullet of §3.1.1 asks two further things that nothing here checks:
+that a value's enclosing objects (§3.3) are values, and that its class does
+not define `==` ([core-library.md](core-library.md), "What is still
+unchecked", where the enclosing-object question is recorded as an open
+decision):
 
 - **Step 1 refuses a mutable slot.** A class that inherits `Value` and declares
   one could never have a value object for an instance, so there is no instance
