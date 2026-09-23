@@ -496,6 +496,17 @@ The corpus has such roots — `Newspeak2SqueakCompilation`'s
 `= NewspeakCompilation usingPlatform: platform`, `UISessionManager`'s
 `= NewspeakObject new` — which the Squeak-hosted implementation accepts and
 §6.1 says "will almost certainly fail"; none is on `corpus/runnable.toml`.
+**Every root defect is deferred, including the ones the resolver refuses
+today** — `= Foo new`, `= Top new`, `= outer Bar …` and the same receivers
+after `<:` are resolve errors now (`resolver/mod.rs`,
+`resolve_superclass_clause`), while `= self Object new` or `= Array new`
+run. Decided with the user on 2026-09-23: one rule, one path, and the
+deferred one, because a module whose root is wrong still loads, so its class
+exists to be inspected and fixed in a live system before anything
+instantiates it. The resolver stops binding a root clause's receivers at
+all; compiling stays total, since a receiver with no binding already lowers
+to `LoadBuiltinClass` or a deferred `UnresolvedIdentifier`, and a root's
+clause receiver is never run. Nested declarations keep their resolve errors.
 Because the rule is syntactic, `build_mixin` records the defect on the root
 mixin (`root_clause_defect`, naming the clause and the reason);
 `load_root_class` builds the class without the defective level, so
@@ -507,8 +518,11 @@ root, so every program with a defective root meets the error at start, under
 both lowerings with the same text. `Kernel.ns` goes through the same path.
 **The encoder refuses a module with a root defect**, at `build` and
 `snapshot`, with the same text: such a root can never be instantiated, so an
-artifact of it could only fail, and refusing it needs no wire field, no tag
-and nothing in the decoder.
+artifact of it could only fail, and refusing it needs no wire field and no
+tag. The decoder's root-section reader refuses what the encoder can no
+longer write — a superclass tag other than `Object` or `Value`, a level
+naming anything but `Value`, a second level, or a level over anything but
+`Object` — so a crafted artifact cannot bring the rule back.
 
 **Not re-checked: a class object decoded from an image**, as a ready-made
 instance is not ("What is still unchecked" in
