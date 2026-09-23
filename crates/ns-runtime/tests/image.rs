@@ -8938,7 +8938,7 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Host usingPlatform: p = Object new () (
+        class Host usingPlatform: p = Object <: Value () (
             public class Point = Object new <: Value () (
                 public answer = ( ^7 )
             )

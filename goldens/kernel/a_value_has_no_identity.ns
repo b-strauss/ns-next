@@ -30,23 +30,32 @@ Newspeak3
    answered `false` before `Value` declared anything. That is the reading
    3.1.1 requires -- a value with no state has nothing to tell two of them
    apart -- and it is recorded here because it is the one outcome of this
-   change that no other golden shows. *)
-class ValueIdentity usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
-) (
+   change that no other golden shows.
+
+   The module is a value (`Object <: Value`) because §3.1.1 asks a value
+   class's enclosing object to be one; the transcript lives in `Script`,
+   which is no value. *)
+class ValueIdentity usingPlatform: platformAtCreation = Object <: Value () (
     public class Text = String new () ()
-    report: label for: first and: second = (
-        transcript show: label; show: ' '; show: (first = second) printString;
-            show: ' '; show: (first == second) printString; newLine
+    class Script on: aTranscript = Object new (
+        | transcript = aTranscript. |
+    ) (
+        report: label for: first and: second = (
+            transcript show: label; show: ' '; show: (first = second) printString;
+                show: ' '; show: (first == second) printString; newLine
+        )
+        public run = (
+            report: 'String' for: 'a' and: 'a'.
+            report: 'Character' for: "a" and: "a".
+            report: 'Symbol' for: #a and: #a.
+            report: 'Integer' for: 3 and: 3.
+            report: 'Nil' for: nil and: nil.
+            report: 'Float/Integer' for: 1.0 and: 1.
+            report: 'Integer/Float' for: 1 and: 1.0.
+            report: 'Text' for: Text new and: Text new.
+        )
     )
-    public main: ignoredPlatform args: arguments = (
-        report: 'String' for: 'a' and: 'a'.
-        report: 'Character' for: "a" and: "a".
-        report: 'Symbol' for: #a and: #a.
-        report: 'Integer' for: 3 and: 3.
-        report: 'Nil' for: nil and: nil.
-        report: 'Float/Integer' for: 1.0 and: 1.
-        report: 'Integer/Float' for: 1 and: 1.0.
-        report: 'Text' for: Text new and: Text new.
+    public main: platform args: arguments = (
+        (Script on: platform transcript) run
     )
 ) : ()

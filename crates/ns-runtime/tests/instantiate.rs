@@ -595,7 +595,7 @@ fn a_refused_slot_names_the_factory_the_program_sent() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Holders = Object new () (
+        class Holders = Object <: Value () (
             public class Base held: contents = Value new (
                 | public held = contents. |
             ) ()

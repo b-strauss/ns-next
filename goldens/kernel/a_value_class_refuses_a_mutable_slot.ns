@@ -9,15 +9,17 @@ Newspeak3
 
    The refusal is an ordinary Newspeak error raised where the instance
    would come into being, so the line before it still prints: nothing about
-   the class is wrong until something asks for an instance of it. *)
-class ValueMutableSlot usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
-) (
+   the class is wrong until something asks for an instance of it.
+
+   The module is a value (`Object <: Value`) because §3.1.1 asks a value
+   class's enclosing object to be one; the transcript is therefore read
+   from `platform` where it is used, never held in a slot. *)
+class ValueMutableSlot usingPlatform: platformAtCreation = Object <: Value () (
     public class Counter = Value new (
         | public count ::= 1. |
     ) ()
-    public main: ignoredPlatform args: arguments = (
-        transcript show: 'before'; newLine.
-        transcript show: Counter new printString; newLine.
+    public main: platform args: arguments = (
+        platform transcript show: 'before'; newLine.
+        platform transcript show: Counter new printString; newLine.
     )
 ) : ()

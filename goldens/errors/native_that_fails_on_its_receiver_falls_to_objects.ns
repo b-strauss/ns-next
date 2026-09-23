@@ -9,8 +9,13 @@ Newspeak3
    `transcript` stream shares the `Platform` class with the platform
    singleton and has no `=` of its own, so `=` is `Object`'s identity, false
    for two fresh streams. Step 3a keeps every one of these outcomes
-   (`docs/design/dispatch.md`, "A primitive can fail"). *)
-class Sub usingPlatform: platform = Object new (
+   (`docs/design/dispatch.md`, "A primitive can fail").
+
+   The module is declared a value (`Object <: Value`, §3.1.1) because it
+   declares a value class, `Text` below `String`, and a value class's
+   enclosing object must be a value; the transcript is therefore read where
+   it is used, never held in a slot. *)
+class Sub usingPlatform: platform = Object <: Value (
 ) (
     class Text = String new () (
         public viaSelf = ( ^self printString )
