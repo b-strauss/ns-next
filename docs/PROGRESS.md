@@ -30,9 +30,12 @@ goes with it ("Mixin application" and "The value conditions" below;
 conditions"). All are described below, from "Step 6's first part" on, after
 the account of how M4 got here. A follow-up fix on 2026-09-24 moved the
 no-identity-method condition from the class object to the application it is
-really a property of, which is what let a value module's root class define
-`==` and still instantiate ("The value conditions" below, "What changed,
-commit by commit").
+really a property of: decided at class-object creation, the condition never
+reached a module's root, which `load_root_class` builds with no class object
+of its own, so such a root defining `==` instantiated; decided per
+application instead, where `apply_mixin` builds every application root and
+nested alike, the root is refused the same way a nested class is ("The value
+conditions" below, "What changed, commit by commit").
 
 M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
@@ -3727,12 +3730,16 @@ conditions" and "Mixin application", "The root rule".
 - **Every golden declaring a value class inside an ordinary module becomes a
   value module and keeps its outcome** (2026-09-23), the rule decided for the
   two `class Text = String new` goldens, extended to every such module.
-- **The two class conditions are decided at class creation and refused at
-  instantiation** (2026-09-24), changed from the plan's refusal at creation
-  because §2.3's own example creates a `String` subclass enclosed by a
-  mutable object and never instantiates it
-  (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which passes as
-  transcribed).
+- **The two class conditions are decided cold and refused at instantiation**
+  (2026-09-24), changed from the plan's refusal at creation because §2.3's
+  own example creates a `String` subclass enclosed by a mutable object and
+  never instantiates it (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`,
+  which passes as transcribed). Decided where, though, differs between the
+  two: the enclosing-object condition at class-object creation, from
+  `nested::after_clause`; the identity-method condition, moved by Task 6b's
+  follow-up fix, once per application, from `Mutator::apply_mixin` -- which
+  is what let it cover a module's root, since `apply_mixin` builds the
+  root's application too, while `after_clause` never runs for one.
 
 **What changed, commit by commit:**
 
@@ -3772,11 +3779,13 @@ conditions" and "Mixin application", "The root rule".
   `ClassData::value_class_refusal` (decided at class-object creation, which a
   module's root never reaches) to `MixinApplication::instantiation_refusal`
   (decided once per application by `Mutator::apply_mixin`, which the root's
-  application goes through like any other), closing the gap below. A golden
-  and an image round-trip test pin a value module whose root defines `==`;
-  every other recorded outcome held.
+  application goes through like any other), closing the root gap this
+  milestone entry used to record as a known gap. A golden and an image
+  round-trip test pin a value module whose root defines `==`; every other
+  recorded outcome held.
 
-**Measurement.** Measured in Task 8: see below.
+**Measurement.** (Placeholder: filled in by the release measurement at the
+end of this plan.)
 
 **Known gaps**, each recorded where it applies:
 

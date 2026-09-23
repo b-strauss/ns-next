@@ -274,11 +274,15 @@ module a value.
   panic-free, and the derivation declines any shape it cannot rule on rather
   than guessing ([image-format.md](image-format.md), "Verification", on what
   the two passes do and do not guarantee). A decoded *class object* is
-  different: its class conditions are recomputed on load, with the same
-  `check_value_class`, once every decoded class has its real application
-  (`image::decode::rebuild_applications`), so a snapshot of a refused value
-  class decodes refused, and a new instance of any decoded class meets every
-  check an instance made from source does.
+  different: its enclosing-object condition is recomputed on load, with the
+  same `check_value_class`, once every decoded class has its real
+  application (`image::decode::rebuild_applications`), so a snapshot of a
+  refused value class decodes refused; its identity-method condition needs
+  no recompute of its own, since `rebuild_applications` builds every decoded
+  class's application through the same `Mutator::apply_mixin` a class built
+  from source goes through, which folds that condition in as it goes. A new
+  instance of any decoded class meets every check an instance made from
+  source does.
 - **`=` and `hash` are expected to agree, not checked to.** A subclass that
   overrides one and not the other breaks the contract silently, as it does
   in every Smalltalk.

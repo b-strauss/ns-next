@@ -1886,11 +1886,12 @@ impl<'gc> Heap<'gc> {
         false
     }
 
-    /// Records `class`'s verdict on §3.1.1's enclosing-object condition,
-    /// right after `interpreter::nested::after_clause` creates it -- the one
-    /// caller and the one time this is ever set; a decoded class object is
-    /// not re-checked. Answers whether the write happened, like the other
-    /// class setters.
+    /// Records `class`'s verdict on §3.1.1's enclosing-object condition.
+    /// Two callers: `interpreter::nested::after_clause`, right after it
+    /// creates a class object built from source, and
+    /// `image::decode::rebuild_applications`, which recomputes the verdict
+    /// for a decoded one rather than trusting it from the wire. Answers
+    /// whether the write happened, like the other class setters.
     pub fn set_class_value_refusal(
         &mut self,
         class: ClassReference<'gc>,
