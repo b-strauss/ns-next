@@ -1,0 +1,4 @@
+stdout = '''
+Inner's outer Marker is an Applied; its outer Library is the library
+Probe's outer Applied is an Applied; its outer Host is the host
+'''

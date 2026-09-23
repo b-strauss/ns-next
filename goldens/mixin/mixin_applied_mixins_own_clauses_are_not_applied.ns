@@ -1,0 +1,43 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2: "an inheritance clause that specifies a class C
+   whose mixin M will be applied to the superclass", and the result "is a
+   class I with mixin M and superclass S". M is C's mixin, the class
+   declaration's own; the levels C's own <: clauses added are C's
+   superclasses, not part of M.
+
+   Composite is itself Object new <: Extra. User applies Composite over
+   Base, so User gains one level, with Composite's mixin and superclass
+   Base, and nothing from Extra:
+
+   - Composite's chain sends super chain (5.10); from the level User's
+     clause added, the superclass is Base, so User new chain answers
+     'Composite > Base'. Composite new chain, on Composite's own chain,
+     still reaches Extra.
+   - By the same token only Base's and Composite's initializers run for
+     User new; Extra's runs only for Composite new. *)
+class MixinAppliedMixinsOwnClausesAreNotApplied usingPlatform: p = Object new (| t = p transcript. |) (
+    class Base = Object new (| baseSlot = outer MixinAppliedMixinsOwnClausesAreNotApplied note: 'Base'. |) (
+        public chain = ( ^'Base' )
+    ) : ()
+    class Extra = Object new (| extraSlot = outer MixinAppliedMixinsOwnClausesAreNotApplied note: 'Extra'. |) (
+        public chain = ( ^'Extra' )
+    ) : ()
+    class Composite = Object new <: Extra (| compositeSlot = outer MixinAppliedMixinsOwnClausesAreNotApplied note: 'Composite'. |) (
+        public chain = ( ^'Composite > ', super chain )
+    ) : ()
+    class User = Base new <: Composite () ()
+    public note: name = (
+        t show: name, ' initializer'; newLine.
+        ^name
+    )
+    public main: platform args: arguments = (
+        | user composite |
+        t show: 'User new:'; newLine.
+        user:: User new.
+        t show: 'User new chain: ', user chain; newLine.
+        t show: 'Composite new:'; newLine.
+        composite:: Composite new.
+        t show: 'Composite new chain: ', composite chain; newLine.
+    )
+) : ()

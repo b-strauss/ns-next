@@ -1,0 +1,63 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2: "The enclosing object of I is the enclosing object
+   of C", where C is the class the inheritance clause after <: specifies;
+   3.3 defines the kth enclosing object of o with respect to a class C, and
+   5.9 sends outer N m to it.
+
+   Marker is declared in Library and declares Inner; Applied is declared in
+   Host and applies that Library's Marker. applied Inner new is an Inner
+   whose class was created by sending Inner to applied, so by 3.3 its
+   enclosing object is applied. From Inner's method:
+
+   - outer Marker is k = 1: the 1st enclosing object with respect to Inner,
+     applied itself. kind is looked up on applied's class (5.9's
+     lookupProtected), so Applied's own kind answers, not Marker's.
+   - outer Library is k = 2: the enclosing object of the superclass of
+     applied's class that is an application of Marker's mixin (3.3, items
+     1-5), which is the level Applied's <: clause added. That level's
+     enclosing object is Marker's (6.2), the Library, so identify answers
+     'the library'. Walking the applying class's chain instead would reach
+     Applied's enclosing object, the Host, and print 'the host'.
+
+   Probe, nested in Applied itself, reaches two hops out along Applied's
+   own chain: its outer Applied is applied again, and its outer Host is the
+   Host, since the application of Applied's mixin in applied's class is
+   Applied, whose enclosing object is the Host. Each object identifies
+   itself differently, so the two chains cannot be confused. *)
+class MixinClassNestedInAnAppliedMixinReachesTheMixinsEnclosingChain usingPlatform: p = Object new (|
+    t = p transcript.
+    library = Library named: 'the library'.
+|) (
+    class Library named: name = Object new (| libraryName = name. |) (
+        public class Marker = Object new () (
+            public class Inner = Object new () (
+                public innerSees = (
+                    ^'Inner''s outer Marker is ', outer Marker kind,
+                        '; its outer Library is ', outer Library identify
+                )
+            ) : ()
+            public kind = ( ^'a Marker' )
+        ) : ()
+        public identify = ( ^libraryName )
+    ) : ()
+    class Host named: name = Object new (| hostName = name. |) (
+        public class Applied = Object new <: libraryMarker () (
+            public class Probe = Object new () (
+                public probeSees = (
+                    ^'Probe''s outer Applied is ', outer Applied kind,
+                        '; its outer Host is ', outer Host identify
+                )
+            ) : ()
+            public kind = ( ^'an Applied' )
+        ) : ()
+        public identify = ( ^hostName )
+    ) : ()
+    libraryMarker = ( ^library Marker )
+    public identify = ( ^'the module' )
+    public main: platform args: arguments = (
+        | applied = (Host named: 'the host') Applied new. |
+        t show: applied Inner new innerSees; newLine.
+        t show: applied Probe new probeSees; newLine.
+    )
+) : ()

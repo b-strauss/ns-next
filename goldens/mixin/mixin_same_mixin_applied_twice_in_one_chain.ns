@@ -1,0 +1,71 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2: the result of a mixin application "is a class I
+   with mixin M and superclass S", and its instance initializer runs S's
+   initializer and then M's "on o with the arguments of mu_m". Nothing
+   there forbids applying one mixin twice in one chain.
+
+   Twice is Base withBase: 'b' <: Marker tag: 'lower' <: Middle
+   <: Marker tag: 'upper': four levels over Base, Marker's mixin at the
+   first and the third. So:
+
+   - Each Marker level is its own application with its own subobject, so
+     Marker's initializer runs twice, once per clause, each with its own
+     clause's argument, in the chain's order (the first four lines).
+   - Adding a second Marker level must leave every other level's slots
+     where they were: Base's two slots, Middle's and Twice's own each read
+     back what their initializers stored.
+   - who is declared by Marker, Middle and Base; the upper Marker level is
+     the nearest to Twice, so it answers. Its markerTag is a protected slot
+     read, an implicit receiver send that 5.7 turns into outer Marker
+     markerTag, which at k = 0 is looked up on the receiver's class (5.9's
+     lookupProtected): the upper level's getter, answering 'upper'.
+   - chain climbs by super from the upper Marker level through Middle and
+     the lower Marker level to Base (5.10), one step per level.
+   - belowSees is Middle's super markerSees, which runs the lower Marker
+     level's method; its markerTag is the same virtual send, so it too
+     answers the upper level's 'upper': the topmost application wins a
+     selector even when the lower one's own method sends it. *)
+class MixinSameMixinAppliedTwiceInOneChain usingPlatform: p = Object new (| t = p transcript. |) (
+    class Base withBase: value = Object new (|
+        baseFirst = outer MixinSameMixinAppliedTwiceInOneChain note: 'Base' receives: value, '1'.
+        baseSecond = value, '2'.
+    |) (
+        public who = ( ^'Base' )
+        public chain = ( ^'Base' )
+        public baseSlots = ( ^baseFirst, ' ', baseSecond )
+    ) : ()
+    class Marker tag: value = Object new (|
+        markerTag = outer MixinSameMixinAppliedTwiceInOneChain note: 'Marker' receives: value.
+    |) (
+        public who = ( ^'Marker tagged ', markerTag )
+        public chain = ( ^'Marker > ', super chain )
+        public markerSees = ( ^markerTag )
+    ) : ()
+    class Middle = Object new (|
+        middleSlot = outer MixinSameMixinAppliedTwiceInOneChain note: 'Middle' receives: 'm'.
+    |) (
+        public who = ( ^'Middle' )
+        public chain = ( ^'Middle > ', super chain )
+        public middleSlotValue = ( ^middleSlot )
+        public belowSees = ( ^super markerSees )
+    ) : ()
+    class Twice = Base withBase: 'b' <: Marker tag: 'lower' <: Middle <: Marker tag: 'upper' (|
+        twiceSlot = outer MixinSameMixinAppliedTwiceInOneChain note: 'Twice' receives: 't'.
+    |) (
+        public twiceSlotValue = ( ^twiceSlot )
+    ) : ()
+    public note: name receives: value = (
+        t show: name, ' initializer receives ', value; newLine.
+        ^value
+    )
+    public main: platform args: arguments = (
+        | twice = Twice new. |
+        t show: 'who: ', twice who; newLine.
+        t show: 'chain: ', twice chain; newLine.
+        t show: 'lower Marker level reads markerTag as: ', twice belowSees; newLine.
+        t show: 'Base slots: ', twice baseSlots; newLine.
+        t show: 'Middle slot: ', twice middleSlotValue; newLine.
+        t show: 'Twice slot: ', twice twiceSlotValue; newLine.
+    )
+) : ()
