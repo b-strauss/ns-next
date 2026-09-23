@@ -1,0 +1,29 @@
+stdout = '''
+-- Applied from: a
+ms evaluated with a
+bm evaluated with ms(a)
+Root initializer receives bm(ms(a))
+Base initializer receives ms(a)
+m1 evaluated with a
+First initializer receives m1(a)
+m2 evaluated with a
+Second initializer receives m2(a)
+Applied initializer receives a
+-- Plain w: p
+pm evaluated with p
+Root initializer receives pm(p)
+Plain initializer receives p
+-- Sub z: z
+sm evaluated with z
+ms evaluated with sm(z)
+bm evaluated with ms(sm(z))
+Root initializer receives bm(ms(sm(z)))
+Base initializer receives ms(sm(z))
+m1 evaluated with sm(z)
+First initializer receives m1(sm(z))
+m2 evaluated with sm(z)
+Second initializer receives m2(sm(z))
+Applied initializer receives sm(z)
+Sub initializer receives z
+the factory answered
+'''
