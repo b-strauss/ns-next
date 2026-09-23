@@ -127,6 +127,23 @@ pub struct ClassData<'gc> {
     /// (`DispatchId::class_side`) from the invariant that `mint_dispatch_ids`
     /// mints the pair consecutively.
     pub dispatch_id: crate::mixin::DispatchId,
+    /// For a level a mixin application added (`newspeak-spec.pdf` §6.2), the
+    /// `<:` clause that added it -- which of the applying declaration's
+    /// clauses, and so the factory message that declaration wrote for it and
+    /// that message's compiled arguments (`AppliedClause::clause`). `None` for
+    /// every other class object.
+    ///
+    /// It cannot live on the level's mixin, where an ordinary level's
+    /// superclass-clause message lives: the level's mixin is the *applied*
+    /// class's, one mixin shared by every declaration that applies it, and
+    /// each of them writes its own message. Nor on the level's application,
+    /// which the application cache shares between two declarations applying
+    /// the same mixin to the same superclass with different messages.
+    ///
+    /// Boxed, so that it adds one word to every class object rather than
+    /// three: the instantiation walk and the collector read this struct for
+    /// every class object, applied level or not.
+    pub applied_clause: Option<Box<crate::mixin::AppliedClause>>,
 }
 
 impl<'gc> ClassData<'gc> {
@@ -147,6 +164,7 @@ impl<'gc> ClassData<'gc> {
             superclass,
             builtin,
             metaclass: None,
+            applied_clause: None,
         }
     }
 }
@@ -329,6 +347,14 @@ pub enum FrameKind<'gc> {
     /// `Mixin::superclass_message_code`; see `SuperclassClause` above
     /// for why that makes it a kind of its own.
     SuperclassMessage(ClassReference<'gc>),
+    /// The arguments of a `<:` clause's factory message (§6.2), evaluated
+    /// like `SuperclassMessage`'s, on the instance being initialized and with
+    /// the applying class's factory arguments. It names the *level* the
+    /// clause added, not the applying class: the applying class's mixin has
+    /// one body per clause, and the level's `ClassData::applied_clause` says
+    /// which of them ran here -- a frame kind is how
+    /// `image::decode::frame_body` finds an activation's body.
+    MixinApplicationMessage(ClassReference<'gc>),
 }
 
 /// What the run loop does with an activation's value when it returns
@@ -424,15 +450,50 @@ pub struct Instantiation<'gc> {
     /// Nearest level first: the class instantiated, then its superclass, and
     /// so on up, as the upward walk reaches them.
     pub(crate) levels: Vec<(ClassReference<'gc>, Vec<Value<'gc>>)>,
+    /// The index in `levels` of the level whose declaration the upward walk
+    /// is climbing through: the last level reached that is no level a mixin
+    /// application added. §6.2 writes every message on the way from a
+    /// declaration up through its applied levels -- each `<:` clause's and
+    /// the superclass clause's -- in that one declaration, so each is
+    /// evaluated with its factory arguments, which `levels` still holds
+    /// while the walk climbs. Written and read only by the climb through
+    /// applied levels (`Mutator::climb_through_applied_levels`), which sets
+    /// it when it takes over; the ordinary climb, where every level is its
+    /// own, never needs it.
+    pub(crate) applying: usize,
+    /// The messages into applied levels the upward walk has passed and not
+    /// evaluated, nearest level first, so the downward walk takes the next
+    /// one off the end. §6.2 evaluates a `<:` clause's message after the
+    /// superclass's initializer has run, just before its own mixin's
+    /// (`Mutator::descend_levels`). Empty for any declaration without `<:`
+    /// clauses, and for any whose `<:` messages take no arguments.
+    pub(crate) deferred: Vec<DeferredMessage>,
     pub(crate) phase: InstantiationPhase<'gc>,
+}
+
+/// A message into an applied level whose evaluation waits for the downward
+/// walk. It holds no handle: both levels are indices into
+/// `Instantiation::levels`, which is traced.
+#[derive(Debug, Clone)]
+pub struct DeferredMessage {
+    /// The index of the applied level the message's value is the factory
+    /// arguments of.
+    pub(crate) level: usize,
+    /// The index of the declaration the message is written in, whose factory
+    /// arguments it is evaluated with.
+    pub(crate) applying: usize,
+    pub(crate) code: Rc<crate::bytecode::CompiledCode>,
 }
 
 /// Which way an instantiation's walk is going.
 #[derive(Debug, Clone, Copy)]
 pub enum InstantiationPhase<'gc> {
-    /// Upward. A body running for this instantiation is the clause message
-    /// of `level`, the last in `levels`, and its value is the factory
-    /// arguments of `superclass`, `level`'s superclass.
+    /// Upward. A body running for this instantiation is a clause message
+    /// written in `level`'s declaration -- the message into the last level
+    /// in `levels`'s superclass, `superclass` -- and its value is the factory
+    /// arguments of `superclass`. `level` is the last level in `levels`
+    /// unless that one is a level a mixin application added, whose messages
+    /// are the applying declaration's (`Instantiation::applying`).
     Climbing {
         level: ClassReference<'gc>,
         superclass: ClassReference<'gc>,
@@ -440,6 +501,10 @@ pub enum InstantiationPhase<'gc> {
     /// Downward. A body running for this instantiation is the initializer of
     /// `levels[index]`, and a level below it has code still to run.
     Descending { index: usize },
+    /// Downward. A body running for this instantiation is the message into
+    /// the applied level `levels[index]`, written in `levels[applying]`'s
+    /// declaration, and its value is `levels[index]`'s factory arguments.
+    Applying { index: usize, applying: usize },
 }
 
 /// A *reified* activation: one a block captured, or one the image decoder

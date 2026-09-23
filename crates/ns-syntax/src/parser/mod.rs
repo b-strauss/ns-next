@@ -210,8 +210,8 @@ impl<'a> Parser<'a> {
     /// `<T>`-as-`Literal::Pattern` stance in expression position
     /// (`parser::expression::parse_pattern_literal`) — the annotation is parsed and
     /// dropped here. Balanced `<`/`[` pairs are consumed until the matching
-    /// `>`; a `<` immediately followed by `:` is the `<:` bound operator, not a
-    /// nesting open. The scan never runs past a declaration boundary
+    /// `>`; the `<:` bound operator is one token, so it is not a nesting open.
+    /// The scan never runs past a declaration boundary
     /// (`= ::= ) .` at depth 0) or `EndOfInput`: on a malformed / unterminated
     /// `<...>` it pushes a diagnostic and returns without panicking. Every
     /// branch consumes a token or returns, so the loop always terminates.
@@ -228,12 +228,13 @@ impl<'a> Parser<'a> {
                     return;
                 }
                 TokenKind::LessThan => {
+                    depth += 1;
                     self.bump();
-                    // `<:` is the mixin/bound operator, not a nesting open.
-                    if !self.at(TokenKind::Colon) {
-                        depth += 1;
-                    }
                 }
+                // The bound operator `<:` inside a type body (`<Foo <: Bar>`)
+                // lexes as one token, so it never opens a nesting level; it
+                // falls through to the default arm below and is discarded with
+                // the rest of the annotation.
                 TokenKind::LeftBracket | TokenKind::LeftBrace | TokenKind::LeftParenthesis => {
                     depth += 1;
                     self.bump();

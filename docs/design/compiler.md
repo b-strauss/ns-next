@@ -163,7 +163,14 @@ two bodies are on the `Mixin` (`initializer_code`, `superclass_clause_code`,
 `superclass_message_code`) — the clause's because a nested class's superclass
 clause is code too, evaluated by the accessor once per enclosing instance, and
 its message's because §6.2 evaluates the message's arguments on every
-instantiation. While the tree is built from source, `MixinMethod::from_declaration`
+instantiation. A declaration that applies mixins carries one more message
+body per `<:` clause, on that clause's `MixinApplicationClause`
+(`message_code`), compiled exactly as the superclass clause's message is —
+kind `SuperclassMessage`, in the declaration's own factory scope and with its
+factory's arity, since §6.2 evaluates every clause message with the applying
+class's factory arguments — and its superclass clause body answers the
+superclass and every `<:` receiver as one array
+([object-model.md](object-model.md), "Mixin application"). While the tree is built from source, `MixinMethod::from_declaration`
 compiles each method and `compile_mixin_bodies` a mixin's three bodies, before
 the mixin is wrapped in the `Rc` every application shares; `image::mixins::decode`
 attaches the bodies a row names from the image's code table. So a method without

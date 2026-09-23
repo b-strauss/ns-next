@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before Applied new
+'''
+stderr = '''
+Uncaught Newspeak error: a mixin application clause of class Applied sends #new, but the primary factory of class Marker is #withTag:
+'''

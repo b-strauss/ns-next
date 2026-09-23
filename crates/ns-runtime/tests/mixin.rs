@@ -386,3 +386,289 @@ fn a_class_side_is_not_inherited() {
         "a class side must not be inherited, message was: {message}"
     );
 }
+
+/// `load`, under the lowering given: every property of §6.2's levels is
+/// checked under both lowerings, since the clauses are compiled by each.
+fn load_with(source: &str, lowering: ns_runtime::Lowering) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
+}
+
+const LOWERINGS: [ns_runtime::Lowering; 2] = [
+    ns_runtime::Lowering::Optimized,
+    ns_runtime::Lowering::Reference,
+];
+
+/// A string result, read inside the entry that fetched it.
+fn string_of(interpreter: &mut Interpreter, root: &Root) -> String {
+    interpreter.enter(|mutator| {
+        let object = object(mutator, root);
+        mutator
+            .heap()
+            .str_value(object)
+            .unwrap_or_else(|| panic!("expected a String"))
+    })
+}
+
+const APPLIED_SOURCE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Host usingPlatform: platform = Object new (
+        | private mark = 'host'. |
+    ) (
+        public class Marker = Object new () (
+            public markOf: ignored = ( ^mark )
+        )
+        public class Applied = Object new <: Marker () (
+        )
+        public markOfApplied = ( ^Applied new markOf: nil )
+    )
+"};
+
+/// §6.2: "The result of a mixin application expression is a class *I* with
+/// mixin *M* and superclass *S*", and the declaration's own class has *I* for
+/// its superclass. So `Applied`'s superclass is a level of its own, carrying
+/// `Marker`'s mixin over `Object`, and a method only `Marker` declares
+/// answers on an `Applied`.
+#[test]
+fn an_applied_level_sits_between_the_class_and_its_superclass() {
+    for lowering in LOWERINGS {
+        let (mut interpreter, class) = load_with(APPLIED_SOURCE, lowering);
+        let platform = interpreter.platform();
+        let host = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "instantiate Host",
+        );
+        let applied = expect_ok(
+            interpreter.send(&host, Symbol::intern("Applied"), &[]),
+            "Applied",
+        );
+        let marker = expect_ok(
+            interpreter.send(&host, Symbol::intern("Marker"), &[]),
+            "Marker",
+        );
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let applied = object(mutator, &applied);
+            let marker = object(mutator, &marker);
+            let level = heap
+                .class_superclass(applied)
+                .expect("Applied has a superclass");
+            let level_application = heap.class_application(level).expect("a class object");
+            let marker_application = heap.class_application(marker).expect("a class object");
+            assert!(
+                Rc::ptr_eq(&level_application.mixin, &marker_application.mixin),
+                "the level between Applied and Object carries Marker's mixin"
+            );
+            let above = heap
+                .class_superclass(level)
+                .expect("the applied level has a superclass");
+            assert_eq!(
+                heap.class_builtin(above),
+                Some(ns_runtime::BuiltinClass::Object),
+                "the applied level's superclass is the superclass clause's Object"
+            );
+            let applied_application = heap.class_application(applied).expect("a class object");
+            assert!(
+                Rc::ptr_eq(
+                    applied_application
+                        .superclass
+                        .as_ref()
+                        .expect("Applied's application has a superclass application"),
+                    &level_application
+                ),
+                "the application chain runs through the applied level too"
+            );
+        });
+        let mark = expect_ok(
+            interpreter.send(&host, Symbol::intern("markOfApplied"), &[]),
+            "markOfApplied",
+        );
+        assert_eq!(string_of(&mut interpreter, &mark), "host");
+    }
+}
+
+const SUPER_SOURCE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Host usingPlatform: platform = Object new () (
+        public class Marker = Object new () (
+            public level = ( ^1 )
+        )
+        public class Applied = Object new <: Marker () (
+            public level = ( ^super level + 10 )
+        )
+        public levelOfApplied = ( ^Applied new level )
+        public classOfAppliedIsApplied = ( ^Applied new class == Applied )
+    )
+"};
+
+/// The applied level is a superclass like any other: an instance of the
+/// declaration is still an instance of the declaration's own class, and
+/// `super` from one of its methods starts at the applied level -- `Object`
+/// declares no `level`, so reaching it instead would not understand.
+#[test]
+fn super_from_the_applying_class_reaches_the_applied_level() {
+    for lowering in LOWERINGS {
+        let (mut interpreter, class) = load_with(SUPER_SOURCE, lowering);
+        let platform = interpreter.platform();
+        let host = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "instantiate Host",
+        );
+        let level = expect_ok(
+            interpreter.send(&host, Symbol::intern("levelOfApplied"), &[]),
+            "levelOfApplied",
+        );
+        let same_class = expect_ok(
+            interpreter.send(&host, Symbol::intern("classOfAppliedIsApplied"), &[]),
+            "classOfAppliedIsApplied",
+        );
+        interpreter.enter(|mutator| {
+            assert!(
+                matches!(mutator.fetch(&level), Value::SmallInteger(11)),
+                "super level reaches Marker's level"
+            );
+            assert!(
+                matches!(mutator.fetch(&same_class), Value::Boolean(true)),
+                "Applied new class is Applied"
+            );
+        });
+    }
+}
+
+const TWO_CLAUSES_SOURCE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Host usingPlatform: platform = Object new () (
+        public class First = Object new () (
+        )
+        public class Second withValue: value = Object new () (
+        )
+        public class Applied withCount: count = Object new <: First <: Second withValue: count + 1 () (
+        )
+    )
+"};
+
+/// With several `<:` clauses the levels stack in written order, the first
+/// clause's lowest, and each carries its own clause: the selector its message
+/// names (`new` when it names none, as §6.1 defaults a superclass clause's)
+/// and that message's arguments compiled against the applying declaration's
+/// own factory parameters -- `count` is `Applied`'s, so it must compile to
+/// the argument register, not to a name nothing resolved.
+#[test]
+fn each_applied_level_carries_its_own_clause_message() {
+    for lowering in LOWERINGS {
+        let (mut interpreter, class) = load_with(TWO_CLAUSES_SOURCE, lowering);
+        let platform = interpreter.platform();
+        let host = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "instantiate Host",
+        );
+        let applied = expect_ok(
+            interpreter.send(&host, Symbol::intern("Applied"), &[]),
+            "Applied",
+        );
+        let second = expect_ok(
+            interpreter.send(&host, Symbol::intern("Second"), &[]),
+            "Second",
+        );
+        let first = expect_ok(
+            interpreter.send(&host, Symbol::intern("First"), &[]),
+            "First",
+        );
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let applied = object(mutator, &applied);
+            let mixin_of = |class| {
+                heap.class_application(class)
+                    .expect("a class object")
+                    .mixin
+                    .clone()
+            };
+            assert!(
+                heap.class_applied_clause(applied).is_none(),
+                "the declaration's own class is no applied level"
+            );
+            let upper = heap.class_superclass(applied).expect("a superclass");
+            let lower = heap.class_superclass(upper).expect("a superclass");
+            assert!(Rc::ptr_eq(
+                &mixin_of(upper),
+                &mixin_of(object(mutator, &second))
+            ));
+            assert!(Rc::ptr_eq(
+                &mixin_of(lower),
+                &mixin_of(object(mutator, &first))
+            ));
+            assert_eq!(
+                heap.class_builtin(heap.class_superclass(lower).expect("a superclass")),
+                Some(ns_runtime::BuiltinClass::Object)
+            );
+
+            let upper_clause = heap.class_applied_clause(upper).expect("an applied level");
+            assert_eq!(upper_clause.selector, Symbol::intern("withValue:"));
+            assert!(upper_clause.has_arguments);
+            let code = upper_clause
+                .message_code
+                .expect("a message with arguments is compiled");
+            assert_eq!(
+                code.argument_count, 1,
+                "compiled with Applied's own factory parameters"
+            );
+            let listing = ns_runtime::bytecode::disassemble(&code, "withValue:");
+            assert!(
+                !listing.contains("unresolved-ident"),
+                "`count` resolves to Applied's factory parameter:\n{listing}"
+            );
+
+            let lower_clause = heap.class_applied_clause(lower).expect("an applied level");
+            assert_eq!(lower_clause.selector, Symbol::NEW);
+            assert!(!lower_clause.has_arguments);
+            assert!(lower_clause.message_code.is_none());
+        });
+    }
+}
+
+/// A module's root class builds its levels too, through the same function a
+/// nested class does. It has no enclosing object to evaluate a receiver in,
+/// so the clause names a builtin -- the only kind of class it can name.
+#[test]
+fn a_root_class_builds_its_applied_levels() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value (
+        ) (
+        )
+    "};
+    for lowering in LOWERINGS {
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let root = object(mutator, &class);
+            let level = heap.class_superclass(root).expect("a superclass");
+            let value = mutator.builtin_class(ns_runtime::BuiltinClass::Value);
+            assert!(Rc::ptr_eq(
+                &heap.class_application(level).expect("a class object").mixin,
+                &heap.class_application(value).expect("a class object").mixin
+            ));
+            assert!(heap.class_applied_clause(level).is_some());
+            assert_eq!(
+                heap.class_builtin(heap.class_superclass(level).expect("a superclass")),
+                Some(ns_runtime::BuiltinClass::Object)
+            );
+            assert!(
+                heap.class_inherits_value(root),
+                "applying Value's mixin makes the class a value class (§3.1.1)"
+            );
+        });
+    }
+}

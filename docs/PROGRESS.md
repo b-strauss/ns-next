@@ -15,8 +15,57 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**The next piece of work is step 6's third plan, `Class`, `Behavior`
-and `Metaclass` in `Kernel.ns`**, which has no plan yet and only the outline
+**The next piece of work is the strict enforcement of §3.1.1's value
+conditions ("Plan B")**, which has no plan yet. It enforces all four
+conditions §3.1.1 names — a value's slots are immutable; they are initialized
+and hold values; its enclosing objects are values; and its class inherits
+`Value` and declares no `==` — where today only the slot half is refused
+([core-library.md](design/core-library.md), "What is still unchecked";
+[object-model.md](design/object-model.md), "A value object's two
+conditions"). **§6.2's mixin application, built on 2026-09-23 as its
+prerequisite, is done** — a module can now declare itself a value,
+`class M = Object <: Value (…)` — see "Mixin application" below and
+[object-model.md](design/object-model.md), "Mixin application". The user
+took two decisions for Plan B on 2026-09-23:
+
+1. **The two goldens that declare `class Text = String new` in an ordinary
+   module** —
+   `goldens/errors/native_that_fails_on_its_receiver_falls_to_objects` and
+   `goldens/cache/cached_primitive_that_fails_on_a_receiver_of_the_same_class`
+   — **are restructured so that their modules are themselves values**:
+   `= Object <: Value`, with the transcript passed as an argument rather than
+   held in a slot. They keep their recorded outcomes rather than being
+   re-recorded as refusals.
+2. **`<:` is implemented fully per §6.2**, which the mixin-application branch
+   did.
+
+**Plan B's first item is the root-clause gap, fixed for the superclass clause
+and `<:` together.** The user decided on 2026-09-23 that `<: Value` on a
+module, `class M … = Object <: Value (…)`, is explicitly allowed as a rule: it
+is how a module declares itself a value (§3.1.1), and the fix keeps it
+(`goldens/mixin/mixin_module_declares_itself_a_value`). Every other root `<:`
+clause becomes a deferred program error: one prefixed `self` or `super`, one
+naming another builtin, and `<: self Value`. Today, at a module's root, a
+clause prefixed `self` or `super` that names anything but a builtin adds no
+level, silently, one naming another builtin adds a level, and
+`builtin_kind_from_name` ignores the prefix, so `<: self Value` is taken as
+the builtin `Value`; the root superclass clause has the same prefix gap, and
+keeps resolving a builtin such as `Object` by name. §6.1 evaluates such a
+clause "as if it was a top level expression", so it is a run-time error, not
+a silent acceptance. `load_module` has no error path, so the fix needs a
+deferred program error at module load, as `Literal::UnresolvedIdentifier`
+defers one to execution ([object-model.md](design/object-model.md), "Mixin
+application", the gap at its end). The whole-branch review of mixin
+application put it first.
+
+Nothing else about Plan B is decided; in particular, whether `Kernel.ns`'s
+own module becomes a value — its one slot holds the VM mirror — is open
+([core-library.md](design/core-library.md), "The bootstrap: placeholders
+first, kernel second").
+
+**After Plan B comes step 6's third plan, `Class`, `Behavior` and
+`Metaclass` in `Kernel.ns`**, which was next before mixin application was
+put ahead of it and has no plan yet, only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
 gives. Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
@@ -338,10 +387,20 @@ seven of the eight sources are level and `bench_new2.ns` is 3.6% slower**;
 see "`Top`, `Value` and the value semantics" below, which also carries one
 open defect and a finding about the measurement protocol itself.
 
-**What comes next is the third plan and then step 7**, deliberately not one
-plan, for the reason the leaf inlining was split off first: each produces
-working, measured software on its own, and each one's measurement informs the
-next.
+**What comes next is Plan B, then the third plan and then step 7**,
+deliberately not one plan, for the reason the leaf inlining was split off
+first: each produces working, measured software on its own, and each one's
+measurement informs the next. §6.2's mixin application was inserted ahead of
+the third plan on 2026-09-23, because §3.1.1's strict enforcement needs a
+module that can declare itself a value, and is done ("Mixin application"
+below).
+
+**Plan B, §3.1.1's four conditions enforced strictly**, comes first, with the
+two decisions recorded at the top of this section. No plan exists yet; write
+one from [core-library.md](design/core-library.md), "What is still
+unchecked", and [object-model.md](design/object-model.md), "A value object's
+two conditions" and "Mixin application". Then step 6's third plan and step 7,
+numbered as step 6's plans are:
 
 3. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2: the three
    become declared classes of `Kernel.ns`, and a class object's own class
@@ -443,13 +502,12 @@ The measurement, and the template for the next, is
 
 **The two specification audits' other findings are closed**, in "M4 — The
 specification gaps" below: the member-set fix, the symbol-identity fix and
-the parameter-setter fix. Mixin application (§6.2) is the one finding left
-open, and it fails loudly — a parse error — rather than answering wrongly,
-so it is not the same class of defect. **Five goldens are still `skipped`**
-(`grep -l '^skipped' goldens/*/*.toml`): the parameter-and-a-local-of-the-
-same-name compile check (§3.6), `nil isNil` (§5.1.3), mixin application
-(§6.2), the sequential simultaneous slot clauses (§6.3.2) and the eager lazy
-slot (§6.3.3) — the last two also rows in [README.md](design/README.md)'s
+the parameter-setter fix. Mixin application (§6.2), the one finding they
+left open, is closed too, on 2026-09-23 ("Mixin application" below).
+**Four goldens are still `skipped`** (`grep -l '^skipped' goldens/*/*.toml`):
+the parameter-and-a-local-of-the-same-name compile check (§3.6), `nil isNil`
+(§5.1.3), the sequential simultaneous slot clauses (§6.3.2) and the eager
+lazy slot (§6.3.3) — the last two also rows in [README.md](design/README.md)'s
 deviations table, answering a **correct** program **wrongly, at exit status
 0**, and worth reading before trusting a program's output.
 
@@ -3560,6 +3618,129 @@ passing and one ignored**, also under each of the three stress modes;
 **210/0/1/0**; `run-corpus` at **6/0/205** in all four lanes. Every commit
 from `ab692b7` on has seen the per-commit group, and the end-of-batch group
 was re-run at the head.
+
+## Mixin application (2026-09-23)
+
+Plan:
+[ns-next-mixin-application](superpowers/plans/2026-09-23-0936-ns-next-mixin-application.md),
+eight tasks. Branch `feature/mixin-application`, off `master` at `6833234`,
+on the checked-out tree throughout. The user asked for §3.1.1's conditions
+to be enforced strictly, and one of them is that a value's enclosing objects
+are values; a module can be a value only if it can be declared one, which
+SOMns writes as a mixin application (`class Kernel vmMirror: vmMirror =
+Object <: Value (`). So `<:`, a recorded deviation since Milestone 1, came
+first, as a language feature in its own right, and **what it unlocks is
+§3.1.1's enclosing-object condition, which Plan B enforces** ("Where the
+next session starts" above). The design is
+[object-model.md](design/object-model.md), "Mixin application".
+
+**What changed, commit by commit:**
+
+- `ec3282c` — the parser: `<:` is one lexer token, and
+  `class C = S ms <: M1 m1 <: … ( … )`, or the same ending in `.`, parses into
+  `ClassDeclaration::mixin_applications`, each clause by the superclass
+  clause's own parser ([frontend.md](design/frontend.md), "Grammar").
+- `1adcc25`, `a547956` — the resolver resolves each clause's message in the
+  declaration's factory scope, the compiler compiles one message body per
+  clause, and `nested::build_applied_levels` builds one class level per
+  clause, for a root class and a nested one alike: the named class's mixin
+  over the level below, with the named class's enclosing object and
+  declaring class (§6.2). A nested declaration's `<:` receivers are evaluated
+  in its superclass clause's activation, which answers
+  `{superclass. mixin…}`, so no step, frame kind or opcode was added for them.
+- `fac4e2c`, `3e92ae5` — initialization: every clause message is evaluated
+  with the applying class's factory arguments, its selector checked against
+  the named class's primary factory, and each `mk` just before `Mk`'s
+  initializer runs, following §6.2's text and matching SOMns: `ms`, `S`'s
+  initializers, `m1`, `M1`'s, …, then `C`'s own. The first version evaluated
+  every message on the way up; the review caught the order against §6.2's
+  "Then, *m* is evaluated", and the fix defers each message to the descent
+  (`Instantiation::deferred`).
+- `6b281aa` — the image format: a mixin row carries its clauses, a class
+  record names its mixin by a tagged reference (`MIXIN_ROW`,
+  `MIXIN_BUILTIN`), so the class-record tag 5 is retired for 7, a root
+  class's levels are rebuilt from the root-class section and named by
+  `CLASS_ROOT_LEVEL` (class tag 3), and a clause message's frame is
+  `FRAME_MIXIN_APPLICATION_MESSAGE` (6). A level whose clause named a builtin
+  carries no enclosing object or declaring class, which keeps `Kernel` and
+  the VM mirror out of every image ([image-format.md](design/image-format.md),
+  "Sections", "Verification").
+- `f1e4d0f`, `de05916`, `77d6e4d` — `goldens/mixin/`, a new category of ten
+  goldens, each derived from §6.2 before it was run, and
+  `goldens/spec/spec_6_2_a_mixin_application_derives_a_class` is no longer
+  `skipped`.
+- `1a06417`, `4e83254` and the documentation after them — the whole-branch
+  review's fix pass: three more goldens for configurations the review probed
+  and found right (a class nested in an applied mixin reaching two `outer`
+  hops out, one mixin applied twice in one chain, and a mixin whose own
+  declaration has `<:` clauses), and `verify_mixins` refuses a clause without
+  arguments that carries a message body
+  (`UnexpectedMixinApplicationMessage`).
+- the fourteenth golden, `mixin_module_declares_itself_a_value`, pins the
+  rule the user made explicit afterwards: a module declares itself a value
+  with `= Object <: Value`, and a second instance of its class is `=` and
+  `==` to it and hashes alike.
+- `5ac5034`, `06fd024`, `6b0f36a`, `4f4ea13` — the measurement, the
+  regression it found and its fix, below.
+
+**Measurement.** The first measurement found a program with no `<:` paying
+for it: instantiation 2.1–5.6% slower and nested-class creation 9.3%, every
+head build above every base build, because the grown walk functions had
+pushed `check_factory_arity`, `clause_message_body` and `argument_list` out of
+line and the unboxed applied clause had moved `ClassData.application`. The
+controller ruled it fixed before the documentation, since performance comes
+first and the plan had promised that a declaration without `<:` takes the
+path it took before. `06fd024` restored the ordinary paths plus one test per
+level, moved the `<:` machinery into cold helpers and boxed the clause.
+Measured again against `6833234`, three builds a tree and three sittings,
+all ten sources are within the protocol's noise, −2.2% to +1.4%; four
+instantiating sources still sit 0.5–1.4% above the base in every build and
+sitting, a difference whose cause — data placement is the likely one — is not
+isolated. `vm::run` is 6,508 instructions in both trees and one function. See
+[execution.md](design/execution.md), "What mixin application cost".
+
+**Known gaps**, each recorded where it applies:
+
+- **At a module's root, every `<:` clause but `<: Value` should be
+  refused**: `<: Value` is how a module declares itself a value and stays;
+  a root `<: self X` or `<: super X` adds no level, silently, a clause naming
+  another builtin adds one, and the prefix before a builtin's name is
+  ignored, as for the root superclass clause
+  ([README.md](design/README.md), deviations;
+  [object-model.md](design/object-model.md), "Mixin application").
+- **A root class's levels lose their identity hash across a snapshot**; not
+  observable today ([image-format.md](design/image-format.md), "Identity
+  hashes are preserved verbatim").
+- **Load does not check that a level sits directly above a class of its
+  applying row**; the walk's run-time arity guard makes a crafted mismatch a
+  Newspeak error, never a panic ([image-format.md](design/image-format.md),
+  "Verification").
+- **Type arguments on a clause's receiver are dropped**, as elsewhere
+  ([frontend.md](design/frontend.md), "What is parsed and dropped").
+- **A private slot of a mixin applied twice in one chain** has no pinned
+  answer: §5.9's private-access rule does not say which application's slot a
+  method of the lower application reads when both applications declare it.
+  `goldens/mixin/mixin_same_mixin_applied_twice_in_one_chain` pins the
+  protected case only. Settle it from the specification (and SOMns) before a
+  golden records either answer.
+
+**Left as they are**, judged not worth a change on their own by the
+whole-branch review and recorded so a later pass through the same code can
+take them: `MixinApplicationClause` (`mixin.rs`) repeats `SuperclassClause`'s
+fields rather than holding one; `nested::after_clause` looks the superclass's
+application up twice on the `<:` path; the not-a-class error names a `<:`
+clause by position ("clause 1") rather than by its source text;
+`image::encode`'s `encode_class_tag` scans the root levels twice; and
+`build_root_class` maps every `build_applied_levels` error to
+`NotAClassReference`, which is unreachable today.
+
+**Gates.** Every commit that changed code or tests saw the per-commit group.
+At the branch's final state the whole end-of-batch group ran at `56ecf79`, the last commit that changed code or tests:
+`cargo test --workspace` had all 39 test results ok plain and under each of
+`NS_NEXT_STRESS_MOVES=1`, `NS_NEXT_STRESS_CACHES=1` and
+`NS_NEXT_STRESS_COLLECT=1`; `run-corpus` reported "ran 6, failed 0, skipped
+205" plain and under each of the three; and `parse-corpus` reported "parsed
+210, failed 0, expected-fail 1, stale 0".
 
 ## Notes
 

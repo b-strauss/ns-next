@@ -143,9 +143,10 @@ pub(crate) enum Step<'gc> {
         arguments: Vec<Value<'gc>>,
         then: Box<Instantiation<'gc>>,
     },
-    /// Activate `code`, the arguments of `level`'s superclass clause message,
-    /// on the instance `then` is initializing and with `level`'s factory
-    /// arguments (§6.2); its value is the superclass's arguments, with which
+    /// Activate `code`, the arguments of a clause message written in
+    /// `level`'s declaration, on the instance `then` is initializing and with
+    /// `level`'s factory arguments (§6.2); its value is the factory arguments
+    /// of the level above -- the superclass, or an applied level -- with which
     /// `then` carries the walk on.
     ClauseMessage {
         level: ClassReference<'gc>,
@@ -969,11 +970,12 @@ impl<'gc> Mutator<'gc> {
             } => {
                 let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
+                let kind = instantiate::clause_message_frame_kind(level, &then);
                 self.push(
                     ActivationHeader {
                         receiver: then.instance,
                         current_class: Some(level),
-                        kind: FrameKind::SuperclassMessage(level),
+                        kind,
                         slot_base: 0, // a clause message never contains InitializeSlot
                         code,
                         then: Continuation::Instantiate(then),
@@ -1116,14 +1118,18 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Whether a `^` aimed at `activation` ends at `activation`: a method's
-    /// does, and a superclass clause's or its message's. An initializer catches
+    /// does, and a superclass clause's or its message's, a `<:` clause's
+    /// message included. An initializer catches
     /// none -- a `^` into a running one escapes, the known gap in
     /// `docs/design/execution.md`, "Non-local return" -- and a block's `^`
     /// always targets its home, never the block.
     pub(crate) fn catches_return(&self, activation: ActivationReference) -> bool {
         matches!(
             self.heap.activation_kind(activation),
-            FrameKind::Method(_) | FrameKind::SuperclassClause(_) | FrameKind::SuperclassMessage(_)
+            FrameKind::Method(_)
+                | FrameKind::SuperclassClause(_)
+                | FrameKind::SuperclassMessage(_)
+                | FrameKind::MixinApplicationMessage(_)
         )
     }
 
@@ -1399,17 +1405,35 @@ impl<'gc> Mutator<'gc> {
         declaring_class: Option<ClassReference<'gc>>,
         superclass: Option<ClassReference<'gc>>,
     ) -> ClassReference<'gc> {
+        self.allocate_class_object(ClassData::new(
+            application,
+            enclosing,
+            declaring_class,
+            superclass,
+            None,
+        ))
+    }
+
+    /// A level a mixin application adds (`newspeak-spec.pdf` §6.2): a class
+    /// object like any other -- `new_class_object`'s invariant holds for it
+    /// too -- that also carries the `<:` clause it was built for.
+    pub(crate) fn new_applied_level(
+        &mut self,
+        application: Rc<crate::mixin::MixinApplication>,
+        enclosing: Option<ObjectReference<'gc>>,
+        declaring_class: Option<ClassReference<'gc>>,
+        superclass: Option<ClassReference<'gc>>,
+        clause: crate::mixin::AppliedClause,
+    ) -> ClassReference<'gc> {
+        let mut data = ClassData::new(application, enclosing, declaring_class, superclass, None);
+        data.applied_clause = Some(Box::new(clause));
+        self.allocate_class_object(data)
+    }
+
+    fn allocate_class_object(&mut self, data: ClassData<'gc>) -> ClassReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
-        self.heap.allocate_object(
-            class,
-            ObjectData::Class(Box::new(ClassData::new(
-                application,
-                enclosing,
-                declaring_class,
-                superclass,
-                None,
-            ))),
-        )
+        self.heap
+            .allocate_object(class, ObjectData::Class(Box::new(data)))
     }
 
     pub fn apply_mixin(

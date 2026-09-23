@@ -23,6 +23,11 @@ pub struct ClassDeclaration {
     pub name: Identifier,
     pub factory: Option<MessagePattern>, // absent form: `class C = Super (...)`
     pub superclass: Option<SuperclassClause>,
+    /// The `<:` clauses of a mixin application (§6.2), in written order; empty
+    /// for a declaration with no `<:` at all. Each has the same shape as
+    /// `superclass`, because §6.2's suffix is `(mixinOperator inheritanceClause)+`
+    /// over §6.1's very production.
+    pub mixin_applications: Vec<SuperclassClause>,
     pub class_comment: Option<String>,
     pub instance_side: ClassBody,
     pub class_side: Option<ClassBody>, // the `: ( ... )` block

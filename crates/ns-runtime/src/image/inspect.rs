@@ -96,6 +96,15 @@ fn attribute_code(decoded: &mixins::Decoded, codes: &[Rc<CompiledCode>]) -> Vec<
         if let Some(id) = code.superclass_message {
             claim(id, &owner, "superclass message");
         }
+        for (index, id) in code.mixin_applications.iter().enumerate() {
+            if let Some(id) = id {
+                claim(
+                    *id,
+                    &owner,
+                    &format!("mixin application clause {} message", index + 1),
+                );
+            }
+        }
     }
     for (label, body) in labels.iter_mut().zip(codes.iter()) {
         if label.0.is_empty() && label.1.is_empty() {
@@ -147,6 +156,19 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
             let _ = writeln!(out, "      {what} -> code {id}");
         }
     }
+    for (index, clause) in mixin.mixin_applications.iter().enumerate() {
+        let message = match code.mixin_applications.get(index).copied().flatten() {
+            Some(id) => format!(" -> code {id}"),
+            None if clause.has_arguments => " -> (no code)".to_string(),
+            None => String::new(),
+        };
+        let _ = writeln!(
+            out,
+            "      mixin application {}  {}{message}",
+            index + 1,
+            clause.selector
+        );
+    }
     for nested in &mixin.nested {
         let _ = writeln!(out, "      nested    {} ({:?})", nested.name, nested.access);
     }
@@ -185,9 +207,56 @@ fn read_class_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeE
         opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
         opcodes::CLASS_USER_ROOT => "<root class>".to_string(),
         opcodes::CLASS_RECORD => format!("object {}", reader.read_u32()?),
+        opcodes::CLASS_ROOT_LEVEL => format!("<root class level {}>", reader.read_u32()?),
         tag => {
             return Err(decode::DecodeError::InvalidTag {
                 what: "class tag",
+                tag,
+            })
+        }
+    })
+}
+
+/// A class record's body, after its tag: a class applying a row of the mixin
+/// table, or a level applying a builtin's mixin, whose enclosing object and
+/// declaring class are the builtin's and so are not in the record.
+fn read_class_record(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    let applied_by = |reader: &mut decode::Reader| -> Result<String, decode::DecodeError> {
+        let row = reader.read_u32()?;
+        let index = reader.read_u32()?;
+        Ok(format!("clause {index} of row {row}"))
+    };
+    Ok(match reader.read_u8()? {
+        opcodes::MIXIN_ROW => {
+            let mixin = reader.read_u32()?;
+            let superclass = read_optional_class(reader)?;
+            let enclosing = if reader.read_boolean()? {
+                read_value(reader)?
+            } else {
+                "-".to_string()
+            };
+            let declaring = read_optional_class(reader)?;
+            let applied = if reader.read_boolean()? {
+                applied_by(reader)?
+            } else {
+                "-".to_string()
+            };
+            format!(
+                "class mixin row {mixin}, superclass {superclass}, enclosing {enclosing}, \
+                 declaring {declaring}, applied by {applied}"
+            )
+        }
+        opcodes::MIXIN_BUILTIN => {
+            let builtin = decode::read_builtin_class(reader)?;
+            let superclass = read_optional_class(reader)?;
+            let applied = applied_by(reader)?;
+            format!(
+                "class mixin builtin {builtin:?}, superclass {superclass}, applied by {applied}"
+            )
+        }
+        tag => {
+            return Err(decode::DecodeError::InvalidTag {
+                what: "mixin reference",
                 tag,
             })
         }
@@ -260,20 +329,7 @@ fn walk_graph(
             opcodes::OBJECT_SYMBOL => format!("symbol #{}", symbols.get(reader.read_u32()?)?),
             opcodes::OBJECT_ARRAY => format!("array [{}]", read_values(reader)?.join(", ")),
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader)?),
-            opcodes::OBJECT_CLASS => {
-                let mixin = reader.read_u32()?;
-                let superclass = read_optional_class(reader)?;
-                let enclosing = if reader.read_boolean()? {
-                    read_value(reader)?
-                } else {
-                    "-".to_string()
-                };
-                let declaring = read_optional_class(reader)?;
-                format!(
-                    "class mixin {mixin}, superclass {superclass}, enclosing {enclosing}, \
-                     declaring {declaring}"
-                )
-            }
+            opcodes::OBJECT_CLASS => read_class_record(reader)?,
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "object body",
@@ -302,6 +358,9 @@ fn walk_graph(
             }
             opcodes::FRAME_SUPERCLASS_MESSAGE => {
                 format!("superclass message of {}", read_class_tag(reader)?)
+            }
+            opcodes::FRAME_MIXIN_APPLICATION_MESSAGE => {
+                format!("mixin application message of {}", read_class_tag(reader)?)
             }
             opcodes::FRAME_CLOSURE => format!("closure object {}", reader.read_u32()?),
             tag => {
@@ -491,15 +550,22 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 
     offset = reader.position();
 
-    // The root class's superclass reference. Decoding it needs a `Mutator`
-    // only to resolve a builtin tag to a live class, which inspection does not
-    // want; the bytes are read and their span recorded without resolving.
-    decode::skip_root_superclass(&mut reader).map_err(|error| error.to_string())?;
+    // The root class's superclass and its `<:` levels, read without
+    // resolving a builtin tag to a live class, which would need a `Mutator`.
+    let root =
+        decode::decode_root_section(&mut reader, &decoded).map_err(|error| error.to_string())?;
+    let mut root_detail = match root.superclass {
+        Some(kind) => format!("superclass {kind:?}"),
+        None => "no superclass".to_string(),
+    };
+    for (index, kind) in &root.levels {
+        let _ = write!(root_detail, ", applies {kind:?} (clause {index})");
+    }
     sections.push(Section {
         name: "root class",
         start: offset,
         end: reader.position(),
-        detail: String::new(),
+        detail: root_detail,
     });
     offset = reader.position();
 

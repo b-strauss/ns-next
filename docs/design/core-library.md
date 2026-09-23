@@ -229,14 +229,12 @@ one, the program does not.
   golden under `goldens/kernel/` that declares a value class. The condition
   is not vacuous: SOMns keeps it by declaring its module itself a value,
   `class Kernel vmMirror: vmMirror = Object <: Value (`
-  (`prior-art/somns/core-lib/Kernel.ns`), a mixin application `<:` that
-  ns-next's grammar does not parse. **This is an open decision for the
-  user**, and the options are the shape of the answer: parse and apply `<:`
-  so a module can be declared a value, check the enclosing chain at
-  instantiation without it (which would refuse every value class a module
-  declares today), or record the deviation deliberately. Nothing is
-  decided; what is decided is that the documents must not claim the
-  condition holds.
+  (`prior-art/somns/core-lib/Kernel.ns`), a mixin application. **Decided
+  with the user on 2026-09-23: enforce it strictly**, together with the
+  absent `==` below, in the plan after mixin application — which was built
+  first so that a module can declare itself a value the same way
+  ([object-model.md](object-model.md), "Mixin application"). Until that plan
+  lands the documents must not claim the condition holds.
 - **A value class that defines `==` is accepted.** §3.1.1's third
   requirement is that a value's class "does not define an identity method
   (`==`)"; nothing refuses a subclass of `Value` that declares one, and such
@@ -695,10 +693,11 @@ declared no factory at all, let any count through. `Array new` and
 (`instantiate::decide_factory`).
 
 `Kernel` is declared like any other module, `= Object new (…)`, where SOMns
-writes `= Object <: Value`. The `Value` class exists here now, so what is
-missing is only the syntax: `<:`, a mixin application in a superclass
-clause, is not parsed ([README.md](README.md), deviations). Nothing depends
-on it. §6.4 makes a module *definition* a value object with nothing
+writes `= Object <: Value`. Both halves exist now — the `Value` class and
+§6.2's `<:` ([object-model.md](object-model.md), "Mixin application") — and
+`Kernel` has not been changed; whether it becomes a value belongs to the
+strict enforcement of §3.1.1 ("What is still unchecked" above), since its
+one slot holds the VM mirror, which is no value. Nothing depends on it yet. §6.4 makes a module *definition* a value object with nothing
 declared, and §3.1.1's conditions on its *instances* exist for passing
 objects across actor boundaries, which ns-next has none of
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
@@ -883,9 +882,9 @@ and a Newspeak body would have to settle again, visibly:
   makes a module definition a value object; §3.1.1's instance-side condition
   serves actor boundaries, which do not exist here, so the value semantics go
   with the actor work rather than with this step. The same syntax is what
-  §3.1.1's enclosing-object condition would need for a module's value
-  classes, which is why that condition is now an open decision rather than a
-  settled one ("What is still unchecked" above).
+  §3.1.1's enclosing-object condition needs for a module's value classes;
+  it is built now, and that condition is to be enforced strictly next ("What
+  is still unchecked" above).
 - **Modules are to be linked statically, through a namespace on the mirror**
   (decided with the user on 2026-09-21, not built): the CLI fills a table in
   advance and a mirror primitive looks names up in it, so nothing touches the

@@ -163,29 +163,49 @@ pub const VALUE_CLASS_TAG: u8 = 6;
 pub const VALUE_PLATFORM: u8 = 7;
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 7.
+/// Next free number: 8.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
 pub const OBJECT_ARRAY: u8 = 3;
-pub const OBJECT_CLASS: u8 = 5;
 /// A block closure: its code, the frame it captured, and its copied values.
 pub const OBJECT_CLOSURE: u8 = 6;
+/// A class object, in one of the two shapes its mixin reference
+/// (`MIXIN_ROW`/`MIXIN_BUILTIN`) selects.
+pub const OBJECT_CLASS: u8 = 7;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home
 /// frame, and carried no copied values. Both halves changed, so a stale
 /// artifact's tag-4 record would decode -- field for field, by luck of the
 /// layout or not at all -- into something other than what it said. Retiring
-/// the number makes those bytes an unknown tag instead.
-pub const RETIRED_OBJECT_BODIES: [u8; 1] = [4];
+/// the number makes those bytes an unknown tag instead. 5 was the class
+/// record while it named its mixin by a bare row id and could not describe
+/// a level a mixin application added; a stale tag-5 record's row id would
+/// otherwise be read as a mixin-reference tag and the next four bytes.
+pub const RETIRED_OBJECT_BODIES: [u8; 2] = [4, 5];
 
-/// How a class reference is named. A builtin and the module's root class are
-/// not in the graph at all -- the bootstrap and the mixin table produce them --
-/// so only the third case indexes the object table.
+/// How a class record names the mixin its class object applies, which also
+/// decides the rest of the record. Every class the graph creates applies a
+/// declaration of the module's own -- a row of the mixin table, followed by
+/// the superclass, enclosing object, declaring class and, for a level a `<:`
+/// clause added, that clause -- except a level a `<:` clause naming a builtin
+/// added, whose mixin is that builtin's: the bootstrap supplies it, no row
+/// describes it, and so it is named the way a builtin class is, by builtin
+/// tag, followed by the superclass and the clause only. Its enclosing object
+/// and declaring class are the builtin's, which no image carries.
+pub const MIXIN_ROW: u8 = 0;
+pub const MIXIN_BUILTIN: u8 = 1;
+
+/// How a class reference is named. A builtin, the module's root class and
+/// the levels the root's `<:` clauses add are not in the graph at all -- the
+/// bootstrap, the mixin table and the root-class section produce them -- so
+/// only `CLASS_RECORD` indexes the object table. `CLASS_ROOT_LEVEL` is
+/// followed by the level's position among the root's levels, lowest first.
 pub const CLASS_BUILTIN: u8 = 0;
 pub const CLASS_USER_ROOT: u8 = 1;
 pub const CLASS_RECORD: u8 = 2;
+pub const CLASS_ROOT_LEVEL: u8 = 3;
 
 /// What a frame was activated for, numbered in the order `types::FrameKind`
 /// declares it.
@@ -196,6 +216,9 @@ pub const FRAME_TOP_LEVEL: u8 = 2;
 pub const FRAME_INITIALIZER: u8 = 3;
 pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
 pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
+/// A `<:` clause's message activation, followed by the class tag of the level
+/// the clause added -- whose clause names the body that ran.
+pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
 
 /// Which tag-named object an entry of the graph section's closing hash table
 /// names. The three are exactly the objects `CLASS_BUILTIN`, `CLASS_USER_ROOT`

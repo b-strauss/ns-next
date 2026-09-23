@@ -240,7 +240,16 @@ The running activation's `current_class` seeds it and `ClassData::declaring_clas
 continues it level by level. A method or nested-class accessor inherited across a
 nesting boundary runs with the class that lexically declares it, not the receiver's own
 class — using the receiver's class instead silently resolves `outer` to the wrong
-enclosing object.
+enclosing object. A level a `<:` clause adds (§6.2) takes its enclosing object and
+declaring class from the class the clause names, never from the declaration
+applying it (`interpreter/nested.rs`, `build_applied_levels`).
+
+**A `<:` clause's message runs with the applying class's factory arguments, just
+before the initializer of the level it adds** — `ms`, `S`'s initializers, `m1`,
+`M1`'s, …, then `C`'s own (§6.2; `docs/design/object-model.md`, "Mixin
+application"). Evaluating every message on the way up, or with the level's own
+arguments, gives a wrong order or wrong values at exit status 0;
+`goldens/mixin/mixin_initializer_order.ns` pins it.
 
 **The VM mirror is a capability.** Whoever holds the one VM mirror object can run every
 leaf, so it reaches `Kernel.ns` and nothing else (`docs/design/core-library.md`, "The VM

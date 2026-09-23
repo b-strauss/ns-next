@@ -1,0 +1,42 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2: "The result of a mixin application expression is
+   a class I with mixin M and superclass S." Combined is Trait's mixin
+   applied to Base, with Combined's own body on top of that application, so
+   a lookup on a Combined meets Combined's methods, then Trait's, then
+   Base's:
+
+   - greet: only Trait declares it, so the mixin answers it;
+   - describe: Combined declares its own, which overrides Trait's, and its
+     super send reaches Trait's, because Combined's superclass is I;
+   - onlyInBase: neither Combined nor Trait declares it, so Base answers;
+   - shadowed: Trait's overrides Base's, since I sits above S;
+   - layered: Trait's method sends super, which from inside I reaches S,
+     Base -- not Trait's own declared superclass Object, which does not
+     understand #layered. The mixin carries the methods, not the
+     superclass. *)
+class MixinMethodLookupAndOverride usingPlatform: p = Object new (| t = p transcript. |) (
+    class Base = Object new () (
+        public onlyInBase = ( ^'Base answers onlyInBase' )
+        public shadowed = ( ^'Base answers shadowed' )
+        public layered = ( ^'Base' )
+    ) : ()
+    class Trait = Object new () (
+        public greet = ( ^'Trait answers greet' )
+        public describe = ( ^'Trait answers describe' )
+        public shadowed = ( ^'Trait answers shadowed' )
+        public layered = ( ^'Trait over ', super layered )
+    ) : ()
+    class Combined = Base new <: Trait (
+    ) (
+        public describe = ( ^'Combined overrides describe, then ', super describe )
+    ) : ()
+    public main: platform args: arguments = (
+        | combined = Combined new. |
+        t show: combined greet; newLine.
+        t show: combined describe; newLine.
+        t show: combined onlyInBase; newLine.
+        t show: combined shadowed; newLine.
+        t show: combined layered; newLine.
+    )
+) : ()

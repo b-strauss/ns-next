@@ -49,6 +49,17 @@ be checked against it. The load-bearing ones:
   slotDecls? , initExprs , ')'`
 - `superclassClause = superclassPrefix? , unaryMsg , message?`, where
   `superclassPrefix` is `outer <id>` | `self` | `super`
+- §6.2's mixin application follows an explicit superclass clause:
+  `mixinAppSuffix = (mixinOperator inheritanceClause)+ (dot | classBody)`,
+  so `class C = S ms <: M1 m1 <: M2 m2 ( … )`, or the same ending in `.`
+  with no body at all. `mixinOperator` is `<:`, one lexer token; each clause
+  is parsed by the superclass clause's own `parse_superclass_clause` and kept,
+  in written order, in `ClassDeclaration::mixin_applications`. What the
+  runtime builds from it is [object-model.md](object-model.md), "Mixin
+  application". Inside a `<...>` type body or a `where { ... }` clause `<:`
+  is the bound operator (`<Foo <: Bar>`) and is dropped with it. No corpus
+  module writes `<:` in a superclass clause, so `parse-corpus` does not
+  exercise the form; `goldens/mixin/` does.
 - `slotDecls = '|' slotDef* '|'` (sequential) or `'||' slotDef* '||'`
   (simultaneous). A `slotDef` is
   `accessModifier? slotDecl (('=' | '::=') expression)? '.'` — `=` is an
@@ -104,7 +115,8 @@ instruction, so nothing at run time consults a span to find a binding.
 
 Typed-Newspeak declaration syntax parses and is discarded, because there is no
 type AST: `<Type>` annotations on parameters and slots, `^<Type>` return
-annotations, `[T]` type parameters on class names and selectors, and
+annotations, `[T]` type parameters on class names and selectors and type
+arguments on a superclass or `<:` clause's receiver (`<: Collection[E]`), and
 `where { ... }` constraint clauses. The eventual-send operator `<-:` is likewise
 accepted and dropped, which makes an asynchronous send (§5.6) run as an
 ordinary synchronous one and answer the value where the specification gives a
@@ -131,15 +143,6 @@ so the clauses initialize in declaration order like ordinary ones: in
 `|| first = second + 1. second = 2. ||`, `second` is still **nil** when `first`
 is computed. Where the expressions do not raise, this too is silent wrong
 output at exit status 0.
-
-## Deviation: mixin application is not implemented
-
-§6.2's mixin application, `class C = Base <: Trait (...)(...)`, does not parse.
-This one fails loudly -- a parse error naming the position -- so it cannot
-produce a wrong answer. No corpus module writes `<:` in a superclass clause;
-the eleven files that contain the operator use it inside `where { ... }` type
-constraints, which are parsed and dropped, so `parse-corpus` does not exercise
-the form either way.
 
 ## Deviation: the six reserved words are not lexer-reserved
 

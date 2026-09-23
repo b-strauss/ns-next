@@ -356,6 +356,62 @@ pub struct SuperclassClause {
     pub has_arguments: bool,
 }
 
+/// One `<:` clause of a mixin application (`newspeak-spec.pdf` §6.2), as the
+/// declaration that writes it carries it: the level the clause adds is built
+/// from what the clause's receiver evaluates to, and the rest is what the
+/// instantiation walk needs to initialize that level.
+///
+/// It lives on the *applying* declaration's mixin, not on the applied one:
+/// the applied mixin is shared by every declaration that applies it, and
+/// each of them writes its own message.
+#[derive(Debug, Clone)]
+pub struct MixinApplicationClause {
+    /// The factory selector the clause's message names; `new` when the
+    /// message is omitted, the default §6.1 gives a superclass clause, whose
+    /// production (`inheritanceClause`) §6.2 reuses.
+    pub selector: Symbol,
+    /// Whether that message carries argument expressions, and therefore a
+    /// compiled body in `message_code`.
+    pub has_arguments: bool,
+    /// The message's arguments as one body, compiled exactly as
+    /// `Mixin::superclass_message_code` is -- with the applying declaration's
+    /// own factory parameters in scope, since §6.2 evaluates the message in
+    /// the same instance initializer as the superclass clause's. Filled by
+    /// the compiler; `None` when the message takes no arguments.
+    pub message_code: Option<Rc<CompiledCode>>,
+}
+
+/// Which `<:` clause added a level (`types::ClassData::applied_clause`): the
+/// applying declaration's mixin and the clause's position in its
+/// `mixin_applications`, rather than a copy of the clause.
+///
+/// A copy would say what the clause was but not which one: two clauses of
+/// one declaration can be identical (`<: A <: B`, both sending `new`), and
+/// the image names a level's clause by the row that declares it and its
+/// position there, so that the row's own clauses -- verified against that
+/// row's factory once, at load -- are the only ones a decoded level can run.
+///
+/// `named_builtin` records the builtin the clause's receiver named, when it
+/// named one. A builtin's mixin is in no declaration tree, so it is how the
+/// image identifies such a level's mixin -- by builtin tag, the way it
+/// identifies a builtin superclass -- and nothing else reads it.
+#[derive(Debug, Clone)]
+pub struct AppliedClause {
+    pub declaration: Rc<Mixin>,
+    pub index: usize,
+    pub named_builtin: Option<crate::types::BuiltinClass>,
+}
+
+impl AppliedClause {
+    /// The clause itself. `None` only if `index` is past the declaration's
+    /// clauses, which neither `nested::build_applied_levels` nor the image
+    /// decoder -- the two things that build one -- lets happen; answering
+    /// `None` rather than indexing keeps a future mistake from being a panic.
+    pub fn clause(&self) -> Option<&MixinApplicationClause> {
+        self.declaration.mixin_applications.get(self.index)
+    }
+}
+
 /// `Debug` is derived so `ObjectData::Class` keeps its own derived `Debug`
 /// now that a class object's behaviour lives here. Printing one walks the
 /// whole superclass chain and every method's AST -- as `ClassData`'s own
@@ -374,6 +430,12 @@ pub struct Mixin {
     pub slots: Vec<MixinSlot>,
     pub factory: Option<Factory>,
     pub superclass: Option<SuperclassClause>,
+    /// §6.2's `<:` clauses, in declaration order: each one adds a level
+    /// between this declaration's own class and its superclass, the first
+    /// clause's level lowest. Empty for a declaration that applies no mixin,
+    /// for a builtin's mixin and a class side. A decoded mixin carries its
+    /// row's clauses (`image::mixins`).
+    pub mixin_applications: Vec<MixinApplicationClause>,
     /// Whether the declaration wrote any `initExpr`s. Stored because
     /// `instantiate::mixin_needs_initializer_code` asks the question of a
     /// decoded mixin too, where `initializer_expressions` below is empty by
@@ -400,8 +462,10 @@ pub struct Mixin {
     /// that when the mixin needs one.
     pub initializer_code: Option<Rc<CompiledCode>>,
     /// The superclass clause's receiver expression (§6.1's `ec`), which the
-    /// nested-class accessor runs once per enclosing object. `None` when the
-    /// declaration has no clause.
+    /// nested-class accessor runs once per enclosing object -- together with
+    /// every `<:` clause's receiver when the declaration applies mixins, as
+    /// one array (`interpreter::nested::superclass_clause_expression`).
+    /// `None` when the declaration has no clause.
     pub superclass_clause_code: Option<Rc<CompiledCode>>,
     /// The arguments of the clause's factory message, run on every
     /// instantiation (§6.2). `None` when the message takes none.
@@ -421,6 +485,7 @@ impl Mixin {
             slots: Vec::new(),
             factory: None,
             superclass: None,
+            mixin_applications: Vec::new(),
             has_initializer_expressions: false,
             initializer_expressions: Vec::new(),
             nested: Vec::new(),

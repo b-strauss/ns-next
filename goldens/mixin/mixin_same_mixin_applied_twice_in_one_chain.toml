@@ -1,0 +1,13 @@
+stdout = '''
+Base initializer receives b1
+Marker initializer receives lower
+Middle initializer receives m
+Marker initializer receives upper
+Twice initializer receives t
+who: Marker tagged upper
+chain: Marker > Middle > Marker > Base
+lower Marker level reads markerTag as: upper
+Base slots: b1 b2
+Middle slot: m
+Twice slot: t
+'''

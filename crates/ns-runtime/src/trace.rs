@@ -95,6 +95,8 @@ impl Trace for ClassData<'_> {
             builtin: _,
             metaclass,
             dispatch_id: _, // not a handle
+            // A clause and its compiled message: code, which holds no handle.
+            applied_clause: _,
         } = self;
         trace_optional_object(enclosing, tracer);
         trace_optional_object(declaring_class, tracer);
@@ -138,7 +140,8 @@ impl Trace for FrameKind<'_> {
             FrameKind::Closure(closure) => tracer.object(closure),
             FrameKind::Initializer(class)
             | FrameKind::SuperclassClause(class)
-            | FrameKind::SuperclassMessage(class) => tracer.object(class),
+            | FrameKind::SuperclassMessage(class)
+            | FrameKind::MixinApplicationMessage(class) => tracer.object(class),
         }
     }
 }
@@ -201,6 +204,10 @@ impl Trace for Instantiation<'_> {
         let Instantiation {
             instance,
             levels,
+            // An index into `levels`, which is traced below.
+            applying: _,
+            // Compiled code and indices into `levels`: no handle.
+            deferred: _,
             phase,
         } = self;
         tracer.value(instance);
@@ -219,7 +226,11 @@ impl Trace for InstantiationPhase<'_> {
                 tracer.object(level);
                 tracer.object(superclass);
             }
-            InstantiationPhase::Descending { index: _ } => {}
+            InstantiationPhase::Descending { index: _ }
+            | InstantiationPhase::Applying {
+                index: _,
+                applying: _,
+            } => {}
         }
     }
 }

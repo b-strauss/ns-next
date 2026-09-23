@@ -1,0 +1,10 @@
+stdout = '''
+User new:
+Base initializer
+Composite initializer
+User new chain: Composite > Base
+Composite new:
+Extra initializer
+Composite initializer
+Composite new chain: Composite > Extra
+'''

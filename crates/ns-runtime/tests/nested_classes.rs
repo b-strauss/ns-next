@@ -10,6 +10,10 @@ use std::rc::Rc;
 use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value};
 
 fn load(source: &str) -> (Interpreter, Root) {
+    load_with(source, ns_runtime::Lowering::Optimized)
+}
+
+fn load_with(source: &str, lowering: ns_runtime::Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -17,7 +21,7 @@ fn load(source: &str) -> (Interpreter, Root) {
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interpreter = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
 }
@@ -911,4 +915,185 @@ fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
         };
         assert!(mutator.heap().is_class(inner));
     });
+}
+
+/// `Marker` and `Applied` are declared at different depths so that their
+/// enclosing objects differ: `Marker`'s is a `Library`, `Applied`'s an
+/// `Inner`, and each declares its own `mark`. `Marker`'s methods reach two
+/// levels out -- `mark` one hop, `outer Host label` two -- so the level must
+/// carry both `Marker`'s enclosing object and its declaring class, the second
+/// hop's starting point. Each enclosing level answers its own `label`, so
+/// landing on the wrong one shows.
+const APPLIED_ENCLOSING_SOURCE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Host usingPlatform: platform = Object new () (
+        public class Library = Object new (
+            | private mark = 'library'. |
+        ) (
+            public class Marker = Object new () (
+                public markOf: ignored = ( ^mark )
+                public hostLabel = ( ^outer Host label )
+            )
+            public class Inner = Object new (
+                | private mark = 'inner'. |
+            ) (
+                public class Applied = Object new <: Marker () (
+                )
+                public label = ( ^'inner' )
+            )
+            public label = ( ^'library' )
+        )
+        public label = ( ^'host' )
+        public markOfApplied = ( ^Library new Inner new Applied new markOf: nil )
+        public hostLabelOfApplied = ( ^Library new Inner new Applied new hostLabel )
+        public appliedClass = ( ^Library new Inner new Applied )
+    )
+"};
+
+/// §6.2: "The enclosing object of *I* is the enclosing object of *C*." A
+/// method of the applied mixin running on an instance of the applying class
+/// resolves `outer` from where `Marker` is declared, not from where `Applied`
+/// is: taking `Applied`'s enclosing object would answer `'inner'`, and
+/// taking its declaring class would stop the second hop at a `Library`.
+#[test]
+fn an_applied_level_encloses_where_the_applied_class_is_declared() {
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let module = ns_syntax::parse(APPLIED_ENCLOSING_SOURCE).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            Rc::from(APPLIED_ENCLOSING_SOURCE),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let platform = interpreter.platform();
+        let host = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "instantiate Host",
+        );
+        let mark = expect_ok(
+            interpreter.send(&host, Symbol::intern("markOfApplied"), &[]),
+            "markOfApplied",
+        );
+        let host_label = expect_ok(
+            interpreter.send(&host, Symbol::intern("hostLabelOfApplied"), &[]),
+            "hostLabelOfApplied",
+        );
+        interpreter.enter(|mutator| {
+            assert_eq!(
+                string_contents(mutator.heap(), &mutator.fetch(&mark)),
+                "library"
+            );
+            assert_eq!(
+                string_contents(mutator.heap(), &mutator.fetch(&host_label)),
+                "host",
+                "outer Host from Marker's method reaches the Host"
+            );
+        });
+    }
+}
+
+/// §6.2 builds a `<:` clause from §6.1's `inheritanceClause`, so §6.1's run
+/// time error holds for it too: a receiver that is no class object is an
+/// ordinary Newspeak error, and it names the clause.
+#[test]
+fn a_mixin_clause_that_is_not_a_class_is_a_program_error() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
+            public class Applied = Object new <: notAClass () ()
+            public appliedClass = ( ^Applied )
+        )
+    "};
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let (mut interpreter, class) = load_with(source, lowering);
+        let platform = interpreter.platform();
+        let outer = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "instantiate Outer",
+        );
+        let message = expect_error(
+            interpreter.send(&outer, Symbol::intern("appliedClass"), &[]),
+            "appliedClass",
+        );
+        assert!(
+            message.contains("mixin application clause 1 of class Applied"),
+            "{lowering:?}: message was: {message}"
+        );
+    }
+}
+
+/// CLAUDE.md's "the application cache is keyed by the superclass's
+/// *application*": an applied level's class object is per enclosing
+/// instance, like any nested class's, but its behaviour is not. Two `Host`s
+/// give two `Library`s, so two `Marker` class objects and two levels -- and
+/// one `MixinApplication` for both levels, and one for both levels'
+/// declaring classes. Keyed by class object instead, every instance would
+/// mint its own and no call site through a level would ever be monomorphic.
+#[test]
+fn applied_levels_of_two_enclosing_instances_share_their_applications() {
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let (mut interpreter, class) = load_with(APPLIED_ENCLOSING_SOURCE, lowering);
+        let applied_classes: Vec<Root> = (0..2)
+            .map(|_| {
+                let platform = interpreter.platform();
+                let host = expect_ok(
+                    interpreter.instantiate(&class, &[platform]),
+                    "instantiate Host",
+                );
+                expect_ok(
+                    interpreter.send(&host, Symbol::intern("appliedClass"), &[]),
+                    "appliedClass",
+                )
+            })
+            .collect();
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let level_of = |root: &Root| {
+                let Value::Object(applied) = mutator.fetch(root) else {
+                    panic!("appliedClass answers a class object")
+                };
+                heap.class_superclass(applied)
+                    .expect("Applied has a superclass")
+            };
+            let (first, second) = (level_of(&applied_classes[0]), level_of(&applied_classes[1]));
+            assert!(
+                !first.same(second),
+                "{lowering:?}: each enclosing instance has a level of its own"
+            );
+            let application_of = |level| heap.class_application(level).expect("a class object");
+            assert!(
+                Rc::ptr_eq(&application_of(first), &application_of(second)),
+                "{lowering:?}: both levels share one application"
+            );
+            let declaring_of = |level| {
+                heap.class_declaring(level)
+                    .expect("Marker's declaring class")
+            };
+            let (first_declaring, second_declaring) = (declaring_of(first), declaring_of(second));
+            assert!(
+                !first_declaring.same(second_declaring),
+                "{lowering:?}: each level's declaring class is its own Library's"
+            );
+            assert!(
+                Rc::ptr_eq(
+                    &application_of(first_declaring),
+                    &application_of(second_declaring)
+                ),
+                "{lowering:?}: both declaring classes share one application"
+            );
+        });
+    }
 }

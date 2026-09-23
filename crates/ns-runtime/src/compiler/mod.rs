@@ -91,9 +91,9 @@ pub fn compile_method(
 
 /// Compiles `mixin`'s per-mixin bodies onto it: the instance initializer
 /// always, the superclass clause and its message's arguments when the
-/// declaration has them. Called while the mixin is still a value, before it is
-/// wrapped in the `Rc` every application shares -- the one moment it can be
-/// written.
+/// declaration has them, and each `<:` clause's message arguments. Called
+/// while the mixin is still a value, before it is wrapped in the `Rc` every
+/// application shares -- the one moment it can be written.
 pub(crate) fn compile_mixin_bodies(
     mixin: &mut Mixin,
     bindings: &Rc<HashMap<Span, Binding>>,
@@ -106,6 +106,31 @@ pub(crate) fn compile_mixin_bodies(
     mixin.initializer_code = Some(Rc::new(compile_mixin_initializer(mixin, bindings)));
     mixin.superclass_clause_code = compile_superclass_clause(mixin, bindings).map(Rc::new);
     mixin.superclass_message_code = compile_superclass_message(mixin, bindings).map(Rc::new);
+    fill_mixin_application_messages(mixin, |mixin, clause| {
+        compile_clause_message(mixin, clause, bindings)
+    });
+}
+
+/// Fills each `<:` clause's `message_code` from the declaration it was read
+/// off, with `compile` -- one lowering's clause-message compiler. Shared by
+/// both lowerings because it only pairs a clause with its body; the bodies
+/// themselves are each lowering's own.
+pub(super) fn fill_mixin_application_messages(
+    mixin: &mut Mixin,
+    compile: impl Fn(&Mixin, &ast::SuperclassClause) -> Option<CompiledCode>,
+) {
+    let Some(declaration) = mixin.declaration.clone() else {
+        return;
+    };
+    debug_assert_eq!(
+        declaration.mixin_applications.len(),
+        mixin.mixin_applications.len(),
+        "internal: build_mixin reads one clause per `<:`"
+    );
+    for (index, clause) in declaration.mixin_applications.iter().enumerate() {
+        let code = compile(mixin, clause).map(Rc::new);
+        mixin.mixin_applications[index].message_code = code;
+    }
 }
 
 /// A mixin's instance initializer: each of `mixin`'s own slots with an
@@ -185,9 +210,13 @@ fn compile_superclass_clause(
     mixin: &Mixin,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> Option<CompiledCode> {
-    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
+    let declaration = mixin.declaration.as_ref()?;
+    let clause = declaration.superclass.as_ref()?;
     let statements = vec![Statement::Return(
-        crate::interpreter::nested::superclass_clause_expression(clause),
+        crate::interpreter::nested::superclass_clause_expression(
+            clause,
+            &declaration.mixin_applications,
+        ),
     )];
     let captures = Rc::new(capture::analyze(
         RootBody {
@@ -234,6 +263,18 @@ fn compile_superclass_message(
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> Option<CompiledCode> {
     let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
+    compile_clause_message(mixin, clause, bindings)
+}
+
+/// One inheritance clause's message arguments, compiled for `mixin`'s
+/// declaration: its superclass clause's, or one of its `<:` clauses', which
+/// §6.2 evaluates in the same instance initializer and the resolver
+/// therefore scopes the same way.
+fn compile_clause_message(
+    mixin: &Mixin,
+    clause: &ast::SuperclassClause,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> Option<CompiledCode> {
     let arguments =
         crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
     let argument_count = factory_argument_count(mixin);

@@ -1,0 +1,17 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2 builds the part after <: from 6.1's inheritance
+   clause, and 6.1 says: "It is a run time error if e_c does not evaluate
+   to a class object C." notAClass answers 7, so reaching Applied is an
+   ordinary Newspeak error that names the clause: uncaught, exit status 1,
+   and nothing after it prints. The first line shows the program ran up to
+   Applied's first use. *)
+class MixinClauseThatIsNotAClassFails usingPlatform: p = Object new (| t = p transcript. |) (
+    class Applied = Object new <: notAClass () ()
+    notAClass = ( ^7 )
+    public main: platform args: arguments = (
+        t show: 'before Applied'; newLine.
+        Applied new.
+        t show: 'after Applied'; newLine.
+    )
+) : ()

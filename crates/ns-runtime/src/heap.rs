@@ -1658,6 +1658,51 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `class` is a level a mixin application added: exactly when
+    /// `class_applied_clause` answers a clause, without copying it out. The
+    /// instantiation walk asks this of every superclass it climbs to, so an
+    /// ordinary level costs one test of an object the walk reads anyway.
+    pub fn class_is_applied_level(&self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data
+                .applied_clause
+                .as_ref()
+                .is_some_and(|applied| applied.clause().is_some()),
+            _ => false,
+        }
+    }
+
+    /// The `<:` clause a level a mixin application added was built for
+    /// (`ClassData::applied_clause`); `None` for any other class object.
+    pub fn class_applied_clause(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<crate::mixin::MixinApplicationClause> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data
+                .applied_clause
+                .as_ref()
+                .and_then(|applied| applied.clause().cloned()),
+            _ => None,
+        }
+    }
+
+    /// Which `<:` clause added `class` -- the applying declaration and the
+    /// clause's position in it -- for the image encoder, which names a level's
+    /// clause that way; `None` for a class object no mixin application added.
+    pub fn class_applied_origin(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<crate::mixin::AppliedClause> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.applied_clause.as_deref().cloned(),
+            _ => None,
+        }
+    }
+
     pub fn class_builtin(&self, class: ClassReference<'gc>) -> Option<BuiltinClass> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -2002,7 +2047,8 @@ impl<'gc> Heap<'gc> {
     /// at most an `Rc` -- and `image::decode` is the only caller that needs
     /// to match on the *whole* kind rather than one variant's payload
     /// (`frame_captured`): once to resolve which of `Initializer`/
-    /// `SuperclassClause`/`SuperclassMessage` a frame carries a class for
+    /// `SuperclassClause`/`SuperclassMessage`/`MixinApplicationMessage` a
+    /// frame carries a class for
     /// (`frame_body`), and once to check that a class-carrying kind's class
     /// is itself a class reference (`check_class_references`).
     pub fn frame_kind(&self, frame: FrameReference<'gc>) -> FrameKind<'gc> {

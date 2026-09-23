@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::mixin::{mixin_key, Mixin};
+use crate::mixin::{mixin_key, Mixin, MixinApplication};
 use crate::types::*;
 use crate::Symbol;
 
@@ -49,8 +49,30 @@ use super::{Mutator, Signal, Step};
 /// bespoke evaluation: `compiler::lower`'s identifier lowering already
 /// handles every such form, so a clause receiver that is anything other than
 /// a builtin class name needs no lowering of its own.
-pub(crate) fn superclass_clause_expression(clause: &ast::SuperclassClause) -> ast::Expression {
-    ast::Expression::Identifier(clause.receiver.clone())
+///
+/// A declaration that applies mixins (§6.2) evaluates each `<:` clause's
+/// receiver in the same place and by the same rule -- §6.2 builds each clause
+/// from §6.1's very `inheritanceClause` production -- so they are evaluated
+/// here too, left to right after the superclass's, and the body answers
+/// `{superclass. mixin. mixin}` instead: one activation fixes every class the
+/// declaration's levels are built from, and `after_clause` unpacks it. A
+/// declaration without `<:` answers the bare class, as it always has.
+pub(crate) fn superclass_clause_expression(
+    clause: &ast::SuperclassClause,
+    mixin_applications: &[ast::SuperclassClause],
+) -> ast::Expression {
+    let receiver =
+        |clause: &ast::SuperclassClause| ast::Expression::Identifier(clause.receiver.clone());
+    if mixin_applications.is_empty() {
+        return receiver(clause);
+    }
+    ast::Expression::DynamicArray {
+        elements: std::iter::once(clause)
+            .chain(mixin_applications)
+            .map(receiver)
+            .collect(),
+        span: clause.span,
+    }
 }
 
 /// The clause's deferred factory message -- `newspeak-spec.pdf` §6.1's
@@ -182,11 +204,18 @@ pub(crate) fn after_clause<'gc>(
         nested,
         declaring_class,
     } = creation;
-    let Value::Object(superclass) = superclass else {
-        return Err(not_a_class_error(nested.name, superclass));
-    };
-    let Some(super_application) = mutator.heap.class_application(superclass) else {
-        return Err(not_a_class_error(nested.name, Value::Object(superclass)));
+    // A declaration that applies mixins builds its levels out of line, so a
+    // declaration without `<:` takes only the two tests it always took.
+    let (superclass, super_application) = if nested.mixin_applications.is_empty() {
+        let Value::Object(superclass) = superclass else {
+            return Err(not_a_class_error(nested.name, superclass));
+        };
+        let Some(super_application) = mutator.heap.class_application(superclass) else {
+            return Err(not_a_class_error(nested.name, Value::Object(superclass)));
+        };
+        (superclass, super_application)
+    } else {
+        superclass_with_applied_levels(mutator, &nested, superclass)?
     };
     // Step 3: the application cache decides whether this behaviour already
     // exists. Two enclosing instances whose clauses land on the same
@@ -213,6 +242,123 @@ pub(crate) fn after_clause<'gc>(
         Value::Object(class),
     );
     Ok(Step::Value(Value::Object(class)))
+}
+
+/// The class a declaration that applies mixins builds its own class on, and
+/// that class's application: §6.2's levels, one per `<:` clause, stacked on
+/// the superclass `value` names, the declaration's own class going on top of
+/// the last. `value` is the superclass clause activation's answer.
+#[cold]
+#[inline(never)]
+fn superclass_with_applied_levels<'gc>(
+    mutator: &mut Mutator<'gc>,
+    nested: &Rc<Mixin>,
+    value: Value<'gc>,
+) -> Result<(ClassReference<'gc>, Rc<MixinApplication>), Signal<'gc>> {
+    let (superclass, applied) = unpack_clause_value(mutator, nested, value)?;
+    let Value::Object(superclass) = superclass else {
+        return Err(not_a_class_error(nested.name, superclass));
+    };
+    if mutator.heap.class_application(superclass).is_none() {
+        return Err(not_a_class_error(nested.name, Value::Object(superclass)));
+    }
+    let applied: Vec<(usize, Value<'gc>)> = applied.into_iter().enumerate().collect();
+    let top =
+        build_applied_levels(mutator, nested, Some(superclass), &applied)?.unwrap_or(superclass);
+    let application = mutator
+        .heap
+        .class_application(top)
+        .expect("internal: every level build_applied_levels answers is a class object");
+    Ok((top, application))
+}
+
+/// What the superclass clause's activation answered, split into the
+/// superclass and the classes the `<:` clauses named, in clause order: the
+/// value itself and none for a declaration without `<:`, and otherwise the
+/// `{superclass. mixin. mixin}` `superclass_clause_expression` builds.
+///
+/// A value of any other shape is refused as the superclass clause not
+/// answering a class, never indexed past: a decoded clause body is the
+/// image's to write.
+fn unpack_clause_value<'gc>(
+    mutator: &Mutator<'gc>,
+    nested: &Mixin,
+    value: Value<'gc>,
+) -> Result<(Value<'gc>, Vec<Value<'gc>>), Signal<'gc>> {
+    if nested.mixin_applications.is_empty() {
+        return Ok((value, Vec::new()));
+    }
+    let elements = match value {
+        Value::Object(object) => mutator.heap.array_elements(object),
+        _ => None,
+    };
+    match elements {
+        Some(mut elements) if elements.len() == 1 + nested.mixin_applications.len() => {
+            let applied = elements.split_off(1);
+            Ok((elements[0], applied))
+        }
+        _ => Err(not_a_class_error(nested.name, value)),
+    }
+}
+
+/// The levels §6.2 adds between `declaration`'s own class and `superclass`,
+/// built from `applied`: each `<:` clause's index into
+/// `declaration.mixin_applications` with the class its receiver evaluated to,
+/// in clause order. Answers the top level -- the superclass the
+/// declaration's own class is built on -- which is `superclass` itself when
+/// `applied` is empty.
+///
+/// The one place a level is built, for a module's root class
+/// (`Mutator::load_root_class`) and for a nested one (`after_clause`) alike.
+/// Each level is an ordinary class object: the applied class's mixin applied
+/// to the level below (§6.2: "a class *I* with mixin *M* and superclass
+/// *S*"), so lookup, `super` and the instantiation walk step through it like
+/// any other. Its enclosing object is the applied class's -- "the enclosing
+/// object of *I* is the enclosing object of *C*" -- and so is its declaring
+/// class, the class `outer` continues from past that first hop: a method of
+/// the applied mixin was written where the applied class is declared, and
+/// resolves `outer` from there, not from the declaration applying it.
+///
+/// Only the named class's own mixin is applied, not its superclass chain:
+/// §6.2 applies *C*'s mixin *M*, and a class's mixin is what its own
+/// declaration contributes.
+pub(crate) fn build_applied_levels<'gc>(
+    mutator: &mut Mutator<'gc>,
+    declaration: &Rc<Mixin>,
+    superclass: Option<ClassReference<'gc>>,
+    applied: &[(usize, Value<'gc>)],
+) -> Result<Option<ClassReference<'gc>>, Signal<'gc>> {
+    let mut below = superclass;
+    for &(index, applied_class) in applied {
+        assert!(
+            index < declaration.mixin_applications.len(),
+            "internal: a caller indexes the clauses it read off this mixin"
+        );
+        let named = match applied_class {
+            Value::Object(object) => mutator
+                .heap
+                .class_application(object)
+                .map(|application| (object, application)),
+            _ => None,
+        };
+        // §6.2's clause is §6.1's `inheritanceClause`, and §6.1: "It is a run
+        // time error if ec does not evaluate to a class object C."
+        let Some((named_class, named_application)) = named else {
+            return Err(not_a_mixin_error(declaration.name, index, applied_class));
+        };
+        let below_application = below.and_then(|class| mutator.heap.class_application(class));
+        let application = mutator.apply_mixin(&named_application.mixin, below_application.as_ref());
+        let enclosing = mutator.heap.class_enclosing(named_class);
+        let declaring_class = mutator.heap.class_declaring(named_class);
+        let clause = crate::mixin::AppliedClause {
+            declaration: declaration.clone(),
+            index,
+            named_builtin: mutator.heap.class_builtin(named_class),
+        };
+        below =
+            Some(mutator.new_applied_level(application, enclosing, declaring_class, below, clause));
+    }
+    Ok(below)
 }
 
 /// `receiver`'s own object handle together with the absolute index of
@@ -336,6 +482,20 @@ fn not_a_class_error<'gc>(name: Symbol, value: Value<'gc>) -> Signal<'gc> {
         receiver: value,
         message: format!(
             "the superclass clause of class {name} did not evaluate to a class object"
+        ),
+    })
+}
+
+/// §6.1's run time error for a `<:` clause (§6.2 reuses its production),
+/// naming the clause by its position, since a decoded mixin keeps no
+/// receiver name to name it by.
+fn not_a_mixin_error<'gc>(name: Symbol, index: usize, value: Value<'gc>) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: name,
+        receiver: value,
+        message: format!(
+            "mixin application clause {} of class {name} did not evaluate to a class object",
+            index + 1
         ),
     })
 }
