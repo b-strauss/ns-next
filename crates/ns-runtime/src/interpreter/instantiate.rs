@@ -573,6 +573,14 @@ impl<'gc> Mutator<'gc> {
             // The message is evaluated on the instance being initialized and
             // with *this* level's factory arguments -- §6.3 runs each level's
             // slot clauses and statement "in the context of *i*".
+            //
+            // No `check_message_arity` here, unlike the applied climb: an
+            // ordinary level's message body lives on its own mixin and is
+            // compiled for its own factory -- by the compiler from source,
+            // and held to it by `image::decode::verify_mixins` for an image
+            // -- and `check_factory_arity` has just matched `arguments` to
+            // that factory. Only a `<:` clause's body runs with another
+            // level's arguments.
             let message_arguments = arguments.clone();
             state.levels.push((level, arguments));
             state.phase = InstantiationPhase::Climbing { level, superclass };

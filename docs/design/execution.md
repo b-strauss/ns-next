@@ -3123,7 +3123,8 @@ declaration's own class and its superclass (`nested::build_applied_levels`) --
 runs on two paths every program takes: the instantiation walk behind every
 `new`, and the nested-class accessor's creation of a class object. Neither
 `vm.rs`, `act`, the inline caches nor the compiled code of a send changed.
-**A program that writes no `<:` pays one test per path for it**, and nothing
+**A program that writes no `<:` pays one test per climbed level, one per
+`descend_levels` call and one per nested-class creation for it**, and nothing
 else:
 
 - The climb (`instantiate::climb_levels`) is the ordinary walk, with one test
@@ -3144,8 +3145,8 @@ else:
   `#[inline(always)]`, since the cold paths are second callers of each, and
   `ClassData::applied_clause` is boxed, so a class object grows by one word.
 
-**Measured 2026-09-23 against `6833234`**, the commit before mixin
-application, by the protocol of "What removing the re-entries moved" above:
+**Measured 2026-09-23, `06fd024` against `6833234`**, the commit before
+mixin application, by the protocol of "What removing the re-entries moved" above:
 three builds of each tree with the pinned flags, none importing
 `VCRUNTIME140.dll`, each checked to print the expected answer for every
 source; `ns-next bench <source> --iterations 30`, five rounds a sitting, the
@@ -3160,7 +3161,7 @@ debug information of each tree puts `vm::run` at 6,508 instructions in both,
 one function with no closure of its own. Means in ms, all three sittings
 pooled:
 
-| Source | `6833234` | Now | Change, pooled | Sitting 1 / 2 / 3 |
+| Source | `6833234` | `06fd024` | Change, pooled | Sitting 1 / 2 / 3 |
 |---|---|---|---|---|
 | `bench_loop.ns` | 7.02 | 7.04 | +0.3% | +0.2% / +0.7% / −0.1% |
 | `bench_send.ns` | 8.37 | 8.34 | −0.4% | −0.3% / −0.6% / −0.2% |
@@ -3173,15 +3174,24 @@ pooled:
 | `bench_newarg2.ns` | 8.27 | 8.39 | +1.4% | +1.5% / +1.1% / +1.5% |
 | `bench_nested.ns` | 7.87 | 7.95 | +1.0% | +1.0% / +0.8% / +1.3% |
 
-**All ten are level**: −2.2% to +1.4%, inside the 0.3–2.3% these sources
-show between builds of one tree, and in both directions. What is left is
-placement of data rather than work: two builds of the base tree with an
-unused field of the new fields' sizes added to `Mixin` and to `ClassData`, and
-no other change, measured `bench_newarg.ns` about 2% faster and the other
-instantiating sources level to 1% slower than the base itself (one sitting of
-four rounds), the same spread as the table's. `bench_block.ns` instantiates nothing, and is the source whose
-build-to-build spread was measured at 16% above.
+**All ten are within the protocol's noise**: −2.2% to +1.4%, inside the
+0.3–2.3% these sources show between builds of one tree. The five send
+sources are level, the groups overlapping, except `bench_block.ns`, which
+instantiates nothing and is the source whose build-to-build spread was
+measured at 16% above.
 
+**Four instantiating sources still sit above the base**: `bench_new.ns`
++0.5%, `bench_new2.ns` +0.9%, `bench_newarg2.ns` +1.4% and `bench_nested.ns`
++1.0%, every build of `06fd024` above every build of `6833234` in every
+sitting, while `bench_newarg.ns` sits 2.2% below. By the criterion of "What
+`Top`, `Value` and `Number` cost" that is a real difference, if a small one.
+Its cause is not isolated. Placement of data is the likely one: two builds of
+the base tree with only an unused field of the new fields' sizes added to
+`Mixin` and to `ClassData`, in one sitting of four rounds, moved the five
+instantiating sources by −1.8% (`bench_newarg.ns`) to +0.6%
+(`bench_nested.ns`), the same direction and much of the size. It is unproven,
+though -- one sitting, two builds -- and the one added test per level, per
+descent and per nested-class creation is work that remains alongside it.
 
 ## The trampoline
 
