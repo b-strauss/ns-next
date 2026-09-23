@@ -2825,7 +2825,7 @@ fn decode_class_record<'gc>(
         superclass,
         None,
     );
-    data.applied_clause = applied_clause;
+    data.applied_clause = applied_clause.map(Box::new);
     Ok((data, mixin))
 }
 
@@ -2855,7 +2855,7 @@ fn decode_builtin_level<'gc>(
         superclass,
         None,
     );
-    data.applied_clause = Some(applied_clause);
+    data.applied_clause = Some(Box::new(applied_clause));
     Ok((data, mixin))
 }
 

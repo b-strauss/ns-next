@@ -1658,6 +1658,21 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `class` is a level a mixin application added: exactly when
+    /// `class_applied_clause` answers a clause, without copying it out. The
+    /// instantiation walk asks this of every superclass it climbs to, so an
+    /// ordinary level costs one test of an object the walk reads anyway.
+    pub fn class_is_applied_level(&self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data
+                .applied_clause
+                .as_ref()
+                .is_some_and(|applied| applied.clause().is_some()),
+            _ => false,
+        }
+    }
+
     /// The `<:` clause a level a mixin application added was built for
     /// (`ClassData::applied_clause`); `None` for any other class object.
     pub fn class_applied_clause(
@@ -1683,7 +1698,7 @@ impl<'gc> Heap<'gc> {
     ) -> Option<crate::mixin::AppliedClause> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.applied_clause.clone(),
+            ObjectData::Class(data) => data.applied_clause.as_deref().cloned(),
             _ => None,
         }
     }

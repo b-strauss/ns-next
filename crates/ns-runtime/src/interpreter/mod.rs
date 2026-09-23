@@ -1426,7 +1426,7 @@ impl<'gc> Mutator<'gc> {
         clause: crate::mixin::AppliedClause,
     ) -> ClassReference<'gc> {
         let mut data = ClassData::new(application, enclosing, declaring_class, superclass, None);
-        data.applied_clause = Some(clause);
+        data.applied_clause = Some(Box::new(clause));
         self.allocate_class_object(data)
     }
 

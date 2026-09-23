@@ -139,7 +139,11 @@ pub struct ClassData<'gc> {
     /// each of them writes its own message. Nor on the level's application,
     /// which the application cache shares between two declarations applying
     /// the same mixin to the same superclass with different messages.
-    pub applied_clause: Option<crate::mixin::AppliedClause>,
+    ///
+    /// Boxed, so that it adds one word to every class object rather than
+    /// three: the instantiation walk and the collector read this struct for
+    /// every class object, applied level or not.
+    pub applied_clause: Option<Box<crate::mixin::AppliedClause>>,
 }
 
 impl<'gc> ClassData<'gc> {
@@ -452,7 +456,10 @@ pub struct Instantiation<'gc> {
     /// declaration up through its applied levels -- each `<:` clause's and
     /// the superclass clause's -- in that one declaration, so each is
     /// evaluated with its factory arguments, which `levels` still holds
-    /// while the walk climbs (`Mutator::climb_levels`).
+    /// while the walk climbs. Written and read only by the climb through
+    /// applied levels (`Mutator::climb_through_applied_levels`), which sets
+    /// it when it takes over; the ordinary climb, where every level is its
+    /// own, never needs it.
     pub(crate) applying: usize,
     /// The messages into applied levels the upward walk has passed and not
     /// evaluated, nearest level first, so the downward walk takes the next

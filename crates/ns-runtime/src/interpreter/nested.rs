@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::mixin::{mixin_key, Mixin};
+use crate::mixin::{mixin_key, Mixin, MixinApplication};
 use crate::types::*;
 use crate::Symbol;
 
@@ -204,23 +204,19 @@ pub(crate) fn after_clause<'gc>(
         nested,
         declaring_class,
     } = creation;
-    let (superclass, applied) = unpack_clause_value(mutator, &nested, superclass)?;
-    let Value::Object(superclass) = superclass else {
-        return Err(not_a_class_error(nested.name, superclass));
+    // A declaration that applies mixins builds its levels out of line, so a
+    // declaration without `<:` takes only the two tests it always took.
+    let (superclass, super_application) = if nested.mixin_applications.is_empty() {
+        let Value::Object(superclass) = superclass else {
+            return Err(not_a_class_error(nested.name, superclass));
+        };
+        let Some(super_application) = mutator.heap.class_application(superclass) else {
+            return Err(not_a_class_error(nested.name, Value::Object(superclass)));
+        };
+        (superclass, super_application)
+    } else {
+        superclass_with_applied_levels(mutator, &nested, superclass)?
     };
-    if mutator.heap.class_application(superclass).is_none() {
-        return Err(not_a_class_error(nested.name, Value::Object(superclass)));
-    }
-    // §6.2's levels, one per `<:` clause, stacked on the superclass; the
-    // declaration's own class goes on top of the last. With no clause the
-    // superclass is the top.
-    let applied: Vec<(usize, Value<'gc>)> = applied.into_iter().enumerate().collect();
-    let superclass =
-        build_applied_levels(mutator, &nested, Some(superclass), &applied)?.unwrap_or(superclass);
-    let super_application = mutator
-        .heap
-        .class_application(superclass)
-        .expect("internal: every level build_applied_levels answers is a class object");
     // Step 3: the application cache decides whether this behaviour already
     // exists. Two enclosing instances whose clauses land on the same
     // superclass application share one application, and therefore one
@@ -246,6 +242,34 @@ pub(crate) fn after_clause<'gc>(
         Value::Object(class),
     );
     Ok(Step::Value(Value::Object(class)))
+}
+
+/// The class a declaration that applies mixins builds its own class on, and
+/// that class's application: §6.2's levels, one per `<:` clause, stacked on
+/// the superclass `value` names, the declaration's own class going on top of
+/// the last. `value` is the superclass clause activation's answer.
+#[cold]
+#[inline(never)]
+fn superclass_with_applied_levels<'gc>(
+    mutator: &mut Mutator<'gc>,
+    nested: &Rc<Mixin>,
+    value: Value<'gc>,
+) -> Result<(ClassReference<'gc>, Rc<MixinApplication>), Signal<'gc>> {
+    let (superclass, applied) = unpack_clause_value(mutator, nested, value)?;
+    let Value::Object(superclass) = superclass else {
+        return Err(not_a_class_error(nested.name, superclass));
+    };
+    if mutator.heap.class_application(superclass).is_none() {
+        return Err(not_a_class_error(nested.name, Value::Object(superclass)));
+    }
+    let applied: Vec<(usize, Value<'gc>)> = applied.into_iter().enumerate().collect();
+    let top =
+        build_applied_levels(mutator, nested, Some(superclass), &applied)?.unwrap_or(superclass);
+    let application = mutator
+        .heap
+        .class_application(top)
+        .expect("internal: every level build_applied_levels answers is a class object");
+    Ok((top, application))
 }
 
 /// What the superclass clause's activation answered, split into the
