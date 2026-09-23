@@ -225,10 +225,14 @@ silently allowing a value that is not one:
   the derivation makes state-based, but two equal `String`s remain two
   distinct objects to the collector. Canonicalization is not required for
   the derived equality and was left out deliberately.
-- **`1 = 1.0` and `1.0 = 1` still disagree**, as they did before: each is
-  its own class's `=`, and the missing numeric tower is what would
-  reconcile them ("Deviation: `i64` integers" and "Gap: an integer has no
-  `/`" above).
+- **`1 = 1.0` and `1.0 = 1` both answer `false`** (decided with the user on
+  2026-09-23). `Float>>=` widened an `Integer` argument until then, which
+  made `1.0 = 1` true while `1.0 hash` and `1 hash` differ — the one rule a
+  `hash` has — and made `Float`'s own `=` disagree with the derived
+  equality, which asks the classes first. Every value class's `=` is
+  class-tight now, `Float`'s like `Character`'s and `String`'s. That is a
+  stopgap, not the answer: see "Gap: an integer has no `/`" below, where
+  the numeric tower this needs is recorded.
 The builtin value classes' own immutability rests on there being no mutating
 leaf for a `String`, a `Symbol` or a `Character` — their state is a Rust
 payload, not slots, so neither check above is about them. And the actor
@@ -351,6 +355,21 @@ inexact; build the numeric tower the deviation above already defers; or keep
 the selector absent and say so. What was decided is only that it has to be
 settled eventually, deliberately rather than in passing; when, and by which
 step, is not.
+
+**The class-tight `=` of 2026-09-23 makes the tower needed, not merely
+deferred.** `1.0 = 1` and `1 = 1.0` both answer `false` now, which is
+symmetric and keeps the `=`/`hash` contract, but it is not what a program
+comparing numbers expects, and no rule inside the library can give a better
+answer while an `Integer`'s hash is the integer and a `Float`'s is a hash of
+its bits. What resolves it is one piece of work, not two: a numeric tower
+under `Number` — the class that now exists to hold it — with cross-type
+comparison and a hash that matches it, `/` answering an exact quotient, and
+whatever `Fraction` and `LargeInteger` that needs. The contract such a tower
+has to meet is written down in Primordial Soup's `testFloatHash`
+(`prior-art/primordialsoup/newspeak/KernelTests.ns`): `3 asFloat hash` must
+equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
+class-tight `=` is the stopgap that keeps the contract by answering
+`false`.
 
 ## The core library as Newspeak source over a VM mirror
 

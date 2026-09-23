@@ -18,11 +18,14 @@
 //! * `=` is the deliberate exception: a type-mismatched argument makes it
 //!   plain `false` (two values of different types are not equal), never an
 //!   error -- matching `Object`'s own `=` and the usual Smalltalk
-//!   convention. It is asymmetric across the two receivers, for the same
-//!   missing-coercion reason: `1 = 1.0` is `false` (`Integer`'s `=` only
-//!   accepts an `Integer`), while `1.0 = 1` is `true` (`Float`'s `=` widens
-//!   its argument like the rest of `execute_float`). A real numeric tower
-//!   would answer `true` both ways.
+//!   convention. Both directions answer `false`: `1 = 1.0` and `1.0 = 1`
+//!   alike, because each `=` is class-tight (`Character>>=` and `String>>=`
+//!   are for the same reason). `Float>>=` widened an `Integer` argument
+//!   until 2026-09-23, which made `1.0 = 1` true while `1.0 hash` and
+//!   `1 hash` differ -- the one rule a `hash` has -- and was asymmetric
+//!   besides. A real numeric tower would answer `true` both ways *and*
+//!   hash alike; until there is one, `false` both ways is the answer that
+//!   keeps the `=`/`hash` contract.
 //!
 //! Implementing the tower means widening the whole `Value` numeric domain
 //! (`LargeInteger`/`Fraction` belong in the same change) and is out of scope
@@ -62,14 +65,20 @@ pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<&Value<'gc>>) 
     matches!(argument, Some(Value::SmallInteger(other)) if *other == receiver)
 }
 
-/// `Float>>=`'s rule, the same way: an `Integer` argument widens
-/// losslessly, anything else is unequal.
+/// `Float>>=`'s rule, the same way, and class-tight: only a `Float` can be
+/// equal to a `Float`.
+///
+/// It widened an `Integer` argument until 2026-09-23. That broke the one
+/// rule a `hash` has -- `1.0 = 1` answered `true` while `1.0 hash` and
+/// `1 hash` differ -- and it made `builtins::value`'s derived equality,
+/// which asks the classes first, answer `false` for the very pair this
+/// answered `true` for. One rule now, in both places. Cross-type numeric
+/// equality is what the numeric tower under `Number` brings back
+/// (`docs/design/core-library.md`, "Gap: an integer has no `/`"); the
+/// lossless widening in `argument_float` below stays, because arithmetic
+/// and ordering ask a magnitude question rather than an identity one.
 pub(crate) fn float_equals<'gc>(receiver: f64, argument: Option<&Value<'gc>>) -> bool {
-    match argument {
-        Some(Value::Float(other)) => *other == receiver,
-        Some(Value::SmallInteger(other)) => *other as f64 == receiver,
-        _ => false,
-    }
+    matches!(argument, Some(Value::Float(other)) if *other == receiver)
 }
 
 /// A float's content hash: its bits, mixed and folded to 32 bits. `-0.0` is

@@ -372,11 +372,19 @@ tiers rather than now, and it owns four semantic decisions already recorded
 with their goldens and code ([core-library.md](design/core-library.md),
 "Planned: real bodies for control flow and `do:`, before the JIT tiers").
 
-Two things are recorded and not yet built, and neither should be
-rediscovered: `Integer` has no `/`, which step 6 left open deliberately and
-which still has to be settled — what an exact quotient answers without a
-`Fraction` class ([core-library.md](design/core-library.md), "Gap: an
-integer has no `/`"); and the arithmetic fast path can drop its `Jump` by
+Three things are recorded and not yet built, and none should be
+rediscovered: **the numeric tower under `Number` is needed**, which the
+class-tight `=` of 2026-09-23 forced — `1.0 = 1` and `1 = 1.0` both answer
+`false` now, which is symmetric and keeps the `=`/`hash` contract but is not
+what a program comparing numbers expects, and only a tower under the
+`Number` that already exists resolves it: cross-type comparison with a
+matching hash (the contract is Primordial Soup's `testFloatHash`,
+`3 asFloat hash = 3 hash`), `/` answering an exact quotient, and whatever
+`Fraction` and `LargeInteger` that needs ([core-library.md](design/core-library.md),
+"Gap: an integer has no `/`"); `Integer` has no `/`, the piece of that tower
+step 6 left open deliberately and which still has to be settled — what an
+exact quotient answers without a `Fraction` class (same section); and the
+arithmetic fast path can drop its `Jump` by
 inverting the branch sense, a separate step that requires retiring wire tag
 33 and taking 34 ([compiler.md](design/compiler.md), "Arithmetic inlining").
 

@@ -587,9 +587,11 @@ mod tests {
         assert_eq!(first_hash, second_hash);
     }
 
-    /// `1.0 = 1` is true, because `Float>>=` widens its argument. The
-    /// derived equality asks the classes first, and `Integer` is not
-    /// `Float`.
+    /// The derived equality asks the classes first, and `Integer` is not
+    /// `Float`. `Float>>=` is class-tight for the same reason (2026-09-23),
+    /// so the leaf here and `Float`'s own `=` answer this pair alike --
+    /// while `Float>>=` widened an `Integer` argument, the two disagreed
+    /// about `1.0 = 1` and `1.0 hash = 1 hash` was false either way.
     #[test]
     fn an_integer_and_a_float_of_one_magnitude_are_not_one_value() {
         let (mut interpreter, _fixture) = a_fixture();

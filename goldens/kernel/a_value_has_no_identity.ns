@@ -12,9 +12,14 @@ Newspeak3
    agreement is visible column by column: the two are never allowed to
    differ.
 
-   `Integer/Float` answers false in both columns, and that is the rule
-   holding rather than breaking: `Integer>>=` takes only an Integer, so
-   `1 = 1.0` is false and `==` must answer exactly that.
+   `Float/Integer` and `Integer/Float` answer false in both columns, and
+   that is the rule holding rather than breaking: every value class's `=`
+   is class-tight, `Float`'s included, so neither `1.0 = 1` nor `1 = 1.0`
+   is true and `==` must answer exactly that. `Float>>=` widened an
+   Integer argument until 2026-09-23, which made the two lines disagree
+   and broke the `=`/`hash` contract with them: `1.0 hash` and `1 hash`
+   differ. Cross-type numeric equality comes back with the numeric tower
+   under `Number` (`docs/design/core-library.md`).
 
    `Text` is the case a user subclass of a builtin value class makes. Its
    instances carry no string payload, so `String>>=`'s leaf declines and

@@ -9,6 +9,8 @@ Character/String false false
 String/Character false false
 Symbol/String false false
 String/Symbol false false
+Float/Integer false false
+Integer/Float false false
 3
 0
 97
