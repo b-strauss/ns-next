@@ -1399,17 +1399,35 @@ impl<'gc> Mutator<'gc> {
         declaring_class: Option<ClassReference<'gc>>,
         superclass: Option<ClassReference<'gc>>,
     ) -> ClassReference<'gc> {
+        self.allocate_class_object(ClassData::new(
+            application,
+            enclosing,
+            declaring_class,
+            superclass,
+            None,
+        ))
+    }
+
+    /// A level a mixin application adds (`newspeak-spec.pdf` §6.2): a class
+    /// object like any other -- `new_class_object`'s invariant holds for it
+    /// too -- that also carries the `<:` clause it was built for.
+    pub(crate) fn new_applied_level(
+        &mut self,
+        application: Rc<crate::mixin::MixinApplication>,
+        enclosing: Option<ObjectReference<'gc>>,
+        declaring_class: Option<ClassReference<'gc>>,
+        superclass: Option<ClassReference<'gc>>,
+        clause: crate::mixin::MixinApplicationClause,
+    ) -> ClassReference<'gc> {
+        let mut data = ClassData::new(application, enclosing, declaring_class, superclass, None);
+        data.applied_clause = Some(clause);
+        self.allocate_class_object(data)
+    }
+
+    fn allocate_class_object(&mut self, data: ClassData<'gc>) -> ClassReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
-        self.heap.allocate_object(
-            class,
-            ObjectData::Class(Box::new(ClassData::new(
-                application,
-                enclosing,
-                declaring_class,
-                superclass,
-                None,
-            ))),
-        )
+        self.heap
+            .allocate_object(class, ObjectData::Class(Box::new(data)))
     }
 
     pub fn apply_mixin(

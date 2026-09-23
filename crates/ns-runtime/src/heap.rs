@@ -1658,6 +1658,19 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// The `<:` clause a level a mixin application added was built for
+    /// (`ClassData::applied_clause`); `None` for any other class object.
+    pub fn class_applied_clause(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<crate::mixin::MixinApplicationClause> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.applied_clause.clone(),
+            _ => None,
+        }
+    }
+
     pub fn class_builtin(&self, class: ClassReference<'gc>) -> Option<BuiltinClass> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {

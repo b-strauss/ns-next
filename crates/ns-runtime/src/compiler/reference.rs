@@ -39,6 +39,9 @@ pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
     mixin.initializer_code = Some(Rc::new(initializer(mixin, bindings)));
     mixin.superclass_clause_code = superclass_clause(mixin, bindings).map(Rc::new);
     mixin.superclass_message_code = superclass_message(mixin, bindings).map(Rc::new);
+    super::fill_mixin_application_messages(mixin, |mixin, clause| {
+        clause_message(mixin, clause, bindings)
+    });
 }
 
 /// Each own slot's initializer followed by `InitializeSlot`, one statement
@@ -82,9 +85,13 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
 /// The superclass clause as a single `^ec`. The expression is
 /// `interpreter::nested`'s, the one definition of what a clause evaluates.
 fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
-    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
+    let declaration = mixin.declaration.as_ref()?;
+    let clause = declaration.superclass.as_ref()?;
     let statements = [Statement::Return(
-        crate::interpreter::nested::superclass_clause_expression(clause),
+        crate::interpreter::nested::superclass_clause_expression(
+            clause,
+            &declaration.mixin_applications,
+        ),
     )];
     let mut body = Body::new(CodeKind::SuperclassClause, 0, 0, bindings);
     body.statements_and_end(&statements);
@@ -95,6 +102,16 @@ fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode>
 /// the declaring class's own factory arguments.
 fn superclass_message(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
     let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
+    clause_message(mixin, clause, bindings)
+}
+
+/// Any inheritance clause's message arguments -- the superclass clause's or
+/// a `<:` clause's -- the same way.
+fn clause_message(
+    mixin: &Mixin,
+    clause: &ast::SuperclassClause,
+    bindings: &Bindings,
+) -> Option<CompiledCode> {
     let arguments =
         crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
     let mut body = Body::new(

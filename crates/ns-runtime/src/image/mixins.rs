@@ -756,6 +756,9 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             slots,
             factory: row.factory,
             superclass: row.superclass,
+            // A mixin table row carries no `<:` clause: the image format
+            // does not describe §6.2's applied levels yet.
+            mixin_applications: Vec::new(),
             has_initializer_expressions: row.has_initializer_expressions,
             initializer_expressions: Vec::new(),
             nested,

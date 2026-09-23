@@ -115,9 +115,8 @@ impl Resolver {
         // is evaluated under the same rule as the superclass clause's, in the
         // same enclosing scope. That is why `resolve_superclass_clause` is
         // called for them rather than a second copy of the rule being written
-        // here. The clauses' deferred *message* arguments are not resolved yet:
-        // nothing builds the levels a mixin application adds, so nothing
-        // compiles them.
+        // here. Their deferred *message* arguments are resolved below, beside
+        // the superclass clause's, for the same reason.
         for clause in &declaration.mixin_applications {
             self.resolve_superclass_clause(clause, enclosing);
         }
@@ -171,7 +170,15 @@ impl Resolver {
         // separately, above, against the enclosing chain instead -- it is
         // evaluated once, when the declaration is evaluated, and never sees
         // a factory argument.
-        if let Some(clause) = &declaration.superclass {
+        //
+        // §6.2 evaluates each `<:` clause's message in that same instance
+        // initializer, after the superclass clause's, so its arguments see
+        // the same factory parameters.
+        for clause in declaration
+            .superclass
+            .iter()
+            .chain(&declaration.mixin_applications)
+        {
             if let Some(message) = crate::interpreter::nested::superclass_clause_message(clause) {
                 for argument in &message.arguments {
                     self.resolve_expression(argument, &mut scope, &class_chain);

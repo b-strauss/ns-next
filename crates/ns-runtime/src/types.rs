@@ -127,6 +127,18 @@ pub struct ClassData<'gc> {
     /// (`DispatchId::class_side`) from the invariant that `mint_dispatch_ids`
     /// mints the pair consecutively.
     pub dispatch_id: crate::mixin::DispatchId,
+    /// For a level a mixin application added (`newspeak-spec.pdf` §6.2), the
+    /// `<:` clause that added it -- the factory message the applying
+    /// declaration wrote for it, and that message's compiled arguments.
+    /// `None` for every other class object.
+    ///
+    /// It cannot live on the level's mixin, where an ordinary level's
+    /// superclass-clause message lives: the level's mixin is the *applied*
+    /// class's, one mixin shared by every declaration that applies it, and
+    /// each of them writes its own message. Nor on the level's application,
+    /// which the application cache shares between two declarations applying
+    /// the same mixin to the same superclass with different messages.
+    pub applied_clause: Option<crate::mixin::MixinApplicationClause>,
 }
 
 impl<'gc> ClassData<'gc> {
@@ -147,6 +159,7 @@ impl<'gc> ClassData<'gc> {
             superclass,
             builtin,
             metaclass: None,
+            applied_clause: None,
         }
     }
 }

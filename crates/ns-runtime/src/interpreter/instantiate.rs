@@ -11,7 +11,8 @@ use ns_syntax::Span;
 use crate::hash::IdentityMap;
 use crate::heap::{Heap, Root};
 use crate::mixin::{
-    slot_accessors, Factory, MethodEntry, Mixin, MixinMethod, MixinSlot, SuperclassClause,
+    slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod, MixinSlot,
+    SuperclassClause,
 };
 use crate::types::*;
 use crate::Symbol;
@@ -68,6 +69,22 @@ fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
             .map_or(Symbol::NEW, crate::compiler::lower::selector_of),
         has_arguments: super::nested::superclass_clause_message_arguments_expression(clause)
             .is_some(),
+    }
+}
+
+/// One `<:` clause's run-time half, read off the clause exactly as
+/// `superclass_clause_of` reads a superclass clause: §6.2 builds each one from
+/// §6.1's `inheritanceClause`, so the selector defaults to `new` the same way.
+/// Its message body is the compiler's to fill.
+fn mixin_application_clause_of(clause: &ast::SuperclassClause) -> MixinApplicationClause {
+    let SuperclassClause {
+        selector,
+        has_arguments,
+    } = superclass_clause_of(clause);
+    MixinApplicationClause {
+        selector,
+        has_arguments,
+        message_code: None,
     }
 }
 
@@ -138,6 +155,26 @@ impl<'gc> Mutator<'gc> {
         let declaration = &resolved.module.root_class;
         let mixin = self.build_mixin(declaration, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(declaration);
+        // §6.2's levels, each `<:` clause's receiver resolved by the rule the
+        // superclass clause's is, above: a root class has no enclosing object
+        // to evaluate a receiver in, so only a builtin can be named. A clause
+        // naming anything else adds no level -- the gap
+        // `resolve_superclass_receiver` describes, and the same answer it
+        // gives a superclass it cannot find.
+        let applied: Vec<(usize, Value<'gc>)> = declaration
+            .mixin_applications
+            .iter()
+            .enumerate()
+            .filter_map(|(index, clause)| {
+                builtin_kind_from_name(&clause.receiver.name)
+                    .map(|kind| (index, Value::Object(self.builtin_class(kind))))
+            })
+            .collect();
+        let superclass =
+            match super::nested::build_applied_levels(self, &mixin, superclass, &applied) {
+                Ok(top) => top,
+                Err(_) => panic!("internal: every builtin class is a class object"),
+            };
         // The slot layout is the application's job, not the class object's:
         // `apply_mixin` offsets this class's own slots past every inherited
         // one (`own_slot_base`), so a class object never computes -- or can
@@ -207,6 +244,11 @@ impl<'gc> Mutator<'gc> {
             slots,
             factory: Some(factory),
             superclass: declaration.superclass.as_ref().map(superclass_clause_of),
+            mixin_applications: declaration
+                .mixin_applications
+                .iter()
+                .map(mixin_application_clause_of)
+                .collect(),
             has_initializer_expressions: !declaration
                 .instance_side
                 .initializer_expressions
