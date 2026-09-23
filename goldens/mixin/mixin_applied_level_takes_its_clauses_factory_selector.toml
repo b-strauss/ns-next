@@ -1,0 +1,6 @@
+stdout = '''
+Applied new is tagged x
+Applied new tag is x
+Tagged, tagged y
+Tagged label: 'z' tag is z
+'''
