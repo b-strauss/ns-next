@@ -113,6 +113,12 @@ pub struct MixinMethod {
     /// (`newspeak-spec.pdf` §6.2). Never replaced: editing a method builds a
     /// new `MixinMethod`.
     pub code: Rc<CompiledCode>,
+    /// The mirror row this method forwards to, when it is a primitive
+    /// method (`compiler::primitive_method`): `act` runs the row's leaf
+    /// first and activates the method only when the leaf declines. `None`
+    /// for every method outside the kernel, and for every method decoded
+    /// from an image, which never carries a kernel method.
+    pub primitive: Option<crate::builtins::primitive::MirrorPrimitive>,
 }
 
 impl MixinMethod {
@@ -136,6 +142,7 @@ impl MixinMethod {
                 bindings,
                 lowering,
             )),
+            primitive: crate::compiler::primitive_method::recognize(&declaration, bindings),
             declaration: Some(declaration),
         }
     }
@@ -192,10 +199,10 @@ pub struct SlotAccessor {
     pub kind: AccessorKind,
 }
 
-/// A native method of a builtin class (`docs/design/dispatch.md`,
-/// "Primitives"): the primitive it runs and its §6.3.1
-/// accessibility. Found by the same lookups as a compiled method; it runs no
-/// code and pushes no activation.
+/// A primitive entry (`docs/design/dispatch.md`, "Primitives"): the
+/// primitive it runs and its §6.3.1 accessibility. Only the VM mirror's
+/// method table holds any -- one per `MIRROR` row. Found by the same lookups
+/// as a compiled method; it runs no code and pushes no activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrimitiveMethod {
     pub primitive: crate::builtins::primitive::Primitive,
@@ -437,10 +444,35 @@ impl Mixin {
     }
 }
 
+/// A mutable slot declared by a class that inherits `Value`, which §3.1.1
+/// forbids: a value object is deeply immutable, so an instance of such a
+/// class could never be one. Both names are recorded because the class that
+/// declares the slot need not be the class being instantiated -- the
+/// refusal has to say which level is at fault.
+#[derive(Debug, Clone, Copy)]
+pub struct MutableValueSlot {
+    pub class: Symbol,
+    pub slot: Symbol,
+}
+
 #[derive(Debug)]
 pub struct MixinApplication {
     pub mixin: Rc<Mixin>,
     pub superclass: Option<Rc<MixinApplication>>,
+    /// §3.1.1: whether this application's superclass chain reaches `Value`,
+    /// which is what makes its instances value objects -- deeply immutable,
+    /// equal by their state and free to be copied across an actor boundary.
+    /// Computed once per application (`Mutator::apply_mixin`), because the
+    /// same mixin applied over a superclass that is no value is no value
+    /// either.
+    ///
+    /// `Value`'s own application answers `false`: it inherits nothing, and
+    /// `Kernel.ns` gives it no slots for the rule below to be about.
+    pub inherits_value: bool,
+    /// The first mutable slot anywhere in this application's chain below
+    /// `Value`, if any: the refusal `interpreter::instantiate` raises when
+    /// something asks for an instance.
+    pub mutable_value_slot: Option<MutableValueSlot>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached
     /// nested class object; accessing it is a slot read rather than a
@@ -455,6 +487,34 @@ pub struct MixinApplication {
     /// entries onto one index and make whichever was resolved first the
     /// answer to both.
     pub nested_slot: IdentityMap<usize, usize>,
+    /// The absolute field indices of the slots this application's classes
+    /// **declare**, superclass level first and in declaration order within a
+    /// level -- which is the order the fields themselves are laid out in.
+    ///
+    /// An instance's field vector is not all declared slots: each level lays
+    /// its own slots down at `own_slot_base`, then one hidden nested-class
+    /// cache slot per nested declaration (`nested_slot`, above), so the
+    /// declared slots of a chain are interleaved with hidden ones rather
+    /// than forming a prefix.
+    ///
+    /// **This is what a value's state is**, and the one answer to that
+    /// question: §3.1.1 derives equality and hash from the state a class
+    /// declares, and a nested class's cache slot is not state -- it holds a
+    /// class object, it is per enclosing instance, and it is written by the
+    /// accessor rather than by any initializer. Counting it made two equal
+    /// values answer `false` once the accessor had run on both, because each
+    /// side cached *its own* class object there
+    /// (`docs/design/core-library.md`, "A value's state is the slots its
+    /// classes *declare*, and nothing else").
+    ///
+    /// Computed once here, like `nested_slot` and `inherits_value`, because
+    /// nothing about an application changes after it is built and the
+    /// declining path reads it once per slot: `builtins/value.rs`'s walks
+    /// and the `slotCount`/`slotAt:` leaves the Newspeak fallback reads
+    /// through all borrow this slice, so the leaf and the fallback cannot
+    /// disagree about which slots exist or what order they come in, and
+    /// neither allocates to ask.
+    pub declared_slots: Vec<usize>,
     pub slot_count: usize,
     /// Where this application's *own* slots start -- `superclass.slot_count`,
     /// or 0 with none. Read at run time (`Mutator::initializer_body`, into the
@@ -470,6 +530,22 @@ pub struct MixinApplication {
     /// comes from an image's bytes. `DispatchIds::NONE` for an application
     /// built anywhere else, which only tests do.
     pub dispatch_ids: DispatchIds,
+}
+
+/// `MixinApplication::declared_slots` for a level being built: the
+/// superclass's list, which is already in this order, and then this level's
+/// own declared slots. Extending the inherited list is what keeps this
+/// linear over a chain -- each level pays for its own slots once, when the
+/// application is built, rather than re-walking its ancestors.
+pub fn declared_slots_of(
+    superclass: Option<&Rc<MixinApplication>>,
+    own_slot_base: usize,
+    own_slot_count: usize,
+) -> Vec<usize> {
+    let mut declared =
+        superclass.map_or_else(Vec::new, |superclass| superclass.declared_slots.clone());
+    declared.extend(own_slot_base..own_slot_base + own_slot_count);
+    declared
 }
 
 /// Unlinks the superclass list in a loop rather than through the stack.

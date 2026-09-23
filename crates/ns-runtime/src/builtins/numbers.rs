@@ -18,11 +18,14 @@
 //! * `=` is the deliberate exception: a type-mismatched argument makes it
 //!   plain `false` (two values of different types are not equal), never an
 //!   error -- matching `Object`'s own `=` and the usual Smalltalk
-//!   convention. It is asymmetric across the two receivers, for the same
-//!   missing-coercion reason: `1 = 1.0` is `false` (`Integer`'s `=` only
-//!   accepts an `Integer`), while `1.0 = 1` is `true` (`Float`'s `=` widens
-//!   its argument like the rest of `execute_float`). A real numeric tower
-//!   would answer `true` both ways.
+//!   convention. Both directions answer `false`: `1 = 1.0` and `1.0 = 1`
+//!   alike, because each `=` is class-tight (`Character>>=` and `String>>=`
+//!   are for the same reason). `Float>>=` widened an `Integer` argument
+//!   until 2026-09-23, which made `1.0 = 1` true while `1.0 hash` and
+//!   `1 hash` differ -- the one rule a `hash` has -- and was asymmetric
+//!   besides. A real numeric tower would answer `true` both ways *and*
+//!   hash alike; until there is one, `false` both ways is the answer that
+//!   keeps the `=`/`hash` contract.
 //!
 //! Implementing the tower means widening the whole `Value` numeric domain
 //! (`LargeInteger`/`Fraction` belong in the same change) and is out of scope
@@ -52,6 +55,44 @@ fn type_mismatch<'gc>(
             heap.describe_argument(got)
         ),
     }
+}
+
+/// `Integer>>=`'s rule: an argument of any other type is plainly unequal,
+/// never an error (this module's known-gap note says why). Named so that
+/// `builtins::value`'s derived equality decides an integer exactly as
+/// `Integer>>=` does rather than growing a second copy of the rule.
+pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<&Value<'gc>>) -> bool {
+    matches!(argument, Some(Value::SmallInteger(other)) if *other == receiver)
+}
+
+/// `Float>>=`'s rule, the same way, and class-tight: only a `Float` can be
+/// equal to a `Float`.
+///
+/// It widened an `Integer` argument until 2026-09-23. That broke the one
+/// rule a `hash` has -- `1.0 = 1` answered `true` while `1.0 hash` and
+/// `1 hash` differ -- and it made `builtins::value`'s derived equality,
+/// which asks the classes first, answer `false` for the very pair this
+/// answered `true` for. One rule now, in both places. Cross-type numeric
+/// equality is what the numeric tower under `Number` brings back
+/// (`docs/design/core-library.md`, "Gap: an integer has no `/`"); the
+/// lossless widening in `argument_float` below stays, because arithmetic
+/// and ordering ask a magnitude question rather than an identity one.
+pub(crate) fn float_equals<'gc>(receiver: f64, argument: Option<&Value<'gc>>) -> bool {
+    matches!(argument, Some(Value::Float(other)) if *other == receiver)
+}
+
+/// A float's content hash: its bits, mixed and folded to 32 bits. `-0.0` is
+/// normalized to `0.0` first -- the two have different bits but compare
+/// equal, and a `hash` that told them apart would break the one rule a
+/// `hash` has ("if `x = y` ... then `x hash = y hash`"). A `NaN` needs no
+/// such care: it equals nothing, itself included, so nothing constrains its
+/// hash.
+///
+/// Shared with `builtins::value`, whose derived hash must answer the same
+/// number for a float slot as `Float>>hash` does for the float itself.
+pub(crate) fn float_hash(value: f64) -> i64 {
+    let normalized = if value == 0.0 { 0.0 } else { value };
+    crate::hash::content_hash(normalized.to_bits())
 }
 
 pub(crate) fn execute_integer<'gc>(
@@ -120,9 +161,10 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::GreaterOrEqual => Some(compare(">=", |left, right| left >= right)),
         // Deliberately *not* an error on a type mismatch -- see the
         // module-level note.
-        IntegerPrimitive::Equal => Some(Ok(Value::Boolean(
-            argument_integer() == Some(receiver_integer),
-        ))),
+        IntegerPrimitive::Equal => Some(Ok(Value::Boolean(integer_equals(
+            receiver_integer,
+            arguments.first(),
+        )))),
         IntegerPrimitive::Negated => Some(
             receiver_integer
                 .checked_neg()
@@ -182,7 +224,11 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::Less => Some(compare("<", |left, right| left < right)),
         FloatPrimitive::Greater => Some(compare(">", |left, right| left > right)),
         // Same exception as `Integer`'s `=`: never an error.
-        FloatPrimitive::Equal => Some(Ok(Value::Boolean(argument_float() == Some(receiver_float)))),
+        FloatPrimitive::Equal => Some(Ok(Value::Boolean(float_equals(
+            receiver_float,
+            arguments.first(),
+        )))),
+        FloatPrimitive::Hash => Some(Ok(Value::SmallInteger(float_hash(receiver_float)))),
         FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),
         ))),

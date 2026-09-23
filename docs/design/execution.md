@@ -1046,7 +1046,9 @@ the alignment flag alone. Why the pin: step 2c's brand commit changed no
 instruction of the run loop and still measured 1–2% slower than its parent,
 because smaller cold code ahead of the hot functions moved every one of them
 into a different 64-byte phase ("What 2c moved" below). With every function
-start pinned, a comparison measures code, not placement. Why the shipped
+start pinned, that phase shift is gone — which is not the same as a
+comparison measuring code rather than placement; the paragraph below says
+what the pin does not cover. Why the shipped
 build does not carry it: the pin costs about 110 KB of padding, 5.6% of the
 release binary, and measured no faster — the unpinned build was level or up
 to 1.8% faster than the pinned one — so `.cargo/config.toml` carries only
@@ -1056,6 +1058,13 @@ imports `VCRUNTIME140.dll` (`dumpbin /dependents`) and that each prints the
 expected output for every source; a linker map (`-C link-arg=/MAP:<file>`)
 shows every function of the crate at a multiple of 64 — the only symbols off
 the boundary are the static C runtime's own objects.
+
+The pin removes the 64-byte phase shift and nothing else. `bench_block.ns` has
+since shown a **16% spread between builds of the same tree** with the pin in
+place, stable to about 1% within each build, so on that source one build per
+commit measures the build rather than the commit; pool several builds of each
+tree instead ("What `Top`, `Value` and `Number` cost" below, which found it).
+The other seven sources stay within 0.3–2.3% between builds.
 
 Medians in ms from the first sitting, each group's mean, and the change of
 the mean in both sittings:
@@ -2772,6 +2781,341 @@ from the difference between a slot send's cost and a leaf send's. Placing
 the fallback out of line is therefore a follow-up worth trying and not one
 this measurement makes a case for.
 
+### What the core library's move cost
+
+Every builtin method now lives in `crates/ns-runtime/core-library/Kernel.ns` as a
+forwarder over the one VM mirror ([core-library.md](core-library.md),
+"The core library as Newspeak source over a VM mirror"). A kernel
+method whose whole body forwards to one mirror row is a primitive method: a
+send of it runs the row's leaf in `act`, without an activation, and
+activates the body only when the leaf declines
+([dispatch.md](dispatch.md), "Primitive methods").
+`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without them, for measuring only, so the same binary shows what they
+recover.
+
+**The expectation, recorded before any binary was built.** With primitive
+methods on, against `e2bb31e`: level on every source. A leaf send that `IntegerBinary` does not absorb costs one
+cached send plus one field test on the method, where it cost one cached
+send; the rest of the path is the same primitive. The one new cost on every
+method send is that field test; if a source that sends no leaf moves, that is
+where to look. Under `NS_NEXT_NO_PRIMITIVE_METHODS=1`, against `e2bb31e`:
+slower on every source that sends a leaf the fast path does not absorb, since
+each such send becomes an activation of the kernel method, a lexical send of
+`vmMirror` and a `SendMirror`. From their text those are `bench_block.ns`
+(`value:`, 50,000 a run), `bench_megamorphic.ns` (`at:`, 50,000 a run) and
+`bench_do.ns` (`do:`, 5,000 a run, each running ten block activations the
+leaf makes); `bench_loop.ns`, `bench_send.ns` and the three `bench_new*`
+sources send `printString`, `show:` and `newLine` only once, after their
+loop, and should be level. Start-up, against `e2bb31e`: slower by the
+kernel's parse, resolution, compilation and instantiation, which did not
+exist.
+
+**Measured 2026-09-22, against `e2bb31e` (the merge of leaf inlining into
+`master`) and `be3eb40`, by the protocol of "What removing the re-entries
+moved" above.** Every binary -- `e2bb31e` and `be3eb40` built in throwaway
+worktrees, the head `52c242b` in the current tree -- built with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
+none imports `VCRUNTIME140.dll` (`dumpbin -dependents`); each checked to
+print the expected answer for all eight sources first, the head in both
+configurations; `ns-next bench <source> --iterations 30`, five rounds per
+sitting, the four configurations -- `e2bb31e`, `be3eb40`, the head, the head
+under `NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary with the variable
+set for its runs only -- rotating by one position from round to round, two
+whole sittings, nothing else running.
+
+**`vm::run`'s step is still one function.** A release build with debug
+information of the head and of `e2bb31e` (the timed build's `RUSTFLAGS`
+plus `CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`), then
+`dumpbin -disasm`: one function label matching `vm::run`
+(`ns_runtime::vm::run`) in each, no `vm::run::closure` of its own. `e2bb31e`
+measures **5,866 instructions**, the figure leaf inlining recorded, and the
+head **6,385** -- 519 more, for the `SendMirror` arm and the primitive-method
+test in every inlined `act`. The step did not split, so no remedy was
+needed. Two things the head changed on the send path, checked in the same
+listing: `vm::deliver`, `#[inline(always)]` and shared by `send` and
+`SendMirror`, has no label of its own, so it is inlined into both; and
+`act`'s `Primitive` arm, which now builds its error through
+`unwrap_or_else`, keeps that error out of line --
+`resolve::impl$2::act_with_base::closure$0` and `resolve::unhandled_error`
+are small functions of their own, called from three sites each in
+`vm::run`, where `e2bb31e` called the cold `act_above` and
+`act_handler_primitive` from four each. What the primitive methods add to
+the hot path is visible as calls: `vm::run` calls `builtins::execute` from
+eight sites, against four in `e2bb31e` (`mirror::execute_method` is inlined
+into each method arm, and the leaf it runs stays out of line), and
+`mirror::run_leaf` from one, the `SendMirror` arm.
+
+Medians in ms per round, then each group's mean; sitting 1:
+
+| Source | `e2bb31e`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | Head, rounds 1–5 | mean | Head, no primitive methods, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.21, 7.14, 7.09, 7.20, 7.12 | 7.15 | 11.25, 11.10, 11.33, 11.26, 11.23 | 11.23 | 6.97, 7.13, 7.17, 7.09, 6.94 | 7.06 | 6.87, 7.06, 7.04, 7.04, 6.94 | 6.99 |
+| `bench_send.ns` | 8.43, 8.43, 8.51, 8.33, 8.51 | 8.44 | 13.73, 13.92, 14.03, 14.01, 13.95 | 13.93 | 8.16, 8.29, 8.40, 8.38, 8.41 | 8.33 | 8.33, 8.24, 8.40, 8.30, 8.41 | 8.33 |
+| `bench_block.ns` | 17.58, 17.81, 17.79, 17.78, 17.83 | 17.76 | 22.98, 23.45, 23.21, 23.35, 23.33 | 23.27 | 16.83, 16.94, 16.84, 16.64, 16.95 | 16.84 | 21.82, 21.58, 21.36, 21.60, 21.43 | 21.56 |
+| `bench_megamorphic.ns` | 11.59, 11.52, 11.58, 11.46, 11.61 | 11.55 | 17.96, 18.08, 17.97, 17.96, 18.06 | 18.01 | 11.32, 11.34, 11.43, 11.55, 11.42 | 11.41 | 14.32, 14.29, 14.44, 14.21, 14.30 | 14.31 |
+| `bench_do.ns` | 5.59, 5.71, 5.59, 5.64, 5.57 | 5.62 | 8.09, 8.02, 8.14, 8.26, 8.61 | 8.23 | 5.76, 5.72, 5.81, 5.66, 6.23 | 5.84 | 5.98, 5.98, 5.98, 6.01, 5.99 | 5.99 |
+| `bench_new.ns` | 4.81, 4.96, 4.92, 4.95, 4.98 | 4.92 | 7.42, 7.50, 7.73, 7.53, 7.47 | 7.53 | 4.81, 4.84, 4.82, 4.79, 4.88 | 4.83 | 4.92, 4.93, 4.94, 4.98, 4.98 | 4.95 |
+| `bench_new2.ns` | 5.87, 6.03, 5.91, 5.88, 5.93 | 5.92 | 8.34, 8.36, 8.37, 8.41, 8.38 | 8.37 | 5.84, 5.81, 5.80, 5.79, 5.75 | 5.80 | 5.79, 5.97, 5.83, 5.75, 5.78 | 5.82 |
+| `bench_newarg.ns` | 8.16, 8.08, 8.11, 8.18, 8.14 | 8.14 | 10.54, 10.84, 10.79, 10.60, 10.67 | 10.69 | 8.06, 8.13, 8.03, 7.95, 8.03 | 8.04 | 8.25, 8.37, 8.33, 8.29, 8.46 | 8.34 |
+
+Sitting 2:
+
+| Source | `e2bb31e`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | Head, rounds 1–5 | mean | Head, no primitive methods, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.24, 7.03, 7.08, 7.31, 7.20 | 7.17 | 11.17, 11.34, 11.22, 11.22, 11.14 | 11.22 | 7.00, 7.01, 7.10, 6.96, 7.11 | 7.04 | 7.04, 7.15, 7.05, 7.08, 7.03 | 7.07 |
+| `bench_send.ns` | 8.65, 8.53, 8.34, 8.38, 8.53 | 8.49 | 13.90, 13.94, 14.10, 13.95, 14.04 | 13.98 | 8.33, 8.26, 8.37, 8.50, 8.33 | 8.36 | 9.38, 8.26, 8.36, 8.34, 8.36 | 8.54 |
+| `bench_block.ns` | 17.71, 17.67, 17.81, 17.62, 17.91 | 17.74 | 23.18, 23.31, 23.27, 23.29, 23.33 | 23.28 | 17.85, 16.99, 16.59, 16.86, 17.11 | 17.08 | 21.55, 21.37, 21.56, 21.49, 21.49 | 21.49 |
+| `bench_megamorphic.ns` | 11.41, 11.75, 11.59, 11.79, 11.43 | 11.59 | 18.04, 17.95, 18.19, 18.06, 18.02 | 18.05 | 11.44, 11.43, 11.38, 11.38, 11.45 | 11.41 | 14.42, 14.24, 14.33, 14.32, 14.17 | 14.30 |
+| `bench_do.ns` | 5.78, 5.74, 5.72, 5.64, 5.66 | 5.71 | 8.00, 8.00, 8.05, 7.94, 8.08 | 8.02 | 5.71, 5.64, 5.85, 5.74, 5.71 | 5.73 | 5.97, 5.92, 5.99, 5.92, 6.00 | 5.96 |
+| `bench_new.ns` | 4.91, 4.92, 4.90, 5.00, 4.89 | 4.92 | 7.42, 7.37, 7.55, 7.50, 7.48 | 7.47 | 4.88, 4.81, 4.87, 4.82, 4.81 | 4.84 | 4.91, 4.94, 4.95, 4.98, 4.97 | 4.95 |
+| `bench_new2.ns` | 5.99, 5.94, 5.85, 5.94, 5.93 | 5.93 | 8.36, 8.41, 8.36, 8.27, 8.44 | 8.37 | 5.85, 5.81, 5.79, 5.85, 5.88 | 5.84 | 5.72, 5.82, 5.78, 5.86, 5.79 | 5.79 |
+| `bench_newarg.ns` | 8.20, 8.19, 8.04, 8.23, 8.15 | 8.16 | 10.61, 10.63, 10.59, 10.53, 10.54 | 10.58 | 7.98, 7.98, 8.01, 8.00, 7.92 | 7.98 | 8.41, 8.31, 8.37, 8.38, 8.36 | 8.36 |
+
+The change of each head configuration's mean against each baseline,
+sitting 1 / sitting 2:
+
+| Source | Head against `e2bb31e` | No primitive methods against `e2bb31e` | Head against `be3eb40` | No primitive methods against `be3eb40` |
+|---|---|---|---|---|
+| `bench_loop.ns` | −1.3% / −1.9%, overlapping | −2.3% / −1.4%, entirely below in the first | −37.2% / −37.3%, entirely below | −37.8% / −37.0%, entirely below |
+| `bench_send.ns` | −1.3% / −1.5%, overlapping | −1.3% / +0.6%, overlapping | −40.2% / −40.2%, entirely below | −40.2% / −38.9%, entirely below |
+| `bench_block.ns` | −5.2% / −3.7%, entirely below in the first | **+21.4% / +21.1%, entirely above** | −27.6% / −26.6%, entirely below | −7.3% / −7.7%, entirely below |
+| `bench_megamorphic.ns` | −1.2% / −1.6%, overlapping | **+23.9% / +23.3%, entirely above** | −36.6% / −36.8%, entirely below | −20.5% / −20.8%, entirely below |
+| `bench_do.ns` | +3.8% / +0.4%, overlapping | **+6.5% / +4.4%, entirely above** | −29.1% / −28.5%, entirely below | −27.2% / −25.7%, entirely below |
+| `bench_new.ns` | −1.9% / −1.7%, entirely below in the second | +0.5% / +0.6%, overlapping | −35.9% / −35.2%, entirely below | −34.3% / −33.7%, entirely below |
+| `bench_new2.ns` | −2.1% / −1.5%, entirely below in the first | −1.7% / −2.2%, overlapping | −30.8% / −30.3%, entirely below | −30.5% / −30.8%, entirely below |
+| `bench_newarg.ns` | −1.2% / −2.3%, entirely below in the second | **+2.5% / +2.5%, entirely above** | −24.8% / −24.6%, entirely below | −21.9% / −21.0%, entirely below |
+
+Both sittings pooled, means in ms:
+
+| Source | `e2bb31e` | `be3eb40` | Head | No primitive methods | Head against `e2bb31e` | No primitive methods against `e2bb31e` | No primitive methods against the head |
+|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.16 | 11.23 | 7.05 | 7.03 | −1.6% | −1.8% | −0.2% |
+| `bench_send.ns` | 8.46 | 13.96 | 8.34 | 8.44 | −1.4% | −0.3% | +1.1% |
+| `bench_block.ns` | 17.75 | 23.27 | 16.96 | 21.52 | −4.5% | **+21.3%** | **+26.9%** |
+| `bench_megamorphic.ns` | 11.57 | 18.03 | 11.41 | 14.30 | −1.4% | **+23.6%** | **+25.3%** |
+| `bench_do.ns` | 5.66 | 8.12 | 5.78 | 5.97 | +2.1% | **+5.5%** | +3.3% |
+| `bench_new.ns` | 4.92 | 7.50 | 4.83 | 4.95 | −1.8% | +0.5% | +2.4% |
+| `bench_new2.ns` | 5.93 | 8.37 | 5.82 | 5.81 | −1.8% | −2.0% | −0.1% |
+| `bench_newarg.ns` | 8.15 | 10.63 | 8.01 | 8.35 | −1.7% | +2.5% | +4.3% |
+
+**With primitive methods on, moving the core library into Newspeak cost
+nothing measurable: the head is −4.5% to +2.1% against `e2bb31e`, and no
+head group lies entirely above its `e2bb31e` group in either sitting.** The
+expectation said level, and that is what the suite shows: seven sources
+between −1.4% and −4.5%, four of them entirely below in one sitting, and
+`bench_do.ns` at +3.8% / +0.4%, overlapping, its first-sitting mean carried
+by one round at 6.23 ms against four between 5.66 and 5.81. The field test
+every method send now makes does not show: `bench_send.ns` activates one
+ordinary method per iteration, `tick:`, and is −1.4%. Against `be3eb40` the
+head is 24.7% to 40.2% faster on every source, entirely below in both
+sittings.
+
+**Without them, the three sources named in advance are the three that got
+clearly slower**, entirely above in both sittings: `bench_megamorphic.ns`
++23.6% and `bench_block.ns` +21.3%, each sending one leaf 50,000 times a run
+(`at:` and `value:`), and `bench_do.ns` +5.5%, whose `do:` is sent 5,000
+times. That is what the primitive methods recover: 26.9% of
+`bench_block.ns`'s time, 25.3% of `bench_megamorphic.ns`'s and 3.3% of
+`bench_do.ns`'s against the same binary without them. Per send, the
+activation, the lexical `vmMirror` send and the `SendMirror` that replace a
+primitive method's fast path cost about 58 ns on `bench_megamorphic.ns`
+(2.89 ms over 50,000 `at:`) and about 91 ns on `bench_block.ns` (4.56 ms over
+50,000 `value:`, whose leaf then activates the block, so the kernel method's
+own activation sits beneath the block's on the stack); on `bench_do.ns`, 0.19
+ms over 5,000 `do:` is about 38 ns each. Even so, every source without
+primitive methods stays 7.5% to 39.5% faster than `be3eb40`, pooled.
+
+**What is left unexplained.** `bench_newarg.ns` is 2.5% slower without
+primitive methods in both sittings, entirely above, and `bench_new.ns` 2.4%
+slower than the head, entirely above in both, although neither sends a
+kernel method in its loop, by its text: `--cache-statistics` counts four more
+sites filled without primitive methods on every source, which fits the
+`vmMirror` and mirror sends of the activated `printString`, `show:` and
+`newLine` each sends once after its loop. Being the same binary, code
+placement is not the explanation either; what differs between the two is the
+kernel's compiled bodies, and how that reaches an instantiation loop is not
+isolated. Nor is why
+`bench_block.ns` is 4.5% *faster* with primitive methods than `e2bb31e`,
+entirely below in the first sitting: its `value:` went from a primitive
+entry of `Block`'s method table, run by `act`'s `Primitive` arm, to a
+kernel method whose leaf runs from its `Method` arm, and nothing on that
+path is obviously cheaper. Neither was profiled.
+
+**Two costs the primitive methods carry that the suite does not exercise.**
+A leaf that declines runs twice: once in `act`'s fast path, and again from
+the activated body's `SendMirror` before its failure block runs. It is paid
+only on a failure path: every kernel method's failure block resends its
+message to `super`, which for all but a few rows (`Integer`'s `=` reaching
+`Object`'s) ends in `doesNotUnderstand:`. No figure was taken; the suite runs
+no failing leaf. And a cached site
+whose target is a primitive method reserves feedback-table room for that
+method's family although the fast path never activates it:
+`ns-next run --cache-statistics` counts 23 site entries for `bench_loop.ns`
+against 15 in `e2bb31e`, 26 against 16 for `bench_block.ns` and 39 against
+29 for `bench_megamorphic.ns`, with the same number filled -- 8 to 10
+entries of 24 bytes, 192 to 240 bytes a run, for the `printString`, `show:`
+and `newLine` sent once.
+
+**Start-up is 0.5 ms slower**, the kernel's parse, resolution, compilation
+and instantiation, as expected. The whole `ns-next run` of a module whose
+`main:args:` answers `0` at once, wall-clock from the parent process, 50
+runs of each binary alternating, in two sittings: `e2bb31e` median 3.56 ms
+and 3.55 ms (10th to 90th percentile 3.31–3.71 and 3.46–3.82), the head
+4.08 ms and 4.06 ms (3.84–4.35 and 3.96–4.31) -- +0.51 ms, 14%, the head's
+10th percentile above `e2bb31e`'s 90th in both. That is under a
+millisecond, so embedding the compiled kernel as an image generated at
+build time ([core-library.md](core-library.md), "Where the library source
+lives, and how modules are found") is not called for by this figure; it stays the named next step if
+the kernel grows until it is.
+
+### What `Top`, `Value` and `Number` cost
+
+Giving the core library the specification's object model
+([core-library.md](core-library.md), "What exists"; §3.2 and §3.1.1) changed
+three things a release build runs. The hierarchy gained two levels -- `Top`
+above `Object`, and `Value`, with `Number` under it, between `Object` and the
+value classes -- so a *failed* lookup walks two levels more before it reaches
+`doesNotUnderstand:`. `Instruction::InitializeSlot` gained a branch, the
+deep-immutability check of §3.1.1's second condition
+(`instantiate::check_value_slot`). And `==` on a value is no longer `Object`'s
+identity leaf but `Value`'s `^self = other`, two dispatches where there was
+one.
+
+**The expectation, recorded before any binary was built.** Level on all eight
+sources. No send in any of the eight loops fails, so the two extra levels
+cannot show. **None of the eight compares values in its loop** -- no `=` and
+no `==` appears in any of them, in the loop or outside it -- so the two
+dispatches cannot show either, and this measurement does not bound them; what
+a value comparison costs is stated from the source instead. That leaves the
+`InitializeSlot` branch, which can show only on `bench_new.ns`, `bench_new2.ns`
+and `bench_newarg.ns`, the three that run one or two initializers per
+iteration, 20,000 iterations each. Every one of their stores is an immediate,
+so the check returns on its first test.
+
+**Measured 2026-09-23, `ab692b7` against `b0a771d`, by the protocol of "What
+removing the re-entries moved" above.** `b0a771d` is this branch's head before
+the first commit of the work (`1dc548a`) and is itself documentation only, so
+its tree is the code as it stood before; `ab692b7` is the last commit of the
+work, the one the figures below were taken at. `2ad6f30` landed afterwards --
+a value's state is the slots its classes declare, so a nested class's cache
+slot is no longer compared or hashed -- and touches no path any of the eight
+sources runs: none of them declares a value class, and the change is confined
+to `builtins/value.rs`'s walks and the two reflective leaves. The figures
+stand for the head. Every binary built with
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
+neither imports `VCRUNTIME140.dll` (`dumpbin -dependents`); each checked to
+print the expected answer for all eight sources first;
+`ns-next bench <source> --iterations 30`, five rounds a sitting, the binaries
+rotating by one position from round to round, two whole sittings, nothing else
+running.
+
+**Five binaries rather than two, and why.** The first pairing -- one build of
+the baseline against one build of the head -- put `bench_block.ns` 13.4%
+*faster* at the head, every group entirely below, which nothing the change
+touches can explain: `bench_block.ns` instantiates nothing, and its loop sends
+`<`, `+`, `value:` and `bump:`. Two further builds of the baseline and two of
+the head, from the same trees with the same flags, showed what it was. On
+`bench_block.ns` alone the five builds sit at five separate levels --
+17.21 ms, 18.86 (baseline) and 16.49, 19.13, 19.13 (head) -- each stable to
+about 1% across ten rounds, with the fastest and the two slowest all being
+head builds. The spread is 16%, it straddles the commit boundary, and it is
+therefore a property of the build, not of the change. The other seven sources
+show 0.3% to 2.3% between builds of the same tree. `bench_block.ns` is the
+longest-running source and the only one whose loop activates a block through a
+primitive method; what in the layout decides which level a build lands on was
+not isolated. **One build per commit is not enough for `bench_block.ns`**, and
+the comparison below pools the builds of each commit instead.
+
+**`vm::run`'s step is still one function.** A release build with debug
+information of each tree (the timed build's `RUSTFLAGS` plus
+`CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`), then
+`dumpbin -disasm`: one function label matching `vm::run`
+(`ns_runtime::vm::run`) in each, no `vm::run::closure` of its own. The
+baseline measures **6,389 instructions** and the head **6,506** -- 117 more,
+the inlined `check_value_slot` in the `InitializeSlot` arm. `check_value_slot`
+has no label of its own in either listing, so it is inlined rather than
+called; the only new function is the `#[cold]`
+`instantiate::non_value_slot_error`, which builds the refusal. The step did not
+split, so no remedy was needed.
+
+Means in ms per build, over that sitting's five rounds; sitting 1, then
+sitting 2. `base1` and `base2` are the two baseline builds, `head1` to `head3`
+the three head builds:
+
+| Source | `base1` | `base2` | `head1` | `head2` | `head3` |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.16 | 7.10 | 7.14 | 7.08 | 7.14 |
+| `bench_send.ns` | 8.45 | 8.45 | 8.49 | 8.74 | 8.45 |
+| `bench_block.ns` | 18.68 | 17.17 | 16.44 | 19.01 | 19.05 |
+| `bench_megamorphic.ns` | 11.56 | 11.52 | 11.57 | 11.60 | 11.62 |
+| `bench_do.ns` | 5.73 | 5.81 | 5.79 | 5.85 | 5.95 |
+| `bench_new.ns` | 5.01 | 5.04 | 4.97 | 4.97 | 4.98 |
+| `bench_new2.ns` | 5.80 | 5.90 | 6.02 | 6.01 | 6.05 |
+| `bench_newarg.ns` | 8.10 | 8.08 | 8.05 | 8.06 | 7.96 |
+
+| Source | `base1` | `base2` | `head1` | `head2` | `head3` |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.14 | 7.14 | 7.18 | 7.17 | 7.15 |
+| `bench_send.ns` | 8.53 | 8.45 | 8.54 | 8.50 | 8.51 |
+| `bench_block.ns` | 19.05 | 17.25 | 16.54 | 19.24 | 19.21 |
+| `bench_megamorphic.ns` | 11.60 | 11.56 | 11.63 | 11.65 | 11.65 |
+| `bench_do.ns` | 5.77 | 5.79 | 5.87 | 5.87 | 5.98 |
+| `bench_new.ns` | 5.00 | 5.07 | 5.00 | 5.04 | 5.00 |
+| `bench_new2.ns` | 5.86 | 5.83 | 6.05 | 6.08 | 6.13 |
+| `bench_newarg.ns` | 8.05 | 8.11 | 8.08 | 8.08 | 8.03 |
+
+Both sittings pooled, the baseline's two builds against the head's three:
+
+| Source | Baseline | Head | Change, pooled | Change, sitting 1 / 2 |
+|---|---|---|---|---|
+| `bench_loop.ns` | 7.13 | 7.14 | +0.1% | −0.1% / +0.3% |
+| `bench_send.ns` | 8.47 | 8.54 | +0.8% | +1.3% / +0.3% |
+| `bench_block.ns` | 18.04 | 18.25 | +1.2% | +1.3% / +1.0% |
+| `bench_megamorphic.ns` | 11.56 | 11.62 | +0.5% | +0.4% / +0.5% |
+| `bench_do.ns` | 5.78 | 5.88 | +1.9% | +1.6% / +2.2% |
+| `bench_new.ns` | 5.03 | 4.99 | −0.7% | −1.0% / −0.5% |
+| `bench_new2.ns` | 5.85 | **6.06** | **+3.6%** | +3.0% / +4.2% |
+| `bench_newarg.ns` | 8.08 | 8.05 | −0.5% | −0.8% / −0.2% |
+
+**Seven of the eight are level, and the expectation held for them**: −0.7% to
++1.9%, inside the 0.3–2.3% these sources show between builds of the same tree.
+`bench_block.ns`'s +1.2% is not a figure at all -- the build-to-build spread on
+that source is 16%, and both the fastest and the slowest builds are head
+builds, so this measurement says nothing about it either way.
+
+**Open finding: `bench_new2.ns` is 3.6% slower**, and that is a real
+regression, not scatter. All three head builds (6.02, 6.01, 6.05 and 6.05,
+6.08, 6.13) lie above both baseline builds (5.80, 5.90 and 5.86, 5.83) in both
+sittings, and the source's build-to-build spread is 0.7%. It was one of the
+three the expectation named. What does not follow is why it is the only one:
+`bench_newarg.ns` runs the same two initializers per instantiation over the
+same two levels and is −0.5%, and `bench_new.ns`, with one, is −0.7%. So the
+per-store check alone does not explain it -- all three store immediates, where
+the check returns on its first test. The other two candidates on that path are
+the `Ok`/`Err` match the `InitializeSlot` arm now carries, which is new
+control flow inside `vm::run` where there was a straight store, and
+`MixinApplication` having grown two fields (`inherits_value` and
+`mutable_value_slot`), which `instantiate_class` reads once per instantiation
+for §3.1.1's first condition. Neither was profiled, and nothing was bisected
+between them. **What would recover it**: deciding the check once per
+activation instead of once per store. The application already knows
+`inherits_value`, and the executing activation already reads its level's
+application for `slot_base`, so `InitializeSlot` could branch on a flag the
+frame carries rather than walking `receiver -> class -> application` on every
+store; that is the change to make if the figure ever matters, and it was left
+undone because 3.6% on one instantiation benchmark did not warrant it before
+`Class`, `Behavior` and `Metaclass` land and change the same path again.
+
+**Start-up did not move measurably.** The whole `ns-next run` of a module whose
+`main:args:` answers `0` at once, wall-clock from the parent process, 100 runs
+of each binary over two sittings, the four binaries rotating: baseline medians
+5.10 ms and 5.13 ms (10th to 90th percentile 4.89–5.49 and 4.91–5.53), head
+4.94 ms and 5.26 ms (4.67–5.36 and 5.00–5.70). The two head builds straddle
+the two baseline builds, so the three classes and seven methods the kernel
+gained cost less than the scatter between builds. These figures are not
+comparable with the core library's move above, which was a different sitting on
+a differently loaded machine.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -2824,8 +3168,10 @@ Three things the trampoline settles on its own:
   the static nesting of `and:` and `while` blocks, so no fixed native stack
   would guarantee that the count trips before the native stack under both
   lowerings. `do:` answers its block as a step too ("No re-entry from Rust"
-  below), and moves to Newspeak in step 6 of M4's order of
-  work ([core-library.md](core-library.md), [PROGRESS.md](../PROGRESS.md)).
+  below). Since step 6 each of these is the leaf a `Kernel.ns` method
+  forwards to; rewriting them as Newspeak loops and branches is a separate
+  step before the JIT tiers ([core-library.md](core-library.md), "Planned:
+  real bodies for control flow and `do:`, before the JIT tiers").
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
@@ -2884,8 +3230,10 @@ yet.
   an instantiation or a nested-class accessor runs — an initializer level, a
   superclass clause or its message — are counted by construction.
 - **The exemption is marked by the arguments.** A block a control-flow native
-  activates carries `StepArguments::ControlFlow` — it has no arguments, and only
-  those natives build that variant — and `push_step` exempts it when the send
+  activates, and the failure block a sent mirror send activates when its leaf
+  declines ([compiler.md](compiler.md), "Mirror sends"), carry
+  `StepArguments::ControlFlow` — neither has arguments, and only those two
+  build that variant — and `push_step` exempts one when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through
@@ -3007,8 +3355,8 @@ when these paths ran in nested runs of the loop.
   "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and
   every other primitive's leaf result is lifted into a step through
   `leaf_step`. `Array` and `OrderedCollection` share this one function; which
-  of them answers `at:put:` and which `add:` is decided by their own lists in
-  `builtins/primitive.rs`, not here. Each element's activation is counted, like any block a `value`
+  of them answers `at:put:` and which `add:` is decided by the methods their
+  classes declare in `Kernel.ns`, not here. Each element's activation is counted, like any block a `value`
   send activates; a `^` in it unwinds like any other activation's, and its
   arity is checked by the same `check_block_arity`. Its argument is a
   one-element vector, allocated per element: a `StepArguments` variant that carried
@@ -3215,8 +3563,10 @@ walking that chain (`ActivationMirrorTesting.ns`, `describeActivation:to:`),
 the creator is still answered after its method has returned
 (`testClosureActivation`, on a block `seven` returned), and a block evaluated
 directly in its method has `sender = enclosingActivation`
-(`testEnclosingActivationEquality`). Once the core library is Newspeak (step
-6), every block a collection iterator runs is such an entry.
+(`testEnclosingActivationEquality`). Once the collection iterators are
+Newspeak loops rather than forwarders to a leaf ([core-library.md](core-library.md),
+"Planned: real bodies for control flow and `do:`, before the JIT tiers"),
+every block one runs is such an entry.
 
 The alternative — reify nothing for a block without `^`, carry only what it
 captured, as the JVM does (a lambda holds its captured values and no frame;

@@ -1,0 +1,73 @@
+Newspeak3
+'Kernel'
+(* A value object has no observable identity -- §3.1.1 lets a value be
+   copied across an actor boundary, so a copy must be equal to, and hash
+   like, its original. Primordial Soup states the contract `hash` is held
+   to: it "should be overridden if the method `=` is overridden ... if
+   `x = y` evaluates to true then `x hash = y hash` must evaluate to true."
+
+   Each `report:` line prints whether its two values are equal and whether
+   they hash alike: both must be `true` for every value class. Where the
+   class has separate instances at all -- `Float`, `String` -- the two are
+   built separately, so a hash by identity would show up as `true false`.
+   The rest cannot be: a `Symbol` is interned to one object (§5.1.6), and
+   an `Integer`, a `Boolean` and a `Character` literal are immediates or
+   one-`char` payloads the two sides need not keep apart. Those lines pin
+   that the answers agree, not that two objects were compared.
+
+   The `cross:` lines are the other half of the contract: `String` and
+   `Character` share a payload and `Symbol` carries the same text, so each
+   pair below *looks* equal and hashes apart. `=` therefore has to answer
+   `false`, which is the class check in `builtins::text`. The second column
+   is informational -- the contract says nothing about how unequal values
+   hash -- and records that the two are in fact told apart.
+
+   `Float/Integer` is the same shape and the reason `Float>>=` is
+   class-tight (2026-09-23): `1.0 hash` is a hash of the float's bits and
+   `1 hash` is the integer itself, so the two hash apart, and an `=` that
+   widened its argument -- as `Float>>=` did until then -- answered `true`
+   for a pair whose hashes differ. Making cross-type numeric equality true
+   again means the numeric tower under `Number`, which has to give the two
+   one hash as well (`docs/design/core-library.md`).
+
+   The bare lines are the hashes the contract fixes exactly, then two
+   inequalities showing a content hash is a hash of the content and not a
+   constant, and one line for the one float pair whose bits differ while
+   their values are equal. *)
+class ValueHashes usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    report: label for: first and: second = (
+        transcript show: label; show: ' '; show: (first = second) printString;
+            show: ' '; show: (first hash = second hash) printString; newLine
+    )
+    cross: label for: first and: second = (
+        transcript show: label; show: ' '; show: (first = second) printString;
+            show: ' '; show: (first hash = second hash) printString; newLine
+    )
+    show: value = (
+        transcript show: value printString; newLine
+    )
+    public main: ignoredPlatform args: arguments = (
+        report: 'Integer' for: 1 + 2 and: 3.
+        report: 'Float' for: 1.0 + 1.5 and: 2.5.
+        report: 'String' for: 'ab' , 'c' and: 'abc'.
+        report: 'Symbol' for: 'abc' asSymbol and: #abc.
+        report: 'Character' for: "a" and: "a".
+        report: 'Boolean' for: 1 < 2 and: true.
+        cross: 'Character/String' for: "a" and: 'a'.
+        cross: 'String/Character' for: 'a' and: "a".
+        cross: 'Symbol/String' for: #a and: 'a'.
+        cross: 'String/Symbol' for: 'a' and: #a.
+        cross: 'Float/Integer' for: 1.0 and: 1.
+        cross: 'Integer/Float' for: 1 and: 1.0.
+        show: 3 hash.
+        show: 0 hash.
+        show: "a" hash.
+        show: true hash.
+        show: false hash.
+        show: 'abc' hash = 'abd' hash.
+        show: #abc hash = #abd hash.
+        show: ((0.0 - 1.0) * 0.0) hash = 0.0 hash.
+    )
+) : ()

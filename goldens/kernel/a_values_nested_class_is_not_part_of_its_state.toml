@@ -1,0 +1,8 @@
+stdout = '''
+untouched true true true
+one touched true true true
+both touched true true true
+different state false false false
+inherited nested true true true
+inherited differs false false false
+'''

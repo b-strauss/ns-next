@@ -1,3 +1,7 @@
 # Vendored third-party corpus: keep byte-for-byte verbatim, no line-ending or
 # other normalization, so parser tests and snapshots are stable across platforms.
 corpus/** -text
+# The core library is compiled into the binary with `include_str!`: keep it
+# byte-for-byte as committed, so its spans and every image built from it are
+# the same on every platform.
+crates/ns-runtime/core-library/** -text

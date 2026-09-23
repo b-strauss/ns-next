@@ -15,6 +15,16 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
+**The next piece of work is step 6's third plan, `Class`, `Behavior`
+and `Metaclass` in `Kernel.ns`**, which has no plan yet and only the outline
+[object-model.md](design/object-model.md)'s "Class sides and metaclasses"
+gives. Step 6's first two plans are done: the core library over a VM mirror,
+which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
+which gave it the specification's object model
+([core-library.md](design/core-library.md), "What exists"). All three are
+described below, from "Step 6's first part" on, after the account of how M4
+got here.
+
 M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
 "Checked roots and a collector"). **2a, no re-entry from Rust** — `do:`,
@@ -269,46 +279,114 @@ inline caches, at 4.3–11.3% over seven sources. `vm::run` grew from 5,732 to
 below and [execution.md](design/execution.md), "What leaf inlining moved".
 
 **This is the cushion step 6's move to the VM mirror was sequenced to have.**
-Rewriting `do:`, `collect:` and the kernel classes as Newspeak turns every
-arithmetic operation in those bodies into a send the interpreter dispatches;
-the numbers above are what that rewrite now has to spend before it shows as
-a regression against `6f5a5b1`, and the fast path is what supplies it.
+Moving the library into Newspeak, and later rewriting `do:` and the
+control-flow methods as Newspeak loops, turns arithmetic in those bodies into
+sends the interpreter dispatches; the numbers above are what that work has to
+spend before it shows as a regression against `6f5a5b1`, and the fast path is
+what supplies it.
 
-**What step 6 still needs, and it has a design but no plan yet.** The design
-is [core-library.md](design/core-library.md), "Planned: the core library as
-Newspeak source over a VM mirror", decided with the user on 2026-09-21 and
-written up in four parts: why the mirror is the whole Rust boundary (§8.3.1
-requires it — "A primitive call is a message send to the VM mirror" — which
-rules out the primitive pragma an earlier version of that document named as
-the target), how the bootstrap fills empty class placeholders from the
-compiled `Kernel.ns` before instantiating it, where the library source lives
-and how modules are found, and what the step must not break.
+**The rest of step 6 breaks into three plans, and the first two are done.**
+The first — the core
+library over a VM mirror — is done (2026-09-22;
+[ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md);
+[core-library.md](design/core-library.md), "The core library as Newspeak
+source over a VM mirror"). Every builtin method is a one-line forwarder in
+`crates/ns-runtime/core-library/Kernel.ns` — `^vmMirror integer: self add: other
+ifFail: [^super + other]` — over the one VM mirror, a builtin object whose
+method table carries every leaf as an enumerated primitive, one row of
+`builtins/primitive.rs`'s `MIRROR` each; the per-class primitive lists and
+the pass-over a failing primitive used to take are gone. The bootstrap
+compiles `Kernel.ns`, fills the builtin class objects it had built as
+placeholders from its nested classes, `True` and `False` now under
+`Boolean`, and instantiates it with the mirror, which nothing else can
+obtain: only `resolver::resolve_kernel` marks a send to it, the image format
+refuses it both ways, and its class cannot be instantiated. Inside a kernel
+method the mirror send's failure block is lowered inline
+(`Instruction::SendMirror`, no wire tag; [compiler.md](design/compiler.md),
+"Mirror sends"), and a kernel method whose body only forwards is a
+primitive method, whose leaf `act` runs without an activation under both
+lowerings ([dispatch.md](design/dispatch.md), "Primitive methods").
+**No recorded outcome moved.** The one observable difference — a builtin
+subclass's own `doesNotUnderstand:` is now passed by, as §5.10 says — was
+decided with the user and is pinned by a new golden under `goldens/kernel/`
+([core-library.md](design/core-library.md), "The one observable
+difference"). **Measured against `e2bb31e` over the eight sources, two
+sittings: with primitive methods −4.5% to +2.1%, no group entirely above in
+either sitting — the move cost nothing measurable.** Without them
+(`NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary) −2.0% to +23.6%:
+`bench_megamorphic.ns` +23.6%, `bench_block.ns` +21.3% and `bench_do.ns`
++5.5%, the three that send a leaf the fast path does not absorb in their
+loop. Against `be3eb40` the head is 24.7–40.2% faster. Start-up (`run` of a
+module that returns at once) is 0.5 ms slower, 4.07 ms against 3.56 ms.
+`vm::run` grew from 5,866 to 6,385 instructions and stayed one inlined
+function. See [execution.md](design/execution.md), "What the core library's
+move cost".
 
-It breaks into three plans, deliberately not one, for the reason the leaf
-inlining was split off first: each produces working, measured software on its
-own, and each one's measurement informs the next.
+**The second — `Top`, `Value` and `Number` — is done too** (2026-09-23;
+[ns-next-value-and-top](superpowers/plans/2026-09-22-2112-ns-next-value-and-top.md);
+[core-library.md](design/core-library.md), "What exists"). It gave the core
+library the specification's *object model* where the first gave it the
+specification's *dispatch*: §3.2's empty class `Top` above `Object`, with
+every other class below `Object`; §3.1.1's `Value` over the value classes,
+`Number` among them, empty and waiting for the numeric tower; the value
+classes hashing by content rather than by identity; `Value` deriving `=`,
+`==` and `hash` from an instance's state through `builtins/value.rs`, with a
+Newspeak fallback for what that leaf declines; and §3.1.1's two conditions
+refused at instantiation. Every class but `Top` is public, because §6.3.1
+would otherwise leave them unreachable from any other module. **Measured,
+seven of the eight sources are level and `bench_new2.ns` is 3.6% slower**;
+see "`Top`, `Value` and the value semantics" below, which also carries one
+open defect and a finding about the measurement protocol itself.
 
-1. **The vmMirror, `Kernel.ns` and the bootstrap.** The largest of the three.
-   The mirror is an object of a builtin class whose method table carries every
-   leaf as an enumerated primitive, so step 3a's machinery is kept whole and
-   only the class holding the entries changes. Expect the arithmetic-heavy
-   benchmarks to regress against `e2bb31e` by whatever the leaf inlining does
-   not absorb; that is the number this step is measured on.
-2. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2, which
-   [object-model.md](design/object-model.md) describes and which the
-   reflection work after step 6 cannot start without.
-3. **The payload space**, step 7 of the order of work, whose own measurements
-   are named under [memory.md](design/memory.md), "Payloads belong to the Rust
-   allocator, and what that costs". Run one of them before building anything
-   there.
+**What comes next is the third plan and then step 7**, deliberately not one
+plan, for the reason the leaf inlining was split off first: each produces
+working, measured software on its own, and each one's measurement informs the
+next.
 
-Two things are recorded as decided but unbuilt, and neither should be
-rediscovered: `Integer` has no `/` and step 6 has to settle what an exact
-quotient answers without a `Fraction` class
-([core-library.md](design/core-library.md), "Gap: an integer has no `/`"); and
-the arithmetic fast path can drop its `Jump` by inverting the branch sense,
-which requires retiring wire tag 33 and taking 34
-([compiler.md](design/compiler.md), "Arithmetic inlining").
+3. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2: the three
+   become declared classes of `Kernel.ns`, and a class object's own class
+   becomes its metaclass instead of the builtin `Object` class
+   ([object-model.md](design/object-model.md), "Class sides and
+   metaclasses", its deviation paragraph; [core-library.md](design/core-library.md),
+   "The core library as Newspeak source over a VM mirror"). The reflection
+   work after step 6 cannot start without the reified instance-of relation,
+   and the decoder's placeholder scheme and the class-side `doesNotUnderstand:`
+   deviation ([dispatch.md](design/dispatch.md)) both change with it. No plan
+   exists yet; write one from those sections.
+4. **The payload space**, step 7 of the order of work below, whose own
+   measurements are named under [memory.md](design/memory.md), "Payloads
+   belong to the Rust allocator, and what that costs". Run one of them before
+   building anything there. **Open, and to settle before planning it:** the
+   space was ordered after step 6 because a Newspeak `OrderedCollection` over
+   a fixed `Array` removes the one payload that grows in place
+   (`Heap::array_push`). The first plan kept `OrderedCollection>>add:` a
+   forwarder to that leaf, as it kept every body a forwarder, so the
+   constraint is still there, and no plan yet names the step that removes
+   it.
+
+**A separate step, created by this plan, sits before the JIT tiers**:
+rewriting the kernel's control-flow methods and `do:` as real Newspeak loops
+and branches instead of forwarders to today's leaves (decided with the user
+on 2026-09-22). It pays off only with a JIT, so it comes right before the
+tiers rather than now, and it owns four semantic decisions already recorded
+with their goldens and code ([core-library.md](design/core-library.md),
+"Planned: real bodies for control flow and `do:`, before the JIT tiers").
+
+Three things are recorded and not yet built, and none should be
+rediscovered: **the numeric tower under `Number` is needed**, which the
+class-tight `=` of 2026-09-23 forced — `1.0 = 1` and `1 = 1.0` both answer
+`false` now, which is symmetric and keeps the `=`/`hash` contract but is not
+what a program comparing numbers expects, and only a tower under the
+`Number` that already exists resolves it: cross-type comparison with a
+matching hash (the contract is Primordial Soup's `testFloatHash`,
+`3 asFloat hash = 3 hash`), `/` answering an exact quotient, and whatever
+`Fraction` and `LargeInteger` that needs ([core-library.md](design/core-library.md),
+"Gap: an integer has no `/`"); `Integer` has no `/`, the piece of that tower
+step 6 left open deliberately and which still has to be settled — what an
+exact quotient answers without a `Fraction` class (same section); and the
+arithmetic fast path can drop its `Jump` by
+inverting the branch sense, a separate step that requires retiring wire tag
+33 and taking 34 ([compiler.md](design/compiler.md), "Arithmetic inlining").
 
 **The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
 `22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
@@ -359,9 +437,9 @@ The measurement, and the template for the next, is
   builtin names resolve statically rather than as sends to the accessors
   §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
   class name is loaded, not sent").
-- **`nil printString` answers `'an Object'`**: `Object>>printString` is a
-  stub (`crates/ns-runtime/src/builtins/object_class.rs`, `an Object` for
-  every receiver); no golden pins the correct answer yet.
+- **`nil printString` answers `'an Object'`**: the leaf `Object>>printString`
+  forwards to is a stub (`crates/ns-runtime/src/builtins/object_class.rs`,
+  `an Object` for every receiver); no golden pins the correct answer yet.
 
 **The two specification audits' other findings are closed**, in "M4 — The
 specification gaps" below: the member-set fix, the symbol-identity fix and
@@ -792,43 +870,38 @@ so nothing is lost by it going second.
 Then, after M4 and before the JIT tiers:
 
 6. **The core library in Newspeak, over a VM mirror** —
-   [core-library.md](design/core-library.md). Every builtin method — `do:`,
-   `whileTrue:`, `collect:` and the bodies Rust reimplements today, and the
-   kernel classes with them — becomes Newspeak source in a `Kernel.ns`, the
-   way SOMns's kernel is; the leaves (`+`, `<`, `at:put:`, `size`, `show:`)
-   stay Rust primitives, but as entries of **one VM mirror object** that
-   `Kernel.ns` is handed, which §8.3.1 requires ("A primitive call is a
-   message send to the VM mirror") and which makes the Rust boundary a
-   capability rather than something any method can claim. The inlined fast
-   path for leaves is sequenced first, because without it every leaf send
-   costs an activation. Decided with the user on 2026-09-21; a leaf is what a
-   Rust primitive is good
-   for and the artifact-size and trust arguments still hold for it.
-   **That first part is done** (2026-09-21): the nine binary integer
+   [core-library.md](design/core-library.md). Every builtin method becomes
+   Newspeak source in `Kernel.ns`, the way SOMns's kernel is; the leaves
+   (`+`, `<`, `at:put:`, `size`, `show:`) stay Rust primitives, but as entries
+   of **one VM mirror object** that `Kernel.ns` is handed, which §8.3.1
+   requires ("A primitive call is a message send to the VM mirror") and which
+   makes the Rust boundary a capability rather than something any method can
+   claim. Decided with the user on 2026-09-21; a leaf is what a Rust primitive
+   is good for and the artifact-size and trust arguments still hold for it.
+   It is required so that every builtin method is a real method lookup,
+   mirrors, the debugger and a JIT see. Where it sits is fixed from both
+   ends: before the caches it made the numbers worse, and it must come before
+   the tiers, which need the library as real Newspeak code to optimize at all.
+   **The inlined fast path for leaves came first** (2026-09-21), because
+   without it every leaf send costs an activation: the nine binary integer
    primitives compile to `Instruction::IntegerBinary` under a run-time type
    guard whose fallback is the ordinary send, and all eight measurement
    sources came out 11.5–31.0% faster for it, each entirely below its
    baseline group in both sittings — the cushion the rest of this step
-   spends. See "Leaf inlining" below. It is
-   required so that every builtin method is a real method lookup, mirrors, the
-   debugger and a JIT see: a `do:` in Rust is opaque to a JIT, which can
-   neither inline its block nor compile the loop as a unit. Where it sits is
-   fixed from both ends. Before the steps above it makes the numbers worse; a
-   `do:` written in Newspeak pays for its block until the caches and a JIT can
-   inline it. After them it costs nothing, and it must come before the tiers,
-   which need the library as real Newspeak code to optimize at all. M4 owed it
-   only that the rewrite not deepen the investment in Rust callbacks, and step
-   2a took the last callback away, as a trampoline step rather than as
-   Newspeak. What it still needs: the kernel classes loadable as Newspeak
-   source without the bootstrap depending on it, and the leaves reachable as
-   primitives from that source — which 3a prepared, a primitive being a method
-   table entry carrying a number. **It also carries the rest of §3.2**
-   (decided 2026-09-18): `Class`, `Behavior` and `Metaclass` become declared
-   kernel classes, as they are in both references, and a class object's own
-   class becomes its metaclass — the reified instance-of relation that
-   mirrors need and that nothing before this step does
+   spends. See "Leaf inlining" below. **The core library over the mirror is
+   done** (2026-09-22): every builtin method a forwarder in
+   `crates/ns-runtime/core-library/Kernel.ns`, primitive methods absorbing what the
+   forwarding costs, and no source measurably slower; see "Where the next
+   session starts" above. **Still to come in this step: `Class`, `Behavior`
+   and `Metaclass`** — the rest of §3.2 (decided 2026-09-18), declared kernel
+   classes as they are in both references, with a class object's own class
+   becoming its metaclass: the reified instance-of relation that mirrors need
+   and that nothing before this step does
    ([object-model.md](design/object-model.md), "Class sides and
-   metaclasses").
+   metaclasses"). The kernel's control-flow methods and `do:` stay forwarders
+   over today's leaves; rewriting them as Newspeak loops is a separate step
+   right before the tiers ([core-library.md](design/core-library.md),
+   "Planned: real bodies for control flow and `do:`, before the JIT tiers").
 
 7. **The payload space** — [memory.md](design/memory.md), "Payloads belong to
    the Rust allocator, and what that costs". An object's variable-length part
@@ -1070,8 +1143,8 @@ runs also went from ~38 ms to ~117 ms, which the arena's `Vec` doubling would
 explain — an inference from the shape of the growth curve rather than a measured
 cause, and one the next step contradicted for this benchmark (below). The
 conditions the peak figures were taken under, and the control that would settle
-the doubling attribution, are in [memory.md](design/memory.md), "Open: what the
-collector owns"; the tree-walk figures, retired with the engine, are recorded
+the doubling attribution, are in [memory.md](design/memory.md), "The interim cost, and
+the one question still open"; the tree-walk figures, retired with the engine, are recorded
 only here.
 
 ## M4 — The activation stack (2026-09-10)
@@ -1182,8 +1255,8 @@ inline caches'. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which
 the arena's `Vec` doubling was thought to explain, survived under a binary that
 retains nothing for that benchmark — 4.6 MB across all twenty-two entry sends —
 so that explanation does not hold for it; its cause was never found. What the
-bytecode maxima do and do not show is in [memory.md](design/memory.md), "Open:
-what the collector owns".
+bytecode maxima do and do not show is in [memory.md](design/memory.md), "The
+interim cost, and the one question still open".
 
 ## M4 — Retiring the tree-walker (2026-09-11)
 
@@ -3287,6 +3360,207 @@ more to a later reader than the silence that usually replaces it.
 - **"The only earlier step to clear it across its whole suite was 3b"** is true
   for a step measured against its own baseline; several cumulative comparisons
   against `be3eb40` also show every source entirely below in both sittings.
+
+## The core library over a VM mirror (2026-09-22)
+
+Plan:
+[ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md),
+sixteen tasks over nine decisions taken with the user on 2026-09-21 and
+2026-09-22 ([core-library.md](design/core-library.md), "The core library as
+Newspeak source over a VM mirror"). Branch `feature/kernel-over-vm-mirror`,
+started from `ef4a9da` on `master`, on the checked-out tree throughout. The
+first of step 6's three remaining plans.
+
+**What changed, commit by commit:**
+
+- `fc94e84` — `VmMirror`, a builtin class with builtin class tag 14, whose
+  method table carries every leaf as one row of `builtins/primitive.rs`'s
+  `MIRROR`, and its one instance, created at bootstrap.
+- `f5a5efc` — `crates/ns-runtime/core-library/Kernel.ns`, resolved by
+  `resolver::resolve_kernel`, the only resolver that records
+  `Binding::MirrorSend`; the bootstrap fills the builtin class objects it
+  built as placeholders from the kernel's nested classes and instantiates
+  `Kernel vmMirror:` with the mirror.
+- `da695fd`, `f58b84c` — `Instruction::SendMirror`: a mirror send's literal
+  `ifFail:` block lowered inline, with no fallback send and no wire tag
+  ([compiler.md](design/compiler.md), "Mirror sends").
+- `604a023` — primitive methods: a kernel method whose body only forwards
+  runs its row's leaf in `act` without an activation, under both lowerings,
+  and `NS_NEXT_NO_PRIMITIVE_METHODS=1` to measure without them
+  ([dispatch.md](design/dispatch.md), "Primitive methods").
+- `ed6a93f` to `ff7f543` — one family per commit: `Object`; `Boolean`, with
+  `True` and `False` now under it; `Integer`; `Float`; the text classes; the
+  collections; `Block`; `Platform`.
+- `90632b1` — the per-class primitive lists and the pass-over a failing
+  primitive took are gone, and the one observable difference is pinned.
+- `52c242b` — `build` refuses an entry only the core library answers, since
+  its entry check now stops at the first builtin level.
+- `094db4a`, `5c76345` — the measurement and the documents; `3e0ac9f` — the
+  whole-branch review's fixes, among them a test that every kernel method is
+  a recognized primitive method named after its row.
+
+**Measurement.** Two sittings by the protocol, eight sources, against
+`e2bb31e`, the merge of leaf inlining, and `be3eb40`, every binary built
+through `RUSTFLAGS` with `+crt-static` and the function-alignment pin.
+**With primitive methods the move cost nothing measurable: −4.5% to +2.1%
+against `e2bb31e`, no group entirely above in either sitting**, and 24.7% to
+40.2% faster than `be3eb40`. Without them, on the same binary, the three
+sources named in advance were clearly slower — `bench_megamorphic.ns`
++23.6%, `bench_block.ns` +21.3%, `bench_do.ns` +5.5% — which is what the
+primitive methods recover. Start-up is 0.5 ms slower, the kernel's parse,
+resolution, compilation and instantiation. `vm::run` grew from 5,866 to
+6,385 instructions and stayed one function. See
+[execution.md](design/execution.md), "What the core library's move cost",
+for the tables and what is left unexplained.
+
+**One observable difference, decided (Decision 9).** A builtin subclass's
+own `doesNotUnderstand:` is now passed by, as §5.10 says: a declining leaf's
+failure block sends `super …`, which ends in `Object`'s handler rather than
+continuing the receiver's lookup. No golden had pinned the old behaviour;
+`goldens/kernel/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
+pins the new one ([core-library.md](design/core-library.md), "The one
+observable difference"). No other recorded outcome moved.
+
+Gates, at `3e0ac9f`: `cargo test --workspace` green (868 tests passing, one
+ignored), also under each of the three stress modes; `cargo clippy
+--workspace --all-targets` clean; `parse-corpus` at **210/0/1/0** and
+`run-corpus` at **6/0/205**, under each stress mode too.
+
+## `Top`, `Value` and the value semantics (2026-09-23)
+
+Plan:
+[ns-next-value-and-top](superpowers/plans/2026-09-22-2112-ns-next-value-and-top.md),
+eight tasks over the decisions taken with the user on 2026-09-22, the central
+one being that a value object has no observable identity: a value may be
+copied across an actor boundary, so its equality and hash are derived from
+its state and its identity method is a send of `=`. Branch
+`feature/kernel-over-vm-mirror`, on the checked-out tree throughout. Step 6's
+first plan gave the core library the specification's *dispatch*; this one
+gives it the specification's *object model*
+([core-library.md](design/core-library.md), "What exists";
+[object-model.md](design/object-model.md), "The builtin classes").
+
+**What changed, commit by commit:**
+
+- `1dc548a` — `crates/ns-runtime/kernel/` is `crates/ns-runtime/core-library/`,
+  since `kernel` named only the bootstrap phase that installs it, and every
+  nested class of `Kernel.ns` says `public`: §6.3.1 defaults a member to
+  protected, which would leave a kernel class unreachable from any other
+  module.
+- `7d7026d` — `Top`, `Value` and `Number`, and with them §3.2's and §3.1.1's
+  hierarchy. `BuiltinClass::ALL` is a wire-tag order and no longer a
+  superclass order, so the bootstrap fills the placeholders in `fill_order`,
+  sorted by depth below `Top`.
+- `1932c0e` — `Top` is refused wherever an artifact names a class, as the
+  mirror's tag is: §3.2 lets only `Object` name it, so no source module can
+  and no image may either ([image-format.md](design/image-format.md)).
+- `39fb961` — the builtin value classes hash by their value rather than by
+  identity, which §3.1.1 requires of anything a copy must hash like.
+- `d011a57`, `8b53296`, `7cfdee3` — the derivation: `builtins/value.rs`
+  answers a value's equality and hash from its state without ever sending,
+  four new `MIRROR` rows carry it, and `Value` declares `=`, `hash` and
+  `==` over them with a Newspeak fallback for what the leaf declines.
+- `55d3f60`, `ab692b7` — §3.1.1's two conditions, refused where an instance
+  comes into being: a mutable slot below `Value` means no instance, and a
+  slot of a value may hold only a value
+  ([object-model.md](design/object-model.md), "A value object's two
+  conditions").
+- `a6edb79` — the measurement below.
+- The fix below: a value's state is the slots its classes declare, so a
+  nested class's hidden cache slot is no longer compared or hashed.
+
+**Measurement.** Two sittings by the protocol, eight sources, `ab692b7`
+against `b0a771d` -- the last commit of the work against this branch's head
+before it started, which is documentation only, so its tree is the code as it
+stood before. The value-state fix below came after the figures were taken and
+touches no path any of the eight sources runs, so they stand for the head.
+**Seven of the eight are
+level: −0.7% to +1.9%, inside the scatter those sources show between builds
+of the same tree.** `bench_new2.ns` is **3.6% slower**, all three head builds
+above both baseline builds in both sittings; it was one of the three sources
+the expectation named, but the two others that run the same initializers are
+level, so the per-store check alone does not explain it. `vm::run` grew from
+6,389 to 6,506 instructions and stayed one function, with
+`instantiate::check_value_slot` inlined into its `InitializeSlot` arm.
+Start-up did not move measurably. See
+[execution.md](design/execution.md), "What `Top`, `Value` and `Number` cost",
+for the tables, the open finding and what would recover it.
+
+**A protocol finding.** `bench_block.ns` spreads 16% between builds of the
+same tree, with the function-alignment pin in place and each build stable to
+about 1% -- found because the first pairing put it 13.4% *faster* at the head,
+which nothing the change touches could explain. Five builds, two of the
+baseline and three of the head, land at five separate levels that straddle the
+commit boundary. On that source one build per commit measures the build, not
+the commit; the protocol paragraph in
+[execution.md](design/execution.md), "What removing the re-entries moved",
+now says so.
+
+**What is enforced, and what is not.** The slot half of §3.1.1's second
+bullet — no mutable slot, and no slot holding a non-value — is refused where
+an instance comes into being, which is every instance of every class,
+whether its class came from source, from a nested declaration or from an
+image. **The other half of the bullet is not checked at all**: §3.1.1 also
+requires that a value's enclosing objects (§3.3) are values and that its
+class does not define `==`. By the letter of the first, a value class a
+module declares has no value instances, since a module instance is an
+ordinary object — which is true of every user value class in the goldens
+here. SOMns keeps the condition by declaring its module a value
+(`class Kernel vmMirror: vmMirror = Object <: Value (`), a mixin
+application ns-next does not parse. **What to do about it is an open
+decision for the user**, recorded in
+[core-library.md](design/core-library.md), "What is still unchecked".
+Three further things are deliberately outside the checks: a value class with a
+mutable slot that nothing ever instantiates is accepted silently, because
+the refusal sits at instantiation rather than at class creation; a
+ready-made instance decoded from an image is not re-checked, so a crafted
+artifact can produce a wrong answer, never a crash, since the derivation
+declines what it cannot decide; and nothing canonicalizes two equal
+`String`s, so §3.1.1's "globally unique" holds for `=` and `==` but not for
+object identity. All three are recorded in
+[core-library.md](design/core-library.md), "What is still unchecked".
+
+**One defect, found while writing that section up and fixed the same day.**
+A value class that declares a nested class compared wrongly
+once the nested-class accessor had run: the hidden cache slot is a field
+like any other, both the derivation's walk and `valueSlotCount:` counted it,
+and each instance's own class object lands there — so `valueEquals:` sent
+`=` to two different class objects and answered false for two values built
+from the same arguments, at exit status 0. **The rule now is that a value's
+state is the slots its classes declare and nothing else**, computed once per
+application (`MixinApplication::declared_slots`, beside `nested_slot` and
+`inherits_value`) and read by both Rust walks and both reflective leaves
+through one wrapper, so the leaf and the Newspeak fallback cannot disagree
+about which slots exist or in what order.
+`goldens/kernel/a_values_nested_class_is_not_part_of_its_state.ns` and two
+unit tests beside the walks pin it, the one-sided and the inherited case
+included ([core-library.md](design/core-library.md), "A value's state is the
+slots its classes *declare*").
+
+**The final whole-branch review found five things, all fixed on
+2026-09-23** (`0ccff43`, `95f2a07`, `cf1c5a0`, `0a5bb4e`, `3da730d`,
+`ed70803`). `Float>>=` is class-tight, so `1.0 = 1` and `1 = 1.0` both
+answer `false` and the leaf's class-first rule and `Float`'s own `=` are
+one rule again — the ruling that makes the numeric tower a named open item
+above. `Value`'s own application carries `inherits_value`, since §3.2's
+"subclass of" is inclusive, so `Value new = Value new` and a slot holding
+a `Value new` no longer disagree. Both value walks charge their node
+budget when a node is *pushed*, which bounds the work vector by the budget
+rather than by the heap. The documents no longer claim more of §3.1.1 than
+is enforced. And both refusals name the factory the program sent. Two
+goldens moved, both recorded by this branch:
+`a_value_has_no_identity.ns`'s `Float/Integer` line from `true true` to
+`false false`, and `value_hashes_follow_value_equality.ns` gained a
+`Float/Integer` and an `Integer/Float` `cross:` line, each `false false`.
+
+**Gates, at this branch's head** — not at `ab692b7`, since the value-state
+fix above is code and tests: `cargo test --workspace` green, **892 tests
+passing and one ignored**, also under each of the three stress modes;
+`cargo clippy --workspace --all-targets` clean; `parse-corpus` at
+**210/0/1/0**; `run-corpus` at **6/0/205** in all four lanes. Every commit
+from `ab692b7` on has seen the per-commit group, and the end-of-batch group
+was re-run at the head.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of

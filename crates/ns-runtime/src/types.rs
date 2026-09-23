@@ -94,13 +94,16 @@ pub struct ClassData<'gc> {
     /// The per-instance class-object chain, parallel to the application
     /// chain. `outer` and `super` need it, and lookup steps it beside the
     /// application chain for each level's class object -- the level a found
-    /// method runs in, and the one a failed primitive passes over.
+    /// method runs in.
     pub superclass: Option<ClassReference<'gc>>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
-    /// core-library classes `builtins/` implements natively, for the image's
-    /// class tags and for `decide_factory`, which instantiates `Array` and
-    /// `OrderedCollection` with their own payload. Lookup does not read it:
-    /// a builtin's primitives are entries of its mixin's method table.
+    /// core-library classes the bootstrap fills from `Kernel.ns` (or the VM
+    /// mirror's class), for the image's class tags and for `decide_factory`,
+    /// which instantiates `Array` and `OrderedCollection` with their own
+    /// payload and refuses the mirror's class. Lookup does not read it: a
+    /// builtin's methods are `Kernel.ns`'s, found in its mixin's method table
+    /// like any other class's, and the only primitive entries are the VM
+    /// mirror's.
     pub builtin: Option<BuiltinClass>,
     /// The metaclass built from this class's mixin's `class_side` together
     /// with its primary factory (§6.3), created on first use and cached here
@@ -164,14 +167,34 @@ pub enum BuiltinClass {
     Nil,
     Block,
     Platform,
+    /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
+    /// is the whole Rust boundary"): one instance, built at bootstrap and
+    /// handed to the core library alone. No program can name it -- it is
+    /// not a bare builtin name, and the image format refuses its tag
+    /// wherever a program names a class.
+    VmMirror,
+    /// §3.2's empty class, the root of the whole chain: it has no
+    /// superclass and declares nothing, so that all code, `Object`'s
+    /// included, resides in a mixin. Only `Object` may name it, which is
+    /// why it is not a bare builtin name either.
+    Top,
+    /// §3.1.1: a value object's class inherits from `Value`.
+    Value,
+    /// §3.1.1 lists `Number` among the classes whose instances are values;
+    /// `Integer` and `Float` are its subclasses.
+    Number,
 }
 
 impl BuiltinClass {
     /// Every builtin class, in declaration order. `Mutator::builtin_class`
     /// indexes by discriminant, so the bootstrap builds them in this order,
     /// and the image's closing hash table writes them in it too -- it is also
-    /// their wire-tag order (`image::encode::builtin_class_tag`).
-    pub const ALL: [BuiltinClass; 14] = [
+    /// their wire-tag order (`image::encode::builtin_class_tag`), which is
+    /// why a class added later is appended rather than slotted in beside its
+    /// siblings. So this is *not* a superclass-first order: the kernel phase
+    /// sorts the kinds by their depth below `Top` before it fills them
+    /// (`interpreter::kernel::fill_order`).
+    pub const ALL: [BuiltinClass; 18] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -186,6 +209,10 @@ impl BuiltinClass {
         BuiltinClass::Nil,
         BuiltinClass::Block,
         BuiltinClass::Platform,
+        BuiltinClass::VmMirror,
+        BuiltinClass::Top,
+        BuiltinClass::Value,
+        BuiltinClass::Number,
     ];
 }
 
@@ -239,6 +266,15 @@ pub enum Binding {
     /// A `super m` send (`newspeak-spec.pdf` §5.10) -- resolved at runtime
     /// against the current activation's `current_class`, not by depth.
     SuperSend,
+    /// An explicit-receiver send whose receiver is the core library's
+    /// `vmMirror` slot. Recorded only by `resolver::resolve_kernel`, so no
+    /// user module ever carries it. Every consumer treats it as an ordinary
+    /// send with no binding; the two recognizers that inline a mirror send
+    /// (`control_flow::recognize_mirror_send`,
+    /// `primitive_method::recognize`) read it, because only the kernel's
+    /// `vmMirror` is known to hold the mirror (`docs/design/core-library.md`,
+    /// "The VM mirror is the whole Rust boundary").
+    MirrorSend,
 }
 
 pub struct ResolvedModule {
@@ -485,7 +521,10 @@ mod tests {
         Rc::new(crate::mixin::MixinApplication {
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
+            inherits_value: false,
+            mutable_value_slot: None,
             nested_slot: crate::hash::IdentityMap::default(),
+            declared_slots: Vec::new(),
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,

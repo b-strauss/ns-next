@@ -27,6 +27,10 @@ impl World {
                 heap: Heap::new(),
                 builtin_classes: Vec::new(),
                 platform_singleton: None,
+                vm_mirror: None,
+                kernel: None,
+                value_equality_method: None,
+                value_mixin: None,
                 applications: IdentityMap::default(),
                 metaclass_mixins: IdentityMap::default(),
                 #[cfg(debug_assertions)]
@@ -122,7 +126,8 @@ impl World {
 
     /// Moves every object and every reified frame (`Heap::move_everything`)
     /// and forwards what the step state holds beside the heap: the
-    /// bootstrap's builtin classes and the `platform` singleton.
+    /// bootstrap's builtin classes, the `platform` singleton, the VM
+    /// mirror and the kernel.
     #[cfg(debug_assertions)]
     pub(crate) fn move_everything(&mut self) {
         self.check_quiescent_state();
@@ -132,8 +137,8 @@ impl World {
     }
 
     /// Marks everything reachable: the heap's own roots, then the step state's
-    /// -- the bootstrap's builtin classes and the `platform` singleton -- then
-    /// the traversal.
+    /// -- the bootstrap's builtin classes, the `platform` singleton, the VM
+    /// mirror and the kernel -- then the traversal.
     pub(crate) fn mark_everything_reachable(&mut self) -> crate::heap::mark::Marker {
         use crate::trace::Tracer;
         let mutator = &mut self.mutator;
@@ -144,13 +149,20 @@ impl World {
         if let Some(platform) = &mut mutator.platform_singleton {
             marker.value(platform);
         }
+        if let Some(mirror) = &mut mutator.vm_mirror {
+            marker.value(mirror);
+        }
+        if let Some(kernel) = &mut mutator.kernel {
+            marker.value(kernel);
+        }
         mutator.heap.drain_marking(&mut marker);
         marker
     }
 
     /// One collection: mark everything reachable, compact both arenas, and
     /// forward what the step state holds beside the heap -- the bootstrap's
-    /// builtin classes and the `platform` singleton -- exactly as a move does.
+    /// builtin classes, the `platform` singleton, the VM mirror and the
+    /// kernel -- exactly as a move does.
     ///
     /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
     /// `Heap`'s counters by `record_collection`. That timing call costs
@@ -182,10 +194,10 @@ impl World {
     }
 
     /// Forwards what the step state holds beside the heap: the bootstrap's
-    /// builtin classes and the `platform` singleton. Shared by
-    /// `move_everything` and `collect`, which forward the same two roots
-    /// after the heap has forwarded its own -- one copy so a root added
-    /// here later cannot land in one caller's walk and not the other's.
+    /// builtin classes, the `platform` singleton, the VM mirror and the
+    /// kernel. Shared by `move_everything` and `collect`, which forward the
+    /// same roots after the heap has forwarded its own -- one copy so a root
+    /// added here later cannot land in one caller's walk and not the other's.
     fn forward_step_state<M: crate::heap::Relocation>(
         &mut self,
         forwarder: &mut crate::heap::Forwarder<M>,
@@ -197,6 +209,12 @@ impl World {
         }
         if let Some(platform) = &mut mutator.platform_singleton {
             forwarder.value(platform);
+        }
+        if let Some(mirror) = &mut mutator.vm_mirror {
+            forwarder.value(mirror);
+        }
+        if let Some(kernel) = &mut mutator.kernel {
+            forwarder.value(kernel);
         }
     }
 

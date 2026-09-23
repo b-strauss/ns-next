@@ -1,0 +1,93 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: a value object is "globally unique, in the
+   sense that no other object is equal to it", so its equality and its hash
+   come from the state its class *declares*. A nested class declaration is
+   not that state. Per 6, "every instance of a class C has a distinct
+   nested class for each nested class declaration", cached in a hidden slot
+   of the enclosing instance -- so two equal values hold *different* class
+   objects there the moment each has been sent its own accessor.
+
+   Counting that slot made two equal values answer `false`, at exit status
+   0, as soon as the accessor had run on both. The rule is that a value's
+   state is its declared slots and nothing else, which is also what the
+   `slotCount` and `slotAt:` leaves the Newspeak fallback reads through
+   report, so the leaf and the fallback compare the same slots.
+
+   Each line prints `=`, then `==`, then whether the two hash alike. The
+   first two must always agree (3.1.1's condition on an identity method),
+   and the third must be true wherever the first is. `touch` is what runs
+   the nested-class accessor and fills the hidden slot.
+
+   `Labelled` inherits the nested declaration from `Point` and declares a
+   slot of its own *after* it, so its declared slots are not a prefix of
+   its fields: the hidden slot sits between `y` and `label`. A fix that
+   merely dropped a trailing slot would answer wrongly there. *)
+class NestedClassIsNotState usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    public class Point x: anX y: aY = Value new (
+        | public x = anX. public y = aY. |
+    ) (
+        class Tag = Object new () ()
+        public touch = ( ^Tag )
+    )
+    public class Labelled x: anX y: aY label: aLabel = Point x: anX y: aY (
+        | public label = aLabel. |
+    ) ()
+    report: label for: first and: second = (
+        transcript show: label; show: ' '; show: (first = second) printString;
+            show: ' '; show: (first == second) printString;
+            show: ' '; show: (first hash = second hash) printString; newLine
+    )
+    untouched = (
+        report: 'untouched' for: (Point x: 1 y: 2) and: (Point x: 1 y: 2)
+    )
+    oneTouched = (
+        | first second |
+        first:: Point x: 1 y: 2.
+        second:: Point x: 1 y: 2.
+        first touch.
+        report: 'one touched' for: first and: second
+    )
+    bothTouched = (
+        | first second |
+        first:: Point x: 1 y: 2.
+        second:: Point x: 1 y: 2.
+        first touch.
+        second touch.
+        report: 'both touched' for: first and: second
+    )
+    stillDistinguishesState = (
+        | first second |
+        first:: Point x: 1 y: 2.
+        second:: Point x: 1 y: 3.
+        first touch.
+        second touch.
+        report: 'different state' for: first and: second
+    )
+    inheritedNested = (
+        | first second |
+        first:: Labelled x: 1 y: 2 label: 'a'.
+        second:: Labelled x: 1 y: 2 label: 'a'.
+        first touch.
+        second touch.
+        report: 'inherited nested' for: first and: second
+    )
+    inheritedNestedDiffers = (
+        | first second |
+        first:: Labelled x: 1 y: 2 label: 'a'.
+        second:: Labelled x: 1 y: 2 label: 'b'.
+        first touch.
+        second touch.
+        report: 'inherited differs' for: first and: second
+    )
+    public main: ignoredPlatform args: arguments = (
+        untouched.
+        oneTouched.
+        bothTouched.
+        stillDistinguishesState.
+        inheritedNested.
+        inheritedNestedDiffers.
+    )
+) : ()

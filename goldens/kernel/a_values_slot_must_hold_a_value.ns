@@ -1,0 +1,23 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: a value object is *deeply* immutable -- "all
+   objects reachable from it are also deeply immutable" -- so a slot of a
+   value may only hold another value. An `Array` is mutable (`at:put:`),
+   so storing one would make the whole value mutable through it, and two
+   copies of the value would stop being equal the moment one array was
+   written.
+
+   The refusal is raised as the slot is initialized, naming the class and
+   the slot, so the line before it still prints. `nil` counts as a value
+   (`Nil` inherits `Value`), which the second slot records. *)
+class ValueSlotHoldsAValue usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    public class Holder on: elements = Value new (
+        | public elements = elements. public missing = nil. |
+    ) ()
+    public main: ignoredPlatform args: arguments = (
+        transcript show: (Holder on: 'a') printString; newLine.
+        transcript show: (Holder on: {1. 2}) printString; newLine.
+    )
+) : ()

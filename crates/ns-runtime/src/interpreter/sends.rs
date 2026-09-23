@@ -40,7 +40,7 @@ pub(crate) fn decide_lexical_send<'gc>(
         dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth);
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
     let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
-    mutator.act(resolved, enclosing, None, selector, arguments)
+    mutator.act(resolved, enclosing, selector, arguments)
 }
 
 /// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current
@@ -87,5 +87,5 @@ pub(crate) fn decide_super_send<'gc>(
     };
     let self_value = mutator.heap.activation_receiver(activation);
     let resolved = mutator.resolve_super(superclass, selector);
-    mutator.act(resolved, self_value, Some(superclass), selector, arguments)
+    mutator.act(resolved, self_value, selector, arguments)
 }

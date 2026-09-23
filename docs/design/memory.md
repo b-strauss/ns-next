@@ -559,8 +559,17 @@ mode checks.
 holds an `ObjectReference`, a `ClassReference` or a `FrameReference` to a `Tracer`, one `&mut` at a
 time.
 
-- The bootstrap: `builtin_classes` and `platform_singleton`, which the step
-  state holds beside the heap and `World::move_everything` forwards after it.
+- The bootstrap: `builtin_classes`, `platform_singleton`, `vm_mirror` — the
+  VM mirror, the one object whose method table holds the leaves — and
+  `kernel`, `Kernel.ns`'s one instance and the enclosing object of every
+  builtin class ([core-library.md](core-library.md), "The bootstrap:
+  placeholders first, kernel second"). The step state holds all four beside
+  the heap, and both root walks visit them: marking
+  (`World::mark_everything_reachable`) and forwarding, after a collection or
+  a stress move (`forward_step_state`). The mirror is also the kernel's
+  `vmMirror` slot and the kernel every builtin class's `enclosing` object,
+  but a root of their own keeps both alive and forwarded whatever those
+  links are.
 - The activation stack: each entry's receiver, `current_class`, the
   `ClassReference` or closure object its `FrameKind` names, the frame it is married
   to, and the state its continuation carries — a `WhileLoop`'s condition and
@@ -1312,9 +1321,15 @@ new:` and `replaceFrom:to:with:startingAt:`; SOMns's `Vector`
 (`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage
 size` and copies. Neither VM has a primitive that resizes a payload --
 the shape `java.util.ArrayList` has. `Heap::array_push`, which grows one in
-place here, exists only because `OrderedCollection` is a Rust builtin, a
-simplification `builtins/collections.rs` flags as such; step 6 of
-[PROGRESS.md](../PROGRESS.md)'s order of work retires it.
+place here, exists only because `OrderedCollection`'s `add:` is a Rust leaf, a
+simplification `builtins/collections.rs` flags as such. Step 6 of
+[PROGRESS.md](../PROGRESS.md)'s order of work was to retire it; its first
+plan moved `OrderedCollection` into `Kernel.ns` but kept `add:` a forwarder
+to that leaf, as it kept every body a forwarder
+([core-library.md](core-library.md), "Planned: real bodies for control flow
+and `do:`, before the JIT tiers"), so **which step writes a Newspeak
+`OrderedCollection` over a fixed `Array`, and so retires `array_push`, is
+open**, and has to be settled before the space is planned.
 
 What remains after that is reflective and rare: edit-and-continue adding
 locals to a live activation, and a MirrorBuilder adding or removing slots of

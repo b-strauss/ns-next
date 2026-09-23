@@ -1062,6 +1062,73 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
+/// The VM mirror's class is refused wherever a program names a class, even
+/// though its tag decodes cleanly as a *builtin class tag*: `LoadBuiltinClass`
+/// goes through `read_program_builtin_class`, not `read_builtin_class`,
+/// specifically to keep an artifact from naming the mirror and reaching a
+/// second instance (`docs/design/core-library.md`, "The VM mirror is the
+/// whole Rust boundary").
+#[test]
+fn a_load_builtin_class_naming_the_mirror_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
+    writer.write_u16(0);
+    writer.write_u16(1);
+    writer.write_u16(0); // copied_count
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
+    writer.write_u32(1); // one instruction ...
+    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
+    writer.write_u16(0); // destination
+    writer.write_u8(14); // ... naming the VM mirror
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 14
+        })
+    );
+}
+
+/// `Top` is refused wherever a program names a class, for the same reason
+/// the mirror's class is: §3.2 lets only `Object` have `Top` as its
+/// superclass, and no source module can name it at all
+/// (`instantiate::builtin_kind_from_name`). A class named over `Top` would
+/// decode into a perfectly valid program that sits outside `Object`'s chain
+/// and inherits none of its methods, which is exactly the kind of stale or
+/// hand-built artifact the tag discipline exists to refuse.
+#[test]
+fn a_load_builtin_class_naming_top_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
+    writer.write_u16(0);
+    writer.write_u16(1);
+    writer.write_u16(0); // copied_count
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_boolean(false); // not compiled uncached
+    writer.write_u32(1); // one instruction ...
+    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
+    writer.write_u16(0); // destination
+    writer.write_u8(15); // ... naming Top
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 15
+        })
+    );
+}
+
 #[test]
 fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     // An unknown operation byte must be refused, never defaulted to an
@@ -1128,6 +1195,10 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::Nil,
         BuiltinClass::Block,
         BuiltinClass::Platform,
+        BuiltinClass::VmMirror,
+        BuiltinClass::Top,
+        BuiltinClass::Value,
+        BuiltinClass::Number,
     ];
     for kind in all {
         assert_eq!(
@@ -7756,14 +7827,18 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     assert_eq!(answer, 42);
     // `apply:`'s family is two sends (`keep`, `value:`); the decoded block's
     // is one (`+`, numbered 0 in `prepare`'s family, before the `keep:`
-    // setter that takes the block as its argument).
-    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
+    // setter that takes the block as its argument). `value:` is a kernel
+    // primitive method (`Kernel.ns`): caching its call site as
+    // a `CachedTargetKind::Method` also reserves the target's own family --
+    // `Block>>value:`'s two sends (the lexical read of `vmMirror` and its
+    // `block:value:ifFail:` send) -- so the total is 5, not 3.
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 5);
     // A second call reuses the range `fresh_range` minted for the decoded
     // closure on its first activation (`base_for` supplies only `apply:`'s
     // own range): the closure's `NOT_ASSIGNED` feedback base is written back
     // once assigned, so `site_entries` does not grow again. Minting a fresh
     // range per activation instead -- the defect this pins -- would grow it
-    // by the block's family size of 1, to 4.
+    // by the block's family size of 1, to 6.
     let one = loaded.interpreter.stash(Value::SmallInteger(1));
     let second_answer = expect_ok(
         loaded
@@ -7778,7 +7853,7 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
             _ => panic!("apply: answers a small integer"),
         });
     assert_eq!(second_answer, 2);
-    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 5);
 }
 
 /// A metaclass that reaches the graph is rebuilt **flat**: its application

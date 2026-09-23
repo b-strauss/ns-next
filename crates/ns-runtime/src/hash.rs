@@ -57,6 +57,23 @@ pub type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 /// A `HashMap` hashed by `IdentityHasher`.
 pub type IdentityMap<K, V> = HashMap<K, V, IdentityBuildHasher>;
 
+/// The content hash a Newspeak `hash` answers for a value whose content,
+/// not its address, decides its equality (`builtins::text`'s `String`,
+/// `builtins::numbers`'s `Float`, and the hash `builtins::value` derives
+/// from a value object's slots). The repository keeps one hash function, so
+/// this is `IdentityHasher` over the content rather than a second one.
+///
+/// Folded to 32 bits: a `hash` answers a `SmallInteger`, and the derived
+/// hash adds one per slot of a class that lays out at most 2^16 of them, so
+/// every partial sum has to stay inside an `i64`. The low half is what is
+/// kept, because `IdentityHasher::finish` has already rotated the product's
+/// well-mixed high bits down into it -- keeping the high half instead would
+/// answer the multiply's poorly mixed low bits.
+pub(crate) fn content_hash(value: impl std::hash::Hash) -> i64 {
+    use std::hash::BuildHasher;
+    i64::from(IdentityBuildHasher::default().hash_one(value) as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use std::hash::{BuildHasher, Hash};

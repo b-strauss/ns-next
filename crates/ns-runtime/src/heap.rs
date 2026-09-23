@@ -1600,6 +1600,40 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// §3.1.1's "its class inherits from class `Value`", read off the
+    /// application without cloning the `Rc` that holds it: this is asked of
+    /// every slot an initializer writes, and going through
+    /// `class_application` would pay a refcount bump per slot for one
+    /// `bool`. That bump is what this accessor exists to avoid.
+    pub fn class_inherits_value(&self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.application.inherits_value,
+            _ => false,
+        }
+    }
+
+    /// Runs `read` over the field indices of the slots `class` and its
+    /// superclasses **declare** (`MixinApplication::declared_slots`), for
+    /// the same reason `class_inherits_value` reads its `bool` here: the
+    /// derivation asks this once per slot on its declining path, and
+    /// `class_application` would pay a refcount bump each time.
+    ///
+    /// A closure rather than a returned `&[usize]`, so the borrow of the
+    /// arena ends here and nothing reaches past an accessor ("The seam",
+    /// `docs/design/memory.md`). `None` when `class` is no class object.
+    pub fn with_class_declared_slots<T>(
+        &self,
+        class: ClassReference<'gc>,
+        read: impl FnOnce(&[usize]) -> T,
+    ) -> Option<T> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => Some(read(&data.application.declared_slots)),
+            _ => None,
+        }
+    }
+
     pub fn class_enclosing(&self, class: ClassReference<'gc>) -> Option<ObjectReference<'gc>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -1737,12 +1771,14 @@ impl<'gc> Heap<'gc> {
     /// Relinks `class`'s superclass pointer. Answers whether the write
     /// happened, mirroring `set_class_application` -- the matching relink on
     /// the application chain that carries the layout, called right alongside
-    /// this one. `tests/instantiate.rs`'s
-    /// `superclass_slot_initializer_runs_before_the_subclass_own_slots` is the
-    /// only caller: a root class's superclass clause only resolves a fixed
-    /// list of builtin names (`resolve_superclass_receiver`), so linking a
-    /// subclass to an already-loaded sibling *user-defined* class has to
-    /// happen by hand on the class-object chain `super`/`instantiate` walk.
+    /// this one. Two callers: the bootstrap's kernel phase, which links each
+    /// builtin class to the one its `Kernel.ns` clause names
+    /// (`interpreter::kernel`), and `tests/instantiate.rs`'s
+    /// `superclass_slot_initializer_runs_before_the_subclass_own_slots`: a
+    /// root class's superclass clause only resolves a fixed list of builtin
+    /// names (`resolve_superclass_receiver`), so linking a subclass to an
+    /// already-loaded sibling *user-defined* class has to happen by hand on
+    /// the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(
         &mut self,
         class: ClassReference<'gc>,
@@ -1756,16 +1792,50 @@ impl<'gc> Heap<'gc> {
         false
     }
 
+    /// Unlinks `class`'s superclass pointer, answering whether the write
+    /// happened like `set_class_superclass`. The bootstrap's kernel phase
+    /// is the one caller: it states that the kernel's `Object` has no
+    /// superclass rather than rely on the placeholder already having none.
+    pub fn clear_class_superclass(&mut self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
+            data.superclass = None;
+            return true;
+        }
+        false
+    }
+
+    /// Sets `class`'s enclosing object and declaring class. The bootstrap's
+    /// kernel phase is the one caller: a builtin class object exists before
+    /// the kernel instance that encloses it can, because a literal needs its
+    /// class from the first instruction on. Answers whether the write
+    /// happened, like the other class setters.
+    pub fn set_class_lexical_context(
+        &mut self,
+        class: ClassReference<'gc>,
+        enclosing: Option<ObjectReference<'gc>>,
+        declaring_class: Option<ClassReference<'gc>>,
+    ) -> bool {
+        self.check_object_origin(class);
+        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
+            data.enclosing = enclosing;
+            data.declaring_class = declaring_class;
+            return true;
+        }
+        false
+    }
+
     /// Gives `class` a new application and moves every live object of that
     /// class to its ids -- a walk of the arena, which is why the decoder,
     /// which installs one application per class record, calls
     /// `install_class_application` instead and stamps once afterwards
     /// (`stamp_dispatch_ids`). Answers whether the write happened, mirroring
-    /// `array_set` and `set_instance_field`. This one's callers are all
-    /// tests, editing an already-live class (`install_mixin` in
-    /// `tests/image.rs`, `tests/instantiate.rs`, `ns-cli`'s
-    /// `disasm_snapshots.rs`) -- a wrong-shape `class` there is a test bug,
-    /// not an untrusted-input case.
+    /// `array_set` and `set_instance_field`. Its callers are the bootstrap's
+    /// kernel phase, filling each builtin placeholder once
+    /// (`interpreter::kernel`), and tests editing an already-live class
+    /// (`install_mixin` in `tests/image.rs`, `tests/instantiate.rs`,
+    /// `ns-cli`'s `disasm_snapshots.rs`) -- a wrong-shape `class` there is a
+    /// bug of the caller's, not an untrusted-input case.
     pub fn set_class_application(
         &mut self,
         class: ClassReference<'gc>,
@@ -2484,8 +2554,7 @@ impl<'gc> Heap<'gc> {
     /// hold, the caller forwards with the answer: the interpreter's own
     /// roots (`World::move_everything`). A compacting collection that
     /// treats everything as live; the stress mode runs one at the run loop's
-    /// safepoints (`docs/design/memory.md`, "Checking the roots before a
-    /// collector exists").
+    /// safepoints (`docs/design/memory.md`, "The move stress mode").
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between runs.
@@ -2978,7 +3047,10 @@ mod tests {
         let application = std::rc::Rc::new(crate::mixin::MixinApplication {
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
+            inherits_value: false,
+            mutable_value_slot: None,
             nested_slot: crate::hash::IdentityMap::default(),
+            declared_slots: Vec::new(),
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,

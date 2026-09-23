@@ -183,7 +183,9 @@ fn a_site_goes_polymorphic_then_megamorphic() {
 }
 
 /// `true` and `false` are instances of two classes: a site that is not
-/// inlined and sees both is bimorphic.
+/// inlined and sees both is bimorphic. `not` is a kernel primitive method
+/// (`Kernel.ns`), so each entry's target is a
+/// `CachedTargetKind::Method`, not a `CachedTargetKind::Primitive`.
 #[test]
 fn a_site_on_true_and_false_is_bimorphic() {
     let source = indoc! {"
@@ -202,13 +204,10 @@ fn a_site_on_true_and_false_is_bimorphic() {
     let instance = instantiate(&mut interpreter, &class);
     let answer = send(&mut interpreter, &instance, "run", &[]);
     assert_eq!(small_integer(&mut interpreter, &answer), 1);
-    let primitive = public(CachedTargetKind::Primitive);
+    let not = method("not");
     assert_eq!(
         states(&mut interpreter, &class, MethodSide::Instance, "run", "not"),
-        vec![CallSiteState::Polymorphic(vec![
-            primitive.clone(),
-            primitive
-        ])]
+        vec![CallSiteState::Polymorphic(vec![not.clone(), not])]
     );
 }
 
@@ -608,9 +607,14 @@ fn a_tiny_global_cache_answers_like_a_full_one() {
     }
 }
 
-/// Only the families that ran take room in the table: `used`'s two sends
+/// Only the families that ran take room in the table: `used`'s own two sends
 /// (`+` in its block, `do:`), and nothing for `unused` or for an initializer
-/// with no sends.
+/// with no sends. `do:` is a kernel primitive method (`Kernel.ns`):
+/// caching its call site as a `CachedTargetKind::Method` also reserves
+/// the target's own family -- `Array>>do:`'s two sends (the lexical read of
+/// `vmMirror` and its `collection:do:ifFail:` send) -- which a
+/// `CachedTargetKind::Primitive` target never did, so the table holds four
+/// entries, not two.
 #[test]
 fn only_the_families_that_ran_take_room_in_the_cache_table() {
     let source = indoc! {"
@@ -631,13 +635,16 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
     assert_eq!(interpreter.cache_statistics().site_entries, 0);
     let answer = send(&mut interpreter, &instance, "used", &[]);
     assert_eq!(small_integer(&mut interpreter, &answer), 3);
-    assert_eq!(interpreter.cache_statistics().site_entries, 2);
+    assert_eq!(interpreter.cache_statistics().site_entries, 4);
 }
 
-/// A cached primitive that fails on a receiver of its own class -- the
+/// A cached kernel method that fails on a receiver of its own class -- the
 /// `transcript` stream shares the `Platform` class with the platform object
-/// -- keeps its entry, and the send continues uncached into
-/// `doesNotUnderstand:`.
+/// -- keeps its entry: the leaf declines, the method is activated, and its
+/// failure block's `super transcript` ends in `Object`'s
+/// `doesNotUnderstand:`. `transcript` is a kernel primitive method
+/// (`Kernel.ns`), so the site's target is a `CachedTargetKind::Method`, not
+/// a `CachedTargetKind::Primitive`.
 #[test]
 fn a_failing_primitive_keeps_its_entry() {
     let source = indoc! {"
@@ -663,7 +670,7 @@ fn a_failing_primitive_keeps_its_entry() {
         ),
         _ => panic!("the stream does not understand `transcript`"),
     }
-    let primitive = CallSiteState::Monomorphic(public(CachedTargetKind::Primitive));
+    let transcript = CallSiteState::Monomorphic(method("transcript"));
     assert_eq!(
         states(
             &mut interpreter,
@@ -672,7 +679,7 @@ fn a_failing_primitive_keeps_its_entry() {
             "run:",
             "transcript"
         ),
-        vec![primitive.clone(), primitive]
+        vec![transcript.clone(), transcript]
     );
 }
 

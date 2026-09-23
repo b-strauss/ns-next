@@ -3,7 +3,8 @@
 > **Status:** built.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `types.rs` (`Object`, `ObjectData`, `Value`),
-> `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs`.
+> `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs`,
+> `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`).
 
 ## Values and objects
 
@@ -38,8 +39,9 @@ until the collector, which makes it weak ([memory.md](memory.md), "What the
 collector traces"). This is what every reference does -- Primordial Soup's
 weak `symbolTable` (`KernelForPrimordialSoup.ns`), SOMns's
 `Symbols.symbolFor`, Squeak's symbol table -- and it keeps a symbol an
-indexable object for step 6's kernel, where `Symbol` is a subclass of
-`String`. Rejected: a symbol as an immediate `Value` variant, which no
+indexable object for a kernel where `Symbol` is a subclass of `String`, as
+the references declare it; `Kernel.ns` still puts `Symbol` directly under
+`Object`. Rejected: a symbol as an immediate `Value` variant, which no
 reference does and which every string primitive, and later the Newspeak
 kernel, would have to accept as a non-object. An image carries a symbol as a
 record; the decoder enters each one into the loading heap's table and refuses
@@ -134,7 +136,8 @@ Hence three layers:
 ```rust
 struct Mixin {                    // one per declaration, shared for its lifetime
     name: Symbol,
-    methods: IdentityMap<Symbol, MethodEntry>,  // compiled methods, slot accessors, primitives
+    methods: IdentityMap<Symbol, MethodEntry>,  // compiled methods, slot accessors;
+                                                // primitives on the VM mirror's alone
     slots: Vec<MixinSlot>,        // name, mutability, accessibility
     initializer_expressions: Vec<ast::Statement>,
     factory: Option<Rc<ast::MessagePattern>>,
@@ -269,6 +272,62 @@ program-level error is deferred to the execution of the body that raises it
 ([compiler.md](compiler.md), "Compilation cannot fail") — so loading stays
 total.
 
+## The builtin classes
+
+A builtin class — `Object`, `Integer`, `Array` and the rest of
+`BuiltinClass::ALL` — is an ordinary class object whose `builtin` field names
+its kind, and whose behaviour is a nested class of `Kernel.ns`
+([core-library.md](core-library.md), "The bootstrap: placeholders first,
+kernel second"). The bootstrap builds each class object first, over a
+placeholder mixin, because a literal needs its class before any Newspeak has
+been read, and then gives it its kernel class's application with
+`Heap::set_class_application`. So the class object is the same one every
+literal has had from the first instruction on, and its behaviour is the
+kernel's.
+
+- **Superclasses follow the kernel's clauses.** `Top` has none — §3.2's
+  empty class, which declares nothing so that all code, `Object`'s included,
+  resides in a mixin, and which only `Object` may name as its superclass.
+  `Object` is below it, and every other class is below `Object`, as §3.2
+  requires ("except for `Top` all classes are subclasses of class
+  `Object`"). `Value` is below `Object`, and below `Value` are §3.1.1's value
+  classes: `Boolean` with `True` and `False` (decided with the user on
+  2026-09-22, as both references declare them, so the conditionals and logic
+  are `Boolean`'s methods, inherited), `Number` with `Integer` and `Float`,
+  and `String`, `Symbol`, `Character` and `Nil`. `Number` is empty; it is the
+  place §3.1.1 names, and where the numeric tower goes when there is one
+  ([core-library.md](core-library.md), "Gap: an integer has no `/`").
+  `Array`, `OrderedCollection`, `Block` and `Platform` stay directly under
+  `Object`, since their instances are not values. The clause is read by name
+  at bootstrap, never run, and the class object's `superclass` link is set to
+  match its application's.
+- **`Top` is not nameable.** It is the one class of `Kernel.ns` declared
+  private, so §6.3.1 keeps it out of every other module's reach; no bare name
+  resolves to it (`instantiate::builtin_kind_from_name` omits it), and the
+  image decoder refuses its tag wherever an artifact names a class, as it
+  refuses the mirror's ([image-format.md](image-format.md), "Verification").
+  A program can reach it only as `Object`'s superclass, which is what §3.2
+  allows and nothing more.
+- **A builtin class's enclosing object is the kernel instance** — the one
+  instance of `Kernel.ns`'s root class, instantiated with the VM mirror — and
+  its `declaring_class` is the kernel class, as for any nested class. That is
+  what makes a kernel method's lexical send of `vmMirror` reach the kernel's
+  slot. Each of the kernel instance's hidden nested-class slots holds the
+  builtin class itself (`MixinApplication::nested_slot`), so the nested-class
+  accessor `Array` inside kernel code answers the builtin `Array` rather than
+  a second class object of the same mixin.
+- **Its factory is `new`, with no arguments.** A kernel class declares none,
+  so its mixin has §6's default, and the arity check applies: a host's
+  `Interpreter::instantiate` of a builtin class with factory arguments is
+  refused. `Array new` and `OrderedCollection new` build their own payload
+  (`instantiate::decide_factory`), and the VM mirror's class is refused
+  outright — there is exactly one mirror.
+- **A user subclass of a builtin inherits its methods but not its payload.**
+  `class MyArray = Array new` answers `Array`'s kernel methods, whose leaves
+  decline on an instance that carries no array, and each method's failure
+  block reaches `Object`'s ([core-library.md](core-library.md), "The shape of
+  a kernel method").
+
 ## Instantiation
 
 A superclass clause `[prefix] receiver [message]` — `Object new`, or `balance: b`
@@ -306,6 +365,48 @@ except through slots explicitly extracted in the initializer: only `i` sees them
 walked the superclass chain upward and ran every level's slots and initializer
 expressions in the *subclass's* activation with the subclass's factory arguments,
 which §6.2 does not permit.
+
+### A value object's two conditions
+
+§3.1.1 makes an object a value object when "it is deeply immutable ... and its
+class inherits from class `Value`", and the two halves of that — the mutable
+slot and the slot that is not a value — are enforced as the instance is built,
+the one place every instance of every class comes from, whether its class was
+loaded from source, materialized as a nested class or rebuilt from an image.
+The same bullet of §3.1.1 asks two further things that nothing here checks:
+that a value's enclosing objects (§3.3) are values, and that its class does
+not define `==` ([core-library.md](core-library.md), "What is still
+unchecked", where the enclosing-object question is recorded as an open
+decision):
+
+- **Step 1 refuses a mutable slot.** A class that inherits `Value` and declares
+  one could never have a value object for an instance, so there is no instance
+  to make and nothing is allocated. `Mutator::apply_mixin` answers both
+  questions once per application — whether the chain reaches `Value`
+  (`inherits_value`) and whether any level of it declares a mutable slot while
+  it does (`mutable_value_slot`) — because the same mixin applied over a
+  superclass that is no value declares an ordinary mutable slot and is perfectly
+  legal.
+- **Step 4 refuses a declared slot that is not a value.** *Deeply* immutable
+  means "all objects reachable from it are also deeply immutable", so
+  `InitializeSlot` refuses to store anything but a value in an instance of a
+  value class: an immediate, a `String`, a `Symbol`, a `Character`, or an
+  instance whose class inherits `Value`. An `Array` stored there would make the
+  whole value mutable through it, and two copies of the value would stop being
+  equal the moment one array was written. The decision and its text live in
+  `interpreter/instantiate.rs`; `vm.rs` only calls it, so both lowerings raise
+  the same error.
+
+  The rule is about the slots a class **declares**. The hidden nested-class
+  cache slot ("The nested-class accessor" above) is written by the accessor,
+  not by `InitializeSlot`, so it never meets the check — and should not: it
+  holds a class object, which is no value, but it is the implementation of a
+  member §6 defines rather than state of the value. A value class may declare a
+  nested class without ceasing to be one.
+
+Both are ordinary Newspeak errors naming the class and the slot, raised at run
+time — a class nothing instantiates never fails, as a method nothing runs never
+does.
 
 ## Class sides and metaclasses
 
@@ -380,29 +481,30 @@ superclass's application (§6.2) — a fresh mixin per class object would give
 every enclosing instance its own behaviour and send every `X new` site
 megamorphic.
 
-**Deviation from §3.2, scheduled for step 6.** The specification also makes
+**Deviation from §3.2, scheduled for step 6's third plan.** The specification also makes
 every class formally an instance of its metaclass, which is in turn an instance
 of `Metaclass` and a subclass of `Class`. That reified hierarchy is not built:
 what exists is the lazily created metaclass above, which carries class-side
-behaviour and nothing more, and a class object's own class is the bootstrap
-`Object` placeholder. It lands with the core library in Newspeak
-([core-library.md](core-library.md)), which is where `Class`, `Behavior` and
-`Metaclass` become declared kernel classes rather than objects hand-built in
-Rust — both references declare them exactly there
+behaviour and nothing more, and a class object's own class is the builtin
+`Object` class. It lands with step 6's third plan, the next part of the
+core library in Newspeak ([core-library.md](core-library.md)), which is
+where `Class`, `Behavior` and `Metaclass` become declared kernel classes
+rather than objects hand-built in Rust — both references declare them exactly there
 (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
 `prior-art/newspeak/KernelForJS.ns`) — and which sits immediately before the
 reflection work that cannot be done without them: a mirror's test for a
 metaclass is `Metaclass = classOf: reflectee`, which needs the instance-of
 relation reified. Pulling it earlier would cost a metaclass per class object,
 built eagerly where it is lazy today, and a change to the decoder's placeholder
-scheme (below); nothing before step 6 depends on it. See
+scheme (below); nothing built so far depends on it. See
 [liveness-and-reflection.md](liveness-and-reflection.md).
 
 One consequence is load-bearing elsewhere: `Object::class` is not an
-`Option<ClassReference>`, because every class object's own class is the bootstrap
-`Object` placeholder. The image decoder relies on that: it allocates every
-record as a placeholder pointing at the bootstrap `Object` before it reads the
-record that says what the class really is. Building §3.2's hierarchy would make
+`Option<ClassReference>`, because every class object's own class is the
+builtin `Object` class, which exists from the first moment of the bootstrap.
+The image decoder relies on that: it allocates every record as a placeholder
+pointing at the builtin `Object` before it reads the record that says what
+the class really is. Building §3.2's hierarchy would make
 a class object's class a real, distinct object and would invalidate it.
 
 ## Source retention and provenance

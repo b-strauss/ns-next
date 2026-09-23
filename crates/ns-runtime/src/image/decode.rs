@@ -665,6 +665,10 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         11 => BuiltinClass::Nil,
         12 => BuiltinClass::Block,
         13 => BuiltinClass::Platform,
+        14 => BuiltinClass::VmMirror,
+        15 => BuiltinClass::Top,
+        16 => BuiltinClass::Value,
+        17 => BuiltinClass::Number,
         _ => return None,
     })
 }
@@ -675,6 +679,32 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
         what: "builtin class",
         tag,
     })
+}
+
+/// A builtin class a *program* names: `LoadBuiltinClass`, a class reference
+/// in the graph, a root class's superclass. Two tags are refused here,
+/// because no source module can produce them and an artifact that carried
+/// one would decode into a program the language does not admit. The VM
+/// mirror's class: there is exactly one mirror, and an artifact that could
+/// name its class could instantiate or reach a second one, and so claim
+/// every primitive. `Top`: §3.2 lets only `Object` have it as a superclass,
+/// so a class named over `Top` would sit outside `Object`'s chain and
+/// inherit none of its methods. `instantiate::builtin_kind_from_name` leaves
+/// both out for the same reasons, which is what keeps source and artifact
+/// agreed on the names a program has. Only the closing hash table names
+/// them, by tag, as it names every builtin.
+pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+    match read_builtin_class(reader)? {
+        BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 14,
+        }),
+        BuiltinClass::Top => Err(DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 15,
+        }),
+        kind => Ok(kind),
+    }
 }
 
 /// The inverse of `encode::integer_operation_tag`. An unrecognized byte is
@@ -1229,6 +1259,21 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             registers.push(*destination);
             registers
         }
+        // The decoder never produces one -- it has no wire tag -- but the
+        // match is total, and answering its real registers keeps it so.
+        Instruction::SendMirror {
+            mirror_register,
+            subject_register,
+            argument_registers,
+            destination,
+            ..
+        } => {
+            let mut registers = argument_registers.clone();
+            registers.push(*mirror_register);
+            registers.push(*subject_register);
+            registers.push(*destination);
+            registers
+        }
         Instruction::MakeArray {
             destination,
             element_registers,
@@ -1274,6 +1319,8 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::BranchIfFalse { target, .. }
         | Instruction::BranchIfTrue { target, .. }
         | Instruction::IntegerBinary { target, .. } => Some(*target),
+        // Never decoded (it has no wire tag); its target is still one.
+        Instruction::SendMirror { failure, .. } => Some(*failure),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
         | Instruction::LoadBuiltinClass { .. }
@@ -1482,7 +1529,7 @@ fn decode_instruction(
             let destination = reader.read_u16()?;
             Instruction::LoadBuiltinClass {
                 destination,
-                kind: read_builtin_class(reader)?,
+                kind: read_program_builtin_class(reader)?,
             }
         }
         OPCODE_MOVE => {
@@ -1822,7 +1869,9 @@ pub fn decode_class_tag<'gc>(
     tables: &Tables<'_, 'gc>,
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match reader.read_u8()? {
-        CLASS_BUILTIN => Ok(context.mutator.builtin_class(read_builtin_class(reader)?)),
+        CLASS_BUILTIN => Ok(context
+            .mutator
+            .builtin_class(read_program_builtin_class(reader)?)),
         CLASS_USER_ROOT => Ok(*context.root_class),
         CLASS_RECORD => decode_object_id(reader, tables),
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
@@ -2116,7 +2165,7 @@ pub fn build_root_class<'gc>(
 /// real one.
 fn read_root_superclass_tag(reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
     if reader.read_boolean()? {
-        Ok(Some(read_builtin_class(reader)?))
+        Ok(Some(read_program_builtin_class(reader)?))
     } else {
         Ok(None)
     }

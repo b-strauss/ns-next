@@ -1,0 +1,52 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: "A value object is globally unique, in the
+   sense that no other object is equal to it", and a value's class "does
+   not define an identity method (==) ... if such a method is defined, that
+   method must return the same results as Value's equality method (=)".
+   `Value` declares `==` as a send of `=`, which makes the two agree by
+   construction for every value class -- a value has no observable
+   identity, so there is nothing else for `==` to answer.
+
+   Each line prints the pair's `=` and then its `==`, in that order, so the
+   agreement is visible column by column: the two are never allowed to
+   differ.
+
+   `Float/Integer` and `Integer/Float` answer false in both columns, and
+   that is the rule holding rather than breaking: every value class's `=`
+   is class-tight, `Float`'s included, so neither `1.0 = 1` nor `1 = 1.0`
+   is true and `==` must answer exactly that. `Float>>=` widened an
+   Integer argument until 2026-09-23, which made the two lines disagree
+   and broke the `=`/`hash` contract with them: `1.0 hash` and `1 hash`
+   differ. Cross-type numeric equality comes back with the numeric tower
+   under `Number` (`docs/design/core-library.md`).
+
+   `Text` is the case a user subclass of a builtin value class makes. Its
+   instances carry no string payload, so `String>>=`'s leaf declines and
+   the body's `super = other` reaches `Value`'s `=`; that leaf declines in
+   turn -- the class's `=` is `String`'s, not `Value`'s -- and the Newspeak
+   walk compares the classes and then zero slots. Two instances of a
+   stateless value class are therefore one value: `true`, where identity
+   answered `false` before `Value` declared anything. That is the reading
+   3.1.1 requires -- a value with no state has nothing to tell two of them
+   apart -- and it is recorded here because it is the one outcome of this
+   change that no other golden shows. *)
+class ValueIdentity usingPlatform: platform = Object new (
+    | transcript = platform transcript. |
+) (
+    public class Text = String new () ()
+    report: label for: first and: second = (
+        transcript show: label; show: ' '; show: (first = second) printString;
+            show: ' '; show: (first == second) printString; newLine
+    )
+    public main: ignoredPlatform args: arguments = (
+        report: 'String' for: 'a' and: 'a'.
+        report: 'Character' for: "a" and: "a".
+        report: 'Symbol' for: #a and: #a.
+        report: 'Integer' for: 3 and: 3.
+        report: 'Nil' for: nil and: nil.
+        report: 'Float/Integer' for: 1.0 and: 1.
+        report: 'Integer/Float' for: 1 and: 1.0.
+        report: 'Text' for: Text new and: Text new.
+    )
+) : ()

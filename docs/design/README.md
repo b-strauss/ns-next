@@ -34,12 +34,12 @@ that cannot name its code is describing an intention, and should say so.
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
-| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a), per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c); step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | — |
-| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, and an inlined fast path for the nine binary integer leaves | — |
+| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) — since step 6 on the VM mirror's class alone, with kernel primitive methods run in `act` without an activation — per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c); step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | — |
+| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers | JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Built — the arena, the activation stack, the safepoint, tracing, host roots, the stress modes, the lifetime brand and a mark-compact collector; a slot is reclaimed once nothing reaches it | generations |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
-| Builtins and the platform | [core-library.md](core-library.md) | Partial; `Integer` answers `//` but not `/`, which is registered on `Float` alone | the core library as Newspeak source over a VM mirror, which has to settle `Integer>>/` |
+| Builtins and the platform | [core-library.md](core-library.md) | **Partial:** no `Class`, `Behavior` or `Metaclass`, and `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is a forwarder in `crates/ns-runtime/core-library/Kernel.ns`, and the leaves are the mirror's `MIRROR` rows. Its hierarchy is §3.2's and §3.1.1's — `Top`, then `Object`, then `Value` over the value classes with `Number` among them — and `Value` derives `=`, `==` and `hash` from an instance's state | `Class`, `Behavior` and `Metaclass` (step 6's third plan); real bodies for control flow and `do:` before the JIT tiers; settling `Integer>>/` and the numeric tower `Number` is the place for |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
 ## Architecture
@@ -50,7 +50,8 @@ plugs into:
 ```
 crates/
   ns-syntax/    lexer, tokens, AST, spans, diagnostics
-  ns-runtime/   resolver, object model, dispatch, compiler, VM, builtins, image
+  ns-runtime/   resolver, object model, dispatch, compiler, VM, the leaves, image;
+                core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary
 ```
 
@@ -82,6 +83,9 @@ should change for runtime work.
 ### From source to a running program
 
 ```
+Interpreter::bootstrap          the builtin classes, the VM mirror, and
+                                core-library/Kernel.ns compiled into them
+                                and instantiated with the mirror
 source bytes
   -> ns-syntax::lex             Vec<Token>
   -> ns-syntax::parse           Module (AST + spans)
@@ -142,6 +146,7 @@ since the harness keeps a passing test quiet.
 | `capture/` | what a block captures: copied variables, indirection vectors, the fallback closures of an inlined conditional |
 | `class-side/` | class sides: an implicit one, `outer` from one, class-side `super` |
 | `errors/` | a program that raises, where the error text and the exit status are the point |
+| `kernel/` | the core library in `Kernel.ns`: what a user subclass of a builtin inherits, the one outcome the move defined, a recursion through kernel methods the two lowerings count alike, and §3.1.1's value semantics — a value's derived equality and hash, its lack of identity, and the two conditions refused at instantiation |
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
 | `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
 | `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
@@ -211,8 +216,8 @@ four before trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
-| No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the bootstrap `Object` placeholder; scheduled for step 6, the core library in Newspeak | §3.2 | [object-model.md](object-model.md) |
-| No formal "value object" notion, because there are no actors to need it | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
+| No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the builtin `Object` class; scheduled for step 6's third plan, `Class`, `Behavior` and `Metaclass` in `Kernel.ns` | §3.2 | [object-model.md](object-model.md) |
+| Value objects exist and the slot half of §3.1.1's second bullet is enforced — its enclosing-object and no-`==` requirements are not, an open decision — but nothing copies one across an actor boundary, and a module definition is not one | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
@@ -224,7 +229,7 @@ four before trusting a program's output.
 | The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 | `doesNotUnderstand:`'s argument is a two-element tuple of the selector and the arguments, not an object obeying `MessageMirror`'s protocol | §3.4 | [dispatch.md](dispatch.md) |
-| A `doesNotUnderstand:` declared on a class side is never invoked: the handler walk starts at the class object's own class, the bootstrap `Object` placeholder, not at its metaclass | §5.5 | [dispatch.md](dispatch.md) |
+| A `doesNotUnderstand:` declared on a class side is never invoked: the handler walk starts at the class object's own class, the builtin `Object` class, not at its metaclass | §5.5 | [dispatch.md](dispatch.md) |
 
 Three of these have a golden under `goldens/spec/`, recorded as `skipped`:
 the sequential simultaneous slot clauses, the eager lazy slot and the

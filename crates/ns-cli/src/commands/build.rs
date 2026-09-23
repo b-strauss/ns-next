@@ -3,8 +3,6 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use ns_runtime::mixin::MethodEntry;
-
 use crate::source;
 
 /// Whether the root class can answer `selector`: a method anywhere up its
@@ -19,7 +17,7 @@ use crate::source;
 /// names, because those are exactly what `mixins::encode` interns into the
 /// symbol table while walking this same superclass chain over `mixin.methods`
 /// and `mixin.nested`. Accepting anything wider -- a slot's implicit *setter*,
-/// a builtin's native method -- would accept a selector the code and mixin
+/// a core-library (kernel) method -- would accept a selector the code and mixin
 /// tables never interned: a slot's *getter* is interned (`mixins::encode`
 /// writes every slot name), but the setter selector it is derived from at
 /// dispatch time is not a name `mixins::encode` ever writes. Accepting it
@@ -28,37 +26,32 @@ use crate::source;
 /// preserve (`docs/design/image-format.md`, "The consistency guarantee,
 /// stated precisely").
 ///
-/// Walking past the root level (`application = a.superclass.clone()`) is safe
-/// only because of an invariant this function relies on but does not check:
-/// every non-own mixin reachable from a root class's superclass chain today is
-/// a builtin's, and a builtin mixin's method table holds nothing but its
-/// primitives (`MethodEntry::Primitive`), with empty `nested` -- and
-/// `mixins::encode` never writes a primitive, so the check counts only an
-/// entry that is not one. Cross-module inheritance does not exist yet, so the
-/// ancestor branch can never actually return `true` today; the loop climbs
-/// `superclass` only to stay correct if a root class's chain ever grows past
-/// one level of builtin mixin. If ns-next later gains cross-module
-/// inheritance, or a core-library superclass written in Newspeak, an
-/// ancestor mixin could carry real `methods`/`nested` entries
-/// that `mixins::encode` never interns for *this* module's symbol table (it
-/// only walks the module's own declaration tree) -- and this check would then
-/// accept a selector absent from that table, silently breaking the guarantee
-/// above instead of refusing the build. No test catches that today: every
-/// fixture here inherits directly from `Object`.
+/// The walk stops at the first level whose `class_builtin` is `Some`: every
+/// builtin's methods are `Kernel.ns`'s (`docs/design/core-library.md`, "The
+/// VM mirror is the whole Rust boundary"), so a builtin level holds real
+/// compiled entries -- `Object`'s `printString`, for one. Every builtin
+/// level is the kernel's, which `mixins::encode` never walks (it interns
+/// only the module's own declaration tree), so accepting a selector found
+/// there would accept one absent from the image's symbol table, breaking the
+/// byte-identity guarantee above instead of refusing the build --
+/// `build_refuses_an_entry_only_a_builtin_answers` pins this. Below that
+/// level every entry is the module's own: the only primitive entries are the
+/// VM mirror's, and the mirror is a builtin.
 fn root_class_answers<'gc>(
     heap: &ns_runtime::Heap<'gc>,
     class: ns_runtime::ClassReference<'gc>,
     selector: &str,
 ) -> bool {
     let symbol = ns_runtime::Symbol::intern(selector);
-    let mut level = heap.class_application(class);
-    while let Some(application) = level {
-        let declared = application
-            .mixin
-            .methods
-            .get(&symbol)
-            .is_some_and(|entry| !matches!(entry, MethodEntry::Primitive(_)));
-        if declared {
+    let mut level = Some(class);
+    while let Some(current) = level {
+        if heap.class_builtin(current).is_some() {
+            return false;
+        }
+        let Some(application) = heap.class_application(current) else {
+            return false;
+        };
+        if application.mixin.methods.contains_key(&symbol) {
             return true;
         }
         if application
@@ -69,7 +62,7 @@ fn root_class_answers<'gc>(
         {
             return true;
         }
-        level = application.superclass.clone();
+        level = heap.class_superclass(current);
     }
     false
 }

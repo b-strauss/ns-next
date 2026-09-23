@@ -12,6 +12,7 @@ use ns_syntax::Span;
 
 use super::capture::{BodyKey, Captured, Captures, Place};
 use super::control_flow::{self, InlineForm};
+use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
     CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal as BytecodeLiteral,
 };
@@ -788,7 +789,7 @@ impl<'a> Lowerer<'a> {
         let (depth, index) = match self.bindings.get(&target.span)? {
             Binding::Local(index) => (0, *index),
             Binding::OuterLocal { depth, index } => (*depth, *index),
-            Binding::LexicalSend { .. } | Binding::SuperSend => return None,
+            Binding::LexicalSend { .. } | Binding::SuperSend | Binding::MirrorSend => return None,
         };
         // The inlining gate admits no block with temporaries or parameters,
         // so a binding inside an inlined block never names that block's own
@@ -863,6 +864,17 @@ impl<'a> Lowerer<'a> {
             return true;
         }
         if control_flow::is_ordinary_send(self.bindings, send) {
+            // The mirror's failure block is lowered into this body, like an
+            // inlined conditional's blocks; its receiver and leaf arguments
+            // are lowered as any send's are.
+            if let Some((_, block)) = control_flow::recognize_mirror_send(self.bindings, send) {
+                let arguments = &send.message.arguments;
+                return self.writes_register(&send.receiver, register, inlined_depth)
+                    || arguments[..arguments.len() - 1]
+                        .iter()
+                        .any(|argument| self.writes_register(argument, register, inlined_depth))
+                    || self.inlined_blocks_write_register([block], register, inlined_depth);
+            }
             if let Some(form) = control_flow::recognize(send) {
                 return self.inlined_form_writes_register(send, form, register, inlined_depth);
             }
@@ -904,9 +916,24 @@ impl<'a> Lowerer<'a> {
                 return true;
             }
         }
-        [first, second]
+        self.inlined_blocks_write_register(
+            [first, second].into_iter().flatten(),
+            register,
+            inlined_depth,
+        )
+    }
+
+    /// Whether a statement of one of `blocks`, each lowered inline into this
+    /// body, can write `register`: asked one resolver scope deeper than the
+    /// send that inlines them.
+    fn inlined_blocks_write_register<'b>(
+        &self,
+        blocks: impl IntoIterator<Item = &'b ast::BlockExpression>,
+        register: u16,
+        inlined_depth: u16,
+    ) -> bool {
+        blocks
             .into_iter()
-            .flatten()
             .flat_map(|block| block.body.statements.iter())
             .any(|statement| match statement {
                 Statement::Expression(expression) | Statement::Return(expression) => {
@@ -1093,8 +1120,8 @@ impl<'a> Lowerer<'a> {
             // place: a `super`-prefixed superclass-clause receiver (the known
             // gap in `docs/design/dispatch.md`, "Binding variants"). It is
             // grouped with `None` because both fall to the same builtin-name
-            // fallback.
-            Some(Binding::SuperSend) | None => {
+            // fallback. `MirrorSend` marks a send, never an identifier.
+            Some(Binding::SuperSend | Binding::MirrorSend) | None => {
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
                     Some(kind) => {
                         let destination = self.allocate_scratch();
@@ -1190,7 +1217,7 @@ impl<'a> Lowerer<'a> {
                 let setter = crate::Symbol::intern(&format!("{}:", target.name));
                 self.emit_lexical_send(depth, setter, vec![value_register]);
             }
-            Some(Binding::SuperSend) | None => panic!(
+            Some(Binding::SuperSend | Binding::MirrorSend) | None => panic!(
                 "internal: unresolved setter target `{}` (the resolver should have rejected this)",
                 target.name
             ),
@@ -1267,10 +1294,14 @@ impl<'a> Lowerer<'a> {
     /// Every argument is live until the send instruction reads it, so each
     /// one has to survive whatever the arguments after it emit.
     fn lower_arguments(&mut self, message: &ast::MessageSend) -> Vec<u16> {
-        (0..message.arguments.len())
-            .map(|index| {
-                self.lower_operand(&message.arguments[index], &message.arguments[index + 1..])
-            })
+        self.lower_operands(&message.arguments)
+    }
+
+    /// `lower_operand` over a run of operands one instruction reads: each is
+    /// protected against every operand lowered after it.
+    fn lower_operands(&mut self, operands: &[Expression]) -> Vec<u16> {
+        (0..operands.len())
+            .map(|index| self.lower_operand(&operands[index], &operands[index + 1..]))
             .collect()
     }
 
@@ -1285,6 +1316,9 @@ impl<'a> Lowerer<'a> {
         // inlining stays a pure optimization.
         if !control_flow::is_ordinary_send(self.bindings, send) {
             return self.lower_super_or_lexical_send(send);
+        }
+        if let Some((primitive, block)) = control_flow::recognize_mirror_send(self.bindings, send) {
+            return self.lower_mirror_send(send, primitive, block, use_);
         }
         if let Some(form) = control_flow::recognize(send) {
             return match form {
@@ -1385,6 +1419,11 @@ impl<'a> Lowerer<'a> {
             // send stands, patched exactly like a jump's.
             | Instruction::IntegerBinary {
                 target: jump_target,
+                ..
+            }
+            // A mirror send's `failure` is where its inlined block stands.
+            | Instruction::SendMirror {
+                failure: jump_target,
                 ..
             } => *jump_target = target,
             other => unreachable!("internal: patch_target on a non-jump instruction {other:?}"),
@@ -1613,6 +1652,61 @@ impl<'a> Lowerer<'a> {
         destination
     }
 
+    /// A mirror send with its failure block inline: `SendMirror`, then a jump
+    /// over the block, then the block's body lowered into this body -- a `^`
+    /// in it returns from the kernel method, as the failure path of a
+    /// primitive method's body should (`docs/design/compiler.md`, "Mirror
+    /// sends").
+    ///
+    /// The receiver, the subject and the leaf's arguments are lowered in
+    /// order, each protected against what is lowered after it, as
+    /// `lower_arguments` protects a send's arguments. The block is not
+    /// lowered as a value: it is code at `failure`, run only when the leaf
+    /// declines. Its value lands in the same `destination` the leaf writes,
+    /// the two paths being mutually exclusive, and it is `Move`d there as
+    /// `emit_guarded_branch` moves a branch's value -- after a block that
+    /// ends in `^` that `Move` is unreachable, and harmless.
+    ///
+    /// Unlike an inlined conditional there is no fallback send: the mirror's
+    /// class and method table are fixed, so nothing but this block can ever
+    /// answer the leaf's failure, and no closure is built out of it.
+    fn lower_mirror_send(
+        &mut self,
+        send: &ast::Send,
+        primitive: MirrorPrimitive,
+        block: &ast::BlockExpression,
+        use_: ValueUse,
+    ) -> u16 {
+        let arguments = &send.message.arguments;
+        let leaf = &arguments[..arguments.len() - 1];
+        let mirror_register = self.lower_operand(&send.receiver, leaf);
+        let [subject, rest @ ..] = leaf else {
+            unreachable!("internal: every mirror selector takes a subject");
+        };
+        let subject_register = self.lower_operand(subject, rest);
+        let argument_registers = self.lower_operands(rest);
+        let destination = self.allocate_scratch();
+        let failure_jump = self.emit(Instruction::SendMirror {
+            primitive,
+            mirror_register,
+            subject_register,
+            argument_registers,
+            destination,
+            failure: 0,
+        });
+        let after_send_jump = self.emit(Instruction::Jump { target: 0 });
+        let failure_label = self.here();
+        self.patch_target(failure_jump, failure_label);
+        let failure_result = self.lower_inline_block_body(block, use_);
+        self.emit(Instruction::Move {
+            destination,
+            source: failure_result,
+        });
+        let end_label = self.here();
+        self.patch_target(after_send_jump, end_label);
+        destination
+    }
+
     /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
     /// value, the other arm the block's value coerced by `truthy`'s rule.
     /// The coercion only chooses which literal becomes the send's result, so
@@ -1718,7 +1812,10 @@ impl<'a> Lowerer<'a> {
                     | Instruction::JumpIfNotBoolean { target, .. }
                     | Instruction::BranchIfFalse { target, .. }
                     | Instruction::BranchIfTrue { target, .. }
-                    | Instruction::IntegerBinary { target, .. } => Some(*target as usize),
+                    | Instruction::IntegerBinary { target, .. }
+                    | Instruction::SendMirror {
+                        failure: target, ..
+                    } => Some(*target as usize),
                     _ => None,
                 })
                 .all(|target| target < self.instructions.len()),
@@ -3586,6 +3683,106 @@ mod tests {
 
     fn has<F: Fn(&Instruction) -> bool>(code: &CompiledCode, predicate: F) -> bool {
         code.instructions.iter().any(predicate)
+    }
+
+    /// Lowers `method` of a nested class `C` in a kernel-shaped module that
+    /// `resolve_kernel` resolved, so that its sends to `vmMirror` carry
+    /// `Binding::MirrorSend`.
+    fn lower_kernel_method(method: &str) -> CompiledCode {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                {method}
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(&source).expect("parse");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            Rc::from(source.as_str()),
+            crate::SourceOrigin::File(PathBuf::from("t.ns")),
+        ) else {
+            panic!("the kernel-shaped module resolves");
+        };
+        let method = &resolved.module.root_class.instance_side.nested_classes[0]
+            .instance_side
+            .methods[0];
+        let mut lowerer = method_lowerer(method, &resolved.bindings);
+        lowerer.lower_local_initializers(&method.body.temporaries);
+        lowerer.lower_body(&method.body.statements);
+        lowerer.finish(method.span)
+    }
+
+    /// The failure block is code at `failure`, not a closure: the send
+    /// evaluates the mirror, the subject and the leaf's argument, then either
+    /// jumps over the block or runs it in this body, where its `^` returns
+    /// from the method.
+    #[test]
+    fn a_mirror_send_lowers_its_failure_block_inline() {
+        let code = lower_kernel_method(
+            "foo: argument = ( ^vmMirror string: self concatenate: argument ifFail: [^nil] )",
+        );
+        let primitive =
+            crate::builtins::primitive::mirror_primitive_named("string:concatenate:ifFail:")
+                .expect("the mirror has string:concatenate:ifFail:");
+        let expected = vec![
+            Instruction::SendLexical {
+                depth: 1,
+                selector: crate::Symbol::intern("vmMirror"),
+                argument_registers: vec![],
+                destination: 1,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::LoadSelf { destination: 2 },
+            Instruction::SendMirror {
+                primitive,
+                mirror_register: 1,
+                subject_register: 2,
+                argument_registers: vec![0],
+                destination: 3,
+                failure: 4,
+            },
+            Instruction::Jump { target: 8 },
+            Instruction::LoadLiteral {
+                destination: 4,
+                literal: BytecodeLiteral::Nil,
+            },
+            Instruction::Return { register: 4 },
+            Instruction::LoadLiteral {
+                destination: 5,
+                literal: BytecodeLiteral::Nil,
+            },
+            Instruction::Move {
+                destination: 3,
+                source: 5,
+            },
+            Instruction::Return { register: 3 },
+        ];
+        assert_eq!(code.instructions, expected, "{:#?}", code.instructions);
+        // The one call site is `vmMirror`'s lexical send: `SendMirror`
+        // carries none, since nothing about it is looked up at run time.
+        assert_eq!(code.family_size, 1);
+        assert_eq!(code.outer_reach, 0);
+    }
+
+    /// A failure argument that is not a literal block is an ordinary send
+    /// to the mirror, under the optimized lowering as under the reference.
+    #[test]
+    fn a_mirror_send_whose_failure_argument_is_not_a_block_is_an_ordinary_send() {
+        let code =
+            lower_kernel_method("foo: argument = ( ^vmMirror stringSize: self ifFail: argument )");
+        assert!(!has(&code, |instruction| matches!(
+            instruction,
+            Instruction::SendMirror { .. }
+        )));
+        assert!(has(&code, |instruction| matches!(
+            instruction,
+            Instruction::SendPublic { selector, .. } if selector.as_str() == "stringSize:ifFail:"
+        )));
     }
 
     #[test]

@@ -156,6 +156,30 @@ pub enum Instruction {
         destination: u16,
         call_site: CallSite,
     },
+    /// A send to the VM mirror whose failure block was lowered inline, at
+    /// `failure` (`docs/design/compiler.md`, "Mirror sends"). Emitted only
+    /// by the optimized lowering, only for a `Binding::MirrorSend`, so only
+    /// into `Kernel.ns`, which no image carries -- it has no wire tag.
+    ///
+    /// `primitive` is the row the selector names, bound at compile time:
+    /// the mirror's class and method table are built once from the same
+    /// table, and nothing can add to or override them. The run-time check
+    /// that `mirror_register` holds the mirror is what stands for the
+    /// lookup (`interpreter::mirror::send_inlined`). `subject_register` is
+    /// the kernel method's `self`, `argument_registers` the leaf's own
+    /// arguments; the failure block is not an argument, because it is code
+    /// here, not a value.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// `outer_reach_of` does not name it.
+    SendMirror {
+        primitive: crate::builtins::primitive::MirrorPrimitive,
+        mirror_register: u16,
+        subject_register: u16,
+        argument_registers: Vec<u16>,
+        destination: u16,
+        failure: u32,
+    },
     /// Builds a closure over the *compiled* block body. `captured_frame` is
     /// a runtime value the VM supplies from its current activation when the
     /// instruction executes.
@@ -567,6 +591,25 @@ fn format_instruction(instruction: &Instruction) -> String {
             registers(argument_registers),
             format_call_site(*call_site)
         ),
+        Instruction::SendMirror {
+            primitive,
+            mirror_register,
+            subject_register,
+            argument_registers,
+            destination,
+            failure,
+        } => {
+            // The subject leads the list, as it leads the mirror selector's
+            // arguments; the failure block is the target, not an operand.
+            let operands: Vec<u16> = std::iter::once(*subject_register)
+                .chain(argument_registers.iter().copied())
+                .collect();
+            format!(
+                "SendMirror r{destination} <- r{mirror_register} #{} ({}) else -> {failure}",
+                crate::builtins::primitive::mirror_entry(*primitive).selector,
+                registers(&operands),
+            )
+        }
         Instruction::MakeClosure {
             destination,
             parameters,
@@ -767,6 +810,30 @@ mod tests {
             ]),
             1
         );
+    }
+
+    /// A mirror send lists its mirror selector with the subject leading its
+    /// operands, and names where its inlined failure block stands; it has
+    /// no call site to print, and reaches no other frame.
+    #[test]
+    fn a_mirror_send_disassembles_with_its_selector_operands_and_failure_target() {
+        let primitive =
+            crate::builtins::primitive::mirror_primitive_named("string:concatenate:ifFail:")
+                .expect("the mirror has string:concatenate:ifFail:");
+        let instruction = Instruction::SendMirror {
+            primitive,
+            mirror_register: 1,
+            subject_register: 2,
+            argument_registers: vec![0],
+            destination: 3,
+            failure: 4,
+        };
+        assert_eq!(
+            format_instruction(&instruction),
+            "SendMirror r3 <- r1 #string:concatenate:ifFail: (r2, r0) else -> 4"
+        );
+        assert_eq!(instruction.call_site(), None);
+        assert_eq!(outer_reach_of(&[instruction]), 0);
     }
 
     #[test]

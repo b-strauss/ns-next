@@ -9,9 +9,11 @@
 > send), `interpreter/sends.rs` (the uncached lexical and super sends),
 > `interpreter/instantiate.rs` (`decide_factory`, the action of a factory
 > entry and the per-send read a cache key does not cover),
-> `mixin.rs` (`DispatchId`), `heap.rs` (`Heap::dispatch_id`),
-> `builtins/primitive.rs` (the enumerated primitive and each builtin class's
-> method table).
+> `mixin.rs` (`DispatchId`, `MixinMethod.primitive`), `heap.rs`
+> (`Heap::dispatch_id`), `builtins/primitive.rs` (the enumerated primitive
+> and the VM mirror's table, `MIRROR`), `interpreter/mirror.rs` (how a send
+> to the mirror runs), `compiler/primitive_method.rs` (which kernel methods
+> are primitive methods).
 
 What a name means is settled in two halves: the resolver fixes the *shape* of
 each reference statically, and dispatch resolves the *target* at run time. They
@@ -288,7 +290,7 @@ access modifier.
 **Deviation: a class side's own `doesNotUnderstand:` is unreachable.** An
 ordinary send to a class object searches the metaclass, so a class-side method
 answers; but the `doesNotUnderstand:` walk starts at `class_of(receiver)`,
-which for a class object is the bootstrap `Object` placeholder rather than the
+which for a class object is the builtin `Object` class rather than the
 metaclass, so a `doesNotUnderstand:` declared on a class side is never
 invoked and the send raises the default error instead. §5.5 gives the handler
 no such exception: it is "the `#doesNotUnderstand:` method defined for the
@@ -401,39 +403,37 @@ with `InitializeSlot`.
 
 ## Primitives
 
-The builtin classes' natives are entries of their mixins' method tables
-(`MethodEntry::Primitive`, `mixin.rs`), found by the ordinary lookups instead
-of matched by their selector's text. `enum Primitive` (`builtins/primitive.rs`)
-names every native operation, one variant each, grouped by the builtin family
-whose module executes it — `Primitive::Integer(IntegerPrimitive::Add)`,
+A primitive is an entry of a method table (`MethodEntry::Primitive`,
+`mixin.rs`), found by the ordinary lookups instead of matched by its
+selector's text, and **only the VM mirror's method table holds any**: one
+public entry per row of `builtins/primitive.rs`'s `MIRROR`, carrying
+`Primitive::Mirror(row)` (`mirror_method_table`). The builtin classes'
+behaviour is `Kernel.ns` — ordinary compiled methods that forward to the
+mirror ([core-library.md](core-library.md), "The VM mirror is the whole Rust
+boundary"). `enum Primitive` names every native operation, one variant each,
+grouped by the builtin family whose module executes it —
+`Primitive::Integer(IntegerPrimitive::Add)`,
 `Primitive::Object(ObjectPrimitive::DoesNotUnderstand)`,
 `Primitive::Collection(CollectionPrimitive::Enumerate)` for `do:`,
-`Primitive::Platform(PlatformPrimitive::Show)` and the rest. One function,
+`Primitive::Platform(PlatformPrimitive::Show)` and the rest — and a `MIRROR`
+row names the one it runs. One function,
 `builtins::execute(mutator, primitive, receiver, selector, arguments)`,
 matches on it — the selector only for the error texts that name the send —
-and the bodies stay in `builtins/`'s modules, with their semantics and error
-text unchanged. An enumeration and not a function pointer, because a later
-JIT tier must be able to recognize a primitive and emit it inline: a function
-pointer can only be called, the ceiling a Rust callback imposes
-([core-library.md](core-library.md)). This is the model of the Smalltalk and
-Newspeak systems above: in Cog and Primordial Soup a primitive is a *method*
-whose primitive number indexes the interpreter's table (`primitiveTable`,
-`Primitives::primitive_table_` in `prior-art/primordialsoup/vm/primitives.cc`),
-and SOMns keeps its primitives as dispatchables in the same table as its
-methods.
-
-The bootstrap fills each builtin mixin's method table from a static list per
-`BuiltinClass` of (selector, access, primitive) (`builtins/primitive.rs`'s
-`method_table`), as a `MethodEntry::Primitive` carrying the primitive and its
-access. **Where those entries sit is what step 6 changes**: they move onto the
-method table of one VM mirror object, which §8.3.1 requires and which
-`Kernel.ns` is handed, and the builtin classes get their behaviour from that
-Newspeak source instead ([core-library.md](core-library.md), "The VM mirror is
-the whole Rust boundary"). Everything else in this section — the enumeration,
-the lookup, the failure rule, the cache entry — is unchanged by that move,
-which is why it is a move and not a redesign. Every primitive is `public`, except `Object`'s `doesNotUnderstand:`,
-which §5.5 requires to be `protected`, so an explicit `x doesNotUnderstand: m`
-sent from outside the receiver itself ends in `doesNotUnderstand:`.
+and the bodies stay in `builtins/`'s modules. Its `Mirror` arm is a send to
+the mirror object, which `interpreter::mirror::execute_sent` splits into the
+subject, the leaf's arguments and the failure block before it runs the row's
+leaf; every other arm is a leaf itself, which a mirror send reaches with the
+row's **reported selector** — `+`, not `integer:add:ifFail:` — so an error
+text names the kernel selector the program sent. An enumeration and not a
+function pointer, because a later JIT tier must be able to recognize a
+primitive and emit it inline: a function pointer can only be called, the
+ceiling a Rust callback imposes ([core-library.md](core-library.md)). This is
+the model of the Smalltalk and Newspeak systems above: in Cog and Primordial
+Soup a primitive is a *method* whose primitive number indexes the
+interpreter's table (`primitiveTable`, `Primitives::primitive_table_` in
+`prior-art/primordialsoup/vm/primitives.cc`), and SOMns keeps its primitives
+as dispatchables in the same table as its methods — on its VM mirror's class,
+as here.
 
 A lookup that reaches a primitive answers `Lookup::Primitive(primitive,
 level)`, `level` being the class object whose method table holds it — the
@@ -441,29 +441,152 @@ same "defining class" a `Lookup::Method` reports — and `resolve` turns it
 into `Resolved::Primitive` with the chain it was found on ("Resolve, then
 act" below).
 
-**A primitive can fail.** `builtins::execute` answers `None` exactly where the
-native it replaced did: a receiver of the wrong variant or payload — a user
-subclass of `Array`, whose instances carry no array payload, or one of the
-three platform objects that share `BuiltinClass::Platform` and are told apart
-by payload shape ([core-library.md](core-library.md), "Tagging inside the
-platform"). A failure passes the level over and the lookup continues from its
-superclass — `Object`, for every builtin — ending in `doesNotUnderstand:` if
-nothing above answers. In Cog a failing primitive falls into its method's
-body, whose code often sends the message on to `super`; these primitives have
-no body, so the lookup does it. The rule lives in one place, `act`
-(`interpreter/resolve.rs`), whichever send found the primitive and whether it
-was found uncached or rebuilt from a cache entry: `act` matches on
-`builtins::execute`'s answer and, on `None`, continues the same chain's
-lookup from `dispatch::lookup_above` in the `#[cold]` `act_above` — the
-public chain, a class side, the lexical chain or `super`'s — uncached; a
-`doesNotUnderstand:` handler that is a primitive continues in
-`act_handler_primitive`. The platform objects keep
-their shared class: a class of their own each would be observable
-(`platform transcript class` answers `Platform`) and is not needed for
-correctness.
+**The mirror's class and table are fixed at bootstrap.** The bootstrap builds
+them once from `MIRROR`, and nothing can add to or override them: no program
+can name the mirror's class to subclass it, the decoder refuses its tag
+wherever a program names a class ([image-format.md](image-format.md),
+"Verification"), and there is no MirrorBuilder yet. That is what lets the
+compiler bind a mirror send to its row at compile time — `SendMirror` carries
+the row and runs it with no lookup, checking only that its receiver register
+holds the mirror ([compiler.md](compiler.md), "Mirror sends") — and what
+lets a primitive method carry its row ("Primitive methods" below). **A
+MirrorBuilder must seal the mirror's class when it arrives**: a method added
+to or replaced on it would be found by a sent mirror send and bypassed by
+every `SendMirror` and primitive method, and the two would then disagree
+([liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors and
+MirrorBuilder").
 
-Bytecode and image are unaffected: the builtin mixins are built by the
-bootstrap and never serialized, so primitive numbers never reach the wire.
+**A primitive can fail.** `builtins::execute` answers `None` when a leaf
+declines: a receiver of the wrong variant or payload — an instance of a user
+subclass of `Array`, which carries no array payload, or one of the three
+platform objects that share `BuiltinClass::Platform` and are told apart by
+payload shape ([core-library.md](core-library.md), "Tagging inside the
+platform"). The answer goes back to the mirror code, which runs the send's
+failure block, the `[^super …]` every kernel method writes:
+
+- inline, for a `SendMirror`: the VM jumps to the failure target, where the
+  optimized lowering placed the block's body ([compiler.md](compiler.md),
+  "Mirror sends");
+- activated, for a mirror send that was *sent* — the reference lowering's,
+  and any the optimized lowering could not inline: `execute_sent` answers the
+  block as a step to activate, marked as a control-flow block so the depth
+  count treats it as it treats `ifTrue:`'s ([compiler.md](compiler.md), "How
+  the limit counts"), or the failure argument itself if it is not a block;
+- the method's own body, for a primitive method: `act` activates the method,
+  whose mirror send declines again and runs the failure block
+  ("Primitive methods" below).
+
+So a failure is Newspeak code, as in Cog, where a failing primitive falls
+into its method's body — whose code often sends the message on to `super`,
+as every kernel method's does. `execute_sent` never answers `None`, so a
+primitive entry never passes its level over any more: there is no pass-over,
+and `act`'s `Primitive` arm turns a `None` it can no longer receive into the
+unhandled-send error rather than a panic. The one observable consequence —
+a user subclass's own `doesNotUnderstand:` is passed by, per §5.10 — is
+[core-library.md](core-library.md), "The one observable difference". The
+platform objects keep their shared class: a class of their own each would be
+observable (`platform transcript class` answers `Platform`) and is not needed
+for correctness.
+
+**Four rows serve `Value` rather than one builtin class**, and they are where
+the rule that a leaf may not send shows most plainly:
+`value:sameAs:ifFail:` (reported `=`) and `valueHash:ifFail:` (`hash`) derive
+a value's equality and hash from its state, and `valueSlotCount:ifFail:`
+(`slotCount`) and `value:slotAt:ifFail:` (`slotAt:`) read that state
+(`builtins/value.rs`). **The derivation declines; it never sends.** Comparing
+two values means comparing their slots, and a slot's class may bring its own
+`=` — user Newspeak the leaf would have to run, which no native may do
+([core-library.md](core-library.md), "The rule: a native that calls back into
+Newspeak must not stay a Rust native"). So the leaf decides only the shapes
+it can decide without sending — the immediates, the text payloads, and slots
+whose classes it knows answer the derived `=` — and declines everything
+else, including a graph wider or deeper than its node budget, which is an
+ordinary primitive failure taking the ordinary path above:
+`Value`'s `ifFail:` block runs `valueEquals:` or `valueHashOfSlots`, which
+walk the slots from Newspeak and send `=` or `hash` to each. The cost of the
+decline is an activation and a Newspeak loop, paid only by the values that
+need it; the common shapes never leave the leaf.
+
+Bytecode and image are unaffected: the mirror's mixin is built by the
+bootstrap and never serialized, so primitive numbers never reach the wire,
+and neither does `Kernel.ns`, whose classes an image names only by tag.
+
+## Primitive methods
+
+**A kernel method whose whole body is a mirror send forwarding `self` and its
+own parameters is a primitive method** (decided with the user on
+2026-09-22): a send of it runs the row's leaf on the send's own receiver and
+arguments, without an activation, and activates the method only when the
+leaf declines — Cog's primitive methods, with the primitive recognized from a
+body that means exactly what it says rather than declared by a pragma that
+replaces what the body says. Without it every leaf the arithmetic fast path
+does not absorb would cost an activation, a lexical send of `vmMirror` and a
+`SendMirror` more than it did as a native entry
+([execution.md](execution.md), "What the core library's move cost").
+
+**Recognition** (`compiler/primitive_method.rs`, `recognize`) runs as a
+method is built onto its mixin, and stores the row on the method
+(`MixinMethod.primitive`). It accepts exactly
+`^vmMirror <row>: self <the method's parameters, in order> ifFail: [...]`:
+
+- the body is one statement, a `^` of the send, and declares no temporaries;
+- the send is a recognized mirror send (`control_flow::recognize_mirror_send`):
+  marked `Binding::MirrorSend`, a keyword selector naming a `MIRROR` row, its
+  last argument a literal block with no parameters and no temporaries;
+- the subject is an explicit `self`;
+- the arguments between the subject and the block are the method's own
+  parameters, each at its own position, by binding and not by name alone — the
+  resolver's `Binding::Local` of that index, so nothing that shadows a
+  parameter passes.
+
+Anything else — a second statement, a temporary, another subject, a
+parameter out of place, a row whose arity is not the method's — is an
+ordinary method. Only `resolve_kernel` records `MirrorSend`, so only a
+`Kernel.ns` method can be one; the same text in a user module is an ordinary
+method sending to whatever its `vmMirror` holds. What the failure block
+contains is not examined: it runs only when the method is activated. A method
+decoded from an image never carries a row, since no image carries a kernel
+method.
+
+**The fast path is in `act`** (`interpreter/resolve.rs`), on a
+`Resolved::Method` of any chain but the two handler chains: when the method
+carries a row, `mirror::execute_method` runs the row's leaf with the send's
+receiver, selector and arguments; `Some` is the send's answer, and `None`
+falls through to the ordinary `Step::Method`, whose body then runs the leaf
+again from its own mirror send and, declining, its failure block. A
+`doesNotUnderstand:` handler that is a primitive method — `Object`'s — runs
+its leaf on the reified message in `act_handler_method` the same way, before
+it would activate. The fast path costs one field test on every method send;
+the leaf's answer is delivered exactly as a native entry's was, a value or a
+step.
+
+**It applies under both lowerings**, because it is dispatch, not lowering: the
+reference lowering's sends reach `act` like the optimized lowering's. It has
+to. The depth count holds both lowerings to the same count of activations
+([compiler.md](compiler.md), "How the limit counts"), and the reference
+lowering's `SendInlinable` of `ifTrue:` reaches `Boolean>>ifTrue:`: without
+the fast path that is a counted activation of the kernel method, and the
+literal block its leaf then activates fails the exemption's condition, since
+that activation did not create it — two counted where the optimized lowering,
+which inlines the whole send, counts none. With it, the leaf answers the block
+straight to the `SendInlinable`'s sender, and the exemption applies unchanged.
+`goldens/kernel/recursion_through_the_core_library_counts_alike_under_both_lowerings`
+pins it.
+
+**`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without the marks, for
+measuring only.** It lets one binary run with and without the fast path, so a
+measurement can report both what the move costs and what the fast path
+recovers. It breaks the agreement above, so an overflow compared across the
+lowerings is not valid under it, and no gate runs with it. It is read once per
+process, and only once a kernel mirror send has been recognized, so no method
+outside the kernel consults the environment.
+
+**A cache needs no change.** A site whose target is a primitive method records
+a `Target::Method` like any other, and the mark is read off the method in
+`act` on every send, hit or miss, never decided by the entry — so a hit runs
+the leaf exactly when a miss would ("Every target is a function of its key
+and its site" below). One cost follows: such a site reserves feedback-table
+room for the method's family, though the fast path never activates it.
 
 ## Inline caches
 
@@ -575,7 +698,7 @@ two sittings ([execution.md](execution.md), "What the inline caches moved").
 The id (`mixin::DispatchId`) is a dense `u32`, minted per heap by a
 counter in the `Mutator` when `apply_mixin` creates an application — two per
 application, one for its instances and one for its class objects' class side,
-since every class object shares one placeholder class and its behaviour
+since every class object's class is the one builtin `Object` class and its behaviour
 (its metaclass, the factory among its members, then `Object`'s own) depends
 on its application alone. The
 two are minted consecutively, so the class side's is always the instances id
@@ -633,22 +756,27 @@ and their rules unchanged, and each answers a `Resolved`: what it found, with
 its defining class as a handle, and the `Chain` it was found on — `Public`,
 `PublicClassSide`, `Protected`, `ProtectedClassSide`, `Private`, `Super`, or one
 of the handler chains, `DoesNotUnderstand` and `SuperDoesNotUnderstand`. The
-chain says which class object the defining class is counted from and where a
-failed primitive continues. A `Resolved` is one of:
+chain says which class object the defining class is counted from. A
+`Resolved` is one of:
 
-- `Method` — the method and its defining class;
+- `Method` — the method and its defining class; a primitive method's row is
+  on the method ("Primitive methods" above);
 - `Slot` — an accessor's kind and absolute field, fixed by the application
   the lookup walked;
 - `NestedClass` — the mixin and its declaring class;
-- `Primitive` — the primitive and its level, where a failure continues;
+- `Primitive` — the primitive and its level: a mirror row, found only on the
+  mirror's class;
 - `Factory` — §6.3's primary factory, an entry of the receiver's metaclass
   mixin, with the class object §6.3 instantiates: the receiver, whichever
   level of the metaclass chain held the entry. Found on one of the two
   class-side chains and nowhere else;
 - `Unhandled` — nothing handles the send, not even `doesNotUnderstand:`.
 
-A `doesNotUnderstand:` handler is a `Method`, `Slot` or `Primitive` on a
-handler chain rather than a variant of its own. `act` turns a `Resolved`
+A `doesNotUnderstand:` handler is a `Method` or `Slot` on a handler chain
+rather than a variant of its own. It is never a `Primitive`: `Object`'s
+handler is a kernel method, and the mirror answers no `doesNotUnderstand:` of
+its own, so a `Primitive` on a handler chain, which only a crafted image could
+arrange, is the unhandled send's error (`act`, `interpreter/resolve.rs`). `act` turns a `Resolved`
 into the `Step`, value or signal. The uncached path is literally
 `act(resolve(…))` (`Mutator::decide_send`, `sends::decide_lexical_send`,
 `sends::decide_super_send`), the cached one `act` on a `Resolved` rebuilt
@@ -660,9 +788,8 @@ too: a lexical send whose `lookupProtected` finds nothing falls to
 ends in is what is recorded. That is what makes the uncached reference
 lowering a valid oracle for the cached one ("Verification" below). A release
 `Resolved` is 16 bytes, pinned. `act` is `#[inline(always)]` into its
-callers, and its continuations — `act_above` and the three handler arms —
-are out of line, `#[cold]` where they are failure paths, so only the hot half
-is duplicated into the sends.
+callers, and its handler arms are out of line and `#[cold]`, so only the hot
+half is duplicated into the sends.
 
 #### An entry
 
@@ -845,13 +972,16 @@ so it gains no dispatch logic:
 A target that cannot be rebuilt for this receiver — a level past the top of
 its chain, which only a crafted image makes — is a miss.
 
-What `act` does, per resolution: `Method` answers `Step::Method` with the
-target's `feedback_base`, and `push_step` still checks the arity. `Slot`
+What `act` does, per resolution: `Method` runs a primitive method's leaf
+first, read off the method ("Primitive methods" above), and otherwise answers
+`Step::Method` with the target's `feedback_base`; `push_step` still checks
+the arity. `Slot`
 reads or writes the field without an activation (`decide_slot_accessor`).
 `NestedClass` calls `nested::nested_class` with the declaring class; creating
-one still runs its clause as a step. `Primitive` calls `builtins::execute`; a
-failure continues the lookup above the primitive's level, uncached, as 3a
-defines it, and the entry stays, as Cog keeps a method whose primitive
+one still runs its clause as a step. `Primitive` calls `builtins::execute`,
+which for a mirror row never answers `None` — a declining leaf runs the send's
+failure block ("A primitive can fail" above). An entry whose primitive
+method's leaf declined stays, as Cog keeps a method whose primitive
 failed. `Factory` instantiates the receiver (`instantiate::decide_factory`),
 re-checking nothing the lookup decided — §3.2's flat metaclass leaves the
 entry reachable only on the receiver's own metaclass, which the class-side
@@ -869,17 +999,19 @@ the key does not cover re-checks it in `act`. The plan audited every read
 `resolve` and its callees make: the only ones the key does not cover are
 `ClassData.builtin`, which `decide_factory` re-reads on every send off the
 receiver rather than trusting an entry, and a primitive's payload check,
-which `builtins::execute` re-runs on every send. A class object's factory
+which `builtins::execute` re-runs on every send. Whether a method is a
+primitive method is not such a read: it is a property of the method the entry
+records, and `act` reads it off that method on every send. A class object's factory
 selector is no longer among them: §6.3 makes it the selector the entry is
 filed under in the metaclass's method table, which the guard covers.
 
 The audit also covers the class-side fall-through: once the metaclass lookup
-finds nothing, `resolve_public` and `act_above`'s `PublicClassSide` arm both
-re-read the class object's own `class` field (`class_of`) to reach `Object`'s
-primitives, and that read is outside the key too — the class-side guard is
+finds nothing, `resolve_public` re-reads the class object's own `class` field
+(`class_of`) to reach `Object`'s methods, and that read is outside the key
+too — the class-side guard is
 the metaclass's dispatch id, never the class object's own. Built from source
-this is never a problem: every class object shares the one placeholder class,
-so the field never varies. A crafted image could still give a class object a
+this is never a problem: every class object's class is the one builtin
+`Object` class, so the field never varies. A crafted image could still give a class object a
 different `class` than the guard assumes; the result is wrong but safe, never
 a panic, because the level walk from there runs through the same
 `Option`-returning steps (`metaclass_of`, `class_of`) as any other lookup.
@@ -1010,7 +1142,7 @@ under the gate. Targeted tests pin, through a test view of a site's state
 - a private lexical site with a changing `o`;
 - class objects: a factory send, a class-side method and `Object`'s
   behaviour, at one site that also sees instances;
-- `doesNotUnderstand:` with the native handler, a user handler, and the
+- `doesNotUnderstand:` with `Object`'s handler, a user handler, and the
   setter of a slot named `doesNotUnderstand`;
 - a cached primitive that fails;
 - a second site filled from the global cache, and, for a lexical send whose
@@ -1204,8 +1336,13 @@ dispatches on one.
   failure mode this rule exists to prevent.
 - **Primitives are method-table entries** (3a, 2026-09-15), bound as an
   enumerated primitive, so natives are members found by the ordinary lookups,
-  with an access modifier, as in Cog and Primordial Soup. Built; see
-  "Primitives" above.
+  with an access modifier, as in Cog and Primordial Soup. Since step 6 they
+  sit only on the VM mirror's class. Built; see "Primitives" above.
+- **Primitive methods** (2026-09-22): a kernel method whose whole body
+  forwards `self` and its parameters to one mirror row runs the leaf in
+  `act` without an activation, under both lowerings, recognized from the
+  body rather than declared, and only in `Kernel.ns`. Built; see "Primitive
+  methods" above.
 - **Inline caches per heap** (3b, designed 2026-09-15, built 2026-09-16) —
   monomorphic, a polymorphic cache of 4, then megamorphic, with a global
   cache of 1024 entries behind every site — guarded on the mixin

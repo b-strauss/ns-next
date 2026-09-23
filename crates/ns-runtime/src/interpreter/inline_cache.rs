@@ -935,7 +935,7 @@ fn send_lexical_first<'gc>(
         superclass: None,
     };
     fill(mutator, index, key, selector, &resolved);
-    mutator.act(resolved, enclosing, None, selector, arguments)
+    mutator.act(resolved, enclosing, selector, arguments)
 }
 
 /// `key`'s global-cache row, materialized and acted on, if it already holds
@@ -957,14 +957,7 @@ fn global_hit<'gc>(
     mutator
         .caches
         .advance(index, key.guard, target, key.private());
-    Some(mutator.act_with_base(
-        resolved,
-        base,
-        key.receiver,
-        key.superclass,
-        selector,
-        arguments,
-    ))
+    Some(mutator.act_with_base(resolved, base, key.receiver, selector, arguments))
 }
 
 /// A `super` send (§5.10), cached, keyed by the running method's
@@ -1028,14 +1021,7 @@ fn cached<'gc>(
         if entry.guard == key.guard {
             let target = entry.target.clone();
             if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(
-                    resolved,
-                    base,
-                    key.receiver,
-                    key.superclass,
-                    selector,
-                    arguments,
-                );
+                return mutator.act_with_base(resolved, base, key.receiver, selector, arguments);
             }
         }
     }
@@ -1064,14 +1050,7 @@ fn miss<'gc>(
     if key.guard != DispatchId::NONE {
         if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
             if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(
-                    resolved,
-                    base,
-                    key.receiver,
-                    key.superclass,
-                    selector,
-                    arguments,
-                );
+                return mutator.act_with_base(resolved, base, key.receiver, selector, arguments);
             }
         }
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
@@ -1087,20 +1066,13 @@ fn miss<'gc>(
                 mutator
                     .caches
                     .advance(index, key.guard, target, key.private());
-                return mutator.act_with_base(
-                    resolved,
-                    base,
-                    key.receiver,
-                    key.superclass,
-                    selector,
-                    arguments,
-                );
+                return mutator.act_with_base(resolved, base, key.receiver, selector, arguments);
             }
         }
     }
     let resolved = resolve(mutator);
     fill(mutator, index, key, selector, &resolved);
-    mutator.act(resolved, key.receiver, key.superclass, selector, arguments)
+    mutator.act(resolved, key.receiver, selector, arguments)
 }
 
 /// Records `resolved` in the global cache and at the site -- unless the key

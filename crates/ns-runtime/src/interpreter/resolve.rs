@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
-use crate::dispatch::{self, Lookup, Rule};
+use crate::dispatch::{self, Lookup};
 use crate::mixin::{AccessorKind, Mixin, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
@@ -16,7 +16,7 @@ use crate::Symbol;
 use super::{nested, FeedbackBase, Mutator, Signal, Step, StepArguments};
 
 /// Which lookup found a target -- and so which class object its levels are
-/// counted from, and where a failed primitive continues.
+/// counted from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Chain {
     /// §5.5's lookupPublic, from the receiver's class.
@@ -152,11 +152,9 @@ impl<'gc> Mutator<'gc> {
     /// object reaches it.
     ///
     /// A metaclass primitive on the public chain is resolved like any
-    /// member; its failure falls through to the class object's own
-    /// behaviour, in `act`. No metaclass holds a primitive -- a metaclass's
-    /// mixin is always a class side, never a builtin's instance mixin -- so
-    /// that is reached only in principle; it is written out so that nothing
-    /// here depends on it.
+    /// member. No metaclass holds a primitive -- a metaclass's mixin is
+    /// always a class side, never the VM mirror's instance mixin -- so that
+    /// is reached only in principle.
     #[inline(never)]
     fn resolve_class_side(
         &mut self,
@@ -171,9 +169,9 @@ impl<'gc> Mutator<'gc> {
         };
         match lookup {
             Lookup::NotFound => None,
-            // §5.9 on a class side:
-            // only a real declaration stops the search, so a primitive there
-            // would be passed over to reach the class-object chain anyway.
+            // §5.9 on a class side: only a real declaration stops the
+            // search, so a primitive there -- which no metaclass holds --
+            // falls to the class-object chain.
             Lookup::Primitive(..) if chain == Chain::ProtectedClassSide => None,
             found => Some(resolved_on_class_side(
                 found,
@@ -283,9 +281,9 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The `doesNotUnderstand:` defined for `class`. A user-overridden one
-    /// arrives as a method; `Object`'s own primitive one, which every class
-    /// that does not override it inherits, as a primitive, run like any
-    /// other.
+    /// arrives as a method; so does `Object`'s own, a kernel method every
+    /// class that does not override it inherits -- `act` runs its mirror
+    /// row's leaf before activating it, like any primitive method.
     fn resolve_handler(&mut self, class: ClassReference<'gc>, chain: Chain) -> Resolved<'gc> {
         match dispatch::lookup_defined_for(&self.heap, class, Symbol::DOES_NOT_UNDERSTAND) {
             // A nested declaration can never be the handler: `walk` matches
@@ -361,14 +359,13 @@ fn resolved_on_class_side<'gc>(
 
 impl<'gc> Mutator<'gc> {
     /// Runs what a send resolved to. `receiver` is the send's receiver --
-    /// `o` for a lexical send, `self` for `super` -- and `superclass` is S
-    /// for a `super` send, `None` otherwise.
+    /// `o` for a lexical send, `self` for `super`.
     ///
     /// `#[inline(always)]` so that the caller holding the `Resolved` also
     /// builds the step, rather than handing it to a call that answers a
-    /// 56-byte decision back through memory; the `#[cold]` and
-    /// `#[inline(never)]` continuations below break the recursion, so only
-    /// the hot half is duplicated into the senders. That split measured
+    /// 56-byte decision back through memory; the `doesNotUnderstand:`
+    /// handlers below are `#[cold]` and `#[inline(never)]`, so only the hot
+    /// half is duplicated into the senders. That split measured
     /// 1.9%/2.6% faster than a decision behind a function boundary
     /// (`docs/design/execution.md`, "What primitives as method-table entries
     /// moved").
@@ -377,7 +374,6 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         resolved: Resolved<'gc>,
         receiver: Value<'gc>,
-        superclass: Option<ClassReference<'gc>>,
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -385,7 +381,6 @@ impl<'gc> Mutator<'gc> {
             resolved,
             FeedbackBase::NOT_ASSIGNED,
             receiver,
-            superclass,
             selector,
             arguments,
         )
@@ -400,7 +395,6 @@ impl<'gc> Mutator<'gc> {
         resolved: Resolved<'gc>,
         feedback_base: FeedbackBase,
         receiver: Value<'gc>,
-        superclass: Option<ClassReference<'gc>>,
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -413,13 +407,25 @@ impl<'gc> Mutator<'gc> {
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
                     self.act_handler_method(method, defining_class, receiver, selector, arguments)
                 }
-                _ => Ok(Step::Method {
-                    receiver,
-                    method,
-                    defining_class,
-                    arguments: StepArguments::Send,
-                    feedback_base,
-                }),
+                _ => {
+                    // Read off the method on every send, hit or miss: the
+                    // cache records `Target::Method` and never decides
+                    // whether its leaf runs.
+                    if let Some(primitive) = method.primitive {
+                        if let Some(result) = crate::interpreter::mirror::execute_method(
+                            self, primitive, receiver, selector, arguments,
+                        ) {
+                            return result;
+                        }
+                    }
+                    Ok(Step::Method {
+                        receiver,
+                        method,
+                        defining_class,
+                        arguments: StepArguments::Send,
+                        feedback_base,
+                    })
+                }
             },
             Resolved::Slot { kind, field, chain } => match chain {
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
@@ -447,19 +453,23 @@ impl<'gc> Mutator<'gc> {
                 declaring_class,
                 ..
             } => nested::nested_class(self, &receiver, &mixin, declaring_class),
+            // A primitive entry is a mirror row, and a mirror row's failure
+            // path is its block: `builtins::execute` answers `Some` for every
+            // one, so no primitive passes its level over any more. The
+            // `None` arm is what keeps that an error rather than a panic if
+            // it ever stopped holding. A `doesNotUnderstand:` handler is
+            // never a primitive -- `Object`'s is a kernel method, and the
+            // mirror answers no `doesNotUnderstand:` of its own -- so a
+            // handler chain's primitive, which only a crafted image could
+            // arrange, is the same error.
             Resolved::Primitive {
-                primitive,
-                level,
-                chain,
+                primitive, chain, ..
             } => match chain {
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
-                    self.act_handler_primitive(primitive, level, receiver, selector, arguments)
+                    Err(unhandled_error(receiver, selector))
                 }
-                _ => match crate::builtins::execute(self, primitive, receiver, selector, arguments)
-                {
-                    Some(result) => result,
-                    None => self.act_above(level, chain, receiver, superclass, selector, arguments),
-                },
+                _ => crate::builtins::execute(self, primitive, receiver, selector, arguments)
+                    .unwrap_or_else(|| Err(unhandled_error(receiver, selector))),
             },
             // §6.3's factory entry, run with no re-check: the lookup found
             // it on the receiver's own metaclass, and the class-side
@@ -468,99 +478,6 @@ impl<'gc> Mutator<'gc> {
             Resolved::Factory { level, .. } => self.decide_factory(level, arguments),
             Resolved::Unhandled => Err(unhandled_error(receiver, selector)),
         }
-    }
-
-    /// Where a failed primitive sends a send on: the same chain's lookup,
-    /// continued from the level above the one that declared it
-    /// (`docs/design/dispatch.md`, "A primitive can fail").
-    ///
-    /// `#[cold]`, and out of line, because a primitive fails only when its
-    /// receiver has the wrong shape for it -- an instance of a user subclass
-    /// of `String`, which carries no string, or a platform object sent
-    /// another platform object's selector. Every send in a running program
-    /// that reaches a primitive at all normally has the shape that primitive
-    /// works on, so this path must not take registers or a branch from the
-    /// one that does.
-    ///
-    /// It recurses back into `act` rather than looping, which keeps the
-    /// loop's state out of the hot function entirely. The recursion
-    /// terminates and is shallow: each step moves at least one level up a
-    /// superclass chain that `image::decode` refuses to let form a cycle.
-    #[cold]
-    #[inline(never)]
-    fn act_above(
-        &mut self,
-        level: ClassReference<'gc>,
-        chain: Chain,
-        receiver: Value<'gc>,
-        superclass: Option<ClassReference<'gc>>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        let resolved = match chain {
-            Chain::Public => {
-                let lookup = dispatch::lookup_above(&self.heap, Rule::Public, level, selector);
-                self.resolved_public(lookup, receiver)
-            }
-            Chain::PublicClassSide => {
-                match dispatch::lookup_above(&self.heap, Rule::Public, level, selector) {
-                    // The metaclass does not answer after all: fall through
-                    // to the class object's own behaviour, as
-                    // `resolve_public` does when the metaclass finds nothing.
-                    Lookup::NotFound => {
-                        let class = self.class_of(&receiver);
-                        let lookup = dispatch::lookup_public(&self.heap, class, selector);
-                        self.resolved_public(lookup, receiver)
-                    }
-                    found => resolved_on_class_side(found, receiver, Chain::PublicClassSide),
-                }
-            }
-            Chain::Protected | Chain::Private => {
-                match dispatch::lookup_above(&self.heap, Rule::Protected, level, selector) {
-                    // §5.9: nothing found is an ordinary send to `o`.
-                    Lookup::NotFound => self.resolve_public(receiver, selector),
-                    found => resolved(found, Chain::Protected),
-                }
-            }
-            // Unreachable today: `resolve_class_side` never lets a
-            // metaclass-chain primitive reach here on `ProtectedClassSide`
-            // (it treats one as `NotFound` per §5.9, see its own comment), so
-            // this arm only ever runs from a state the uncached path never
-            // produces -- a `Primitive` resolved on `ProtectedClassSide`.
-            // Written out anyway, faithfully: continue lookupProtected on the
-            // metaclass chain first, the way the `PublicClassSide` arm above
-            // continues lookupPublic, and only when that still finds nothing
-            // fall to `lookupProtected` on `o`'s own class, the class-object
-            // chain in the order `resolve_lexical` falls to it. That fall-
-            // through is the only part this arm actually shares with the
-            // uncached path -- `resolve_class_side` itself never continues
-            // the metaclass chain above a miss, since a metaclass primitive
-            // is passed over entirely rather than failed into `act_above`.
-            Chain::ProtectedClassSide => {
-                match dispatch::lookup_above(&self.heap, Rule::Protected, level, selector) {
-                    Lookup::NotFound => {
-                        let class = self.class_of(&receiver);
-                        match dispatch::lookup_protected(&self.heap, class, selector) {
-                            Lookup::NotFound => self.resolve_public(receiver, selector),
-                            found => resolved(found, Chain::Protected),
-                        }
-                    }
-                    found => resolved_on_class_side(found, receiver, Chain::ProtectedClassSide),
-                }
-            }
-            Chain::Super => {
-                // Only a `super` send builds this chain, and it passes S.
-                let superclass = superclass.expect("internal: a super chain carries S");
-                match dispatch::lookup_above(&self.heap, Rule::Protected, level, selector) {
-                    Lookup::NotFound => self.resolve_super_does_not_understand(superclass),
-                    found => resolved(found, Chain::Super),
-                }
-            }
-            Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
-                unreachable!("internal: a handler's primitive fails in act_handler_primitive")
-            }
-        };
-        self.act(resolved, receiver, superclass, selector, arguments)
     }
 
     /// A `doesNotUnderstand:` handler that is a method: activated on the
@@ -576,6 +493,20 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let message = self.handler_message(selector, arguments);
+        // A primitive method as the handler -- `Object`'s own -- runs its
+        // leaf on the message before it is activated, like any primitive
+        // method.
+        if let Some(primitive) = method.primitive {
+            if let Some(result) = crate::interpreter::mirror::execute_method(
+                self,
+                primitive,
+                receiver,
+                Symbol::DOES_NOT_UNDERSTAND,
+                std::slice::from_ref(&message),
+            ) {
+                return result;
+            }
+        }
         Ok(handler_method_step(
             receiver,
             method,
@@ -606,73 +537,6 @@ impl<'gc> Mutator<'gc> {
             field,
             &[message],
         )
-    }
-
-    /// A `doesNotUnderstand:` handler that is a primitive. It loops, for the
-    /// reason `act_above` recurses: a handler that is a primitive can fail --
-    /// a platform object handed `Object`'s `doesNotUnderstand:` still
-    /// answers it, but a primitive that does not recognize its receiver
-    /// passes its level over and the walk continues above it. Nothing here
-    /// is a hot path: reaching it at all means a send found no method.
-    #[cold]
-    #[inline(never)]
-    fn act_handler_primitive(
-        &mut self,
-        primitive: Primitive,
-        level: ClassReference<'gc>,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        let message = self.handler_message(selector, arguments);
-        let mut primitive = primitive;
-        let mut level = level;
-        loop {
-            if let Some(result) = crate::builtins::execute(
-                self,
-                primitive,
-                receiver,
-                Symbol::DOES_NOT_UNDERSTAND,
-                &[message],
-            ) {
-                return result;
-            }
-            match dispatch::lookup_above(
-                &self.heap,
-                Rule::DefinedFor,
-                level,
-                Symbol::DOES_NOT_UNDERSTAND,
-            ) {
-                Lookup::Method(method, defining_class) => {
-                    return Ok(handler_method_step(
-                        receiver,
-                        method,
-                        defining_class,
-                        message,
-                    ));
-                }
-                Lookup::SlotAccessor(accessor, field) => {
-                    return self.decide_slot_accessor(
-                        receiver,
-                        accessor.kind,
-                        Symbol::DOES_NOT_UNDERSTAND,
-                        field,
-                        &[message],
-                    );
-                }
-                Lookup::Primitive(above, above_level) => {
-                    primitive = above;
-                    level = above_level;
-                }
-                // As in `resolve_handler`: a nested declaration is never
-                // the handler, and neither is §6.3's factory, whose entry
-                // lives on a metaclass while this walks the receiver's own
-                // class chain.
-                Lookup::NotFound | Lookup::NestedClass(..) | Lookup::Factory => {
-                    return Err(unhandled_error(receiver, selector));
-                }
-            }
-        }
     }
 
     /// The message every `doesNotUnderstand:` handler takes.
@@ -726,6 +590,7 @@ fn unhandled_error<'gc>(receiver: Value<'gc>, selector: Symbol) -> Signal<'gc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins::primitive::mirror_primitive_named;
     use crate::{HostResult, HostSignal, Interpreter, Root, SourceOrigin};
     use indoc::indoc;
     use std::path::PathBuf;
@@ -796,20 +661,34 @@ mod tests {
                     ..
                 }
             ));
-            assert!(matches!(
-                mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+")),
-                Resolved::Primitive {
+            // `Integer`'s `+` is a kernel primitive method (`Kernel.ns`),
+            // found as a `Resolved::Method` whose
+            // `MixinMethod.primitive` names the mirror row.
+            match mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+")) {
+                Resolved::Method {
+                    method,
                     chain: Chain::Public,
                     ..
-                }
-            ));
-            assert!(matches!(
-                mutator.resolve_public(receiver, Symbol::intern("zork")),
-                Resolved::Primitive {
+                } => assert_eq!(
+                    method.primitive,
+                    mirror_primitive_named("integer:add:ifFail:")
+                ),
+                _ => panic!("`3 + 4` must resolve to Integer's `+`"),
+            }
+            // `Object`'s `doesNotUnderstand:` is a kernel primitive method
+            // now (`Kernel.ns`), found as a `Resolved::Method` whose
+            // `MixinMethod.primitive` names the mirror row.
+            match mutator.resolve_public(receiver, Symbol::intern("zork")) {
+                Resolved::Method {
+                    method,
                     chain: Chain::DoesNotUnderstand,
                     ..
-                }
-            ));
+                } => assert_eq!(
+                    method.primitive,
+                    mirror_primitive_named("object:doesNotUnderstand:ifFail:")
+                ),
+                _ => panic!("an unhandled selector must resolve to Object's doesNotUnderstand:"),
+            }
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
         });
     }
@@ -824,7 +703,6 @@ mod tests {
             match mutator.act(
                 resolved,
                 Value::SmallInteger(3),
-                None,
                 Symbol::intern("+"),
                 &[Value::SmallInteger(4)],
             ) {

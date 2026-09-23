@@ -9,8 +9,13 @@ Rust 1.98.0, edition 2021, three crates:
   with the reference lowering it is checked against in `compiler/reference.rs`),
   the VM (`vm.rs`) and the send machinery it calls (`interpreter/`, the inline
   caches in `interpreter/inline_cache.rs` in front of the lookups in
-  `interpreter/resolve.rs`), core library
-  (`builtins/`), image format (`image/`). Objects live in an arena owned by one
+  `interpreter/resolve.rs`), the core library -- `core-library/Kernel.ns`,
+  Newspeak source the bootstrap compiles into the builtin classes
+  (`interpreter/kernel.rs`), in §3.2's and §3.1.1's hierarchy (`Top`, then
+  `Object`, then `Value` over the value classes), whose methods reach Rust
+  only through the one VM
+  mirror object and its leaves (`builtins/`, `interpreter/mirror.rs`) -- and
+  the image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
   activation stack in the same `Heap` and are reified into the frame arena only
   when a block captures one. A mark-compact collector reclaims a slot once
@@ -47,7 +52,9 @@ dispatch and raise the same errors, and a second copy is how they would drift. I
 need something private there, widen it to `pub(crate)`. The inline caches live in
 `interpreter/` too: a send in `vm.rs` hands the running activation's `feedback_base`, its
 code's `family_size` and the instruction's `CallSite` to `interpreter/inline_cache.rs` and
-does nothing else with them.
+does nothing else with them. Likewise `SendMirror`'s arm reads its registers, calls
+`interpreter::mirror::send_inlined`, and jumps to the failure block or delivers what it was
+handed; which leaf runs, and whether the receiver is the mirror, are decided there.
 
 **Compiling an already-resolved module can never raise a `NewspeakError`.** Compilation
 is a total, deterministic lowering; a compiler-invariant violation is `panic!` /
@@ -235,6 +242,23 @@ nesting boundary runs with the class that lexically declares it, not the receive
 class — using the receiver's class instead silently resolves `outer` to the wrong
 enclosing object.
 
+**The VM mirror is a capability.** Whoever holds the one VM mirror object can run every
+leaf, so it reaches `Kernel.ns` and nothing else (`docs/design/core-library.md`, "The VM
+mirror is the whole Rust boundary"). Six things keep it there, and loosening any one of them
+lets a program claim every primitive: only `resolver::resolve_kernel` records
+`Binding::MirrorSend`, the mark `SendMirror` and primitive methods are compiled from, and
+only `Kernel.ns` is resolved with it -- a user module goes through `resolve`; the bootstrap
+checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
+(`interpreter::kernel`); no program can name the mirror's class -- no bare name resolves to
+it (`instantiate::builtin_kind_from_name` omits it), and the image decoder refuses builtin
+class tag 14 wherever a program names a class (`read_program_builtin_class`, which refuses
+`Top`'s tag 15 the same way and for the same kind of reason -- §3.2 lets only `Object` name
+it, so no source module can and no artifact may either); the encoder
+refuses an image whose graph reaches the mirror; `decide_factory` refuses to instantiate the
+mirror's class; and `SendMirror`, which runs a leaf with no lookup, is emitted only for a
+`MirrorSend` and has no wire tag, so no artifact can carry one. Never add a way for a
+program to obtain the mirror, its class or a `MirrorSend` binding.
+
 **A cache records what the lookup decided; it never decides.** A send's lookup is
 `resolve_*` (`interpreter/resolve.rs`), and `act` is the one place that runs what it
 found; an inline-cache hit is `act` on the resolution `resolve` answered for the same
@@ -245,42 +269,51 @@ read afresh in `act` on every send, never trusted from the entry; today that is
 `ClassData.builtin`, which `instantiate::decide_factory` reads off the receiver to
 tell `Array` and `OrderedCollection` from an ordinary instance, a primitive's
 payload check, which `builtins::execute` re-runs, and a class object's own
-`class` field, which `resolve_public` and `act_above` re-read to fall through
-to `Object`'s primitives after a metaclass miss. Add such a read and its per-send
+`class` field, which `resolve_public` re-reads to fall through to `Object`'s
+methods after a metaclass miss. A primitive method's fast path is decided the same way:
+the entry records a `Method`, and `act` reads the mirror row off that method
+(`MixinMethod.primitive`) on every send, hit or miss, never from anything the entry
+decided (`docs/design/dispatch.md`, "Primitive methods"). Add such a read and its per-send
 re-check goes with it. The reference lowering runs every send uncached, so it
 is the oracle a cache defect shows against (`docs/design/dispatch.md`, "3b — The
 caches").
 
 ## Working in this repository
 
+**The gates are staggered.** Everything below still gates the work; what
+changed is how often. Running all of it before every commit means a batch of
+three small changes runs the suite twelve times, which is why the per-commit
+gate is the first group and the rest runs once, at the end of a stretch of
+work, before it is handed on. Nothing here is optional: a commit that never
+saw the second group is not finished work, it is work in progress.
+
 ```bash
-# build every crate
-cargo build --workspace
+# --- before every commit ---
+cargo fmt --all
+# must be warning-free
+cargo clippy --workspace --all-targets
 # the full suite, including every golden under both lowerings
 cargo test --workspace
+# non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
+cargo run -p ns-cli -- parse-corpus corpus/modules
+
+# --- once at the end of a batch of work, before handing it on ---
 # the same suite with every object moved at the run loop's safepoints
 # (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace
 # the same suite with every inline cache vacated at every safepoint
-# (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_CACHES=1 cargo test --workspace
 # the same suite with a collection at every safepoint
-# (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_COLLECT=1 cargo test --workspace
-# before every commit
-cargo fmt --all
-# must be warning-free
-cargo clippy --workspace --all-targets
-# non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
-cargo run -p ns-cli -- parse-corpus corpus/modules
 # non-regression gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
-# non-regression gate under the stress mode, same report
+# the same report under each stress mode
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
-# non-regression gate under the cache stress mode, same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
-# non-regression gate under the collect stress mode, same report
 NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
+
+# build every crate
+cargo build --workspace
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
@@ -291,8 +324,12 @@ boundary: in PowerShell,
 before the build and `Remove-Item Env:RUSTFLAGS` after it (`RUSTFLAGS` replaces the
 configuration's flags, so `+crt-static` must be repeated; a Linux or macOS build carries
 the alignment flag alone). Step 2c measured identical machine code 1–2% apart through a
-64-byte phase shift of every hot function; pinned, a comparison measures code, not
-placement. The shipped build does not carry the pin: it costs about 110 KB (5.6%) and
+64-byte phase shift of every hot function; pinned, that phase shift is gone. The pin is
+not the whole story, though: `bench_block.ns` has since measured **16% apart between two
+builds of the same tree** with the pin in place, each build stable to about 1%, so for
+that source one build per commit measures the build rather than the commit — build
+several of each tree and pool them, or the comparison is noise. The shipped build does
+not carry the pin: it costs about 110 KB (5.6%) and
 measured no faster. `docs/design/execution.md`'s measurement protocol ("What removing the
 re-entries moved") spells it out. `vm::run`'s per-instruction step sits near LLVM's
 inlining threshold and is forced inline; before timing a change to a send's path, check

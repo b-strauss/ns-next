@@ -154,6 +154,19 @@ A **MirrorBuilder** applies class changes:
 Edit-and-continue is then a special case: a mirror on the suspended activation,
 plus a method replacement, plus the ability to resume.
 
+**The VM mirror's class must be sealed against it.** The compiler binds a
+kernel mirror send to its leaf at compile time (`Instruction::SendMirror`),
+and a primitive method carries its leaf on the method, both on the ground
+that the mirror's class and table are fixed at bootstrap
+([dispatch.md](dispatch.md), "Primitives"). A MirrorBuilder that added or
+replaced a method there would be seen by a sent mirror send and bypassed by
+both, so the two paths would disagree. **Open:** how a replaced *kernel*
+method is compiled. Its primitive-method mark and its `SendMirror` rest on
+`Binding::MirrorSend`, which only `Kernel.ns`'s resolution records, and
+recording it for an edit would hand that edit the whole Rust boundary
+([core-library.md](core-library.md), "The VM mirror is the whole Rust
+boundary").
+
 ### The obstacle: `Mixin` has no interior mutability
 
 Editing a live class's method table today re-applies a *fresh* mixin. Existing
@@ -220,15 +233,34 @@ graph is treacherous under shared-memory concurrency. Narrowly scoped data
 parallelism over immutable data could be a deliberate later exception, never the
 default.
 
-### Deviation: no formal value objects
+### Value objects exist; the boundary they cross does not
 
 §3.1.1 defines a deeply immutable "value object" — numbers, strings, symbols,
-characters, booleans, module definitions, and any class inheriting `Value` whose
-slots are all immutable value objects. That is the mechanism letting an object
-cross an actor boundary by copy rather than by far reference (§3.7). None of it
-is built, because there are no actors to need it. When concurrency is
-implemented, it should adopt the specification's exact vocabulary and mechanism
-rather than a looser "provably non-aliased or frozen data" phrasing.
+characters, booleans, and any class inheriting `Value` whose slots are all
+immutable value objects. That is the mechanism letting an object cross an actor
+boundary by copy rather than by far reference (§3.7).
+
+The notion itself is built. `Kernel.ns` declares `Value` with the value classes
+beneath it; `Value` derives `=` and `hash` from an instance's state and declares
+§3.1.1's identity method as a send of `=`, so a copy of a value is equal to, and
+hashes like, its original — a value has no observable identity
+([core-library.md](core-library.md)). The slot half of §3.1.1's second bullet
+is enforced as a value object is built: instantiating a class that inherits
+`Value` and declares a mutable slot is refused, and an initializer that stores
+anything but a value in such an instance's slot is refused
+([object-model.md](object-model.md), "A value object's two conditions"). The
+other half of that bullet is not enforced — §3.1.1 also requires that a
+value's *enclosing objects* (§3.3) are values and that its class does not
+define an identity method `==`, and nothing checks either. By the letter of
+the first of those, a value class a module declares has no value instances at
+all, since a module instance is an ordinary object; what to do about it is an
+open decision ([core-library.md](core-library.md), "What is still
+unchecked").
+
+What is missing is the boundary: there are no actors, so nothing copies a value
+across one, and a module definition is not yet a value object (§8.1). Neither is
+a looser "provably non-aliased or frozen data" notion to be substituted when
+concurrency arrives — the vocabulary above is the specification's own.
 
 ## Performance and the tiered model
 

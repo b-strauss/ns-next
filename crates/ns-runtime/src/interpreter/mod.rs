@@ -6,8 +6,10 @@
 
 pub(crate) mod inline_cache;
 pub mod instantiate;
+pub(crate) mod kernel;
 pub(crate) mod literals;
 pub(crate) mod locals;
+pub(crate) mod mirror;
 pub(crate) mod nested;
 pub(crate) mod resolve;
 mod safepoint;
@@ -207,6 +209,40 @@ pub struct Mutator<'gc> {
     /// building it; nothing can reach a `Mutator` in that state.
     pub(crate) builtin_classes: Vec<ClassReference<'gc>>,
     pub(crate) platform_singleton: Option<Value<'gc>>,
+    /// The VM mirror (`BuiltinClass::VmMirror`'s one instance), built with
+    /// the builtin classes and handed to the core library at bootstrap. A
+    /// capability: nothing hands it to a program.
+    pub(crate) vm_mirror: Option<Value<'gc>>,
+    /// The core library's one instance, `Kernel.ns`'s root class
+    /// instantiated with the VM mirror (`interpreter::kernel`): the
+    /// enclosing object of every builtin class. `None` only until the
+    /// bootstrap's kernel phase has run.
+    pub(crate) kernel: Option<Value<'gc>>,
+    /// The `=` the core library's `Value` declares, recorded by the
+    /// bootstrap's kernel phase. `builtins::value`'s derived equality
+    /// compares against it to tell an inherited `=` from an overridden one:
+    /// only an instance whose lookup of `=` lands on this very method has a
+    /// state the derivation may read. `None` while `Value` declares none,
+    /// and the derivation then declines every instance.
+    ///
+    /// An `Rc<MixinMethod>`, not a heap handle: a method holds nothing a
+    /// move or a collection can invalidate, so it needs no root and nothing
+    /// traces it.
+    pub(crate) value_equality_method: Option<Rc<crate::mixin::MixinMethod>>,
+    /// `Value`'s own mixin, recorded by the bootstrap's kernel phase just
+    /// before `Value`'s class object is filled: what `apply_mixin` compares
+    /// a mixin against to answer §3.1.1's "its class inherits from class
+    /// `Value`" for the chain's topmost link. Compared by `Rc` identity,
+    /// never by name -- any module may declare a class called `Value`.
+    ///
+    /// The *mixin* rather than the application, so that `Value`'s own
+    /// application can be told it is one while it is being built; every
+    /// application below it reads the flag off its superclass and never
+    /// asks again.
+    ///
+    /// `None` until that moment, so the placeholder applications the world
+    /// is built with inherit nothing.
+    pub(crate) value_mixin: Option<Rc<crate::mixin::Mixin>>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -334,6 +370,9 @@ impl Interpreter {
                 interpreter.set_global_cache_size(entries);
             }
         }
+        // Last, after the stress modes are set up: the kernel's own
+        // instantiation is a run like any other, and they should see it.
+        interpreter.install_kernel();
         interpreter
     }
 
@@ -612,10 +651,19 @@ impl<'gc> Mutator<'gc> {
     /// calls it once, in the first entry the world makes.
     pub(crate) fn bootstrap_builtin_classes(&mut self) {
         self.builtin_classes = build_builtin_classes(self);
-        // An immediate has no class field to read a dispatch id from, so the
-        // ids `dispatch_id` answers for one are read once, here, off the
-        // builtin class objects that were just built, and kept in a table of
-        // their own (`Heap::set_immediate_dispatch_ids`).
+        self.refresh_immediate_dispatch_ids();
+        let class = self.builtin_class(BuiltinClass::VmMirror);
+        let mirror = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        self.vm_mirror = Some(Value::Object(mirror));
+    }
+
+    /// An immediate has no class field to read a dispatch id from, so the
+    /// ids `dispatch_id` answers for one are read off the builtin class
+    /// objects and kept in a table of their own
+    /// (`Heap::set_immediate_dispatch_ids`) -- once when the placeholders
+    /// are built, and again when the kernel phase gives them their
+    /// applications (`interpreter::kernel`).
+    pub(crate) fn refresh_immediate_dispatch_ids(&mut self) {
         let instances = |mutator: &Mutator<'gc>, kind| {
             mutator
                 .heap
@@ -753,7 +801,7 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let resolved = self.resolve_public(receiver, selector);
-        self.act(resolved, receiver, None, selector, arguments)
+        self.act(resolved, receiver, selector, arguments)
     }
 
     pub(crate) fn take_argument_buffer(&mut self) -> Vec<Value<'gc>> {
@@ -1285,6 +1333,22 @@ impl<'gc> Mutator<'gc> {
         value
     }
 
+    /// The VM mirror. Built by `bootstrap_builtin_classes`, before anything
+    /// can ask; the kernel phase hands it to `Kernel.ns`.
+    pub(crate) fn vm_mirror(&self) -> Value<'gc> {
+        self.vm_mirror
+            .expect("internal: the VM mirror is built with the builtin classes")
+    }
+
+    /// Whether `value` is the VM mirror: the kernel phase checks that
+    /// `Kernel.ns`'s `vmMirror` slot holds it.
+    pub(crate) fn is_vm_mirror(&self, value: Value<'gc>) -> bool {
+        match (value, self.vm_mirror) {
+            (Value::Object(object), Some(Value::Object(mirror))) => object.same(mirror),
+            _ => false,
+        }
+    }
+
     /// A `Transcript`-style stdout stream object -- see `crate::platform`'s
     /// module doc for how its payload shape (a one-field, always-`Nil`
     /// `Instance`) tells it apart from the `platform` singleton itself
@@ -1380,12 +1444,57 @@ impl<'gc> Mutator<'gc> {
             nested_slot.insert(crate::mixin::mixin_key(nested), next);
             next += 1;
         }
+        // §3.1.1's two questions about a value class, asked once here rather
+        // than per instance: does this chain reach `Value`, and does any
+        // level of it declare a mutable slot while it does. The answer
+        // belongs to the *application*, not to the mixin -- the same mixin
+        // over a superclass that is no value declares an ordinary mutable
+        // slot and is perfectly legal.
+        //
+        // `Value`'s own application answers `true`, because §3.2 defines
+        // "subclass of" inclusively -- "a class C is a subclass of a class S
+        // if C's superclass is S or a subclass of S", and §3.1.1's condition
+        // is "its class inherits from class `Value`", which `Value new`
+        // meets. `builtins::value`'s `state_is_a_value` reaches the same
+        // verdict for `Value new` by another route (its `=` *is* `Value`'s),
+        // and the two predicates must agree: while this one said `false`,
+        // `Value new = Value new` answered `true` and `Box v: Value new` was
+        // refused as if the instance were no value.
+        let inherits_value = self
+            .value_mixin
+            .as_ref()
+            .is_some_and(|value_mixin| Rc::ptr_eq(value_mixin, mixin))
+            || superclass.is_some_and(|application| application.inherits_value);
+        let mutable_value_slot = superclass
+            .and_then(|application| application.mutable_value_slot)
+            .or_else(|| {
+                if !inherits_value {
+                    return None;
+                }
+                mixin.slots.iter().find(|slot| slot.mutable).map(|slot| {
+                    crate::mixin::MutableValueSlot {
+                        class: mixin.name,
+                        slot: slot.name,
+                    }
+                })
+            });
+        // The declared slots, in field order, computed here for the same
+        // reason `nested_slot` is: nothing about an application changes
+        // after it is built, and `builtins/value.rs` reads this per slot on
+        // the declining path. Declared and hidden slots interleave -- this
+        // level's own slots sit at `inherited`, its cache slots after them
+        // -- so a value's state is not a prefix of its fields.
+        let declared_slots =
+            crate::mixin::declared_slots_of(superclass, inherited, mixin.slots.len());
         let dispatch_ids = self.mint_dispatch_ids();
         let application = Rc::new(crate::mixin::MixinApplication {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
+            inherits_value,
+            mutable_value_slot,
             slot_count: next,
             nested_slot,
+            declared_slots,
             own_slot_base: inherited,
             dispatch_ids,
         });
@@ -1477,13 +1586,13 @@ fn recursion_too_deep<'gc>(header: &ActivationHeader<'gc>) -> Signal<'gc> {
 /// §3.2 deviation in `docs/design/object-model.md`, "Class sides and
 /// metaclasses").
 ///
-/// Every non-`Object` builtin's superclass below is `Object` directly, a
-/// simplification of the real class hierarchy
-/// (`newspeak-spec.pdf` places `Boolean` above `True`/`False`, for
-/// instance): `builtins::boolean` must not rely on `True`/`False`
-/// actually inheriting from a `Boolean` superclass node, since they do not
-/// yet. Fix this only if a corpus module or fixture test needs real
-/// `Boolean`/`True`/`False` inheritance to observe correct behavior.
+/// These are placeholders: every non-`Object` builtin's superclass below is
+/// `Object` directly, and each mixin holds its primitives alone. They exist
+/// so that a literal has its class from the first allocation on; the
+/// bootstrap's kernel phase (`interpreter::kernel`) then gives each the
+/// application of its `Kernel.ns` class and the superclass that class's
+/// clause names -- `Boolean` above `True` and `False` -- before any code
+/// runs.
 fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<'gc>> {
     // NOTE: deliberately *not* `use BuiltinClass::*;` here --
     // `BuiltinClass::Object` and `crate::types::Object`
@@ -1531,14 +1640,21 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
     classes
 }
 
-/// The mixin behind one `BuiltinClass`: its method table holds `kind`'s
-/// primitives (`builtins::primitive::method_table`), and nothing else. A
-/// fresh `Rc` per call, so the application cache keys the builtins apart from
-/// each other even where several -- `Boolean`, `True` and `False` -- hold the
-/// same primitives.
+/// The mixin behind one `BuiltinClass` until the kernel phase runs. The VM
+/// mirror's holds its rows (`builtins::primitive::mirror_method_table`) and
+/// keeps them: `Kernel.ns` declares no mirror class. Every other kind's is a
+/// placeholder with an empty table, which the kernel phase replaces with its
+/// kernel class's mixin before anything runs (`interpreter::kernel`). A
+/// fresh `Rc` per call, so the application cache keys the placeholders
+/// apart from each other.
 fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
+    let methods = if kind == BuiltinClass::VmMirror {
+        crate::builtins::primitive::mirror_method_table()
+    } else {
+        crate::hash::IdentityMap::default()
+    };
     Rc::new(crate::mixin::Mixin {
-        methods: crate::builtins::primitive::method_table(kind),
+        methods,
         ..crate::mixin::Mixin::empty(Symbol::intern(&format!("{kind:?}")))
     })
 }

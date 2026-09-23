@@ -164,7 +164,7 @@ impl<'gc> Mutator<'gc> {
     /// -- a nested mixin has no class object of its own until something
     /// materializes it (the accessor), and a class side until
     /// `Mutator::metaclass_of` builds the metaclass that applies it.
-    fn build_mixin(
+    pub(crate) fn build_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
@@ -288,6 +288,14 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match self.heap.class_builtin(class) {
+            // The VM mirror is a capability: there is exactly one, and it is
+            // the bootstrap's to hand out (`docs/design/core-library.md`, "The
+            // VM mirror is the whole Rust boundary").
+            Some(BuiltinClass::VmMirror) => Err(Signal::Error(NewspeakError {
+                selector: Symbol::NEW,
+                receiver: Value::Object(class),
+                message: "the VM mirror's class cannot be instantiated".to_string(),
+            })),
             // `Array`/`OrderedCollection`'s representation is
             // `ObjectData::Array`, not `decide_instantiation`'s
             // `ObjectData::Instance` -- `builtins::collections`' primitives
@@ -347,13 +355,27 @@ impl<'gc> Mutator<'gc> {
         class: ClassReference<'gc>,
         factory_arguments: Vec<Value<'gc>>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
+        let application = self.heap.class_application(class);
+        // §3.1.1's first condition, asked before anything is allocated: a
+        // class that inherits `Value` and declares a mutable slot could
+        // never have a value object for an instance, so there is no
+        // instance to make. The answer was computed once, when the
+        // application was built (`Mutator::apply_mixin`).
+        if let Some((application, violation)) = application.as_ref().and_then(|application| {
+            application
+                .mutable_value_slot
+                .map(|violation| (application, violation))
+        }) {
+            return Err(Signal::Error(mutable_value_slot_error(
+                class,
+                application,
+                violation,
+            )));
+        }
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
-        let slot_count = self
-            .heap
-            .class_application(class)
-            .map_or(0, |application| application.slot_count);
+        let slot_count = application.map_or(0, |application| application.slot_count);
         let instance =
             self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
         let state = self.walk_state(Value::Object(instance));
@@ -736,12 +758,20 @@ fn argument_list<'gc>(
 /// catch-all default, because a caller must be able to tell "unrecognized
 /// name" apart from a genuine `Object` match; the match arms are the one
 /// list of builtin names, so no caller keeps a second one to guard with.
+///
+/// `Top` is deliberately absent: §3.2 lets only `Object` have it as its
+/// superclass, so no program may name it -- and no artifact may either,
+/// which is why `image::decode::read_program_builtin_class` refuses its tag
+/// as it refuses the mirror's. `Platform` is absent for the reason
+/// `kernel::kernel_class_name` gives.
 pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     Some(match name {
         "Object" => BuiltinClass::Object,
+        "Value" => BuiltinClass::Value,
         "Boolean" => BuiltinClass::Boolean,
         "True" => BuiltinClass::True,
         "False" => BuiltinClass::False,
+        "Number" => BuiltinClass::Number,
         "Integer" => BuiltinClass::Integer,
         "Float" => BuiltinClass::Float,
         "String" => BuiltinClass::String,
@@ -753,6 +783,158 @@ pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
         "Block" => BuiltinClass::Block,
         _ => return None,
     })
+}
+
+/// §3.1.1's first condition on a value class, refused where the instance
+/// would come into being: "an object is a value object if it is deeply
+/// immutable", and a mutable slot is state anything holding the object can
+/// write afterwards. The class being instantiated and the class declaring
+/// the slot are named apart, because a subclass inherits the fault.
+///
+/// The selector is the class's own primary factory, which is the selector
+/// the send that got here carried -- a class declaring `x:y:` understands
+/// no `new` -- defaulted the way `mixin::factory_entry` defaults it. That
+/// is the rule `non_value_slot_error` follows too; its doc comment states
+/// it for both.
+fn mutable_value_slot_error<'gc>(
+    class: ClassReference<'gc>,
+    application: &crate::mixin::MixinApplication,
+    violation: crate::mixin::MutableValueSlot,
+) -> NewspeakError<'gc> {
+    let instantiated = application.mixin.name;
+    let declares = if instantiated == violation.class {
+        "it declares".to_string()
+    } else {
+        format!("{} declares", violation.class)
+    };
+    NewspeakError {
+        selector: factory_selector(application),
+        receiver: Value::Object(class),
+        message: format!(
+            "cannot instantiate {instantiated}: a value object is deeply immutable, and \
+             {declares} the mutable slot {}",
+            violation.slot
+        ),
+    }
+}
+
+/// §3.1.1's second condition, asked of every slot an initializer writes on
+/// an instance of a value class: a value object is *deeply* immutable, "all
+/// objects reachable from it are also deeply immutable", so a slot of one
+/// may hold only another value. Anything else -- an `Array`, an ordinary
+/// object, a class -- would make the whole value mutable through it, and
+/// two copies of it would stop being equal the moment one was written.
+///
+/// Decided here rather than in `vm.rs`, which only calls it: an error's
+/// text and the rule behind it live in `interpreter/`, so the reference
+/// lowering, running the same instruction, raises the same error.
+pub(crate) fn check_value_slot<'gc>(
+    mutator: &Mutator<'gc>,
+    activation: crate::heap::ActivationReference,
+    receiver: Value<'gc>,
+    own_index: usize,
+    value: Value<'gc>,
+) -> Result<(), Signal<'gc>> {
+    // Every immediate is a value, whatever holds it, and this answers
+    // without reading the heap at all: an initializer that stores a number
+    // or `nil` -- most of them -- never reaches a class.
+    let Value::Object(stored) = value else {
+        return Ok(());
+    };
+    let Value::Object(instance) = receiver else {
+        return Ok(());
+    };
+    let class = mutator.heap().class_of_object(instance);
+    if !mutator.heap().class_inherits_value(class) {
+        return Ok(());
+    }
+    if is_a_value(mutator, stored) {
+        return Ok(());
+    }
+    Err(Signal::Error(non_value_slot_error(
+        mutator, activation, class, receiver, own_index, value,
+    )))
+}
+
+/// Whether `object` is a value object: §3.1.1's "its class inherits from
+/// class `Value`", which covers a `String`, a `Symbol`, a `Character`, an
+/// instance of a user class below `Value` and a `Value new` alike -- §3.2's
+/// "subclass of" is inclusive, so `Value`'s own application carries the
+/// flag (`Mutator::apply_mixin`). A class object is not one -- its own
+/// class is `Object`.
+///
+/// **The other predicate about "is a value" is
+/// `builtins::value::state_is_a_value`**, which asks the narrower question
+/// of whether an instance's `=` is still `Value`'s own; the two must agree
+/// about everything this one accepts and that one unfolds, and they
+/// disagreed about `Value new` until 2026-09-23.
+fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
+    !mutator.heap().is_class(object)
+        && mutator
+            .heap()
+            .class_inherits_value(mutator.heap().class_of_object(object))
+}
+
+/// The refusal itself, off the checking path so that the check stays a
+/// handful of loads. The slot is named from the level whose initializer is
+/// running -- `own_index` is mixin-relative (`bytecode.rs`), so it indexes
+/// that level's own slots and no other's.
+///
+/// **The rule both value refusals follow: the selector is the primary
+/// factory of the class being *instantiated*, defaulted to `new`** -- the
+/// selector the program actually sent, which is what a reader has to find
+/// in the source to see the refusal. It is not the running level's factory:
+/// each level of a chain runs its own initializer in its own activation
+/// (§6.2), so an inherited level's store would otherwise be reported under
+/// a selector the program never sent -- the superclass clause did.
+/// `mutable_value_slot_error` names the instantiated class's factory for
+/// the same reason, and it had no other candidate, which is how the two
+/// came to disagree.
+#[cold]
+fn non_value_slot_error<'gc>(
+    mutator: &Mutator<'gc>,
+    activation: crate::heap::ActivationReference,
+    instantiated: ClassReference<'gc>,
+    receiver: Value<'gc>,
+    own_index: usize,
+    value: Value<'gc>,
+) -> NewspeakError<'gc> {
+    let level = mutator
+        .heap()
+        .activation_current_class(activation)
+        .and_then(|class| mutator.heap().class_application(class));
+    let class = level.as_ref().map_or_else(
+        || "a value".to_string(),
+        |level| level.mixin.name.to_string(),
+    );
+    let slot = level
+        .as_ref()
+        .and_then(|level| level.mixin.slots.get(own_index))
+        .map_or_else(|| "a slot".to_string(), |slot| slot.name.to_string());
+    NewspeakError {
+        selector: mutator
+            .heap()
+            .class_application(instantiated)
+            .as_ref()
+            .map_or(Symbol::NEW, |application| factory_selector(application)),
+        receiver,
+        message: format!(
+            "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, \
+             so every slot it declares holds a value",
+            mutator.heap().describe(&value)
+        ),
+    }
+}
+
+/// A class's primary factory selector, defaulted to `new` for a class that
+/// declares none -- `mixin::factory_entry`'s rule, which is what puts the
+/// entry in the metaclass's method table, asked again here so that a
+/// refusal names the selector the program actually sent.
+fn factory_selector(application: &crate::mixin::MixinApplication) -> Symbol {
+    application
+        .mixin
+        .factory
+        .map_or(Symbol::NEW, |factory| factory.selector)
 }
 
 /// A `MessagePattern` rendered as the selector string it declares. Also the

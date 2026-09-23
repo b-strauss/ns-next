@@ -1,0 +1,10 @@
+stdout = '''
+String true true
+Character true true
+Symbol true true
+Integer true true
+Nil true true
+Float/Integer false false
+Integer/Float false false
+Text true true
+'''

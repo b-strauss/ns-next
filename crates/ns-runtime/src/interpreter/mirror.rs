@@ -1,0 +1,582 @@
+//! How a send to the VM mirror runs (`docs/design/core-library.md`, "The VM
+//! mirror is the whole Rust boundary"). One row of
+//! `builtins::primitive::MIRROR` runs one leaf; this module is the one place
+//! that turns a send's arguments into that leaf's receiver and arguments, and
+//! a leaf's failure into the failure block's activation, whichever of the
+//! three ways the send ran: sent to the mirror object (`execute_sent`), with
+//! its failure block lowered inline (`send_inlined`,
+//! `docs/design/compiler.md`, "Mirror sends"), or as the primitive of a
+//! kernel method (`execute_method`, `docs/design/dispatch.md`, "Primitive
+//! methods").
+
+use crate::builtins::primitive::{mirror_entry, MirrorEntry, MirrorPrimitive, MIRROR};
+use crate::interpreter::{Signal, Step, StepArguments};
+use crate::types::*;
+use crate::{Mutator, Symbol};
+
+thread_local! {
+    /// Each row's reported selector, interned once per thread -- the
+    /// interner is per thread (`symbol.rs`), so a process-wide table of
+    /// `Symbol`s would be wrong on every thread but the first.
+    static REPORTED: Vec<Symbol> =
+        MIRROR.iter().map(|entry| Symbol::intern(entry.reported)).collect();
+}
+
+/// The kernel selector `row`'s error texts name.
+pub(crate) fn reported_selector(row: MirrorPrimitive) -> Symbol {
+    REPORTED.with(|reported| reported[row.index()])
+}
+
+/// A send to the mirror object: the reference lowering's, and the optimized
+/// lowering's wherever it could not lower the failure block inline.
+/// `arguments` are the subject, the leaf's arguments, then the failure block.
+pub(crate) fn execute_sent<'gc>(
+    mutator: &mut Mutator<'gc>,
+    row: MirrorPrimitive,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    let entry = mirror_entry(row);
+    // The lookup matched the selector, whose arity fixes the argument count
+    // for any send a compiler emitted; the check is for a decoded send that
+    // names the selector with the wrong count, which must fail as an error,
+    // never as a slice index.
+    let [subject, rest @ .., block] = arguments else {
+        return Err(arity_error(entry, arguments.len()));
+    };
+    if rest.len() != entry.leaf_arity() {
+        return Err(arity_error(entry, arguments.len()));
+    }
+    match run_leaf(mutator, row, *subject, rest) {
+        Some(result) => result.map(|step| owning_its_arguments(step, rest)),
+        None => Ok(failure_step(mutator, *block)),
+    }
+}
+
+/// `Instruction::SendMirror`: the leaf of `primitive`, when `mirror` is the
+/// VM mirror; `None` when the leaf does not recognize its subject, which
+/// the VM answers by jumping to the inlined failure block.
+///
+/// `leaf_arguments` are the send's own arguments here -- the instruction
+/// passes neither the subject nor the block as one -- so a leaf that
+/// activates a block "with the send's arguments" is right as it stands.
+pub(crate) fn send_inlined<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: MirrorPrimitive,
+    mirror: Value<'gc>,
+    subject: Value<'gc>,
+    leaf_arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    if !mutator.is_vm_mirror(mirror) {
+        return Some(Err(not_the_mirror(primitive, mirror)));
+    }
+    run_leaf(mutator, primitive, subject, leaf_arguments)
+}
+
+/// Only `Kernel.ns` contains a `SendMirror`, and the bootstrap checks that
+/// its `vmMirror` holds the mirror, so this is unreachable while that holds.
+/// It is an error rather than a panic so that it stays one if it ever does
+/// not.
+fn not_the_mirror<'gc>(primitive: MirrorPrimitive, receiver: Value<'gc>) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern(mirror_entry(primitive).selector),
+        receiver,
+        message: "internal: a mirror send's receiver is not the VM mirror".to_string(),
+    })
+}
+
+/// The leaf of `row`, on `subject` with `leaf_arguments`; `None` when it
+/// does not recognize the subject's shape.
+pub(crate) fn run_leaf<'gc>(
+    mutator: &mut Mutator<'gc>,
+    row: MirrorPrimitive,
+    subject: Value<'gc>,
+    leaf_arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    let entry = mirror_entry(row);
+    crate::builtins::execute(
+        mutator,
+        entry.primitive,
+        subject,
+        reported_selector(row),
+        leaf_arguments,
+    )
+}
+
+/// A primitive method's leaf, on the send's own receiver and arguments --
+/// the method forwards exactly those, which `primitive_method::recognize`
+/// checked. `None` when the leaf declines, and the method is then activated
+/// as any method is.
+///
+/// `selector` is the send's, which is the method's own and so the row's
+/// reported selector for every send but a `doesNotUnderstand:` handler's,
+/// which passes `Symbol::DOES_NOT_UNDERSTAND`.
+#[inline(always)]
+pub(crate) fn execute_method<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: MirrorPrimitive,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    crate::builtins::execute(
+        mutator,
+        mirror_entry(primitive).primitive,
+        receiver,
+        selector,
+        arguments,
+    )
+}
+
+/// A leaf that activates a block with "the send's own arguments" means the
+/// kernel send's -- the leaf's arguments -- not the mirror send's, which
+/// also carry the subject and the failure block.
+fn owning_its_arguments<'gc>(step: Step<'gc>, leaf_arguments: &[Value<'gc>]) -> Step<'gc> {
+    match step {
+        Step::Block {
+            closure,
+            arguments: StepArguments::Send,
+            then,
+        } => Step::Block {
+            closure,
+            arguments: StepArguments::Owned(leaf_arguments.to_vec()),
+            then,
+        },
+        other => other,
+    }
+}
+
+/// The failure block, activated with no arguments; a failure argument that
+/// is not a block is its own value. Marked `ControlFlow` so that the depth
+/// count treats it as it treats `ifTrue:`'s block: the optimized lowering
+/// lowers this block inline and never activates it, so under the reference
+/// lowering its activation is exempt exactly when that rule's condition holds
+/// (`docs/design/compiler.md`, "How the limit counts").
+fn failure_step<'gc>(mutator: &Mutator<'gc>, block: Value<'gc>) -> Step<'gc> {
+    if let Value::Object(object) = block {
+        if mutator.heap().is_closure(object) {
+            return Step::Block {
+                closure: object,
+                arguments: StepArguments::ControlFlow,
+                then: Continuation::Deliver,
+            };
+        }
+    }
+    Step::Value(block)
+}
+
+fn arity_error<'gc>(entry: &MirrorEntry, given: usize) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern(entry.selector),
+        receiver: Value::Nil,
+        message: format!(
+            "the VM mirror's {} takes {} arguments, got {given}",
+            entry.selector,
+            entry.leaf_arity() + 2
+        ),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::builtins::primitive::{mirror_primitive_named, MIRROR};
+    use crate::{HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+
+    fn expect_ok(result: HostResult, what: &str) -> Root {
+        match result {
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    fn the_mirror(interpreter: &mut Interpreter) -> Root {
+        interpreter.enter(|mutator| {
+            let mirror = mutator.vm_mirror();
+            mutator.stash(mirror)
+        })
+    }
+
+    #[test]
+    fn a_mirror_send_runs_its_leaf_on_the_subject() {
+        let mut interpreter = Interpreter::bootstrap();
+        let mirror = the_mirror(&mut interpreter);
+        let three = interpreter.stash(Value::SmallInteger(3));
+        let four = interpreter.stash(Value::SmallInteger(4));
+        let fallback = interpreter.stash(Value::SmallInteger(-1));
+        let sum = expect_ok(
+            interpreter.send(
+                &mirror,
+                Symbol::intern("integer:add:ifFail:"),
+                &[three, four, fallback],
+            ),
+            "integer:add:ifFail:",
+        );
+        interpreter.enter(|mutator| {
+            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
+        });
+    }
+
+    /// A leaf that does not recognize its subject answers the failure
+    /// argument's value -- here not a block, so it stands for itself, the
+    /// convention `ifTrue:` already follows for a non-block argument.
+    #[test]
+    fn a_leaf_that_fails_on_its_subject_answers_the_failure_argument() {
+        let mut interpreter = Interpreter::bootstrap();
+        let mirror = the_mirror(&mut interpreter);
+        let nothing = interpreter.stash(Value::Nil);
+        let four = interpreter.stash(Value::SmallInteger(4));
+        let fallback = interpreter.stash(Value::SmallInteger(-1));
+        let answer = expect_ok(
+            interpreter.send(
+                &mirror,
+                Symbol::intern("integer:add:ifFail:"),
+                &[nothing, four, fallback],
+            ),
+            "integer:add:ifFail: on nil",
+        );
+        interpreter.enter(|mutator| {
+            assert!(matches!(mutator.fetch(&answer), Value::SmallInteger(-1)));
+        });
+    }
+
+    /// The error a leaf raises names the kernel selector, not the mirror's:
+    /// the text a program sees must not change when `+` moves behind the
+    /// mirror.
+    #[test]
+    fn an_error_a_leaf_raises_names_the_reported_selector() {
+        let mut interpreter = Interpreter::bootstrap();
+        let mirror = the_mirror(&mut interpreter);
+        let three = interpreter.stash(Value::SmallInteger(3));
+        let text = interpreter.enter(|mutator| {
+            let string = mutator.new_string("x".to_string());
+            mutator.stash(Value::Object(string))
+        });
+        let fallback = interpreter.stash(Value::Nil);
+        match interpreter.send(
+            &mirror,
+            Symbol::intern("integer:add:ifFail:"),
+            &[three, text, fallback],
+        ) {
+            Err(HostSignal::Error(error)) => {
+                assert_eq!(error.selector, Symbol::intern("+"));
+                assert!(
+                    error.message.starts_with("+ requires a numeric argument"),
+                    "{}",
+                    error.message
+                );
+            }
+            _ => panic!("3 + 'x' through the mirror must raise the mismatch error"),
+        }
+    }
+
+    #[test]
+    fn every_mirror_selector_is_unique_ends_in_if_fail_and_takes_two_more_arguments() {
+        let mut seen = std::collections::HashSet::new();
+        for (row, entry) in MIRROR.iter().enumerate() {
+            assert!(
+                seen.insert(entry.selector),
+                "{} listed twice",
+                entry.selector
+            );
+            assert!(entry.selector.ends_with("ifFail:"), "{}", entry.selector);
+            let mirror_arity = entry.selector.matches(':').count();
+            assert_eq!(
+                mirror_arity,
+                entry.leaf_arity() + 2,
+                "{} must take the subject, the leaf's arguments and the failure block",
+                entry.selector
+            );
+            assert!(
+                !matches!(
+                    entry.primitive,
+                    crate::builtins::primitive::Primitive::Mirror(_)
+                ),
+                "{} runs a mirror row",
+                entry.selector
+            );
+            let named = mirror_primitive_named(entry.selector).map(|found| found.index());
+            assert_eq!(named, Some(row), "{}", entry.selector);
+        }
+    }
+
+    /// `Mutator::is_vm_mirror` recognizes the one mirror instance and nothing
+    /// else, including another instance of the same class -- which cannot
+    /// arise through a program (the mirror's class is refused as a factory,
+    /// `the_mirror_class_cannot_be_instantiated` below) but must still not
+    /// be confused with the real mirror by identity alone.
+    #[test]
+    fn is_vm_mirror_recognizes_only_the_one_mirror_instance() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let mirror = mutator.vm_mirror();
+            assert!(mutator.is_vm_mirror(mirror));
+            assert!(!mutator.is_vm_mirror(Value::SmallInteger(3)));
+            assert!(!mutator.is_vm_mirror(Value::Nil));
+            let platform = mutator.platform_value();
+            assert!(!mutator.is_vm_mirror(platform));
+        });
+    }
+
+    #[test]
+    fn the_mirror_class_cannot_be_instantiated() {
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(crate::BuiltinClass::VmMirror);
+            mutator.stash(Value::Object(class))
+        });
+        assert!(matches!(
+            interpreter.send(&class, Symbol::NEW, &[]),
+            Err(HostSignal::Error(_))
+        ));
+    }
+
+    /// A kernel-shaped module, resolved by `resolve_kernel` when `kernel`
+    /// and by plain `resolve` otherwise: its `Probe` sends the mirror inline
+    /// (`sizeOf:`) and declares two primitive methods, one whose leaf accepts
+    /// any receiver (`same:`) and one whose leaf never accepts a `Probe`
+    /// (`size`). Answers the interpreter and a `Probe`.
+    fn a_probe(lowering: crate::Lowering, kernel: bool) -> (Interpreter, Root) {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class Probe = Object new () (
+                public sizeOf: text = ( ^vmMirror stringSize: text ifFail: [^-1] )
+                public same: other = ( ^vmMirror object: self identicalTo: other ifFail: [^-1] )
+                public size = ( ^vmMirror stringSize: self ifFail: [^-1] )
+              )
+              public probe = ( ^Probe new )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let origin = crate::SourceOrigin::File(std::path::PathBuf::from("t.ns"));
+        let resolved = if kernel {
+            crate::resolver::resolve_kernel(module, std::rc::Rc::from(source), origin)
+        } else {
+            crate::resolve(module, std::rc::Rc::from(source), origin)
+        };
+        let Ok(resolved) = resolved else {
+            let resolver = if kernel { "resolve_kernel" } else { "resolve" };
+            panic!("the kernel-shaped module does not resolve under `{resolver}`");
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let mirror = the_mirror(&mut interpreter);
+        let instance = expect_ok(
+            interpreter.instantiate(&class, &[mirror]),
+            "K vmMirror: the mirror",
+        );
+        let probe = expect_ok(
+            interpreter.send(&instance, Symbol::intern("probe"), &[]),
+            "probe",
+        );
+        (interpreter, probe)
+    }
+
+    /// `selector`'s compiled method on the class of the value `probe` holds.
+    fn probe_method(
+        interpreter: &mut Interpreter,
+        probe: &Root,
+        selector: &str,
+    ) -> std::rc::Rc<crate::mixin::MixinMethod> {
+        interpreter.enter(|mutator| {
+            let receiver = mutator.fetch(probe);
+            let class = mutator.class_of(&receiver);
+            let Some(application) = mutator.heap().class_application(class) else {
+                panic!("a Probe's class is a class");
+            };
+            let Some(method) = application.mixin.compiled_method(Symbol::intern(selector)) else {
+                panic!("Probe declares {selector}");
+            };
+            method.clone()
+        })
+    }
+
+    /// A kernel-shaped module's mirror send, run end to end: under the
+    /// optimized lowering its failure block is inlined (`SendMirror`), under
+    /// the reference lowering it is a real closure sent to the mirror
+    /// (`SendInlinable`), and both answer the leaf's value when the leaf
+    /// recognizes its subject and the block's `^` when it does not.
+    #[test]
+    fn an_inlined_mirror_send_runs_its_leaf_and_its_failure_block() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let (mut interpreter, probe) = a_probe(lowering, true);
+            let text = interpreter.enter(|mutator| {
+                let string = mutator.new_string("abc".to_string());
+                mutator.stash(Value::Object(string))
+            });
+            let size = expect_ok(
+                interpreter.send(&probe, Symbol::intern("sizeOf:"), &[text]),
+                "sizeOf: 'abc'",
+            );
+            let nothing = interpreter.stash(Value::Nil);
+            let declined = expect_ok(
+                interpreter.send(&probe, Symbol::intern("sizeOf:"), &[nothing]),
+                "sizeOf: nil",
+            );
+            interpreter.enter(|mutator| {
+                assert!(
+                    matches!(mutator.fetch(&size), Value::SmallInteger(3)),
+                    "{lowering:?}: the leaf answers the string's size"
+                );
+                assert!(
+                    matches!(mutator.fetch(&declined), Value::SmallInteger(-1)),
+                    "{lowering:?}: the failure block answers for nil"
+                );
+            });
+        }
+    }
+
+    /// A primitive method answers from its leaf when the leaf accepts the
+    /// receiver, and through its activated body -- the failure block --
+    /// when it does not, alike under both lowerings.
+    #[test]
+    fn a_primitive_method_runs_its_leaf_and_its_body_only_when_the_leaf_declines() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let (mut interpreter, probe) = a_probe(lowering, true);
+            for selector in ["same:", "size"] {
+                let method = probe_method(&mut interpreter, &probe, selector);
+                assert!(
+                    method.primitive.is_some(),
+                    "{lowering:?}: {selector} is a primitive method"
+                );
+            }
+            let inline = probe_method(&mut interpreter, &probe, "sizeOf:");
+            assert!(
+                inline.primitive.is_none(),
+                "{lowering:?}: sizeOf: forwards a parameter as the subject, not self"
+            );
+            let same = expect_ok(
+                interpreter.send(
+                    &probe,
+                    Symbol::intern("same:"),
+                    std::slice::from_ref(&probe),
+                ),
+                "aProbe same: aProbe",
+            );
+            let size = expect_ok(
+                interpreter.send(&probe, Symbol::intern("size"), &[]),
+                "aProbe size",
+            );
+            interpreter.enter(|mutator| {
+                assert!(
+                    matches!(mutator.fetch(&same), Value::Boolean(true)),
+                    "{lowering:?}: the leaf answers identity"
+                );
+                assert!(
+                    matches!(mutator.fetch(&size), Value::SmallInteger(-1)),
+                    "{lowering:?}: the activated body's failure block answers"
+                );
+            });
+        }
+    }
+
+    /// `act` itself answers an accepting leaf without an activation, and
+    /// hands a declining one's method on to be activated.
+    #[test]
+    fn act_answers_an_accepting_primitive_method_without_an_activation() {
+        let (mut interpreter, probe) = a_probe(crate::Lowering::Optimized, true);
+        let same = probe_method(&mut interpreter, &probe, "same:");
+        let size = probe_method(&mut interpreter, &probe, "size");
+        interpreter.enter(|mutator| {
+            let receiver = mutator.fetch(&probe);
+            let class = mutator.class_of(&receiver);
+            let accepted = mutator.act_with_base(
+                crate::interpreter::resolve::Resolved::Method {
+                    method: same,
+                    defining_class: class,
+                    chain: crate::interpreter::resolve::Chain::Public,
+                },
+                crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
+                receiver,
+                Symbol::intern("same:"),
+                &[receiver],
+            );
+            assert!(matches!(
+                accepted,
+                Ok(crate::interpreter::Step::Value(Value::Boolean(true)))
+            ));
+            let declined = mutator.act_with_base(
+                crate::interpreter::resolve::Resolved::Method {
+                    method: size,
+                    defining_class: class,
+                    chain: crate::interpreter::resolve::Chain::Public,
+                },
+                crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
+                receiver,
+                Symbol::intern("size"),
+                &[],
+            );
+            assert!(matches!(
+                declined,
+                Ok(crate::interpreter::Step::Method { .. })
+            ));
+        });
+    }
+
+    /// The same forwarders in a module plain `resolve` resolved are ordinary
+    /// methods: only the kernel's `vmMirror` is known to hold the mirror.
+    #[test]
+    fn forwarders_outside_the_kernel_are_ordinary_methods() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let (mut interpreter, probe) = a_probe(lowering, false);
+            for selector in ["same:", "size"] {
+                let method = probe_method(&mut interpreter, &probe, selector);
+                assert!(
+                    method.primitive.is_none(),
+                    "{lowering:?}: {selector} outside the kernel"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_snapshot_that_reaches_the_mirror_is_refused() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'T'
+            class Holder = Object new (
+                | public held |
+            ) (
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+        let mirror = the_mirror(&mut interpreter);
+        let _ = expect_ok(
+            interpreter.send(&instance, Symbol::intern("held:"), &[mirror]),
+            "held:",
+        );
+        let refused = interpreter.enter(|mutator| {
+            let Value::Object(class) = mutator.fetch(&class) else {
+                panic!("the root is a class object");
+            };
+            let platform = mutator.platform_value();
+            let holder = mutator.fetch(&instance);
+            crate::image::snapshot(
+                mutator,
+                None,
+                &crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+                class,
+                &platform,
+                &[holder],
+            )
+        });
+        match refused {
+            Err(message) => assert!(message.contains("VM mirror"), "{message}"),
+            Ok(_) => panic!("an image must never carry the VM mirror"),
+        }
+    }
+}
