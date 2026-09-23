@@ -13,8 +13,9 @@
 //! decoded value reaches is the image's to choose, so both walks run an
 //! explicit work stack; the equality walk remembers the pairs it has
 //! already assumed equal, so a cycle terminates in `true` rather than
-//! running forever, and both stop once they have taken `NODE_BUDGET` nodes
-//! off that stack, so neither runs for as long as the input likes.
+//! running forever, and both stop once `NODE_BUDGET` nodes have gone *onto*
+//! that stack, so neither runs for as long as the input likes and neither
+//! stack grows past the budget.
 //!
 //! What a leaf cannot decide it declines, and the `ifFail:` block of
 //! `Value`'s method answers instead. It never asks the receiver: a native
@@ -37,22 +38,23 @@ use crate::dispatch::{self, Lookup};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-/// How many nodes either walk takes off its work stack before it stops
-/// unfolding.
+/// How many nodes either walk puts on its work stack before it stops
+/// unfolding -- the root included.
 ///
-/// It is checked when a node is taken, not when one is pushed, so a node
-/// already taken pushes all of its slots before the next check: the work is
-/// bounded by `NODE_BUDGET` times the widest class's slot count, and the
-/// work vector itself by what the heap holds, not by this number. What the
-/// budget does rule out is a walk that runs for as long as the input likes
-/// -- a wide graph still costs a bounded multiple of it, and a deep or
-/// cyclic one stops here.
+/// It is charged when a node is **pushed**, not when one is taken, which is
+/// what bounds the work vector itself by this number rather than by what
+/// the heap holds. Charging on the take instead let one node push all of
+/// its slots first, so a wide or cyclic value pushed up to `NODE_BUDGET`
+/// times the widest class's slot count before the budget stopped it: an
+/// image is untrusted input and chooses that width, so it chose the
+/// allocation, which is how a decoded value could turn a bounded walk into
+/// an allocation abort.
 ///
 /// It is also what keeps a truncated hash *consistent*: two equal values
-/// unfold to the same nodes in the same order, so cutting both off at the
-/// same count cuts them off alike. Every node contributes a hash below 2^32
-/// plus a slot count below 2^16, so a sum of this many stays far inside an
-/// `i64`.
+/// unfold to the same nodes in the same order and have the same slot
+/// counts at each of them, so both are charged alike and both stop at the
+/// same node. Every node contributes a hash below 2^32 plus a slot count
+/// below 2^16, so a sum of this many stays far inside an `i64`.
 const NODE_BUDGET: usize = 4096;
 
 /// `nil`'s hash. `Nil` is a singleton below `Value`, so any constant will
@@ -337,16 +339,9 @@ fn derived_equality<'gc>(
 ) -> Option<bool> {
     let mut work = vec![(left, right)];
     let mut assumed: HashSet<(usize, usize)> = HashSet::new();
-    let mut visited = 0usize;
+    // The root pair is on the stack already.
+    let mut charged = 1usize;
     while let Some((first, second)) = work.pop() {
-        if visited == NODE_BUDGET {
-            // Out of budget, with pairs still unexamined: decline rather
-            // than claim an equality that was never checked. `Value`'s
-            // `ifFail:` block then answers, as it does for any other shape
-            // this leaf will not rule on.
-            return None;
-        }
-        visited += 1;
         match compare_node(mutator, first, second)? {
             Pair::Decided(true) => {}
             Pair::Decided(false) => return Some(false),
@@ -366,6 +361,16 @@ fn derived_equality<'gc>(
                 if first_slots.len() != second_slots.len() {
                     return Some(false);
                 }
+                if first_slots.len() > NODE_BUDGET - charged {
+                    // Out of budget, with pairs still unexamined: decline
+                    // rather than claim an equality that was never checked,
+                    // and decline *before* pushing them, so the stack never
+                    // grows past the budget. `Value`'s `ifFail:` block then
+                    // answers, as it does for any other shape this leaf
+                    // will not rule on.
+                    return None;
+                }
+                charged += first_slots.len();
                 work.extend(first_slots.into_iter().zip(second_slots));
             }
         }
@@ -379,20 +384,23 @@ fn derived_equality<'gc>(
 fn derived_hash<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<i64> {
     let mut work = vec![value];
     let mut total: i64 = 0;
-    let mut visited = 0usize;
+    // The root is on the stack already.
+    let mut charged = 1usize;
     while let Some(current) = work.pop() {
-        // Unlike the comparison, a truncated hash is still a valid hash:
-        // two equal values unfold in the same order, so both are cut at the
-        // same place and both answer the same number.
-        if visited == NODE_BUDGET {
-            break;
-        }
-        visited += 1;
         match hash_node(mutator, current)? {
             Node::Leaf(hash) => total += hash,
             Node::State(object) => {
                 let slots = slots_of(mutator, object);
                 total += slots.len() as i64;
+                // Unlike the comparison, a truncated hash is still a valid
+                // hash: two equal values unfold in the same order with the
+                // same slot counts, so both are cut at the same node and
+                // both answer the same number. Cut before the slots are
+                // pushed, which is what bounds the stack by the budget.
+                if slots.len() > NODE_BUDGET - charged {
+                    break;
+                }
+                charged += slots.len();
                 // Pushed back to front, so the stack unfolds the slots in
                 // declaration order: the sum does not care, but the node
                 // budget cuts two equal values at the same slot only if
@@ -491,6 +499,7 @@ mod tests {
                     public = other = ( ^false )
                 )
                 class Cyclic = Marker new (| public me = self. |) ()
+                class Chain link: previous = Marker new (| public link = previous. |) ()
                 class Nesting first: firstValue second: secondValue = Marker new (
                     | public first = firstValue. public second = secondValue. |
                 ) (
@@ -506,6 +515,15 @@ mod tests {
                 public couple: firstValue and: secondValue = ( ^Couple first: firstValue second: secondValue )
                 public overriding = ( ^Overriding new )
                 public cyclic = ( ^Cyclic new )
+                public chainOf: count = (
+                    | index result |
+                    result:: nil.
+                    index:: 1.
+                    [index <= count] whileTrue: [
+                        result:: Chain link: result.
+                        index:: index + 1].
+                    ^result
+                )
                 public nesting: firstValue and: secondValue = ( ^Nesting first: firstValue second: secondValue )
                 public deeper: firstValue and: secondValue and: thirdValue = (
                     ^Deeper first: firstValue second: secondValue third: thirdValue
@@ -701,6 +719,48 @@ mod tests {
         let hash = leaf(&mut interpreter, "valueHash:ifFail:", &cyclic, &[]);
         let hash = answered_integer(&mut interpreter, hash, "a cyclic value's hash");
         assert_ne!(hash, DECLINED, "the hash terminates on a cycle too");
+    }
+
+    /// A value deeper than the node budget: the equality declines rather
+    /// than claim an equality it never checked, and the hash answers a
+    /// truncated but consistent number.
+    ///
+    /// Both walks charge the budget when a node is **pushed**, so the work
+    /// vector never grows past `NODE_BUDGET` entries whatever the value's
+    /// width. Charging on the take let a node push all of its slots first,
+    /// and an image -- untrusted input -- picks that width.
+    #[test]
+    fn a_value_deeper_than_the_budget_declines_and_still_hashes() {
+        let (mut interpreter, fixture) = a_fixture();
+        record_marker_as_values_equality(&mut interpreter, &fixture);
+        let depth = interpreter.stash(Value::SmallInteger(super::NODE_BUDGET as i64 + 100));
+        let first = send(
+            &mut interpreter,
+            &fixture,
+            "chainOf:",
+            std::slice::from_ref(&depth),
+        );
+        let second = send(&mut interpreter, &fixture, "chainOf:", &[depth]);
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &first,
+            std::slice::from_ref(&second),
+        );
+        assert_eq!(
+            answered_boolean(&mut interpreter, compared, "two chains past the budget"),
+            None
+        );
+        let first_hash = leaf(&mut interpreter, "valueHash:ifFail:", &first, &[]);
+        let first_hash = answered_integer(&mut interpreter, first_hash, "the first chain's hash");
+        let second_hash = leaf(&mut interpreter, "valueHash:ifFail:", &second, &[]);
+        let second_hash =
+            answered_integer(&mut interpreter, second_hash, "the second chain's hash");
+        assert_ne!(first_hash, DECLINED, "a truncated hash is still a hash");
+        assert_eq!(
+            first_hash, second_hash,
+            "two equal values are cut at the same node"
+        );
     }
 
     /// An `Array` is no value: it is mutable and sits under `Object`, so
