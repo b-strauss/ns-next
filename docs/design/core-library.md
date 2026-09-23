@@ -213,6 +213,12 @@ are **not** checked, and are listed under "What is still unchecked" below:
   Deep immutability is then transitive by induction: whatever a value's slot
   holds was itself checked when it was made.
 
+Both refusals name **the primary factory of the class being instantiated**,
+defaulted to `new` — the selector the program sent. A store in an inherited
+level's initializer is reported under it too, although that level runs in its
+own activation with its own factory (§6.2): the superclass clause sends that
+one, the program does not.
+
 **What is still unchecked.**
 
 - **A value's enclosing objects are not checked to be values, and by the

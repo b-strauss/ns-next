@@ -585,6 +585,46 @@ fn a_value_class_refuses_a_slot_that_is_not_a_value() {
     );
 }
 
+/// Both value refusals name the selector the program sent: the primary
+/// factory of the class being *instantiated*, never of the level whose
+/// initializer happens to be running. Each level of a chain runs its own
+/// initializer in its own activation (§6.2), so the store below happens in
+/// `Base`'s -- and reporting it as `held:`, which only the superclass
+/// clause sends, sends a reader looking for a send their program does not
+/// contain.
+#[test]
+fn a_refused_slot_names_the_factory_the_program_sent() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holders = Object new () (
+            public class Base held: contents = Value new (
+                | public held = contents. |
+            ) ()
+            public class Derived take: contents = Base held: contents (
+                | public own = 1. |
+            ) ()
+        ) : ()
+    "};
+    let (mut interpreter, module_class) = load(source);
+    let module = expect_ok(interpreter.instantiate(&module_class, &[]), "Holders new");
+    let derived = expect_ok(
+        interpreter.send(&module, Symbol::intern("Derived"), &[]),
+        "Derived",
+    );
+    // A class object is no value, so `Base`'s initializer refuses it.
+    let error = expect_error(
+        interpreter.instantiate(&derived, std::slice::from_ref(&module_class)),
+        "Derived take: Holders",
+    );
+    assert_eq!(error.selector, Symbol::intern("take:"));
+    assert!(
+        error.message.contains("Base") && error.message.contains("held"),
+        "the refusal names the level that declares the slot: {}",
+        error.message
+    );
+}
+
 /// An instance of `Value` itself is a value, so a value's slot may hold
 /// one: §3.2 defines "subclass of" inclusively ("C's superclass is S or a
 /// subclass of S"), which makes §3.1.1's "its class inherits from class

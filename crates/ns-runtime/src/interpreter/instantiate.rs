@@ -793,7 +793,9 @@ pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
 ///
 /// The selector is the class's own primary factory, which is the selector
 /// the send that got here carried -- a class declaring `x:y:` understands
-/// no `new` -- defaulted the way `mixin::factory_entry` defaults it.
+/// no `new` -- defaulted the way `mixin::factory_entry` defaults it. That
+/// is the rule `non_value_slot_error` follows too; its doc comment states
+/// it for both.
 fn mutable_value_slot_error<'gc>(
     class: ClassReference<'gc>,
     application: &crate::mixin::MixinApplication,
@@ -850,7 +852,7 @@ pub(crate) fn check_value_slot<'gc>(
         return Ok(());
     }
     Err(Signal::Error(non_value_slot_error(
-        mutator, activation, receiver, own_index, value,
+        mutator, activation, class, receiver, own_index, value,
     )))
 }
 
@@ -877,10 +879,22 @@ fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool
 /// handful of loads. The slot is named from the level whose initializer is
 /// running -- `own_index` is mixin-relative (`bytecode.rs`), so it indexes
 /// that level's own slots and no other's.
+///
+/// **The rule both value refusals follow: the selector is the primary
+/// factory of the class being *instantiated*, defaulted to `new`** -- the
+/// selector the program actually sent, which is what a reader has to find
+/// in the source to see the refusal. It is not the running level's factory:
+/// each level of a chain runs its own initializer in its own activation
+/// (§6.2), so an inherited level's store would otherwise be reported under
+/// a selector the program never sent -- the superclass clause did.
+/// `mutable_value_slot_error` names the instantiated class's factory for
+/// the same reason, and it had no other candidate, which is how the two
+/// came to disagree.
 #[cold]
 fn non_value_slot_error<'gc>(
     mutator: &Mutator<'gc>,
     activation: crate::heap::ActivationReference,
+    instantiated: ClassReference<'gc>,
     receiver: Value<'gc>,
     own_index: usize,
     value: Value<'gc>,
@@ -898,11 +912,11 @@ fn non_value_slot_error<'gc>(
         .and_then(|level| level.mixin.slots.get(own_index))
         .map_or_else(|| "a slot".to_string(), |slot| slot.name.to_string());
     NewspeakError {
-        // The initializer running is the one the level's own primary
-        // factory started, so that is the selector the program sent.
-        selector: level
+        selector: mutator
+            .heap()
+            .class_application(instantiated)
             .as_ref()
-            .map_or(Symbol::NEW, |level| factory_selector(level)),
+            .map_or(Symbol::NEW, |application| factory_selector(application)),
         receiver,
         message: format!(
             "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, \
