@@ -221,7 +221,8 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
 /// object graph (the graph's class tag 1 names it, so it has to exist by
 /// then). Everything else about it comes from mixin-table row 0: this
 /// section carries the one thing a declaration does not determine, the
-/// class it inherits from.
+/// class it inherits from -- its superclass, and the levels its `<:` clauses
+/// (`newspeak-spec.pdf` §6.2) stack on that superclass.
 ///
 /// Written as an optional builtin-class tag rather than as a general class
 /// tag, because the general form names an object-table id and the object
@@ -233,6 +234,14 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
 /// is refused here rather than written wrongly; extending
 /// `resolve_superclass_receiver` is what would make it representable, and
 /// that extension is where this format would grow with it.
+///
+/// The root's `<:` clauses are resolved by the same rule
+/// (`Mutator::load_root_class`), so each level names a builtin too, and is
+/// written the same way: after the superclass, a count and, lowest level
+/// first, each level's clause position in row 0 and the builtin its clause
+/// named. The position is written rather than implied because a root clause
+/// naming anything but a builtin adds no level, so the levels need not be
+/// one per clause.
 pub fn encode_root_class<'gc>(
     writer: &mut Writer,
     heap: &Heap<'gc>,
@@ -241,7 +250,9 @@ pub fn encode_root_class<'gc>(
     if !heap.is_class(root_class) {
         return Err("image encoding's root object is not a class".to_string());
     }
-    let superclass = heap.class_superclass(root_class);
+    let levels = root_levels(heap, root_class);
+    let lowest = levels.first().copied().unwrap_or(root_class);
+    let superclass = heap.class_superclass(lowest);
     match superclass {
         None => writer.write_boolean(false),
         Some(superclass) => {
@@ -258,7 +269,68 @@ pub fn encode_root_class<'gc>(
             writer.write_u8(builtin_class_tag(kind));
         }
     }
+    writer.write_u32(u32_field("root class level count", levels.len()));
+    for level in levels {
+        let applied = heap
+            .class_applied_origin(level)
+            .expect("internal: root_levels answers only applied levels");
+        writer.write_u32(u32_field("mixin application clause index", applied.index));
+        writer.write_u8(builtin_class_tag(named_builtin(&applied)?));
+    }
     Ok(())
+}
+
+/// The levels the root class's own `<:` clauses added, lowest first -- the
+/// order the clauses are written in, and the order the root-class section
+/// lists them in. A class tag names one by its position here
+/// (`CLASS_ROOT_LEVEL`): like the root class, a root level exists before the
+/// graph does, so the graph never carries it as a record.
+///
+/// Walked down the superclass chain from the root for as long as each class
+/// is a level one of the root's own clauses added -- the applying declaration
+/// is the root's mixin itself, not merely a mixin applied somewhere.
+pub fn root_levels<'gc>(
+    heap: &Heap<'gc>,
+    root_class: ClassReference<'gc>,
+) -> Vec<ClassReference<'gc>> {
+    let Some(root_mixin) = heap
+        .class_application(root_class)
+        .map(|application| application.mixin.clone())
+    else {
+        return Vec::new();
+    };
+    let mut levels = Vec::new();
+    let mut current = heap.class_superclass(root_class);
+    while let Some(class) = current {
+        let is_root_level = heap
+            .class_applied_origin(class)
+            .is_some_and(|applied| Rc::ptr_eq(&applied.declaration, &root_mixin));
+        if !is_root_level {
+            break;
+        }
+        levels.push(class);
+        current = heap.class_superclass(class);
+    }
+    levels.reverse();
+    levels
+}
+
+/// The builtin a level's `<:` clause named, as the format can name it: a
+/// builtin a program can name at all. `Top` and the VM mirror's class are
+/// refused here because the decoder refuses their tags wherever a program
+/// names a class (`decode::read_program_builtin_class`), so writing one would
+/// produce an image nothing can load; no source can name either.
+fn named_builtin(applied: &crate::mixin::AppliedClause) -> Result<BuiltinClass, String> {
+    match applied.named_builtin {
+        Some(BuiltinClass::Top | BuiltinClass::VmMirror) | None => Err(format!(
+            "image encoding cannot serialize a level that `<:` clause {} of class `{}` added: \
+             it applies a mixin that is neither part of the module's declaration tree nor a \
+             builtin class a program can name",
+            applied.index + 1,
+            applied.declaration.name
+        )),
+        Some(kind) => Ok(kind),
+    }
 }
 
 /// The entry selector, as a presence byte and -- when present -- a symbol id.
@@ -281,7 +353,8 @@ pub fn encode_entry(writer: &mut Writer, entry: Option<u32>) {
 
 /// The code table: every `CompiledCode` reachable from the mixin tree under
 /// `root_class` -- every mixin's methods, every mixin's initializer, every
-/// superclass clause and clause-message body, and every nested block body --
+/// superclass clause and clause-message body, every `<:` clause's message
+/// body, and every nested block body --
 /// with nested block code *before* the code that creates it. Flat and
 /// unnamed: *which* body belongs to which declaration is the mixin table's
 /// business (`image::mixins`), which addresses this table by id.
@@ -310,6 +383,12 @@ pub fn encode_code_table<'gc>(
             &row.mixin.superclass_message_code,
         ]
         .into_iter()
+        .chain(
+            row.mixin
+                .mixin_applications
+                .iter()
+                .map(|clause| &clause.message_code),
+        )
         .flatten()
         {
             collect_code(code, &mut order, &mut ids);
@@ -693,33 +772,54 @@ enum Pending<'gc> {
     Frame(FrameReference<'gc>),
 }
 
-/// A class object's three graph references, in the order its record
-/// writes them: the superclass, the enclosing object, the declaring class.
-/// Traversal and encoding share one definition so the two cannot drift into
-/// a reference that is written but never given an id.
+/// A class object's graph references, in the order its record writes them:
+/// the superclass, the enclosing object, the declaring class. Traversal and
+/// encoding share one definition so the two cannot drift into a reference
+/// that is written but never given an id.
+///
+/// A level whose `<:` clause named a builtin has only its superclass: its
+/// enclosing object and declaring class are the builtin's own (§6.2, "the
+/// enclosing object of I is the enclosing object of C"), which is the core
+/// library's `Kernel` -- the object that holds the VM mirror. The image
+/// carries neither, exactly as it carries no builtin; the decoder takes both
+/// from the loading bootstrap's builtin, as `nested::build_applied_levels`
+/// does.
 fn class_references<'a, 'gc>(
     data: &'a ClassData<'gc>,
 ) -> impl Iterator<Item = ObjectReference<'gc>> + 'a {
+    let own_context = !names_a_builtin(data);
     data.superclass
         .iter()
-        .chain(data.enclosing.iter())
-        .chain(data.declaring_class.iter())
+        .chain(data.enclosing.iter().filter(move |_| own_context))
+        .chain(data.declaring_class.iter().filter(move |_| own_context))
         .copied()
+}
+
+/// Whether `data` is a level a `<:` clause naming a builtin added.
+fn names_a_builtin(data: &ClassData<'_>) -> bool {
+    data.applied_clause
+        .as_ref()
+        .is_some_and(|applied| applied.named_builtin.is_some())
 }
 
 /// Whether `object` is a class object the format names with a *tag* rather
 /// than with an object-table id: a builtin, which the loaded bootstrap
-/// supplies, or the module's root class, which `load` rebuilds from the
-/// image's own source before the graph is decoded. Neither exists because
-/// the graph says so, so neither is a record. Every other class object is.
-/// The mirror of `decode::is_prebuilt_class`, including its explicit,
-/// today-redundant `is_class` guard -- see that function's doc comment.
+/// supplies, or the module's root class or one of its levels, which `load`
+/// rebuilds from the mixin table and the root-class section before the graph
+/// is decoded. None of them exists because the graph says so, so none is a
+/// record. Every other class object is. The mirror of
+/// `decode::is_prebuilt_class`, including its explicit, today-redundant
+/// `is_class` guard -- see that function's doc comment.
 fn is_class_tag<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
     root_class: ClassReference<'gc>,
+    root_levels: &[ClassReference<'gc>],
 ) -> bool {
-    heap.is_class(object) && (heap.class_builtin(object).is_some() || object.same(root_class))
+    heap.is_class(object)
+        && (heap.class_builtin(object).is_some()
+            || object.same(root_class)
+            || root_levels.iter().any(|level| level.same(object)))
 }
 
 /// Every heap object (instances, strings, symbols, arrays, closures, and
@@ -748,6 +848,7 @@ impl<'gc> GraphTable<'gc> {
         roots: &[Value<'gc>],
         platform: &Value<'gc>,
         root_class: ClassReference<'gc>,
+        root_levels: &[ClassReference<'gc>],
     ) -> GraphTable<'gc> {
         let mut table = GraphTable {
             objects: Vec::new(),
@@ -762,9 +863,13 @@ impl<'gc> GraphTable<'gc> {
             .collect();
         while let Some(pending) = stack.pop() {
             match pending {
-                Pending::Value(value) => {
-                    table.visit_value(heap, &value, platform, root_class, &mut stack)
-                }
+                Pending::Value(value) => table.visit_value(
+                    heap,
+                    &value,
+                    platform,
+                    (root_class, root_levels),
+                    &mut stack,
+                ),
                 Pending::Frame(frame) => table.visit_frame(heap, frame, &mut stack),
             }
         }
@@ -776,11 +881,11 @@ impl<'gc> GraphTable<'gc> {
         heap: &Heap<'gc>,
         value: &Value<'gc>,
         platform: &Value<'gc>,
-        root_class: ClassReference<'gc>,
+        (root_class, root_levels): (ClassReference<'gc>, &[ClassReference<'gc>]),
         stack: &mut Vec<Pending<'gc>>,
     ) {
         let Value::Object(object) = value else { return };
-        if is_same_object(value, platform) || is_class_tag(heap, *object, root_class) {
+        if is_same_object(value, platform) || is_class_tag(heap, *object, root_class, root_levels) {
             return;
         }
         let key = heap.object_identity_key(*object);
@@ -865,11 +970,12 @@ impl<'gc> GraphTable<'gc> {
                 FrameKind::Closure(closure) => {
                     stack.push(Pending::Value(Value::Object(*closure)));
                 }
-                // The three class-carrying kinds name a class the same way
+                // The class-carrying kinds name a class the same way
                 // `current_class` does, so the class needs an id the same way.
                 FrameKind::Initializer(class)
                 | FrameKind::SuperclassClause(class)
-                | FrameKind::SuperclassMessage(class) => {
+                | FrameKind::SuperclassMessage(class)
+                | FrameKind::MixinApplicationMessage(class) => {
                     stack.push(Pending::Value(Value::Object(*class)));
                 }
                 FrameKind::Method(_) | FrameKind::TopLevel => {}
@@ -914,15 +1020,18 @@ pub struct EncodeContext<'a, 'gc> {
     /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
     /// assigned them.
     pub mixin_ids: &'a HashMap<usize, u32>,
+    /// `root_levels(root_class)`: the levels a class tag names by position.
+    pub root_levels: &'a [ClassReference<'gc>],
     pub heap: &'a Heap<'gc>,
 }
 
-/// `Builtin(kind)` (0 + kind tag), `UserRoot` (1), or `Record` (2 + object
-/// id) -- the three ways a class object can exist in a loaded world.
+/// `Builtin(kind)` (0 + kind tag), `UserRoot` (1), `Record` (2 + object
+/// id) or `RootLevel` (3 + position) -- the four ways a class object can
+/// exist in a loaded world.
 ///
-/// The first two are rebuilt before the graph is: a builtin comes from the
-/// bootstrap, the root class from mixin-table row 0 plus the root-class
-/// section (`decode::build_root_class`).
+/// All but `Record` are rebuilt before the graph is: a builtin comes from the
+/// bootstrap, the root class and its levels from mixin-table row 0 plus the
+/// root-class section (`decode::build_root_class`).
 /// Everything else is a class object the *graph* creates, and tag 2 names
 /// which one by the id of its own record in the object table. That third
 /// case is what nesting needs: a nested class object is the value of its
@@ -944,6 +1053,15 @@ fn encode_class_tag<'gc>(
             writer.write_u8(builtin_class_tag(kind));
         }
         None if class.same(*context.root_class) => writer.write_u8(CLASS_USER_ROOT),
+        None if context.root_levels.iter().any(|level| level.same(class)) => {
+            let position = context
+                .root_levels
+                .iter()
+                .position(|level| level.same(class))
+                .expect("internal: the level was just found among the root's levels");
+            writer.write_u8(CLASS_ROOT_LEVEL);
+            writer.write_u32(u32_field("root class level position", position));
+        }
         None => {
             writer.write_u8(CLASS_RECORD);
             writer.write_u32(context.table.object_id(context.heap, class));
@@ -1083,11 +1201,49 @@ fn encode_closure_record<'gc>(
 /// reachable, this answers the ordinary "not part of the declaration tree"
 /// error rather than writing a wrong id -- a refusal to snapshot, not a
 /// corrupt image.
+///
+/// A level a `<:` clause added (`newspeak-spec.pdf` §6.2) is a record like
+/// any other, except that it ends with the clause that added it, as the
+/// applying declaration's row id and the clause's position there: the
+/// clause's selector and compiled message are that row's, which
+/// `decode::verify_mixins` has reconciled with the row's own factory.
+///
+/// A level whose clause named a builtin (`<: Value`) has a record of its own
+/// shape (`MIXIN_BUILTIN`): its mixin is the builtin's, which no row
+/// describes, so it is named by builtin tag, and its enclosing object and
+/// declaring class are the builtin's too, so they are not written at all
+/// (`class_references`). What is left is the builtin, the superclass and the
+/// clause, which is never absent.
 fn encode_class_record<'gc>(
     writer: &mut Writer,
     data: &ClassData<'gc>,
     context: &EncodeContext<'_, 'gc>,
 ) -> Result<(), String> {
+    let applied_row = |applied: &crate::mixin::AppliedClause| {
+        context
+            .mixin_ids
+            .get(&crate::mixin::mixin_key(&applied.declaration))
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "image encoding cannot serialize a level added by class `{}`, \
+                     which is not part of the module's declaration tree",
+                    applied.declaration.name
+                )
+            })
+    };
+    if let Some(applied) = data
+        .applied_clause
+        .as_ref()
+        .filter(|applied| applied.named_builtin.is_some())
+    {
+        writer.write_u8(MIXIN_BUILTIN);
+        writer.write_u8(builtin_class_tag(named_builtin(applied)?));
+        encode_optional_class(writer, data.superclass.as_ref(), context);
+        writer.write_u32(applied_row(applied)?);
+        writer.write_u32(u32_field("mixin application clause index", applied.index));
+        return Ok(());
+    }
     let mixin = &data.application.mixin;
     let id = context
         .mixin_ids
@@ -1100,6 +1256,7 @@ fn encode_class_record<'gc>(
                 mixin.name
             )
         })?;
+    writer.write_u8(MIXIN_ROW);
     writer.write_u32(id);
     encode_optional_class(writer, data.superclass.as_ref(), context);
     // The enclosing object is an ordinary object, not a class, so it is
@@ -1112,6 +1269,14 @@ fn encode_class_record<'gc>(
         None => writer.write_boolean(false),
     }
     encode_optional_class(writer, data.declaring_class.as_ref(), context);
+    match &data.applied_clause {
+        Some(applied) => {
+            writer.write_boolean(true);
+            writer.write_u32(applied_row(applied)?);
+            writer.write_u32(u32_field("mixin application clause index", applied.index));
+        }
+        None => writer.write_boolean(false),
+    }
     Ok(())
 }
 
@@ -1197,6 +1362,10 @@ fn encode_frame<'gc>(
             writer.write_u8(FRAME_SUPERCLASS_MESSAGE);
             encode_class_tag(writer, *class, context);
         }
+        FrameKind::MixinApplicationMessage(level) => {
+            writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
+            encode_class_tag(writer, *level, context);
+        }
     }
     writer.write_boolean(snapshot.uncontinuable);
 }
@@ -1215,13 +1384,15 @@ pub fn encode_graph_section<'gc>(
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
-    let table = GraphTable::build(heap, roots, platform, root_class);
+    let root_levels = root_levels(heap, root_class);
+    let table = GraphTable::build(heap, roots, platform, root_class, &root_levels);
     let context = EncodeContext {
         table: &table,
         code_ids,
         platform,
         root_class: &root_class,
         mixin_ids,
+        root_levels: &root_levels,
         heap,
     };
     writer.write_u32(u32_field("object table entry count", table.objects().len()));

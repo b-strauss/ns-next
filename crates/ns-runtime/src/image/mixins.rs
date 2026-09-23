@@ -29,8 +29,8 @@ use ns_syntax::Span;
 use crate::bytecode::CompiledCode;
 use crate::heap::Heap;
 use crate::mixin::{
-    mixin_key, slot_accessors, Factory, MethodEntry, Mixin, MixinMethod, MixinSlot,
-    SuperclassClause,
+    mixin_key, slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod,
+    MixinSlot, SuperclassClause,
 };
 use crate::types::ClassReference;
 use crate::Symbol;
@@ -270,6 +270,24 @@ pub fn encode<'gc>(
             }
             None => writer.write_boolean(false),
         }
+        // §6.2's `<:` clauses, in declaration order. How each one's receiver
+        // is identified is not here: it is evaluated by the superclass
+        // clause's body, which answers the superclass and every named class
+        // together (`interpreter::nested::superclass_clause_expression`) --
+        // so the count here is also how many classes that body answers
+        // beside the superclass.
+        writer.write_u32(u32_field(
+            "mixin's mixin application count",
+            mixin.mixin_applications.len(),
+        ));
+        for clause in &mixin.mixin_applications {
+            writer.write_u32(symbols.intern(clause.selector.as_str()));
+            writer.write_boolean(clause.has_arguments);
+            write_optional_id(
+                writer,
+                clause.message_code.as_ref().map(|code| codes.id_of(code)),
+            );
+        }
         writer.write_u32(u32_field("mixin's method count", row.methods.len()));
         for method in &row.methods {
             writer.write_u32(symbols.intern(method.selector.as_str()));
@@ -350,6 +368,8 @@ pub struct MixinCode {
     pub initializer: Option<u32>,
     pub superclass_clause: Option<u32>,
     pub superclass_message: Option<u32>,
+    /// Each `<:` clause's message body, in clause order.
+    pub mixin_applications: Vec<Option<u32>>,
 }
 
 /// The decoded mixin table: the rebuilt declarations, in row-id order (which
@@ -387,12 +407,21 @@ struct RawRow {
     factory: Option<Factory>,
     has_initializer_expressions: bool,
     superclass: Option<SuperclassClause>,
+    mixin_applications: Vec<RawClause>,
     methods: Vec<(Symbol, AccessModifier, usize, u32)>,
     nested: Vec<u32>,
     class_side: Option<u32>,
     initializer: Option<u32>,
     superclass_clause: Option<u32>,
     superclass_message: Option<u32>,
+}
+
+/// A `<:` clause as read: its selector, whether its message takes arguments,
+/// and the code id of their body.
+struct RawClause {
+    selector: Symbol,
+    has_arguments: bool,
+    message: Option<u32>,
 }
 
 /// A slot as read: its name, mutability and accessibility.
@@ -473,6 +502,15 @@ fn read_row(
     } else {
         None
     };
+    let clause_count = reader.read_u32()? as usize;
+    let mut mixin_applications: Vec<RawClause> = reserve_for(clause_count, reader);
+    for _ in 0..clause_count {
+        mixin_applications.push(RawClause {
+            selector: read_symbol(reader, symbols)?,
+            has_arguments: reader.read_boolean()?,
+            message: read_optional(reader, |reader| read_code_id(reader, codes))?,
+        });
+    }
     let method_count = reader.read_u32()? as usize;
     let mut methods: Vec<(Symbol, AccessModifier, usize, u32)> = reserve_for(method_count, reader);
     for _ in 0..method_count {
@@ -499,6 +537,7 @@ fn read_row(
         factory,
         has_initializer_expressions,
         superclass,
+        mixin_applications,
         methods,
         nested,
         class_side,
@@ -734,6 +773,11 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             initializer: row.initializer,
             superclass_clause: row.superclass_clause,
             superclass_message: row.superclass_message,
+            mixin_applications: row
+                .mixin_applications
+                .iter()
+                .map(|clause| clause.message)
+                .collect(),
         });
         let nested = row
             .nested
@@ -756,9 +800,15 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             slots,
             factory: row.factory,
             superclass: row.superclass,
-            // A mixin table row carries no `<:` clause: the image format
-            // does not describe §6.2's applied levels yet.
-            mixin_applications: Vec::new(),
+            mixin_applications: row
+                .mixin_applications
+                .iter()
+                .map(|clause| MixinApplicationClause {
+                    selector: clause.selector,
+                    has_arguments: clause.has_arguments,
+                    message_code: clause.message.map(code_at),
+                })
+                .collect(),
             has_initializer_expressions: row.has_initializer_expressions,
             initializer_expressions: Vec::new(),
             nested,

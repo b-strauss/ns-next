@@ -970,11 +970,12 @@ impl<'gc> Mutator<'gc> {
             } => {
                 let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
+                let kind = instantiate::clause_message_frame_kind(level, &then);
                 self.push(
                     ActivationHeader {
                         receiver: then.instance,
                         current_class: Some(level),
-                        kind: FrameKind::SuperclassMessage(level),
+                        kind,
                         slot_base: 0, // a clause message never contains InitializeSlot
                         code,
                         then: Continuation::Instantiate(then),
@@ -1117,14 +1118,18 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Whether a `^` aimed at `activation` ends at `activation`: a method's
-    /// does, and a superclass clause's or its message's. An initializer catches
+    /// does, and a superclass clause's or its message's, a `<:` clause's
+    /// message included. An initializer catches
     /// none -- a `^` into a running one escapes, the known gap in
     /// `docs/design/execution.md`, "Non-local return" -- and a block's `^`
     /// always targets its home, never the block.
     pub(crate) fn catches_return(&self, activation: ActivationReference) -> bool {
         matches!(
             self.heap.activation_kind(activation),
-            FrameKind::Method(_) | FrameKind::SuperclassClause(_) | FrameKind::SuperclassMessage(_)
+            FrameKind::Method(_)
+                | FrameKind::SuperclassClause(_)
+                | FrameKind::SuperclassMessage(_)
+                | FrameKind::MixinApplicationMessage(_)
         )
     }
 
@@ -1418,7 +1423,7 @@ impl<'gc> Mutator<'gc> {
         enclosing: Option<ObjectReference<'gc>>,
         declaring_class: Option<ClassReference<'gc>>,
         superclass: Option<ClassReference<'gc>>,
-        clause: crate::mixin::MixinApplicationClause,
+        clause: crate::mixin::AppliedClause,
     ) -> ClassReference<'gc> {
         let mut data = ClassData::new(application, enclosing, declaring_class, superclass, None);
         data.applied_clause = Some(clause);

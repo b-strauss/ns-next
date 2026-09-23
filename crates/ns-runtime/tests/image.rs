@@ -328,6 +328,7 @@ fn write_mixin_row_with_slots(
     writer.write_boolean(false); // no factory
     writer.write_boolean(false); // no initExprs
     writer.write_boolean(false); // no superclass clause
+    writer.write_u32(0); // no mixin applications
     writer.write_u32(methods.len() as u32);
     for (selector, code) in methods {
         writer.write_u32(*selector);
@@ -1492,16 +1493,16 @@ fn a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow() {
 fn a_mixin_table_with_no_root_row_is_a_decode_error() {
     let mut interpreter = Interpreter::bootstrap();
     let empty = mixins::Decoded::empty();
-    interpreter.enter(
-        |mutator| match decode::build_root_class(mutator, &empty, None) {
+    interpreter.enter(|mutator| {
+        match decode::build_root_class(mutator, &empty, &decode::RootSection::default()) {
             Err(decode::DecodeError::NotAClass) => assert_eq!(
                 decode::DecodeError::NotAClass.to_string(),
                 "the image's mixin table describes no root class"
             ),
             Err(error) => panic!("expected NotAClass, got a different error: {error}"),
             Ok(_) => panic!("expected NotAClass, got Ok"),
-        },
-    );
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1771,6 +1772,7 @@ fn round_trip_graph(
         let mut reader = decode::Reader::new(&bytes);
         let code_table = decode::decode_code_table(&mut reader, &symbol_table).expect("code table");
         let mixin_order = mixin_preorder(mutator.heap(), class);
+        let root_levels = encode::root_levels(mutator.heap(), class);
         let decoded = {
             let mut context = decode::DecodeContext {
                 mutator,
@@ -1778,6 +1780,7 @@ fn round_trip_graph(
                 codes: &code_table.codes,
                 platform: platform_value,
                 mixins: &mixin_order,
+                root_levels: &root_levels,
             };
             decode::decode_graph_section(&mut reader, &mut context, &symbol_table).expect("graph")
         };
@@ -2139,7 +2142,13 @@ struct GraphFixture {
 
 impl GraphFixture {
     fn new() -> GraphFixture {
-        let (mut interpreter, class) = load(EMPTY);
+        GraphFixture::with_source(EMPTY)
+    }
+
+    /// A fixture around `source`'s declarations, for a hand-crafted section
+    /// that names rows `EMPTY` does not have.
+    fn with_source(source: &str) -> GraphFixture {
+        let (mut interpreter, class) = load(source);
         let platform = interpreter.platform();
         let mixins = interpreter
             .enter(|mutator| mixin_preorder(mutator.heap(), class_reference(mutator, &class)));
@@ -2175,6 +2184,7 @@ impl GraphFixture {
         self.interpreter.enter(|mutator| {
             let class = class_reference(mutator, class);
             let platform = mutator.fetch(platform);
+            let root_levels = encode::root_levels(mutator.heap(), class);
             let decoded = {
                 let mut context = decode::DecodeContext {
                     mutator,
@@ -2182,6 +2192,7 @@ impl GraphFixture {
                     codes,
                     platform,
                     mixins,
+                    root_levels: &root_levels,
                 };
                 decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, symbols)
             };
@@ -2390,7 +2401,8 @@ fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
 /// One class record: its own `.class` (the builtin `Object`, as
 /// `Mutator::new_class_object` gives every class object), an identity
 /// hash, the body tag, the mixin-table row id, then the three references
-/// `references` writes.
+/// `references` writes, and no applied clause -- an ordinary class, not a
+/// level a mixin application added.
 fn class_record(
     writer: &mut encode::Writer,
     mixin_id: u32,
@@ -2400,8 +2412,10 @@ fn class_record(
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
+    writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
     writer.write_u32(mixin_id);
     references(writer);
+    writer.write_boolean(false); // not an applied level
 }
 
 /// A graph section holding one class record and no roots.
@@ -2728,12 +2742,14 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let symbol_table = symbols.build();
         assert!(before > 0 && graph.len() > 8);
         let mixin_order = mixin_preorder(mutator.heap(), class);
+        let root_levels = encode::root_levels(mutator.heap(), class);
         let mut context = decode::DecodeContext {
             mutator,
             root_class: &class,
             codes: &[],
             platform,
             mixins: &mixin_order,
+            root_levels: &root_levels,
         };
         for cut in 1..graph.len() {
             let mut reader = decode::Reader::new(&graph[..cut]);
@@ -2866,7 +2882,7 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
 /// assigns, for the two readers of a graph section below.
 fn unknown_frame_kind_graph() -> Vec<u8> {
     let mut writer = one_frame_prefix();
-    writer.write_u8(FRAME_SUPERCLASS_MESSAGE + 1); // one past the last frame kind
+    writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE + 1); // one past the last frame kind
 
     // Padded past the shortest frame record the wire admits, so
     // `bounded_count` admits the announced frame and the kind tag itself is
@@ -2884,7 +2900,7 @@ fn an_unknown_frame_kind_tag_is_refused() {
         GraphFixture::new().decode_error(&unknown_frame_kind_graph()),
         decode::DecodeError::InvalidTag {
             what: "frame kind",
-            tag: FRAME_SUPERCLASS_MESSAGE + 1
+            tag: FRAME_MIXIN_APPLICATION_MESSAGE + 1
         }
     );
 }
@@ -2924,7 +2940,10 @@ fn inspect_refuses_an_unknown_frame_kind_tag() {
         Ok(_) => panic!("inspect accepted an unknown frame kind tag"),
         Err(error) => error,
     };
-    let expected = format!("invalid frame kind tag {}", FRAME_SUPERCLASS_MESSAGE + 1);
+    let expected = format!(
+        "invalid frame kind tag {}",
+        FRAME_MIXIN_APPLICATION_MESSAGE + 1
+    );
     assert_eq!(error, expected);
     assert_eq!(load_error(&bytes), expected);
 }
@@ -6692,9 +6711,11 @@ fn a_class_object_whose_own_class_is_another_record_is_refused() {
     writer.write_u32(1);
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
+    writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
     writer.write_u32(0); // mixin id
     no_class_references(&mut writer);
-    // Object 1: an ordinary class record.
+    writer.write_boolean(false); // not an applied level
+                                 // Object 1: an ordinary class record.
     class_record(&mut writer, 0, no_class_references);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
@@ -7942,4 +7963,917 @@ fn a_decoded_metaclass_is_rebuilt_with_no_superclass_application() {
              dispatch::next_level rests on, not an oversight"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// Mixin applications (`newspeak-spec.pdf` §6.2) on the wire: the `<:`
+// clauses a mixin-table row carries, the applied levels a class record
+// describes, and the frame a `<:` clause message runs in.
+// ---------------------------------------------------------------------------
+
+/// Every part of a mixin application the image has to carry: two `<:`
+/// clauses stacked on a superclass whose message takes arguments, the first
+/// clause's own message taking arguments computed from the applying
+/// declaration's factory parameter, and a super chain through every level.
+const MIXIN_APPLICATION_MODULE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Host usingPlatform: p = Object new () (
+        public class Base withBase: b = Object new (| base = b. |) (
+            public fromBase = ( ^base )
+            public chain = ( ^'Base' )
+        )
+        public class Marker withMark: m = Object new (| mark = m. |) (
+            public fromMarker = ( ^mark )
+            public chain = ( ^'Marker ', super chain )
+        )
+        public class Stamp = Object new () (
+            public chain = ( ^'Stamp ', super chain )
+        )
+        public class Applied from: x = Base withBase: x + 1 <: Marker withMark: x * 10 <: Stamp (
+        ) (
+            public chain = ( ^'Applied ', super chain )
+        )
+    ) : ()
+"};
+
+/// The integer `root` holds, read in a fresh entry.
+fn integer_of(interpreter: &mut Interpreter, root: &Root) -> i64 {
+    interpreter.enter(|mutator| match mutator.fetch(root) {
+        Value::SmallInteger(integer) => integer,
+        _ => panic!("expected a SmallInteger"),
+    })
+}
+
+/// The text of the string `root` holds, read in a fresh entry.
+fn text_of(interpreter: &mut Interpreter, root: &Root) -> String {
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(root);
+        string_contents(mutator.heap(), &value)
+    })
+}
+
+/// `Applied from: factory_argument` on `host`, and what the instance answers
+/// to each of the three selectors its levels define between them.
+fn applied_answers(
+    interpreter: &mut Interpreter,
+    host: &Root,
+    factory_argument: i64,
+) -> (i64, i64, String) {
+    let applied_class = expect_ok(
+        interpreter.send(host, Symbol::intern("Applied"), &[]),
+        "Applied",
+    );
+    let argument = interpreter.stash(Value::SmallInteger(factory_argument));
+    let instance = expect_ok(
+        interpreter.send(&applied_class, Symbol::intern("from:"), &[argument]),
+        "Applied from:",
+    );
+    answers_of(interpreter, &instance)
+}
+
+fn answers_of(interpreter: &mut Interpreter, instance: &Root) -> (i64, i64, String) {
+    let from_base = expect_ok(
+        interpreter.send(instance, Symbol::intern("fromBase"), &[]),
+        "fromBase",
+    );
+    let from_marker = expect_ok(
+        interpreter.send(instance, Symbol::intern("fromMarker"), &[]),
+        "fromMarker",
+    );
+    let chain = expect_ok(
+        interpreter.send(instance, Symbol::intern("chain"), &[]),
+        "chain",
+    );
+    (
+        integer_of(interpreter, &from_base),
+        integer_of(interpreter, &from_marker),
+        text_of(interpreter, &chain),
+    )
+}
+
+/// A snapshot taken after the applied levels exist carries them as class
+/// records: the reloaded instance still answers through every level, and a
+/// fresh instantiation through the reloaded class object still evaluates each
+/// level's own clause message with the applying class's factory argument.
+#[test]
+fn a_snapshot_of_a_world_with_applied_levels_loads_and_runs() {
+    let (mut interpreter, class, platform, host) = instantiated_world(MIXIN_APPLICATION_MODULE);
+    let expected = (5, 40, "Applied Stamp Marker Base".to_string());
+    assert_eq!(applied_answers(&mut interpreter, &host, 4), expected);
+    let applied_class = expect_ok(
+        interpreter.send(&host, Symbol::intern("Applied"), &[]),
+        "Applied",
+    );
+    let argument = interpreter.stash(Value::SmallInteger(4));
+    let instance = expect_ok(
+        interpreter.send(&applied_class, Symbol::intern("from:"), &[argument]),
+        "Applied from:",
+    );
+    let bytes = snapshot_world(
+        &mut interpreter,
+        MIXIN_APPLICATION_MODULE,
+        &class,
+        &platform,
+        &[host, instance],
+    );
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let host = loaded.roots[0].clone();
+    let instance = loaded.roots[1].clone();
+    assert_eq!(answers_of(&mut loaded.interpreter, &instance), expected);
+    assert_eq!(
+        applied_answers(&mut loaded.interpreter, &host, 2),
+        (3, 20, "Applied Stamp Marker Base".to_string())
+    );
+    loaded.interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let heap = mutator.heap();
+        let applied = class_of(heap, &instance);
+        let stamp_level = heap.class_superclass(applied).expect("a superclass");
+        let marker_level = heap.class_superclass(stamp_level).expect("a superclass");
+        let base = heap.class_superclass(marker_level).expect("a superclass");
+        assert_eq!(class_name(heap, stamp_level), "Stamp");
+        assert_eq!(class_name(heap, marker_level), "Marker");
+        assert_eq!(class_name(heap, base), "Base");
+        let marker_clause = heap
+            .class_applied_clause(marker_level)
+            .expect("the Marker level carries the clause that added it");
+        assert_eq!(marker_clause.selector.as_str(), "withMark:");
+        assert!(marker_clause.has_arguments);
+        assert!(heap.class_applied_clause(stamp_level).is_some());
+        assert!(heap.class_applied_clause(base).is_none());
+    });
+}
+
+/// A stateless binary carries no class record at all, so the loaded world
+/// rebuilds every level from the row's clauses the first time the accessor
+/// runs the clause -- which answers one class per clause, and a decoded row
+/// that lost its clauses would refuse that answer.
+#[test]
+fn a_binary_of_a_module_applying_mixins_builds_its_levels_after_loading() {
+    let (mut interpreter, class) = load(MIXIN_APPLICATION_MODULE);
+    let binary = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        image::build(
+            mutator.heap(),
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            Symbol::intern("Applied"),
+        )
+        .expect("build")
+    });
+    let mut loaded = image::load(&binary).expect("load");
+    let platform = loaded.interpreter.platform();
+    let host = expect_ok(
+        loaded
+            .interpreter
+            .instantiate(&loaded.root_class, std::slice::from_ref(&platform)),
+        "instantiate Host",
+    );
+    assert_eq!(
+        applied_answers(&mut loaded.interpreter, &host, 4),
+        (5, 40, "Applied Stamp Marker Base".to_string())
+    );
+}
+
+/// A root class has no enclosing object to evaluate a `<:` receiver in, so
+/// its clause can name only a builtin -- the shape a module that is a value
+/// takes (`class M = Object <: Value`). Its level applies a builtin's mixin,
+/// which no mixin-table row describes, so the root-class section names it the
+/// way it names the root's superclass: by builtin tag.
+#[test]
+fn a_root_class_applying_a_builtin_mixin_round_trips() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value () (
+            public answer = ( ^42 )
+        )
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let (binary, snapshot) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let origin = Origin::File(PathBuf::from("t.ns"));
+        let binary = image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("answer"),
+        )
+        .expect("build");
+        let platform = mutator.fetch(&platform);
+        let snapshot =
+            image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
+        (binary, snapshot)
+    });
+    for bytes in [binary, snapshot] {
+        let mut loaded = image::load(&bytes).expect("load");
+        loaded.interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let root = class_reference(mutator, &loaded.root_class);
+            let level = heap.class_superclass(root).expect("a superclass");
+            let value = mutator.builtin_class(BuiltinClass::Value);
+            assert!(Rc::ptr_eq(
+                &application_of(heap, level).mixin,
+                &application_of(heap, value).mixin
+            ));
+            let clause = heap
+                .class_applied_clause(level)
+                .expect("the level carries the root's clause");
+            assert_eq!(clause.selector, Symbol::NEW);
+            assert_eq!(
+                heap.class_builtin(heap.class_superclass(level).expect("a superclass")),
+                Some(BuiltinClass::Object)
+            );
+            assert!(heap.class_inherits_value(root));
+        });
+        let instance = expect_ok(
+            loaded.interpreter.instantiate(&loaded.root_class, &[]),
+            "instantiate Root",
+        );
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&instance, Symbol::intern("answer"), &[]),
+            "answer",
+        );
+        assert_eq!(integer_of(&mut loaded.interpreter, &answer), 42);
+    }
+}
+
+/// A `<:` clause message is evaluated in an activation of its own, and a
+/// block written in it captures that activation. The block outlives it --
+/// the applied level's initializer keeps it in a slot -- so a snapshot holds
+/// the dead activation as a frame, and loading reconciles the frame against
+/// the body that ran in it: the clause's message body, which is neither the
+/// applying class's superclass-clause message nor anything else its mixin
+/// carries.
+#[test]
+fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Host usingPlatform: p = Object new () (
+            public class Keeper withBlock: block = Object new (| kept = block. |) (
+                public run = ( ^kept value )
+            )
+            public class Holder from: x = Object new <: Keeper withBlock: [x * 3] () ()
+        ) : ()
+    "};
+    let (mut interpreter, class, platform, host) = instantiated_world(source);
+    let holder_class = expect_ok(
+        interpreter.send(&host, Symbol::intern("Holder"), &[]),
+        "Holder",
+    );
+    let argument = interpreter.stash(Value::SmallInteger(5));
+    let holder = expect_ok(
+        interpreter.send(&holder_class, Symbol::intern("from:"), &[argument]),
+        "Holder from:",
+    );
+    let bytes = snapshot_world(&mut interpreter, source, &class, &platform, &[holder]);
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let holder = loaded.roots[0].clone();
+    let answer = expect_ok(
+        loaded.interpreter.send(&holder, Symbol::intern("run"), &[]),
+        "run",
+    );
+    assert_eq!(integer_of(&mut loaded.interpreter, &answer), 15);
+
+    let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
+    assert!(
+        report.contains("mixin application message of"),
+        "inspect names the frame's kind:\n{report}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mixin applications from hand-crafted bytes: every id, tag and position a
+// level's description holds is checked before it is used.
+// ---------------------------------------------------------------------------
+
+/// The smallest module whose mixin table has a row with a `<:` clause.
+const APPLYING_MODULE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Host = Object new () (
+        class Marker = Object new () ()
+        class Applied = Object new <: Marker () ()
+    ) : ()
+"};
+
+/// The row id of the declaration named `name` in `fixture`'s mixin table.
+fn row_named(fixture: &GraphFixture, name: &str) -> u32 {
+    fixture
+        .mixins
+        .iter()
+        .position(|mixin| mixin.name.as_str() == name)
+        .expect("the fixture declares it") as u32
+}
+
+/// One class record describing a level a `<:` clause added: it applies row
+/// `mixin_row`'s mixin over the object-table record `superclass` (or no
+/// superclass), and was added by clause `clause` of row `applying_row`.
+fn applied_level_record(
+    writer: &mut encode::Writer,
+    mixin_row: u32,
+    superclass: Option<u32>,
+    (applying_row, clause): (u32, u32),
+) {
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_u32(7); // identity hash
+    writer.write_u8(OBJECT_CLASS); // object body: Class
+    writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
+    writer.write_u32(mixin_row);
+    match superclass {
+        Some(id) => {
+            writer.write_boolean(true);
+            writer.write_u8(CLASS_RECORD); // class tag: object-table record
+            writer.write_u32(id);
+        }
+        None => writer.write_boolean(false),
+    }
+    writer.write_boolean(false); // no enclosing object
+    writer.write_boolean(false); // no declaring class
+    writer.write_boolean(true); // an applied level
+    writer.write_u32(applying_row);
+    writer.write_u32(clause);
+}
+
+/// A graph section of exactly `records`, written by `write`, and no roots.
+fn class_records(count: u32, write: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, count, 0);
+    write(&mut writer);
+    writer.write_u32(0); // no roots
+    writer.into_bytes()
+}
+
+#[test]
+fn a_well_formed_applied_level_record_decodes_with_its_clause() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let applied = row_named(&fixture, "Applied");
+    let bytes = class_records(1, |writer| {
+        applied_level_record(writer, marker, None, (applied, 0));
+    });
+    fixture.decoded(&bytes, "an applied level", |heap, graph| {
+        let clause = heap
+            .class_applied_clause(graph.objects[0])
+            .expect("the record's clause is attached to the level");
+        assert_eq!(clause.selector, Symbol::NEW);
+        assert_eq!(class_name(heap, graph.objects[0]), "Marker");
+    });
+}
+
+#[test]
+fn an_applied_levels_applying_row_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let bytes = class_records(1, |writer| {
+        applied_level_record(writer, marker, None, (99, 0));
+    });
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::BadMixinId(99)
+    );
+}
+
+/// A level's clause is where its selector and message come from, so a
+/// position past the applying row's clauses -- or any position in a row that
+/// declares none -- names nothing to initialize it by.
+#[test]
+fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let applied = row_named(&fixture, "Applied");
+    for (row, index) in [(applied, 1), (marker, 0), (applied, u32::MAX)] {
+        let bytes = class_records(1, |writer| {
+            applied_level_record(writer, marker, None, (row, index));
+        });
+        let error = fixture.decode_error(&bytes);
+        assert_eq!(
+            error,
+            decode::DecodeError::BadMixinApplicationClause { row, index }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the image names mixin application clause {index} of mixin row {row}, which the \
+                 row does not declare in that place"
+            )
+        );
+    }
+}
+
+/// A level's application is derived from the one below it, so levels whose
+/// superclass links close on themselves -- directly, or through another
+/// level -- have no order in which they could be rebuilt. The rebuild refuses
+/// them rather than walking the cycle forever.
+#[test]
+fn applied_levels_inheriting_from_each_other_in_a_cycle_are_refused() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let applied = row_named(&fixture, "Applied");
+    let through_another = class_records(2, |writer| {
+        applied_level_record(writer, marker, Some(1), (applied, 0));
+        applied_level_record(writer, applied, Some(0), (applied, 0));
+    });
+    let directly = class_records(1, |writer| {
+        applied_level_record(writer, marker, Some(0), (applied, 0));
+    });
+    for bytes in [through_another, directly] {
+        assert_eq!(
+            fixture.decode_error(&bytes),
+            decode::DecodeError::SuperclassCycle
+        );
+    }
+}
+
+#[test]
+fn an_unknown_mixin_reference_tag_is_a_decode_error_not_a_panic() {
+    let bytes = class_records(1, |writer| {
+        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        writer.write_u32(7); // identity hash
+        writer.write_u8(OBJECT_CLASS); // object body: Class
+        writer.write_u8(MIXIN_BUILTIN + 1); // one past the last mixin reference
+        writer.write_u32(0);
+        no_class_references(writer);
+        writer.write_boolean(false);
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::InvalidTag {
+            what: "mixin reference",
+            tag: MIXIN_BUILTIN + 1
+        }
+    );
+}
+
+/// A class record for a level applying the mixin of the builtin `kind_tag`
+/// names, with no superclass, added by clause `index` of row `row`. Such a
+/// record carries no enclosing object or declaring class: both are the
+/// builtin's.
+fn builtin_mixin_record(kind_tag: u8, (row, index): (u32, u32)) -> Vec<u8> {
+    class_records(1, |writer| {
+        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        writer.write_u32(7); // identity hash
+        writer.write_u8(OBJECT_CLASS); // object body: Class
+        writer.write_u8(MIXIN_BUILTIN); // mixin reference: a builtin's
+        writer.write_u8(kind_tag);
+        writer.write_boolean(false); // no superclass
+        writer.write_u32(row);
+        writer.write_u32(index);
+    })
+}
+
+/// A `<:` clause naming a builtin gives its level that builtin's mixin, which
+/// the record names by tag, and the builtin's own enclosing object and
+/// declaring class -- the positive side of the refusals below.
+#[test]
+fn a_level_applying_a_builtins_mixin_decodes() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let applied = row_named(&fixture, "Applied");
+    let bytes = builtin_mixin_record(encode::builtin_class_tag(BuiltinClass::Value), (applied, 0));
+    fixture.decoded(&bytes, "a level applying Value", |heap, graph| {
+        let level = graph.objects[0];
+        assert_eq!(class_name(heap, level), "Value");
+        assert!(heap.class_applied_clause(level).is_some());
+        assert!(
+            heap.class_enclosing(level).is_some() && heap.class_declaring(level).is_some(),
+            "the level is enclosed where Value is declared, in the loading bootstrap"
+        );
+    });
+}
+
+/// The clause of a level applying a builtin is checked like any other
+/// level's: its applying row and its position there.
+#[test]
+fn a_builtin_levels_clause_is_checked_like_any_levels() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let value = encode::builtin_class_tag(BuiltinClass::Value);
+    let applied = row_named(&fixture, "Applied");
+    assert_eq!(
+        fixture.decode_error(&builtin_mixin_record(value, (99, 0))),
+        decode::DecodeError::BadMixinId(99)
+    );
+    assert_eq!(
+        fixture.decode_error(&builtin_mixin_record(value, (applied, 3))),
+        decode::DecodeError::BadMixinApplicationClause {
+            row: applied,
+            index: 3
+        }
+    );
+}
+
+/// The VM mirror's class and `Top` are refused wherever a program names a
+/// class, and a level's builtin mixin is such a place: a level applying the
+/// mirror's mixin would hand its instances every primitive.
+#[test]
+fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let applied = row_named(&fixture, "Applied");
+    for kind in [BuiltinClass::VmMirror, BuiltinClass::Top] {
+        let tag = encode::builtin_class_tag(kind);
+        assert_eq!(
+            fixture.decode_error(&builtin_mixin_record(tag, (applied, 0))),
+            decode::DecodeError::InvalidTag {
+                what: "builtin class a program may name",
+                tag
+            }
+        );
+    }
+}
+
+/// Tag 5 was the class record before its mixin became a tagged reference;
+/// a stale record's bytes meet an unknown tag instead of being read in the
+/// new layout.
+#[test]
+fn the_retired_class_record_tag_is_refused() {
+    let bytes = class_records(1, |writer| {
+        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        writer.write_u32(7); // identity hash
+        writer.write_u8(5); // the retired class-record tag
+        writer.write_u32(0); // its bare mixin row id
+        no_class_references(writer);
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::InvalidTag {
+            what: "object body",
+            tag: 5
+        }
+    );
+}
+
+#[test]
+fn a_root_level_class_tag_past_the_roots_levels_is_a_decode_error_not_a_panic() {
+    let bytes = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
+        writer.write_u8(CLASS_ROOT_LEVEL); // class tag: a level of the root
+        writer.write_u32(0); // EMPTY's root applies no mixin
+    });
+    let mut bytes = bytes;
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
+    let error = GraphFixture::new().decode_error(&bytes);
+    assert_eq!(error, decode::DecodeError::BadRootLevel(0));
+    assert_eq!(error.to_string(), "root class level 0 out of range");
+}
+
+/// A root level exists before the graph does, so the graph names it by its
+/// position among the root's levels, and decodes that back to the very class
+/// object the root-class section rebuilt.
+#[test]
+fn a_root_level_class_tag_names_the_root_classs_own_level() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value () ()
+    "};
+    let mut bytes = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
+        writer.write_u8(CLASS_ROOT_LEVEL); // class tag: a level of the root
+        writer.write_u32(0);
+    });
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
+                                                  // A decoded graph's handles cannot leave the entry that decoded it, so
+                                                  // the element is compared with the root's level by a value both sides can
+                                                  // answer: the identity hash, assigned here, before the decode, to the
+                                                  // level the fixture's own root class sits on.
+    let mut fixture = GraphFixture::with_source(source);
+    let class = fixture.class.clone();
+    let level_hash = fixture.interpreter.enter(|mutator| {
+        let root = class_reference(mutator, &class);
+        let level = mutator
+            .heap()
+            .class_superclass(root)
+            .expect("the root's level");
+        mutator.heap_mut().ensure_identity_hash(level)
+    });
+    fixture.decoded(&bytes, "a root level", |heap, graph| {
+        let element = heap
+            .array_elements(graph.objects[0])
+            .expect("an array")
+            .first()
+            .copied()
+            .expect("one element");
+        let Value::Object(level) = element else {
+            panic!("the element is a class object")
+        };
+        assert_eq!(heap.identity_hash(level), level_hash);
+        assert!(heap.class_applied_clause(level).is_some());
+    });
+}
+
+/// The frame kind of a `<:` clause message names the level the clause added
+/// -- its body is that level's clause's -- and decodes back to that kind.
+#[test]
+fn the_mixin_application_message_frame_kind_decodes() {
+    let mut writer = one_frame_prefix();
+    writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_boolean(false); // continuable
+    writer.write_u32(0); // no roots
+    let bytes = writer.into_bytes();
+    GraphFixture::new().decoded(
+        &bytes,
+        "a mixin application message frame",
+        |heap, graph| {
+            let frame = graph.frames.first().expect("the one frame");
+            assert!(matches!(
+                heap.frame_kind(*frame),
+                FrameKind::MixinApplicationMessage(_)
+            ));
+        },
+    );
+}
+
+/// The root-class section's bytes for a root that inherits from nothing, then
+/// `levels` as (clause position, builtin tag) pairs.
+fn root_section_bytes(levels: &[(u32, u8)]) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    writer.write_boolean(false); // no superclass
+    writer.write_u32(levels.len() as u32);
+    for (index, tag) in levels {
+        writer.write_u32(*index);
+        writer.write_u8(*tag);
+    }
+    writer.into_bytes()
+}
+
+/// The root's levels are listed in clause order, at most one per clause, and
+/// only for clauses row 0 declares -- which is also what bounds the count
+/// before anything is reserved for it.
+#[test]
+fn a_root_level_naming_a_clause_out_of_place_is_refused() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value <: Value () ()
+    "};
+    let decoded = mixin_table_of(&snapshot_of(source));
+    let value = encode::builtin_class_tag(BuiltinClass::Value);
+    let read = |levels: &[(u32, u8)]| {
+        decode::decode_root_section(
+            &mut decode::Reader::new(&root_section_bytes(levels)),
+            &decoded,
+        )
+    };
+    assert_eq!(
+        read(&[(0, value), (1, value)]).expect("both clauses, in order"),
+        decode::RootSection {
+            superclass: None,
+            levels: vec![(0, BuiltinClass::Value), (1, BuiltinClass::Value)],
+        }
+    );
+    for (levels, index) in [
+        (vec![(2, value)], 2),
+        (vec![(1, value), (0, value)], 0),
+        (vec![(0, value), (0, value)], 0),
+    ] {
+        assert_eq!(
+            read(&levels),
+            Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index })
+        );
+    }
+    let mut huge = encode::Writer::new();
+    huge.write_boolean(false);
+    huge.write_u32(u32::MAX); // a count no clause list could back
+    assert_eq!(
+        decode::decode_root_section(&mut decode::Reader::new(&huge.into_bytes()), &decoded),
+        Err(decode::DecodeError::UnexpectedEndOfFile)
+    );
+    let mirror = encode::builtin_class_tag(BuiltinClass::VmMirror);
+    assert_eq!(
+        read(&[(0, mirror)]),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: mirror
+        })
+    );
+}
+
+/// `MIXIN_APPLICATION_MODULE`'s `Applied`, edited by `edit`, reloaded as a
+/// mixin table: what `verify_mixins` says about it.
+fn verify_doctored_applied(edit: impl FnOnce(Mixin) -> Mixin) -> Result<(), decode::DecodeError> {
+    let (mut interpreter, class) = load(MIXIN_APPLICATION_MODULE);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_nested(mixin_of(mutator.heap(), class), "Applied", edit);
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        decode::verify_mixins(&decoded_mixins)
+    })
+}
+
+/// §6.2 evaluates a `<:` clause's message with the applying declaration's
+/// factory arguments, so its body must take exactly that many. The walk
+/// re-checks it at run time as a Newspeak error; the load refuses an image
+/// that breaks it outright, before anything runs.
+#[test]
+fn a_clause_message_whose_arity_disagrees_with_the_factory_is_refused_at_load() {
+    let error = verify_doctored_applied(|applied| {
+        let mut clauses = applied.mixin_applications.clone();
+        let message = clauses[0].message_code.clone().expect("withMark: x * 10");
+        clauses[0].message_code = Some(Rc::new(CompiledCode {
+            argument_count: message.argument_count + 1,
+            register_count: message.register_count + 1,
+            ..(*message).clone()
+        }));
+        Mixin {
+            mixin_applications: clauses,
+            ..applied
+        }
+    })
+    .expect_err("the message takes one argument too many");
+    assert_eq!(
+        error,
+        decode::DecodeError::CodeArityMismatch {
+            what: "mixin application clause 1 message".to_string(),
+            parameters: 1,
+            argument_count: 2,
+        }
+    );
+
+    let wrong_kind = verify_doctored_applied(|applied| {
+        let mut clauses = applied.mixin_applications.clone();
+        clauses[0].message_code = applied.initializer_code.clone();
+        Mixin {
+            mixin_applications: clauses,
+            ..applied
+        }
+    });
+    assert_eq!(
+        wrong_kind,
+        Err(decode::DecodeError::WrongCodeKind {
+            expected: "superclass clause message"
+        })
+    );
+}
+
+/// A clause whose message passes arguments in an image with no body for
+/// them would panic on the first instantiation; the load refuses it.
+#[test]
+fn a_clause_message_with_arguments_and_no_body_is_refused_at_load() {
+    let error = verify_doctored_applied(|applied| {
+        let mut clauses = applied.mixin_applications.clone();
+        clauses[0].message_code = None;
+        Mixin {
+            mixin_applications: clauses,
+            ..applied
+        }
+    })
+    .expect_err("no message body");
+    assert_eq!(error, decode::DecodeError::MissingMixinApplicationMessage);
+    assert_eq!(
+        error.to_string(),
+        "the image's mixin application clause passes factory arguments it has no compiled code for"
+    );
+}
+
+/// `<:` follows a superclass clause in the grammar, and it is the superclass
+/// clause's body that evaluates every `<:` receiver; a row with clauses but
+/// no superclass clause describes a declaration no source has.
+#[test]
+fn a_row_applying_mixins_without_a_superclass_clause_is_refused_at_load() {
+    let error = verify_doctored_applied(|applied| Mixin {
+        superclass: None,
+        superclass_clause_code: None,
+        superclass_message_code: None,
+        ..applied
+    })
+    .expect_err("clauses with no superclass clause");
+    assert_eq!(
+        error,
+        decode::DecodeError::MixinApplicationWithoutSuperclass
+    );
+}
+
+/// A row's clause names its message body by code id, checked against the
+/// code table like every other id the row names.
+#[test]
+fn a_clause_message_code_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1); // one row
+    writer.write_u32(0); // name
+    writer.write_u8(mixins::access_tag(AccessModifier::Protected));
+    writer.write_u32(0); // span.start
+    writer.write_u32(0); // span.end
+    writer.write_u32(0); // no slots
+    writer.write_boolean(false); // no factory
+    writer.write_boolean(false); // no initExprs
+    writer.write_boolean(false); // no superclass clause
+    writer.write_u32(1); // one mixin application
+    writer.write_u32(0); // its selector
+    writer.write_boolean(true); // its message takes arguments
+    writer.write_boolean(true); // ... compiled as
+    writer.write_u32(5); // ... code 5, of an empty code table
+    let table = table_with(&["X"]);
+    assert_eq!(
+        mixins::decode(&mut decode::Reader::new(&writer.into_bytes()), &table, &[]).map(|_| ()),
+        Err(decode::DecodeError::BadCodeId(5))
+    );
+}
+
+/// `inspect` shows everything the format now says about a mixin
+/// application: each row's clauses and their message bodies, which clause
+/// added a level, and the root's own levels.
+#[test]
+fn inspect_prints_the_mixin_applications_an_image_describes() {
+    let (mut interpreter, class, platform, host) = instantiated_world(MIXIN_APPLICATION_MODULE);
+    let expected = (5, 40, "Applied Stamp Marker Base".to_string());
+    assert_eq!(applied_answers(&mut interpreter, &host, 4), expected);
+    let bytes = snapshot_world(
+        &mut interpreter,
+        MIXIN_APPLICATION_MODULE,
+        &class,
+        &platform,
+        &[host],
+    );
+    let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
+    for expected in [
+        "mixin application 1  withMark: -> code ",
+        "mixin application 2  new\n",
+        "Applied  mixin application clause 1 message",
+        "applied by clause 0 of row ",
+        "applied by clause 1 of row ",
+    ] {
+        assert!(
+            report.contains(expected),
+            "inspect prints `{expected}`:\n{report}"
+        );
+    }
+
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value () ()
+    "};
+    let report =
+        image::inspect::render(&image::inspect::inspect(&snapshot_of(source)).expect("inspect"));
+    assert!(
+        report.contains("superclass Object, applies Value (clause 0)"),
+        "inspect prints the root's levels:\n{report}"
+    );
+}
+
+/// A nested class's `<:` clause can name a builtin too, and its level is then
+/// a class record whose mixin no row describes: the record names it by
+/// builtin tag, and the reloaded level applies the loading bootstrap's own
+/// builtin mixin.
+#[test]
+fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Host usingPlatform: p = Object new () (
+            public class Point = Object new <: Value () (
+                public answer = ( ^7 )
+            )
+        ) : ()
+    "};
+    let (mut interpreter, class, platform, host) = instantiated_world(source);
+    let point_class = expect_ok(
+        interpreter.send(&host, Symbol::intern("Point"), &[]),
+        "Point",
+    );
+    let point = expect_ok(interpreter.instantiate(&point_class, &[]), "Point new");
+    let bytes = snapshot_world(&mut interpreter, source, &class, &platform, &[point]);
+
+    let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
+    assert!(
+        report.contains("class mixin builtin Value"),
+        "the level's record names Value's mixin by tag:\n{report}"
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let point = loaded.roots[0].clone();
+    loaded.interpreter.enter(|mutator| {
+        let point = mutator.fetch(&point);
+        let heap = mutator.heap();
+        let level = heap
+            .class_superclass(class_of(heap, &point))
+            .expect("Point's level");
+        let value = mutator.builtin_class(BuiltinClass::Value);
+        assert!(Rc::ptr_eq(
+            &application_of(heap, level).mixin,
+            &application_of(heap, value).mixin
+        ));
+        assert!(heap.class_applied_clause(level).is_some());
+    });
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&point, Symbol::intern("answer"), &[]),
+        "answer",
+    );
+    assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }

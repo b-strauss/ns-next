@@ -167,6 +167,29 @@ pub enum DecodeError {
         copied_count: u16,
         register_count: u16,
     },
+    /// A class record names a `<:` clause its applying row does not declare:
+    /// `index` is past the row's clauses, or -- in the root-class section --
+    /// the root's levels are not listed in clause order, one per clause at
+    /// most. A level's clause is where its selector and compiled message come
+    /// from, so there is nothing a level with no clause could initialize by.
+    BadMixinApplicationClause {
+        row: u32,
+        index: u32,
+    },
+    /// A mixin-table row's `<:` clause passes factory arguments the image has
+    /// no compiled body for. `instantiate::clause_message_body` panics on the
+    /// invariant when the clause carries none -- the same refusal, for the
+    /// same reason, as `MissingSuperclassMessage`.
+    MissingMixinApplicationMessage,
+    /// A mixin-table row declares `<:` clauses but no superclass clause. The
+    /// grammar admits `<:` only after a superclass clause, and it is the
+    /// superclass clause's body that evaluates every clause's receiver
+    /// (`interpreter::nested::superclass_clause_expression`), so such a row
+    /// describes a declaration no source has and whose levels nothing builds.
+    MixinApplicationWithoutSuperclass,
+    /// A `CLASS_ROOT_LEVEL` class tag names a position past the levels the
+    /// root-class section rebuilt.
+    BadRootLevel(u32),
     /// The image's mixin table is empty, so it describes no root class --
     /// and a world without one has nothing for the graph's class tag 1 to
     /// name and no declaration to instantiate.
@@ -373,6 +396,23 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a body in the image takes {argument_count} arguments and {copied_count} copied \
                  values, which do not fit its {register_count} registers"
+            ),
+            DecodeError::BadMixinApplicationClause { row, index } => write!(
+                f,
+                "the image names mixin application clause {index} of mixin row {row}, which the \
+                 row does not declare in that place"
+            ),
+            DecodeError::MissingMixinApplicationMessage => write!(
+                f,
+                "the image's mixin application clause passes factory arguments it has no compiled code for"
+            ),
+            DecodeError::MixinApplicationWithoutSuperclass => write!(
+                f,
+                "a mixin-table row applies mixins but declares no superclass clause to apply them to"
+            ),
+            DecodeError::BadRootLevel(position) => write!(
+                f,
+                "root class level {position} out of range"
             ),
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
@@ -682,7 +722,8 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 }
 
 /// A builtin class a *program* names: `LoadBuiltinClass`, a class reference
-/// in the graph, a root class's superclass. Two tags are refused here,
+/// in the graph, a root class's superclass, the builtin a `<:` clause named
+/// (a class record's `MIXIN_BUILTIN`, a root level). Two tags are refused here,
 /// because no source module can produce them and an artifact that carried
 /// one would decode into a program the language does not admit. The VM
 /// mirror's class: there is exactly one mirror, and an artifact that could
@@ -921,6 +962,28 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 return Err(DecodeError::MissingSuperclassMessage)
             }
             None => {}
+        }
+        if !mixin.mixin_applications.is_empty() && mixin.superclass.is_none() {
+            return Err(DecodeError::MixinApplicationWithoutSuperclass);
+        }
+        for (index, clause) in mixin.mixin_applications.iter().enumerate() {
+            match &clause.message_code {
+                // §6.2 evaluates a `<:` clause's message in the applying
+                // declaration's instance initializer, as it does the superclass
+                // clause's, so its body takes this mixin's factory arguments --
+                // which is the precondition `instantiate`'s arity guard only
+                // re-checks at run time, as a Newspeak error rather than a panic.
+                Some(code) => check_code_arity(
+                    code,
+                    CodeKind::SuperclassMessage,
+                    format!("mixin application clause {} message", index + 1),
+                    mixin.factory.map_or(0, |factory| factory.argument_count),
+                )?,
+                None if clause.has_arguments => {
+                    return Err(DecodeError::MissingMixinApplicationMessage)
+                }
+                None => {}
+            }
         }
     }
     Ok(())
@@ -1823,6 +1886,9 @@ pub struct DecodeContext<'a, 'gc> {
     /// other copy of the same declaration would miss the entry every other
     /// class object of that row shares.
     pub mixins: &'a [Rc<crate::mixin::Mixin>],
+    /// The root class's `<:` levels, lowest first, as `build_root_class`
+    /// built them: what a `CLASS_ROOT_LEVEL` class tag names by position.
+    pub root_levels: &'a [ClassReference<'gc>],
 }
 
 pub struct DecodedGraph<'gc> {
@@ -1874,6 +1940,14 @@ pub fn decode_class_tag<'gc>(
             .builtin_class(read_program_builtin_class(reader)?)),
         CLASS_USER_ROOT => Ok(*context.root_class),
         CLASS_RECORD => decode_object_id(reader, tables),
+        CLASS_ROOT_LEVEL => {
+            let position = reader.read_u32()?;
+            context
+                .root_levels
+                .get(position as usize)
+                .copied()
+                .ok_or(DecodeError::BadRootLevel(position))
+        }
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
     }
 }
@@ -2048,6 +2122,9 @@ fn decode_frame<'gc>(
         FRAME_SUPERCLASS_MESSAGE => {
             FrameKind::SuperclassMessage(decode_class_tag(reader, context, tables)?)
         }
+        FRAME_MIXIN_APPLICATION_MESSAGE => {
+            FrameKind::MixinApplicationMessage(decode_class_tag(reader, context, tables)?)
+        }
         FRAME_CLOSURE => FrameKind::Closure(decode_object_id(reader, tables)?),
         tag => {
             return Err(DecodeError::InvalidTag {
@@ -2143,51 +2220,86 @@ pub(crate) fn bounded_count(
 /// `decode_root_superclass`, because `load_module` resolves it by *name*
 /// from the declaration and a decoded mixin has no declaration to read a
 /// name from.
+///
+/// The root's `<:` levels (`newspeak-spec.pdf` §6.2) are built here too, by
+/// `nested::build_applied_levels` -- the function `load_module` builds them
+/// with -- and in the same place in the order, before the root class object
+/// itself. Answers the root class and its levels, lowest first: the levels
+/// are what a `CLASS_ROOT_LEVEL` class tag names by position.
 pub fn build_root_class<'gc>(
     mutator: &mut Mutator<'gc>,
     mixins: &mixins::Decoded,
-    superclass: Option<ClassReference<'gc>>,
-) -> Result<ClassReference<'gc>, DecodeError> {
+    section: &RootSection,
+) -> Result<(ClassReference<'gc>, Vec<ClassReference<'gc>>), DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
+    let superclass = section.superclass.map(|kind| mutator.builtin_class(kind));
+    let applied: Vec<(usize, Value<'gc>)> = section
+        .levels
+        .iter()
+        .map(|&(index, kind)| (index as usize, Value::Object(mutator.builtin_class(kind))))
+        .collect();
+    // `decode_root_section` held every index to row 0's clauses, and a
+    // builtin class is always a class object, so this cannot fail; the
+    // mapping keeps a future change to either from being a panic.
+    let superclass = crate::interpreter::nested::build_applied_levels(
+        mutator,
+        &root_mixin,
+        superclass,
+        &applied,
+    )
+    .map_err(|_| DecodeError::NotAClassReference)?;
     let super_application = superclass
         .as_ref()
         .and_then(|superclass| mutator.heap.class_application(*superclass));
     let application = mutator.apply_mixin(&root_mixin, super_application.as_ref());
-    Ok(mutator.new_class_object(application, None, None, superclass))
+    let root_class = mutator.new_class_object(application, None, None, superclass);
+    let levels = super::encode::root_levels(&mutator.heap, root_class);
+    Ok((root_class, levels))
 }
 
-/// The root-class section's bytes, read but not resolved: whether a
-/// superclass tag follows and, if so, which builtin it names. Shared by
-/// `decode_root_superclass`, which resolves the tag against a live
-/// interpreter, and `skip_root_superclass`, which only needs to know how
-/// many bytes the section spans -- duplicating this reading would let the
-/// two drift, and then the span `inspect` records would stop matching the
-/// real one.
-fn read_root_superclass_tag(reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
-    if reader.read_boolean()? {
-        Ok(Some(read_program_builtin_class(reader)?))
-    } else {
-        Ok(None)
-    }
+/// The root-class section as read: the builtin the root class inherits from,
+/// if any, and the root's levels, lowest first, each as the position of the
+/// `<:` clause in row 0 that added it and the builtin that clause named.
+#[derive(Debug, Default, PartialEq)]
+pub struct RootSection {
+    pub superclass: Option<BuiltinClass>,
+    pub levels: Vec<(u32, BuiltinClass)>,
 }
 
 /// The root-class section: the class the module's root class inherits from,
-/// as an optional builtin tag. The inverse of `encode::encode_root_class`,
-/// which explains why the format admits only a builtin here.
-pub fn decode_root_superclass<'gc>(
+/// as an optional builtin tag, then the levels its `<:` clauses add. The
+/// inverse of `encode::encode_root_class`, which explains why the format
+/// admits only builtins here.
+///
+/// Every level's clause position is checked against row 0's clauses and must
+/// rise from one level to the next: the levels are built in clause order, and
+/// no clause adds two. That bounds the count by row 0's clause count before
+/// anything is reserved for it. Resolving no tag against a live interpreter,
+/// this serves `inspect` as well as `load`.
+pub fn decode_root_section(
     reader: &mut Reader,
-    mutator: &Mutator<'gc>,
-) -> Result<Option<ClassReference<'gc>>, DecodeError> {
-    Ok(read_root_superclass_tag(reader)?.map(|tag| mutator.builtin_class(tag)))
-}
-
-/// Reads the root-class section's bytes without resolving the tag to a live
-/// class. `inspect` has no interpreter to resolve a builtin tag against --
-/// it must not bootstrap one -- and only needs to know where this section
-/// ends.
-pub fn skip_root_superclass(reader: &mut Reader) -> Result<(), DecodeError> {
-    read_root_superclass_tag(reader)?;
-    Ok(())
+    mixins: &mixins::Decoded,
+) -> Result<RootSection, DecodeError> {
+    let superclass = if reader.read_boolean()? {
+        Some(read_program_builtin_class(reader)?)
+    } else {
+        None
+    };
+    let clause_count = mixins
+        .root()
+        .map_or(0, |root| root.mixin_applications.len());
+    let count = reader.read_u32()? as usize;
+    let mut levels = Vec::with_capacity(count.min(clause_count));
+    let mut next_allowed: u32 = 0;
+    for _ in 0..count {
+        let index = reader.read_u32()?;
+        if index < next_allowed || index as usize >= clause_count {
+            return Err(DecodeError::BadMixinApplicationClause { row: 0, index });
+        }
+        next_allowed = index + 1;
+        levels.push((index, read_program_builtin_class(reader)?));
+    }
+    Ok(RootSection { superclass, levels })
 }
 
 /// A class record as read, before its application exists: the object-table
@@ -2335,8 +2447,8 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
         .collect()
 }
 
-/// Whether `class` is one of the two class objects a graph never creates:
-/// a builtin, or the module's root class. The mirror of
+/// Whether `class` is one of the class objects a graph never creates: a
+/// builtin, the module's root class, or one of the root's levels. The mirror of
 /// `encode::is_class_tag`. The explicit `is_class` guard is redundant with
 /// `class.same(root_class)` today -- that can only be true when `class` is
 /// literally `root_class`, which is a class by construction -- but it keeps
@@ -2347,8 +2459,12 @@ fn is_prebuilt_class<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     root_class: ClassReference<'gc>,
+    root_levels: &[ClassReference<'gc>],
 ) -> bool {
-    heap.is_class(class) && (heap.class_builtin(class).is_some() || class.same(root_class))
+    heap.is_class(class)
+        && (heap.class_builtin(class).is_some()
+            || class.same(root_class)
+            || root_levels.iter().any(|level| level.same(class)))
 }
 
 /// Every field the format types as a class reference really names a class
@@ -2382,7 +2498,7 @@ fn check_class_references<'gc>(
     heap: &Heap<'gc>,
     objects: &[ObjectReference<'gc>],
     frames: &[FrameReference<'gc>],
-    root_class: ClassReference<'gc>,
+    (root_class, root_levels): (ClassReference<'gc>, &[ClassReference<'gc>]),
 ) -> Result<(), DecodeError> {
     for object in objects {
         let class = heap.class_of_object(*object);
@@ -2390,7 +2506,7 @@ fn check_class_references<'gc>(
             return Err(DecodeError::NotAClassReference);
         }
         if heap.is_class(*object) {
-            if !is_prebuilt_class(heap, class, root_class) {
+            if !is_prebuilt_class(heap, class, root_class, root_levels) {
                 return Err(DecodeError::ClassOfAClassIsARecord);
             }
             let superclass = heap.class_superclass(*object);
@@ -2413,7 +2529,8 @@ fn check_class_references<'gc>(
         let kind_class = match &kind {
             FrameKind::Initializer(class)
             | FrameKind::SuperclassClause(class)
-            | FrameKind::SuperclassMessage(class) => Some(class),
+            | FrameKind::SuperclassMessage(class)
+            | FrameKind::MixinApplicationMessage(class) => Some(class),
             FrameKind::Method(_) | FrameKind::Closure(_) | FrameKind::TopLevel => None,
         };
         for class in current_class.iter().chain(kind_class) {
@@ -2562,7 +2679,7 @@ pub fn decode_graph_section<'gc>(
         &context.mutator.heap,
         &objects,
         &frames,
-        *context.root_class,
+        (*context.root_class, context.root_levels),
     )?;
     let roots = decode_values(reader, context, &tables)?;
     Ok(DecodedGraph {
@@ -2622,12 +2739,21 @@ pub fn decode_tag_named_hashes<'gc>(
     Ok(max)
 }
 
-/// The inverse of `encode::encode_class_record`: the mixin-table row this
-/// class applies, then its superclass, its enclosing object and its
-/// declaring class.
+/// The inverse of `encode::encode_class_record`: the mixin this class
+/// applies, then its superclass, its enclosing object and its declaring
+/// class, and -- for a level a `<:` clause added -- that clause.
 ///
 /// The mixin id is range-checked here, against the decoded mixin table,
-/// before it is used to index anything. The three references resolve
+/// before it is used to index anything, and so are a level's applying row
+/// and clause position: the clause is read off that row, so a level can only
+/// ever run a clause message `verify_mixins` reconciled with its row's
+/// factory.
+///
+/// A level whose clause named a builtin (`MIXIN_BUILTIN`) is its own shape:
+/// its mixin, enclosing object and declaring class are the loading
+/// bootstrap's builtin's, exactly what `nested::build_applied_levels` gives a
+/// level it builds, so the record carries only the builtin, the superclass and
+/// the clause. The three references resolve
 /// to identities that already exist (every record was placeholder-allocated
 /// before this pass started), so a forward reference and a cycle are both
 /// ordinary; what cannot be settled yet is whether each really is a class
@@ -2638,12 +2764,25 @@ fn decode_class_record<'gc>(
     tables: &Tables<'_, 'gc>,
     placeholder_application: &Rc<crate::mixin::MixinApplication>,
 ) -> Result<(crate::types::ClassData<'gc>, Rc<crate::mixin::Mixin>), DecodeError> {
-    let id = reader.read_u32()?;
-    let mixin = context
-        .mixins
-        .get(id as usize)
-        .cloned()
-        .ok_or(DecodeError::BadMixinId(id))?;
+    let mixin = match reader.read_u8()? {
+        MIXIN_ROW => {
+            let id = reader.read_u32()?;
+            context
+                .mixins
+                .get(id as usize)
+                .cloned()
+                .ok_or(DecodeError::BadMixinId(id))?
+        }
+        MIXIN_BUILTIN => {
+            return decode_builtin_level(reader, context, tables, placeholder_application)
+        }
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "mixin reference",
+                tag,
+            })
+        }
+    };
     let superclass = decode_optional_class(reader, context, tables)?;
     let enclosing = if reader.read_boolean()? {
         match decode_value(reader, context, tables)? {
@@ -2654,6 +2793,11 @@ fn decode_class_record<'gc>(
         None
     };
     let declaring_class = decode_optional_class(reader, context, tables)?;
+    let applied_clause = if reader.read_boolean()? {
+        Some(decode_applied_clause(reader, context, None)?)
+    } else {
+        None
+    };
     // A record only ever describes a user class: a builtin is a class *tag*,
     // resolved through the bootstrap, and never an object-table entry.
     //
@@ -2674,16 +2818,69 @@ fn decode_class_record<'gc>(
     // metaclass and no two of them can be compared. Recording it rather than
     // claiming stability, because the claim would stop being true the moment
     // §3.2's reified model is built.
-    Ok((
-        crate::types::ClassData::new(
-            placeholder_application.clone(),
-            enclosing,
-            declaring_class,
-            superclass,
-            None,
-        ),
-        mixin,
-    ))
+    let mut data = crate::types::ClassData::new(
+        placeholder_application.clone(),
+        enclosing,
+        declaring_class,
+        superclass,
+        None,
+    );
+    data.applied_clause = applied_clause;
+    Ok((data, mixin))
+}
+
+/// A `MIXIN_BUILTIN` class record, after its tag: the builtin whose mixin the
+/// level applies, its superclass and the clause that added it. The builtin is
+/// read as a program names one, so neither the VM mirror's class nor `Top`
+/// can be applied.
+fn decode_builtin_level<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+    placeholder_application: &Rc<crate::mixin::MixinApplication>,
+) -> Result<(crate::types::ClassData<'gc>, Rc<crate::mixin::Mixin>), DecodeError> {
+    let kind = read_program_builtin_class(reader)?;
+    let named = context.mutator.builtin_class(kind);
+    let heap = &context.mutator.heap;
+    let mixin = heap
+        .class_application(named)
+        .map(|application| application.mixin.clone())
+        .ok_or(DecodeError::NotAClass)?;
+    let superclass = decode_optional_class(reader, context, tables)?;
+    let applied_clause = decode_applied_clause(reader, context, Some(kind))?;
+    let mut data = crate::types::ClassData::new(
+        placeholder_application.clone(),
+        heap.class_enclosing(named),
+        heap.class_declaring(named),
+        superclass,
+        None,
+    );
+    data.applied_clause = Some(applied_clause);
+    Ok((data, mixin))
+}
+
+/// The clause that added a level: the applying declaration's row id and the
+/// clause's position in it, each checked before it indexes anything.
+fn decode_applied_clause(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, '_>,
+    named_builtin: Option<BuiltinClass>,
+) -> Result<crate::mixin::AppliedClause, DecodeError> {
+    let row = reader.read_u32()?;
+    let declaration = context
+        .mixins
+        .get(row as usize)
+        .cloned()
+        .ok_or(DecodeError::BadMixinId(row))?;
+    let index = reader.read_u32()?;
+    if index as usize >= declaration.mixin_applications.len() {
+        return Err(DecodeError::BadMixinApplicationClause { row, index });
+    }
+    Ok(crate::mixin::AppliedClause {
+        declaration,
+        index: index as usize,
+        named_builtin,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2742,6 +2939,12 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
         FrameKind::SuperclassMessage(class) => {
             frame_mixin(heap, *class).and_then(|mixin| mixin.superclass_message_code.clone())
         }
+        // The level names its clause, and the clause its body: the applying
+        // class's mixin holds one message body per clause, so the class alone
+        // would not say which ran.
+        FrameKind::MixinApplicationMessage(level) => heap
+            .class_applied_clause(*level)
+            .and_then(|clause| clause.message_code),
         FrameKind::Closure(closure) => heap.closure_code(*closure),
         FrameKind::TopLevel => None,
     }

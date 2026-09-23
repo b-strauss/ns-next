@@ -1194,6 +1194,28 @@ pub(crate) fn class_has_initializer_code<'gc>(
         .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
 }
 
+/// The kind of the activation a `Step::ClauseMessage` for `level` pushes,
+/// whose walk continues with `then`.
+///
+/// A `<:` clause's message is evaluated during the descent, with the walk in
+/// `InstantiationPhase::Applying`, whose `index` is the level that clause
+/// added: its kind names that level, whose applied clause says which of the
+/// applying class's message bodies runs (`image::decode::frame_body` finds a
+/// frame's body by it). Every other clause message is the applying class's
+/// own superclass clause's. Read off the walk rather than carried on the
+/// step, which every send's decision is sized by.
+pub(crate) fn clause_message_frame_kind<'gc>(
+    level: ClassReference<'gc>,
+    then: &Instantiation<'gc>,
+) -> FrameKind<'gc> {
+    match then.phase {
+        InstantiationPhase::Applying { index, .. } => {
+            FrameKind::MixinApplicationMessage(then.levels[index].0)
+        }
+        _ => FrameKind::SuperclassMessage(level),
+    }
+}
+
 /// The nearest level to the top of the chain below `below` that has
 /// initializer code: the next one the downward walk runs.
 fn initializing_level_below<'gc>(

@@ -381,6 +381,37 @@ pub struct MixinApplicationClause {
     pub message_code: Option<Rc<CompiledCode>>,
 }
 
+/// Which `<:` clause added a level (`types::ClassData::applied_clause`): the
+/// applying declaration's mixin and the clause's position in its
+/// `mixin_applications`, rather than a copy of the clause.
+///
+/// A copy would say what the clause was but not which one: two clauses of
+/// one declaration can be identical (`<: A <: B`, both sending `new`), and
+/// the image names a level's clause by the row that declares it and its
+/// position there, so that the row's own clauses -- verified against that
+/// row's factory once, at load -- are the only ones a decoded level can run.
+///
+/// `named_builtin` records the builtin the clause's receiver named, when it
+/// named one. A builtin's mixin is in no declaration tree, so it is how the
+/// image identifies such a level's mixin -- by builtin tag, the way it
+/// identifies a builtin superclass -- and nothing else reads it.
+#[derive(Debug, Clone)]
+pub struct AppliedClause {
+    pub declaration: Rc<Mixin>,
+    pub index: usize,
+    pub named_builtin: Option<crate::types::BuiltinClass>,
+}
+
+impl AppliedClause {
+    /// The clause itself. `None` only if `index` is past the declaration's
+    /// clauses, which neither `nested::build_applied_levels` nor the image
+    /// decoder -- the two things that build one -- lets happen; answering
+    /// `None` rather than indexing keeps a future mistake from being a panic.
+    pub fn clause(&self) -> Option<&MixinApplicationClause> {
+        self.declaration.mixin_applications.get(self.index)
+    }
+}
+
 /// `Debug` is derived so `ObjectData::Class` keeps its own derived `Debug`
 /// now that a class object's behaviour lives here. Printing one walks the
 /// whole superclass chain and every method's AST -- as `ClassData`'s own
@@ -402,7 +433,8 @@ pub struct Mixin {
     /// §6.2's `<:` clauses, in declaration order: each one adds a level
     /// between this declaration's own class and its superclass, the first
     /// clause's level lowest. Empty for a declaration that applies no mixin,
-    /// for a builtin's mixin, a class side and a decoded mixin.
+    /// for a builtin's mixin and a class side. A decoded mixin carries its
+    /// row's clauses (`image::mixins`).
     pub mixin_applications: Vec<MixinApplicationClause>,
     /// Whether the declaration wrote any `initExpr`s. Stored because
     /// `instantiate::mixin_needs_initializer_code` asks the question of a

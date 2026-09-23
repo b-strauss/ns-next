@@ -128,9 +128,10 @@ pub struct ClassData<'gc> {
     /// mints the pair consecutively.
     pub dispatch_id: crate::mixin::DispatchId,
     /// For a level a mixin application added (`newspeak-spec.pdf` §6.2), the
-    /// `<:` clause that added it -- the factory message the applying
-    /// declaration wrote for it, and that message's compiled arguments.
-    /// `None` for every other class object.
+    /// `<:` clause that added it -- which of the applying declaration's
+    /// clauses, and so the factory message that declaration wrote for it and
+    /// that message's compiled arguments (`AppliedClause::clause`). `None` for
+    /// every other class object.
     ///
     /// It cannot live on the level's mixin, where an ordinary level's
     /// superclass-clause message lives: the level's mixin is the *applied*
@@ -138,7 +139,7 @@ pub struct ClassData<'gc> {
     /// each of them writes its own message. Nor on the level's application,
     /// which the application cache shares between two declarations applying
     /// the same mixin to the same superclass with different messages.
-    pub applied_clause: Option<crate::mixin::MixinApplicationClause>,
+    pub applied_clause: Option<crate::mixin::AppliedClause>,
 }
 
 impl<'gc> ClassData<'gc> {
@@ -342,6 +343,14 @@ pub enum FrameKind<'gc> {
     /// `Mixin::superclass_message_code`; see `SuperclassClause` above
     /// for why that makes it a kind of its own.
     SuperclassMessage(ClassReference<'gc>),
+    /// The arguments of a `<:` clause's factory message (§6.2), evaluated
+    /// like `SuperclassMessage`'s, on the instance being initialized and with
+    /// the applying class's factory arguments. It names the *level* the
+    /// clause added, not the applying class: the applying class's mixin has
+    /// one body per clause, and the level's `ClassData::applied_clause` says
+    /// which of them ran here -- a frame kind is how
+    /// `image::decode::frame_body` finds an activation's body.
+    MixinApplicationMessage(ClassReference<'gc>),
 }
 
 /// What the run loop does with an activation's value when it returns

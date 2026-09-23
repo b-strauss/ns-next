@@ -93,7 +93,8 @@ from validating ids and lengths, not from a version field.
 This is the part that decides how big an artifact is and how large its trusted
 surface is.
 
-- **Builtin classes and the root class** are referenced by a **class tag**
+- **Builtin classes, the root class and the levels the root's `<:` clauses
+  add** are referenced by a **class tag**
   wherever a class object appears — an object's `.class`, a class-valued slot, a
   frame's `current_class` — never structurally encoded. On load a tag resolves to
   the live class the bootstrap produced. The bootstrap itself is the fixed
@@ -282,7 +283,7 @@ function (`bytecode::family_size_of`). A block precedes its parent in the
 table, but its numbers depend on where its `MakeClosure` sits in its root's
 emission order, so the decoder numbers a family only once its root -- the
 body nothing else's `MakeClosure` creates -- has been read in full. The
-golden image is 1176 bytes.
+golden image is 1243 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -290,9 +291,9 @@ the decoder alike rather than repeated as magic numbers on each side.
 share a number, so a renumbering fails the suite at the moment it happens instead
 of surfacing later as an image that no longer means what it said.
 
-The graph section's five tag families live there under the same rule: how a
-`Value` is encoded, an object record's body, how a class reference is named, what
-a frame was activated for, and which tag-named object an entry of the closing
+The graph section's six tag families live there under the same rule: how a
+`Value` is encoded, an object record's body, how a class record names its mixin,
+how a class reference is named, what a frame was activated for, and which tag-named object an entry of the closing
 hash table names (`HASHED_*`, below). They were bare literals in the encoder and
 again in the decoder until `inspect` became a third reader of those bytes — and
 three hand-kept copies of one numbering is how a viewer starts quietly
@@ -315,11 +316,40 @@ in which two members would share a name — a compiled method, a slot's getter, 
 mutable slot's setter, a nested declaration — is refused before any mixin is
 built, so a crafted row cannot make one member silently hide another.
 
-**Class objects are ordinary objects in the graph**, encoded as
-`{mixin id, superclass, enclosing object, declaring class}`. The declaring class
-has to be there because `outer` walks the declaration chain rather than the
-receiver's dynamic one, so an image that dropped it would come back resolving
-`outer` from the wrong chain.
+A row also carries its `<:` clauses (`newspeak-spec.pdf` §6.2), in declaration
+order: each one's selector, whether its message takes arguments, and the code id
+of that message's body. How each clause's *receiver* is identified is not
+repeated there: the superclass clause's body evaluates the superclass and every
+`<:` receiver together and answers them as one array
+(`interpreter::nested::superclass_clause_expression`), so the row's clause
+count is also how many named classes that body answers beside the superclass.
+
+**Class objects are ordinary objects in the graph** (object body tag 7),
+encoded as `{MIXIN_ROW, row id, superclass, enclosing object, declaring
+class, applied clause?}`. The declaring class has to be there because `outer`
+walks the declaration chain rather than the receiver's dynamic one, so an image
+that dropped it would come back resolving `outer` from the wrong chain. The
+applied clause is present exactly for a level a `<:` clause added, as the
+applying declaration's row id and the clause's position in that row, so the
+selector and message a level is initialized with are the ones its row carries
+and `verify_mixins` reconciled with that row's factory. A level whose clause
+named a builtin (`<: Value`) is recorded as `{MIXIN_BUILTIN, builtin tag,
+superclass, applied clause}`: its mixin is the builtin's, which no row
+describes, and its enclosing object and declaring class are the builtin's own —
+the core library's `Kernel`, which holds the VM mirror — so the record carries
+neither, and the decoder takes both from the loading bootstrap, as building the
+level from source does. The record changed shape when its mixin became a tagged
+reference, so the old class-record tag 5 is retired
+(`opcodes::RETIRED_OBJECT_BODIES`).
+
+**Root class.** The class the root inherits from, as an optional builtin tag,
+then the root's own `<:` levels, lowest first, each as its clause's position in
+row 0 and the builtin that clause named. A root clause can name only a builtin,
+by the rule that resolves the root's superclass (`load_root_class`), so builtin
+tags are enough; the position is written because a root clause naming anything
+else adds no level. `load` rebuilds these levels with the root class, before
+the graph, so the graph names one by its position (`CLASS_ROOT_LEVEL`, class
+tag 3) rather than as a record.
 
 **Object table.** Every heap object reachable from the roots — instances,
 strings, symbols, arrays, closures — decoded in two passes (placeholder, then
@@ -338,7 +368,12 @@ temps, `program_counter` — an instruction index into the frame's compiled body
 `home`, `current_class`, `kind` and `uncontinuable`. A closure frame's `kind`
 names the closure object it runs, by object id; that the id names a closure is
 checked once every record has been read (`NotAClosureReference`), as a class
-reference is.
+reference is. A `<:` clause message's frame (`FRAME_MIXIN_APPLICATION_MESSAGE`,
+6) names the *level* its clause added rather than the applying class: the
+applying class's mixin carries one message body per clause, and the level's
+applied clause says which one ran, which is how `verify_graph` finds the body to
+reconcile the frame with. A block written in such a message captures that
+frame, so a snapshot can hold one.
 Frames and objects reference each other freely, so both tables are
 placeholder-allocated before either is filled.
 
@@ -468,6 +503,23 @@ stateless binary already runs its own code, with the same exposure as running
 the equivalent source, so a wrong slot from a malformed index is no worse
 than any other wrong answer a mutated program's own code can produce.
 
+**A mixin application is checked against the row that declares it.** Every
+`<:` clause's message body is a clause-message body taking exactly the row's
+factory arity, since §6.2 evaluates it with the applying declaration's factory
+arguments (`CodeArityMismatch`, `WrongCodeKind`), and a clause whose message
+takes arguments has one (`MissingMixinApplicationMessage`); a row with `<:`
+clauses but no superclass clause is refused
+(`MixinApplicationWithoutSuperclass`). A level's record names an applying row
+and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`), and the
+root-class section lists the root's levels at rising positions within row 0's
+clauses, which also bounds their count before anything is reserved for it.
+Levels whose superclass links close on themselves have no order to be rebuilt
+in and are refused like any other class records that do (`SuperclassCycle`).
+What is not checked is that a level sits directly above a class of its applying
+row; the instantiation walk re-checks a clause body's arity against the
+arguments it is given and raises a Newspeak error rather than indexing past
+them.
+
 The mixin tree's nesting depth is input-controlled, so building it is iterative —
 the "bound any recursion whose depth the input controls" case. Symbol ids, mixin
 ids, class-object references, slot counts and arities are all validated before
@@ -539,7 +591,7 @@ whole Rust boundary"). Its class has builtin class tag **14**
 13), which `builtin_class_from_tag` knows so that the closing table of
 tag-named hashes can name it as it names every builtin. **Everywhere a
 program names a class — a `LoadBuiltinClass`, a class reference in the graph,
-a root class's superclass — the decoder reads the tag through
+a root class's superclass, the builtin a `<:` clause named — the decoder reads the tag through
 `read_program_builtin_class`, which refuses 14** as an invalid tag: an
 artifact that could name the mirror's class could instantiate a second mirror
 or reach the one there is, and so claim every primitive, which no source

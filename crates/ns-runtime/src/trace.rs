@@ -140,7 +140,8 @@ impl Trace for FrameKind<'_> {
             FrameKind::Closure(closure) => tracer.object(closure),
             FrameKind::Initializer(class)
             | FrameKind::SuperclassClause(class)
-            | FrameKind::SuperclassMessage(class) => tracer.object(class),
+            | FrameKind::SuperclassMessage(class)
+            | FrameKind::MixinApplicationMessage(class) => tracer.object(class),
         }
     }
 }

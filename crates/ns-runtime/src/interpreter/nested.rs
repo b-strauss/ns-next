@@ -300,17 +300,16 @@ fn unpack_clause_value<'gc>(
 /// declaration contributes.
 pub(crate) fn build_applied_levels<'gc>(
     mutator: &mut Mutator<'gc>,
-    declaration: &Mixin,
+    declaration: &Rc<Mixin>,
     superclass: Option<ClassReference<'gc>>,
     applied: &[(usize, Value<'gc>)],
 ) -> Result<Option<ClassReference<'gc>>, Signal<'gc>> {
     let mut below = superclass;
     for &(index, applied_class) in applied {
-        let clause = declaration
-            .mixin_applications
-            .get(index)
-            .cloned()
-            .expect("internal: a caller indexes the clauses it read off this mixin");
+        assert!(
+            index < declaration.mixin_applications.len(),
+            "internal: a caller indexes the clauses it read off this mixin"
+        );
         let named = match applied_class {
             Value::Object(object) => mutator
                 .heap
@@ -327,6 +326,11 @@ pub(crate) fn build_applied_levels<'gc>(
         let application = mutator.apply_mixin(&named_application.mixin, below_application.as_ref());
         let enclosing = mutator.heap.class_enclosing(named_class);
         let declaring_class = mutator.heap.class_declaring(named_class);
+        let clause = crate::mixin::AppliedClause {
+            declaration: declaration.clone(),
+            index,
+            named_builtin: mutator.heap.class_builtin(named_class),
+        };
         below =
             Some(mutator.new_applied_level(application, enclosing, declaring_class, below, clause));
     }

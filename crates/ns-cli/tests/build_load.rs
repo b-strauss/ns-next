@@ -2,6 +2,7 @@
 
 mod common;
 use common::{golden, ns_next, ScratchDirectory};
+use indoc::indoc;
 use std::path::Path;
 
 #[test]
@@ -102,6 +103,76 @@ fn a_built_binary_runs_exactly_as_its_source_does() {
     assert_eq!(load_ok, run_ok, "exit status differs");
     assert_eq!(load_out, run_out, "stdout differs");
     assert_eq!(load_error, run_error, "stderr differs");
+}
+
+/// A module applying mixins (`newspeak-spec.pdf` §6.2) built into a binary
+/// answers exactly what its source answers: the binary carries each
+/// declaration's `<:` clauses -- their selectors and compiled messages -- so
+/// the loaded world builds every applied level itself and initializes it
+/// with its own clause's message, evaluated with the applying class's
+/// factory argument.
+#[test]
+fn a_built_binary_applying_mixins_runs_exactly_as_its_source_does() {
+    let directory = ScratchDirectory::new("mixin-application");
+    let source = directory.join("applying.ns");
+    std::fs::write(
+        &source,
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Applying usingPlatform: p = Object new (| t = p transcript. |) (
+                class Base withBase: b = Object new (| base = b. |) (
+                    public chain = ( ^'Base ', base printString )
+                )
+                class Marker withMark: m = Object new (| mark = m. |) (
+                    public chain = ( ^'Marker ', mark printString, ' ', super chain )
+                )
+                class Stamp = Object new () (
+                    public chain = ( ^'Stamp ', super chain )
+                )
+                class Applied from: x = Base withBase: x + 1 <: Marker withMark: x * 10 <: Stamp (
+                ) (
+                    public chain = ( ^'Applied ', super chain )
+                )
+                public main: platform args: arguments = (
+                    t show: (Applied from: 4) chain; newLine.
+                    t show: (Applied from: 2) chain; newLine.
+                )
+            ) : ()
+        "},
+    )
+    .expect("write the module");
+    for lowering in ["optimized", "reference"] {
+        let out = directory.join(&format!("applying.{lowering}.nsb"));
+        let (built, _, build_error) = ns_next(&[
+            "build".as_ref(),
+            source.as_os_str(),
+            out.as_os_str(),
+            "--lowering".as_ref(),
+            lowering.as_ref(),
+        ]);
+        assert!(built, "{lowering}: {build_error}");
+        let (run_ok, run_out, run_error) = ns_next(&[
+            "run".as_ref(),
+            source.as_os_str(),
+            "--lowering".as_ref(),
+            lowering.as_ref(),
+        ]);
+        assert!(
+            run_ok,
+            "{lowering}: the module runs from source: {run_error}"
+        );
+        assert_eq!(
+            run_out, "Applied Stamp Marker 40 Base 5\nApplied Stamp Marker 20 Base 3\n",
+            "{lowering}: the source's own answer"
+        );
+        let (load_ok, load_out, load_error) = ns_next(&["load".as_ref(), out.as_os_str()]);
+        assert_eq!(
+            (load_ok, load_out, load_error),
+            (run_ok, run_out, run_error),
+            "{lowering}: the binary answers what the source answers"
+        );
+    }
 }
 
 #[test]

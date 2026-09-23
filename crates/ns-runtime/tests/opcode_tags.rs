@@ -171,11 +171,13 @@ fn retired_instruction_tags_are_never_reused() {
 /// A retired object-body tag stays retired, for the same reason a retired
 /// instruction tag does: the closure record's payload changed on both
 /// halves, so tag 4's bytes would otherwise decode into a different,
-/// perfectly valid closure.
+/// perfectly valid closure; and the class record's mixin became a tagged
+/// reference, so tag 5's row id would otherwise be read as that tag.
 #[test]
 fn retired_object_body_tags_are_refused() {
-    assert_eq!(RETIRED_OBJECT_BODIES, [4]);
+    assert_eq!(RETIRED_OBJECT_BODIES, [4, 5]);
     assert_eq!(OBJECT_CLOSURE, 6);
+    assert_eq!(OBJECT_CLASS, 7);
     let live = [
         OBJECT_INSTANCE,
         OBJECT_STRING,
@@ -209,12 +211,16 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_STRING, 1);
     assert_eq!(OBJECT_SYMBOL, 2);
     assert_eq!(OBJECT_ARRAY, 3);
-    assert_eq!(OBJECT_CLASS, 5);
     assert_eq!(OBJECT_CLOSURE, 6);
+    assert_eq!(OBJECT_CLASS, 7);
+
+    assert_eq!(MIXIN_ROW, 0);
+    assert_eq!(MIXIN_BUILTIN, 1);
 
     assert_eq!(CLASS_BUILTIN, 0);
     assert_eq!(CLASS_USER_ROOT, 1);
     assert_eq!(CLASS_RECORD, 2);
+    assert_eq!(CLASS_ROOT_LEVEL, 3);
 
     assert_eq!(FRAME_METHOD, 0);
     assert_eq!(FRAME_CLOSURE, 1);
@@ -222,6 +228,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_INITIALIZER, 3);
     assert_eq!(FRAME_SUPERCLASS_CLAUSE, 4);
     assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
+    assert_eq!(FRAME_MIXIN_APPLICATION_MESSAGE, 6);
 
     assert_eq!(HASHED_BUILTIN_CLASS, 0);
     assert_eq!(HASHED_ROOT_CLASS, 1);
@@ -232,7 +239,7 @@ fn graph_section_tags_are_fixed() {
 /// stops two constants sharing one, and the compiler would not object.
 #[test]
 fn no_two_graph_tags_in_a_family_share_a_number() {
-    let families: [&[u8]; 5] = [
+    let families: [&[u8]; 6] = [
         &[
             VALUE_NIL,
             VALUE_FALSE,
@@ -251,7 +258,13 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_CLOSURE,
             OBJECT_CLASS,
         ],
-        &[CLASS_BUILTIN, CLASS_USER_ROOT, CLASS_RECORD],
+        &[MIXIN_ROW, MIXIN_BUILTIN],
+        &[
+            CLASS_BUILTIN,
+            CLASS_USER_ROOT,
+            CLASS_RECORD,
+            CLASS_ROOT_LEVEL,
+        ],
         &[
             FRAME_METHOD,
             FRAME_CLOSURE,
@@ -259,6 +272,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_INITIALIZER,
             FRAME_SUPERCLASS_CLAUSE,
             FRAME_SUPERCLASS_MESSAGE,
+            FRAME_MIXIN_APPLICATION_MESSAGE,
         ],
         &[HASHED_BUILTIN_CLASS, HASHED_ROOT_CLASS, HASHED_PLATFORM],
     ];

@@ -280,9 +280,9 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         let mixins = mixins::decode(&mut reader, &symbols, &table.codes)
             .map_err(|error| error.to_string())?;
         decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
-        let root_superclass = decode::decode_root_superclass(&mut reader, mutator)
-            .map_err(|error| error.to_string())?;
-        let root_class = decode::build_root_class(mutator, &mixins, root_superclass)
+        let root_section =
+            decode::decode_root_section(&mut reader, &mixins).map_err(|error| error.to_string())?;
+        let (root_class, root_levels) = decode::build_root_class(mutator, &mixins, &root_section)
             .map_err(|error| error.to_string())?;
         // `snapshot` always writes this field (as absent); a binary requires it
         // present, since it is the only place a binary records how to start
@@ -310,6 +310,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
                 codes: &table.codes,
                 platform,
                 mixins: &mixins.mixins,
+                root_levels: &root_levels,
             };
             decode::decode_graph_section(&mut reader, &mut context, &symbols)
                 .map_err(|error| error.to_string())?
