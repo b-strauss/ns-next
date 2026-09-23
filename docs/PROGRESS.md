@@ -3537,8 +3537,24 @@ unit tests beside the walks pin it, the one-sided and the inherited case
 included ([core-library.md](design/core-library.md), "A value's state is the
 slots its classes *declare*").
 
+**The final whole-branch review found five things, all fixed on
+2026-09-23** (`0ccff43`, `95f2a07`, `cf1c5a0`, `0a5bb4e`, `3da730d`,
+`ed70803`). `Float>>=` is class-tight, so `1.0 = 1` and `1 = 1.0` both
+answer `false` and the leaf's class-first rule and `Float`'s own `=` are
+one rule again — the ruling that makes the numeric tower a named open item
+above. `Value`'s own application carries `inherits_value`, since §3.2's
+"subclass of" is inclusive, so `Value new = Value new` and a slot holding
+a `Value new` no longer disagree. Both value walks charge their node
+budget when a node is *pushed*, which bounds the work vector by the budget
+rather than by the heap. The documents no longer claim more of §3.1.1 than
+is enforced. And both refusals name the factory the program sent. Two
+goldens moved, both recorded by this branch:
+`a_value_has_no_identity.ns`'s `Float/Integer` line from `true true` to
+`false false`, and `value_hashes_follow_value_equality.ns` gained a
+`Float/Integer` and an `Integer/Float` `cross:` line, each `false false`.
+
 **Gates, at this branch's head** — not at `ab692b7`, since the value-state
-fix above is code and tests: `cargo test --workspace` green, **887 tests
+fix above is code and tests: `cargo test --workspace` green, **892 tests
 passing and one ignored**, also under each of the three stress modes;
 `cargo clippy --workspace --all-targets` clean; `parse-corpus` at
 **210/0/1/0**; `run-corpus` at **6/0/205** in all four lanes. Every commit
