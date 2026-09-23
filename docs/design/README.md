@@ -149,7 +149,7 @@ since the harness keeps a passing test quiet.
 | `kernel/` | the core library in `Kernel.ns`: what a user subclass of a builtin inherits, the one outcome the move defined, a recursion through kernel methods the two lowerings count alike, and §3.1.1's value semantics — a value's derived equality and hash, its lack of identity, and the two conditions refused at instantiation |
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
 | `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
-| `mixin/` | §6.2's mixin application: lookup and `super` through the applied levels, `outer` from an applied mixin, the order of several `<:` clauses, the initializer order, the level's factory selector, and the errors a clause raises |
+| `mixin/` | §6.2's mixin application: lookup and `super` through the applied levels, `outer` from an applied mixin, the order of several `<:` clauses, the initializer order, the level's factory selector, the errors a clause raises, and a module that declares itself a value with `<: Value` |
 | `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
 | `spec/` | one named rule of `newspeak-spec.pdf`, its section in the file name |
 
@@ -225,7 +225,7 @@ four before trusting a program's output.
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
-| At a module's root, a superclass or `<:` clause is resolved by builtin name alone: one prefixed `self` or `super` that names anything else is dropped silently (a `<:` clause adds no level), where §6.1 evaluates it as a top-level expression that fails, and the prefix before a builtin's name is ignored | §6.1, §6.2 | [object-model.md](object-model.md) |
+| At a module's root, `<: Value` is the one allowed `<:` clause — how a module declares itself a value (§3.1.1) — but every other root `<:` clause is accepted or dropped rather than refused: one naming another builtin adds a level, one prefixed `self` or `super` that names anything but a builtin is dropped silently, and the prefix before a builtin's name is ignored, so `<: self Value` is taken as `<: Value`; the root superclass clause has the same prefix gap, though resolving a builtin such as `Object` by name is right for it. §6.1 evaluates such a clause as a top-level expression that fails | §3.1.1, §6.1, §6.2 | [object-model.md](object-model.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |

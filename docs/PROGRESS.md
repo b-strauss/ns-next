@@ -40,16 +40,23 @@ took two decisions for Plan B on 2026-09-23:
    did.
 
 **Plan B's first item is the root-clause gap, fixed for the superclass clause
-and `<:` together.** At a module's root, a clause prefixed `self` or `super`
-that names anything but a builtin adds no level, silently, and
+and `<:` together.** The user decided on 2026-09-23 that `<: Value` on a
+module, `class M … = Object <: Value (…)`, is explicitly allowed as a rule: it
+is how a module declares itself a value (§3.1.1), and the fix keeps it
+(`goldens/mixin/mixin_module_declares_itself_a_value`). Every other root `<:`
+clause becomes a deferred program error: one prefixed `self` or `super`, one
+naming another builtin, and `<: self Value`. Today, at a module's root, a
+clause prefixed `self` or `super` that names anything but a builtin adds no
+level, silently, one naming another builtin adds a level, and
 `builtin_kind_from_name` ignores the prefix, so `<: self Value` is taken as
-the builtin `Value`; the root superclass clause has the same gap. §6.1
-evaluates such a clause "as if it was a top level expression", so it is a
-run-time error, not a silent acceptance. `load_module` has no error path, so
-the fix needs a deferred program error at module load, as
-`Literal::UnresolvedIdentifier` defers one to execution
-([object-model.md](design/object-model.md), "Mixin application", the gap at
-its end). The whole-branch review of mixin application put it first.
+the builtin `Value`; the root superclass clause has the same prefix gap, and
+keeps resolving a builtin such as `Object` by name. §6.1 evaluates such a
+clause "as if it was a top level expression", so it is a run-time error, not
+a silent acceptance. `load_module` has no error path, so the fix needs a
+deferred program error at module load, as `Literal::UnresolvedIdentifier`
+defers one to execution ([object-model.md](design/object-model.md), "Mixin
+application", the gap at its end). The whole-branch review of mixin
+application put it first.
 
 Nothing else about Plan B is decided; in particular, whether `Kernel.ns`'s
 own module becomes a value — its one slot holds the VM mirror — is open
@@ -3669,6 +3676,10 @@ next session starts" above). The design is
   declaration has `<:` clauses), and `verify_mixins` refuses a clause without
   arguments that carries a message body
   (`UnexpectedMixinApplicationMessage`).
+- the fourteenth golden, `mixin_module_declares_itself_a_value`, pins the
+  rule the user made explicit afterwards: a module declares itself a value
+  with `= Object <: Value`, and a second instance of its class is `=` and
+  `==` to it and hashes alike.
 - `5ac5034`, `06fd024`, `6b0f36a`, `4f4ea13` — the measurement, the
   regression it found and its fix, below.
 
@@ -3690,9 +3701,11 @@ isolated. `vm::run` is 6,508 instructions in both trees and one function. See
 
 **Known gaps**, each recorded where it applies:
 
-- **At a module's root, a clause names only a builtin**: a root `<: self X`
-  or `<: super X` adds no level, silently, and the prefix before a builtin's
-  name is ignored, as for the root superclass clause
+- **At a module's root, every `<:` clause but `<: Value` should be
+  refused**: `<: Value` is how a module declares itself a value and stays;
+  a root `<: self X` or `<: super X` adds no level, silently, a clause naming
+  another builtin adds one, and the prefix before a builtin's name is
+  ignored, as for the root superclass clause
   ([README.md](design/README.md), deviations;
   [object-model.md](design/object-model.md), "Mixin application").
 - **A root class's levels lose their identity hash across a snapshot**; not

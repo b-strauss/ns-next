@@ -518,17 +518,32 @@ carries the clauses on each row and the levels as class records
 `goldens/mixin/`, with §6.2's own example in
 `goldens/spec/spec_6_2_a_mixin_application_derives_a_class.ns`.
 
-**Gap: at a module's root, a clause can only name a builtin.** A root class has
-no enclosing object to evaluate a receiver in, so `load_root_class` resolves
-each `<:` receiver as it resolves the root's superclass
-(`resolve_superclass_receiver`): by builtin name alone.
-`class M = Object <: Value (…)` works, which is what a module declaring itself
-a value needs. A root clause prefixed `self` or `super` that names anything
-else adds no level, silently, and `builtin_kind_from_name` ignores the prefix,
-so `<: self Value` is taken as the builtin `Value`; §6.1 evaluates such a
-clause "as if it was a top level expression", where it "will almost certainly
-fail". The root superclass clause has the same gap. Both only over-accept a
-program §6.1 says fails ([README.md](README.md), deviations).
+**At a module's root, `<: Value` is allowed as a rule: it is how a module
+declares itself a value.** `class M … = Object <: Value (…)` makes the
+module's class inherit `Value`, which is §3.1.1's condition for its instances
+to be values, and it is the form §3.1.1's other conditions need — a value
+class's enclosing objects must be values, and the outermost one is the module
+— and the one SOMns's `Kernel.ns` writes. It is a sanctioned form, not a side
+effect of how a root clause is resolved, and it stays allowed when the gap
+below is closed (`goldens/mixin/mixin_module_declares_itself_a_value.ns`).
+
+**Gap: every other root `<:` clause is accepted or dropped instead of
+refused.** A root class has no enclosing object to evaluate a receiver in, so
+`load_root_class` resolves each `<:` receiver as it resolves the root's
+superclass (`resolve_superclass_receiver`): by builtin name alone. A root
+clause naming another builtin adds a level for it; one prefixed `self` or
+`super` that names anything but a builtin adds no level, silently; and
+`builtin_kind_from_name` ignores the prefix, so `<: self Value` is taken as
+the builtin `Value`. §6.1 evaluates such a clause "as if it was a top level
+expression", where it "will almost certainly fail". The root superclass clause
+has the same prefix gap — a prefixed one naming anything but a builtin is
+dropped, and a prefix before a builtin's name is ignored — while resolving a
+builtin such as `Object` by name is what it should do. Plan B closes the gap
+([PROGRESS.md](../PROGRESS.md), "Where the next session starts"): it keeps
+`<: Value` and makes every other root `<:` clause — prefixed, naming another
+builtin, or `<: self Value` — a deferred program error, and refuses a prefixed
+root superclass clause the same way. Until then the runtime only over-accepts a program the rule refuses
+([README.md](README.md), deviations).
 
 ## Class sides and metaclasses
 
