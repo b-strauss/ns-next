@@ -587,6 +587,7 @@ mod tests {
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             inherits_value: false,
+            first_mutable_slot: None,
             instantiation_refusal: None,
             nested_slot: crate::hash::IdentityMap::default(),
             declared_slots: Vec::new(),

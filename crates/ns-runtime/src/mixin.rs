@@ -582,11 +582,18 @@ pub struct MixinApplication {
     /// `Value`'s own application answers `false`: it inherits nothing, and
     /// `Kernel.ns` gives it no slots for the rule below to be about.
     pub inherits_value: bool,
+    /// The first mutable slot anywhere in this application's chain, whether
+    /// or not the chain inherits `Value`: a `<:` clause can put `Value`'s
+    /// level below a class that declares one, and the instances of every
+    /// class built on that level carry the slot. `instantiation_refusal`
+    /// turns it into a refusal only where the chain inherits `Value`, so a
+    /// class with no value in its chain keeps its mutable slots legally.
+    pub first_mutable_slot: Option<MutableValueSlot>,
     /// What `interpreter::instantiate` refuses before allocating an
     /// instance, computed once per application by `Mutator::apply_mixin`:
     /// a root clause defect (on this level or inherited), or -- when the
-    /// chain inherits `Value` -- the first mutable slot below `Value`. One
-    /// field, so the instantiation path tests one `Option` for both.
+    /// chain inherits `Value` -- `first_mutable_slot`. One field, so the
+    /// instantiation path tests one `Option` for both.
     pub instantiation_refusal: Option<InstantiationRefusal>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached

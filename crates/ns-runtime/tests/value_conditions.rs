@@ -89,6 +89,48 @@ fn every_allowed_root_form_instantiates() {
     }
 }
 
+/// §6.2 lets `<: Value` put `Value`'s level below an arbitrary class, so a
+/// mutable slot declared above that level -- not only below it -- reaches a
+/// value's instances. The class that declares the mutable slot is no value
+/// itself and keeps the slot legally; only the class whose chain inherits
+/// `Value` through the `<:` clause is refused, where its instance would come
+/// into being.
+#[test]
+fn a_mutable_slot_above_the_value_level_is_refused() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class MutableSlotAboveValue usingPlatform: platformAtCreation = Object <: Value () (
+            public class Counting = Object new (
+                | public count ::= 0. |
+            ) ()
+            public class Counted = Counting new <: Value () ()
+        ) : ()
+    "};
+    let (mut interpreter, class, _resolved) = load(source);
+    let platform = interpreter.platform();
+    let module = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "MutableSlotAboveValue usingPlatform:",
+    );
+    let counting = expect_ok(
+        interpreter.send(&module, Symbol::intern("Counting"), &[]),
+        "MutableSlotAboveValue Counting",
+    );
+    expect_ok(interpreter.instantiate(&counting, &[]), "Counting new");
+
+    let counted = expect_ok(
+        interpreter.send(&module, Symbol::intern("Counted"), &[]),
+        "MutableSlotAboveValue Counted",
+    );
+    let message = expect_error(interpreter.instantiate(&counted, &[]), "Counted new");
+    assert_eq!(
+        message,
+        "cannot instantiate Counted: a value object is deeply immutable, and Counting declares \
+         the mutable slot count"
+    );
+}
+
 /// A root clause the resolver refused until 2026-09-23 now resolves, and is
 /// refused at instantiation like every other root defect.
 #[test]
