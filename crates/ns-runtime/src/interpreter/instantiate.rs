@@ -646,6 +646,20 @@ impl<'gc> Mutator<'gc> {
                 // and with the factory arguments of the declaration it is
                 // written in -- §6.3 runs each level's slot clauses and
                 // statement "in the context of *i*".
+                //
+                // Checked for both kinds of message, though only a `<:`
+                // clause's needs it. A clause's body is compiled for the
+                // applying declaration's factory and runs with the arguments
+                // of the level below the applied ones, and an image may put a
+                // level above a class that is not its applying row
+                // (`verify_mixins` checks the body against the row alone), so
+                // the two can disagree. `ms` -- the `None` arm above -- is the
+                // applying level's own superclass clause, compiled for its own
+                // factory, whose arity `check_factory_arity` has already
+                // matched those arguments to, so for it the check cannot fail,
+                // exactly as `climb_levels` says of the ordinary climb. It
+                // stays unconditional so the two arms share one path: this
+                // walk is cold, and a program without `<:` never reaches it.
                 self.check_message_arity(&code, applying, &state.levels[applying_index].1)?;
                 if !into_applied_level {
                     let message_arguments = state.levels[applying_index].1.clone();

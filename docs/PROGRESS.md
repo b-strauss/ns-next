@@ -39,6 +39,18 @@ took two decisions for Plan B on 2026-09-23:
 2. **`<:` is implemented fully per §6.2**, which the mixin-application branch
    did.
 
+**Plan B's first item is the root-clause gap, fixed for the superclass clause
+and `<:` together.** At a module's root, a clause prefixed `self` or `super`
+that names anything but a builtin adds no level, silently, and
+`builtin_kind_from_name` ignores the prefix, so `<: self Value` is taken as
+the builtin `Value`; the root superclass clause has the same gap. §6.1
+evaluates such a clause "as if it was a top level expression", so it is a
+run-time error, not a silent acceptance. `load_module` has no error path, so
+the fix needs a deferred program error at module load, as
+`Literal::UnresolvedIdentifier` defers one to execution
+([object-model.md](design/object-model.md), "Mixin application", the gap at
+its end). The whole-branch review of mixin application put it first.
+
 Nothing else about Plan B is decided; in particular, whether `Kernel.ns`'s
 own module becomes a value — its one slot holds the VM mirror — is open
 ([core-library.md](design/core-library.md), "The bootstrap: placeholders
@@ -3650,6 +3662,13 @@ next session starts" above). The design is
   goldens, each derived from §6.2 before it was run, and
   `goldens/spec/spec_6_2_a_mixin_application_derives_a_class` is no longer
   `skipped`.
+- `1a06417`, `4e83254` and the documentation after them — the whole-branch
+  review's fix pass: three more goldens for configurations the review probed
+  and found right (a class nested in an applied mixin reaching two `outer`
+  hops out, one mixin applied twice in one chain, and a mixin whose own
+  declaration has `<:` clauses), and `verify_mixins` refuses a clause without
+  arguments that carries a message body
+  (`UnexpectedMixinApplicationMessage`).
 - `5ac5034`, `06fd024`, `6b0f36a`, `4f4ea13` — the measurement, the
   regression it found and its fix, below.
 
@@ -3686,13 +3705,13 @@ isolated. `vm::run` is 6,508 instructions in both trees and one function. See
 - **Type arguments on a clause's receiver are dropped**, as elsewhere
   ([frontend.md](design/frontend.md), "What is parsed and dropped").
 
-**Gates.** Every commit that changed code or tests saw the per-commit group;
-at `4f4ea13` `cargo test --workspace` passes 934 tests and `parse-corpus`
-reports 210/0/1/0. The end-of-batch group — the suite under the three stress
-modes and `run-corpus` in all four lanes — last ran in full at `f1e4d0f`,
-green; `06fd024` saw the suite under `NS_NEXT_STRESS_MOVES=1` and
-`run-corpus` at 6/0/205, and what followed it is one golden, one comment and
-documentation.
+**Gates.** Every commit that changed code or tests saw the per-commit group.
+At the branch's final state the whole end-of-batch group ran at `5326f7a`:
+`cargo test --workspace` had all 39 test results ok plain and under each of
+`NS_NEXT_STRESS_MOVES=1`, `NS_NEXT_STRESS_CACHES=1` and
+`NS_NEXT_STRESS_COLLECT=1`; `run-corpus` reported "ran 6, failed 0, skipped
+205" plain and under each of the three; and `parse-corpus` reported "parsed
+210, failed 0, expected-fail 1, stale 0".
 
 ## Notes
 

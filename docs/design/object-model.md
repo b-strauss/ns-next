@@ -499,9 +499,15 @@ before `Mk`'s initializer runs, not on the way up. The walk climbs as for any
 class, checks each clause's selector against the named class's factory as it
 climbs, defers each `<:` message (`Instantiation::deferred`) and evaluates it
 on the descent; a frame running one has kind
-`FrameKind::MixinApplicationMessage`, naming the level its clause added. An
+`FrameKind::MixinApplicationMessage`, naming the level its clause added.
+Because a `<:` clause's selector is checked against the named class's primary
+factory on the way up, a misnamed clause fails before `ms` and the
+superclass initializers run -- the policy the superclass clause already
+follows, whose selector is checked before its arguments are evaluated. An
 applied mixin's own superclass clause is never evaluated: only its mixin is
-applied (`goldens/mixin/mixin_initializer_order.ns`).
+applied (`goldens/mixin/mixin_initializer_order.ns`), and so are none of its
+own `<:` clauses
+(`goldens/mixin/mixin_applied_mixins_own_clauses_are_not_applied.ns`).
 
 **A declaration without `<:` takes the path it took before**, plus one test
 per climbed level, per descent and per nested-class creation; the `<:`
