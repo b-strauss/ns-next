@@ -445,7 +445,28 @@ pub struct Instantiation<'gc> {
     /// evaluated with its factory arguments, which `levels` still holds
     /// while the walk climbs (`Mutator::climb_levels`).
     pub(crate) applying: usize,
+    /// The messages into applied levels the upward walk has passed and not
+    /// evaluated, nearest level first, so the downward walk takes the next
+    /// one off the end. §6.2 evaluates a `<:` clause's message after the
+    /// superclass's initializer has run, just before its own mixin's
+    /// (`Mutator::descend_levels`). Empty for any declaration without `<:`
+    /// clauses, and for any whose `<:` messages take no arguments.
+    pub(crate) deferred: Vec<DeferredMessage>,
     pub(crate) phase: InstantiationPhase<'gc>,
+}
+
+/// A message into an applied level whose evaluation waits for the downward
+/// walk. It holds no handle: both levels are indices into
+/// `Instantiation::levels`, which is traced.
+#[derive(Debug, Clone)]
+pub struct DeferredMessage {
+    /// The index of the applied level the message's value is the factory
+    /// arguments of.
+    pub(crate) level: usize,
+    /// The index of the declaration the message is written in, whose factory
+    /// arguments it is evaluated with.
+    pub(crate) applying: usize,
+    pub(crate) code: Rc<crate::bytecode::CompiledCode>,
 }
 
 /// Which way an instantiation's walk is going.
@@ -464,6 +485,10 @@ pub enum InstantiationPhase<'gc> {
     /// Downward. A body running for this instantiation is the initializer of
     /// `levels[index]`, and a level below it has code still to run.
     Descending { index: usize },
+    /// Downward. A body running for this instantiation is the message into
+    /// the applied level `levels[index]`, written in `levels[applying]`'s
+    /// declaration, and its value is `levels[index]`'s factory arguments.
+    Applying { index: usize, applying: usize },
 }
 
 /// A *reified* activation: one a block captured, or one the image decoder

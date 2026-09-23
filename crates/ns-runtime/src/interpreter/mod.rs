@@ -143,9 +143,10 @@ pub(crate) enum Step<'gc> {
         arguments: Vec<Value<'gc>>,
         then: Box<Instantiation<'gc>>,
     },
-    /// Activate `code`, the arguments of `level`'s superclass clause message,
-    /// on the instance `then` is initializing and with `level`'s factory
-    /// arguments (§6.2); its value is the superclass's arguments, with which
+    /// Activate `code`, the arguments of a clause message written in
+    /// `level`'s declaration, on the instance `then` is initializing and with
+    /// `level`'s factory arguments (§6.2); its value is the factory arguments
+    /// of the level above -- the superclass, or an applied level -- with which
     /// `then` carries the walk on.
     ClauseMessage {
         level: ClassReference<'gc>,

@@ -811,3 +811,75 @@ fn a_mixin_clause_message_must_name_the_primary_factory() {
         );
     }
 }
+
+/// Clause messages whose arguments note themselves in the log, so the log
+/// shows when each message is evaluated against when each initializer runs.
+/// `Other` has no initializer of its own, and `Quiet` has none anywhere in
+/// its chain: a level's message is evaluated even when no code of the level
+/// runs after it.
+const EVALUATION_ORDER_SOURCE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Evaluation = Object new (
+        | log ::= 0. |
+    ) (
+        public class Base withBase: b = Object new (
+            note: b.
+        ) ()
+        public class Mixed withMixed: m = Object new (
+            note: m.
+        ) ()
+        public class Other withOther: o = Object new () ()
+        public class Applied from: x = Base withBase: (noted: 1) <: Mixed withMixed: (noted: 2) (
+            note: x.
+        ) ()
+        public class Stacked from: x = Base withBase: (noted: 1) <: Mixed withMixed: (noted: 2) <: Other withOther: (noted: 4) (
+            note: x.
+        ) ()
+        public class Quiet = Object new <: Other withOther: (noted: 6) () ()
+        note: n = ( log:: log * 100 + n )
+        noted: n = ( note: n. ^n )
+        public applied = ( log:: 0. Applied from: 3. ^log )
+        public stacked = ( log:: 0. Stacked from: 3. ^log )
+        public quiet = ( log:: 0. Quiet new. ^log )
+    ) : ()
+"};
+
+/// §6.2's instance initializer for `I` "evaluates ms to μs … invokes the
+/// instance initializer of S on o with the arguments of μs. Then, m is
+/// evaluated to μm": a `<:` clause's message is evaluated after the
+/// superclass's initializer has run and just before its own mixin's, never
+/// on the way up with the superclass clause's. Each case runs under both
+/// lowerings; the log reads two digits per note.
+#[test]
+fn an_applied_level_evaluates_its_message_just_before_its_initializer() {
+    let cases: [(&str, i64); 3] = [
+        // ms 1, Base 1, m 2, Mixed 2, Applied 3.
+        ("applied", 1_01_02_02_03),
+        // ms 1, Base 1, m1 2, Mixed 2, m2 4, Other has no initializer,
+        // Stacked 3.
+        ("stacked", 1_01_02_02_04_03),
+        // m 6, and no initializer anywhere.
+        ("quiet", 6),
+    ];
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load_with(EVALUATION_ORDER_SOURCE, lowering);
+        let module = expect_ok(
+            interpreter.instantiate(&class, &[]),
+            "instantiate Evaluation",
+        );
+        for (selector, expected) in cases {
+            let log = expect_ok(
+                interpreter.send(&module, Symbol::intern(selector), &[]),
+                selector,
+            );
+            interpreter.enter(|mutator| match mutator.fetch(&log) {
+                Value::SmallInteger(actual) if actual == expected => {}
+                other => panic!(
+                    "{lowering:?} {selector}: expected the log {expected}, got {}",
+                    mutator.heap().describe(&other)
+                ),
+            });
+        }
+    }
+}

@@ -205,6 +205,8 @@ impl Trace for Instantiation<'_> {
             levels,
             // An index into `levels`, which is traced below.
             applying: _,
+            // Compiled code and indices into `levels`: no handle.
+            deferred: _,
             phase,
         } = self;
         tracer.value(instance);
@@ -223,7 +225,11 @@ impl Trace for InstantiationPhase<'_> {
                 tracer.object(level);
                 tracer.object(superclass);
             }
-            InstantiationPhase::Descending { index: _ } => {}
+            InstantiationPhase::Descending { index: _ }
+            | InstantiationPhase::Applying {
+                index: _,
+                applying: _,
+            } => {}
         }
     }
 }

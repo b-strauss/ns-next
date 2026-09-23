@@ -438,6 +438,7 @@ impl<'gc> Mutator<'gc> {
                 instance,
                 levels: Vec::new(),
                 applying: 0,
+                deferred: Vec::new(),
                 // Never read: the phase is written wherever the box is handed
                 // to a continuation, the one place that reads it.
                 phase: InstantiationPhase::Descending { index: 0 },
@@ -454,6 +455,7 @@ impl<'gc> Mutator<'gc> {
     fn retire_walk(&mut self, mut state: Box<Instantiation<'gc>>) {
         if self.spare_walks.len() < SPARE_WALKS {
             state.levels.clear();
+            state.deferred.clear();
             state.levels.shrink_to(SPARE_LEVELS);
             state.instance = Value::Nil;
             // A walk that climbed through a clause message with arguments and
@@ -474,7 +476,7 @@ impl<'gc> Mutator<'gc> {
     /// another body.
     pub(crate) fn advance_instantiation(
         &mut self,
-        state: Box<Instantiation<'gc>>,
+        mut state: Box<Instantiation<'gc>>,
         value: Value<'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match state.phase {
@@ -485,6 +487,16 @@ impl<'gc> Mutator<'gc> {
             // An initializer's value is not used; only its effects on the
             // instance are.
             InstantiationPhase::Descending { index } => self.descend_levels(state, index),
+            InstantiationPhase::Applying { index, applying } => {
+                let arguments = argument_list(&self.heap, state.levels[applying].0, value)?;
+                // The climb passed this level with its arguments still to
+                // come, so its arity is checked now, before its initializer.
+                self.check_factory_arity(state.levels[index].0, &arguments)?;
+                state.levels[index].1 = arguments;
+                // `index + 1`: the level itself is the next one to initialize,
+                // if it has code.
+                self.descend_levels(state, index + 1)
+            }
         }
     }
 
@@ -509,17 +521,29 @@ impl<'gc> Mutator<'gc> {
     /// the walk keeps the index of `C` (`Instantiation::applying`) while it
     /// climbs through `C`'s levels. An ordinary level is its own applying
     /// level, so for it this is exactly the walk it always was: its own
-    /// clause, with its own arguments. Nothing on the way down changes at all:
-    /// each applied level's own initializer -- its named class's -- runs with
-    /// the arguments the message into it answered, as every level's does.
+    /// clause, with its own arguments.
+    ///
+    /// §6.2 also orders the messages: `I1`'s initializer "evaluates ms to μs
+    /// … invokes the instance initializer of S on o with the arguments of μs.
+    /// Then, m is evaluated to μm". So only `ms` is evaluated on the way up;
+    /// a message into an applied level has its selector checked here, where
+    /// nothing has run yet, and is then left in `Instantiation::deferred` for
+    /// the downward walk to evaluate just before that level's initializer --
+    /// and the level's factory arity is checked once its arguments exist
+    /// (`advance_instantiation`).
     fn climb_levels(
         &mut self,
         mut state: Box<Instantiation<'gc>>,
         mut level: ClassReference<'gc>,
         mut arguments: Vec<Value<'gc>>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
+        // Whether `level`'s arguments are a deferred message's, not yet
+        // evaluated. Only ever true for an applied level.
+        let mut arguments_deferred = false;
         loop {
-            self.check_factory_arity(level, &arguments)?;
+            if !arguments_deferred {
+                self.check_factory_arity(level, &arguments)?;
+            }
             let Some(superclass) = self.heap.class_superclass(level) else {
                 state.levels.push((level, arguments));
                 let above_top = state.levels.len();
@@ -532,7 +556,8 @@ impl<'gc> Mutator<'gc> {
             // The superclass begins a declaration of its own unless it is one
             // of the applying declaration's levels, whose messages are still
             // the applying declaration's.
-            if applied_clause.is_none() {
+            let into_applied_level = applied_clause.is_some();
+            if !into_applied_level {
                 state.applying = state.levels.len();
             }
             let message = self.clause_message_body(applying, superclass, applied_clause)?;
@@ -541,31 +566,26 @@ impl<'gc> Mutator<'gc> {
                 // to run, and the superclass gets no arguments.
                 level = superclass;
                 arguments = Vec::new();
+                arguments_deferred = false;
                 continue;
             };
             // The message is evaluated on the instance being initialized and
             // with the factory arguments of the declaration it is written in
             // -- §6.3 runs each level's slot clauses and statement "in the
             // context of *i*".
-            let message_arguments = state.levels[applying_index].1.clone();
-            // Its arity is that declaration's, which is what the arguments
-            // were checked against when the walk reached it -- unless an
-            // applied level sits above a class that is not the declaration it
-            // was built for, which no source can build. Refused rather than
-            // pushed, since the activation would lay its registers out from
-            // the wrong count.
-            if usize::from(code.argument_count) != message_arguments.len() {
-                return Err(Signal::Error(NewspeakError {
-                    selector: Symbol::NEW,
-                    receiver: Value::Object(superclass),
-                    message: format!(
-                        "a clause message of class {} takes {} factory arguments, got {}",
-                        class_name(&self.heap, applying),
-                        code.argument_count,
-                        message_arguments.len()
-                    ),
-                }));
+            self.check_message_arity(&code, applying, &state.levels[applying_index].1)?;
+            if into_applied_level {
+                state.deferred.push(DeferredMessage {
+                    level: state.levels.len(),
+                    applying: applying_index,
+                    code,
+                });
+                level = superclass;
+                arguments = Vec::new();
+                arguments_deferred = true;
+                continue;
             }
+            let message_arguments = state.levels[applying_index].1.clone();
             state.phase = InstantiationPhase::Climbing {
                 level: applying,
                 superclass,
@@ -591,13 +611,43 @@ impl<'gc> Mutator<'gc> {
     /// first that has code is answered as an activation;
     /// `advance_instantiation` carries on below it when it returns, unless
     /// nothing below it has code. Past the last level, the instance (step 6).
+    ///
+    /// A message into an applied level the climb deferred is evaluated at the
+    /// same point of the walk, before that level's initializer and after
+    /// everything above it (§6.2's "Then, m is evaluated"), whether or not
+    /// the level has code of its own.
     fn descend_levels(
         &mut self,
         mut state: Box<Instantiation<'gc>>,
         next: usize,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let instance = state.instance;
-        let Some(index) = initializing_level_below(&self.heap, &state.levels, next) else {
+        let initializing = initializing_level_below(&self.heap, &state.levels, next);
+        if let Some(deferred) = state.deferred.last() {
+            debug_assert!(
+                deferred.level < next,
+                "internal: the downward walk passed a deferred message"
+            );
+            if initializing.is_none_or(|index| deferred.level >= index) {
+                let DeferredMessage {
+                    level: index,
+                    applying,
+                    code,
+                } = state
+                    .deferred
+                    .pop()
+                    .expect("internal: the last deferred message was just read");
+                let (applying_class, arguments) = state.levels[applying].clone();
+                state.phase = InstantiationPhase::Applying { index, applying };
+                return Ok(Step::ClauseMessage {
+                    level: applying_class,
+                    code,
+                    arguments,
+                    then: state,
+                });
+            }
+        }
+        let Some(index) = initializing else {
             self.retire_walk(state);
             return Ok(Step::Value(instance));
         };
@@ -617,7 +667,9 @@ impl<'gc> Mutator<'gc> {
         // decoded image's initializer is not held to this; `new` then answers
         // what that code answers, which is the image's program running, not a
         // fault.)
-        if initializing_level_below(&self.heap, &state.levels, index).is_none() {
+        if state.deferred.is_empty()
+            && initializing_level_below(&self.heap, &state.levels, index).is_none()
+        {
             self.retire_walk(state);
             return Ok(Step::Initializer {
                 receiver: instance,
@@ -730,7 +782,7 @@ impl<'gc> Mutator<'gc> {
         &self,
         applying: ClassReference<'gc>,
         superclass: ClassReference<'gc>,
-        applied_clause: Option<crate::mixin::MixinApplicationClause>,
+        applied_clause: Option<MixinApplicationClause>,
     ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal<'gc>> {
         let expected = primary_factory_selector(&self.heap, superclass);
         if let Some(clause) = applied_clause {
@@ -788,6 +840,34 @@ impl<'gc> Mutator<'gc> {
                 panic!("internal: mixin whose superclass clause message takes arguments carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
             });
         Ok(Some(code))
+    }
+
+    /// A clause message's compiled arity is that of the declaration it is
+    /// written in, which is what `arguments` were checked against when the
+    /// walk reached it -- unless an applied level sits above a class that is
+    /// not the declaration it was built for, which no source can build.
+    /// Refused rather than pushed, since the activation would lay its
+    /// registers out from the wrong count.
+    fn check_message_arity(
+        &self,
+        code: &crate::bytecode::CompiledCode,
+        applying: ClassReference<'gc>,
+        arguments: &[Value<'gc>],
+    ) -> Result<(), Signal<'gc>> {
+        if usize::from(code.argument_count) == arguments.len() {
+            return Ok(());
+        }
+        Err(Signal::Error(NewspeakError {
+            // The factory message the program sent to the applying class.
+            selector: primary_factory_selector(&self.heap, applying).unwrap_or(Symbol::NEW),
+            receiver: Value::Object(applying),
+            message: format!(
+                "a clause message of class {} takes {} factory arguments, got {}",
+                class_name(&self.heap, applying),
+                code.argument_count,
+                arguments.len()
+            ),
+        }))
     }
 }
 
