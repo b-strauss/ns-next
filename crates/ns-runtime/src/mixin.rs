@@ -517,11 +517,15 @@ impl Mixin {
     }
 }
 
-/// A mutable slot declared by a class that inherits `Value`, which §3.1.1
-/// forbids: a value object is deeply immutable, so an instance of such a
-/// class could never be one. Both names are recorded because the class that
-/// declares the slot need not be the class being instantiated -- the
-/// refusal has to say which level is at fault.
+/// A mutable slot and the class that declares it, recorded wherever such a
+/// slot exists anywhere in an application's chain -- whether or not that
+/// chain inherits `Value`, since a `<:` clause can put `Value`'s level below
+/// the declaring class (`MixinApplication::first_mutable_slot`). It becomes
+/// a refusal, §3.1.1's "a value object is deeply immutable", only where the
+/// chain does inherit `Value`: a mutable slot is otherwise ordinary and
+/// legal. Both names are recorded because the class that declares the slot
+/// need not be the class being instantiated -- the refusal has to say which
+/// level is at fault.
 #[derive(Debug, Clone, Copy)]
 pub struct MutableValueSlot {
     pub class: Symbol,
