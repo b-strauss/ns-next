@@ -439,14 +439,25 @@ value class passes the enclosing-object condition by construction; the
 builtin classes are built by the bootstrap rather than by the nested-class
 accessor, so a test pins that the kernel instance is a value.
 
-**The two new conditions are checked where a class object is created, as
-SOMns checks them** (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`):
-in `interpreter/nested.rs`'s `after_clause`, after `apply_mixin` answers the
-application and before `new_class_object` builds the class. A class that does
-not inherit `Value` pays one flag test there; the checks themselves are cold
-helpers in `interpreter/`, so both lowerings raise the same errors. Each is an
-ordinary Newspeak error of the accessor send, naming the class and the
-violation.
+**The two new conditions are decided where a class object is created and
+refused where an instance is made.** They are decided once, cold, in
+`interpreter/nested.rs`'s `after_clause`, after `apply_mixin` answers the
+application, and the verdict is recorded on the class object
+(`ClassData`); `decide_instantiation` refuses an instance of a class that
+carries one, as it refuses a mutable slot. A class that does not inherit
+`Value` pays one flag test at creation, and a value class one more test per
+instantiation. SOMns refuses at class creation
+(`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`), and
+this runtime did too until §2.3's own example ruled it out (decided with the
+user on 2026-09-24): with `GrandChildOfOuter`'s slot `Inner ::= String`,
+"`g Nested` returns a subclass of `String`" — a value class whose enclosing
+object `g` is mutable, which the specification creates and never
+instantiates (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`).
+§3.1.1 defines when an *object* is a value; what must never exist is an
+instance that passes for a value and is not one. Both refusals are ordinary
+Newspeak errors named under the class's primary factory, like the other
+instantiation refusals, and the texts live in `interpreter/`, so both
+lowerings raise the same errors.
 
 - **No identity method.** `apply_mixin` records, once per application and in
   the way it records `mutable_value_slot`, the first level that declares an
