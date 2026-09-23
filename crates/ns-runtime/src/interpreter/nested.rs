@@ -222,6 +222,17 @@ pub(crate) fn after_clause<'gc>(
     // superclass application share one application, and therefore one
     // compiled body and one instance layout (§6.2).
     let application = mutator.apply_mixin(&nested, Some(&super_application));
+    // §3.1.1's conditions on a value class, asked once, where its class
+    // object comes into being; a class that is no value pays this one test.
+    if application.inherits_value {
+        crate::interpreter::value_class::check_value_class(
+            mutator,
+            nested.name,
+            &application,
+            enclosing,
+            superclass,
+        )?;
+    }
     // Step 4: identity is per receiver. The class object's superclass chain
     // and its application's superclass chain are linked together here --
     // `dispatch::next_level` steps both and stops if either is missing.

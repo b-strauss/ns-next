@@ -1,0 +1,17 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: a value's class "inherits from class Value and
+   does not define an identity method (==)". `Value`'s own `==` answers what
+   its `=` does, which is what makes a value globally unique; a class that
+   redefines it would break that silently. The refusal is raised where the
+   class object is created, as SOMns checks a value class's conditions
+   (InstantiationNode), so the line before it still prints. *)
+class ValueDefiningIdentity usingPlatform: platformAtCreation = Object <: Value () (
+    public class Odd = Value new () (
+        public == other = ( ^false )
+    )
+    public main: platform args: arguments = (
+        platform transcript show: 'before'; newLine.
+        platform transcript show: Odd new printString; newLine.
+    )
+) : ()

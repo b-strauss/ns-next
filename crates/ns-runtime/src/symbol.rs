@@ -54,6 +54,7 @@ well_known_symbols! {
     AN_OBJECT => "an object",
     UNKNOWN => "unknown",
     EQUALS => "=",
+    IDENTICAL => "==",
 }
 
 struct Interner {

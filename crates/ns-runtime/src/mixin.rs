@@ -593,6 +593,12 @@ pub struct MixinApplication {
     /// turns it into a refusal only where the chain inherits `Value`, so a
     /// class with no value in its chain keeps its mutable slots legally.
     pub first_mutable_slot: Option<MutableValueSlot>,
+    /// §3.1.1: a value's class "does not define an identity method (==)".
+    /// The class, if any, that declares one below `Value` -- `Value`'s own
+    /// excluded, which the specification's next sentence allows, and every
+    /// level above `Value` too, whose `==` `Value` overrides. Refused where a
+    /// class object is created (`interpreter::value_class`).
+    pub identity_method: Option<Symbol>,
     /// What `interpreter::instantiate` refuses before allocating an
     /// instance, computed once per application by `Mutator::apply_mixin`:
     /// a root clause defect (on this level or inherited), or -- when the

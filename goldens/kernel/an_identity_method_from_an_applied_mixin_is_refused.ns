@@ -1,0 +1,16 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1 and 6.2: a level a `<:` clause adds below `Value`
+   is part of the value class, so an `==` its mixin declares is one the class
+   defines. `Identity` alone is no value and may declare `==`; `Mixed`
+   applies it over `Value` and is refused where it is created. *)
+class IdentityFromAMixin usingPlatform: platformAtCreation = Object <: Value () (
+    public class Identity = Object new () (
+        public == other = ( ^true )
+    )
+    public class Mixed = Value new <: Identity () ()
+    public main: platform args: arguments = (
+        platform transcript show: (Identity new == Identity new) printString; newLine.
+        platform transcript show: Mixed new printString; newLine.
+    )
+) : ()

@@ -15,6 +15,7 @@ pub(crate) mod resolve;
 mod safepoint;
 pub(crate) mod sends;
 mod slots;
+pub(crate) mod value_class;
 
 use std::rc::Rc;
 
@@ -1484,11 +1485,28 @@ impl<'gc> Mutator<'gc> {
         // and the two predicates must agree: while this one said `false`,
         // `Value new = Value new` answered `true` and `Box v: Value new` was
         // refused as if the instance were no value.
-        let inherits_value = self
+        let is_value_mixin = self
             .value_mixin
             .as_ref()
-            .is_some_and(|value_mixin| Rc::ptr_eq(value_mixin, mixin))
-            || superclass.is_some_and(|application| application.inherits_value);
+            .is_some_and(|value_mixin| Rc::ptr_eq(value_mixin, mixin));
+        let inherits_value =
+            is_value_mixin || superclass.is_some_and(|application| application.inherits_value);
+        // §3.1.1's third condition on a value class, recorded here like
+        // `first_mutable_slot`: the first level below `Value` -- `Value`'s
+        // own excluded, since its next sentence allows that one -- whose
+        // mixin declares an instance-side `==`. Checked once per application
+        // rather than per instance, and refused where the class object comes
+        // into being (`interpreter::value_class`), not where an instance is
+        // made: unlike a mutable slot, a redefined `==` is wrong about the
+        // class itself, whether or not anything is ever instantiated.
+        let identity_method = superclass
+            .and_then(|application| application.identity_method)
+            .or_else(|| {
+                (inherits_value
+                    && !is_value_mixin
+                    && mixin.compiled_method(Symbol::IDENTICAL).is_some())
+                .then_some(mixin.name)
+            });
         // The first mutable slot anywhere in the chain, superclass levels
         // first, recorded whether or not the chain inherits `Value`: a `<:`
         // clause can put `Value`'s level below an arbitrary class (§6.2), so
@@ -1538,6 +1556,7 @@ impl<'gc> Mutator<'gc> {
             superclass: superclass.cloned(),
             inherits_value,
             first_mutable_slot,
+            identity_method,
             instantiation_refusal,
             slot_count: next,
             nested_slot,
