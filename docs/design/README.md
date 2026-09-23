@@ -33,7 +33,7 @@ that cannot name its code is describing an intention, and should say so.
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
-| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
+| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built, §6.2's mixin application included: each `<:` clause adds an ordinary class level, so lookup, `super`, `outer` and the caches need nothing new | strict enforcement of §3.1.1's value conditions; `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) — since step 6 on the VM mirror's class alone, with kernel primitive methods run in `act` without an activation — per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c); step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | — |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers | JIT tiers |
@@ -149,6 +149,7 @@ since the harness keeps a passing test quiet.
 | `kernel/` | the core library in `Kernel.ns`: what a user subclass of a builtin inherits, the one outcome the move defined, a recursion through kernel methods the two lowerings count alike, and §3.1.1's value semantics — a value's derived equality and hash, its lack of identity, and the two conditions refused at instantiation |
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
 | `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
+| `mixin/` | §6.2's mixin application: lookup and `super` through the applied levels, `outer` from an applied mixin, the order of several `<:` clauses, the initializer order, the level's factory selector, and the errors a clause raises |
 | `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
 | `spec/` | one named rule of `newspeak-spec.pdf`, its section in the file name |
 
@@ -217,23 +218,22 @@ four before trusting a program's output.
 | Deviation | Spec | Where it is explained |
 |---|---|---|
 | No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the builtin `Object` class; scheduled for step 6's third plan, `Class`, `Behavior` and `Metaclass` in `Kernel.ns` | §3.2 | [object-model.md](object-model.md) |
-| Value objects exist and the slot half of §3.1.1's second bullet is enforced — its enclosing-object and no-`==` requirements are not, an open decision — but nothing copies one across an actor boundary, and a module definition is not one | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
+| Value objects exist and the slot half of §3.1.1's second bullet is enforced — its enclosing-object and no-`==` requirements are not, and are to be enforced strictly next — but nothing copies one across an actor boundary, and a module definition is not one | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
-| Mixin application `Base <: Trait` does not parse | §6.2 | [frontend.md](frontend.md) |
+| At a module's root, a superclass or `<:` clause is resolved by builtin name alone: one prefixed `self` or `super` that names anything else is dropped silently (a `<:` clause adds no level), where §6.1 evaluates it as a top-level expression that fails, and the prefix before a builtin's name is ignored | §6.1, §6.2 | [object-model.md](object-model.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 | `doesNotUnderstand:`'s argument is a two-element tuple of the selector and the arguments, not an object obeying `MessageMirror`'s protocol | §3.4 | [dispatch.md](dispatch.md) |
 | A `doesNotUnderstand:` declared on a class side is never invoked: the handler walk starts at the class object's own class, the builtin `Object` class, not at its metaclass | §5.5 | [dispatch.md](dispatch.md) |
 
-Three of these have a golden under `goldens/spec/`, recorded as `skipped`:
-the sequential simultaneous slot clauses, the eager lazy slot and the
-unparsed mixin application. Each
+Two of these have a golden under `goldens/spec/`, recorded as `skipped`:
+the sequential simultaneous slot clauses and the eager lazy slot. Each
 states what the specification requires the program
 to answer, so closing the gap is deleting the `skipped` line, and the
 expectation written the day the gap was found is what then has to hold. The

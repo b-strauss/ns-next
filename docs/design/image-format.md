@@ -399,6 +399,16 @@ and the object table's, so a hash assigned afterward never collides with either.
 `inspect` reads the table as part of the graph section
 (`Report::graph_tag_named_hashes`).
 
+**Gap: a root class's `<:` levels are tag-named but have no entry in that
+table**, so a hash one of them was given would not survive a snapshot: the
+decoder rebuilds the levels with the root class and they draw fresh hashes
+when asked. It is not observable today. No program can obtain a root level as
+a value — there is no reflective `superclass` — and the one thing that can name
+one in an image is a frame's `current_class`, when a method of the builtin the
+clause named, a kernel method, runs on an instance of the root class; that is
+why `CLASS_ROOT_LEVEL` exists rather than a refusal. A `HASHED_*` tag naming a
+root level by position would close the gap once something can reach one.
+
 That is what Cog and Primordial Soup get without trying: their images carry
 every object, classes included — a Spur class's identity hash is even its index
 in the class table (`ensureBehaviorHash`, `enterIntoClassTable`) — so no hash

@@ -251,7 +251,12 @@ Each walks from a class up the superclass chain, and at every level that
 declares the selector — a method, a slot accessor or a nested class, which are
 members on the same footing — the declaration's accessibility decides one of
 three things: the declaration is the answer, it is passed over and the walk
-continues, or the walk stops with no answer (`dispatch::Verdict`).
+continues, or the walk stops with no answer (`dispatch::Verdict`). The chain
+includes the levels a mixin application adds (§6.2): each `<:` clause puts
+an ordinary class object between the declaration and its superclass, so the
+walk meets the applied mixins' members after the declaration's own and before
+the superclass's, with no case of its own ([object-model.md](object-model.md),
+"Mixin application").
 
 **`lookupPublic(selector, class)`** — ordinary sends with an explicit receiver
 (§5.5): "m, if the mixin of C defines a method m with selector n and public
@@ -343,7 +348,11 @@ continues it level by level. A method or nested-class accessor inherited across 
 nesting boundary runs with the class that lexically declares it, not with the
 receiver's own class. Using the receiver's class instead silently resolves
 `outer` to the wrong enclosing object — the kind of defect that produces a
-plausible answer rather than a crash.
+plausible answer rather than a crash. A method found at a level a `<:` clause
+added runs with that level as its current class, and the level's enclosing
+object and declaring class are the named class's (§6.2), so `outer` in an
+applied mixin reaches the mixin's own enclosing objects, not those of the
+declaration applying it.
 
 ## The send machinery
 

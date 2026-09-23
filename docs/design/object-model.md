@@ -3,7 +3,8 @@
 > **Status:** built.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `types.rs` (`Object`, `ObjectData`, `Value`),
-> `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs`,
+> `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
+> nested-class accessor and `build_applied_levels`, §6.2's levels),
 > `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`).
 
 ## Values and objects
@@ -143,6 +144,7 @@ struct Mixin {                    // one per declaration, shared for its lifetim
     factory: Option<Rc<ast::MessagePattern>>,
     nested: Vec<Rc<Mixin>>,       // the nested declarations, for their accessors
     class_side: Option<Rc<Mixin>>,
+    mixin_applications: Vec<MixinApplicationClause>,  // its `<:` clauses (§6.2)
 }
 
 struct MixinApplication {         // (mixin, super application) -> behaviour
@@ -159,6 +161,7 @@ struct ClassData {                // one per enclosing instance, per level
     superclass: Option<ClassReference>,         // parallel to the application chain
     builtin: Option<BuiltinClass>,
     metaclass: Option<ClassReference>,          // built on first class-side send
+    applied_clause: Option<Box<AppliedClause>>, // the `<:` clause that added this level
 }
 ```
 
@@ -213,7 +216,11 @@ The accessor body, in five steps:
 1. Read the hidden slot reserved for this declaration in the receiver's layout.
    If it is not nil, return it.
 2. Otherwise evaluate the superclass clause **in the receiver's context**,
-   yielding a class object; take its application.
+   yielding a class object; take its application. A declaration with `<:`
+   clauses evaluates their receivers in the same activation, left to right
+   after the superclass's, and builds the levels they add ("Mixin
+   application" below) before step 3, which then applies the declaration's
+   own mixin to the top one.
 3. Look up (mixin, that application) in the application cache, creating the
    application if absent.
 4. Allocate the class object `{application, enclosing: r, superclass}`.
@@ -376,8 +383,11 @@ loaded from source, materialized as a nested class or rebuilt from an image.
 The same bullet of §3.1.1 asks two further things that nothing here checks:
 that a value's enclosing objects (§3.3) are values, and that its class does
 not define `==` ([core-library.md](core-library.md), "What is still
-unchecked", where the enclosing-object question is recorded as an open
-decision):
+unchecked"). Both are to be enforced strictly by the next plan, which mixin
+application ("Mixin application" below) was built for: a module can now
+declare itself a value, `class M = Object <: Value (…)`, so a value class it
+declares can have an enclosing object that is one. The two halves enforced
+today:
 
 - **Step 1 refuses a mutable slot.** A class that inherits `Value` and declares
   one could never have a value object for an instance, so there is no instance
@@ -407,6 +417,112 @@ decision):
 Both are ordinary Newspeak errors naming the class and the slot, raised at run
 time — a class nothing instantiates never fails, as a method nothing runs never
 does.
+
+## Mixin application
+
+§6.2 lets a superclass clause apply one or more mixins to the superclass it
+names:
+
+```newspeak
+class C factory: x = S ms <: M1 m1 <: M2 m2 ( … ) ( … )
+class Tagged = Object new <: Marker withTag: 'x'.
+```
+
+Each `<:` clause is §6.1's `inheritanceClause`, the production the superclass
+clause itself is — a receiver naming a class, with an optional message
+defaulting to `new` — and `<:` is one lexer token. With at least one clause the
+whole body may be replaced by a `.`, which declares nothing: the applied mixins
+supply everything. `ClassDeclaration::mixin_applications` carries the clauses
+in written order, and the declaration's `Mixin::mixin_applications` one
+`MixinApplicationClause` each — its selector, whether its message has
+arguments, and that message's compiled body. Type arguments on a clause's
+receiver (`<: Collection[E]`) are parsed and dropped, as they are on a
+superclass clause ([frontend.md](frontend.md), "What is parsed and dropped").
+
+**Each clause adds one class level between the declaration and its
+superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
+§6.2 gives the level four properties, and the level has each one:
+
+- **Its mixin is the named class's mixin** — that class's own declaration, not
+  its superclass chain, which is what §6.2's "a class *C* whose mixin *M*"
+  applies.
+- **Its superclass is the level below**: `S` for the first clause, the
+  previous level for each later one.
+- **Its enclosing object is the named class's** — "The enclosing object of *I*
+  is the enclosing object of *C*" — **and so is its declaring class.** A method
+  of the applied mixin was written where the named class is declared, so
+  `outer` inside it reaches the mixin's own enclosing objects, never the
+  applying declaration's (`goldens/mixin/mixin_outer_reaches_the_mixins_enclosing_object.ns`).
+- **Its primary factory selector is the clause's selector** — "Class *I* has a
+  primary factory method (6) with the same selector as *m*" — which must name
+  the named class's primary factory: a clause sending anything else is §6.1's
+  run-time error, raised when `C` is instantiated
+  (`goldens/mixin/mixin_clause_naming_the_wrong_factory_fails.ns`). A clause
+  whose receiver does not evaluate to a class object is §6.1's other run-time
+  error, raised where the levels are built.
+
+**The levels are built in one place, `interpreter/nested.rs`'s
+`build_applied_levels`**, called by `Mutator::load_root_class` for a module's
+root class and by the nested-class accessor's `after_clause` for a nested one.
+A nested declaration's `<:` receivers are evaluated in its superclass clause's
+own activation, which answers `{superclass. mixin…}` when there are clauses
+(`nested::superclass_clause_expression`), so one activation fixes every class
+the levels are built from, with the bindings and the cyclic-creation marker the
+superclass clause already had. Each level is an ordinary class object
+(`Mutator::new_applied_level`) whose `ClassData::applied_clause` names the
+applying declaration and the clause's position in it — boxed, so a class
+object grows by one word — rather than carrying a copy, because two clauses of
+one declaration can be identical and the image names a level's clause by row
+and position.
+
+**So lookup, `super`, `outer`, the dispatch ids and the inline caches need
+nothing new.** A level is a class object in the class-object chain and an
+application in the application chain like any other, so the three lookups walk
+through it ([dispatch.md](dispatch.md), "The three lookup algorithms"), a
+`super` send from `C` reaches the applied mixin and one from the applied mixin
+reaches the level below, and the dispatch ids and inline caches, which are
+per application, see one more application with an id of its own. The
+application cache is keyed as for any class, by (mixin,
+superclass application), so two enclosing instances whose `C`s apply the same
+mixin over the same superclass share each level's `MixinApplication`, as §6.2's
+"they all share their code and structural definition with the mixin" requires.
+
+**Initialization order follows §6.2's text**, generalized to a chain, and
+matches SOMns (`MixinBuilder.assembleInitializationMethod`): `C`'s instance
+initializer evaluates `ms` and runs `S`'s initializer — and everything above
+`S` — with its arguments; then evaluates `m1` and runs `M1`'s initializer with
+its arguments; and so on to `mn` and `Mn`; and then runs `C`'s own slots and
+initializer expressions. Every clause message is compiled in `C`'s factory
+scope and evaluated with `C`'s factory arguments (§6.3 makes the factory's
+parameters visible in the superclass clause), and each `mk` is evaluated just
+before `Mk`'s initializer runs, not on the way up. The walk climbs as for any
+class, checks each clause's selector against the named class's factory as it
+climbs, defers each `<:` message (`Instantiation::deferred`) and evaluates it
+on the descent; a frame running one has kind
+`FrameKind::MixinApplicationMessage`, naming the level its clause added. An
+applied mixin's own superclass clause is never evaluated: only its mixin is
+applied (`goldens/mixin/mixin_initializer_order.ns`).
+
+**A declaration without `<:` takes the path it took before**, plus one test
+per climbed level, per descent and per nested-class creation; the `<:`
+machinery lives in cold, out-of-line helpers. What that costs is measured in
+[execution.md](execution.md), "What mixin application cost". The image
+carries the clauses on each row and the levels as class records
+([image-format.md](image-format.md), "Sections"). The goldens are under
+`goldens/mixin/`, with §6.2's own example in
+`goldens/spec/spec_6_2_a_mixin_application_derives_a_class.ns`.
+
+**Gap: at a module's root, a clause can only name a builtin.** A root class has
+no enclosing object to evaluate a receiver in, so `load_root_class` resolves
+each `<:` receiver as it resolves the root's superclass
+(`resolve_superclass_receiver`): by builtin name alone.
+`class M = Object <: Value (…)` works, which is what a module declaring itself
+a value needs. A root clause prefixed `self` or `super` that names anything
+else adds no level, silently, and `builtin_kind_from_name` ignores the prefix,
+so `<: self Value` is taken as the builtin `Value`; §6.1 evaluates such a
+clause "as if it was a top level expression", where it "will almost certainly
+fail". The root superclass clause has the same gap. Both only over-accept a
+program §6.1 says fails ([README.md](README.md), deviations).
 
 ## Class sides and metaclasses
 
@@ -570,6 +686,10 @@ stays blocked on that, not on the collector.
   makes an override and the declaration it overrides collide in one slot.
 - **The accessor is interpreter code, not synthesized bytecode**, so there is one
   copy of it for every lowering to reach.
+- **A mixin application's levels are ordinary class objects**, one per `<:`
+  clause, so lookup, `super`, `outer`, the dispatch ids and the caches reach
+  them with no new machinery; only building them, initializing them and
+  carrying them through the image are new ("Mixin application" above).
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.

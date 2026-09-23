@@ -253,8 +253,10 @@ other half of that bullet is not enforced — §3.1.1 also requires that a
 value's *enclosing objects* (§3.3) are values and that its class does not
 define an identity method `==`, and nothing checks either. By the letter of
 the first of those, a value class a module declares has no value instances at
-all, since a module instance is an ordinary object; what to do about it is an
-open decision ([core-library.md](core-library.md), "What is still
+all, since a module instance is an ordinary object. Both are to be enforced
+strictly by the next plan (decided with the user on 2026-09-23), now that a
+module can declare itself a value with §6.2's mixin application,
+`= Object <: Value` ([core-library.md](core-library.md), "What is still
 unchecked").
 
 What is missing is the boundary: there are no actors, so nothing copies a value
