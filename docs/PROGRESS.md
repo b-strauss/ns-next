@@ -39,29 +39,20 @@ took two decisions for Plan B on 2026-09-23:
 2. **`<:` is implemented fully per §6.2**, which the mixin-application branch
    did.
 
-**Plan B's first item is the root-clause gap, fixed for the superclass clause
-and `<:` together.** The user decided on 2026-09-23 that `<: Value` on a
-module, `class M … = Object <: Value (…)`, is explicitly allowed as a rule: it
-is how a module declares itself a value (§3.1.1), and the fix keeps it
-(`goldens/mixin/mixin_module_declares_itself_a_value`). Every other root `<:`
-clause becomes a deferred program error: one prefixed `self` or `super`, one
-naming another builtin, and `<: self Value`. Today, at a module's root, a
-clause prefixed `self` or `super` that names anything but a builtin adds no
-level, silently, one naming another builtin adds a level, and
-`builtin_kind_from_name` ignores the prefix, so `<: self Value` is taken as
-the builtin `Value`; the root superclass clause has the same prefix gap, and
-keeps resolving a builtin such as `Object` by name. §6.1 evaluates such a
-clause "as if it was a top level expression", so it is a run-time error, not
-a silent acceptance. `load_module` has no error path, so the fix needs a
-deferred program error at module load, as `Literal::UnresolvedIdentifier`
-defers one to execution ([object-model.md](design/object-model.md), "Mixin
-application", the gap at its end). The whole-branch review of mixin
-application put it first.
-
-Nothing else about Plan B is decided; in particular, whether `Kernel.ns`'s
-own module becomes a value — its one slot holds the VM mirror — is open
-([core-library.md](design/core-library.md), "The bootstrap: placeholders
-first, kernel second").
+**Plan B is designed (2026-09-23) and has no implementation plan yet**;
+writing it is the next step. The design is
+[object-model.md](design/object-model.md)'s "Planned: all four conditions,
+enforced strictly": `Kernel` becomes `= Object <: Value` and the VM mirror a
+value by moving its class below `Value`; the identity-method and
+enclosing-object conditions are checked where a class object is created
+(`after_clause`), the latter walking the superclass chain with an early stop
+at a class already checked; the mutable-slot check covers the whole chain,
+since a `<:` clause can put `Value`'s level below a class with slots; a
+module's root may name only `Object` or `Value`, or write `Object <: Value`,
+and every other root clause is a defect recorded on the root mixin, refused
+at instantiation and refused by the encoder; and every golden that declares
+a value class inside an ordinary module becomes a value module, keeping its
+outcome. The plan follows the order the design gives.
 
 **After Plan B comes step 6's third plan, `Class`, `Behavior` and
 `Metaclass` in `Kernel.ns`**, which was next before mixin application was

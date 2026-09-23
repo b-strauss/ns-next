@@ -233,8 +233,10 @@ one, the program does not.
   with the user on 2026-09-23: enforce it strictly**, together with the
   absent `==` below, in the plan after mixin application — which was built
   first so that a module can declare itself a value the same way
-  ([object-model.md](object-model.md), "Mixin application"). Until that plan
-  lands the documents must not claim the condition holds.
+  ([object-model.md](object-model.md), "Mixin application"); its design is
+  [object-model.md](object-model.md)'s "Planned: all four conditions,
+  enforced strictly". Until that plan lands the documents must not claim the
+  condition holds.
 - **A value class that defines `==` is accepted.** §3.1.1's third
   requirement is that a value's class "does not define an identity method
   (`==`)"; nothing refuses a subclass of `Value` that declares one, and such
@@ -695,9 +697,11 @@ declared no factory at all, let any count through. `Array new` and
 `Kernel` is declared like any other module, `= Object new (…)`, where SOMns
 writes `= Object <: Value`. Both halves exist now — the `Value` class and
 §6.2's `<:` ([object-model.md](object-model.md), "Mixin application") — and
-`Kernel` has not been changed; whether it becomes a value belongs to the
-strict enforcement of §3.1.1 ("What is still unchecked" above), since its
-one slot holds the VM mirror, which is no value. Nothing depends on it yet. §6.4 makes a module *definition* a value object with nothing
+`Kernel` has not been changed yet. **Decided with the user on 2026-09-23:
+it becomes `= Object <: Value`, and the mirror a value by moving its class
+below `Value`**, as part of the strict enforcement of §3.1.1 ("What is still
+unchecked" above; [object-model.md](object-model.md), "Planned: all four
+conditions, enforced strictly"). §6.4 makes a module *definition* a value object with nothing
 declared, and §3.1.1's conditions on its *instances* exist for passing
 objects across actor boundaries, which ns-next has none of
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects

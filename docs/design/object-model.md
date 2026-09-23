@@ -418,6 +418,125 @@ Both are ordinary Newspeak errors naming the class and the slot, raised at run
 time — a class nothing instantiates never fails, as a method nothing runs never
 does.
 
+### Planned: all four conditions, enforced strictly ("Plan B")
+
+Designed with the user on 2026-09-23; not built yet. It enforces every
+condition of §3.1.1's second bullet and closes the root-clause gap ("Mixin
+application", at its end). Each decision below was taken with the user.
+
+**`Kernel` and the VM mirror become values, as in SOMns.** `Kernel.ns`'s
+module is declared `class Kernel vmMirror: theMirror = Object <: Value (…)`,
+the header `prior-art/somns/core-lib/Kernel.ns` writes, and its one slot is
+already immutable. The mirror's class moves from `Object` to below `Value`
+(`interpreter/kernel.rs`, `superclass_of_kind`), so the mirror is a value by
+the ordinary rule — no slots, no `==` of its own, its class inherits
+`Value` — rather than by an exception in `check_value_slot`; SOMns asserts
+the same (`vm/ObjectSystem.java`, `assert vmMirror.isValue()`). Every
+capability guarantee of the mirror stays as it is: nothing names it, the
+encoder refuses it, `decide_factory` refuses to instantiate its class, and
+`SendMirror` has no wire tag. With the kernel instance a value, every builtin
+value class passes the enclosing-object condition by construction; the
+builtin classes are built by the bootstrap rather than by the nested-class
+accessor, so a test pins that the kernel instance is a value.
+
+**The two new conditions are checked where a class object is created, as
+SOMns checks them** (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`):
+in `interpreter/nested.rs`'s `after_clause`, after `apply_mixin` answers the
+application and before `new_class_object` builds the class. A class that does
+not inherit `Value` pays one flag test there; the checks themselves are cold
+helpers in `interpreter/`, so both lowerings raise the same errors. Each is an
+ordinary Newspeak error of the accessor send, naming the class and the
+violation.
+
+- **No identity method.** `apply_mixin` records, once per application and in
+  the way it records `mutable_value_slot`, the first level that declares an
+  instance-side `==` while the chain inherits `Value`, excluding `Value`'s own
+  mixin. Only levels **below** `Value` count: an `==` above it, `Object`'s
+  included, is overridden by `Value>>==`, so the class does not define it, and
+  `Value>>==` itself is the declaration §3.1.1's next sentence allows. A level
+  a `<:` clause adds below `Value` counts like any other.
+- **Enclosing objects are values.** The walk climbs the new class object's
+  superclass chain. At each level: a class that inherits `Value` and was
+  created as a class of its own — by `after_clause`, as a builtin or as a
+  module root, not a level a `<:` clause added — stops the walk, because it
+  was checked the same way when it was created and everything above it holds
+  by induction. Any other level — one that does not inherit `Value`, or a
+  `<:` level, which is never created through `after_clause` — has its
+  enclosing object checked with `instantiate.rs`'s `is_a_value`, the predicate
+  the slot check uses, and the walk continues. Checking every level and not
+  only the class's own enclosing object matters because an inherited method
+  reaches its own level's enclosing objects through `outer`: in
+  `class P = Foo new <: Value`, `P` inherits `Value`, `Foo` does not, and a
+  method of `Foo` whose enclosing object is mutable would make `P`'s
+  instances reach mutable state. Requiring `Foo` itself to inherit `Value`
+  would be stricter than §3.1.1: a slotless `Foo` in a value module meets
+  every condition, and `Foo new <: Value` is how a value variant of it is
+  made. A module's root class has `nil` for its enclosing object and a chain
+  of builtins and at most `<: Value`, so `load_root_class` needs no error
+  path, only a `debug_assert!`.
+
+**A mutable slot above the `Value` level is refused too.** Today
+`apply_mixin` records a mutable slot only on a level that already inherits
+`Value`, which was complete while only `Object` and `Top`, neither with
+slots, could sit above `Value`. A `<:` clause puts `Value`'s level below an
+arbitrary class, so in `P → [Value] → Foo` a `| counter ::= 0 |` of `Foo`'s
+goes unrecorded and `P new` answers a "value" with a mutable slot. The fix
+records the first mutable slot of the whole chain whatever the level, and
+`instantiate_class` refuses only when the class inherits `Value`, so a class
+with no value in its chain keeps its mutable slots legally. The mutable-slot
+check stays at instantiation.
+
+**The root rule: only `Object`, `Value` or `Object <: Value`.** A module's
+root class may omit its superclass clause (which is `Object`), name `Object`
+or `Value` unprefixed, or write `Object <: Value`; its message part is
+unaffected and checked at instantiation as today. Everything else is a root
+defect: any prefix, any other name — the other builtins and `Top` included —
+and any other `<:` clause, `Value <: Value` and several clauses among them.
+The corpus has such roots — `Newspeak2SqueakCompilation`'s
+`= NewspeakCompilation usingPlatform: platform`, `UISessionManager`'s
+`= NewspeakObject new` — which the Squeak-hosted implementation accepts and
+§6.1 says "will almost certainly fail"; none is on `corpus/runnable.toml`.
+Because the rule is syntactic, `build_mixin` records the defect on the root
+mixin (`root_clause_defect`, naming the clause and the reason);
+`load_root_class` builds the class without the defective level, so
+`load_module` stays total; and `instantiate_class` refuses to instantiate
+it, from one cold `Option` on the application that holds both refusals it
+makes before allocating — the mutable slot and the root defect — so the
+instantiation path gains no test. `run` and `load` always instantiate the
+root, so every program with a defective root meets the error at start, under
+both lowerings with the same text. `Kernel.ns` goes through the same path.
+**The encoder refuses a module with a root defect**, at `build` and
+`snapshot`, with the same text: such a root can never be instantiated, so an
+artifact of it could only fail, and refusing it needs no wire field, no tag
+and nothing in the decoder.
+
+**Not re-checked: a class object decoded from an image**, as a ready-made
+instance is not ("What is still unchecked" in
+[core-library.md](core-library.md)); a crafted artifact gets a wrong answer,
+not a crash.
+
+**Goldens.** Every golden and inline test module that declares a value class
+inside an ordinary module becomes a value module, `= Object <: Value`, with
+`platform` or the transcript passed as an argument rather than held in a
+slot, and keeps its recorded outcome — the rule decided on 2026-09-23 for the
+two goldens declaring `class Text = String new`, extended to every such
+module: those two, `kernel/a_subclass_of_a_builtin_falls_to_objects_methods`,
+`kernel/a_user_value_class_compares_by_its_slots`,
+`kernel/a_value_class_refuses_a_mutable_slot` (still refused for its own
+reason), `kernel/a_value_has_no_identity`,
+`kernel/a_values_nested_class_is_not_part_of_its_state` and
+`kernel/a_values_slot_must_hold_a_value`. Each rule above gets a golden of
+its own, the accepted `Foo new <: Value` over a slotless `Foo` in a value
+module included, and each root defect one.
+
+**Order**, each step leaving the suite green: the root defect; `Kernel` and
+the mirror as values; restructuring the goldens and inline modules, which is
+legal today and changes no outcome; the mutable slot over the whole chain;
+the identity method; the enclosing objects with their early stop; the
+documents. A release measurement against `cdc0257` follows the protocol in
+[execution.md](execution.md); the only new test on a hot path is the flag
+test in `after_clause`, once per class created.
+
 ## Mixin application
 
 §6.2 lets a superclass clause apply one or more mixins to the superclass it
@@ -539,10 +658,10 @@ expression", where it "will almost certainly fail". The root superclass clause
 has the same prefix gap — a prefixed one naming anything but a builtin is
 dropped, and a prefix before a builtin's name is ignored — while resolving a
 builtin such as `Object` by name is what it should do. Plan B closes the gap
-([PROGRESS.md](../PROGRESS.md), "Where the next session starts"): it keeps
-`<: Value` and makes every other root `<:` clause — prefixed, naming another
-builtin, or `<: self Value` — a deferred program error, and refuses a prefixed
-root superclass clause the same way. Until then the runtime only over-accepts a program the rule refuses
+("Planned: all four conditions, enforced strictly" above, "The root rule"):
+a root may name only `Object` or `Value`, or write `Object <: Value`, and
+every other root clause becomes a defect refused when the root is
+instantiated. Until then the runtime only over-accepts a program the rule refuses
 ([README.md](README.md), deviations).
 
 ## Class sides and metaclasses
