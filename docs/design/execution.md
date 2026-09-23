@@ -3120,70 +3120,68 @@ a differently loaded machine.
 
 §6.2's mixin application -- one class level per `<:` clause, between a
 declaration's own class and its superclass (`nested::build_applied_levels`) --
-left `vm.rs`, `act`, the inline caches and the compiled code of every send
-untouched, but it runs on two paths every program takes. The instantiation walk
-(`instantiate::climb_levels`, `descend_levels`) now tests, per level, whether
-the superclass is a level a `<:` clause added (`Heap::class_applied_clause`),
-tracks the applying declaration's index, and checks a list of deferred
-messages on the way down. And the nested-class accessor's `after_clause`
-unpacks the clause's value and builds the applied levels through
-`nested::build_applied_levels`, which an ordinary declaration passes through
-with nothing to build.
+runs on two paths every program takes: the instantiation walk behind every
+`new`, and the nested-class accessor's creation of a class object. Neither
+`vm.rs`, `act`, the inline caches nor the compiled code of a send changed.
+**A program that writes no `<:` pays one test per path for it**, and nothing
+else:
 
-**Measured 2026-09-23, `de05916` against `6833234`**, the branch's base on
-`master`, by the protocol of "What removing the re-entries moved" above: three
-builds of each tree with the pinned flags, none importing `VCRUNTIME140.dll`,
-each checked to print the expected answer for every source; `ns-next bench
-<source> --iterations 30`, five rounds a sitting, the binaries rotating, three
-sittings. The sources are the eight of "What `Top`, `Value` and `Number` cost"
-and two more throwaway ones: `bench_newarg2.ns` is `bench_newarg.ns` with the
-argument forwarded, `class Cell y: b = Base x: b + 1 ( | v ::= b. | )`,
-instantiated as `Cell y: 1`; `bench_nested.ns` creates 20,000 fresh enclosing
-objects and instantiates a nested class of each, `Holder new Inner new v`, so
-every iteration runs the nested-class accessor's creation path once and two
-instantiations. A release build with debug information of each tree puts
-`vm::run` at 6,508 instructions in both, one function with no closure of its
-own. Means in ms, all three sittings pooled:
+- The climb (`instantiate::climb_levels`) is the ordinary walk, with one test
+  per level of whether the superclass is an applied level
+  (`Heap::class_is_applied_level`, a read of `ClassData::applied_clause`). The
+  first applied level hands the rest of the climb to
+  `climb_through_applied_levels`, `#[cold]` and `#[inline(never)]`, which
+  keeps the applying declaration's index and defers each `<:` clause's
+  message.
+- The descent (`descend_levels`) tests whether any message was deferred and
+  otherwise is the ordinary descent; `descend_to_deferred_message` and the
+  resumption after one (`advance_past_applied_message`) are out of line the
+  same way.
+- The accessor's `after_clause` tests whether the declaration has a `<:`
+  clause; one that does builds its levels in the out-of-line
+  `superclass_with_applied_levels`.
+- `check_factory_arity`, `clause_message_body` and `argument_list` are
+  `#[inline(always)]`, since the cold paths are second callers of each, and
+  `ClassData::applied_clause` is boxed, so a class object grows by one word.
 
-| Source | Base | Head | Change, pooled | Sitting 1 / 2 / 3 | Per iteration |
-|---|---|---|---|---|---|
-| `bench_loop.ns` | 7.07 | 7.04 | −0.5% | −1.0% / +0.2% / −0.6% | |
-| `bench_send.ns` | 8.34 | 8.33 | −0.1% | +0.1% / −0.0% / −0.4% | |
-| `bench_block.ns` | 18.46 | 18.63 | +0.9% | +1.1% / +1.4% / +0.3% | |
-| `bench_megamorphic.ns` | 11.48 | 11.53 | +0.5% | +0.5% / +0.8% / +0.1% | |
-| `bench_do.ns` | 5.73 | 5.75 | +0.3% | +0.5% / +0.4% / +0.1% | |
-| `bench_new.ns` | 4.18 | **4.34** | **+3.8%** | +4.1% / +3.5% / +3.7% | +8 ns |
-| `bench_new2.ns` | 5.19 | **5.48** | **+5.6%** | +5.1% / +6.4% / +5.3% | +14 ns |
-| `bench_newarg.ns` | 7.31 | **7.46** | **+2.1%** | +2.1% / +2.2% / +2.1% | +8 ns |
-| `bench_newarg2.ns` | 8.31 | **8.69** | **+4.6%** | +4.7% / +5.3% / +3.8% | +19 ns |
-| `bench_nested.ns` | 7.89 | **8.62** | **+9.3%** | +9.1% / +9.2% / +9.5% | +37 ns |
+**Measured 2026-09-23 against `6833234`**, the commit before mixin
+application, by the protocol of "What removing the re-entries moved" above:
+three builds of each tree with the pinned flags, none importing
+`VCRUNTIME140.dll`, each checked to print the expected answer for every
+source; `ns-next bench <source> --iterations 30`, five rounds a sitting, the
+binaries rotating, three sittings. The sources are the eight of "What `Top`,
+`Value` and `Number` cost" and two more throwaway ones: `bench_newarg2.ns` is
+`bench_newarg.ns` with the argument forwarded,
+`class Cell y: b = Base x: b + 1 ( | v ::= b. | )`, instantiated as `Cell y: 1`;
+`bench_nested.ns` creates 20,000 fresh enclosing objects and instantiates a
+nested class of each, `Holder new Inner new v`, so every iteration runs the
+accessor's creation path once and two instantiations. A release build with
+debug information of each tree puts `vm::run` at 6,508 instructions in both,
+one function with no closure of its own. Means in ms, all three sittings
+pooled:
 
-**Sends are level**: the five sources that instantiate nothing in their loop
-sit within the 0.3–2.3% these sources show between builds of one tree.
+| Source | `6833234` | Now | Change, pooled | Sitting 1 / 2 / 3 |
+|---|---|---|---|---|
+| `bench_loop.ns` | 7.02 | 7.04 | +0.3% | +0.2% / +0.7% / −0.1% |
+| `bench_send.ns` | 8.37 | 8.34 | −0.4% | −0.3% / −0.6% / −0.2% |
+| `bench_block.ns` | 18.45 | 18.66 | +1.2% | +1.1% / +0.7% / +1.7% |
+| `bench_megamorphic.ns` | 11.44 | 11.46 | +0.2% | +0.4% / −0.0% / +0.1% |
+| `bench_do.ns` | 5.73 | 5.72 | −0.0% | −0.0% / +0.2% / −0.2% |
+| `bench_new.ns` | 4.17 | 4.19 | +0.5% | +0.3% / +0.9% / +0.4% |
+| `bench_new2.ns` | 5.18 | 5.23 | +0.9% | +1.1% / +0.6% / +0.9% |
+| `bench_newarg.ns` | 7.34 | 7.18 | −2.2% | −1.7% / −1.4% / −3.4% |
+| `bench_newarg2.ns` | 8.27 | 8.39 | +1.4% | +1.5% / +1.1% / +1.5% |
+| `bench_nested.ns` | 7.87 | 7.95 | +1.0% | +1.0% / +0.8% / +1.3% |
 
-**Open finding: instantiation is 2–6% slower, and creating a nested class
-more.** Every head build lies above every base build on all five
-instantiating sources in all three sittings, while builds of one tree agree to
-within 1%. The cost is about 7 ns per level instantiated -- one level in
-`bench_new.ns` and `bench_newarg.ns`, two in `bench_new2.ns` and
-`bench_newarg2.ns` -- well above the bool test and the one heap read the
-change adds per level on the climb: `climb_levels` grew from 786 to 1,071
-instructions and `descend_levels` from 187 to 286. `bench_nested.ns`'s 37 ns
-is its two instantiations plus about 20 ns on the nested-class creation path,
-where `after_clause` grew from 192 to 727 instructions and now calls
-`build_applied_levels`, an out-of-line function, and looks the superclass's
-application up twice. One build of each commit on the branch puts the
-nested-class step at the commit that builds the levels (`a547956`) and most of
-the instantiation step at the walk's (`fac4e2c`, `3e92ae5`); single builds
-are only indicative here, since a build of a tree with sources identical to
-the head's measured `bench_new.ns` 7% above the head's own builds. Nothing was
-profiled. **What would recover it**: taking the mixin-application branches off
-an ordinary declaration's path -- one flag on the application or the
-`Instantiation` saying whether any level of the chain was added by `<:`, so
-that a walk through a chain without one runs the loop it ran before, and an
-early exit from `after_clause` before `unpack_clause_value` and
-`build_applied_levels` when the declaration has no `<:` clause, reusing the
-application it looked up first.
+**All ten are level**: −2.2% to +1.4%, inside the 0.3–2.3% these sources
+show between builds of one tree, and in both directions. What is left is
+placement of data rather than work: two builds of the base tree with an
+unused field of the new fields' sizes added to `Mixin` and to `ClassData`, and
+no other change, measured `bench_newarg.ns` about 2% faster and the other
+instantiating sources level to 1% slower than the base itself (one sitting of
+four rounds), the same spread as the table's. `bench_block.ns` instantiates nothing, and is the source whose
+build-to-build spread was measured at 16% above.
+
 
 ## The trampoline
 
