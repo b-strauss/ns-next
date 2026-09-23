@@ -1,4 +1,4 @@
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use ns_runtime::{resolve, Binding, SourceOrigin};
 
 fn resolve_source(source: &str) -> ns_runtime::ResolvedModule {
@@ -334,5 +334,130 @@ fn an_implicit_factory_send_binds_to_the_declaring_class_not_an_enclosing_member
         Some(&Binding::LexicalSend { depth: 0 }),
         "an implicit send of the factory selector must bind to the class that \
          declares the factory, not to the enclosing class's member `new`"
+    );
+}
+
+// --- §6.2's mixin application ---
+
+/// `Applied`, two classes deep inside `Host`, with `inheritance` as its whole
+/// inheritance list. `Host` declares a `Mixin` slot, so a bare `Mixin` has a
+/// member to find two levels out and a named `outer Host` has a class to name.
+fn module_applying(inheritance: &str) -> String {
+    formatdoc! {"
+        Newspeak3
+        'T'
+        class Host using: platform = Object new (
+          | private Mixin = platform Mixin. |
+        ) (
+          class Middle = Object new (
+          ) (
+            class Applied = {inheritance} (
+            ) ()
+          ) : ()
+        ) : ()
+    "}
+}
+
+/// The doubly nested `Applied` of [`module_applying`].
+fn applied_class(module: &ns_syntax::ast::Module) -> &ns_syntax::ast::ClassDeclaration {
+    &module.root_class.instance_side.nested_classes[0]
+        .instance_side
+        .nested_classes[0]
+}
+
+/// The binding recorded at the receiver of `Applied`'s superclass clause, when
+/// that clause is written `<inheritance_clause> new`. `None` means the
+/// resolver recorded nothing there and left the name to evaluation.
+fn binding_in_superclass_position(inheritance_clause: &str) -> Option<Binding> {
+    let source = module_applying(&format!("{inheritance_clause} new"));
+    let module = ns_syntax::parse(&source).expect("parse");
+    let resolved = resolve_source(&source);
+    let clause = applied_class(&module)
+        .superclass
+        .as_ref()
+        .expect("a superclass clause");
+    resolved.bindings.get(&clause.receiver.span).copied()
+}
+
+/// The binding recorded at the receiver of the one mixin `Applied` applies,
+/// when that mixin is written `Object new <: <inheritance_clause> new`.
+fn binding_in_mixin_position(inheritance_clause: &str) -> Option<Binding> {
+    let source = module_applying(&format!("Object new <: {inheritance_clause} new"));
+    let module = ns_syntax::parse(&source).expect("parse");
+    let resolved = resolve_source(&source);
+    let clause = &applied_class(&module).mixin_applications[0];
+    resolved.bindings.get(&clause.receiver.span).copied()
+}
+
+/// §6.2's `mixinAppSuffix` is built from §6.1's very `inheritanceClause`
+/// production, so a `<:` clause's receiver must bind exactly as the same
+/// receiver binds in superclass position -- including where that is "no
+/// binding at all", which leaves the name to evaluation. Every spelling
+/// `resolve_superclass_clause` distinguishes is resolved twice, once in each
+/// position, and the two must agree.
+#[test]
+fn a_mixin_clause_receiver_binds_exactly_as_a_superclass_receiver_does() {
+    for (inheritance_clause, expected) in [
+        // A member of a class two levels out.
+        ("Mixin", Some(Binding::LexicalSend { depth: 1 })),
+        // An explicitly named enclosing class.
+        ("outer Host Mixin", Some(Binding::LexicalSend { depth: 1 })),
+        (
+            "outer Middle Mixin",
+            Some(Binding::LexicalSend { depth: 0 }),
+        ),
+        ("self Mixin", Some(Binding::LexicalSend { depth: 0 })),
+        ("super Mixin", Some(Binding::SuperSend)),
+        // A builtin class name: no lexical declaration to find and none
+        // needed, so nothing is recorded.
+        ("Object", None),
+        // Declared nowhere: §5.7's implicit-receiver send, found at run time.
+        ("Unknown", Some(Binding::LexicalSend { depth: 0 })),
+    ] {
+        assert_eq!(
+            binding_in_superclass_position(inheritance_clause),
+            expected,
+            "`{inheritance_clause}` in superclass position"
+        );
+        assert_eq!(
+            binding_in_mixin_position(inheritance_clause),
+            expected,
+            "`{inheritance_clause}` as a mixin application"
+        );
+    }
+}
+
+/// Every clause of a multi-mixin application is resolved, in written order.
+#[test]
+fn every_mixin_clause_of_an_application_is_resolved() {
+    let source = module_applying("Object new <: Mixin new <: super Mixin new <: Object new");
+    let module = ns_syntax::parse(&source).expect("parse");
+    let resolved = resolve_source(&source);
+    let clauses = &applied_class(&module).mixin_applications;
+    assert_eq!(clauses.len(), 3);
+    let bindings: Vec<Option<Binding>> = clauses
+        .iter()
+        .map(|clause| resolved.bindings.get(&clause.receiver.span).copied())
+        .collect();
+    assert_eq!(
+        bindings,
+        vec![
+            Some(Binding::LexicalSend { depth: 1 }),
+            Some(Binding::SuperSend),
+            None,
+        ]
+    );
+}
+
+/// A mixin clause's receiver is held to the same rules, so `outer Missing` is
+/// the same resolve error there as it is in superclass position.
+#[test]
+fn an_undeclared_outer_class_in_a_mixin_clause_is_a_resolve_error() {
+    let errors = resolve_errors(&module_applying("Object new <: outer Missing Mixin new"));
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("`outer Missing` does not name")),
+        "{errors:?}"
     );
 }

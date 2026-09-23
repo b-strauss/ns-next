@@ -109,6 +109,18 @@ impl Resolver {
         if let Some(clause) = &declaration.superclass {
             self.resolve_superclass_clause(clause, enclosing);
         }
+        // §6.2 builds a mixin application out of §6.1's very `inheritanceClause`
+        // production -- "followed by the mixin application operator `<:`,
+        // followed by an inheritance clause" -- so each `<:` clause's receiver
+        // is evaluated under the same rule as the superclass clause's, in the
+        // same enclosing scope. That is why `resolve_superclass_clause` is
+        // called for them rather than a second copy of the rule being written
+        // here. The clauses' deferred *message* arguments are not resolved yet:
+        // nothing builds the levels a mixin application adds, so nothing
+        // compiles them.
+        for clause in &declaration.mixin_applications {
+            self.resolve_superclass_clause(clause, enclosing);
+        }
 
         for method in &declaration.instance_side.methods {
             self.resolve_method(method, &class_chain);
