@@ -1,0 +1,7 @@
+stdout = '''
+Trait answers greet
+Combined overrides describe, then Trait answers describe
+Base answers onlyInBase
+Trait answers shadowed
+Trait over Base
+'''

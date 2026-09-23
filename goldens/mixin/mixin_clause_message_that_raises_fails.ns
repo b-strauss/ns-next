@@ -1,0 +1,27 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2: "Next, the instance initializer of I invokes the
+   instance initializer of S on o with the arguments of mu_s. Then, m is
+   evaluated to mu_m". Marker's clause message sends #fooBar to 3, which
+   does not understand it, so the error is raised in the middle of an
+   instantiation: after m_s has been evaluated and Base's initializer has
+   run, before Marker's initializer or Applied's own runs. The error is
+   uncaught -- exit status 1, the does-not-understand error naming
+   #fooBar -- and nothing after it prints. *)
+class MixinClauseMessageThatRaisesFails usingPlatform: p = Object new (| t = p transcript. |) (
+    class Base withBase: value = Object new (
+        | baseSlot = outer MixinClauseMessageThatRaisesFails log: 'Base initializer receives ', value. |
+    ) () : ()
+    class Marker withMarker: value = Object new (
+        | markerSlot = outer MixinClauseMessageThatRaisesFails log: 'Marker initializer runs'. |
+    ) () : ()
+    class Applied = Base withBase: (outer MixinClauseMessageThatRaisesFails log: 'ms')
+        <: Marker withMarker: (outer MixinClauseMessageThatRaisesFails log: 'm1 starts') , 3 fooBar (
+        | appliedSlot = outer MixinClauseMessageThatRaisesFails log: 'Applied initializer runs'. |
+    ) () : ()
+    public log: line = ( t show: line; newLine. ^line )
+    public main: platform args: arguments = (
+        Applied new.
+        log: 'the factory answered'.
+    )
+) : ()

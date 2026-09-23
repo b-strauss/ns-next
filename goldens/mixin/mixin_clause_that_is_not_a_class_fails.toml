@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before Applied
+'''
+stderr = '''
+Uncaught Newspeak error: mixin application clause 1 of class Applied did not evaluate to a class object
+'''

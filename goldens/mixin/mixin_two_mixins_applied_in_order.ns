@@ -1,0 +1,35 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2: "a mixin application consists of an explicit
+   superclass clause denoting a class S, followed by the mixin application
+   operator <:, followed by an inheritance clause", and its result "is a
+   class I with mixin M and superclass S". A second <: applies its mixin to
+   the class the first produced, so in Base new <: First <: Second the
+   First level's superclass is Base and the Second level's superclass is
+   the First level: the mixin written last is applied last and sits on top.
+
+   So a selector both mixins declare (who) answers from the last one, and a
+   super chain through both (chain) runs from the last mixin down to Base.
+   Reversed applies the same two mixins the other way round, and both
+   answers turn round with it. *)
+class MixinTwoMixinsAppliedInOrder usingPlatform: p = Object new (| t = p transcript. |) (
+    class Base = Object new () (
+        public chain = ( ^'Base' )
+    ) : ()
+    class First = Object new () (
+        public who = ( ^'First' )
+        public chain = ( ^'First, ', super chain )
+    ) : ()
+    class Second = Object new () (
+        public who = ( ^'Second' )
+        public chain = ( ^'Second, ', super chain )
+    ) : ()
+    class InOrder = Base new <: First <: Second () ()
+    class Reversed = Base new <: Second <: First () ()
+    public main: platform args: arguments = (
+        t show: 'InOrder who: ', InOrder new who; newLine.
+        t show: 'InOrder chain: ', InOrder new chain; newLine.
+        t show: 'Reversed who: ', Reversed new who; newLine.
+        t show: 'Reversed chain: ', Reversed new chain; newLine.
+    )
+) : ()

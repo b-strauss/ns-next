@@ -1,0 +1,9 @@
+status = 1
+stdout = '''
+ms
+Base initializer receives ms
+m1 starts
+'''
+stderr = '''
+Uncaught Newspeak error: an object does not understand #fooBar
+'''

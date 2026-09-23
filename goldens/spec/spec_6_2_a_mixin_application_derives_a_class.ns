@@ -4,13 +4,7 @@ Newspeak3
    a class I with mixin M and superclass S", where S is the class the
    superclass clause denotes and M is the mixin of the class the
    inheritance clause after <: specifies. So Combined answers Trait's own
-   method and inherits Base's.
-
-   The parser does not accept <: in a superclass clause
-   (docs/design/frontend.md, "Deviation: mixin application is not
-   implemented"), so this does not parse today. Skipped until it does; it
-   fails loudly rather than answering wrongly, which is why the deviation
-   is the least dangerous of the recorded ones. *)
+   method and inherits Base's. *)
 class Spec62MixinApplication usingPlatform: p = Object new (| t = p transcript. |) (
     class Base = Object new () (
         public inherited = ( ^'from the superclass' )

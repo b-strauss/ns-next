@@ -1,0 +1,38 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.2: "The enclosing object of I is the enclosing object
+   of C", where C is the class the inheritance clause after <: specifies.
+
+   Marker is declared in Library, so its enclosing object is the Library
+   instance the module holds; Applied is declared in Host, so its enclosing
+   object is a Host. Applied's <: clause names that Library's Marker, so
+   the level Applied gains from it has the Library as its enclosing object:
+   outer Library inside Marker's method answers the Library, even though the
+   receiver is an Applied, declared in a Host. outer Host inside Applied's
+   own method still answers the Host. Each of the three objects identifies
+   itself differently, so reaching the Host, or the module, from Marker's
+   method would print a different first line. *)
+class MixinOuterReachesTheMixinsEnclosingObject usingPlatform: p = Object new (|
+    t = p transcript.
+    library = Library named: 'the library'.
+|) (
+    class Library named: name = Object new (| libraryName = name. |) (
+        public class Marker = Object new () (
+            public markerSees = ( ^'Marker''s outer Library is ', outer Library identify )
+        ) : ()
+        public identify = ( ^libraryName )
+    ) : ()
+    class Host named: name = Object new (| hostName = name. |) (
+        public class Applied = Object new <: libraryMarker () (
+            public appliedSees = ( ^'Applied''s outer Host is ', outer Host identify )
+        ) : ()
+        public identify = ( ^hostName )
+    ) : ()
+    libraryMarker = ( ^library Marker )
+    public identify = ( ^'the module' )
+    public main: platform args: arguments = (
+        | applied = (Host named: 'the host') Applied new. |
+        t show: applied markerSees; newLine.
+        t show: applied appliedSees; newLine.
+    )
+) : ()

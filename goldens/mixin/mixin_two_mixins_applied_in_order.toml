@@ -1,0 +1,6 @@
+stdout = '''
+InOrder who: Second
+InOrder chain: Second, First, Base
+Reversed who: First
+Reversed chain: First, Second, Base
+'''

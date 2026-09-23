@@ -1,0 +1,12 @@
+stdout = '''
+ms evaluated with x
+Base's own superclass clause message
+Root initializer receives Base's own superclass clause message
+Base initializer receives ms(x)
+m1 evaluated with x
+First initializer receives m1(x)
+m2 evaluated with x
+Second initializer receives m2(x)
+Applied initializer
+the factory answered
+'''
