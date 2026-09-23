@@ -229,16 +229,20 @@ pub struct Mutator<'gc> {
     /// move or a collection can invalidate, so it needs no root and nothing
     /// traces it.
     pub(crate) value_equality_method: Option<Rc<crate::mixin::MixinMethod>>,
-    /// `Value`'s own application, recorded by the bootstrap's kernel phase
-    /// as `Value`'s class object is filled: what `apply_mixin` compares a
-    /// superclass application against to answer §3.1.1's "its class
-    /// inherits from class `Value`". Compared by `Rc` identity, never by
-    /// name -- any module may declare a class called `Value`.
+    /// `Value`'s own mixin, recorded by the bootstrap's kernel phase just
+    /// before `Value`'s class object is filled: what `apply_mixin` compares
+    /// a mixin against to answer §3.1.1's "its class inherits from class
+    /// `Value`" for the chain's topmost link. Compared by `Rc` identity,
+    /// never by name -- any module may declare a class called `Value`.
+    ///
+    /// The *mixin* rather than the application, so that `Value`'s own
+    /// application can be told it is one while it is being built; every
+    /// application below it reads the flag off its superclass and never
+    /// asks again.
     ///
     /// `None` until that moment, so the placeholder applications the world
-    /// is built with inherit nothing; every application built afterwards,
-    /// `Value`'s own subclasses in the same fill included, sees it.
-    pub(crate) value_application: Option<Rc<crate::mixin::MixinApplication>>,
+    /// is built with inherit nothing.
+    pub(crate) value_mixin: Option<Rc<crate::mixin::Mixin>>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -1446,13 +1450,21 @@ impl<'gc> Mutator<'gc> {
         // belongs to the *application*, not to the mixin -- the same mixin
         // over a superclass that is no value declares an ordinary mutable
         // slot and is perfectly legal.
-        let inherits_value = superclass.is_some_and(|application| {
-            application.inherits_value
-                || self
-                    .value_application
-                    .as_ref()
-                    .is_some_and(|value| Rc::ptr_eq(application, value))
-        });
+        //
+        // `Value`'s own application answers `true`, because §3.2 defines
+        // "subclass of" inclusively -- "a class C is a subclass of a class S
+        // if C's superclass is S or a subclass of S", and §3.1.1's condition
+        // is "its class inherits from class `Value`", which `Value new`
+        // meets. `builtins::value`'s `state_is_a_value` reaches the same
+        // verdict for `Value new` by another route (its `=` *is* `Value`'s),
+        // and the two predicates must agree: while this one said `false`,
+        // `Value new = Value new` answered `true` and `Box v: Value new` was
+        // refused as if the instance were no value.
+        let inherits_value = self
+            .value_mixin
+            .as_ref()
+            .is_some_and(|value_mixin| Rc::ptr_eq(value_mixin, mixin))
+            || superclass.is_some_and(|application| application.inherits_value);
         let mutable_value_slot = superclass
             .and_then(|application| application.mutable_value_slot)
             .or_else(|| {

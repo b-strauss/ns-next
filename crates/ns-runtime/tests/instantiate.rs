@@ -585,6 +585,48 @@ fn a_value_class_refuses_a_slot_that_is_not_a_value() {
     );
 }
 
+/// An instance of `Value` itself is a value, so a value's slot may hold
+/// one: §3.2 defines "subclass of" inclusively ("C's superclass is S or a
+/// subclass of S"), which makes §3.1.1's "its class inherits from class
+/// `Value`" true of `Value new`.
+///
+/// It was refused until 2026-09-23, while `Value new = Value new` already
+/// answered `true` -- the two predicates that decide "is a value"
+/// (`MixinApplication::inherits_value` and `builtins::value`'s
+/// `state_is_a_value`) disagreed about exactly this object. The equality
+/// is asserted here beside the slot for that reason: one test, both
+/// predicates.
+#[test]
+fn a_value_class_accepts_a_slot_holding_an_instance_of_value_itself() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder = Value new (
+            | public contents = Value new. |
+        ) (
+            public sameContentsAs: other = ( ^contents = other contents )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let first = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+    let second = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+    let equal = expect_ok(
+        interpreter.send(
+            &first,
+            Symbol::intern("sameContentsAs:"),
+            std::slice::from_ref(&second),
+        ),
+        "sameContentsAs:",
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&equal) {
+        Value::Boolean(true) => {}
+        other => panic!(
+            "two separately built `Value new`s are one value, got {}",
+            mutator.heap().describe(&other)
+        ),
+    });
+}
+
 /// The same class over `Object` instead of `Value` accepts both: the two
 /// refusals are about the application's chain reaching `Value`, not about
 /// the mixin, which is why `Mutator::apply_mixin` answers them per

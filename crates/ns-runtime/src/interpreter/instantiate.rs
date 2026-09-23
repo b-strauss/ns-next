@@ -855,9 +855,17 @@ pub(crate) fn check_value_slot<'gc>(
 }
 
 /// Whether `object` is a value object: §3.1.1's "its class inherits from
-/// class `Value`", which covers a `String`, a `Symbol`, a `Character` and
-/// an instance of a user class below `Value` alike. A class object is not
-/// one -- its own class is `Object`.
+/// class `Value`", which covers a `String`, a `Symbol`, a `Character`, an
+/// instance of a user class below `Value` and a `Value new` alike -- §3.2's
+/// "subclass of" is inclusive, so `Value`'s own application carries the
+/// flag (`Mutator::apply_mixin`). A class object is not one -- its own
+/// class is `Object`.
+///
+/// **The other predicate about "is a value" is
+/// `builtins::value::state_is_a_value`**, which asks the narrower question
+/// of whether an instance's `=` is still `Value`'s own; the two must agree
+/// about everything this one accepts and that one unfolds, and they
+/// disagreed about `Value new` until 2026-09-23.
 fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
     !mutator.heap().is_class(object)
         && mutator

@@ -192,6 +192,17 @@ enum Node<'gc> {
 /// Compared by `Rc::ptr_eq`, never by selector: any class may declare `=`,
 /// and only the method's identity says the lookup landed on `Value`'s.
 ///
+/// **The other predicate about "is a value" is
+/// `MixinApplication::inherits_value`**, computed in `Mutator::apply_mixin`
+/// and read by `instantiate::check_value_slot`, and the two have to agree
+/// on which objects are values: this one is the narrower question -- a
+/// value *whose equality is still the derived one*, so a value class that
+/// declares its own `=` is a value the flag accepts and this predicate
+/// declines. What they may never disagree about is an instance whose `=`
+/// is `Value`'s: `Value new` answered `true` here while the flag said
+/// `false`, so `Value new = Value new` was `true` and a value's slot
+/// refused to hold one.
+///
 /// **The one predicate both walks ask**, and deliberately one function: if
 /// the equality walk and the hash walk ever decided "this is a value I can
 /// unfold" differently, two instances `=` answered `true` for could take

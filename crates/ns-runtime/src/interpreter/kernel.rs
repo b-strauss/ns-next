@@ -148,16 +148,19 @@ impl<'gc> Mutator<'gc> {
             let superclass = superclass_of_kind(&root_mixin, kind);
             let super_application = superclass
                 .and_then(|superclass| self.heap.class_application(self.builtin_class(superclass)));
-            let application = self.apply_mixin(&mixin, super_application.as_ref());
-            // Recorded as `Value` itself is filled, not after the loop:
-            // `fill_order` puts `Value` ahead of every class below it, and
-            // each of those asks `apply_mixin` whether its superclass
-            // application is this one (§3.1.1's "its class inherits from
-            // class `Value`"). Recorded afterwards, `String` and every
-            // other value class would answer that it does not.
+            // Recorded before `Value`'s own application is built, not after
+            // the loop: `apply_mixin` asks whether the mixin it is applying
+            // is this one, so that `Value`'s own application carries
+            // §3.1.1's "its class inherits from class `Value`" too (§3.2's
+            // "subclass of" is inclusive). `fill_order` puts `Value` ahead
+            // of every class below it, and each of those reads the flag off
+            // its superclass; recorded after the loop, `String` and every
+            // other value class would answer that it does not inherit
+            // `Value`.
             if kind == BuiltinClass::Value {
-                self.value_application = Some(application.clone());
+                self.value_mixin = Some(mixin.clone());
             }
+            let application = self.apply_mixin(&mixin, super_application.as_ref());
             if !self.heap.set_class_application(class, application) {
                 unreachable!("internal: a builtin class is a class object");
             }
@@ -704,8 +707,8 @@ mod tests {
                 BuiltinClass::ALL.len() - 1,
                 "the kernel declares one class per builtin but the mirror's"
             );
+            let top = super::kernel_class_name(BuiltinClass::Top);
             for nested in &application.mixin.nested {
-                let top = super::kernel_class_name(BuiltinClass::Top);
                 let expected = if nested.name.as_str() == top {
                     ns_syntax::ast::AccessModifier::Private
                 } else {
@@ -786,9 +789,15 @@ mod tests {
                 (BuiltinClass::OrderedCollection, false),
                 (BuiltinClass::Block, false),
                 (BuiltinClass::Object, false),
-                // `Value` inherits itself no more than `Object` does, and
-                // declares no slot for the rule to be about.
-                (BuiltinClass::Value, false),
+                // §3.2's "subclass of" is inclusive -- "C's superclass is S
+                // or a subclass of S" -- so `Value`'s own application meets
+                // §3.1.1's "its class inherits from class `Value`", and
+                // `Value new` is a value. It answered `false` until
+                // 2026-09-23, which made `Value new = Value new` true while
+                // a slot could not hold one: `builtins::value`'s
+                // `state_is_a_value`, the other predicate, had always said
+                // it was one.
+                (BuiltinClass::Value, true),
             ] {
                 let class = mutator.builtin_class(kind);
                 assert_eq!(

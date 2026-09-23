@@ -30,7 +30,7 @@ impl World {
                 vm_mirror: None,
                 kernel: None,
                 value_equality_method: None,
-                value_application: None,
+                value_mixin: None,
                 applications: IdentityMap::default(),
                 metaclass_mixins: IdentityMap::default(),
                 #[cfg(debug_assertions)]
