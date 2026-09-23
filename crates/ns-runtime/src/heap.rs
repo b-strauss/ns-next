@@ -1820,10 +1820,10 @@ impl<'gc> Heap<'gc> {
     /// builtin class to the one its `Kernel.ns` clause names
     /// (`interpreter::kernel`), and `tests/instantiate.rs`'s
     /// `superclass_slot_initializer_runs_before_the_subclass_own_slots`: a
-    /// root class's superclass clause only resolves a fixed list of builtin
-    /// names (`resolve_superclass_receiver`), so linking a subclass to an
-    /// already-loaded sibling *user-defined* class has to happen by hand on
-    /// the class-object chain `super`/`instantiate` walk.
+    /// root class's superclass clause may name only `Object` or `Value`
+    /// (the root rule, `instantiate::root_clause_defect`), so linking a
+    /// subclass to an already-loaded sibling *user-defined* class has to
+    /// happen by hand on the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(
         &mut self,
         class: ClassReference<'gc>,
@@ -3094,7 +3094,7 @@ mod tests {
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             inherits_value: false,
-            mutable_value_slot: None,
+            instantiation_refusal: None,
             nested_slot: crate::hash::IdentityMap::default(),
             declared_slots: Vec::new(),
             slot_count: 0,

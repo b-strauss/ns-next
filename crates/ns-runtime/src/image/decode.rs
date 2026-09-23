@@ -2291,12 +2291,25 @@ pub struct RootSection {
 /// no clause adds two. That bounds the count by row 0's clause count before
 /// anything is reserved for it. Resolving no tag against a live interpreter,
 /// this serves `inspect` as well as `load`.
+///
+/// The reader refuses what the root rule forbids
+/// (`interpreter::instantiate::root_clause_defect`) -- a superclass other
+/// than `Object` or `Value`, a level naming anything but `Value`, a second
+/// level, a level over anything but `Object` -- so a crafted artifact cannot
+/// bring back a root the encoder would refuse.
 pub fn decode_root_section(
     reader: &mut Reader,
     mixins: &mixins::Decoded,
 ) -> Result<RootSection, DecodeError> {
     let superclass = if reader.read_boolean()? {
-        Some(read_program_builtin_class(reader)?)
+        let kind = read_program_builtin_class(reader)?;
+        if !matches!(kind, BuiltinClass::Object | BuiltinClass::Value) {
+            return Err(DecodeError::InvalidTag {
+                what: "builtin class a module's root may inherit",
+                tag: super::encode::builtin_class_tag(kind),
+            });
+        }
+        Some(kind)
     } else {
         None
     };
@@ -2308,11 +2321,22 @@ pub fn decode_root_section(
     let mut next_allowed: u32 = 0;
     for _ in 0..count {
         let index = reader.read_u32()?;
-        if index < next_allowed || index as usize >= clause_count {
+        if index < next_allowed
+            || index as usize >= clause_count
+            || !levels.is_empty()
+            || superclass != Some(BuiltinClass::Object)
+        {
             return Err(DecodeError::BadMixinApplicationClause { row: 0, index });
         }
         next_allowed = index + 1;
-        levels.push((index, read_program_builtin_class(reader)?));
+        let kind = read_program_builtin_class(reader)?;
+        if kind != BuiltinClass::Value {
+            return Err(DecodeError::InvalidTag {
+                what: "builtin class a module's root may apply",
+                tag: super::encode::builtin_class_tag(kind),
+            });
+        }
+        levels.push((index, kind));
     }
     Ok(RootSection { superclass, levels })
 }

@@ -153,23 +153,32 @@ impl<'gc> Mutator<'gc> {
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let mixin = self.build_mixin(declaration, &resolved.bindings);
-        let superclass = self.resolve_superclass_receiver(declaration);
-        // §6.2's levels, each `<:` clause's receiver resolved by the rule the
-        // superclass clause's is, above: a root class has no enclosing object
-        // to evaluate a receiver in, so only a builtin can be named. A clause
-        // naming anything else adds no level -- the gap
-        // `resolve_superclass_receiver` describes, and the same answer it
-        // gives a superclass it cannot find.
-        let applied: Vec<(usize, Value<'gc>)> = declaration
-            .mixin_applications
-            .iter()
-            .enumerate()
-            .filter_map(|(index, clause)| {
-                builtin_kind_from_name(&clause.receiver.name)
-                    .map(|kind| (index, Value::Object(self.builtin_class(kind))))
-            })
-            .collect();
+        let mixin = self.build_root_mixin(declaration, &resolved.bindings);
+        // The rule leaves three shapes, and a defective root is built as the
+        // first so that its class exists, answers its class side and can be
+        // inspected -- only an instance is refused (`apply_mixin` carries the
+        // defect into the application).
+        let (superclass_kind, applies_value) = match &mixin.root_clause_defect {
+            Some(_) => (BuiltinClass::Object, false),
+            None => {
+                let names_value = declaration
+                    .superclass
+                    .as_ref()
+                    .is_some_and(|clause| clause.receiver.name == "Value");
+                let superclass_kind = if names_value {
+                    BuiltinClass::Value
+                } else {
+                    BuiltinClass::Object
+                };
+                (superclass_kind, !declaration.mixin_applications.is_empty())
+            }
+        };
+        let superclass = Some(self.builtin_class(superclass_kind));
+        let applied: Vec<(usize, Value<'gc>)> = if applies_value {
+            vec![(0, Value::Object(self.builtin_class(BuiltinClass::Value)))]
+        } else {
+            Vec::new()
+        };
         let superclass =
             match super::nested::build_applied_levels(self, &mixin, superclass, &applied) {
                 Ok(top) => top,
@@ -206,6 +215,27 @@ impl<'gc> Mutator<'gc> {
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Rc<Mixin> {
+        Rc::new(self.mixin_of(declaration, bindings))
+    }
+
+    /// A module's root mixin: `build_mixin`'s, with the root rule's verdict
+    /// recorded on it for `apply_mixin` and the encoder to read.
+    pub(crate) fn build_root_mixin(
+        &mut self,
+        declaration: &ast::ClassDeclaration,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Rc<Mixin> {
+        let mut mixin = self.mixin_of(declaration, bindings);
+        mixin.root_clause_defect = root_clause_defect(declaration);
+        Rc::new(mixin)
+    }
+
+    /// `build_mixin`'s work, before the mixin is shared.
+    fn mixin_of(
+        &mut self,
+        declaration: &ast::ClassDeclaration,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Mixin {
         let slots = build_slots(&declaration.instance_side);
         let methods = build_methods(&declaration.instance_side, &slots, bindings, self.lowering);
         let nested = declaration
@@ -264,9 +294,10 @@ impl<'gc> Mutator<'gc> {
             initializer_code: None,
             superclass_clause_code: None,
             superclass_message_code: None,
+            root_clause_defect: None,
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
-        Rc::new(mixin)
+        mixin
     }
 
     /// The metaclass mixin a class side becomes: `newspeak-spec.pdf` §6.3's
@@ -357,27 +388,6 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    fn resolve_superclass_receiver(
-        &mut self,
-        declaration: &ast::ClassDeclaration,
-    ) -> Option<ClassReference<'gc>> {
-        let Some(clause) = &declaration.superclass else {
-            return Some(self.builtin_class(BuiltinClass::Object));
-        };
-        // Only the common case (a builtin class name) is
-        // handled -- full lexical/outer-prefixed superclass receivers, and
-        // a not-yet-loaded sibling user-defined class referenced by name,
-        // need the resolver's class-nesting chain (and/or a multi-class
-        // load order) at *instantiation* time; both are a known gap.
-        // Extend here if a fixture needs it (see `tests/instantiate.rs`'s
-        // subclass test for how a fixture can route around this gap
-        // without needing the extension).
-        if let Some(kind) = builtin_kind_from_name(&clause.receiver.name) {
-            return Some(self.builtin_class(kind));
-        }
-        None
-    }
-
     /// Decides an instantiation of `class` with `factory_arguments` without
     /// running any of its code: the instance comes back as a value when no
     /// level of the superclass chain has code to run, and otherwise the first
@@ -398,21 +408,18 @@ impl<'gc> Mutator<'gc> {
         factory_arguments: Vec<Value<'gc>>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let application = self.heap.class_application(class);
-        // §3.1.1's first condition, asked before anything is allocated: a
-        // class that inherits `Value` and declares a mutable slot could
-        // never have a value object for an instance, so there is no
-        // instance to make. The answer was computed once, when the
-        // application was built (`Mutator::apply_mixin`).
-        if let Some((application, violation)) = application.as_ref().and_then(|application| {
-            application
-                .mutable_value_slot
-                .map(|violation| (application, violation))
-        }) {
-            return Err(Signal::Error(mutable_value_slot_error(
-                class,
-                application,
-                violation,
-            )));
+        // Asked before anything is allocated: a class whose instances could
+        // never be what §3.1.1 or the root rule demands has no instance to
+        // make. The answer was computed once, when the application was built
+        // (`Mutator::apply_mixin`).
+        if let Some(application) = application.as_ref() {
+            if let Some(refusal) = &application.instantiation_refusal {
+                return Err(Signal::Error(instantiation_refusal_error(
+                    class,
+                    application,
+                    refusal,
+                )));
+            }
         }
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
@@ -1152,6 +1159,79 @@ pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     })
 }
 
+/// §6.1 evaluates a module root's clauses "as if [each] was a top level
+/// expression", where §3.8 leaves nothing to send to, so the only classes a
+/// root can reach are the ones the rule names: `Object` or `Value` as its
+/// superclass, and `Value` applied to `Object`. Decided with the user on
+/// 2026-09-23 (`docs/design/object-model.md`, "The root rule"). Syntactic,
+/// so it is decided here, once, and deferred to instantiation -- a module
+/// whose root is wrong still loads and can be inspected and fixed.
+pub(crate) fn root_clause_defect(
+    declaration: &ast::ClassDeclaration,
+) -> Option<crate::mixin::RootClauseDefect> {
+    use crate::mixin::RootClauseDefect;
+    let superclass_is_value = match &declaration.superclass {
+        None => false,
+        Some(clause) => {
+            let named = clause.receiver.name.as_str();
+            if clause.prefix.is_some() || !matches!(named, "Object" | "Value") {
+                return Some(RootClauseDefect::Superclass {
+                    clause: clause_as_written(clause),
+                });
+            }
+            named == "Value"
+        }
+    };
+    for (index, clause) in declaration.mixin_applications.iter().enumerate() {
+        if index > 0 || clause.prefix.is_some() || clause.receiver.name != "Value" {
+            return Some(RootClauseDefect::MixinApplication {
+                index,
+                clause: clause_as_written(clause),
+            });
+        }
+        if superclass_is_value {
+            return Some(RootClauseDefect::ValueOverValue);
+        }
+    }
+    None
+}
+
+/// A clause's prefix and receiver, as the program wrote them -- what a
+/// refusal names, since the message part is not at fault.
+fn clause_as_written(clause: &ast::SuperclassClause) -> String {
+    let prefix = match &clause.prefix {
+        None => String::new(),
+        Some(ast::SuperclassPrefix::SelfPrefix) => "self ".to_string(),
+        Some(ast::SuperclassPrefix::SuperPrefix) => "super ".to_string(),
+        Some(ast::SuperclassPrefix::Outer(name)) => format!("outer {} ", name.name),
+    };
+    format!("{prefix}{}", clause.receiver.name)
+}
+
+/// The refusal `decide_instantiation` raises, named under the class's own
+/// primary factory as both value refusals are.
+#[cold]
+fn instantiation_refusal_error<'gc>(
+    class: ClassReference<'gc>,
+    application: &crate::mixin::MixinApplication,
+    refusal: &crate::mixin::InstantiationRefusal,
+) -> NewspeakError<'gc> {
+    match refusal {
+        crate::mixin::InstantiationRefusal::MutableValueSlot(violation) => {
+            mutable_value_slot_error(class, application, *violation)
+        }
+        crate::mixin::InstantiationRefusal::RootClause(defect) => NewspeakError {
+            selector: factory_selector(application),
+            receiver: Value::Object(class),
+            message: format!(
+                "cannot instantiate {}: {}",
+                application.mixin.name,
+                defect.describe()
+            ),
+        },
+    }
+}
+
 /// §3.1.1's first condition on a value class, refused where the instance
 /// would come into being: "an object is a value object if it is deeply
 /// immutable", and a mutable slot is state anything holding the object can
@@ -1388,4 +1468,60 @@ fn initializing_level_below<'gc>(
 /// checked per mixin, since every mixin of the tree carries its own.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
     !mixin.slots.is_empty() || mixin.has_initializer_expressions
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn root_clause_defect_classifies_every_root_form() {
+        use crate::mixin::RootClauseDefect;
+        let defect_of = |header: &str| {
+            let source = format!("Newspeak3\n'T'\n{header} ()\n");
+            let module = ns_syntax::parse(&source).expect("parse");
+            super::root_clause_defect(&module.root_class)
+        };
+        assert_eq!(defect_of("class R = ()"), None);
+        assert_eq!(defect_of("class R = Object new ()"), None);
+        assert_eq!(defect_of("class R = Value new ()"), None);
+        assert_eq!(defect_of("class R = Object <: Value ()"), None);
+        let superclass = |clause: &str| {
+            Some(RootClauseDefect::Superclass {
+                clause: clause.to_string(),
+            })
+        };
+        let mixin = |index: usize, clause: &str| {
+            Some(RootClauseDefect::MixinApplication {
+                index,
+                clause: clause.to_string(),
+            })
+        };
+        assert_eq!(
+            defect_of("class R = self Object new ()"),
+            superclass("self Object")
+        );
+        assert_eq!(
+            defect_of("class R = super Object new ()"),
+            superclass("super Object")
+        );
+        assert_eq!(
+            defect_of("class R = outer Missing Object new ()"),
+            superclass("outer Missing Object")
+        );
+        assert_eq!(defect_of("class R = Array new ()"), superclass("Array"));
+        assert_eq!(defect_of("class R = Top new ()"), superclass("Top"));
+        assert_eq!(defect_of("class R = Missing new ()"), superclass("Missing"));
+        assert_eq!(
+            defect_of("class R = Object <: self Value ()"),
+            mixin(0, "self Value")
+        );
+        assert_eq!(defect_of("class R = Object <: Array ()"), mixin(0, "Array"));
+        assert_eq!(
+            defect_of("class R = Object <: Value <: Value ()"),
+            mixin(1, "Value")
+        );
+        assert_eq!(
+            defect_of("class R = Value <: Value ()"),
+            Some(RootClauseDefect::ValueOverValue)
+        );
+    }
 }

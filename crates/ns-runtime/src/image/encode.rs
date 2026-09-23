@@ -226,22 +226,19 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
 ///
 /// Written as an optional builtin-class tag rather than as a general class
 /// tag, because the general form names an object-table id and the object
-/// table is not decoded yet. That costs nothing today:
-/// `instantiate::resolve_superclass_receiver` -- the only thing that ever
-/// fixes a root class's superclass -- resolves a builtin class name or
-/// nothing at all, so `Some(builtin)` and `None` are the complete set of
-/// worlds this runtime builds. A root class inheriting from a *user* class
-/// is refused here rather than written wrongly; extending
-/// `resolve_superclass_receiver` is what would make it representable, and
-/// that extension is where this format would grow with it.
+/// table is not decoded yet. That costs nothing: the root rule
+/// (`instantiate::root_clause_defect`) lets a root inherit only `Object` or
+/// `Value`, and `Mutator::load_root_class` builds every root over one of
+/// them, so a builtin tag names every superclass this runtime builds. A root
+/// class inheriting from a *user* class is refused here rather than written
+/// wrongly.
 ///
-/// The root's `<:` clauses are resolved by the same rule
-/// (`Mutator::load_root_class`), so each level names a builtin too, and is
-/// written the same way: after the superclass, a count and, lowest level
-/// first, each level's clause position in row 0 and the builtin its clause
-/// named. The position is written rather than implied because a root clause
-/// naming anything but a builtin adds no level, so the levels need not be
-/// one per clause.
+/// The root's one permitted `<:` clause, `Value` over `Object`, is written
+/// the same way: after the superclass, a count and, lowest level first, each
+/// level's clause position in row 0 and the builtin its clause named. A root
+/// whose clauses the rule forbids is built with no level at all, but never
+/// reaches here: `encode_describing` refuses it first, and the decoder
+/// refuses any level but that one (`decode::decode_root_section`).
 pub fn encode_root_class<'gc>(
     writer: &mut Writer,
     heap: &Heap<'gc>,

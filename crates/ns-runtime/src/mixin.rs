@@ -470,6 +470,13 @@ pub struct Mixin {
     /// The arguments of the clause's factory message, run on every
     /// instantiation (§6.2). `None` when the message takes none.
     pub superclass_message_code: Option<Rc<CompiledCode>>,
+    /// Why this mixin, as a module's root, can never be instantiated (the
+    /// root rule, `interpreter::instantiate::root_clause_defect`). Only a
+    /// module's root mixin built from source carries one; a decoded mixin
+    /// never does, because the decoder refuses a defective root section and
+    /// the encoder never writes one. `Mutator::apply_mixin` turns it into
+    /// `InstantiationRefusal::RootClause` on the application.
+    pub root_clause_defect: Option<RootClauseDefect>,
 }
 
 impl Mixin {
@@ -495,6 +502,7 @@ impl Mixin {
             initializer_code: None,
             superclass_clause_code: None,
             superclass_message_code: None,
+            root_clause_defect: None,
         }
     }
 
@@ -520,6 +528,46 @@ pub struct MutableValueSlot {
     pub slot: Symbol,
 }
 
+/// Why a module's root class can never be instantiated (§6.1, §3.8): its
+/// clauses name something other than `Object`, `Value` or `Object <: Value`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootClauseDefect {
+    /// The superclass clause, as written without its message, when it is
+    /// prefixed or names anything but `Object` or `Value`.
+    Superclass { clause: String },
+    /// A `<:` clause other than one unprefixed `Value`; `index` is 0-based.
+    MixinApplication { index: usize, clause: String },
+    /// `Value <: Value`: the one `<:` clause is right, the superclass is not.
+    ValueOverValue,
+}
+
+impl RootClauseDefect {
+    /// The tail both the instantiation refusal and the encoder print.
+    pub fn describe(&self) -> String {
+        let rule =
+            "a module's root class may inherit only Object or Value, or write Object <: Value";
+        match self {
+            RootClauseDefect::Superclass { clause } => {
+                format!("{rule}, and its superclass clause names {clause}")
+            }
+            RootClauseDefect::MixinApplication { index, clause } => {
+                format!(
+                    "{rule}, and its mixin application clause {} names {clause}",
+                    index + 1
+                )
+            }
+            RootClauseDefect::ValueOverValue => format!("{rule}, and it applies Value to Value"),
+        }
+    }
+}
+
+/// What `decide_instantiation` refuses before it allocates anything.
+#[derive(Debug, Clone)]
+pub enum InstantiationRefusal {
+    RootClause(RootClauseDefect),
+    MutableValueSlot(MutableValueSlot),
+}
+
 #[derive(Debug)]
 pub struct MixinApplication {
     pub mixin: Rc<Mixin>,
@@ -534,10 +582,12 @@ pub struct MixinApplication {
     /// `Value`'s own application answers `false`: it inherits nothing, and
     /// `Kernel.ns` gives it no slots for the rule below to be about.
     pub inherits_value: bool,
-    /// The first mutable slot anywhere in this application's chain below
-    /// `Value`, if any: the refusal `interpreter::instantiate` raises when
-    /// something asks for an instance.
-    pub mutable_value_slot: Option<MutableValueSlot>,
+    /// What `interpreter::instantiate` refuses before allocating an
+    /// instance, computed once per application by `Mutator::apply_mixin`:
+    /// a root clause defect (on this level or inherited), or -- when the
+    /// chain inherits `Value` -- the first mutable slot below `Value`. One
+    /// field, so the instantiation path tests one `Option` for both.
+    pub instantiation_refusal: Option<InstantiationRefusal>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached
     /// nested class object; accessing it is a slot read rather than a

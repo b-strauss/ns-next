@@ -165,7 +165,7 @@ pub(crate) fn nested_class<'gc>(
     // answer decides whether any code runs.
     if nested.superclass.is_none() {
         // No clause at all (`class N = (...)`): `Object`, the same default
-        // `instantiate::resolve_superclass_receiver` gives a root class.
+        // `Mutator::load_root_class` gives a root class.
         let object = Value::Object(mutator.builtin_class(BuiltinClass::Object));
         return after_clause(mutator, creation, object);
     }

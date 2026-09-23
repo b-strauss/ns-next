@@ -64,6 +64,17 @@ fn encode_describing<'gc>(
     root_class: ClassReference<'gc>,
     heap: &Heap<'gc>,
 ) -> Result<Describing, String> {
+    // A root that can never be instantiated could only fail as an artifact,
+    // and refusing it here keeps the format from needing a way to say so.
+    if let Some(application) = heap.class_application(root_class) {
+        if let Some(defect) = &application.mixin.root_clause_defect {
+            return Err(format!(
+                "image encoding cannot serialize {}: {}",
+                application.mixin.name,
+                defect.describe()
+            ));
+        }
+    }
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code, heap, root_class, &mut symbols)?;

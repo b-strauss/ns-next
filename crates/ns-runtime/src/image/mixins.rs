@@ -818,6 +818,9 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             initializer_code: row.initializer.map(code_at),
             superclass_clause_code: row.superclass_clause.map(code_at),
             superclass_message_code: row.superclass_message.map(code_at),
+            // The decoder refuses a root section the root rule forbids
+            // (`decode::decode_root_section`), so no decoded mixin has one.
+            root_clause_defect: None,
         });
         built[index] = Some(mixin);
     }

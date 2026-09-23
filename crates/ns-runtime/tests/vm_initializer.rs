@@ -188,7 +188,7 @@ fn raw_slot_declaration(name: &str) -> Rc<ns_syntax::ast::SlotDeclaration> {
 }
 
 /// A class object wrapping `application` directly -- built without
-/// `load_module`/`resolve_superclass_receiver` because the point of this
+/// `load_module`/`load_root_class` because the point of this
 /// test is to apply *one* mixin to two different superclass shapes, which
 /// `load_module` cannot do (it always builds a fresh `Mixin` per module).
 fn make_class(

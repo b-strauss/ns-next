@@ -1489,17 +1489,28 @@ impl<'gc> Mutator<'gc> {
             .as_ref()
             .is_some_and(|value_mixin| Rc::ptr_eq(value_mixin, mixin))
             || superclass.is_some_and(|application| application.inherits_value);
-        let mutable_value_slot = superclass
-            .and_then(|application| application.mutable_value_slot)
+        // A root clause defect refuses every instance of the root and of
+        // anything built on it, so it is inherited like the mutable slot is.
+        // It comes first: a root whose chain is wrong has no layout worth
+        // checking.
+        let instantiation_refusal = mixin
+            .root_clause_defect
+            .clone()
+            .map(crate::mixin::InstantiationRefusal::RootClause)
+            .or_else(|| {
+                superclass.and_then(|application| application.instantiation_refusal.clone())
+            })
             .or_else(|| {
                 if !inherits_value {
                     return None;
                 }
                 mixin.slots.iter().find(|slot| slot.mutable).map(|slot| {
-                    crate::mixin::MutableValueSlot {
-                        class: mixin.name,
-                        slot: slot.name,
-                    }
+                    crate::mixin::InstantiationRefusal::MutableValueSlot(
+                        crate::mixin::MutableValueSlot {
+                            class: mixin.name,
+                            slot: slot.name,
+                        },
+                    )
                 })
             });
         // The declared slots, in field order, computed here for the same
@@ -1515,7 +1526,7 @@ impl<'gc> Mutator<'gc> {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
             inherits_value,
-            mutable_value_slot,
+            instantiation_refusal,
             slot_count: next,
             nested_slot,
             declared_slots,

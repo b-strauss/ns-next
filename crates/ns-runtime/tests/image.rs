@@ -8599,9 +8599,15 @@ fn the_mixin_application_message_frame_kind_decodes() {
 
 /// The root-class section's bytes for a root that inherits from nothing, then
 /// `levels` as (clause position, builtin tag) pairs.
-fn root_section_bytes(levels: &[(u32, u8)]) -> Vec<u8> {
+fn root_section_bytes(superclass: Option<BuiltinClass>, levels: &[(u32, u8)]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    writer.write_boolean(false); // no superclass
+    match superclass {
+        Some(kind) => {
+            writer.write_boolean(true);
+            writer.write_u8(encode::builtin_class_tag(kind));
+        }
+        None => writer.write_boolean(false),
+    }
     writer.write_u32(levels.len() as u32);
     for (index, tag) in levels {
         writer.write_u32(*index);
@@ -8618,35 +8624,32 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Root = Object new <: Value <: Value () ()
+        class Root = Object new <: Value () ()
     "};
     let decoded = mixin_table_of(&snapshot_of(source));
     let value = encode::builtin_class_tag(BuiltinClass::Value);
     let read = |levels: &[(u32, u8)]| {
         decode::decode_root_section(
-            &mut decode::Reader::new(&root_section_bytes(levels)),
+            &mut decode::Reader::new(&root_section_bytes(Some(BuiltinClass::Object), levels)),
             &decoded,
         )
     };
     assert_eq!(
-        read(&[(0, value), (1, value)]).expect("both clauses, in order"),
+        read(&[(0, value)]).expect("the one clause"),
         decode::RootSection {
-            superclass: None,
-            levels: vec![(0, BuiltinClass::Value), (1, BuiltinClass::Value)],
+            superclass: Some(BuiltinClass::Object),
+            levels: vec![(0, BuiltinClass::Value)],
         }
     );
-    for (levels, index) in [
-        (vec![(2, value)], 2),
-        (vec![(1, value), (0, value)], 0),
-        (vec![(0, value), (0, value)], 0),
-    ] {
+    for (levels, index) in [(vec![(1, value)], 1), (vec![(0, value), (0, value)], 0)] {
         assert_eq!(
             read(&levels),
             Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index })
         );
     }
     let mut huge = encode::Writer::new();
-    huge.write_boolean(false);
+    huge.write_boolean(true);
+    huge.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
     huge.write_u32(u32::MAX); // a count no clause list could back
     assert_eq!(
         decode::decode_root_section(&mut decode::Reader::new(&huge.into_bytes()), &decoded),
@@ -8660,6 +8663,80 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
             tag: mirror
         })
     );
+}
+
+/// The root rule (`docs/design/object-model.md`, "The root rule"), read back:
+/// a root section the encoder could never write is refused, so a crafted
+/// artifact cannot bring back a root the rule forbids.
+#[test]
+fn a_root_section_the_root_rule_forbids_is_refused() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value () ()
+    "};
+    let decoded = mixin_table_of(&snapshot_of(source));
+    let read = |superclass: Option<BuiltinClass>, levels: &[(u32, u8)]| {
+        decode::decode_root_section(
+            &mut decode::Reader::new(&root_section_bytes(superclass, levels)),
+            &decoded,
+        )
+    };
+    let tag = encode::builtin_class_tag;
+    assert_eq!(
+        read(Some(BuiltinClass::Array), &[]),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a module's root may inherit",
+            tag: tag(BuiltinClass::Array),
+        })
+    );
+    assert_eq!(
+        read(Some(BuiltinClass::Object), &[(0, tag(BuiltinClass::Array))]),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a module's root may apply",
+            tag: tag(BuiltinClass::Array),
+        })
+    );
+    assert_eq!(
+        read(Some(BuiltinClass::Value), &[(0, tag(BuiltinClass::Value))]),
+        Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index: 0 })
+    );
+    assert_eq!(
+        read(None, &[(0, tag(BuiltinClass::Value))]),
+        Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index: 0 })
+    );
+}
+
+/// A root the rule forbids can never be instantiated, so neither artifact
+/// kind is written for it, and both say why with the instantiation's text.
+#[test]
+fn the_encoder_refuses_a_root_the_rule_forbids() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Array new () ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let (snapshot, build) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let origin = Origin::File(PathBuf::from("t.ns"));
+        (
+            image::snapshot(mutator, None, &origin, class, &platform, &[]),
+            image::build(
+                mutator.heap(),
+                None,
+                &origin,
+                class,
+                Symbol::intern("main:args:"),
+            ),
+        )
+    });
+    let expected = "image encoding cannot serialize Root: a module's root class may inherit only \
+                    Object or Value, or write Object <: Value, and its superclass clause names Array";
+    assert_eq!(snapshot.err().as_deref(), Some(expected));
+    assert_eq!(build.err().as_deref(), Some(expected));
 }
 
 /// `MIXIN_APPLICATION_MODULE`'s `Applied`, edited by `edit`, reloaded as a
