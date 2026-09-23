@@ -3706,7 +3706,7 @@ isolated. `vm::run` is 6,508 instructions in both trees and one function. See
   ([frontend.md](design/frontend.md), "What is parsed and dropped").
 
 **Gates.** Every commit that changed code or tests saw the per-commit group.
-At the branch's final state the whole end-of-batch group ran at `5326f7a`:
+At the branch's final state the whole end-of-batch group ran at `56ecf79`, the last commit that changed code or tests:
 `cargo test --workspace` had all 39 test results ok plain and under each of
 `NS_NEXT_STRESS_MOVES=1`, `NS_NEXT_STRESS_CACHES=1` and
 `NS_NEXT_STRESS_COLLECT=1`; `run-corpus` reported "ran 6, failed 0, skipped
