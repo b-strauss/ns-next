@@ -40,12 +40,31 @@ pub(crate) fn check_value_class<'gc>(
     // stops at a class that inherits `Value` and was created as a class of
     // its own -- by `after_clause`, as a builtin or as a module root, never
     // a level a `<:` clause added -- because that class was checked the
-    // same way and everything above it holds by induction.
+    // same way and everything above it holds by induction. Since the
+    // redesign records a refusal rather than raising it, a class the walk
+    // would stop at can itself carry one (a value class whose own
+    // enclosing object was not a value is still created, not refused, per
+    // `docs/design/object-model.md`), so a subclass built on it inherits
+    // the fault instead of the walk trusting the class blindly.
     let heap = mutator.heap();
     let mut level = Some(superclass);
     while let Some(class) = level {
         if heap.class_inherits_value(class) && !heap.class_is_applied_level(class) {
-            return None;
+            return match heap.class_value_refusal(class) {
+                None => None,
+                Some(ValueClassRefusal::IdentityMethod { declaring }) => {
+                    Some(ValueClassRefusal::IdentityMethod { declaring })
+                }
+                Some(ValueClassRefusal::NonValueEnclosingObject { described, .. }) => {
+                    let level_name = heap
+                        .class_application(class)
+                        .map(|application| application.mixin.name);
+                    Some(ValueClassRefusal::NonValueEnclosingObject {
+                        level: level_name,
+                        described,
+                    })
+                }
+            };
         }
         if let Some(level_enclosing) = heap.class_enclosing(class) {
             if !super::instantiate::is_a_value(mutator, level_enclosing) {

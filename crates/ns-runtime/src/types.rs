@@ -71,8 +71,13 @@ pub enum ObjectData<'gc> {
 /// instantiates it (`docs/design/object-model.md`, "The two new conditions
 /// are decided where a class object is created and refused where an
 /// instance is made"). Holds no handle -- a `Symbol` and a `String`, both
-/// already rendered at creation time -- so it survives a move and an image
-/// never needs to carry it: a decoded class object is not re-checked.
+/// already rendered at creation time -- so it survives a move. An image
+/// carries none of it: `ClassData::new` defaults every decoded class's
+/// field to `None`, and `image::decode::rebuild_applications` recomputes it
+/// with the same `check_value_class`, once every decoded class's real
+/// application is installed, so a legitimate snapshot of a value class
+/// created carrying a refusal decodes carrying the same one rather than
+/// becoming instantiable.
 #[derive(Debug, Clone)]
 pub enum ValueClassRefusal {
     /// The level below `Value` that declares `==`.
@@ -172,8 +177,10 @@ pub struct ClassData<'gc> {
     /// a value class whose two conditions both hold -- which is most of
     /// them, so `decide_instantiation` pays this read only behind
     /// `application.inherits_value`. `ClassData::new` defaults it to `None`;
-    /// `interpreter::nested::after_clause` is the only place that ever sets
-    /// it to `Some`, right after creating the class object it is about.
+    /// `interpreter::nested::after_clause` sets it to `Some` right after
+    /// creating the class object it is about, for a class built from
+    /// source, and `image::decode::rebuild_applications` does the same for
+    /// a decoded one, recomputed rather than carried over the wire.
     pub value_class_refusal: Option<ValueClassRefusal>,
 }
 

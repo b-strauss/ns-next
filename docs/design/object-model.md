@@ -469,22 +469,43 @@ lowerings raise the same errors.
 - **Enclosing objects are values.** The walk climbs the new class object's
   superclass chain. At each level: a class that inherits `Value` and was
   created as a class of its own — by `after_clause`, as a builtin or as a
-  module root, not a level a `<:` clause added — stops the walk, because it
-  was checked the same way when it was created and everything above it holds
-  by induction. Any other level — one that does not inherit `Value`, or a
-  `<:` level, which is never created through `after_clause` — has its
-  enclosing object checked with `instantiate.rs`'s `is_a_value`, the predicate
-  the slot check uses, and the walk continues. Checking every level and not
-  only the class's own enclosing object matters because an inherited method
-  reaches its own level's enclosing objects through `outer`: in
-  `class P = Foo new <: Value`, `P` inherits `Value`, `Foo` does not, and a
-  method of `Foo` whose enclosing object is mutable would make `P`'s
-  instances reach mutable state. Requiring `Foo` itself to inherit `Value`
-  would be stricter than §3.1.1: a slotless `Foo` in a value module meets
-  every condition, and `Foo new <: Value` is how a value variant of it is
-  made. A module's root class has `nil` for its enclosing object and a chain
-  of builtins and at most `<: Value`, so `load_root_class` needs no error
-  path, only a `debug_assert!`.
+  module root, not a level a `<:` clause added — stops the walk **only if it
+  carries no recorded refusal of its own** (`ClassData::value_class_refusal`),
+  because it was checked the same way when it was created and everything
+  above it holds by induction. If it does carry one, the walk does not trust
+  it blindly: since the redesign records a refusal rather than raising it, a
+  refused class still exists, so the new class inherits the fault instead —
+  propagating an `IdentityMethod` unchanged, or answering a
+  `NonValueEnclosingObject` that names the stopping level, with the
+  `described` text taken from that level's own verdict. Any other level —
+  one that does not inherit `Value`, or a `<:` level, which is never created
+  through `after_clause` — has its enclosing object checked with
+  `instantiate.rs`'s `is_a_value`, the predicate the slot check uses, and the
+  walk continues. Checking every level and not only the class's own enclosing
+  object matters because an inherited method reaches its own level's
+  enclosing objects through `outer`: in `class P = Foo new <: Value`, `P`
+  inherits `Value`, `Foo` does not, and a method of `Foo` whose enclosing
+  object is mutable would make `P`'s instances reach mutable state. Requiring
+  `Foo` itself to inherit `Value` would be stricter than §3.1.1: a slotless
+  `Foo` in a value module meets every condition, and `Foo new <: Value` is
+  how a value variant of it is made. A module's root class has `nil` for its
+  enclosing object and a chain of builtins and at most `<: Value`, so
+  `load_root_class` needs no error path, only a `debug_assert!`.
+
+  A decoded class object starts with no verdict — `ClassData::new` defaults
+  `value_class_refusal` to `None`, and a legitimate snapshot can hold a class
+  that was created carrying one — so `image::decode::rebuild_applications`
+  recomputes it for every decoded class whose application inherits `Value`
+  and which is not an applied level, using the same `check_value_class`. It
+  does this in a pass of its own, after every decoded class's real
+  application is installed, not folded into the pass that installs them: the
+  walk reads an *enclosing* class's application too (`is_a_value`,
+  `Heap::describe`), which is a different axis than the superclass chain the
+  install pass orders, so an enclosing class can still hold its placeholder
+  application at the point a superclass chain reaches it. The recompute pass
+  itself still runs superclass first — reusing the install pass's own
+  order — since the walk reads an ancestor's `value_class_refusal`, which has
+  to already be the recomputed one.
 
 **A mutable slot above the `Value` level is refused too.** Today
 `apply_mixin` records a mutable slot only on a level that already inherits

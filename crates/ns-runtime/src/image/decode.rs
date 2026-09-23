@@ -2406,6 +2406,21 @@ fn rebuild_applications<'gc>(
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
     let mut chain: Vec<usize> = Vec::new();
+    // Recorded in the order each class's application is installed --
+    // superclass first, by construction of the loop below -- and replayed
+    // by the second pass afterward. §3.1.1's two conditions on a value
+    // class read a level's *enclosing* class's application too
+    // (`is_a_value`, `Heap::describe`), which is a different axis than the
+    // superclass chain this loop orders: an enclosing class can be any
+    // other pending record, done or not, at the point a superclass chain
+    // reaches it. Recomputing a refusal inside this loop, right after its
+    // own application installs, read a not-yet-installed enclosing class's
+    // placeholder application instead of its real one -- answering `Object`
+    // as its name and, had its real answer to `inherits_value` differed
+    // from the placeholder's `false`, potentially the wrong verdict, not
+    // only the wrong text. Running the recompute only once every class in
+    // `pending` already carries its real application avoids both.
+    let mut installed_order: Vec<usize> = Vec::with_capacity(pending.len());
     for start in 0..pending.len() {
         if done[start] {
             continue;
@@ -2437,7 +2452,8 @@ fn rebuild_applications<'gc>(
         for &pending_index in chain.iter().rev() {
             let object = &objects[pending[pending_index].object];
             let mixin = &pending[pending_index].mixin;
-            let super_application = if metaclass_rows.contains(&crate::mixin::mixin_key(mixin)) {
+            let is_metaclass = metaclass_rows.contains(&crate::mixin::mixin_key(mixin));
+            let super_application = if is_metaclass {
                 None
             } else {
                 match context.mutator.heap.class_superclass(*object) {
@@ -2454,17 +2470,67 @@ fn rebuild_applications<'gc>(
             let application = context
                 .mutator
                 .apply_mixin(&pending[pending_index].mixin, super_application.as_ref());
+            let object = *object;
             if !context
                 .mutator
                 .heap
-                .install_class_application(*object, application)
+                .install_class_application(object, application)
             {
                 unreachable!("this object was filled in as a class record");
             }
+            installed_order.push(pending_index);
             done[pending_index] = true;
             on_chain[pending_index] = false;
         }
         chain.clear();
+    }
+    // §3.1.1's two conditions on a value class are decided when the class
+    // object is created (`interpreter::value_class`), never reconstructed
+    // from the wire -- a decoded record starts with no verdict
+    // (`ClassData::new` defaults `None`). A legitimate snapshot can hold a
+    // class that was created carrying one (or one built of decoded pieces
+    // would carry, `Counter`-over-`Holder`-style), so it is recomputed
+    // here, exactly as `after_clause` decides it for a class created from
+    // source -- never for a metaclass or an applied level, neither of which
+    // `after_clause` checks either, and only when the application inherits
+    // `Value`, matching its own guard. A class with no lexical enclosing --
+    // a module root, a builtin -- never reaches `after_clause` and is
+    // skipped the same way here.
+    //
+    // A second pass, not folded into the loop above: `installed_order`'s
+    // own doc comment says why every application has to be real first.
+    // Still superclass first, since that is the order `installed_order`
+    // was recorded in.
+    for pending_index in installed_order {
+        let object = objects[pending[pending_index].object];
+        if metaclass_rows.contains(&crate::mixin::mixin_key(&pending[pending_index].mixin)) {
+            continue;
+        }
+        let application = context
+            .mutator
+            .heap
+            .class_application(object)
+            .expect("every pending class was installed above");
+        if !application.inherits_value || context.mutator.heap.class_is_applied_level(object) {
+            continue;
+        }
+        let (Some(enclosing), Some(superclass_class)) = (
+            context.mutator.heap.class_enclosing(object),
+            context.mutator.heap.class_superclass(object),
+        ) else {
+            continue;
+        };
+        if let Some(refusal) = crate::interpreter::value_class::check_value_class(
+            context.mutator,
+            &application,
+            enclosing,
+            superclass_class,
+        ) {
+            context
+                .mutator
+                .heap
+                .set_class_value_refusal(object, refusal);
+        }
     }
     Ok(())
 }

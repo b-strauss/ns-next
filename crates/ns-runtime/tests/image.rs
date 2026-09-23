@@ -1720,6 +1720,17 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
+/// The other half of `expect_ok`: unwraps the `NewspeakError`'s message
+/// from a `HostResult` expected to fail, the same way `tests/value_conditions.rs`'s
+/// `expect_error` does.
+fn expect_error(result: HostResult, what: &str) -> String {
+    match result {
+        Ok(_) => panic!("{what}: expected a Newspeak error"),
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(error)) => error.message,
+    }
+}
+
 /// The mixin table's row ids, without keeping the table's own bytes: a
 /// graph section names a class object's declaration by row id, so encoding
 /// one needs exactly the map `image::snapshot` builds. Called from inside an
@@ -8979,4 +8990,79 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
         "answer",
     );
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+}
+
+/// §3.1.1's two conditions on a value class are decided when the class
+/// object is created and only *recorded* on it (`ClassData::value_class_refusal`,
+/// `docs/design/object-model.md`, "The two new conditions..."); `decide_instantiation`
+/// is what refuses, at instantiation. A decoded class object starts with no
+/// verdict of its own, so a legitimate snapshot holding a class that was
+/// created carrying one has to have it recomputed on load
+/// (`image::decode::rebuild_applications`) or the round trip would silently
+/// make an already-refused class instantiable.
+///
+/// `Counter` inherits `Value` directly but is enclosed by a fresh `Holder`
+/// each time `MutableCounter` builds one, so it is a refused value class
+/// from the moment it is created -- `goldens/kernel/a_value_subclass_of_a_
+/// refused_value_class_is_refused.ns` pins the same shape as a golden.
+/// `Stamped` inherits `Value` only through `Counter`, with no `<:` clause of
+/// its own, so its own refusal is *inherited* from `Counter`'s recorded
+/// verdict by the walk in `interpreter::value_class::check_value_class` --
+/// exactly the case that has to survive the round trip in the right order,
+/// superclass first, for `Stamped`'s recomputed verdict to name `Counter`
+/// rather than trusting it blindly.
+#[test]
+fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class RefusedValueClassModule usingPlatform: platformAtCreation = Object <: Value () (
+            public class Holder = Object new (
+                | public count ::= 0. |
+            ) (
+                public class Counter = Value new () (
+                    public bump = ( count:: count + 1. ^count )
+                )
+            )
+            public MutableCounter = ( ^Holder new Counter )
+            public class Stamped = MutableCounter new () ()
+        ) : ()
+    "};
+    let (mut interpreter, class, platform, module) = instantiated_world(source);
+    let stamped_class = expect_ok(
+        interpreter.send(&module, Symbol::intern("Stamped"), &[]),
+        "Stamped",
+    );
+    // The shape the bug depends on, confirmed before any round trip:
+    // creating `Stamped` succeeds -- the redesign only records a refusal --
+    // and only instantiating it is refused.
+    let message = expect_error(interpreter.instantiate(&stamped_class, &[]), "Stamped new");
+    assert_eq!(
+        message,
+        "cannot instantiate Stamped: a value class's enclosing objects must be values, and \
+         Counter's enclosing object, an instance of Holder, is not one"
+    );
+
+    let bytes = snapshot_world(
+        &mut interpreter,
+        source,
+        &class,
+        &platform,
+        std::slice::from_ref(&stamped_class),
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded_stamped = loaded
+        .roots
+        .first()
+        .cloned()
+        .expect("the snapshotted Stamped");
+    let message = expect_error(
+        loaded.interpreter.instantiate(&reloaded_stamped, &[]),
+        "Stamped new",
+    );
+    assert_eq!(
+        message,
+        "cannot instantiate Stamped: a value class's enclosing objects must be values, and \
+         Counter's enclosing object, an instance of Holder, is not one"
+    );
 }
