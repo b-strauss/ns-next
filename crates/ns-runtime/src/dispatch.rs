@@ -452,7 +452,6 @@ mod tests {
             superclass: super_application,
             inherits_value: false,
             first_mutable_slot: None,
-            identity_method: None,
             instantiation_refusal: None,
             nested_slot: crate::hash::IdentityMap::default(),
             declared_slots: Vec::new(),

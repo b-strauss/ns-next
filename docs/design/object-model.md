@@ -387,15 +387,19 @@ method (`==`)". All four are enforced strictly (designed with the user on
 2026-09-23). Two are about an instance's slots and are decided as the
 instance is built, the one place every instance of every class comes from,
 whether its class was loaded from source, materialized as a nested class or
-rebuilt from an image. Two are about the class, and are decided once, where
-its class object is created. **Every one of them is refused where an instance
-would come into being**, and so is a fifth: a module root that breaks the root
-rule ("Mixin application", at its end), which decides what a module that
-declares itself a value may write. Every refusal is an ordinary Newspeak error
-named under the primary factory of the class being instantiated, defaulted to
-`new`, raised at run time — a class nothing instantiates never fails, as a
-method nothing runs never does — and every text lives in
-`interpreter/instantiate.rs`, so both lowerings raise the same errors.
+rebuilt from an image. Of the other two, the identity method is a property of
+the *application* and is decided once, where `Mutator::apply_mixin` builds
+it — before any class object exists, which is what covers a module's root
+class along with every nested one — and the enclosing objects are fixed per
+*class object*, decided once where one is created. **Every one of them is
+refused where an instance would come into being**, and so is a fifth: a
+module root that breaks the root rule ("Mixin application", at its end),
+which decides what a module that declares itself a value may write. Every
+refusal is an ordinary Newspeak error named under the primary factory of the
+class being instantiated, defaulted to `new`, raised at run time — a class
+nothing instantiates never fails, as a method nothing runs never does — and
+every text lives in `interpreter/instantiate.rs`, so both lowerings raise the
+same errors.
 
 - **Step 1 refuses a mutable slot anywhere in the chain.** A class that
   inherits `Value` and has one could never have a value object for an
@@ -427,55 +431,66 @@ method nothing runs never does — and every text lives in
   member §6 defines rather than state of the value. A value class may declare a
   nested class without ceasing to be one.
 
-**The two new conditions are decided where a class object is created and
-refused where an instance is made**, the two about the class rather than its
-slots. They are decided once, cold, by
-`interpreter/value_class.rs`'s `check_value_class`, which `interpreter/nested.rs`'s
-`after_clause` calls after `apply_mixin` answers the application, and only
-for an application that inherits `Value`; the verdict is recorded on the
-class object (`ClassData::value_class_refusal`, a `ValueClassRefusal`), and
-`decide_instantiation` refuses an instance of a class that carries one, beside
-the refusals it makes from `instantiation_refusal`. A class that does not
-inherit `Value` pays one flag test at creation, and a value class one more
-test per instantiation. The class object is where both answers are known:
-the identity method is a property of the application, and the enclosing
-objects are fixed per class object, since a nested class object exists per
-enclosing instance — so asking once there costs nothing per instance. SOMns
-refuses at class creation
+**Both of the class-level conditions are decided cold and refused only where
+an instance is made**, but at two different moments, since one is a property
+of the application and the other of the class object. SOMns decides both at
+class creation
 (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`), and
-this runtime did too until §2.3's own example ruled it out (decided with the
-user on 2026-09-24): with `GrandChildOfOuter`'s slot `Inner ::= String`,
-"`g Nested` returns a subclass of `String`" — a value class whose enclosing
-object `g` is mutable, which the specification creates and never
-instantiates (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which
-passes as transcribed). §3.1.1 defines when an *object* is a value; what
-must never exist is an instance that passes for a value and is not one. The
-texts are "cannot instantiate `C`: a value class may not define ==, and `D`
-defines it" and "cannot instantiate `C`: a value class's enclosing objects
-must be values, and its enclosing object, …, is not one" (or "`L`'s enclosing
-object" for a level above `C`).
+this runtime did too until §2.3's own example ruled it out for the
+enclosing-object condition (decided with the user on 2026-09-24): with
+`GrandChildOfOuter`'s slot `Inner ::= String`, "`g Nested` returns a subclass
+of `String`" — a value class whose enclosing object `g` is mutable, which the
+specification creates and never instantiates
+(`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which passes as
+transcribed). §3.1.1 defines when an *object* is a value; what must never
+exist is an instance that passes for a value and is not one. The texts are
+"cannot instantiate `C`: a value class may not define ==, and `D` defines it"
+and "cannot instantiate `C`: a value class's enclosing objects must be
+values, and its enclosing object, …, is not one" (or "`L`'s enclosing object"
+for a level above `C`).
 
-- **No identity method.** `apply_mixin` records, once per application and in
-  the way it records `first_mutable_slot`, the first level that declares an
-  instance-side `==` while the chain inherits `Value`, excluding `Value`'s own
-  mixin (`MixinApplication::identity_method`). Only levels **below** `Value`
+- **No identity method** is decided once per *application*, cold, when
+  `Mutator::apply_mixin` builds it — the same place `first_mutable_slot` is
+  decided, and folded into the same field, `instantiation_refusal`
+  (`InstantiationRefusal::IdentityMethod`), right after it: root clause
+  defect, then the superclass's own refusal (inherited unchanged, exactly as
+  the mutable-slot refusal is), then the mutable slot when the chain inherits
+  `Value`, then the identity method. `apply_mixin` looks for the first level
+  below `Value` that declares an instance-side `==` while the chain inherits
+  `Value`, excluding `Value`'s own mixin. Only levels **below** `Value`
   count: an `==` above it, `Object`'s included, is overridden by `Value>>==`,
   so the class does not define it, and `Value>>==` itself is the declaration
   §3.1.1's next sentence allows. A level a `<:` clause adds below `Value`
   counts like any other
   (`goldens/kernel/an_identity_method_from_an_applied_mixin_is_refused.ns`).
-- **Enclosing objects are values.** The class's own enclosing object is
-  checked first, then the walk climbs the new class object's superclass
-  chain. At each level: a class that inherits `Value` and was created as a
+  Deciding it on the application rather than the class object is what covers
+  a module's root along with every nested class: `Mutator::load_root_class`
+  builds no class object through `nested::after_clause`, but it still calls
+  `apply_mixin` — the one place every application in the system is built,
+  root, nested or decoded alike — so a value module whose root class defines
+  `==` is refused exactly as a nested one would be
+  (`goldens/kernel/a_value_module_defining_identity_is_refused.ns`), and
+  `decide_instantiation` refuses it from `instantiation_refusal`, the same
+  field the root clause defect and the mutable slot are refused from.
+- **Enclosing objects are values** is decided once per *class object*, cold,
+  by `interpreter/value_class.rs`'s `check_value_class`, which
+  `interpreter/nested.rs`'s `after_clause` calls after `apply_mixin` answers
+  the application, and only for an application that inherits `Value`; the
+  verdict is recorded on the class object (`ClassData::value_class_refusal`,
+  a `ValueClassRefusal`), and `decide_instantiation` refuses an instance of a
+  class that carries one, beside the refusals it makes from
+  `instantiation_refusal`. A class that does not inherit `Value` pays one
+  flag test at creation, and a value class one more test per instantiation.
+  The class's own enclosing object is checked first, then the walk climbs
+  the new class object's superclass chain. At each level: a class that inherits `Value` and was created as a
   class of its own — by `after_clause`, as a builtin or as a module root, not
   a level a `<:` clause added — stops the walk **only if it carries no
   recorded refusal of its own**, because it was checked the same way when it
   was created and everything above it holds by induction. If it does carry
   one, the walk does not trust it: a refused class still exists, since the
   refusal is recorded rather than raised, so the new class inherits the
-  fault instead — an `IdentityMethod` unchanged, or a
-  `NonValueEnclosingObject` that names the level the walk stopped at, with
-  the `described` text taken from that level's own verdict
+  fault instead — a `NonValueEnclosingObject` that names the level the walk
+  stopped at, with the `described` text taken from that level's own verdict
   (`goldens/kernel/a_value_subclass_of_a_refused_value_class_is_refused.ns`).
   Any other level — one that does not inherit `Value`, or a `<:` level, which
   is never created through `after_clause` — has its enclosing object checked
@@ -512,13 +527,6 @@ object" for a level above `C`).
   crafted artifact gets the verdict its decoded structure implies, like any
   other decoded class; a ready-made *instance* decoded from an image is not
   re-checked ("What is still unchecked" in [core-library.md](core-library.md)).
-
-**Gap: a module's root class may define `==`.** The identity-method verdict
-is taken only where `after_clause` creates a class object, and a root class
-is created by `load_root_class`, which calls no check, so a value module whose
-root class declares `==` is instantiated, and its instances are values whose
-class defines an identity method. `MixinApplication::identity_method` already
-records the fault on the root's application; nothing reads it for a root.
 
 **`Kernel` and the VM mirror are values, as in SOMns** (decided with the user
 on 2026-09-23). `Kernel.ns`'s module is declared
@@ -878,8 +886,9 @@ stays blocked on that, not on the collector.
   refusing at instantiation rather than at class creation decided on
   2026-09-24, because §2.3's own example creates a value class with a mutable
   enclosing object and never instantiates it). The two class conditions are
-  still *decided* once, where the class object is created ("A value object's
-  four conditions" above).
+  still *decided* once each, cold — the identity method per application,
+  where `Mutator::apply_mixin` builds it, and the enclosing objects per class
+  object, where one is created ("A value object's four conditions" above).
 - **A module's root may name only `Object` or `Value`, or write
   `Object <: Value`, and every other root is a defect deferred to
   instantiation** (decided with the user on 2026-09-23), so a module with a

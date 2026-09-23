@@ -2408,8 +2408,8 @@ fn rebuild_applications<'gc>(
     let mut chain: Vec<usize> = Vec::new();
     // Recorded in the order each class's application is installed --
     // superclass first, by construction of the loop below -- and replayed
-    // by the second pass afterward. §3.1.1's two conditions on a value
-    // class read a level's *enclosing* class's application too
+    // by the second pass afterward. §3.1.1's enclosing-object condition
+    // reads a level's *enclosing* class's application too
     // (`is_a_value`, `Heap::describe`), which is a different axis than the
     // superclass chain this loop orders: an enclosing class can be any
     // other pending record, done or not, at the point a superclass chain
@@ -2484,18 +2484,21 @@ fn rebuild_applications<'gc>(
         }
         chain.clear();
     }
-    // §3.1.1's two conditions on a value class are decided when the class
-    // object is created (`interpreter::value_class`), never reconstructed
-    // from the wire -- a decoded record starts with no verdict
-    // (`ClassData::new` defaults `None`). A legitimate snapshot can hold a
-    // class that was created carrying one (or one built of decoded pieces
-    // would carry, `Counter`-over-`Holder`-style), so it is recomputed
-    // here, exactly as `after_clause` decides it for a class created from
-    // source -- never for a metaclass or an applied level, neither of which
-    // `after_clause` checks either, and only when the application inherits
-    // `Value`, matching its own guard. A class with no lexical enclosing --
-    // a module root, a builtin -- never reaches `after_clause` and is
-    // skipped the same way here.
+    // §3.1.1's enclosing-object condition is decided when the class object
+    // is created (`interpreter::value_class`), never reconstructed from the
+    // wire -- a decoded record starts with no verdict (`ClassData::new`
+    // defaults `None`). A legitimate snapshot can hold a class that was
+    // created carrying one (or one built of decoded pieces would carry,
+    // `Counter`-over-`Holder`-style), so it is recomputed here, exactly as
+    // `after_clause` decides it for a class created from source -- never for
+    // a metaclass or an applied level, neither of which `after_clause`
+    // checks either, and only when the application inherits `Value`,
+    // matching its own guard. A class with no lexical enclosing -- a module
+    // root, a builtin -- never reaches `after_clause` and is skipped the
+    // same way here. The identity-method condition needs no recompute of
+    // its own: it is a property of the application, already folded into
+    // `instantiation_refusal` by the `apply_mixin` call in the loop above,
+    // for a root's application exactly as for any other's.
     //
     // A second pass, not folded into the loop above: `installed_order`'s
     // own doc comment says why every application has to be real first.
@@ -2522,7 +2525,6 @@ fn rebuild_applications<'gc>(
         };
         if let Some(refusal) = crate::interpreter::value_class::check_value_class(
             context.mutator,
-            &application,
             enclosing,
             superclass_class,
         ) {

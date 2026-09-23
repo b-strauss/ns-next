@@ -1703,11 +1703,11 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// §3.1.1's two conditions on a value class, decided when `class` was
-    /// created and read here by `decide_instantiation` -- `ValueClassRefusal`'s
-    /// doc comment says why creation and refusal are two different moments.
-    /// `None` for a class that is no value and for a value class whose
-    /// conditions both hold.
+    /// §3.1.1's enclosing-object condition on a value class, decided when
+    /// `class` was created and read here by `decide_instantiation` --
+    /// `ValueClassRefusal`'s doc comment says why creation and refusal are
+    /// two different moments. `None` for a class that is no value and for a
+    /// value class whose enclosing objects are all values.
     pub fn class_value_refusal(
         &self,
         class: ClassReference<'gc>,
@@ -1886,11 +1886,11 @@ impl<'gc> Heap<'gc> {
         false
     }
 
-    /// Records `class`'s verdict on §3.1.1's two conditions, right after
-    /// `interpreter::nested::after_clause` creates it -- the one caller and
-    /// the one time this is ever set; a decoded class object is not
-    /// re-checked. Answers whether the write happened, like the other class
-    /// setters.
+    /// Records `class`'s verdict on §3.1.1's enclosing-object condition,
+    /// right after `interpreter::nested::after_clause` creates it -- the one
+    /// caller and the one time this is ever set; a decoded class object is
+    /// not re-checked. Answers whether the write happened, like the other
+    /// class setters.
     pub fn set_class_value_refusal(
         &mut self,
         class: ClassReference<'gc>,
@@ -3129,7 +3129,6 @@ mod tests {
             superclass: None,
             inherits_value: false,
             first_mutable_slot: None,
-            identity_method: None,
             instantiation_refusal: None,
             nested_slot: crate::hash::IdentityMap::default(),
             declared_slots: Vec::new(),

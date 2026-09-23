@@ -1,19 +1,22 @@
-//! §3.1.1's conditions on a value *class* -- a value class may not define
-//! `==`, and its enclosing object, and the enclosing object of every level
-//! of its class chain, must be a value -- decided once, cold, where a
-//! nested class object is created (`nested::after_clause`), as SOMns
-//! decides them
+//! §3.1.1's enclosing-object condition on a value *class* -- the enclosing
+//! object of every level of its class chain must be a value -- decided once,
+//! cold, where a nested class object is created (`nested::after_clause`), as
+//! SOMns decides a value class's conditions
 //! (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`).
 //! Unlike SOMns, the verdict is only *recorded* here, on the class object
 //! (`ClassData::value_class_refusal`); `interpreter::instantiate`'s
-//! `decide_instantiation` is what refuses, where an instance would come
-//! into being. `docs/design/object-model.md`, "The two new conditions are
-//! decided where a class object is created and refused where an instance
-//! is made", explains why: the specification's own §2.3 example creates a
-//! class whose enclosing object is mutable and never instantiates it.
-//! `after_clause` calls in only for a class that inherits `Value`.
+//! `decide_instantiation` is what refuses, where an instance would come into
+//! being. `docs/design/object-model.md`, "A value object's four conditions",
+//! explains why: the specification's own §2.3 example creates a class whose
+//! enclosing object is mutable and never instantiates it. `after_clause`
+//! calls in only for a class that inherits `Value`.
+//!
+//! §3.1.1's other class-level condition, no identity method, is not decided
+//! here: it is a property of the *application*, computed once by
+//! `Mutator::apply_mixin` and folded straight into
+//! `MixinApplication::instantiation_refusal`, so it needs no class object
+//! and no call from here to cover a module's root.
 
-use crate::mixin::MixinApplication;
 use crate::types::*;
 
 use super::Mutator;
@@ -22,13 +25,9 @@ use super::Mutator;
 #[inline(never)]
 pub(crate) fn check_value_class<'gc>(
     mutator: &Mutator<'gc>,
-    application: &MixinApplication,
     enclosing: ObjectReference<'gc>,
     superclass: ClassReference<'gc>,
 ) -> Option<ValueClassRefusal> {
-    if let Some(declaring) = application.identity_method {
-        return Some(ValueClassRefusal::IdentityMethod { declaring });
-    }
     if !super::instantiate::is_a_value(mutator, enclosing) {
         return Some(ValueClassRefusal::NonValueEnclosingObject {
             level: None,
@@ -52,9 +51,6 @@ pub(crate) fn check_value_class<'gc>(
         if heap.class_inherits_value(class) && !heap.class_is_applied_level(class) {
             return match heap.class_value_refusal(class) {
                 None => None,
-                Some(ValueClassRefusal::IdentityMethod { declaring }) => {
-                    Some(ValueClassRefusal::IdentityMethod { declaring })
-                }
                 Some(ValueClassRefusal::NonValueEnclosingObject { described, .. }) => {
                     let level_name = heap
                         .class_application(class)

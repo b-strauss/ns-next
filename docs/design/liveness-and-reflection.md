@@ -251,9 +251,7 @@ a value, a class that defines `==` below `Value`, and an enclosing object, at
 any level of the class chain, that is not a value
 ([object-model.md](object-model.md), "A value object's four conditions"). So
 a value class lives in a module that declares itself a value with §6.2's
-mixin application, `= Object <: Value`, as `Kernel.ns` does. One gap remains:
-a value module's root class is not checked for `==`
-([core-library.md](core-library.md), "What is still unchecked").
+mixin application, `= Object <: Value`, as `Kernel.ns` does.
 
 What is missing is the boundary: there are no actors, so nothing copies a value
 across one, and a module definition is not yet a value object (§8.1). Neither is

@@ -8992,14 +8992,15 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }
 
-/// §3.1.1's two conditions on a value class are decided when the class
-/// object is created and only *recorded* on it (`ClassData::value_class_refusal`,
-/// `docs/design/object-model.md`, "The two new conditions..."); `decide_instantiation`
-/// is what refuses, at instantiation. A decoded class object starts with no
-/// verdict of its own, so a legitimate snapshot holding a class that was
-/// created carrying one has to have it recomputed on load
-/// (`image::decode::rebuild_applications`) or the round trip would silently
-/// make an already-refused class instantiable.
+/// §3.1.1's enclosing-object condition on a value class is decided when the
+/// class object is created and only *recorded* on it
+/// (`ClassData::value_class_refusal`, `docs/design/object-model.md`, "A
+/// value object's four conditions", "Enclosing objects are values");
+/// `decide_instantiation` is what refuses, at instantiation. A decoded class
+/// object starts with no verdict of its own, so a legitimate snapshot
+/// holding a class that was created carrying one has to have it recomputed
+/// on load (`image::decode::rebuild_applications`) or the round trip would
+/// silently make an already-refused class instantiable.
 ///
 /// `Counter` inherits `Value` directly but is enclosed by a fresh `Holder`
 /// each time `MutableCounter` builds one, so it is a refused value class
@@ -9064,5 +9065,41 @@ fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
         message,
         "cannot instantiate Stamped: a value class's enclosing objects must be values, and \
          Counter's enclosing object, an instance of Holder, is not one"
+    );
+}
+
+/// The no-identity-method condition is decided once per *application*
+/// (`Mutator::apply_mixin`, folded into `MixinApplication::instantiation_refusal`),
+/// not per class object -- unlike the enclosing-object condition, it needs no
+/// `after_clause`, which a module's root never reaches
+/// (`load_root_class` calls `apply_mixin` directly). `snapshot_of` proves the
+/// case the fix depends on: a value module whose root defines `==` snapshots
+/// with no instance ever made, since `load` builds only the class, never an
+/// instance of it -- so the round trip has to be what catches a root that
+/// slipped past every other check
+/// (`goldens/kernel/a_value_module_defining_identity_is_refused.ns` pins the
+/// same shape as a golden).
+#[test]
+fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class ValueModuleDefiningIdentity usingPlatform: platformAtCreation = Object <: Value () (
+            public == other = ( ^false )
+        ) : ()
+    "};
+    let bytes = snapshot_of(source);
+    let mut loaded = image::load(&bytes).expect("load");
+    let platform = loaded.interpreter.platform();
+    let message = expect_error(
+        loaded
+            .interpreter
+            .instantiate(&loaded.root_class, std::slice::from_ref(&platform)),
+        "ValueModuleDefiningIdentity new",
+    );
+    assert_eq!(
+        message,
+        "cannot instantiate ValueModuleDefiningIdentity: a value class may not define ==, and \
+         ValueModuleDefiningIdentity defines it"
     );
 }

@@ -570,6 +570,20 @@ impl RootClauseDefect {
 pub enum InstantiationRefusal {
     RootClause(RootClauseDefect),
     MutableValueSlot(MutableValueSlot),
+    /// §3.1.1: a value's class "does not define an identity method (==)".
+    /// `declaring` is the first level below `Value` -- `Value`'s own
+    /// excluded, which the specification's next sentence allows, and every
+    /// level above `Value` too, whose `==` `Value` overrides -- whose mixin
+    /// declares an instance-side `==`. Computed once per application by
+    /// `Mutator::apply_mixin`, the same place `MutableValueSlot` is: this is
+    /// a property of the application, not of any class object built from
+    /// it, so a module's root -- which `apply_mixin` builds an application
+    /// for like any other, but which no class-object-creation hook such as
+    /// `nested::after_clause` ever runs for -- is covered without a check
+    /// of its own.
+    IdentityMethod {
+        declaring: Symbol,
+    },
 }
 
 #[derive(Debug)]
@@ -593,19 +607,15 @@ pub struct MixinApplication {
     /// turns it into a refusal only where the chain inherits `Value`, so a
     /// class with no value in its chain keeps its mutable slots legally.
     pub first_mutable_slot: Option<MutableValueSlot>,
-    /// §3.1.1: a value's class "does not define an identity method (==)".
-    /// The class, if any, that declares one below `Value` -- `Value`'s own
-    /// excluded, which the specification's next sentence allows, and every
-    /// level above `Value` too, whose `==` `Value` overrides. Decided where
-    /// the class object is created (`interpreter::value_class`), but
-    /// refused only where an instance is made
-    /// (`ClassData::value_class_refusal`, `interpreter::instantiate`).
-    pub identity_method: Option<Symbol>,
     /// What `interpreter::instantiate` refuses before allocating an
     /// instance, computed once per application by `Mutator::apply_mixin`:
-    /// a root clause defect (on this level or inherited), or -- when the
-    /// chain inherits `Value` -- `first_mutable_slot`. One field, so the
-    /// instantiation path tests one `Option` for both.
+    /// a root clause defect (on this level or inherited), `first_mutable_slot`
+    /// when the chain inherits `Value`, or -- also only then -- the first
+    /// level below `Value` that declares an instance-side `==`
+    /// (`InstantiationRefusal::IdentityMethod`'s own doc comment says which
+    /// levels count). One field, so the instantiation path tests one
+    /// `Option` for all three, and every one of them is inherited through
+    /// the superclass's own `instantiation_refusal` the same way.
     pub instantiation_refusal: Option<InstantiationRefusal>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached

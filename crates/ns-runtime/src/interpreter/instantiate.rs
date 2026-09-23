@@ -420,16 +420,15 @@ impl<'gc> Mutator<'gc> {
                     refusal,
                 )));
             }
-            // §3.1.1's other two conditions on a value class -- no identity
-            // method, and every enclosing object a value
-            // (`interpreter::value_class::check_value_class`) -- decided
-            // when `class` was created and only recorded then
+            // §3.1.1's other class-level condition, every enclosing object a
+            // value (`interpreter::value_class::check_value_class`) --
+            // decided when `class` was created and only recorded then
             // (`ClassData::value_class_refusal`); refused here, not there,
             // because the specification's own §2.3 example creates such a
             // class and never instantiates it
-            // (`docs/design/object-model.md`, "The two new conditions...").
-            // Behind `inherits_value` so a class that is no value pays
-            // nothing beyond the flag it already carries.
+            // (`docs/design/object-model.md`, "A value object's four
+            // conditions"). Behind `inherits_value` so a class that is no
+            // value pays nothing beyond the flag it already carries.
             if application.inherits_value {
                 if let Some(refusal) = self.heap.class_value_refusal(class) {
                     return Err(Signal::Error(value_class_refusal_error(
@@ -1248,6 +1247,9 @@ fn instantiation_refusal_error<'gc>(
                 defect.describe()
             ),
         },
+        crate::mixin::InstantiationRefusal::IdentityMethod { declaring } => {
+            identity_method_error(class, application, *declaring)
+        }
     }
 }
 
@@ -1284,11 +1286,35 @@ fn mutable_value_slot_error<'gc>(
     }
 }
 
-/// §3.1.1's other two conditions on a value class -- decided when the class
-/// object was created (`interpreter::value_class::check_value_class`), and
-/// refused here rather than there (`docs/design/object-model.md`, "The two
-/// new conditions..."). Named under the class's own primary factory, like
-/// every other instantiation refusal.
+/// §3.1.1's third condition on a value class -- "does not define an
+/// identity method (==)" -- decided once per *application*
+/// (`Mutator::apply_mixin`, folded into `MixinApplication::instantiation_refusal`)
+/// rather than per class object, and refused from there by
+/// `instantiation_refusal_error`, alongside the root clause defect and the
+/// mutable-slot refusal. The class being instantiated and the class
+/// declaring `==` are named apart, because a subclass inherits the fault --
+/// the same rule `mutable_value_slot_error` follows for its own violation.
+fn identity_method_error<'gc>(
+    class: ClassReference<'gc>,
+    application: &crate::mixin::MixinApplication,
+    declaring: Symbol,
+) -> NewspeakError<'gc> {
+    NewspeakError {
+        selector: factory_selector(application),
+        receiver: Value::Object(class),
+        message: format!(
+            "cannot instantiate {}: a value class may not define ==, and {declaring} defines it",
+            application.mixin.name
+        ),
+    }
+}
+
+/// §3.1.1's other class-level condition -- every enclosing object a value --
+/// decided when the class object was created
+/// (`interpreter::value_class::check_value_class`), and refused here rather
+/// than there (`docs/design/object-model.md`, "A value object's four
+/// conditions"). Named under the class's own primary factory, like every
+/// other instantiation refusal.
 fn value_class_refusal_error<'gc>(
     class: ClassReference<'gc>,
     application: &crate::mixin::MixinApplication,
@@ -1296,10 +1322,6 @@ fn value_class_refusal_error<'gc>(
 ) -> NewspeakError<'gc> {
     let instantiated = application.mixin.name;
     let message = match refusal {
-        ValueClassRefusal::IdentityMethod { declaring } => format!(
-            "cannot instantiate {instantiated}: a value class may not define ==, and \
-             {declaring} defines it"
-        ),
         ValueClassRefusal::NonValueEnclosingObject {
             level: None,
             described,

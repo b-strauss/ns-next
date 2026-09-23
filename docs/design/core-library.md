@@ -217,17 +217,25 @@ value object's four conditions", has the whole design:
   an ordinary instance, a class object — is refused with the slot named.
   Deep immutability is then transitive by induction: whatever a value's slot
   holds was itself checked when it was made.
-- **A value class may not define `==`, and its enclosing objects must be
-  values.** Both are decided once, where the class object is created
-  (`interpreter/value_class.rs`, from `nested::after_clause`), recorded on it
-  (`ClassData::value_class_refusal`) and refused at instantiation, because
-  §2.3's own example creates a value class whose enclosing object is mutable
-  and never instantiates it (decided with the user on 2026-09-24). The
-  enclosing objects of every level of the class chain count, not only the
-  class's own, since an inherited method reaches its own level's through
-  `outer`. `Value`'s own `==` is the declaration the specification's next
-  sentence allows ("If the class `Value` declares an identity method, that
-  method must return the same results as `Value`'s equality method").
+- **A value class may not define `==`.** Decided once per application, cold,
+  by `Mutator::apply_mixin` — the same place `first_mutable_slot` is decided
+  — and folded into `MixinApplication::instantiation_refusal`, refused at
+  instantiation alongside the root clause defect and the mutable slot. Being
+  a property of the application rather than of any class object built from
+  it is what covers a module's root the same way it covers a nested class:
+  `load_root_class` calls `apply_mixin` too, even though it builds no class
+  object through `nested::after_clause`. `Value`'s own `==` is the
+  declaration the specification's next sentence allows ("If the class
+  `Value` declares an identity method, that method must return the same
+  results as `Value`'s equality method").
+- **A value class's enclosing objects must be values.** Decided once per
+  class object, cold, where one is created (`interpreter/value_class.rs`,
+  from `nested::after_clause`), recorded on it (`ClassData::value_class_refusal`)
+  and refused at instantiation, because §2.3's own example creates a value
+  class whose enclosing object is mutable and never instantiates it (decided
+  with the user on 2026-09-24). The enclosing objects of every level of the
+  class chain count, not only the class's own, since an inherited method
+  reaches its own level's through `outer`.
 
 Every refusal names **the primary factory of the class being instantiated**,
 defaulted to `new` — the selector the program sent. A store in an inherited
@@ -247,16 +255,12 @@ module a value.
 
 **What is still unchecked.**
 
-- **A module's root class may define `==`.** The identity-method verdict is
-  taken where `nested::after_clause` creates a class object, and a root class
-  is created by `load_root_class`, which asks nothing, so a value module
-  whose root class declares `==` is instantiated
-  ([object-model.md](object-model.md), "A value object's four conditions").
 - **A value class nothing creates is never checked, and one nothing
-  instantiates is never refused.** A value class's identity method and
-  enclosing objects are decided when its class object is created, but only
-  recorded; they, the mutable slot and the slots' contents are refused only
-  where an instance comes into being. A class that inherits `Value` and
+  instantiates is never refused.** A value class's identity method is
+  decided when its application is built, and its enclosing objects when its
+  class object is created, but both only recorded; they, the mutable slot
+  and the slots' contents are refused only where an instance comes into
+  being. A class that inherits `Value` and
   declares a mutable slot is a defect the moment it is written, and it is
   reported the moment something asks for an instance — never before. That is
   what §2.3 requires: its own example creates such a class and never

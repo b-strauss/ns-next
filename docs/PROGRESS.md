@@ -28,16 +28,11 @@ the strict enforcement of §3.1.1's value conditions and the root rule that
 goes with it ("Mixin application" and "The value conditions" below;
 [object-model.md](design/object-model.md), "A value object's four
 conditions"). All are described below, from "Step 6's first part" on, after
-the account of how M4 got here.
-
-**One gap the value conditions left open: a value module's root class is not
-checked for `==`.** The identity-method verdict is taken only where
-`nested::after_clause` creates a class object, and `load_root_class` asks
-nothing, so `class M = Object <: Value (…) ( public == other = (…) )`
-instantiates ([core-library.md](design/core-library.md), "What is still
-unchecked"). It is a deviation from §3.1.1, so it needs fixing, not only
-recording; `MixinApplication::identity_method` already holds the answer for
-the root's application.
+the account of how M4 got here. A follow-up fix on 2026-09-24 moved the
+no-identity-method condition from the class object to the application it is
+really a property of, which is what let a value module's root class define
+`==` and still instantiate ("The value conditions" below, "What changed,
+commit by commit").
 
 M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
@@ -3773,14 +3768,18 @@ conditions" and "Mixin application", "The root rule".
   load, in a pass of its own after every application is installed, so a
   snapshot of a refused value class decodes refused.
 - this entry's commit — the documents.
+- **Task 6b, follow-up fix** — the no-identity-method condition moves from
+  `ClassData::value_class_refusal` (decided at class-object creation, which a
+  module's root never reaches) to `MixinApplication::instantiation_refusal`
+  (decided once per application by `Mutator::apply_mixin`, which the root's
+  application goes through like any other), closing the gap below. A golden
+  and an image round-trip test pin a value module whose root defines `==`;
+  every other recorded outcome held.
 
 **Measurement.** Measured in Task 8: see below.
 
 **Known gaps**, each recorded where it applies:
 
-- **A value module's root class is not checked for `==`**
-  ([core-library.md](design/core-library.md), "What is still unchecked";
-  "Where the next session starts" above).
 - **A ready-made instance decoded from an image is not re-checked**, as
   before; a decoded class object now is
   ([image-format.md](design/image-format.md), "Verification").

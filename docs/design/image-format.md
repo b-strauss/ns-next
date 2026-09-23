@@ -548,15 +548,22 @@ cannot bring back a root the rule refuses, and no decoded mixin carries a
 root defect.
 
 **A decoded value class is re-decided; a decoded instance is not re-checked.**
-§3.1.1's two conditions on a value class — no `==`, every enclosing object a
-value — are a verdict on the class object, not a wire field, so
-`rebuild_applications` recomputes it with `check_value_class` for every
-decoded class whose application inherits `Value`, once every decoded class
-has its real application ([object-model.md](object-model.md), "A value
-object's four conditions"): a snapshot of a refused value class decodes
-refused. A ready-made *instance*, by contrast, is rebuilt from its record
-without its slots passing through `InitializeSlot`, so a crafted image can
-hand back a value whose slot holds an `Array` — a wrong answer, never a crash
+§3.1.1's two class-level conditions on a value class — no `==`, every
+enclosing object a value — are wire fields of neither the application nor
+the class object, so neither is trusted from the artifact's bytes. No `==`
+needs no recompute of its own: it is a property of the application, and
+`rebuild_applications` builds every decoded class's real application through
+the same `Mutator::apply_mixin` a class built from source goes through, root
+included, so the condition is already folded into `instantiation_refusal`
+the moment the application exists. Every enclosing object a value *is* a
+verdict on the class object, so `rebuild_applications` recomputes it with
+`check_value_class` for every decoded class whose application inherits
+`Value`, once every decoded class has its real application
+([object-model.md](object-model.md), "A value object's four conditions"): a
+snapshot of a refused value class decodes refused either way. A ready-made
+*instance*, by contrast, is rebuilt from its record without its slots
+passing through `InitializeSlot`, so a crafted image can hand back a value
+whose slot holds an `Array` — a wrong answer, never a crash
 ([core-library.md](core-library.md), "What is still unchecked").
 
 The mixin tree's nesting depth is input-controlled, so building it is iterative —

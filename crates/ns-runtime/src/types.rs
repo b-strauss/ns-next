@@ -62,22 +62,28 @@ pub enum ObjectData<'gc> {
     Class(Box<ClassData<'gc>>),
 }
 
-/// §3.1.1's two conditions on a value class -- no identity method, and every
-/// enclosing object a value -- decided once, where the class object is
-/// created (`interpreter::value_class::check_value_class`, called from
+/// §3.1.1's enclosing-object condition on a value class -- every enclosing
+/// object, at every level of its class chain, must be a value -- decided
+/// once, where the class object is created
+/// (`interpreter::value_class::check_value_class`, called from
 /// `interpreter::nested::after_clause`), and recorded on `ClassData` rather
 /// than raised there: `decide_instantiation` is what refuses, since the
 /// specification's own §2.3 example creates such a class and never
-/// instantiates it (`docs/design/object-model.md`, "The two new conditions
-/// are decided where a class object is created and refused where an
-/// instance is made"). Holds no handle -- a `Symbol` and a `String`, both
-/// already rendered at creation time -- so it survives a move. An image
-/// carries none of it: `ClassData::new` defaults every decoded class's
-/// field to `None`, and `image::decode::rebuild_applications` recomputes it
-/// with the same `check_value_class`, once every decoded class's real
-/// application is installed, so a legitimate snapshot of a value class
-/// created carrying a refusal decodes carrying the same one rather than
-/// becoming instantiable.
+/// instantiates it (`docs/design/object-model.md`, "A value object's four
+/// conditions"). Holds no handle -- a `Symbol` and a `String`, both already
+/// rendered at creation time -- so it survives a move. An image carries none
+/// of it: `ClassData::new` defaults every decoded class's field to `None`,
+/// and `image::decode::rebuild_applications` recomputes it with the same
+/// `check_value_class`, once every decoded class's real application is
+/// installed, so a legitimate snapshot of a value class created carrying a
+/// refusal decodes carrying the same one rather than becoming instantiable.
+///
+/// §3.1.1's other class-level condition, no identity method, is not a
+/// `ValueClassRefusal` at all: it is a property of the *application*, not of
+/// any class object built from it, so `Mutator::apply_mixin` folds it
+/// straight into `MixinApplication::instantiation_refusal`
+/// (`mixin::InstantiationRefusal::IdentityMethod`) instead, which covers a
+/// module's root the same way it covers a nested class.
 ///
 /// The enclosing-objects walk (`check_value_class`) climbs a new class
 /// object's superclass chain and stops early only at a class that inherits
@@ -85,15 +91,11 @@ pub enum ObjectData<'gc> {
 /// refusal of its own -- such a class was checked the same way when it was
 /// created, so everything above it holds by induction. A class that does
 /// carry one is not trusted blindly: the new class inherits the fault
-/// instead, naming the level the walk stopped at (an `IdentityMethod`
-/// unchanged, since its `declaring` already names the right level; a
-/// `NonValueEnclosingObject` rebuilt with `level: Some(<the stopping
-/// class's name>)`, its `described` carried over from that class's own
-/// verdict).
+/// instead, naming the level the walk stopped at (`described` carried over
+/// from that class's own verdict, `level` rebuilt as `Some(<the stopping
+/// class's name>)`).
 #[derive(Debug, Clone)]
 pub enum ValueClassRefusal {
-    /// The level below `Value` that declares `==`.
-    IdentityMethod { declaring: Symbol },
     /// `level` is `None` for the class's own enclosing object; `described`
     /// is `Heap::describe` of the offending object, taken at creation.
     NonValueEnclosingObject {
@@ -186,8 +188,8 @@ pub struct ClassData<'gc> {
     pub applied_clause: Option<Box<crate::mixin::AppliedClause>>,
     /// `ValueClassRefusal`'s own doc comment says where this is decided and
     /// where it is refused. `None` for every class that is no value and for
-    /// a value class whose two conditions both hold -- which is most of
-    /// them, so `decide_instantiation` pays this read only behind
+    /// a value class whose enclosing objects are all values -- which is
+    /// most of them, so `decide_instantiation` pays this read only behind
     /// `application.inherits_value`. `ClassData::new` defaults it to `None`;
     /// `interpreter::nested::after_clause` sets it to `Some` right after
     /// creating the class object it is about, for a class built from
@@ -639,7 +641,6 @@ mod tests {
             superclass: None,
             inherits_value: false,
             first_mutable_slot: None,
-            identity_method: None,
             instantiation_refusal: None,
             nested_slot: crate::hash::IdentityMap::default(),
             declared_slots: Vec::new(),

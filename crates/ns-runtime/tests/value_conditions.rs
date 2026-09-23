@@ -1,6 +1,6 @@
 //! §3.1.1's value conditions and the root rule (§6.1, §3.8), enforced
-//! strictly: `docs/design/object-model.md`, "Planned: all four conditions,
-//! enforced strictly".
+//! strictly: `docs/design/object-model.md`, "A value object's four
+//! conditions".
 
 use indoc::indoc;
 
@@ -154,9 +154,8 @@ fn an_unknown_root_superclass_is_a_deferred_defect_not_a_resolve_error() {
 /// ordinary module still has its own enclosing object checked. §2.3's own
 /// example creates such a class and never instantiates it, so the class
 /// object itself comes into being without complaint
-/// (`docs/design/object-model.md`, "The two new conditions are decided
-/// where a class object is created and refused where an instance is
-/// made"); only `Derived new` is refused.
+/// (`docs/design/object-model.md`, "A value object's four conditions",
+/// "Enclosing objects are values"); only `Derived new` is refused.
 #[test]
 fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
     let source = indoc! {"
@@ -196,8 +195,9 @@ fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
 /// §2.3's own point, pinned directly: a value class whose enclosing object
 /// is not a value can still be *created* -- the send answers a class
 /// object, with no error -- and only instantiating it is refused.
-/// `docs/design/object-model.md`, "The two new conditions...", names the
-/// specification's own worked example this follows
+/// `docs/design/object-model.md`, "A value object's four conditions",
+/// "Enclosing objects are values", names the specification's own worked
+/// example this follows
 /// (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which creates
 /// such a class and never instantiates it).
 #[test]

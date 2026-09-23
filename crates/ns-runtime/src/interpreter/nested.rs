@@ -222,18 +222,16 @@ pub(crate) fn after_clause<'gc>(
     // superclass application share one application, and therefore one
     // compiled body and one instance layout (§6.2).
     let application = mutator.apply_mixin(&nested, Some(&super_application));
-    // §3.1.1's conditions on a value class, asked once, where its class
+    // §3.1.1's enclosing-object condition, asked once, where this class
     // object comes into being; a class that is no value pays this one
     // test. Only *decided* here -- `decide_instantiation` is what refuses,
     // once the verdict is recorded on the class object below
-    // (`value_class.rs`'s doc comment says why).
+    // (`value_class.rs`'s doc comment says why). The other class-level
+    // condition, no identity method, is already folded into `application`'s
+    // own `instantiation_refusal` by `apply_mixin` above, so it needs no
+    // call here.
     let value_class_refusal = if application.inherits_value {
-        crate::interpreter::value_class::check_value_class(
-            mutator,
-            &application,
-            enclosing,
-            superclass,
-        )
+        crate::interpreter::value_class::check_value_class(mutator, enclosing, superclass)
     } else {
         None
     };
