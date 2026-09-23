@@ -30,6 +30,8 @@ pub enum TokenKind {
     Pound,
     LessThan,
     GreaterThan,
+    /// `<:`, the mixin application operator (`newspeak-spec.pdf` §6.2).
+    MixinOperator,
     // Literals
     Number,
     String,

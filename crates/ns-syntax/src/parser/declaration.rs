@@ -303,8 +303,11 @@ impl<'a> Parser<'a> {
     /// classSideDecl = ':' '(' methodDecl* ')'
     /// ```
     ///
-    /// So a class is `class Id pattern? = superclause? ( G1 ) ( G2 ) ( ':' '(' G3 ')' )?`
-    /// with three distinct paren groups:
+    /// So a class is
+    /// `class Id pattern? = superclause? ( '<:' clause )* ( G1 ) ( G2 ) ( ':' '(' G3 ')' )?`
+    /// with three distinct paren groups (the `<:` clauses are §6.2's mixin
+    /// application; with at least one of them the whole body may be replaced by
+    /// a single `.`):
     /// - **G1** (`classHeader` body): class comment, ONE slot section, then
     ///   initializer expressions. No methods, no nested classes.
     /// - **G2** (`sideDecl` body): nested classes, methods, and lazy slot declarations.
@@ -328,17 +331,53 @@ impl<'a> Parser<'a> {
             Some(self.parse_message_pattern())
         };
         self.expect(TokenKind::Equals);
-        // DEVIATION (grammar lines 49, 195, 214-221): mixin application
-        // `class C = Super <: Mixin (...) (...)` (the `inverseMixinOperator`
-        // `<:`, `mixinApplication` / `mixinAppSuffix`) is unimplemented for
-        // Milestone 1 — no corpus file uses `<:` in a superclass clause.
-        // `parse_superclass_clause` parses the receiver and its trailing
-        // message sends only; a following `<:` is left for the caller to flag.
         let superclass = if self.at(TokenKind::LeftParenthesis) {
             None
         } else {
             Some(self.parse_superclass_clause())
         };
+        // §6.2's mixin application, `class C = S someMessage <: M otherMessage`:
+        //
+        // ```text
+        // explicitInheritanceListAndOrBody = inheritanceClause mixinSpec
+        // mixinSpec       = classBody | mixinAppSuffix
+        // mixinAppSuffix  = (mixinOperator inheritanceClause)+ (dot | classBody)
+        // ```
+        //
+        // Each `<:` clause is §6.1's `inheritanceClause`, the same production
+        // the superclass clause above is, so `parse_superclass_clause` parses
+        // it unchanged rather than a near-copy drifting from it. The suffix may
+        // only follow an explicit superclass clause, which is why it is parsed
+        // here and not where an implicit `Object` superclass is assumed.
+        let mut mixin_applications = Vec::new();
+        while self.eat(TokenKind::MixinOperator) {
+            mixin_applications.push(self.parse_superclass_clause());
+        }
+        // `(dot | classBody)`: a mixin application may end at a `.` instead of
+        // carrying a body. It then declares no slots, no methods, no nested
+        // classes, no class side and no class comment — the applied mixin
+        // supplies all of its behaviour.
+        if !mixin_applications.is_empty() && self.at(TokenKind::Dot) {
+            let dot = self.bump();
+            let span = start.merge(dot.span);
+            return ClassDeclaration {
+                access,
+                name,
+                factory,
+                superclass,
+                mixin_applications,
+                class_comment: None,
+                instance_side: ClassBody {
+                    slots: Vec::new(),
+                    initializer_expressions: Vec::new(),
+                    methods: Vec::new(),
+                    nested_classes: Vec::new(),
+                    span,
+                },
+                class_side: None,
+                span,
+            };
+        }
 
         // --- G1: classHeader body `( classComment? slotDecls? initExprs )` ---
         self.expect(TokenKind::LeftParenthesis);
@@ -388,6 +427,7 @@ impl<'a> Parser<'a> {
             name,
             factory,
             superclass,
+            mixin_applications,
             class_comment,
             instance_side,
             class_side,
@@ -981,6 +1021,54 @@ mod class_tests {
         let superclass = module.root_class.superclass.as_ref().unwrap();
         assert_eq!(superclass.receiver.name, "Object");
         assert_eq!(superclass.messages.len(), 1);
+    }
+
+    #[test]
+    fn a_mixin_application_carries_its_clauses_in_order() {
+        let module = module(indoc! {"
+            Newspeak3
+            'T'
+            class Applied using: platform = Object new <: Value <: Other with: 1 (
+            ) (
+            ) : ()
+        "});
+        let declaration = &module.root_class;
+        let superclass = declaration
+            .superclass
+            .as_ref()
+            .expect("a superclass clause");
+        assert_eq!(superclass.receiver.name, "Object");
+        let applications = &declaration.mixin_applications;
+        assert_eq!(applications.len(), 2);
+        assert_eq!(applications[0].receiver.name, "Value");
+        assert!(applications[0].messages.is_empty());
+        assert_eq!(applications[1].receiver.name, "Other");
+        assert_eq!(applications[1].messages.len(), 1);
+    }
+
+    #[test]
+    fn a_mixin_application_may_end_with_a_dot_instead_of_a_body() {
+        let module = module(indoc! {"
+            Newspeak3
+            'T'
+            class Applied = Object <: Value.
+        "});
+        let declaration = &module.root_class;
+        assert_eq!(declaration.mixin_applications.len(), 1);
+        assert!(declaration.instance_side.methods.is_empty());
+        assert!(declaration.instance_side.slots.is_empty());
+    }
+
+    // A declaration without `<:` carries no mixin application at all, and the
+    // `<` of a type annotation on the primary factory is still an annotation.
+    #[test]
+    fn an_ordinary_declaration_has_no_mixin_applications() {
+        let module = module(indoc! {"
+            Newspeak3
+            'T'
+            class Plain using: platform <Platform> = Object new () ()
+        "});
+        assert!(module.root_class.mixin_applications.is_empty());
     }
 
     #[test]

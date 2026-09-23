@@ -222,6 +222,17 @@ impl<'a> Lexer<'a> {
         // Fixed single-character punctuation that also happens to be `specialCharacter`.
         let byte = self.bytes[self.position];
         let next = self.peek_at(1);
+        // `<:` is §6.2's `mixinOperator`, taken as one token even though `<`
+        // alone is a `specialCharacter` that a binary selector may start with.
+        // The longest match is safe because `:` is *not* a `specialCharacter`
+        // (the specification's lexical grammar, `specialCharacter`), so no
+        // binary selector spelled `<:` exists that a program could have meant
+        // instead. `<` and `<=` are unaffected: neither is followed by `:`.
+        if byte == b'<' && next == Some(b':') {
+            self.position += 2;
+            self.push(TokenKind::MixinOperator, start, self.position);
+            return;
+        }
         let is_run_of_two_plus = next.is_some_and(|next_byte| SPECIAL.contains(&next_byte));
         if !is_run_of_two_plus {
             match byte {
@@ -508,6 +519,33 @@ mod tests {
                 Identifier,
                 EndOfInput,
             ]
+        );
+    }
+
+    #[test]
+    fn mixin_operator_is_one_token_and_leaves_less_than_alone() {
+        // `<:` is §6.2's `mixinOperator`, one token. Everything else that
+        // starts with `<` keeps its old lexing: the binary selectors `<` and
+        // `<=`, and the `<` that opens a declaration's type annotation.
+        assert_eq!(
+            kinds("x <: y"),
+            vec![Identifier, MixinOperator, Identifier, EndOfInput]
+        );
+        assert_eq!(
+            kinds("Object<:Value"),
+            vec![Identifier, MixinOperator, Identifier, EndOfInput]
+        );
+        assert_eq!(
+            kinds("x < y"),
+            vec![Identifier, LessThan, Identifier, EndOfInput]
+        );
+        assert_eq!(
+            kinds("x <= y"),
+            vec![Identifier, BinarySelector, Identifier, EndOfInput]
+        );
+        assert_eq!(
+            kinds("foo <Bar>"),
+            vec![Identifier, LessThan, Identifier, GreaterThan, EndOfInput]
         );
     }
 

@@ -37,6 +37,7 @@ Module {
             },
         ),
         superclass: None,
+        mixin_applications: [],
         class_comment: None,
         instance_side: ClassBody {
             slots: [
