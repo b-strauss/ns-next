@@ -273,9 +273,15 @@ one, the program does not.
   made `1.0 = 1` true while `1.0 hash` and `1 hash` differ — the one rule a
   `hash` has — and made `Float`'s own `=` disagree with the derived
   equality, which asks the classes first. Every value class's `=` is
-  class-tight now, `Float`'s like `Character`'s and `String`'s. That is a
-  stopgap, not the answer: see "Gap: an integer has no `/`" below, where
-  the numeric tower this needs is recorded.
+  class-tight now, `Float`'s like `Character`'s and `String`'s. **Only
+  equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`
+  and `>` still take an `Integer` argument and widen it losslessly
+  (`builtins/numbers.rs`'s module note), so `1.5 < 2` answers; an `Integer`
+  receiver still requires an `Integer`, so `1 < 2.0` is the type-mismatch
+  error it always was, and `1 + 1.5` likewise. That asymmetry is exactly
+  what the numeric tower closes. So this is a stopgap, not the answer: see
+  "Gap: an integer has no `/`" below, where the tower it needs is
+  recorded.
 The builtin value classes' own immutability rests on there being no mutating
 leaf for a `String`, a `Symbol` or a `Character` — their state is a Rust
 payload, not slots, so neither check above is about them. And the actor
@@ -412,7 +418,9 @@ has to meet is written down in Primordial Soup's `testFloatHash`
 (`prior-art/primordialsoup/newspeak/KernelTests.ns`): `3 asFloat hash` must
 equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
 class-tight `=` is the stopgap that keeps the contract by answering
-`false`.
+`false`, and only `=` is class-tight: a `Float`'s arithmetic and ordering
+still widen an `Integer` argument losslessly, while an `Integer`'s raise a
+type mismatch (`builtins/numbers.rs`'s module note).
 
 ## The core library as Newspeak source over a VM mirror
 
