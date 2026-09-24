@@ -871,9 +871,11 @@ Each decision below was taken with the user.
 `Float`, `String`, `Symbol`, `Character`, `Nil`, `Array`,
 `OrderedCollection` and `Block` — the set of `builtin_kind_from_name`.
 `Top`, the VM mirror's class and `Platform` get none. Each is an ordinary
-public method of `Kernel.ns`'s `Object`, `public String = ( ^String )`,
-whose body reaches the kernel's own nested class lexically (§5.7 finds the
-enclosing kernel declaration before `Object`'s own member). This is wider
+public method of `Kernel.ns`'s `Object`, `public String = ( ^outer Kernel
+String )`, whose body sends the kernel instance its nested-class accessor.
+The `outer Kernel` is required, not style: inside `Object`, §5.7's innermost
+declaration of `String` is `Object` itself, so a bare `^String` would send
+the accessor to itself forever. This is wider
 than both references: SOMns declares only `Object`, `Value` and `kernel` on
 its root class ("This works around restrictions by the absense of a global
 scope, we use inheritance instead", `prior-art/somns/core-lib/Kernel.ns`)
@@ -901,8 +903,9 @@ deferred `UnresolvedIdentifier`, so compiling stays total.
 its leaf without one** ([dispatch.md](dispatch.md), "Primitive methods").
 `MixinMethod.primitive` becomes `fast_path: Option<MethodFastPath>`, with
 `Mirror(MirrorPrimitive)` as today and `BuiltinClass(BuiltinClass)` new.
-`compiler::primitive_method` recognizes, while compiling `Kernel.ns` only,
-a body that is nothing but `^` and the name of a kernel class, and `act`
+`compiler::primitive_method` recognizes, while compiling `Kernel.ns` only
+(`ResolvedModule` says which module it is, set by `resolve_kernel`), a body
+that is nothing but `^outer Kernel` and the name of a kernel class, and `act`
 reads the variant off the method on every send, hit or miss, and answers
 the builtin class. The inline cache still records only the method it found;
 it decides nothing, and a class that redefines the name reaches its own
