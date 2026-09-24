@@ -10,42 +10,6 @@ use ns_syntax::ast;
 
 use crate::Symbol;
 
-/// Names Object supports with no Newspeak-source declaration to find --
-/// resolving a superclass-clause receiver (or a bare implicit send) against
-/// these is the base case that lets a lexical/inheritance search bottom out.
-/// Extend this list as the core library gains classes and public selectors
-/// that user code may reasonably reference by bare name from a superclass
-/// clause (in practice, just the class *names* below matter for superclass
-/// resolution -- Object's own instance-side selectors matter for implicit
-/// sends that fall all the way through to Object).
-/// `Top` is deliberately absent: §3.2 reserves it for `Object` alone, and
-/// `Kernel.ns` declares it private for that reason, so no module may name
-/// it. Every other name here is one `instantiate::builtin_kind_from_name`
-/// answers -- the two lists are the same question asked before and during
-/// execution, and a name in one but not the other resolves as an implicit
-/// send and fails with "does not understand".
-pub(super) const BUILTIN_CLASS_NAMES: &[&str] = &[
-    "Object",
-    "Value",
-    "Boolean",
-    "True",
-    "False",
-    "Number",
-    "Integer",
-    "Float",
-    "String",
-    "Symbol",
-    "Character",
-    "Array",
-    "OrderedCollection",
-    "Nil",
-    "Block",
-];
-
-pub(super) fn is_builtin_class_name(name: Symbol) -> bool {
-    BUILTIN_CLASS_NAMES.contains(&name.as_str())
-}
-
 /// The members one side of a class declaration *declares*, each under its
 /// full selector, in declaration order and with any repeats kept -- what
 /// `newspeak-spec.pdf` §5.7 searches, "a method, slot or class named s":
@@ -163,15 +127,4 @@ pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec
         }
     }
     duplicates
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builtin_names_are_recognized() {
-        assert!(is_builtin_class_name(Symbol::intern("Object")));
-        assert!(!is_builtin_class_name(Symbol::intern("NotABuiltin")));
-    }
 }

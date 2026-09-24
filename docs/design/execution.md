@@ -3422,6 +3422,122 @@ There were 25 rounds of the six layout binaries rotating, in two sittings, so
 4.90 ms (4.80–5.11 and 4.73–5.14). The kernel's applied level costs less than
 the scatter.
 
+### What the class accessors cost
+
+Answering a predefined class through an accessor on `Object`
+([core-library.md](core-library.md); [dispatch.md](dispatch.md), "Primitive
+methods") changed what a release build runs where a program names one. A bare
+builtin name such as `Array` was a constant load, `LoadBuiltinClass`; it is now
+a self send, `SendLexical` at depth 0, whose inline-cache hit reaches `act`,
+and `act` answers the class off the method's `MethodFastPath::BuiltinClass`
+without an activation. A nested superclass clause such as `= Object new` sends
+`Object` the same way, once per class object it creates. `LoadBuiltinClass`'s
+arm is gone from `vm::run`. What every send now pays is one more arm in `act`'s
+test of `method.fast_path`, which was a test of `primitive` before.
+
+**Which sources can move.** None of the four fixtures under `goldens/bench/`
+names a builtin class in its loop. Each names `Object` only in its module's
+superclass clause, which runs once when the module is instantiated, and
+`bench_megamorphic.ns` also in its five nested classes' `= Object new`
+clauses, each of which runs once when its class object is first created,
+before the loop. The throwaway `bench_new.ns`, `bench_new2.ns`,
+`bench_newarg.ns` and `bench_newvalue.ns` name `Object` or `Value` only in the
+clauses of classes their loops instantiate, and a class object is created once
+per enclosing instance, so their loops send no class accessor either. One more
+throwaway source therefore exercises the change: `bench_builtin.ns` runs
+`sum:: sum + Array new size + OrderedCollection new size + 1` 20,000 times, so
+its loop makes 40,000 class-accessor sends (`SendLexical #Array` and
+`#OrderedCollection` in its disassembly) where the base made 40,000
+`LoadBuiltinClass`es.
+
+**Measured 2026-09-24, `dd1c70c` against `909bf40`**, the merge of the value
+conditions and this branch's start, by the protocol of "What removing the
+re-entries moved" above, with the layout variation of "What the value
+conditions cost": each tree built plain and with `-C metadata=layoutprobe` and
+`=secondprobe`, every build with the pinned flags. The measured tree was the
+branch head, `96d5a8d`, whose commits after `dd1c70c` change documentation
+only. The plain build and a `-C metadata` build of one tree differ in 1.55 to
+1.86 million bytes. None of the six imports `VCRUNTIME140.dll`, and each printed
+the expected answer for every source first. The timing is
+`ns-next bench <source> --iterations 30`, five rounds a sitting, the six
+binaries rotating by one position from round to round, four sittings. The
+sources are the four fixtures, the five throwaway sources of "What the value
+conditions cost" (`bench_newvalue.ns` with its sum in a local, since its module
+is a value and may declare no mutable slot) and `bench_builtin.ns`.
+
+**`vm::run`'s step is still one function, and it grew.** A release build with
+debug information of each tree, `dumpbin -disasm`: one function label matching
+`vm::run` in each and no `vm::run::closure`. The base has **6,507
+instructions**, the head **6,626**, 119 more although an arm was removed. `act`
+has no label of its own in either listing, so it is inlined, and the functions
+it is inlined into grew alike: `inline_cache::global_hit` from 909 to 926,
+`send_lexical_first` from 577 to 601, and each of the three
+`inline_cache::miss` instances by 60 to 63. The likely cause of `vm::run`'s
+growth is the same one, the new `fast_path` arm at each place `act` is inlined
+into it; that was not isolated. Storing the builtin classes in a fixed-size array rather than a
+`Vec` would drop `builtin_class`'s bounds check from each of those sites; it
+waits on a bootstrap restructuring ([PROGRESS.md](../PROGRESS.md), "The
+predefined classes as accessors on `Object`").
+
+Means in ms per layout, the four sittings pooled:
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.29 | 7.29 | 7.23 | 7.23 | 7.19 | 7.19 |
+| `bench_send.ns` | 8.61 | 8.58 | 8.68 | 8.53 | 8.63 | 8.49 |
+| `bench_block.ns` | 19.02 | 19.88 | 19.83 | 19.20 | 19.04 | 19.10 |
+| `bench_megamorphic.ns` | 11.83 | 11.80 | 11.82 | 11.83 | 11.78 | 11.86 |
+| `bench_do.ns` | 5.91 | 6.12 | 6.13 | 5.85 | 5.82 | 5.85 |
+| `bench_new.ns` | 4.28 | 4.28 | 4.27 | 4.28 | 4.31 | 4.32 |
+| `bench_new2.ns` | 5.34 | 5.32 | 5.37 | 5.33 | 5.37 | 5.40 |
+| `bench_newarg.ns` | 7.33 | 7.30 | 7.27 | 7.26 | 7.34 | 7.40 |
+| `bench_newvalue.ns` | 3.76 | 3.74 | 3.79 | 3.80 | 3.79 | 3.81 |
+| `bench_builtin.ns` | 3.93 | 3.94 | 3.94 | 4.02 | 4.00 | 3.97 |
+
+The base's three layouts against the head's three:
+
+| Source | `909bf40` | `dd1c70c` | Change, pooled | Sitting 1 / 2 / 3 / 4 |
+|---|---|---|---|---|
+| `bench_loop.ns` | 7.27 | 7.21 | −0.9% | −1.4% / −1.1% / −0.7% / −0.2% |
+| `bench_send.ns` | 8.63 | 8.55 | −0.9% | −1.8% / −0.8% / +0.0% / −0.9% |
+| `bench_block.ns` | 19.58 | 19.12 | −2.4% | −2.2% / −2.3% / −2.5% / −2.5% |
+| `bench_megamorphic.ns` | 11.81 | 11.82 | +0.1% | −0.0% / +0.3% / −0.1% / +0.2% |
+| `bench_do.ns` | 6.05 | 5.84 | −3.5% | −3.6% / −3.2% / −3.9% / −3.4% |
+| `bench_new.ns` | 4.28 | 4.30 | +0.5% | +1.1% / +0.2% / +0.7% / +0.2% |
+| `bench_new2.ns` | 5.34 | 5.37 | +0.4% | +0.7% / +0.4% / +0.4% / +0.1% |
+| `bench_newarg.ns` | 7.30 | 7.33 | +0.5% | −0.2% / −0.1% / +1.6% / +0.5% |
+| `bench_newvalue.ns` | 3.76 | 3.80 | +0.9% | +1.0% / +0.4% / +1.0% / +1.3% |
+| `bench_builtin.ns` | **3.94** | **3.99** | **+1.5%** | +1.9% / +1.0% / +0.8% / +2.1% |
+
+**`bench_builtin.ns`, the one source whose loop names a builtin, is 1.5%
+slower.** Pooled over the four sittings every head layout (3.97–4.02 ms) lies
+above every base layout (3.93–3.94 ms), whose spread is 0.2%; within single
+sittings the slowest base layout touches the fastest head layout in two of
+the four. That is about 0.06 ms over 40,000 sends, some 1.4 ns for each, the
+difference between an inline-cache hit followed by `act` and a constant load.
+The loop also allocates two collections and sends `new` and `size` to each,
+so the naming is a small part of what it runs; a loop that did little but name
+classes would show a larger share.
+
+**The rest are level.** `bench_new.ns` to `bench_newvalue.ns` sit 0.4–0.9%
+above the base with the groups overlapping in every sitting; `bench_loop.ns`,
+`bench_send.ns` and `bench_megamorphic.ns` are level or below. `bench_block.ns`
+and `bench_do.ns` show the head 2.4% and 3.5% *faster*, which is layout, not
+the change: the base's two `-C metadata` layouts lie 4% above its plain
+build on both, while the head's three layouts and the base's plain build lie
+together (19.02 against 19.04–19.20 ms, and 5.91 against 5.82–5.85 ms).
+Neither source names a builtin in its loop. The open finding of "What the
+value conditions cost", `bench_block.ns` 4.4% slower at the value conditions'
+head, is the base of this measurement, and this measurement does not bear on
+it: here its plain layout is the fast one.
+
+**Start-up did not move.** The whole `ns-next run` of a module whose
+`main:args:` answers `0` at once, timed wall-clock from the parent process,
+25 rounds of the six binaries rotating, in two sittings, so 75 runs of each
+tree a sitting. The base's medians were 5.49 ms and 5.58 ms (10th to 90th
+percentile 5.21–5.89 and 5.19–6.08), the head's 5.56 ms and 5.63 ms
+(5.27–5.91 and 5.32–6.17): 0.05–0.07 ms apart, inside the scatter.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the

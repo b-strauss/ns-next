@@ -3,7 +3,7 @@
 
 mod classes;
 mod scope;
-mod sends;
+pub(crate) mod sends;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -57,6 +57,7 @@ fn resolve_with(
             source,
             origin,
             bindings: Rc::new(resolver.bindings),
+            kernel,
         })
     } else {
         Err(resolver.errors)
@@ -102,10 +103,10 @@ impl Resolver {
 
         // A module root's clauses are decided by the root rule, deferred to
         // instantiation (`interpreter::instantiate::root_clause_defect`), so
-        // they bind nothing here: a receiver with no binding lowers to
-        // `LoadBuiltinClass` or a deferred `UnresolvedIdentifier`, and a
-        // root's clause receiver is never run. Refusing `Missing` here while
-        // `Array` ran was one rule on two paths.
+        // they bind nothing here: a receiver with no binding lowers to the
+        // deferred `UnresolvedIdentifier`, and a root's clause receiver is
+        // never run. Refusing `Missing` here while `Array` ran was one rule
+        // on two paths.
         if !enclosing.is_empty() {
             // The superclass clause's receiver (e.g. `Object` in `Object new`)
             // is evaluated "as if it occurred inside an instance method of the
@@ -302,13 +303,12 @@ impl Resolver {
     /// message) need no binding entry -- the interpreter special-cases
     /// them directly against the current `Frame`.
     ///
-    /// Mirrors `resolve_superclass_clause`'s `None` prefix case: a bare
-    /// name that genuinely resolves nowhere lexically (`find_member_depth`
-    /// returns `None`, unlike `depth_search`'s always-defaults-to-0
-    /// behavior) is checked against `classes::is_builtin_class_name`
-    /// *before* falling back to a self send. A builtin match records no
-    /// `Binding` at all for this span -- the compiler resolves it against
-    /// the builtin table by name instead (`Instruction::LoadBuiltinClass`).
+    /// A name that no local and no lexically enclosing declaration declares
+    /// is §5.7's self send, `LexicalSend { depth: 0 }`, whatever the name:
+    /// a predefined class such as `String` is answered by `Object`'s
+    /// accessor (§3.2) through the receiver's inheritance chain, so a class
+    /// that inherits a member of that name reaches its own (§2.3.1), and a
+    /// name nothing answers raises `doesNotUnderstand:` at run time.
     fn resolve_identifier(
         &mut self,
         id: &ast::Identifier,
@@ -323,27 +323,9 @@ impl Resolver {
             self.bindings.insert(id.span, binding);
             return;
         }
-        match sends::find_member_depth(chain, name) {
-            Some(depth) => {
-                self.bindings
-                    .insert(id.span, Binding::LexicalSend { depth });
-            }
-            None if classes::is_builtin_class_name(name) => {
-                // No lexical declaration and none needed -- the base case
-                // that lets a bare builtin-class-name reference (e.g.
-                // `OrderedCollection new` outside any superclass clause)
-                // resolve against the builtin table instead of becoming a
-                // depth-0 self send.
-            }
-            None => {
-                // Not found at any lexical depth and not a builtin --
-                // per the spec, an implicit send that matches nothing
-                // falls back to a depth-0 self send (dispatch then
-                // naturally produces `doesNotUnderstand:`).
-                self.bindings
-                    .insert(id.span, Binding::LexicalSend { depth: 0 });
-            }
-        }
+        let depth = sends::find_member_depth(chain, name).unwrap_or(0);
+        self.bindings
+            .insert(id.span, Binding::LexicalSend { depth });
     }
 
     fn resolve_send(&mut self, send: &ast::Send, scope: &mut ScopeStack, chain: &[EnclosingClass]) {
@@ -427,11 +409,12 @@ impl Resolver {
     /// self/super/outer receiver would be in an ordinary send; a bare
     /// receiver is looked up as a member name (a nested class is referenced
     /// through its auto-generated accessor, so it is already present in
-    /// `own_member_names`) against `enclosing_chain`. Builtin class names
-    /// (`Object` and the rest of the core library) have no
-    /// lexical declaration to find -- that is the base case that lets a
-    /// class hierarchy bottom out, so only a name that is *neither* found
-    /// lexically *nor* a known builtin is a `ResolveError`.
+    /// `own_member_names`) against `enclosing_chain`, and a name no
+    /// enclosing declaration declares -- `Object` in `Object new` among
+    /// them -- is a self send to the enclosing object, answered at run time
+    /// by its inheritance chain, which for a predefined class ends at
+    /// `Object`'s accessor (§3.2). Only a nested class's clauses come here:
+    /// a module root's are decided by the root rule and bind nothing.
     fn resolve_superclass_clause(
         &mut self,
         clause: &ast::SuperclassClause,
@@ -463,39 +446,21 @@ impl Resolver {
                 }
             }
             None => {
+                debug_assert!(
+                    !enclosing_chain.is_empty(),
+                    "internal: a module root's clauses are the root rule's, never resolved"
+                );
+                // §6.1 evaluates the clause "as if it occurred inside an
+                // instance method of E", the enclosing class, where a name
+                // no enclosing declaration declares is an implicit receiver
+                // send "equivalent to a self send" (§5.7) -- a nested class
+                // the enclosing class only inherits, and a predefined class
+                // through `Object`'s accessor, are found that way, at run
+                // time.
                 let name = Symbol::intern(&clause.receiver.name);
-                match sends::find_member_depth(enclosing_chain, name) {
-                    Some(depth) => {
-                        self.bindings
-                            .insert(clause.receiver.span, Binding::LexicalSend { depth });
-                    }
-                    None if classes::is_builtin_class_name(name) => {
-                        // No lexical declaration and none needed -- this is
-                        // the base case that lets the hierarchy bottom out
-                        // at a core-library class.
-                    }
-                    // §6.1 evaluates the clause "as if it occurred inside an
-                    // instance method of E", the enclosing class, where a
-                    // name no enclosing declaration declares is an implicit
-                    // receiver send "equivalent to a self send" (§5.7) --
-                    // a nested class the enclosing class only inherits is
-                    // found that way, at run time.
-                    None if !enclosing_chain.is_empty() => {
-                        self.bindings
-                            .insert(clause.receiver.span, Binding::LexicalSend { depth: 0 });
-                    }
-                    // At the top level there is no enclosing object to send
-                    // to: §3.8, "a top level expression is not evaluated in
-                    // the context of an enclosing object; this precludes
-                    // implicit receiver sends".
-                    None => self.errors.push(ResolveError {
-                        span: clause.receiver.span,
-                        message: format!(
-                            "`{}` does not name an enclosing class member or a known builtin",
-                            clause.receiver.name
-                        ),
-                    }),
-                }
+                let depth = sends::find_member_depth(enclosing_chain, name).unwrap_or(0);
+                self.bindings
+                    .insert(clause.receiver.span, Binding::LexicalSend { depth });
             }
         }
     }

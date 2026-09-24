@@ -113,20 +113,36 @@ pub struct MixinMethod {
     /// (`newspeak-spec.pdf` §6.2). Never replaced: editing a method builds a
     /// new `MixinMethod`.
     pub code: Rc<CompiledCode>,
-    /// The mirror row this method forwards to, when it is a primitive
-    /// method (`compiler::primitive_method`): `act` runs the row's leaf
-    /// first and activates the method only when the leaf declines. `None`
-    /// for every method outside the kernel, and for every method decoded
-    /// from an image, which never carries a kernel method.
-    pub primitive: Option<crate::builtins::primitive::MirrorPrimitive>,
+    /// What a send of this method does without an activation, when it is a
+    /// kernel method `compiler::primitive_method` recognized: `act` reads it
+    /// on every send. `None` for every method outside the kernel, and for
+    /// every method decoded from an image, which never carries a kernel
+    /// method.
+    pub fast_path: Option<MethodFastPath>,
+}
+
+/// What a kernel method's send does without an activation, read off the
+/// method by `act` on every send (`docs/design/dispatch.md`,
+/// "Primitive methods"). Only `Kernel.ns`'s methods carry one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodFastPath {
+    /// The method forwards to one mirror row: run the leaf, and activate
+    /// the method only when the leaf declines.
+    Mirror(crate::builtins::primitive::MirrorPrimitive),
+    /// The method answers a builtin class (§3.2's accessors on
+    /// `Object`): answer it, never activate.
+    BuiltinClass(crate::types::BuiltinClass),
 }
 
 impl MixinMethod {
     /// The entry a parsed declaration becomes, compiled by `lowering` against
-    /// the resolver's `bindings` for the module it belongs to.
-    pub fn from_declaration(
+    /// the resolver's `bindings` for the module it belongs to. `kernel` is
+    /// that module's `ResolvedModule.kernel`: only a kernel method may carry
+    /// a fast path.
+    pub(crate) fn from_declaration(
         declaration: Rc<ast::MethodDeclaration>,
         bindings: &Rc<HashMap<Span, Binding>>,
+        kernel: bool,
         lowering: crate::compiler::Lowering,
     ) -> MixinMethod {
         MixinMethod {
@@ -142,7 +158,7 @@ impl MixinMethod {
                 bindings,
                 lowering,
             )),
-            primitive: crate::compiler::primitive_method::recognize(&declaration, bindings),
+            fast_path: crate::compiler::primitive_method::recognize(&declaration, bindings, kernel),
             declaration: Some(declaration),
         }
     }

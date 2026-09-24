@@ -36,9 +36,6 @@ that lowering is mostly a transliteration rather than a translation.
   than at each execution. The last two are the deferred cases; see "Compilation
   cannot fail".
 - `LoadSelf { destination }`.
-- `LoadBuiltinClass { destination, kind }` — serves the convention that a bare builtin
-  class name has no `Binding`: the compiler resolves the name to its builtin
-  class at compile time.
 - `Move { destination, source }`.
 - `StoreLocal { source, slot }` — a `Binding::Local` **write**. A read needs no
   instruction at all: **the local's register *is* its value.** That is the fact
@@ -46,6 +43,15 @@ that lowering is mostly a transliteration rather than a translation.
 - `LoadOuterLocal { destination, depth, index }` / `StoreOuterLocal { source, depth, index }`
   — `Binding::OuterLocal`, walking the `captured_frame` chain exactly as
   `frame_at_depth` does.
+
+A bare predefined class name has no load of its own. The resolver binds a
+name no enclosing declaration declares `LexicalSend { depth: 0 }`, so `String`
+lowers to `SendLexical` of `String` at depth 0 — `self String`, answered by
+`Object`'s accessor ([dispatch.md](dispatch.md), "Binding variants") — in a
+method body and in a nested class's superclass clause alike, under both
+lowerings. `LoadBuiltinClass`, which loaded the class as a constant and
+ignored a member of that name, is retired, and so is its wire tag 2
+([image-format.md](image-format.md)).
 
 **Sends** — each carries a `call_site`; see "Safepoints and call-site
 identity".
@@ -661,7 +667,12 @@ it, so a method that is never run never fails. Two literals carry that deferral:
   lowers it to `MalformedInteger`; the VM re-runs `parse_integer_literal` when the
   instruction executes and raises its error text, and only if execution actually
   reaches it.
-- `Literal::UnresolvedIdentifier`.
+- `Literal::UnresolvedIdentifier` — an identifier the resolver left unbound:
+  bare `super`, which the lexer does not reserve and the language rejects
+  only when it is evaluated, and a module root's clause receiver, which the
+  root rule decides and which never runs ([object-model.md](object-model.md),
+  "The root rule"). Every other name is bound, a predefined class name
+  included.
 
 ## Reading the output
 
@@ -721,7 +732,7 @@ that kind, identically wrong under both engines.
 shares with `lower.rs` only what must have one definition or is purely
 mechanical: the bytecode types, `lower_literal` (with its deferred
 `MalformedInteger`), `selector_of`, the parameter counting, the span helpers,
-`instantiate::builtin_kind_from_name`, and `nested::superclass_clause_expression` and
+and `nested::superclass_clause_expression` and
 `superclass_clause_message_arguments_expression` — the one definition of what a superclass
 clause evaluates.
 

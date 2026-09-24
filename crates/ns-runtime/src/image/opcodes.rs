@@ -34,9 +34,6 @@
 pub const OPCODE_LOAD_LITERAL: u8 = 0;
 /// Loads the receiver, `self`, into a register.
 pub const OPCODE_LOAD_SELF: u8 = 1;
-/// Loads the builtin class a bare name such as `Object` denotes when no
-/// enclosing declaration declares that name.
-pub const OPCODE_LOAD_BUILTIN_CLASS: u8 = 2;
 /// Copies one register into another.
 pub const OPCODE_MOVE: u8 = 3;
 /// Writes a register into a local variable of the running activation; reading
@@ -108,7 +105,12 @@ pub const OPCODE_INTEGER_BINARY: u8 = 33;
 /// `MakeClosure` before it carried a list of copied registers; a stale
 /// artifact's tag-11 bytes would otherwise decode as a `MakeClosure` whose
 /// block is handed nothing, which is a different, perfectly valid program.
-pub const RETIRED_OPCODES: [u8; 9] = [7, 8, 9, 10, 11, 21, 22, 23, 24];
+/// 2 was `LoadBuiltinClass`, retired 2026-09-24 when a bare builtin class
+/// name became a send to `Object`'s accessor instead of a loaded constant
+/// (`newspeak-spec.pdf` §3.2): no lowering emits it any more, and retiring
+/// the number keeps a stale artifact's tag-2 bytes from ever being read as
+/// whatever instruction takes the next free number instead.
+pub const RETIRED_OPCODES: [u8; 10] = [2, 7, 8, 9, 10, 11, 21, 22, 23, 24];
 
 // Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
 // Next free number: 10.

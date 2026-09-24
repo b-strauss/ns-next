@@ -348,20 +348,28 @@ impl<'a> Body<'a> {
                     call_site,
                 })
             }
-            // No binding: a bare builtin class name, or the deferred
-            // unresolved-identifier error (`docs/design/compiler.md`,
-            // "Compilation cannot fail"). A bare identifier bound `SuperSend`
-            // is a `super`-prefixed superclass-clause receiver, which falls to
-            // the same case. `MirrorSend` marks a send, never an identifier.
-            Some(Binding::SuperSend | Binding::MirrorSend) | None => {
+            // A `super`-prefixed inheritance-clause receiver, `super Foo`:
+            // §6.1's super send of `Foo` from the class declaring the clause.
+            Some(Binding::SuperSend) => {
+                let selector = Symbol::intern(&id.name);
+                self.emit_send(|destination, call_site| Instruction::SendSuper {
+                    selector,
+                    argument_registers: vec![],
+                    destination,
+                    call_site,
+                })
+            }
+            // No binding: the deferred unresolved-identifier error
+            // (`docs/design/compiler.md`, "Compilation cannot fail") -- bare
+            // `super`, and a module root's clause receivers, which the
+            // resolver leaves unbound for the root rule and which never run.
+            // `MirrorSend` marks a send, never an identifier.
+            Some(Binding::MirrorSend) | None => {
                 let destination = self.fresh();
-                match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
-                    Some(kind) => self.emit(Instruction::LoadBuiltinClass { destination, kind }),
-                    None => self.emit(Instruction::LoadLiteral {
-                        destination,
-                        literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
-                    }),
-                }
+                self.emit(Instruction::LoadLiteral {
+                    destination,
+                    literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
+                });
                 destination
             }
         }
@@ -642,7 +650,6 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
             .collect(),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
-        | Instruction::LoadBuiltinClass { .. }
         | Instruction::LoadOuterLocal { .. }
         | Instruction::MakeClosure { .. }
         | Instruction::MakeVector { .. }
@@ -656,7 +663,6 @@ fn destination(instruction: &Instruction) -> Option<u16> {
     match instruction {
         Instruction::LoadLiteral { destination, .. }
         | Instruction::LoadSelf { destination }
-        | Instruction::LoadBuiltinClass { destination, .. }
         | Instruction::Move { destination, .. }
         | Instruction::LoadOuterLocal { destination, .. }
         | Instruction::SendLexical { destination, .. }

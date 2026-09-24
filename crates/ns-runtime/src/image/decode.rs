@@ -743,19 +743,18 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
     })
 }
 
-/// A builtin class a *program* names: `LoadBuiltinClass`, a class reference
-/// in the graph, a root class's superclass, the builtin a `<:` clause named
-/// (a class record's `MIXIN_BUILTIN`, a root level). Two tags are refused here,
-/// because no source module can produce them and an artifact that carried
-/// one would decode into a program the language does not admit. The VM
-/// mirror's class: there is exactly one mirror, and an artifact that could
-/// name its class could instantiate or reach a second one, and so claim
-/// every primitive. `Top`: §3.2 lets only `Object` have it as a superclass,
-/// so a class named over `Top` would sit outside `Object`'s chain and
-/// inherit none of its methods. `instantiate::builtin_kind_from_name` leaves
-/// both out for the same reasons, which is what keeps source and artifact
-/// agreed on the names a program has. Only the closing hash table names
-/// them, by tag, as it names every builtin.
+/// A builtin class a *program* names: a class reference in the graph, a root
+/// class's superclass, the builtin a `<:` clause named (a class record's
+/// `MIXIN_BUILTIN`, a root level). Two tags are refused here, because no
+/// source module can produce them and an artifact that carried one would
+/// decode into a program the language does not admit. The VM mirror's class:
+/// there is exactly one mirror, and an artifact that could name its class
+/// could instantiate or reach a second one, and so claim every primitive.
+/// `Top`: §3.2 lets only `Object` have it as a superclass, so a class named
+/// over `Top` would sit outside `Object`'s chain and inherit none of its
+/// methods. `Object` declares an accessor for neither, for the same reasons,
+/// which is what keeps source and artifact agreed on the names a program has.
+/// Only the closing hash table names them, by tag, as it names every builtin.
 pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     match read_builtin_class(reader)? {
         BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
@@ -1292,9 +1291,9 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
 /// bounds it against that one.
 fn own_registers(instruction: &Instruction) -> Vec<u16> {
     match instruction {
-        Instruction::LoadLiteral { destination, .. }
-        | Instruction::LoadSelf { destination }
-        | Instruction::LoadBuiltinClass { destination, .. } => vec![*destination],
+        Instruction::LoadLiteral { destination, .. } | Instruction::LoadSelf { destination } => {
+            vec![*destination]
+        }
         // The copied registers are read out of the *executing* frame, like
         // a send's arguments, so they are bounded here and not by
         // `verify_outer_locals`.
@@ -1411,7 +1410,6 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         Instruction::SendMirror { failure, .. } => Some(*failure),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
-        | Instruction::LoadBuiltinClass { .. }
         | Instruction::Move { .. }
         | Instruction::StoreLocal { .. }
         | Instruction::LoadOuterLocal { .. }
@@ -1613,13 +1611,6 @@ fn decode_instruction(
         OPCODE_LOAD_SELF => Instruction::LoadSelf {
             destination: reader.read_u16()?,
         },
-        OPCODE_LOAD_BUILTIN_CLASS => {
-            let destination = reader.read_u16()?;
-            Instruction::LoadBuiltinClass {
-                destination,
-                kind: read_program_builtin_class(reader)?,
-            }
-        }
         OPCODE_MOVE => {
             let destination = reader.read_u16()?;
             Instruction::Move {

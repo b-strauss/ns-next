@@ -387,6 +387,7 @@ fn next_level<'gc>(
 mod tests {
     use super::*;
     use crate::builtins::primitive::mirror_primitive_named;
+    use crate::mixin::MethodFastPath;
     use indoc::formatdoc;
     use std::collections::HashMap;
 
@@ -434,6 +435,7 @@ mod tests {
             MethodEntry::Compiled(Rc::new(MixinMethod::from_declaration(
                 Rc::new(method),
                 &Rc::new(HashMap::new()),
+                false,
                 crate::compiler::Lowering::Optimized,
             ))),
         );
@@ -549,7 +551,7 @@ mod tests {
 
     /// A builtin's method is an entry of its own method table:
     /// `Integer`'s `+` is a kernel primitive method (`Kernel.ns`), found as
-    /// a `Lookup::Method` whose `MixinMethod.primitive` names the mirror
+    /// a `Lookup::Method` whose `MixinMethod.fast_path` names the mirror
     /// row.
     #[test]
     fn a_builtins_own_primitive_is_found_at_its_own_level() {
@@ -559,8 +561,8 @@ mod tests {
             match lookup_public(&mutator.heap, integer, Symbol::intern("+")) {
                 Lookup::Method(method, level) => {
                     assert_eq!(
-                        method.primitive,
-                        mirror_primitive_named("integer:add:ifFail:")
+                        method.fast_path,
+                        mirror_primitive_named("integer:add:ifFail:").map(MethodFastPath::Mirror)
                     );
                     assert!(level.same(integer), "found above Integer's own level")
                 }
@@ -572,7 +574,7 @@ mod tests {
     /// `Block` has no `==`; the ordinary walk reaches `Object`'s, since
     /// `Block`'s superclass is `Object` -- no hand-restored inheritance.
     /// `Object`'s `==` is a kernel primitive method (`Kernel.ns`), found as a
-    /// `Lookup::Method` whose `MixinMethod.primitive` names the mirror row.
+    /// `Lookup::Method` whose `MixinMethod.fast_path` names the mirror row.
     #[test]
     fn a_primitive_a_builtin_lacks_is_found_at_objects_level() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -582,8 +584,9 @@ mod tests {
             match lookup_public(&mutator.heap, block, Symbol::intern("==")) {
                 Lookup::Method(method, level) => {
                     assert_eq!(
-                        method.primitive,
+                        method.fast_path,
                         mirror_primitive_named("object:identicalTo:ifFail:")
+                            .map(MethodFastPath::Mirror)
                     );
                     assert!(level.same(object))
                 }
@@ -604,7 +607,7 @@ mod tests {
             let value = mutator.builtin_class(BuiltinClass::Value);
             match lookup_public(&mutator.heap, integer, Symbol::intern("==")) {
                 Lookup::Method(method, level) => {
-                    assert_eq!(method.primitive, None);
+                    assert_eq!(method.fast_path, None);
                     assert!(level.same(value))
                 }
                 _ => panic!("`3 == 3` must find Value's `==`"),
@@ -624,8 +627,8 @@ mod tests {
             match lookup_public(&mutator.heap, string, Symbol::intern("=")) {
                 Lookup::Method(method, level) => {
                     assert_eq!(
-                        method.primitive,
-                        mirror_primitive_named("string:equals:ifFail:")
+                        method.fast_path,
+                        mirror_primitive_named("string:equals:ifFail:").map(MethodFastPath::Mirror)
                     );
                     assert!(level.same(string), "found at String's own level")
                 }
@@ -637,7 +640,7 @@ mod tests {
     /// §5.5: `Object`'s `doesNotUnderstand:` is protected -- lookupPublic
     /// stops at it, lookupProtected and the "defined for" walk accept it. It
     /// is a kernel primitive method now (`Kernel.ns`), found as a
-    /// `Lookup::Method` whose `MixinMethod.primitive` names the mirror row.
+    /// `Lookup::Method` whose `MixinMethod.fast_path` names the mirror row.
     #[test]
     fn objects_does_not_understand_is_protected() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -648,13 +651,14 @@ mod tests {
                 lookup_public(&mutator.heap, integer, selector),
                 Lookup::NotFound
             ));
-            let expected = mirror_primitive_named("object:doesNotUnderstand:ifFail:");
+            let expected = mirror_primitive_named("object:doesNotUnderstand:ifFail:")
+                .map(MethodFastPath::Mirror);
             match lookup_protected(&mutator.heap, integer, selector) {
-                Lookup::Method(method, _) => assert_eq!(method.primitive, expected),
+                Lookup::Method(method, _) => assert_eq!(method.fast_path, expected),
                 _ => panic!("lookupProtected must find Object's doesNotUnderstand:"),
             }
             match lookup_defined_for(&mutator.heap, integer, selector) {
-                Lookup::Method(method, _) => assert_eq!(method.primitive, expected),
+                Lookup::Method(method, _) => assert_eq!(method.fast_path, expected),
                 _ => panic!("the \"defined for\" walk must find Object's doesNotUnderstand:"),
             }
         });

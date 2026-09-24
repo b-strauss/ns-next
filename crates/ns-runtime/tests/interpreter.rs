@@ -1,6 +1,6 @@
 //! Interpreter core behaviours through real modules: a method's implicit and
-//! explicit return, a bare builtin class name, and non-local return from a
-//! block to a live home and into a dead one.
+//! explicit return, a bare builtin class name's send to `Object`'s accessor,
+//! and non-local return from a block to a live home and into a dead one.
 
 use indoc::indoc;
 use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
@@ -84,7 +84,8 @@ fn method_with_explicit_return_returns_the_returned_value() {
 }
 
 /// A bare `OrderedCollection` (no `platform` prefix, outside any superclass
-/// clause) names the builtin class.
+/// clause) is the self send `self OrderedCollection`, which `Object`'s
+/// accessor answers with the builtin class.
 #[test]
 fn bare_builtin_class_name_reference_produces_a_working_instance() {
     let (mut interpreter, receiver) = instance_of(indoc! {"

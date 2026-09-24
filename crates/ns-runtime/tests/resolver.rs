@@ -77,17 +77,15 @@ fn outer_named_send_resolves_to_the_exact_depth() {
         .any(|binding| matches!(binding, Binding::LexicalSend { depth: 1 })));
 }
 
-/// A bare reference to a builtin class name --
-/// outside any superclass clause -- must resolve without a `ResolveError`,
-/// and must record *no* `Binding` at all at that identifier's span,
-/// mirroring `resolve_superclass_clause`'s existing convention for the
-/// analogous superclass-clause case (see `classes::is_builtin_class_name`).
-/// Locates the exact span of the `OrderedCollection` identifier by walking
-/// the parsed AST directly, rather than scanning `bindings.values()`
-/// (which cannot distinguish "no binding recorded here" from "no bindings
-/// anywhere").
+/// A bare reference to a builtin class name that no enclosing declaration
+/// declares is §5.7's self send, `self OrderedCollection`, answered by
+/// `Object`'s accessor (§3.2) -- a depth-0 `LexicalSend` at the identifier's
+/// span, not a resolve error and not a constant. Locates the exact span of
+/// the `OrderedCollection` identifier by walking the parsed AST directly,
+/// rather than scanning `bindings.values()`, which cannot tell which
+/// identifier a binding belongs to.
 #[test]
-fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
+fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
     let source = indoc! {"
         Newspeak3
         'T'
@@ -118,8 +116,11 @@ fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
     };
     assert_eq!(receiver_id.name, "OrderedCollection");
     assert!(
-        resolved.bindings.get(&receiver_id.span).is_none(),
-        "a bare builtin class name reference must record no Binding at its span"
+        matches!(
+            resolved.bindings.get(&receiver_id.span),
+            Some(Binding::LexicalSend { depth: 0 })
+        ),
+        "a bare builtin class name reference must bind a depth-0 self send at its span"
     );
 }
 
@@ -391,8 +392,7 @@ fn binding_in_mixin_position(inheritance_clause: &str) -> Option<Binding> {
 
 /// §6.2's `mixinAppSuffix` is built from §6.1's very `inheritanceClause`
 /// production, so a `<:` clause's receiver must bind exactly as the same
-/// receiver binds in superclass position -- including where that is "no
-/// binding at all", which leaves the name to evaluation. Every spelling
+/// receiver binds in superclass position. Every spelling
 /// `resolve_superclass_clause` distinguishes is resolved twice, once in each
 /// position, and the two must agree.
 #[test]
@@ -408,9 +408,9 @@ fn a_mixin_clause_receiver_binds_exactly_as_a_superclass_receiver_does() {
         ),
         ("self Mixin", Some(Binding::LexicalSend { depth: 0 })),
         ("super Mixin", Some(Binding::SuperSend)),
-        // A builtin class name: no lexical declaration to find and none
-        // needed, so nothing is recorded.
-        ("Object", None),
+        // A builtin class name no enclosing class declares: §5.7's self
+        // send, answered by `Object`'s accessor (§3.2) at run time.
+        ("Object", Some(Binding::LexicalSend { depth: 0 })),
         // Declared nowhere: §5.7's implicit-receiver send, found at run time.
         ("Unknown", Some(Binding::LexicalSend { depth: 0 })),
     ] {
@@ -444,7 +444,7 @@ fn every_mixin_clause_of_an_application_is_resolved() {
         vec![
             Some(Binding::LexicalSend { depth: 1 }),
             Some(Binding::SuperSend),
-            None,
+            Some(Binding::LexicalSend { depth: 0 }),
         ]
     );
 }

@@ -22,7 +22,6 @@ use ns_runtime::BuiltinClass;
 fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_LOAD_LITERAL, 0);
     assert_eq!(OPCODE_LOAD_SELF, 1);
-    assert_eq!(OPCODE_LOAD_BUILTIN_CLASS, 2);
     assert_eq!(OPCODE_MOVE, 3);
     assert_eq!(OPCODE_STORE_LOCAL, 4);
     assert_eq!(OPCODE_LOAD_OUTER_LOCAL, 5);
@@ -78,7 +77,6 @@ fn no_two_tags_share_a_number() {
     let opcodes = [
         OPCODE_LOAD_LITERAL,
         OPCODE_LOAD_SELF,
-        OPCODE_LOAD_BUILTIN_CLASS,
         OPCODE_MOVE,
         OPCODE_STORE_LOCAL,
         OPCODE_LOAD_OUTER_LOCAL,
@@ -135,11 +133,10 @@ fn no_two_tags_share_a_number() {
 /// (`image/opcodes.rs`).
 #[test]
 fn retired_instruction_tags_are_never_reused() {
-    assert_eq!(RETIRED_OPCODES, [7, 8, 9, 10, 11, 21, 22, 23, 24]);
+    assert_eq!(RETIRED_OPCODES, [2, 7, 8, 9, 10, 11, 21, 22, 23, 24]);
     let live = [
         OPCODE_LOAD_LITERAL,
         OPCODE_LOAD_SELF,
-        OPCODE_LOAD_BUILTIN_CLASS,
         OPCODE_MOVE,
         OPCODE_STORE_LOCAL,
         OPCODE_LOAD_OUTER_LOCAL,
@@ -285,9 +282,9 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
 }
 
 /// A builtin class's tag is how an image names a builtin class -- in a
-/// `LoadBuiltinClass` instruction, a `CLASS_BUILTIN` record and the hashed
-/// table -- so renumbering one would decode a stale image's reference into a
-/// different, perfectly valid builtin class. The tags are a match in
+/// `CLASS_BUILTIN` record and the hashed table -- so renumbering one would
+/// decode a stale image's reference into a different, perfectly valid
+/// builtin class. The tags are a match in
 /// `encode::builtin_class_tag` rather than constants in `opcodes.rs`, and are
 /// pinned here all the same.
 #[test]

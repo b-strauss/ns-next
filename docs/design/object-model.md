@@ -311,10 +311,17 @@ kernel's.
   value ("A value object's four conditions" below). The clause is read by name
   at bootstrap, never run, and the class object's `superclass` link is set to
   match its application's.
+- **A program reaches a builtin class through `Object`'s accessors** (§3.2):
+  `Kernel.ns`'s `Object` declares one public method per nameable builtin,
+  `public String = ( ^outer Kernel String )`, and a bare `String` is
+  `self String` by §5.7, so a class that declares or inherits a member of
+  that name reaches its own ([core-library.md](core-library.md), "The
+  predefined classes are accessors on `Object`").
 - **`Top` is not nameable.** It is the one class of `Kernel.ns` declared
-  private, so §6.3.1 keeps it out of every other module's reach; no bare name
-  resolves to it (`instantiate::builtin_kind_from_name` omits it), and the
-  image decoder refuses its tag wherever an artifact names a class, as it
+  private, so §6.3.1 keeps it out of every other module's reach; `Object`
+  declares no accessor for it among §3.2's accessors for the predefined
+  classes, so a bare `Top` is `self Top` and ends in `doesNotUnderstand:`
+  (`goldens/errors/top_is_not_a_name.ns`); and the image decoder refuses its tag wherever an artifact names a class, as it
   refuses the mirror's ([image-format.md](image-format.md), "Verification").
   A program can reach it only as `Object`'s superclass, which is what §3.2
   allows and nothing more.
@@ -695,9 +702,8 @@ Squeak-hosted implementation accepts; none is on `corpus/runnable.toml`.
 root is wrong still loads, so its class exists to be inspected and fixed in a
 live system before anything instantiates it. The resolver binds none of a
 root clause's receivers (`resolver/mod.rs`), so `= Missing new` is no resolve
-error; compiling stays total, since a receiver with no binding lowers to
-`LoadBuiltinClass` or a deferred `UnresolvedIdentifier`, and a root's clause
-receiver is never run. Nested declarations keep their resolve errors. The
+error; compiling stays total, since a receiver with no binding lowers to the
+deferred `UnresolvedIdentifier`, and a root's clause receiver is never run. Nested declarations keep their resolve errors. The
 rule is syntactic, so `Mutator::build_root_mixin` — which builds every
 module's root mixin, `Kernel.ns`'s included — records the defect on the root
 mixin (`instantiate::root_clause_defect`, `Mixin::root_clause_defect`,

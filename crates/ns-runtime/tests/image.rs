@@ -416,10 +416,6 @@ fn every_instruction_once() -> CompiledCode {
                 ]),
             },
             Instruction::LoadSelf { destination: 1 },
-            Instruction::LoadBuiltinClass {
-                destination: 2,
-                kind: BuiltinClass::OrderedCollection,
-            },
             Instruction::Move {
                 destination: 3,
                 source: 2,
@@ -1006,6 +1002,29 @@ fn a_retired_send_tag_is_refused() {
     }
 }
 
+/// Tag 2 was `LoadBuiltinClass` before a bare builtin class name became a
+/// send to `Object`'s accessor, answered without an activation (§3.2); a
+/// stale artifact's tag-2 bytes meet an unknown tag instead of decoding into
+/// an instruction no lowering emits any more (`RETIRED_OPCODES`).
+#[test]
+fn the_retired_load_builtin_class_tag_is_refused() {
+    let bytes = one_method_code_table(false, 1, |writer| {
+        writer.write_u8(2); // the retired LoadBuiltinClass tag
+        writer.write_u16(0); // destination
+                             // a builtin class tag would have followed; never read, since the
+                             // instruction tag alone is already refused
+        writer.write_u8(0);
+    });
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "instruction",
+            tag: 2
+        })
+    );
+}
+
 #[test]
 fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
     for (payload, what) in [
@@ -1036,96 +1055,28 @@ fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
     }
 }
 
+/// A builtin class tag names no builtin at the root-class section either:
+/// `decode_root_section` reads its superclass through the same
+/// `read_program_builtin_class`, so an out-of-range byte is refused there as
+/// well, never misread as some other builtin class.
 #[test]
-fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
+fn an_invalid_builtin_class_tag_at_the_root_section_is_a_decode_error_not_a_panic() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value () ()
+    "};
+    let decoded = mixin_table_of(&snapshot_of(source));
     let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
-    writer.write_u16(0);
-    writer.write_u16(1);
-    writer.write_u16(0); // copied_count
-    writer.write_u32(0);
-    writer.write_u32(0);
-    writer.write_u32(0);
-    writer.write_boolean(false); // not compiled uncached
-    writer.write_u32(1); // one instruction ...
-    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
-    writer.write_u16(0); // destination
+    writer.write_boolean(true); // the root's superclass is present ...
     writer.write_u8(200); // ... naming no builtin class
+    writer.write_u32(0); // no levels
     let bytes = writer.into_bytes();
-    let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        decode::decode_root_section(&mut decode::Reader::new(&bytes), &decoded),
         Err(decode::DecodeError::InvalidTag {
             what: "builtin class",
             tag: 200
-        })
-    );
-}
-
-/// The VM mirror's class is refused wherever a program names a class, even
-/// though its tag decodes cleanly as a *builtin class tag*: `LoadBuiltinClass`
-/// goes through `read_program_builtin_class`, not `read_builtin_class`,
-/// specifically to keep an artifact from naming the mirror and reaching a
-/// second instance (`docs/design/core-library.md`, "The VM mirror is the
-/// whole Rust boundary").
-#[test]
-fn a_load_builtin_class_naming_the_mirror_is_refused() {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
-    writer.write_u16(0);
-    writer.write_u16(1);
-    writer.write_u16(0); // copied_count
-    writer.write_u32(0);
-    writer.write_u32(0);
-    writer.write_u32(0);
-    writer.write_boolean(false); // not compiled uncached
-    writer.write_u32(1); // one instruction ...
-    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
-    writer.write_u16(0); // destination
-    writer.write_u8(14); // ... naming the VM mirror
-    let bytes = writer.into_bytes();
-    let mut reader = decode::Reader::new(&bytes);
-    assert_eq!(
-        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: 14
-        })
-    );
-}
-
-/// `Top` is refused wherever a program names a class, for the same reason
-/// the mirror's class is: §3.2 lets only `Object` have `Top` as its
-/// superclass, and no source module can name it at all
-/// (`instantiate::builtin_kind_from_name`). A class named over `Top` would
-/// decode into a perfectly valid program that sits outside `Object`'s chain
-/// and inherits none of its methods, which is exactly the kind of stale or
-/// hand-built artifact the tag discipline exists to refuse.
-#[test]
-fn a_load_builtin_class_naming_top_is_refused() {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
-    writer.write_u16(0);
-    writer.write_u16(1);
-    writer.write_u16(0); // copied_count
-    writer.write_u32(0);
-    writer.write_u32(0);
-    writer.write_u32(0);
-    writer.write_boolean(false); // not compiled uncached
-    writer.write_u32(1); // one instruction ...
-    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
-    writer.write_u16(0); // destination
-    writer.write_u8(15); // ... naming Top
-    let bytes = writer.into_bytes();
-    let mut reader = decode::Reader::new(&bytes);
-    assert_eq!(
-        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: 15
         })
     );
 }
@@ -8499,6 +8450,31 @@ fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
         let tag = encode::builtin_class_tag(kind);
         assert_eq!(
             fixture.decode_error(&builtin_mixin_record(tag, (applied, 0))),
+            decode::DecodeError::InvalidTag {
+                what: "builtin class a program may name",
+                tag
+            }
+        );
+    }
+}
+
+/// An object's class field is a place a program names a class too, so
+/// `decode_class_tag`'s builtin arm refuses the VM mirror's class and `Top`
+/// there as well: an object recorded as an instance of the mirror's class
+/// would be a second mirror.
+#[test]
+fn an_objects_class_naming_the_mirrors_class_or_top_is_refused() {
+    for kind in [BuiltinClass::VmMirror, BuiltinClass::Top] {
+        let tag = encode::builtin_class_tag(kind);
+        let bytes = class_records(1, |writer| {
+            writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+            writer.write_u8(tag);
+            writer.write_u32(5); // identity hash
+            writer.write_u8(OBJECT_ARRAY); // object body: Array
+            writer.write_u32(0); // no elements
+        });
+        assert_eq!(
+            GraphFixture::new().decode_error(&bytes),
             decode::DecodeError::InvalidTag {
                 what: "builtin class a program may name",
                 tag
