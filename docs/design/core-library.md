@@ -959,8 +959,12 @@ the answer under both lowerings.
 
 **Measured** against `909bf40` by the protocol with `-C metadata` layouts
 ([execution.md](execution.md), "What the value conditions cost"), start-up
-included. (Placeholder: filled in by the release measurement at the end of
-this plan.)
+included ([execution.md](execution.md), "What the class accessors cost"). The
+four fixtures under `goldens/bench/` name no builtin in their loops and are
+level, and start-up is level. The throwaway `bench_builtin.ns`, whose loop
+names `Array` and `OrderedCollection` every iteration, is 1.5% slower, about
+1.4 ns per accessor send against the constant load it replaces. `vm::run`
+grew from 6,507 to 6,626 instructions and is still one function.
 
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers
 
