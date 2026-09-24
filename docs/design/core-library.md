@@ -36,11 +36,13 @@ Top                     (private; no superclass, declares nothing)
     │   │               └── Float
     │   ├── String
     │   ├── Symbol
-    │   └── UndefinedObject
+    │   ├── UndefinedObject
+    │   ├── Platform    transcript, collections (slots)
+    │   ├── Transcript  show:, newLine
+    │   └── Collections List
     ├── Array
     ├── OrderedCollection
-    ├── Block
-    └── Platform
+    └── Block
 ```
 
 The mirror's class is the one builtin `Kernel.ns` does not declare; the
@@ -86,8 +88,10 @@ below); `Integer`'s `+ - * // < >
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
 `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
 `add:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
-`numArgs`, `whileTrue:` and `whileFalse:`; and the platform's `transcript`,
-`collections`, `List`, `show:` and `newLine`.
+`numArgs`, `whileTrue:` and `whileFalse:`; and `Transcript`'s `show:` and
+`newLine`. `Platform` holds its transcript and its `collections` namespace in
+slots, and `Collections>>List` is `^outer Kernel OrderedCollection`,
+answered without a leaf ("The platform" below).
 `Nil` declares nothing of its own. `True` and `False` reach no leaf at all:
 their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
@@ -318,7 +322,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 60 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 57 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -326,11 +330,38 @@ selector** — the kernel selector every error text of that leaf names,
 leaf's own arguments, and the failure block. `Array` and `OrderedCollection`
 share rows 43–47, as they share their payload.
 
-A minimal `platform` object exposes a `collections` namespace and a stdout
-stream object, enough for transcript-style output. It declares no accessor
-for a predefined class: `platform Array` reaches `Object`'s accessor (§3.2),
-which the platform inherits like every object, so the five it once declared
-were a second way to the same answer and are gone (2026-09-25).
+### The platform
+
+The platform a module is handed (§8.3), its transcript and its `collections`
+namespace are three values (§3.1.1), each a `Kernel.ns` class of its own
+below `Value` (decided with the user on 2026-09-25):
+
+```newspeak
+public class Platform = Value new (
+    | public transcript = Transcript new.
+      public collections = Collections new. |
+) ( )
+public class Transcript = Value new () ( show: and newLine, forwarders )
+public class Collections = Value new () ( public List = ( ^outer Kernel OrderedCollection ) )
+```
+
+`transcript` and `collections` are slot getters, `List` the accessor form
+answered without an activation, and only `Transcript`'s output reaches Rust
+(`platform.rs`). Being values, they have no identity: two transcripts are
+equal and so identical, and a transcript kept in an image is the loading
+platform's after the load. None has an accessor on `Object`, since a program
+reaches them through the platform it is given, and the platform declares no
+accessor for a predefined class either: `platform Array` reaches `Object`'s
+(§3.2), which it inherits like every object.
+
+The host builds the one platform (`Mutator::platform_value`) in the state
+`Platform new` would give it — a fresh `Transcript` and `Collections` in the
+slots `Kernel.ns` declares — rather than by running the factory, so that
+asking for the platform, at bootstrap or in `image::load`, runs no Newspeak
+and fills no cache. `goldens/kernel/the_platform_and_its_parts_are_values`
+pins that the two agree (`platform = platform class new`), and
+`interpreter::kernel`'s shape check lets `Platform`, alone of the builtins,
+declare slots, because Rust builds no other instance of it.
 
 ## The on-demand rule
 
@@ -353,22 +384,6 @@ also asks that namespace for `Map`, `IdentityMap`, `IdentitySet`, `WeakArray` an
 or worse, aliasing them onto `OrderedCollection`, which is neither a dictionary
 nor a set — would be a collections library built without a caller. Modules
 needing them stay off the whitelist.
-
-## Tagging inside the platform
-
-The platform singleton, its `transcript` stream and its `collections` namespace
-all share one builtin-class tag and are told apart by payload shape: zero fields
-for the singleton, one for the stream, two for the namespace. None ever holds
-real slot data; the field count is purely a tag.
-
-This is a wart, and it is recorded rather than hidden. It exists because there was
-no second builtin-class slot to spare, and adding one would renumber the image
-format's builtin-class table for no behavioural gain. All three objects'
-selectors are methods of the one kernel class `Platform`, and a selector sent to
-the wrong one of them is a leaf that declines: the method's failure block sends
-the message to `super`, which is `Object`'s, and ends in `doesNotUnderstand:`
-([dispatch.md](dispatch.md), "A primitive can fail"). They keep the shared
-class, since `platform transcript class` answering `Platform` is observable.
 
 ## Deviation: `i64` integers
 

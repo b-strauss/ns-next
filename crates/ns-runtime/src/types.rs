@@ -239,6 +239,10 @@ pub enum BuiltinClass {
     UndefinedObject,
     Block,
     Platform,
+    /// The platform's transcript, a value of its own class.
+    Transcript,
+    /// The platform's `collections` namespace, a value of its own class.
+    Collections,
     /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
     /// is the whole Rust boundary"): one instance, built at bootstrap and
     /// handed to the core library alone. No program can name it -- it is
@@ -266,7 +270,7 @@ impl BuiltinClass {
     /// siblings. So this is *not* a superclass-first order: the kernel phase
     /// sorts the kinds by their depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 17] = [
+    pub const ALL: [BuiltinClass; 19] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -280,6 +284,8 @@ impl BuiltinClass {
         BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
         BuiltinClass::Platform,
+        BuiltinClass::Transcript,
+        BuiltinClass::Collections,
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Value,

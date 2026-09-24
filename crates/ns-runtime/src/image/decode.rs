@@ -730,6 +730,8 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         15 => BuiltinClass::Top,
         16 => BuiltinClass::Value,
         17 => BuiltinClass::Number,
+        18 => BuiltinClass::Transcript,
+        19 => BuiltinClass::Collections,
         _ => return None,
     })
 }

@@ -1,0 +1,21 @@
+Newspeak3
+'Kernel'
+(* The platform holds its transcript and its collections namespace in
+   immutable slots, and all three are values (§3.1.1): stateless but for
+   those slots, so any two of a kind are equal and, a value having no
+   identity, identical. Each is an instance of its own class, so none
+   answers another's protocol. *)
+class PlatformValues usingPlatform: platformAtCreation = Object new () (
+    public main: platform args: arguments = (
+        | t c |
+        t:: platform transcript.
+        c:: platform collections.
+        t show: (t == platform transcript) printString; newLine.
+        t show: (t = t class new) printString; newLine.
+        t show: (platform = platform class new) printString; newLine.
+        t show: (platform hash = platform class new hash) printString; newLine.
+        t show: (t class == platform class) printString; show: ' ';
+            show: (c class == platform class) printString; newLine.
+        t show: (c List == OrderedCollection) printString; newLine
+    )
+) : ()

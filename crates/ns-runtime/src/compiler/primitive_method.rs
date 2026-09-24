@@ -173,8 +173,15 @@ fn recognize_builtin_class_accessor(
     if !matches!(bindings.get(&send.span), Some(Binding::LexicalSend { .. })) {
         return None;
     }
-    crate::interpreter::kernel::kernel_kind_named(name)
-        .filter(|kind| !matches!(kind, BuiltinClass::Top | BuiltinClass::Platform))
+    crate::interpreter::kernel::kernel_kind_named(name).filter(|kind| {
+        !matches!(
+            kind,
+            BuiltinClass::Top
+                | BuiltinClass::Platform
+                | BuiltinClass::Transcript
+                | BuiltinClass::Collections
+        )
+    })
 }
 
 /// The row `declaration` forwards to, when its body is exactly

@@ -201,6 +201,8 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Top => 15,
         BuiltinClass::Value => 16,
         BuiltinClass::Number => 17,
+        BuiltinClass::Transcript => 18,
+        BuiltinClass::Collections => 19,
     }
 }
 

@@ -149,9 +149,8 @@ fn platform_collections_does_not_invent_a_map() {
     }
 }
 
-/// The transcript stream and the collections namespace share
-/// `BuiltinClass::Platform` and are told apart only by their payload
-/// shape, so this pins that they do not answer each other's protocol.
+/// The transcript and the collections namespace are instances of classes of
+/// their own, so neither answers the other's protocol.
 #[test]
 fn the_collections_namespace_is_not_a_transcript() {
     let mut interpreter = Interpreter::bootstrap();

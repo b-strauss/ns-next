@@ -4064,6 +4064,31 @@ platform keeps `transcript`, `collections`, `List`, `show:` and `newLine`
 pins the absence, and `tests/platform.rs` that all five still answer.
 Nothing recorded changed.
 
+## The platform, its transcript and its namespace are values (2026-09-25)
+
+`Platform`, `Transcript` and `Collections` are three `Kernel.ns` classes
+below `Value` (decided with the user on 2026-09-25;
+[core-library.md](design/core-library.md), "The platform"). The platform
+holds the other two in immutable slots, `Collections>>List` is
+`^outer Kernel OrderedCollection` answered without a leaf, and only
+`Transcript`'s `show:` and `newLine` reach Rust (57 mirror rows remain).
+Until then the three shared the class `Platform` and were told apart by how
+many empty fields they had, every leaf checking that it had the right one;
+that tagging is gone, and each class declares only its own protocol.
+
+The host builds the one platform in the state `Platform new` would give it
+(`Mutator::platform_value`), so asking for it runs no Newspeak and fills no
+cache; `Platform` alone of the builtins may declare slots. `Transcript` and
+`Collections` took builtin class tags 18 and 19.
+
+**Goldens.** `errors/native_that_fails_on_its_receiver_falls_to_objects`
+changed one line: `p transcript = p transcript` is now `true`, two
+transcripts being equal values. New:
+`kernel/the_platform_and_its_parts_are_values`. `tests/inline_caches.rs`'s
+`a_failing_primitive_keeps_its_entry` relied on the shared class and now
+shows the same thing through `Value>>=`, whose leaf declines on a receiver of
+its own class when a slot's class brings its own `=`.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of

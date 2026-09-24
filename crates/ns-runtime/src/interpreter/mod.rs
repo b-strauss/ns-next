@@ -1312,15 +1312,39 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
 
-    /// The `platform` object (`docs/design/core-library.md`):
-    /// memoized on first call, so every reference within one interpreter
-    /// sees the same object identity.
+    /// The `platform` object (`docs/design/core-library.md`), memoized on
+    /// first call so every reference within one interpreter sees the same
+    /// one. It is the state `Platform new` would produce -- a fresh
+    /// `Transcript` and `Collections` in the slots `Kernel.ns` declares --
+    /// built here rather than by running the factory, so that asking for the
+    /// platform, at bootstrap or in `image::load`, runs no Newspeak and fills
+    /// no cache. The three are values, so `platform = platform class new`
+    /// holds, and `goldens/kernel/the_platform_and_its_parts_are_values` pins
+    /// that the two agree.
     pub(crate) fn platform_value(&mut self) -> Value<'gc> {
-        if let Some(platform) = &self.platform_singleton {
-            return *platform;
+        if let Some(platform) = self.platform_singleton {
+            return platform;
         }
+        let transcript_class = self.builtin_class(BuiltinClass::Transcript);
+        let transcript = self.new_instance_object(transcript_class, ObjectData::Instance(vec![]));
+        let collections_class = self.builtin_class(BuiltinClass::Collections);
+        let collections = self.new_instance_object(collections_class, ObjectData::Instance(vec![]));
         let class = self.builtin_class(BuiltinClass::Platform);
-        let object = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        let application = self
+            .heap
+            .class_application(class)
+            .expect("internal: Platform has an application");
+        let mut fields = vec![Value::Nil; application.slot_count];
+        for (position, slot) in application.mixin.slots.iter().enumerate() {
+            fields[application.own_slot_base + position] = match slot.name.as_str() {
+                "transcript" => Value::Object(transcript),
+                "collections" => Value::Object(collections),
+                other => panic!(
+                    "internal: Kernel.ns's Platform declares a slot {other} the host does not fill"
+                ),
+            };
+        }
+        let object = self.new_instance_object(class, ObjectData::Instance(fields));
         let value = Value::Object(object);
         self.platform_singleton = Some(value);
         value
@@ -1340,28 +1364,6 @@ impl<'gc> Mutator<'gc> {
             (Value::Object(object), Some(Value::Object(mirror))) => object.same(mirror),
             _ => false,
         }
-    }
-
-    /// A `Transcript`-style stdout stream object -- see `crate::platform`'s
-    /// module doc for how its payload shape (a one-field, always-`Nil`
-    /// `Instance`) tells it apart from the `platform` singleton itself
-    /// (a zero-field `Instance`). `pub(crate)`, not `pub`: only
-    /// `crate::platform::execute` (`platform transcript`) ever needs to
-    /// mint one.
-    pub(crate) fn new_stream_object(&mut self) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Platform);
-        self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
-    }
-
-    /// The `platform collections` namespace object -- see `crate::platform`'s
-    /// module doc for how its payload shape (a two-field, always-`Nil`
-    /// `Instance`) tells it apart from the `platform` singleton and the
-    /// transcript stream. Like `new_stream_object`, it is allocated fresh
-    /// per send: the namespace is stateless, so identity across sends
-    /// carries no meaning that any caller could observe.
-    pub(crate) fn new_collections_namespace(&mut self) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Platform);
-        self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil, Value::Nil]))
     }
 
     /// A class object around an already-computed application. For an

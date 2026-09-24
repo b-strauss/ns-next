@@ -484,10 +484,9 @@ MirrorBuilder").
 
 **A primitive can fail.** `builtins::execute` answers `None` when a leaf
 declines: a receiver of the wrong variant or payload — an instance of a user
-subclass of `Array`, which carries no array payload, or one of the three
-platform objects that share `BuiltinClass::Platform` and are told apart by
-payload shape ([core-library.md](core-library.md), "Tagging inside the
-platform"). The answer goes back to the mirror code, which runs the send's
+subclass of `Array`, which carries no array payload, or `Value>>=` on a
+value one of whose slots holds a class with its own `=`, which a leaf may not
+send. The answer goes back to the mirror code, which runs the send's
 failure block, the `[^super …]` every kernel method writes:
 
 - inline, for a `SendMirror`: the VM jumps to the failure target, where the

@@ -114,9 +114,6 @@ pub enum BlockPrimitive {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformPrimitive {
-    Transcript,
-    Collections,
-    List,
     Show,
     NewLine,
 }
@@ -474,27 +471,12 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Block(BlockPrimitive::WhileFalse),
     ),
     mirror(
-        "platformTranscript:ifFail:",
-        "transcript",
-        Primitive::Platform(PlatformPrimitive::Transcript),
-    ),
-    mirror(
-        "platformCollections:ifFail:",
-        "collections",
-        Primitive::Platform(PlatformPrimitive::Collections),
-    ),
-    mirror(
-        "platformList:ifFail:",
-        "List",
-        Primitive::Platform(PlatformPrimitive::List),
-    ),
-    mirror(
-        "platform:show:ifFail:",
+        "transcript:show:ifFail:",
         "show:",
         Primitive::Platform(PlatformPrimitive::Show),
     ),
     mirror(
-        "platformNewLine:ifFail:",
+        "transcriptNewLine:ifFail:",
         "newLine",
         Primitive::Platform(PlatformPrimitive::NewLine),
     ),

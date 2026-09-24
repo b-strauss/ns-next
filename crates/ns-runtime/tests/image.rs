@@ -1150,6 +1150,8 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
         BuiltinClass::Platform,
+        BuiltinClass::Transcript,
+        BuiltinClass::Collections,
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Value,

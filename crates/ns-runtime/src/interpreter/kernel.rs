@@ -62,7 +62,7 @@ fn resolve_kernel_source() -> ResolvedModule {
 }
 
 /// The name of `kind`'s class in `Kernel.ns`. Every builtin but the mirror's
-/// class has one, `Top` and `Platform` included, unlike the narrower list of
+/// class has one, `Top` and the platform's three included, unlike the narrower list of
 /// names a *program* may write bare -- `Object`'s own accessor methods, which
 /// `tests::OBJECT_CLASS_ACCESSORS` pins.
 pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
@@ -80,6 +80,8 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::UndefinedObject => "UndefinedObject",
         BuiltinClass::Block => "Block",
         BuiltinClass::Platform => "Platform",
+        BuiltinClass::Transcript => "Transcript",
+        BuiltinClass::Collections => "Collections",
         BuiltinClass::Top => "Top",
         BuiltinClass::Value => "Value",
         BuiltinClass::Number => "Number",
@@ -369,7 +371,8 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 
 /// The shape the phase relies on and the resolver cannot check: one nested
 /// class per builtin but the mirror's, named as `kernel_class_name` says,
-/// each declaring no slots and the default factory `new`; a root class with
+/// each declaring no slots -- but `Platform`, whose slots the host fills --
+/// and the default factory `new`; a root class with
 /// exactly one slot, the immutable `vmMirror`; a clause on every class but
 /// `Top`, a bare name with no message arguments -- it is read, never run --
 /// naming a kernel class, from which the chain reaches `Top` without
@@ -405,8 +408,12 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             "internal: Kernel.ns must declare the class {name} exactly once"
         );
         let nested = nested_named(root, name);
+        // Rust builds a builtin's instances with a payload and no fields, so
+        // a slot would have nowhere to live -- except on `Platform`, whose one
+        // instance the host builds with exactly the slots `Kernel.ns`
+        // declares (`Mutator::platform_value`).
         assert!(
-            nested.slots.is_empty(),
+            nested.slots.is_empty() || kind == BuiltinClass::Platform,
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
         );
         let declaration = nested
@@ -831,6 +838,13 @@ mod tests {
         ),
         (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
         (BuiltinClass::String, "asString", MethodFastPath::Receiver),
+        // Not a quick method but the accessor form, `^outer Kernel <Name>`,
+        // on a class other than `Object`: the namespace's one member.
+        (
+            BuiltinClass::Collections,
+            "List",
+            MethodFastPath::BuiltinClass(BuiltinClass::OrderedCollection),
+        ),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
@@ -1006,7 +1020,7 @@ mod tests {
                     "{kind:?}"
                 );
             }
-            for absent in ["Top", "Platform", "VmMirror"] {
+            for absent in ["Top", "Platform", "Transcript", "Collections", "VmMirror"] {
                 assert!(
                     application
                         .mixin
@@ -1072,7 +1086,9 @@ mod tests {
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
                 (BuiltinClass::OrderedCollection, Some(BuiltinClass::Object)),
                 (BuiltinClass::Block, Some(BuiltinClass::Object)),
-                (BuiltinClass::Platform, Some(BuiltinClass::Object)),
+                (BuiltinClass::Platform, Some(BuiltinClass::Value)),
+                (BuiltinClass::Transcript, Some(BuiltinClass::Value)),
+                (BuiltinClass::Collections, Some(BuiltinClass::Value)),
                 (BuiltinClass::Top, None),
             ];
             for (kind, superclass) in expected {
@@ -1111,6 +1127,9 @@ mod tests {
                 (BuiltinClass::True, true),
                 (BuiltinClass::UndefinedObject, true),
                 (BuiltinClass::Number, true),
+                (BuiltinClass::Platform, true),
+                (BuiltinClass::Transcript, true),
+                (BuiltinClass::Collections, true),
                 (BuiltinClass::Array, false),
                 (BuiltinClass::OrderedCollection, false),
                 (BuiltinClass::Block, false),
