@@ -1063,9 +1063,6 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match then {
             Continuation::Deliver => Ok(Step::Value(value)),
-            Continuation::Truthy => Ok(Step::Value(Value::Boolean(
-                crate::builtins::boolean::truthy(value),
-            ))),
             Continuation::WhileCondition(state) => {
                 crate::builtins::block::after_condition(self, state, value)
             }

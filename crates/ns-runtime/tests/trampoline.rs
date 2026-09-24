@@ -458,8 +458,8 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
 
 /// A control-flow native sent from Rust, not from the loop: its block is
 /// pushed at the floor of the run `Interpreter::send` starts, so the
-/// continuation that pops it -- `Truthy`, a loop's `WhileCondition` and
-/// `WhileBody` -- runs with no caller in that run, and a loop's next block
+/// continuation that pops it -- `Deliver` for `and:` and `or:`, a loop's
+/// `WhileCondition` and `WhileBody` -- runs with no caller in that run, and a loop's next block
 /// replaces the popped one right at the floor. Each must answer the native's
 /// value and leave both depths where they were.
 #[test]
@@ -555,13 +555,13 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             what("whileFalse:")
         );
 
-        // `Truthy`: only exactly `true` is true.
+        // `and:`/`or:` answer the block's value as it is.
         let value = expect_ok(
             send(&mut interpreter, &true_value, "and:", &[&three]),
             &what("and:"),
         );
         assert!(
-            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Boolean(false))),
+            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::SmallInteger(3))),
             "{}",
             what("and:")
         );

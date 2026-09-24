@@ -1467,36 +1467,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// `builtins::boolean::truthy`'s rule in bytecode: only exactly
-    /// `Boolean(true)` is true; a non-`true` `Boolean` or a non-`Boolean` is
-    /// false.
-    fn emit_coerce_to_boolean(&mut self, source: u16) -> u16 {
-        let destination = self.allocate_scratch();
-        let not_boolean_jump = self.emit(Instruction::JumpIfNotBoolean {
-            register: source,
-            target: 0,
-        });
-        let false_jump = self.emit(Instruction::BranchIfFalse {
-            register: source,
-            target: 0,
-        });
-        self.emit(Instruction::LoadLiteral {
-            destination,
-            literal: BytecodeLiteral::Boolean(true),
-        });
-        let after_true_jump = self.emit(Instruction::Jump { target: 0 });
-        let false_label = self.here();
-        self.patch_target(not_boolean_jump, false_label);
-        self.patch_target(false_jump, false_label);
-        self.emit(Instruction::LoadLiteral {
-            destination,
-            literal: BytecodeLiteral::Boolean(false),
-        });
-        let end_label = self.here();
-        self.patch_target(after_true_jump, end_label);
-        destination
-    }
-
     /// The guard-failure path of an inlined loop: what the native
     /// `whileTrue:`/`whileFalse:` does with a non-Boolean condition value.
     fn emit_must_be_boolean(&mut self, register: u16) -> u16 {
@@ -1711,9 +1681,9 @@ impl<'a> Lowerer<'a> {
     }
 
     /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
-    /// value, the other arm the block's value coerced by `truthy`'s rule.
-    /// The coercion only chooses which literal becomes the send's result, so
-    /// `use_` -- what reads that result -- is what reads the block's value.
+    /// value, the other arm the block's value as it is. A branch's value is
+    /// only moved into the send's own result, so `use_` -- what reads that
+    /// result -- is what reads the block's value, as in `lower_if`.
     fn lower_and_or(
         &mut self,
         send: &ast::Send,
@@ -1723,17 +1693,14 @@ impl<'a> Lowerer<'a> {
     ) -> u16 {
         let guard_register = self.lower_expression(&send.receiver);
         let destination = self.allocate_scratch();
-        let evaluate_and_coerce = |lowerer: &mut Self| {
-            let block_register = lowerer.lower_inline_block_body(block, use_);
-            lowerer.emit_coerce_to_boolean(block_register)
-        };
+        let evaluate = |lowerer: &mut Self| lowerer.lower_inline_block_body(block, use_);
         let fallback =
             |lowerer: &mut Self| lowerer.lower_fallback_send(guard_register, &send.message);
         if is_and {
             self.emit_guarded_branch(
                 guard_register,
                 destination,
-                evaluate_and_coerce,
+                evaluate,
                 |_| guard_register,
                 fallback,
             );
@@ -1742,7 +1709,7 @@ impl<'a> Lowerer<'a> {
                 guard_register,
                 destination,
                 |_| guard_register,
-                evaluate_and_coerce,
+                evaluate,
                 fallback,
             );
         }
@@ -4167,23 +4134,24 @@ mod tests {
         assert_eq!(argument_registers[0], bar_destination);
     }
 
+    /// The evaluated arm moves the block's value into the result as it is:
+    /// no literal `true` or `false` is loaded to coerce it.
     #[test]
-    fn and_or_coerce_the_block_value_and_short_circuit() {
+    fn and_or_answer_the_block_value_and_short_circuit() {
+        for source in ["x and: [x]", "x or: [x]"] {
+            let code = compile_foo(source);
+            assert!(
+                !has(&code, |instruction| matches!(
+                    instruction,
+                    Instruction::LoadLiteral {
+                        literal: BytecodeLiteral::Boolean(_),
+                        ..
+                    }
+                )),
+                "{source}"
+            );
+        }
         let code = compile_foo("x and: [x]");
-        assert!(has(&code, |instruction| matches!(
-            instruction,
-            Instruction::LoadLiteral {
-                literal: BytecodeLiteral::Boolean(true),
-                ..
-            }
-        )));
-        assert!(has(&code, |instruction| matches!(
-            instruction,
-            Instruction::LoadLiteral {
-                literal: BytecodeLiteral::Boolean(false),
-                ..
-            }
-        )));
         assert!(has(&code, |instruction| matches!(
             instruction,
             Instruction::SendPublic { selector, .. } if selector.as_str() == "and:"

@@ -1,7 +1,8 @@
 Newspeak3
 'T'
-(* Only the non-short-circuited arms run, and a non-Boolean block value
-   coerces to `false`. *)
+(* Only the non-short-circuited arms run, and the evaluated arm's value is
+   the answer as it is, a non-Boolean included, as in every prior-art
+   kernel. *)
 class AndOr usingPlatform: platform = Object new (
     | log ::= ''. |
 ) (

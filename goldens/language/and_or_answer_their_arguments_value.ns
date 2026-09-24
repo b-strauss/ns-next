@@ -1,0 +1,20 @@
+Newspeak3
+'T'
+(* A block in a variable takes the send, not the inlined form: `and:` and
+   `or:` answer the block's value as it is, and `&` and `|` answer their
+   argument itself on the side that does not decide alone. *)
+class AndVar usingPlatform: platform = Object new (
+) (
+    public main: p args: a = (
+        | three yes |
+        three:: [3].
+        yes:: [true].
+        p transcript show: (true and: three) printString; newLine.
+        p transcript show: (true and: yes) printString; newLine.
+        p transcript show: (false or: three) printString; newLine.
+        p transcript show: (true & 3) printString; newLine.
+        p transcript show: (false | 3) printString; newLine.
+        p transcript show: (false & 3) printString; newLine.
+        p transcript show: (true | 3) printString; newLine
+    )
+) : ()

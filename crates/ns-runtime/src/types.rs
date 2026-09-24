@@ -425,9 +425,6 @@ pub enum FrameKind<'gc> {
 pub enum Continuation<'gc> {
     /// Hand the value to the send that made the activation.
     Deliver,
-    /// `and:` and `or:`: hand on whether the value is exactly `true`
-    /// (`builtins::boolean::truthy`).
-    Truthy,
     /// A native `whileTrue:`/`whileFalse:` loop's condition returned.
     WhileCondition(Box<WhileLoop<'gc>>),
     /// Its body returned.

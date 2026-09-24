@@ -44,12 +44,11 @@ pub(crate) fn execute<'gc>(
         }
         BooleanPrimitive::Not => Step::Value(Value::Boolean(!boolean)),
         // The short circuit holds: `false and: [...]` and `true or: [...]`
-        // never activate the block. Otherwise the block's value is coerced
-        // when it returns (`Continuation::Truthy`), so a `^` out of it or an
-        // error in it passes through untouched.
+        // never activate the block. Otherwise the block's value is the
+        // answer as it is.
         BooleanPrimitive::And => {
             if boolean {
-                block_step(mutator, arguments[0], Continuation::Truthy)
+                block_step(mutator, arguments[0], Continuation::Deliver)
             } else {
                 Step::Value(Value::Boolean(false))
             }
@@ -58,7 +57,7 @@ pub(crate) fn execute<'gc>(
             if boolean {
                 Step::Value(Value::Boolean(true))
             } else {
-                block_step(mutator, arguments[0], Continuation::Truthy)
+                block_step(mutator, arguments[0], Continuation::Deliver)
             }
         }
         BooleanPrimitive::PrintString => Step::Value(Value::Object(
@@ -85,7 +84,6 @@ fn block_step<'gc>(
         }
     }
     match then {
-        Continuation::Truthy => Step::Value(Value::Boolean(truthy(argument))),
         Continuation::Deliver => Step::Value(argument),
         Continuation::WhileCondition(_)
         | Continuation::WhileBody(_)
@@ -95,11 +93,4 @@ fn block_step<'gc>(
             unreachable!("internal: a Boolean's control-flow native runs no loop")
         }
     }
-}
-
-/// `and:`/`or:`'s rule, which the compiler's inlined form reproduces in
-/// bytecode (`compiler/lower.rs`, `emit_coerce_to_boolean`): only exactly `true`
-/// is true, and a non-Boolean is `false`.
-pub(crate) fn truthy<'gc>(value: Value<'gc>) -> bool {
-    matches!(value, Value::Boolean(true))
 }

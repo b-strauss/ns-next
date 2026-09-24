@@ -1,5 +1,8 @@
 stdout = '''
-false
 true
 false
+true
+true
+3
+AD
 '''

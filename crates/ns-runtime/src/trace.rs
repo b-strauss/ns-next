@@ -150,7 +150,7 @@ impl Trace for FrameKind<'_> {
 impl Trace for Continuation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            Continuation::Deliver | Continuation::Truthy => {}
+            Continuation::Deliver => {}
             Continuation::WhileCondition(state) | Continuation::WhileBody(state) => {
                 state.trace(tracer)
             }
