@@ -1494,7 +1494,11 @@ fn a_mixin_table_with_no_root_row_is_a_decode_error() {
     let mut interpreter = Interpreter::bootstrap();
     let empty = mixins::Decoded::empty();
     interpreter.enter(|mutator| {
-        match decode::build_root_class(mutator, &empty, &decode::RootSection::default()) {
+        let section = decode::RootSection {
+            superclass: BuiltinClass::Object,
+            levels: Vec::new(),
+        };
+        match decode::build_root_class(mutator, &empty, &section) {
             Err(decode::DecodeError::NotAClass) => assert_eq!(
                 decode::DecodeError::NotAClass.to_string(),
                 "the image's mixin table describes no root class"
@@ -8608,8 +8612,9 @@ fn the_mixin_application_message_frame_kind_decodes() {
     );
 }
 
-/// The root-class section's bytes for a root that inherits from nothing, then
-/// `levels` as (clause position, builtin tag) pairs.
+/// The root-class section's bytes for a root that inherits `superclass` --
+/// written as absent for `None`, which the reader refuses -- then `levels` as
+/// (clause position, builtin tag) pairs.
 fn root_section_bytes(superclass: Option<BuiltinClass>, levels: &[(u32, u8)]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     match superclass {
@@ -8648,7 +8653,7 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
     assert_eq!(
         read(&[(0, value)]).expect("the one clause"),
         decode::RootSection {
-            superclass: Some(BuiltinClass::Object),
+            superclass: BuiltinClass::Object,
             levels: vec![(0, BuiltinClass::Value)],
         }
     );
@@ -8714,7 +8719,11 @@ fn a_root_section_the_root_rule_forbids_is_refused() {
     );
     assert_eq!(
         read(None, &[(0, tag(BuiltinClass::Value))]),
-        Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index: 0 })
+        Err(decode::DecodeError::RootWithoutSuperclass)
+    );
+    assert_eq!(
+        read(None, &[]),
+        Err(decode::DecodeError::RootWithoutSuperclass)
     );
 }
 

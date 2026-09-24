@@ -342,8 +342,8 @@ level from source does. The record changed shape when its mixin became a tagged
 reference, so the old class-record tag 5 is retired
 (`opcodes::RETIRED_OBJECT_BODIES`).
 
-**Root class.** The class the root inherits from, as an optional builtin tag,
-then the root's own `<:` levels, lowest first, each as its clause's position in
+**Root class.** The class the root inherits from, as a builtin tag behind a
+presence flag that is always set, then the root's own `<:` levels, lowest first, each as its clause's position in
 row 0 and the builtin that clause named. The root rule lets a root inherit
 only `Object` or `Value` and apply only `Value` over `Object`
 ([object-model.md](object-model.md), "Mixin application", "The root rule"), so
@@ -540,7 +540,8 @@ inherit only Object or Value, or write Object <: Value, and …" — the reason
 the instantiation refusal gives: such a root can never be instantiated, so an
 artifact of it could only fail, and refusing it needs no wire field. The
 root-section reader (`decode_root_section`) refuses what the encoder cannot
-write: a superclass tag other than `Object`'s or `Value`'s, and a level naming
+write: a section naming no superclass at all, as `RootWithoutSuperclass`; a
+superclass tag other than `Object`'s or `Value`'s, and a level naming
 anything but `Value`, as `InvalidTag` ("invalid builtin class a module's root
 may inherit tag *n*", "… may apply tag *n*"); a second level, or a level over
 anything but `Object`, as `BadMixinApplicationClause`. So a crafted artifact

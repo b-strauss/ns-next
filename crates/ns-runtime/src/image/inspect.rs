@@ -554,10 +554,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     // resolving a builtin tag to a live class, which would need a `Mutator`.
     let root =
         decode::decode_root_section(&mut reader, &decoded).map_err(|error| error.to_string())?;
-    let mut root_detail = match root.superclass {
-        Some(kind) => format!("superclass {kind:?}"),
-        None => "no superclass".to_string(),
-    };
+    let mut root_detail = format!("superclass {:?}", root.superclass);
     for (index, kind) in &root.levels {
         let _ = write!(root_detail, ", applies {kind:?} (clause {index})");
     }

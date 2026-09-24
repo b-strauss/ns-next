@@ -195,6 +195,12 @@ pub enum DecodeError {
     /// (`interpreter::nested::superclass_clause_expression`), so such a row
     /// describes a declaration no source has and whose levels nothing builds.
     MixinApplicationWithoutSuperclass,
+    /// The root-class section names no superclass for the module's root
+    /// class. The root rule builds every root over `Object` or `Value`
+    /// (`interpreter::instantiate::root_clause_defect`), so the encoder never
+    /// writes one without, and a root with none would be a class outside
+    /// §3.2's hierarchy, below neither `Object` nor `Top`.
+    RootWithoutSuperclass,
     /// A `CLASS_ROOT_LEVEL` class tag names a position past the levels the
     /// root-class section rebuilt.
     BadRootLevel(u32),
@@ -421,6 +427,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MixinApplicationWithoutSuperclass => write!(
                 f,
                 "a mixin-table row applies mixins but declares no superclass clause to apply them to"
+            ),
+            DecodeError::RootWithoutSuperclass => write!(
+                f,
+                "the image's root class inherits from nothing, but a module's root class must inherit Object or Value"
             ),
             DecodeError::BadRootLevel(position) => write!(
                 f,
@@ -2247,7 +2257,7 @@ pub fn build_root_class<'gc>(
     section: &RootSection,
 ) -> Result<(ClassReference<'gc>, Vec<ClassReference<'gc>>), DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
-    let superclass = section.superclass.map(|kind| mutator.builtin_class(kind));
+    let superclass = Some(mutator.builtin_class(section.superclass));
     let applied: Vec<(usize, Value<'gc>)> = section
         .levels
         .iter()
@@ -2272,17 +2282,19 @@ pub fn build_root_class<'gc>(
     Ok((root_class, levels))
 }
 
-/// The root-class section as read: the builtin the root class inherits from,
-/// if any, and the root's levels, lowest first, each as the position of the
-/// `<:` clause in row 0 that added it and the builtin that clause named.
-#[derive(Debug, Default, PartialEq)]
+/// The root-class section as read: the builtin the root class inherits from
+/// -- `Object` or `Value`, the only two the root rule allows -- and the
+/// root's levels, lowest first, each as the position of the `<:` clause in
+/// row 0 that added it and the builtin that clause named.
+#[derive(Debug, PartialEq)]
 pub struct RootSection {
-    pub superclass: Option<BuiltinClass>,
+    pub superclass: BuiltinClass,
     pub levels: Vec<(u32, BuiltinClass)>,
 }
 
 /// The root-class section: the class the module's root class inherits from,
-/// as an optional builtin tag, then the levels its `<:` clauses add. The
+/// as a builtin tag behind a presence flag, then the levels its `<:` clauses
+/// add. The
 /// inverse of `encode::encode_root_class`, which explains why the format
 /// admits only builtins here.
 ///
@@ -2293,26 +2305,24 @@ pub struct RootSection {
 /// this serves `inspect` as well as `load`.
 ///
 /// The reader refuses what the root rule forbids
-/// (`interpreter::instantiate::root_clause_defect`) -- a superclass other
-/// than `Object` or `Value`, a level naming anything but `Value`, a second
-/// level, a level over anything but `Object` -- so a crafted artifact cannot
-/// bring back a root the encoder would refuse.
+/// (`interpreter::instantiate::root_clause_defect`) -- a missing superclass,
+/// a superclass other than `Object` or `Value`, a level naming anything but
+/// `Value`, a second level, a level over anything but `Object` -- so a
+/// crafted artifact cannot bring back a root the encoder would refuse.
 pub fn decode_root_section(
     reader: &mut Reader,
     mixins: &mixins::Decoded,
 ) -> Result<RootSection, DecodeError> {
-    let superclass = if reader.read_boolean()? {
-        let kind = read_program_builtin_class(reader)?;
-        if !matches!(kind, BuiltinClass::Object | BuiltinClass::Value) {
-            return Err(DecodeError::InvalidTag {
-                what: "builtin class a module's root may inherit",
-                tag: super::encode::builtin_class_tag(kind),
-            });
-        }
-        Some(kind)
-    } else {
-        None
-    };
+    if !reader.read_boolean()? {
+        return Err(DecodeError::RootWithoutSuperclass);
+    }
+    let superclass = read_program_builtin_class(reader)?;
+    if !matches!(superclass, BuiltinClass::Object | BuiltinClass::Value) {
+        return Err(DecodeError::InvalidTag {
+            what: "builtin class a module's root may inherit",
+            tag: super::encode::builtin_class_tag(superclass),
+        });
+    }
     let clause_count = mixins
         .root()
         .map_or(0, |root| root.mixin_applications.len());
@@ -2324,7 +2334,7 @@ pub fn decode_root_section(
         if index < next_allowed
             || index as usize >= clause_count
             || !levels.is_empty()
-            || superclass != Some(BuiltinClass::Object)
+            || superclass != BuiltinClass::Object
         {
             return Err(DecodeError::BadMixinApplicationClause { row: 0, index });
         }
