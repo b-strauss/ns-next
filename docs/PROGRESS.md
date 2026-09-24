@@ -29,9 +29,10 @@ implicit-receiver send `self String`, answered without an activation, and
 `LoadBuiltinClass` and its wire tag are retired
 ([core-library.md](design/core-library.md), "The predefined classes are
 accessors on `Object`"; "The predefined classes as accessors on `Object`"
-below). A second piece put ahead of it the same day is done too: `True` and
-`False` are Newspeak over quick methods ("`True` and `False` in Newspeak"
-below). Step 6's first two plans are done: the core library over a VM mirror,
+below). Two more pieces put ahead of it are done too: `True` and `False`
+are Newspeak over quick methods, and `nil`'s class is §5.1.3's
+`UndefinedObject` with the nil protocol on it and on `Object` ("`True` and
+`False` in Newspeak" and "`UndefinedObject` and the nil protocol" below). Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
 ([core-library.md](design/core-library.md), "What exists"). Two pieces of
@@ -3982,6 +3983,33 @@ a payload.
 `True` and `False` as quick methods cost"): a throwaway source sending
 Boolean methods in its loop is 21.5% faster; the four fixtures are level.
 `vm::run` grew from 6,626 to 6,818 instructions and is still one function.
+
+## `UndefinedObject` and the nil protocol (2026-09-25)
+
+`nil`'s class is `UndefinedObject`, as §5.1.3 names it; it was `Nil`
+(`BuiltinClass::UndefinedObject`, `Object`'s accessor renamed with it; the
+image tag stays 11). `Object` declares `isNil`, `notNil`, `ifNil:`,
+`ifNotNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:`, and `UndefinedObject`
+the same six the other way round, as SOMns's and Newspeak's JS kernel do
+([core-library.md](design/core-library.md), "The nil protocol").
+
+- **A not-nil block is culled with the receiver** — handed it when it takes
+  an argument, nothing when it takes none — because the Newspeak sources
+  under `corpus/` pass both shapes (386 against 126) and the prior art
+  splits. `Block>>cull:` is an ordinary kernel method stating the rule.
+- **Every one of the twelve is a quick method.** Two shapes joined the
+  quick methods for them, `^self` (`MethodFastPath::Receiver`), which also
+  made `Integer>>hash` quick, and `^<parameter> cull: self`
+  (`MethodFastPath::CullParameter`). The compiler inlines none of these
+  sends, so no block they activate is exempt from the depth count, and
+  both lowerings count alike. A culled block with an argument is handed a
+  one-element `Vec` per send, the one allocation on these paths.
+
+**Goldens.** `spec/spec_5_1_3_nil_answers_is_nil` is no longer skipped. New:
+`kernel/nil_is_the_undefined_object`, `language/the_nil_protocol`,
+`errors/if_not_nil_culls_its_argument` and
+`errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`.
+Nothing recorded changed.
 
 ## Notes
 

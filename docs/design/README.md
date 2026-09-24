@@ -241,9 +241,8 @@ is no answer to record that would not be invented.
 
 A `skipped` golden is not always a row here. `goldens/spec/` also records
 rules the runtime simply does not implement yet, rather than places where a
-decision was taken to differ: `nil` does not answer `isNil` (§5.1.3), and a
-parameter and a local of the same name compile (§3.6). Each carries its own
-`skipped` reason.
+decision was taken to differ: a parameter and a local of the same name
+compile (§3.6). It carries its own `skipped` reason.
 
 ## What lives elsewhere
 

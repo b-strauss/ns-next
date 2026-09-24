@@ -551,7 +551,7 @@ does not absorb would cost an activation, a lexical send of `vmMirror` and a
 ([execution.md](execution.md), "What the core library's move cost").
 
 **What a method does without an activation is one field,
-`MixinMethod.fast_path: Option<MethodFastPath>`** (`mixin.rs`), with five
+`MixinMethod.fast_path: Option<MethodFastPath>`** (`mixin.rs`), with seven
 variants:
 
 - `Mirror(row)` — the method forwards to one mirror row: a send runs the
@@ -562,14 +562,15 @@ variants:
   send answers the builtin class and never activates the method
   ([core-library.md](core-library.md), "The predefined classes are accessors
   on `Object`").
-- `Constant(constant)`, `Parameter(position)` and
-  `ValueOfParameter(position)` — the method is a quick method, whose whole
-  body is `^true`, `^false` or `^nil`, `^<parameter>`, or
-  `^<parameter> value`: a send answers the constant or the argument, or, for
-  the last, a closure argument as the block to activate, and never
-  activates the method except when that argument is no closure
+- `Constant(constant)`, `Receiver`, `Parameter(position)`,
+  `ValueOfParameter(position)` and `CullParameter(position)` — the method is
+  a quick method, whose whole body is `^true`, `^false` or `^nil`, `^self`,
+  `^<parameter>`, `^<parameter> value` or `^<parameter> cull: self`: a send
+  answers the constant, the receiver or the argument, or, for the last two,
+  a closure argument as the block to activate, and never activates the
+  method except when that argument is no closure
   ([core-library.md](core-library.md), "`True` and `False` are quick
-  methods").
+  methods", "The nil protocol").
 
 Only a `Kernel.ns` method carries one. Every other method, and every method
 decoded from an image, has `None`.
@@ -609,19 +610,22 @@ method. `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch it off, since an
 accessor runs no leaf.
 
 For the quick methods, `recognize_quick_method` accepts a method whose body is
-one statement with no temporaries, a `^` of `true`, `false`, `nil`, a
-parameter, or a unary `value` sent to a parameter -- the parameter by
-binding, as for `Mirror`. It runs only in the kernel, like the accessor, and
+one statement with no temporaries, a `^` of `true`, `false`, `nil`,
+`self`, a parameter, a unary `value` sent to a parameter, or `cull: self`
+sent to a parameter -- the parameter by binding, as for `Mirror`. It runs only in the kernel, like the accessor, and
 is not switched off either: a quick method runs no leaf.
 
 **The fast path is in `act`** (`interpreter/resolve.rs`), on a
 `Resolved::Method` of any chain but the two handler chains. A
 `BuiltinClass(kind)` method answers `kind`'s class object at once, a
-`Constant` its constant and a `Parameter` its argument. A `ValueOfParameter`
-method answers a closure argument as a `Step::Block` with
-`StepArguments::ControlFlow`, the step a control-flow leaf answers, and
-otherwise falls through to the ordinary `Step::Method`, whose body sends
-`value` to the argument. For a
+`Constant` its constant, a `Receiver` the receiver and a `Parameter` its
+argument. A `ValueOfParameter` method answers a closure argument as a
+`Step::Block` -- with `StepArguments::ControlFlow`, the step a control-flow
+leaf answers, for a Boolean receiver, the one the optimized lowering
+inlines, and with no arguments otherwise -- and a `CullParameter` method
+answers one with the receiver as its argument, or none when the block takes
+none; either otherwise falls through to the ordinary `Step::Method`, whose
+body sends `value` or `cull:` to the argument. For a
 `Mirror(row)` method, `mirror::execute_method` runs the row's leaf with the
 send's receiver, selector and arguments; `Some` is the send's answer, and
 `None` falls through to the ordinary `Step::Method`, whose body then runs the leaf

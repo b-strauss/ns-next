@@ -672,13 +672,16 @@ declares nothing, and each of the two declares the `hash` its `=` demands.
 **Every such body is a quick method**, Squeak's and Cog's name for a method
 that answers a constant or an argument and is run without an activation. A
 kernel method whose whole body is `^true`, `^false` or `^nil`
-(`MethodFastPath::Constant`), `^<parameter>` (`MethodFastPath::Parameter`)
-or `^<parameter> value` (`MethodFastPath::ValueOfParameter`) is recognized
+(`MethodFastPath::Constant`), `^self` (`MethodFastPath::Receiver`),
+`^<parameter>` (`MethodFastPath::Parameter`), `^<parameter> value`
+(`MethodFastPath::ValueOfParameter`) or `^<parameter> cull: self`
+(`MethodFastPath::CullParameter`, "The nil protocol" below) is recognized
 by `compiler::primitive_method` and answered by `act` on every send, like
 the other two fast paths ([dispatch.md](dispatch.md), "Primitive
-methods"). The last answers a closure argument as the block to activate, as
-a control-flow trampoline step; any other argument activates the method,
-whose body then sends `value` for real. Only `Kernel.ns`'s methods are
+methods"). `ValueOfParameter` answers a closure argument as the block to
+activate, as a trampoline step, marked as a control-flow step for a Boolean
+receiver; any other argument activates the method, whose body then sends
+`value` for real. Only `Kernel.ns`'s methods are
 recognized, and `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch them off,
 since they run no leaf.
 
@@ -716,6 +719,42 @@ them, where a subclass of `Boolean` inherits nothing from it and falls to
 (`goldens/kernel/a_subclass_of_true_inherits_its_methods`,
 `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`,
 `goldens/kernel/a_subclass_of_boolean_hashes_as_a_value`).
+
+### The nil protocol
+
+§5.1.3 names `nil`'s class `UndefinedObject` and has it answer `isNil`
+with true. `Object` declares the rest of the protocol every prior-art kernel
+has — `isNil`, `notNil`, `ifNil:`, `ifNotNil:`, `ifNil:ifNotNil:` and
+`ifNotNil:ifNil:` — answering for every object that is not `nil`, and
+`UndefinedObject` declares the same six the other way round, as SOMns's
+(`prior-art/somns/core-lib/Kernel.ns`) and Newspeak's JS kernel
+(`prior-art/newspeak/KernelForJS.ns`) do; `nil ifNotNil:` answers `nil`,
+`3 ifNil:` answers `3`.
+
+**A block for the not-nil case is culled with the receiver** (decided on
+2026-09-25, from the corpus): it is handed the receiver when it takes an
+argument and nothing when it takes none, Squeak's `cull:`. The prior art
+splits here — SOMns sends `ifNotNil:`'s block `value` and culls
+`ifNil:ifNotNil:`'s, the JS kernel sends every one `value: self` — and the
+canonical Newspeak sources under `corpus/` pass both shapes, 386
+`ifNotNil: [:x | ...]` against 126 `ifNotNil: [...]`, which only `cull:`
+runs. `Block>>cull:` is an ordinary `Kernel.ns` method saying so, and
+`Object`'s bodies are `^notNilBlock cull: self`. A block that takes two
+arguments is handed one and fails the arity check as `value:` would; an
+argument that is no block is sent `cull:`, which nothing but a block
+answers.
+
+Every one of the twelve bodies is a quick method: a constant, `^self`,
+`^block value` or `^block cull: self` (`MethodFastPath::CullParameter`,
+which activates a closure argument with the receiver or with nothing by its
+parameter count, and otherwise activates the method). None of these sends
+is inlined by the compiler, so no block they activate is a control-flow
+step: both lowerings send them and count the block alike.
+`goldens/language/the_nil_protocol`,
+`goldens/errors/if_not_nil_culls_its_argument`,
+`goldens/errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`
+and `goldens/spec/spec_5_1_3_nil_answers_is_nil` pin it, and
+`goldens/kernel/nil_is_the_undefined_object` the class's name.
 
 ### The bootstrap: placeholders first, kernel second
 
