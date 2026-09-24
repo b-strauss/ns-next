@@ -679,6 +679,7 @@ mod tests {
         // `hash` above, whose integer literal is none either.
         (BuiltinClass::True, "printString"),
         (BuiltinClass::False, "printString"),
+        (BuiltinClass::UndefinedObject, "printString"),
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
         (BuiltinClass::Block, "cull:"),

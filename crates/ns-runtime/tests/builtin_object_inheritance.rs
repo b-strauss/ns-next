@@ -55,13 +55,11 @@ fn a_builtin_receiver_inherits_objects_native_class() {
     });
 }
 
-/// `nil printString` and `(OrderedCollection new) printString`: neither
-/// `UndefinedObject` nor `OrderedCollection` implements `printString`, so both fall back
-/// to `Object`'s own generic default rather than `doesNotUnderstand:`.
+/// `nil printString` answers `nil`, as Primordial Soup's `UndefinedObject`
+/// does.
 #[test]
-fn builtins_without_their_own_print_string_inherit_objects_default() {
+fn nil_prints_as_nil() {
     let mut interpreter = Interpreter::bootstrap();
-
     let nil_result = interpreter.send(
         &interpreter.stash(Value::Nil),
         Symbol::intern("printString"),
@@ -71,9 +69,17 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
     interpreter.enter(|mutator| {
         assert_eq!(
             as_string(mutator.heap(), &mutator.fetch(&nil_result)),
-            "an Object"
+            "nil"
         );
     });
+}
+
+/// `(OrderedCollection new) printString`: `OrderedCollection` implements no
+/// `printString`, so it falls back to `Object`'s own generic default rather
+/// than `doesNotUnderstand:`.
+#[test]
+fn builtins_without_their_own_print_string_inherit_objects_default() {
+    let mut interpreter = Interpreter::bootstrap();
 
     let ordered_collection = interpreter.enter(|mutator| {
         let class = mutator.builtin_class(BuiltinClass::OrderedCollection);

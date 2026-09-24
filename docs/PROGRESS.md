@@ -463,18 +463,15 @@ The measurement, and the template for the next, is
   contribute to one member set for lexical resolution; the specification is
   silent and the canonical compiler scopes the class side apart
   ([dispatch.md](design/dispatch.md), "Resolution").
-- **`nil printString` answers `'an Object'`**: the leaf `Object>>printString`
-  forwards to is a stub (`crates/ns-runtime/src/builtins/object_class.rs`,
-  `an Object` for every receiver); no golden pins the correct answer yet.
 
 **The two specification audits' other findings are closed**, in "M4 — The
 specification gaps" below: the member-set fix, the symbol-identity fix and
 the parameter-setter fix. Mixin application (§6.2), the one finding they
 left open, is closed too, on 2026-09-23 ("Mixin application" below).
-**Four goldens are still `skipped`** (`grep -l '^skipped' goldens/*/*.toml`):
-the parameter-and-a-local-of-the-same-name compile check (§3.6), `nil isNil`
-(§5.1.3), the sequential simultaneous slot clauses (§6.3.2) and the eager
-lazy slot (§6.3.3) — the last two also rows in [README.md](design/README.md)'s
+**Three goldens are still `skipped`** (`grep -l '^skipped' goldens/*/*.toml`):
+the parameter-and-a-local-of-the-same-name compile check (§3.6), the
+sequential simultaneous slot clauses (§6.3.2) and the eager lazy slot
+(§6.3.3) — the last two also rows in [README.md](design/README.md)'s
 deviations table, answering a **correct** program **wrongly, at exit status
 0**, and worth reading before trusting a program's output.
 
@@ -4005,11 +4002,15 @@ the same six the other way round, as SOMns's and Newspeak's JS kernel do
   both lowerings count alike. A culled block with an argument is handed a
   one-element `Vec` per send, the one allocation on these paths.
 
+`nil printString` answers `'nil'`, as Primordial Soup's does, instead of
+`Object`'s generic `an Object`.
+
 **Goldens.** `spec/spec_5_1_3_nil_answers_is_nil` is no longer skipped. New:
 `kernel/nil_is_the_undefined_object`, `language/the_nil_protocol`,
 `errors/if_not_nil_culls_its_argument` and
-`errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`.
-Nothing recorded changed.
+`errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`. One
+changed, because of the new `printString`: `cache/cache_polymorphic_sites`
+prints `nil` for `nil` where it printed `an Object`.
 
 ## Notes
 

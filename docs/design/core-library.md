@@ -729,7 +729,9 @@ has — `isNil`, `notNil`, `ifNil:`, `ifNotNil:`, `ifNil:ifNotNil:` and
 `UndefinedObject` declares the same six the other way round, as SOMns's
 (`prior-art/somns/core-lib/Kernel.ns`) and Newspeak's JS kernel
 (`prior-art/newspeak/KernelForJS.ns`) do; `nil ifNotNil:` answers `nil`,
-`3 ifNil:` answers `3`.
+`3 ifNil:` answers `3`. `nil printString` answers `'nil'`, as Primordial
+Soup's `UndefinedObject` does, where it answered `Object`'s generic
+`an Object` before (`goldens/cache/cache_polymorphic_sites`).
 
 **A block for the not-nil case is culled with the receiver** (decided on
 2026-09-25, from the corpus): it is handed the receiver when it takes an
