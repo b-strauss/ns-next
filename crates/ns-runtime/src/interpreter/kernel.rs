@@ -75,7 +75,6 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Float => "Float",
         BuiltinClass::String => "String",
         BuiltinClass::Symbol => "Symbol",
-        BuiltinClass::Character => "Character",
         BuiltinClass::Array => "Array",
         BuiltinClass::OrderedCollection => "OrderedCollection",
         BuiltinClass::UndefinedObject => "UndefinedObject",
@@ -660,7 +659,6 @@ mod tests {
     const NOT_FORWARDERS: &[(BuiltinClass, &str)] = &[
         (BuiltinClass::True, "hash"),
         (BuiltinClass::False, "hash"),
-        (BuiltinClass::Character, "hash"),
         // §3.1.1's identity method on a value: a send of `=`, which is what
         // makes the two agree for every subclass. No leaf could answer it
         // without sending `=` back into Newspeak.
@@ -849,7 +847,6 @@ mod tests {
         BuiltinClass::Float,
         BuiltinClass::String,
         BuiltinClass::Symbol,
-        BuiltinClass::Character,
         BuiltinClass::UndefinedObject,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
@@ -1046,7 +1043,6 @@ mod tests {
                 (BuiltinClass::Float, Some(BuiltinClass::Number)),
                 (BuiltinClass::String, Some(BuiltinClass::Value)),
                 (BuiltinClass::Symbol, Some(BuiltinClass::Value)),
-                (BuiltinClass::Character, Some(BuiltinClass::Value)),
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
                 (BuiltinClass::OrderedCollection, Some(BuiltinClass::Object)),
@@ -1085,7 +1081,6 @@ mod tests {
             for (kind, expected) in [
                 (BuiltinClass::String, true),
                 (BuiltinClass::Symbol, true),
-                (BuiltinClass::Character, true),
                 (BuiltinClass::Integer, true),
                 (BuiltinClass::Float, true),
                 (BuiltinClass::True, true),

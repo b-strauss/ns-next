@@ -288,9 +288,9 @@ impl<'a> Parser<'a> {
     // `expression.rs`.
 }
 
-/// Strip the first and last character from a lexeme — the quotes of a string
-/// literal, the `"` delimiters of a character constant, the inner `'...'` of a
-/// quoted symbol.
+/// Strip the first and last character from a lexeme — the quotes of a
+/// single- or double-quoted string literal, the inner `'...'` of a quoted
+/// symbol.
 ///
 /// Panic-safe: a lexeme shorter than two characters is returned unchanged
 /// rather than sliced through a byte range that could underflow or land in the
@@ -691,13 +691,26 @@ mod tests {
         );
     }
 
+    /// A double-quoted string is a string literal (§5.1.5), with no escape:
+    /// a doubled quote inside one is two quotes, and a single quote is
+    /// itself. The one-character form `"""` is the string `"`.
     #[test]
-    fn character_constant_produces_a_character_literal() {
-        let Expression::Literal(Literal::Character { value, .. }) = parse_expression("\"a\"")
-        else {
-            panic!()
-        };
-        assert_eq!(value, 'a');
+    fn a_double_quoted_string_produces_a_string_literal() {
+        for (source, expected) in [
+            ("\"a\"", "a"),
+            ("\"abc\"", "abc"),
+            ("\"'\"", "'"),
+            ("\"\"\"", "\""),
+            ("\"\"", ""),
+            ("\"it''s\"", "it''s"),
+            ("'it''s'", "it's"),
+        ] {
+            let Expression::Literal(Literal::String { value, .. }) = parse_expression(source)
+            else {
+                panic!("{source} is not a string literal")
+            };
+            assert_eq!(value, expected, "{source}");
+        }
     }
 
     #[test]

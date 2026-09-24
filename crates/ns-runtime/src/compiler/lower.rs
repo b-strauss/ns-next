@@ -1829,7 +1829,6 @@ pub(super) fn lower_literal(literal: &ast::Literal) -> BytecodeLiteral {
         }
         ast::Literal::String { value, .. } => BytecodeLiteral::String(value.clone()),
         ast::Literal::Symbol { value, .. } => BytecodeLiteral::Symbol(crate::Symbol::intern(value)),
-        ast::Literal::Character { value, .. } => BytecodeLiteral::Character(*value),
         ast::Literal::Boolean { value, .. } => BytecodeLiteral::Boolean(*value),
         ast::Literal::Nil { .. } => BytecodeLiteral::Nil,
         ast::Literal::Array { elements, .. } => {

@@ -1307,20 +1307,6 @@ impl<'gc> Mutator<'gc> {
         Value::Object(object)
     }
 
-    pub fn new_character(&mut self, character: char) -> ObjectReference<'gc> {
-        // There is no dedicated Character payload variant on
-        // ObjectData -- represent a character as a one-`char` Rust String
-        // wrapped the same way String literals are (String), consistent with
-        // how the language spec itself anticipates going forward: §2.2.3
-        // expects to "make all string literals act as symbols, and represent
-        // characters as a special case of these" (`newspeak-spec.pdf`).
-        // `builtins::text` tags the *class* as `BuiltinClass::Character` so
-        // dispatch still lands on the right native methods; only the payload
-        // representation is shared.
-        let class = self.builtin_class(BuiltinClass::Character);
-        self.new_instance_object(class, ObjectData::String(character.to_string()))
-    }
-
     pub fn new_closure(&mut self, closure: ClosureData<'gc>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Block);
         self.new_instance_object(class, ObjectData::Closure(closure))

@@ -1,25 +1,15 @@
-//! `String`, `Symbol`, and `Character` native methods.
-//!
-//! `Character` has no dedicated `ObjectData` payload variant --
-//! `Mutator::new_character` represents a character as a one-`char`
-//! `ObjectData::String`, tagged with the `BuiltinClass::Character` class so
-//! dispatch still lands here (see that constructor's doc comment). This
-//! module's `execute_character` therefore extracts its payload exactly like
-//! `execute_string` does, just from a string that is always one `char`
-//! long.
+//! `String` and `Symbol` native methods.
 
-use crate::builtins::primitive::{CharacterPrimitive, StringPrimitive, SymbolPrimitive};
+use crate::builtins::primitive::{StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
 /// Extracts an owned `String` from `argument` if it is a `String`-payload
-/// object (covers both `String` and `Character` arguments, since they share a
-/// payload representation). `None` for anything else, including `Symbol` (a
-/// distinct payload) and non-`Object` values.
+/// object. `None` for anything else, including `Symbol` (a distinct payload)
+/// and non-`Object` values.
 ///
-/// Concatenation's rule, and only concatenation's: `'ab' , "c"` is meant to
-/// work. Equality reads the class instead (`of_the_same_class`), which is
-/// what keeps `"a" = 'a'` false.
+/// Concatenation's rule, and only concatenation's. Equality reads the class
+/// instead (`of_the_same_class`).
 fn argument_string<'gc>(heap: &Heap<'gc>, argument: Option<&Value<'gc>>) -> Option<String> {
     match argument {
         Some(Value::Object(object)) => heap.str_value(*object),
@@ -31,13 +21,10 @@ fn argument_string<'gc>(heap: &Heap<'gc>, argument: Option<&Value<'gc>>) -> Opti
 /// every `=` in this module opens with, and the reason each of them names
 /// one class rather than one payload.
 ///
-/// `String` and `Character` share an `ObjectData::String` payload, so a
-/// rule that compared payloads alone made `"a" = 'a'` true. That was
-/// tolerable only while both hashed by identity: once each class hashes by
-/// its own content -- a character by its code point, a string by its text
-/// -- a cross-class equality breaks the one rule a `hash` has, that `x = y`
-/// implies `x hash = y hash`. A character equals only a character, a
-/// string only a string, and a symbol only a symbol.
+/// Each class hashes by its own content, a string by its text and a symbol
+/// by its interned index, so a cross-class equality would break the one
+/// rule a `hash` has, that `x = y` implies `x hash = y hash`. A string
+/// equals only a string, and a symbol only a symbol.
 fn of_the_same_class<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
@@ -51,7 +38,7 @@ fn of_the_same_class<'gc>(
         .then_some(*other)
 }
 
-/// `String>>=` and `Character>>=`'s rule: an argument of the receiver's own
+/// `String>>=`'s rule: an argument of the receiver's own
 /// class carrying the same text. Named rather than written twice, so that
 /// `builtins::value`'s derived equality decides one exactly as the class's
 /// own `=` does instead of growing a second copy of the rule.
@@ -96,13 +83,6 @@ pub(crate) fn string_hash(text: &str) -> i64 {
 /// non-negative sub-2^32 answer a `hash` gives.
 pub(crate) fn symbol_hash(symbol: Symbol) -> i64 {
     symbol.index() as i64
-}
-
-/// The one `char` a `Character`'s payload holds. The invariant comes from
-/// `Mutator::new_character`; a payload that ever violated it falls back to
-/// `'\0'` rather than panicking, because this is on a Newspeak-input path.
-pub(crate) fn character_of(text: &str) -> char {
-    text.chars().next().unwrap_or('\0')
 }
 
 /// Mirrors `ns_syntax::lexer`'s string-literal escaping (`lex_string`): a
@@ -189,30 +169,5 @@ pub(crate) fn execute_symbol<'gc>(
         SymbolPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(format!("#{}", symbol.as_str())),
         ))),
-    }
-}
-
-pub(crate) fn execute_character<'gc>(
-    mutator: &mut Mutator<'gc>,
-    primitive: CharacterPrimitive,
-    receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
-) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = &receiver else {
-        return None;
-    };
-    let string = mutator.heap.str_value(*object)?;
-    let character = character_of(&string);
-    match primitive {
-        CharacterPrimitive::AsInteger => Some(Ok(Value::SmallInteger(character as i64))),
-        CharacterPrimitive::AsString => {
-            Some(Ok(Value::Object(mutator.new_string(character.to_string()))))
-        }
-        CharacterPrimitive::Equal => Some(Ok(Value::Boolean(text_equals(
-            &mutator.heap,
-            *object,
-            &string,
-            arguments.first(),
-        )))),
     }
 }

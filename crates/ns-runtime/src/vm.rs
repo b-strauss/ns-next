@@ -776,7 +776,6 @@ fn make_value<'gc>(
         Literal::Float(float) => Value::Float(*float),
         Literal::String(string) => Value::Object(mutator.new_string(string.clone())),
         Literal::Symbol(symbol) => mutator.new_symbol(*symbol),
-        Literal::Character(character) => Value::Object(mutator.new_character(*character)),
         Literal::Array(elements) => {
             let mut values = Vec::with_capacity(elements.len());
             for element in elements {

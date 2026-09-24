@@ -19,7 +19,6 @@ pub enum Primitive {
     Float(FloatPrimitive),
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
-    Character(CharacterPrimitive),
     Collection(CollectionPrimitive),
     Block(BlockPrimitive),
     Platform(PlatformPrimitive),
@@ -92,13 +91,6 @@ pub enum SymbolPrimitive {
     Equal,
     Hash,
     PrintString,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CharacterPrimitive {
-    AsInteger,
-    AsString,
-    Equal,
 }
 
 /// `Array` and `OrderedCollection` share their payload, so they share their
@@ -425,21 +417,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "symbolPrintString:ifFail:",
         "printString",
         Primitive::Symbol(SymbolPrimitive::PrintString),
-    ),
-    mirror(
-        "characterAsInteger:ifFail:",
-        "asInteger",
-        Primitive::Character(CharacterPrimitive::AsInteger),
-    ),
-    mirror(
-        "characterAsString:ifFail:",
-        "asString",
-        Primitive::Character(CharacterPrimitive::AsString),
-    ),
-    mirror(
-        "character:equals:ifFail:",
-        "=",
-        Primitive::Character(CharacterPrimitive::Equal),
     ),
     mirror(
         "collection:do:ifFail:",

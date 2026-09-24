@@ -309,17 +309,7 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
                 return Some(Node::Leaf(text::symbol_hash(symbol)));
             }
             if let Some(payload) = mutator.heap().str_value(object) {
-                let class = mutator.heap().class_of_object(object);
-                // `String` and `Character` share a payload, and each hashes
-                // as its own class's `hash` does: a character by its code
-                // point, a string by its content.
-                return Some(Node::Leaf(
-                    if mutator.heap().class_builtin(class) == Some(BuiltinClass::Character) {
-                        text::character_of(&payload) as i64
-                    } else {
-                        text::string_hash(&payload)
-                    },
-                ));
+                return Some(Node::Leaf(text::string_hash(&payload)));
             }
             state_is_a_value(mutator, object).then_some(Node::State(object))
         }

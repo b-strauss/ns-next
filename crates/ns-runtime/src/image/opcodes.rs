@@ -29,7 +29,7 @@
 // a different instruction.
 // Next free number: 34.
 
-/// Loads a literal into a register; a string, symbol, character or array
+/// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
 pub const OPCODE_LOAD_LITERAL: u8 = 0;
 /// Loads the receiver, `self`, into a register.
@@ -127,8 +127,6 @@ pub const LITERAL_FLOAT: u8 = 3;
 pub const LITERAL_STRING: u8 = 4;
 /// A symbol literal, `#name`.
 pub const LITERAL_SYMBOL: u8 = 5;
-/// A character literal.
-pub const LITERAL_CHARACTER: u8 = 6;
 /// A literal array, `#( ... )`, whose elements are literals themselves.
 pub const LITERAL_ARRAY: u8 = 7;
 /// An integer the lexer accepted and the parser rejects. Carried as its
@@ -138,6 +136,13 @@ pub const LITERAL_MALFORMED_INTEGER: u8 = 8;
 /// An identifier that names nothing, such as a bare `super`; it raises its
 /// error when it runs.
 pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
+
+/// Literal tags that no longer name anything and are never reused: 6 was the
+/// character literal, retired 2026-09-25 when `"c"` became a one-character
+/// string (§5.1.4 announces character literals going away, §5.1.5 makes
+/// `"σ"` a string). A stale artifact's tag-6 literal meets an unknown tag
+/// instead of decoding as whatever literal takes the next free number.
+pub const RETIRED_LITERALS: [u8; 1] = [6];
 
 // ---------------------------------------------------------------------------
 // Graph-section tags. Same rule as above: assigned once, never renumbered.

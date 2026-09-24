@@ -234,7 +234,6 @@ pub enum BuiltinClass {
     Float,
     String,
     Symbol,
-    Character,
     Array,
     OrderedCollection,
     UndefinedObject,
@@ -267,7 +266,7 @@ impl BuiltinClass {
     /// siblings. So this is *not* a superclass-first order: the kernel phase
     /// sorts the kinds by their depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 18] = [
+    pub const ALL: [BuiltinClass; 17] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -276,7 +275,6 @@ impl BuiltinClass {
         BuiltinClass::Float,
         BuiltinClass::String,
         BuiltinClass::Symbol,
-        BuiltinClass::Character,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
         BuiltinClass::UndefinedObject,

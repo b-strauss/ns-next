@@ -410,7 +410,6 @@ fn every_instruction_once() -> CompiledCode {
                     Literal::Float(1.5),
                     Literal::String("s".into()),
                     Literal::Symbol(Symbol::intern("y")),
-                    Literal::Character('z'),
                     Literal::MalformedInteger("16r1.8".into()),
                     Literal::UnresolvedIdentifier("super".into()),
                 ]),
@@ -1025,12 +1024,17 @@ fn the_retired_load_builtin_class_tag_is_refused() {
     );
 }
 
+/// An unknown literal tag is refused, and so is every retired one: tag 6
+/// was the character literal (`RETIRED_LITERALS`), and a stale artifact's
+/// character -- its tag and its code point -- meets an unknown tag rather
+/// than decoding as whatever literal takes the next free number.
 #[test]
-fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
-    for (payload, what) in [
-        (vec![LITERAL_UNRESOLVED_IDENTIFIER + 1], "literal"),
-        (vec![LITERAL_CHARACTER, 0x00, 0xd8, 0x00, 0x00], "char"),
-    ] {
+fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
+    let mut payloads = vec![vec![LITERAL_UNRESOLVED_IDENTIFIER + 1]];
+    for tag in RETIRED_LITERALS {
+        payloads.push(vec![tag, 0x41, 0x00, 0x00, 0x00]);
+    }
+    for (payload, what) in payloads.into_iter().map(|payload| (payload, "literal")) {
         let mut writer = encode::Writer::new();
         writer.write_u32(1);
         writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
@@ -1141,7 +1145,6 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::Float,
         BuiltinClass::String,
         BuiltinClass::Symbol,
-        BuiltinClass::Character,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
         BuiltinClass::UndefinedObject,

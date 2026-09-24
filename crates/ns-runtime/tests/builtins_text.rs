@@ -1,4 +1,4 @@
-//! Integration tests for the `String`/`Symbol`/`Character` native
+//! Integration tests for the `String`/`Symbol` native
 //! methods, found as primitives by the ordinary lookup via
 //! `Interpreter::send`.
 
@@ -275,21 +275,4 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
             mutator.heap().describe(&other)
         ),
     });
-}
-
-#[test]
-fn character_constant_as_integer_yields_its_unicode_code_point() {
-    let mut interpreter = Interpreter::bootstrap();
-
-    let character = interpreter.enter(|mutator| {
-        let object = mutator.new_character('A');
-        mutator.stash(Value::Object(object))
-    });
-
-    let result = expect_ok(
-        interpreter.send(&character, Symbol::intern("asInteger"), &[]),
-        "$A asInteger",
-    );
-
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(65))));
 }

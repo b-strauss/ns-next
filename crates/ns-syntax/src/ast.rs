@@ -189,10 +189,6 @@ pub enum Literal {
         value: String,
         span: Span,
     }, // without the leading '#'
-    Character {
-        value: char,
-        span: Span,
-    },
     Boolean {
         value: bool,
         span: Span,

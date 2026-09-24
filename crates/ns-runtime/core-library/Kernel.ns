@@ -53,7 +53,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Float = ( ^outer Kernel Float )
         public String = ( ^outer Kernel String )
         public Symbol = ( ^outer Kernel Symbol )
-        public Character = ( ^outer Kernel Character )
         public UndefinedObject = ( ^outer Kernel UndefinedObject )
         public Array = ( ^outer Kernel Array )
         public OrderedCollection = ( ^outer Kernel OrderedCollection )
@@ -84,10 +83,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
        the method `=` is overridden ... if `x = y` evaluates to true then
        `x hash = y hash` must evaluate to true." Since a value may be copied
        across an actor boundary, a copy has to hash like its original, so
-       none of them may inherit `Object`'s identity hash. `Integer`'s and
-       `Character`'s are ordinary methods rather than forwarders to a leaf:
-       the value they answer is already at hand, and the activation costs
-       only a program that hashes. *)
+       none of them may inherit `Object`'s identity hash. `Integer`'s,
+       `True`'s and `False`'s are no forwarders to a leaf: the value they
+       answer is already at hand. *)
     public class Value = Object new () (
         (* §3.1.1: a value object is globally unique, in the sense that no
            other object is equal to it -- so equality is derived from state,
@@ -218,12 +216,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror symbolHash: self ifFail: [^super hash] )
         public printString = ( ^vmMirror symbolPrintString: self ifFail: [^super printString] )
-    )
-    public class Character = Value new () (
-        public asInteger = ( ^vmMirror characterAsInteger: self ifFail: [^super asInteger] )
-        public asString = ( ^vmMirror characterAsString: self ifFail: [^super asString] )
-        public = other = ( ^vmMirror character: self equals: other ifFail: [^super = other] )
-        public hash = ( ^self asInteger )
     )
     public class Array = Object new () (
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )

@@ -1,0 +1,7 @@
+stdout = '''
+abc
+true true
+it's "quoted"
+" '
+0 4
+'''

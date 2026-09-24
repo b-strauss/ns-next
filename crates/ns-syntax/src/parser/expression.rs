@@ -53,10 +53,9 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LeftBracket => self.parse_block(),
             TokenKind::LeftBrace => self.parse_dynamic_array(),
-            TokenKind::Number
-            | TokenKind::String
-            | TokenKind::Symbol
-            | TokenKind::CharacterConstant => Expression::Literal(self.parse_literal()),
+            TokenKind::Number | TokenKind::String | TokenKind::Symbol => {
+                Expression::Literal(self.parse_literal())
+            }
             TokenKind::Identifier => {
                 let token = self.current();
                 match self.text(token) {
@@ -129,13 +128,6 @@ impl<'a> Parser<'a> {
                 value: symbol_body(&raw),
                 span: token.span,
             },
-            TokenKind::CharacterConstant => {
-                let inner = super::lexeme_body(&raw);
-                Literal::Character {
-                    value: inner.chars().next().unwrap_or('\u{0}'),
-                    span: token.span,
-                }
-            }
             _ => unreachable!("parse_literal called on {:?}", token.kind),
         }
     }
@@ -263,10 +255,7 @@ impl<'a> Parser<'a> {
                     span: id.span,
                 }
             }
-            TokenKind::Number
-            | TokenKind::String
-            | TokenKind::Symbol
-            | TokenKind::CharacterConstant => self.parse_literal(),
+            TokenKind::Number | TokenKind::String | TokenKind::Symbol => self.parse_literal(),
             _ => {
                 let token = self.bump();
                 self.diagnostics.push(crate::diagnostic::Diagnostic::error(
@@ -544,7 +533,6 @@ fn starts_primary(kind: TokenKind) -> bool {
             | TokenKind::Number
             | TokenKind::String
             | TokenKind::Symbol
-            | TokenKind::CharacterConstant
             | TokenKind::LeftParenthesis
             | TokenKind::LeftBracket
             | TokenKind::LeftBrace
@@ -571,7 +559,6 @@ pub(super) fn literal_span(literal: &Literal) -> crate::span::Span {
         | Literal::Float { span, .. }
         | Literal::String { span, .. }
         | Literal::Symbol { span, .. }
-        | Literal::Character { span, .. }
         | Literal::Boolean { span, .. }
         | Literal::Nil { span }
         | Literal::Array { span, .. }
@@ -579,8 +566,14 @@ pub(super) fn literal_span(literal: &Literal) -> crate::span::Span {
     }
 }
 
+/// A string literal's value: a single-quoted one un-doubles `''`, and a
+/// double-quoted one has no escape at all (`lexer::lex_double_quoted_string`).
 fn unescape_string(raw: &str) -> String {
-    super::lexeme_body(raw).replace("''", "'")
+    if raw.starts_with('"') {
+        super::lexeme_body(raw).to_string()
+    } else {
+        super::lexeme_body(raw).replace("''", "'")
+    }
 }
 
 fn symbol_body(raw: &str) -> String {

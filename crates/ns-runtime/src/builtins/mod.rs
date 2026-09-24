@@ -54,9 +54,6 @@ pub(crate) fn execute<'gc>(
         Primitive::Symbol(primitive) => {
             text::execute_symbol(mutator, primitive, receiver, arguments).map(wrap_error)
         }
-        Primitive::Character(primitive) => {
-            text::execute_character(mutator, primitive, receiver, arguments).map(wrap_error)
-        }
         Primitive::Collection(primitive) => {
             collections::execute(mutator, primitive, receiver, selector, arguments)
         }
