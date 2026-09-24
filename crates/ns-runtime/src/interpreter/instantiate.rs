@@ -1158,43 +1158,6 @@ fn not_an_argument_list_error<'gc>(
     })
 }
 
-/// The string->`BuiltinClass` mapping the lowerings once used to load a bare
-/// builtin class name as a constant. Returns `None` for any name that is not a
-/// builtin class name. `Object` has an explicit arm rather than being a
-/// catch-all default, because a caller must be able to tell "unrecognized
-/// name" apart from a genuine `Object` match; the match arms are the one
-/// list of builtin names, so no caller keeps a second one to guard with.
-///
-/// `Top` is deliberately absent: §3.2 lets only `Object` have it as its
-/// superclass, so no program may name it -- and no artifact may either,
-/// which is why `image::decode::read_program_builtin_class` refuses its tag
-/// as it refuses the mirror's. `Platform` is absent for the reason
-/// `kernel::kernel_class_name` gives.
-#[expect(
-    dead_code,
-    reason = "no lowering loads a builtin class by name any more; removed with LoadBuiltinClass"
-)]
-pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
-    Some(match name {
-        "Object" => BuiltinClass::Object,
-        "Value" => BuiltinClass::Value,
-        "Boolean" => BuiltinClass::Boolean,
-        "True" => BuiltinClass::True,
-        "False" => BuiltinClass::False,
-        "Number" => BuiltinClass::Number,
-        "Integer" => BuiltinClass::Integer,
-        "Float" => BuiltinClass::Float,
-        "String" => BuiltinClass::String,
-        "Symbol" => BuiltinClass::Symbol,
-        "Character" => BuiltinClass::Character,
-        "Array" => BuiltinClass::Array,
-        "OrderedCollection" => BuiltinClass::OrderedCollection,
-        "Nil" => BuiltinClass::Nil,
-        "Block" => BuiltinClass::Block,
-        _ => return None,
-    })
-}
-
 /// §6.1 evaluates a module root's clauses "as if [each] was a top level
 /// expression", where §3.8 leaves nothing to send to, so the only classes a
 /// root can reach are the ones the rule names: `Object` or `Value` as its

@@ -1,6 +1,6 @@
 //! Interpreter core behaviours through real modules: a method's implicit and
-//! explicit return, a bare builtin class name, and non-local return from a
-//! block to a live home and into a dead one.
+//! explicit return, a bare builtin class name's send to `Object`'s accessor,
+//! and non-local return from a block to a live home and into a dead one.
 
 use indoc::indoc;
 use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value};

@@ -61,9 +61,10 @@ fn resolve_kernel_source() -> ResolvedModule {
     }
 }
 
-/// The name of `kind`'s class in `Kernel.ns`. Not
-/// `instantiate::builtin_kind_from_name`, which is the list of names a
-/// *program* may write bare and which, for that reason, has no `Platform`.
+/// The name of `kind`'s class in `Kernel.ns`. Every builtin but the mirror's
+/// class has one, `Top` and `Platform` included, unlike the narrower list of
+/// names a *program* may write bare -- `Object`'s own accessor methods, which
+/// `tests::OBJECT_CLASS_ACCESSORS` pins.
 pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
     match kind {
         BuiltinClass::Object => "Object",

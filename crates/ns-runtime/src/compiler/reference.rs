@@ -650,7 +650,6 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
             .collect(),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
-        | Instruction::LoadBuiltinClass { .. }
         | Instruction::LoadOuterLocal { .. }
         | Instruction::MakeClosure { .. }
         | Instruction::MakeVector { .. }
@@ -664,7 +663,6 @@ fn destination(instruction: &Instruction) -> Option<u16> {
     match instruction {
         Instruction::LoadLiteral { destination, .. }
         | Instruction::LoadSelf { destination }
-        | Instruction::LoadBuiltinClass { destination, .. }
         | Instruction::Move { destination, .. }
         | Instruction::LoadOuterLocal { destination, .. }
         | Instruction::SendLexical { destination, .. }

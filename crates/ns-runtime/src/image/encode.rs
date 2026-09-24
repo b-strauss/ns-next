@@ -506,11 +506,6 @@ fn encode_instruction(
             writer.write_u8(OPCODE_LOAD_SELF);
             writer.write_u16(*destination);
         }
-        Instruction::LoadBuiltinClass { destination, kind } => {
-            writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
-            writer.write_u16(*destination);
-            writer.write_u8(builtin_class_tag(*kind));
-        }
         Instruction::Move {
             destination,
             source,

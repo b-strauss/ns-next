@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::types::BuiltinClass;
 use crate::Symbol;
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
@@ -90,13 +89,6 @@ pub enum Instruction {
     },
     LoadSelf {
         destination: u16,
-    },
-    /// A builtin class, loaded as a constant. No lowering emits it any
-    /// more: a bare builtin class name is §5.7's self send, answered by
-    /// `Object`'s accessor.
-    LoadBuiltinClass {
-        destination: u16,
-        kind: BuiltinClass,
     },
     Move {
         destination: u16,
@@ -527,9 +519,6 @@ fn format_instruction(instruction: &Instruction) -> String {
             format!("LoadLiteral r{destination}, {}", format_literal(literal))
         }
         Instruction::LoadSelf { destination } => format!("LoadSelf r{destination}"),
-        Instruction::LoadBuiltinClass { destination, kind } => {
-            format!("LoadBuiltinClass r{destination}, {kind:?}")
-        }
         Instruction::Move {
             destination,
             source,

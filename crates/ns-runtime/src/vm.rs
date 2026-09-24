@@ -175,11 +175,6 @@ fn execute<'gc>(
             write_local(&mut mutator.heap, activation, *destination, value);
             Flow::Next
         }
-        Instruction::LoadBuiltinClass { destination, kind } => {
-            let value = Value::Object(mutator.builtin_class(*kind));
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
         Instruction::Move {
             destination,
             source,
