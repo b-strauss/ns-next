@@ -1703,8 +1703,21 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `class` carries a recorded `ValueClassRefusal`, without
+    /// copying it: `decide_instantiation` asks this on every instantiation
+    /// of a value class, and only the cold error path reads the refusal
+    /// itself (`class_value_refusal`).
+    pub fn class_has_value_refusal(&self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.value_class_refusal.is_some(),
+            _ => false,
+        }
+    }
+
     /// §3.1.1's enclosing-object condition on a value class, decided when
-    /// `class` was created and read here by `decide_instantiation` --
+    /// `class` was created and read here by `decide_instantiation`'s cold
+    /// error path and by `check_value_class`'s walk --
     /// `ValueClassRefusal`'s doc comment says why creation and refusal are
     /// two different moments. `None` for a class that is no value and for a
     /// value class whose enclosing objects are all values.

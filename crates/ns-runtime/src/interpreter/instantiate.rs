@@ -428,15 +428,15 @@ impl<'gc> Mutator<'gc> {
             // class and never instantiates it
             // (`docs/design/object-model.md`, "A value object's four
             // conditions"). Behind `inherits_value` so a class that is no
-            // value pays nothing beyond the flag it already carries.
-            if application.inherits_value {
-                if let Some(refusal) = self.heap.class_value_refusal(class) {
-                    return Err(Signal::Error(value_class_refusal_error(
-                        class,
-                        application,
-                        &refusal,
-                    )));
-                }
+            // value pays nothing beyond the flag it already carries, and a
+            // presence test rather than a read of the refusal, so the hot
+            // path copies nothing: only the cold error path clones it.
+            if application.inherits_value && self.heap.class_has_value_refusal(class) {
+                return Err(Signal::Error(value_class_refusal_error(
+                    &self.heap,
+                    class,
+                    application,
+                )));
             }
         }
         // Step 1: one instance, every slot nil. The application already
@@ -1294,6 +1294,8 @@ fn mutable_value_slot_error<'gc>(
 /// mutable-slot refusal. The class being instantiated and the class
 /// declaring `==` are named apart, because a subclass inherits the fault --
 /// the same rule `mutable_value_slot_error` follows for its own violation.
+#[cold]
+#[inline(never)]
 fn identity_method_error<'gc>(
     class: ClassReference<'gc>,
     application: &crate::mixin::MixinApplication,
@@ -1314,13 +1316,20 @@ fn identity_method_error<'gc>(
 /// (`interpreter::value_class::check_value_class`), and refused here rather
 /// than there (`docs/design/object-model.md`, "A value object's four
 /// conditions"). Named under the class's own primary factory, like every
-/// other instantiation refusal.
+/// other instantiation refusal. Reads the refusal off `class` itself, so
+/// `decide_instantiation`'s hot path tests only for its presence
+/// (`Heap::class_has_value_refusal`) and never copies it.
+#[cold]
+#[inline(never)]
 fn value_class_refusal_error<'gc>(
+    heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     application: &crate::mixin::MixinApplication,
-    refusal: &ValueClassRefusal,
 ) -> NewspeakError<'gc> {
     let instantiated = application.mixin.name;
+    let Some(refusal) = heap.class_value_refusal(class) else {
+        unreachable!("internal: value_class_refusal_error called for a class with no refusal");
+    };
     let message = match refusal {
         ValueClassRefusal::NonValueEnclosingObject {
             level: None,
