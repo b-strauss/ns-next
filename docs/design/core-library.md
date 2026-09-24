@@ -854,6 +854,88 @@ That measurement also found that `bench_block.ns` spreads 16% between builds
 of the same tree, which is a fact about the protocol rather than about this
 work.
 
+### Planned: the predefined classes are accessors on `Object`
+
+Designed with the user on 2026-09-24; not built yet, and the next piece of
+work ([PROGRESS.md](../PROGRESS.md), "Where the next session starts"). §3.2
+says `Object` "provides a small number of methods available to all
+classes", which "also include accessors for predefined classes and objects,
+such as the classes of the built-in literals (5.1) e.g., `String`", and the
+methods `Array` and `ByteArray`. Today a bare builtin name is no send at
+all: the resolver's "known builtin" base case records no binding, and both
+lowerings turn the name into `Instruction::LoadBuiltinClass`, a constant.
+Each decision below was taken with the user.
+
+**The accessors are exactly the names a program can reach today**:
+`Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
+`Float`, `String`, `Symbol`, `Character`, `Nil`, `Array`,
+`OrderedCollection` and `Block` — the set of `builtin_kind_from_name`.
+`Top`, the VM mirror's class and `Platform` get none. Each is an ordinary
+public method of `Kernel.ns`'s `Object`, `public String = ( ^String )`,
+whose body reaches the kernel's own nested class lexically (§5.7 finds the
+enclosing kernel declaration before `Object`'s own member). This is wider
+than both references: SOMns declares only `Object`, `Value` and `kernel` on
+its root class ("This works around restrictions by the absense of a global
+scope, we use inheritance instead", `prior-art/somns/core-lib/Kernel.ns`)
+and has modules fetch the rest from the platform, and Primordial Soup's
+`Object` declares none; §3.2's text is the authority, and every name that
+works today keeps working.
+
+**A bare name is then an implicit-receiver send.** The resolver drops its
+builtin base case in `resolve_identifier` and in `resolve_superclass_clause`,
+so a name no enclosing declaration declares binds `LexicalSend { depth: 0 }`
+— `self String` — and the receiver's inheritance chain answers it (§2.3.1:
+the lexical chain first, then the receiver's chain). A module or a class may
+therefore redefine `String` for itself, lexically or by inheritance, as the
+specification intends. A nested class's superclass clause `= Object new`
+becomes the same send, run in the clause's activation. A module root's
+clauses stay unbound and are decided by the root rule
+([object-model.md](object-model.md), "The root rule"), since §3.8 leaves a
+top-level expression no receiver. Class-side code reaches the accessors
+through the fall-through to `Object`'s methods after a metaclass miss.
+Neither lowering emits `LoadBuiltinClass` any more; a name with no binding
+— a root clause's receiver, never run, and bare `super` — lowers to the
+deferred `UnresolvedIdentifier`, so compiling stays total.
+
+**The accessor answers without an activation, as a primitive method runs
+its leaf without one** ([dispatch.md](dispatch.md), "Primitive methods").
+`MixinMethod.primitive` becomes `fast_path: Option<MethodFastPath>`, with
+`Mirror(MirrorPrimitive)` as today and `BuiltinClass(BuiltinClass)` new.
+`compiler::primitive_method` recognizes, while compiling `Kernel.ns` only,
+a body that is nothing but `^` and the name of a kernel class, and `act`
+reads the variant off the method on every send, hit or miss, and answers
+the builtin class. The inline cache still records only the method it found;
+it decides nothing, and a class that redefines the name reaches its own
+method through the ordinary lookup. What remains per use is a self send
+that hits its cache and a load, which a JIT can fold to a constant under the
+receiver-class guard. A kernel method is never carried by an image, so the
+format needs nothing for it.
+
+**`Instruction::LoadBuiltinClass` goes, and its wire tag 2 is retired**
+into `RETIRED_OPCODES` (`image/opcodes.rs`), never reused: an old artifact
+naming it hits an unknown tag instead of decoding into another program. The
+decoder's `read_program_builtin_class` stays for the class references a
+record carries.
+
+**The mirror's capability lock moves with it.** "No bare name resolves to
+it (`builtin_kind_from_name` omits it)" becomes "`Object` declares no
+accessor for the mirror's class or for `Top`", pinned by a test, and
+`CLAUDE.md`'s list of the six locks says so.
+
+**Goldens and measurement.** An outcome can change only where a program
+shadows a builtin name by inheritance: the constant won before, the
+inherited member wins now, as §2.3.1 says. The plan searches the goldens and
+the corpus for that shape and argues each hit against the specification,
+never re-recording one because the code now produces it. New goldens pin a
+module that declares its own `String`, a subclass inheriting a method
+`Array` from a user superclass, a class-side `Array`, and `self Top` and the
+mirror's class name ending in `doesNotUnderstand:`. The order is: the
+accessors and the fast path, additive; the resolver and both lowerings; the
+instruction and its tag; the documents; the stress gates, `run-corpus` and a
+release measurement against `909bf40` by the protocol with `-C metadata`
+layouts ([execution.md](execution.md), "What the value conditions cost"),
+start-up included.
+
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers
 
 Would change: `Boolean`'s conditionals, `and:`, `or:`, `Block`'s

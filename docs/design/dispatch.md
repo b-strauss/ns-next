@@ -147,6 +147,10 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
   calls, slot reads, slot writes and references to nested-class accessors. These
   are not three separate cases; per §5.7–§5.9 they are an outer-send at depth
   `k`.
+  Planned: a bare builtin class name becomes one too, `self String`, answered
+  by an accessor on `Object` (§3.2), where today it binds nothing and lowers to
+  `LoadBuiltinClass` ([core-library.md](core-library.md), "Planned: the
+  predefined classes are accessors on `Object`").
 - `SuperSend` — a `super m` send (§5.10). Not depth-based; resolved at run time
   against the current activation's `current_class`, which need not be `self`'s
   own class.

@@ -15,7 +15,15 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**The next piece of work is step 6's third plan, `Class`, `Behavior` and
+**The next piece of work is making the predefined classes accessors on
+`Object`, as §3.2 says**, designed with the user on 2026-09-24 and not yet
+planned: a bare `String` becomes the implicit-receiver send `self String`,
+answered by a `Kernel.ns` method on `Object` that a fast path answers
+without an activation, and `LoadBuiltinClass` and its wire tag are retired
+([core-library.md](design/core-library.md), "Planned: the predefined classes
+are accessors on `Object`"). The user put it ahead of the next plan.
+
+**After it comes step 6's third plan, `Class`, `Behavior` and
 `Metaclass` in `Kernel.ns`**, which has no plan yet, only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
 gives. Step 6's first two plans are done: the core library over a VM mirror,
