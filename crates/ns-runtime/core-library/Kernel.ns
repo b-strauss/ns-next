@@ -54,7 +54,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public String = ( ^outer Kernel String )
         public Symbol = ( ^outer Kernel Symbol )
         public Character = ( ^outer Kernel Character )
-        public Nil = ( ^outer Kernel Nil )
+        public UndefinedObject = ( ^outer Kernel UndefinedObject )
         public Array = ( ^outer Kernel Array )
         public OrderedCollection = ( ^outer Kernel OrderedCollection )
         public Block = ( ^outer Kernel Block )
@@ -224,7 +224,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
-    public class Nil = Value new () (
+    public class UndefinedObject = Value new () (
     )
     public class Block = Object new () (
         public value = ( ^vmMirror blockValue: self ifFail: [^super value] )

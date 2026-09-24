@@ -237,7 +237,7 @@ pub enum BuiltinClass {
     Character,
     Array,
     OrderedCollection,
-    Nil,
+    UndefinedObject,
     Block,
     Platform,
     /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
@@ -279,7 +279,7 @@ impl BuiltinClass {
         BuiltinClass::Character,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
-        BuiltinClass::Nil,
+        BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
         BuiltinClass::Platform,
         BuiltinClass::VmMirror,

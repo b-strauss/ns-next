@@ -676,7 +676,7 @@ impl<'gc> Mutator<'gc> {
                 .instances
         };
         let ids = [
-            instances(self, BuiltinClass::Nil),
+            instances(self, BuiltinClass::UndefinedObject),
             instances(self, BuiltinClass::False),
             instances(self, BuiltinClass::True),
             instances(self, BuiltinClass::Integer),
@@ -1267,7 +1267,7 @@ impl<'gc> Mutator<'gc> {
 
     fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
         let kind = match value {
-            Value::Nil => BuiltinClass::Nil,
+            Value::Nil => BuiltinClass::UndefinedObject,
             Value::Boolean(true) => BuiltinClass::True,
             Value::Boolean(false) => BuiltinClass::False,
             Value::SmallInteger(_) => BuiltinClass::Integer,

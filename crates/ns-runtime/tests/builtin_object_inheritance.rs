@@ -56,7 +56,7 @@ fn a_builtin_receiver_inherits_objects_native_class() {
 }
 
 /// `nil printString` and `(OrderedCollection new) printString`: neither
-/// `Nil` nor `OrderedCollection` implements `printString`, so both fall back
+/// `UndefinedObject` nor `OrderedCollection` implements `printString`, so both fall back
 /// to `Object`'s own generic default rather than `doesNotUnderstand:`.
 #[test]
 fn builtins_without_their_own_print_string_inherit_objects_default() {

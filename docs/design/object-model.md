@@ -300,9 +300,11 @@ kernel's.
   requires ("except for `Top` all classes are subclasses of class
   `Object`"). `Value` is below `Object`, and below `Value` are §3.1.1's value
   classes: `Boolean` with `True` and `False` (decided with the user on
-  2026-09-22, as both references declare them, so the conditionals and logic
-  are `Boolean`'s methods, inherited), `Number` with `Integer` and `Float`,
-  and `String`, `Symbol`, `Character` and `Nil`. `Number` is empty; it is the
+  2026-09-22, as both references declare them; the conditionals and logic
+  are `True`'s and `False`'s own methods, [core-library.md](core-library.md),
+  "`True` and `False` are quick methods"), `Number` with `Integer` and
+  `Float`, and `String`, `Symbol`, `Character` and `UndefinedObject` (§5.1.3
+  names `nil`'s class so). `Number` is empty; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
   `Array`, `OrderedCollection`, `Block` and `Platform` stay directly under

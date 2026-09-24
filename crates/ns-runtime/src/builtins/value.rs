@@ -57,7 +57,7 @@ use crate::{Mutator, Symbol};
 /// below 2^16, so a sum of this many stays far inside an `i64`.
 const NODE_BUDGET: usize = 4096;
 
-/// `nil`'s hash. `Nil` is a singleton below `Value`, so any constant will
+/// `nil`'s hash. `UndefinedObject` is a singleton below `Value`, so any constant will
 /// do; 0 is the one `Object`'s identity hash already answered for it.
 const NIL_HASH: i64 = 0;
 

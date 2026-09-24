@@ -37,7 +37,7 @@ Top                     (private; no superclass, declares nothing)
     │   ├── String
     │   ├── Symbol
     │   ├── Character
-    │   └── Nil
+    │   └── UndefinedObject
     ├── Array
     ├── OrderedCollection
     ├── Block
@@ -940,7 +940,7 @@ Each decision below was taken with the user.
 
 **The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
-`Float`, `String`, `Symbol`, `Character`, `Nil`, `Array`,
+`Float`, `String`, `Symbol`, `Character`, `UndefinedObject`, `Array`,
 `OrderedCollection` and `Block`. `Top`, the VM mirror's class and `Platform`
 get none: §3.2 lets only `Object` name `Top`, as its superclass; the mirror
 is a capability; and a program is handed the platform through its factory.

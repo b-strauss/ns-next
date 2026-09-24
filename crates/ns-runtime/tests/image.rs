@@ -1144,7 +1144,7 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::Character,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
-        BuiltinClass::Nil,
+        BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
         BuiltinClass::Platform,
         BuiltinClass::VmMirror,

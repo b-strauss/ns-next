@@ -300,7 +300,7 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Character), 8);
     assert_eq!(builtin_class_tag(BuiltinClass::Array), 9);
     assert_eq!(builtin_class_tag(BuiltinClass::OrderedCollection), 10);
-    assert_eq!(builtin_class_tag(BuiltinClass::Nil), 11);
+    assert_eq!(builtin_class_tag(BuiltinClass::UndefinedObject), 11);
     assert_eq!(builtin_class_tag(BuiltinClass::Block), 12);
     assert_eq!(builtin_class_tag(BuiltinClass::Platform), 13);
     assert_eq!(builtin_class_tag(BuiltinClass::VmMirror), 14);
