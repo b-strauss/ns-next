@@ -303,8 +303,8 @@ kernel's.
   2026-09-22, as both references declare them; the conditionals and logic
   are `True`'s and `False`'s own methods, [core-library.md](core-library.md),
   "`True` and `False` are quick methods"), `Number` with `Integer` and
-  `Float`, and `String`, `Symbol`, `Character` and `UndefinedObject` (§5.1.3
-  names `nil`'s class so). `Number` is empty; it is the
+  `Float`, and `String`, `Symbol` and `UndefinedObject` (§5.1.3 names
+  `nil`'s class so). `Number` is empty; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
   `Array`, `OrderedCollection`, `Block` and `Platform` stay directly under
@@ -427,7 +427,7 @@ same errors.
 - **Step 4 refuses a declared slot that is not a value.** *Deeply* immutable
   means "all objects reachable from it are also deeply immutable", so
   `InitializeSlot` refuses to store anything but a value in an instance of a
-  value class: an immediate, a `String`, a `Symbol`, a `Character`, or an
+  value class: an immediate, a `String`, a `Symbol`, or an
   instance whose class inherits `Value`. An `Array` stored there would make the
   whole value mutable through it, and two copies of the value would stop being
   equal the moment one array was written. The decision and its text live in

@@ -29,10 +29,12 @@ implicit-receiver send `self String`, answered without an activation, and
 `LoadBuiltinClass` and its wire tag are retired
 ([core-library.md](design/core-library.md), "The predefined classes are
 accessors on `Object`"; "The predefined classes as accessors on `Object`"
-below). Two more pieces put ahead of it are done too: `True` and `False`
-are Newspeak over quick methods, and `nil`'s class is §5.1.3's
-`UndefinedObject` with the nil protocol on it and on `Object` ("`True` and
-`False` in Newspeak" and "`UndefinedObject` and the nil protocol" below). Step 6's first two plans are done: the core library over a VM mirror,
+below). Three more pieces put ahead of it are done too: `True` and `False`
+are Newspeak over quick methods, `nil`'s class is §5.1.3's
+`UndefinedObject` with the nil protocol on it and on `Object`, and
+`"..."` is a string literal with no `Character` class left ("`True` and
+`False` in Newspeak", "`UndefinedObject` and the nil protocol" and
+"Double-quoted strings replace characters" below). Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
 ([core-library.md](design/core-library.md), "What exists"). Two pieces of
@@ -4011,6 +4013,28 @@ the same six the other way round, as SOMns's and Newspeak's JS kernel do
 `errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`. One
 changed, because of the new `printString`: `cache/cache_polymorphic_sites`
 prints `nil` for `nil` where it printed `an Object`.
+
+## Double-quoted strings replace characters (2026-09-25)
+
+`"..."` is a string literal, beside `'...'` (§5.1.5), and character literals
+and the `Character` class are gone, as §5.1.4 announces (decided with the
+user on 2026-09-25; [frontend.md](design/frontend.md), "Lexer"). A
+double-quoted string has no escape and ends at the next `"`, so each kind of
+string holds the other's quote freely; any single character between two
+quotes is a one-character string, `"` included, so the corpus's `"""` still
+reads as a quote and `parse-corpus` stays at 210/0/1/0. `README.md`'s
+deviations table records the difference from §5.1.4's `""""`.
+
+The `Character` class, its three mirror rows (65 remain), `Object`'s
+accessor for it and `Mutator::new_character` are gone. Its literal tag 6
+(`RETIRED_LITERALS`) and builtin class tag 8 are retired and never reused.
+`String` gained `asString`, a `^self` quick method.
+
+**Goldens.** Three changed, each by losing its character lines:
+`kernel/a_value_has_no_identity`, `kernel/value_hashes_follow_value_equality`
+and `kernel/a_subclass_of_a_builtin_falls_to_objects_methods`. New:
+`language/double_quoted_string_literals`, `errors/character_is_not_a_name`
+and `kernel/a_string_s_as_string_is_itself`.
 
 ## Notes
 

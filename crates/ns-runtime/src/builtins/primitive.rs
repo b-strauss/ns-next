@@ -200,7 +200,7 @@ const fn mirror(
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"); a row's index is its
 /// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
-/// rows 46-50, as they share their payload; each of their kernel classes
+/// rows 43-47, as they share their payload; each of their kernel classes
 /// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(

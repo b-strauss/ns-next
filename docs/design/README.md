@@ -222,6 +222,7 @@ four before trusting a program's output.
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
+| There are no character literals and no `Character` class: `"c"` is a one-character string, as the section itself announces and §5.1.5's `"σ"` form states; a double-quoted string has no escape, and a quote in one is written `"""`, not the section's `""""` | §5.1.4 | [frontend.md](frontend.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |

@@ -36,7 +36,6 @@ Top                     (private; no superclass, declares nothing)
     │   │               └── Float
     │   ├── String
     │   ├── Symbol
-    │   ├── Character
     │   └── UndefinedObject
     ├── Array
     ├── OrderedCollection
@@ -85,8 +84,7 @@ below); `Integer`'s `+ - * // < >
 <= >= =`, `negated`, `abs`, `printString` and `asString`; `Float`'s
 `+ - * / < > =`, `hash`, `printString` and `asString`; `String`'s `size`,
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
-`hash` and `printString`; `Character`'s `asInteger`, `asString` and `=`;
-`Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
+`hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
 `add:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
 `numArgs`, `whileTrue:` and `whileFalse:`; and the platform's accessors.
 `Nil` declares nothing of its own. `True` and `False` reach no leaf at all:
@@ -96,18 +94,17 @@ their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 
 The other exceptions are `hash` on `Integer` (`^self`) and `asString` on
 `String` (`^self`), both quick methods ("`True` and `False` are quick
-methods" below), and `hash` on `Character` (`^self asInteger`) and on `True`
-and `False` (`^1` and `^0`), ordinary methods: the value each answers is
+methods" below), and `hash` on `True` and `False` (`^1` and `^0`), ordinary
+methods: the value each answers is
 already at hand, and a row for it would only repeat what `Kernel.ns` can
 say. Every value class
 declares the `hash` its own `=` demands — §3.1.1 lets a value be copied
 across an actor boundary, so a copy has to hash like its original, and none
-of them may inherit `Object`'s identity hash. `String`'s, `Character`'s, `Symbol`'s and — since 2026-09-23 — `Float`'s `=`
-each require an argument of the receiver's own class: `String` and
-`Character` share an `ObjectData::String` payload, so a rule that read the
-payload alone would make `"a" = 'a'` true while the two hash apart, and
-`Float`'s widening did make `1.0 = 1` true while `1.0 hash` and `1 hash`
-differ ("What is still unchecked" below).
+of them may inherit `Object`'s identity hash. `String`'s, `Symbol`'s and —
+since 2026-09-23 — `Float`'s `=` each require an argument of the receiver's
+own class: each class hashes by its own content, so a cross-class equality
+would break the rule, as `Float`'s widening did when it made `1.0 = 1` true
+while `1.0 hash` and `1 hash` differ ("What is still unchecked" below).
 
 **A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
 makes equal symbols one object, so it agrees with `Symbol>>=` by
@@ -304,7 +301,7 @@ module a value.
   made `1.0 = 1` true while `1.0 hash` and `1 hash` differ — the one rule a
   `hash` has — and made `Float`'s own `=` disagree with the derived
   equality, which asks the classes first. Every value class's `=` is
-  class-tight now, `Float`'s like `Character`'s and `String`'s. **Only
+  class-tight now, `Float`'s like `String`'s and `Symbol`'s. **Only
   equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`
   and `>` still take an `Integer` argument and widen it losslessly
   (`builtins/numbers.rs`'s module note), so `1.5 < 2` answers; an `Integer`
@@ -314,19 +311,19 @@ module a value.
   "Gap: an integer has no `/`" below, where the tower it needs is
   recorded.
 The builtin value classes' own immutability rests on there being no mutating
-leaf for a `String`, a `Symbol` or a `Character` — their state is a Rust
+leaf for a `String` or a `Symbol` — their state is a Rust
 payload, not slots, so neither check above is about them. And the actor
 boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 68 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 65 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
 `ifFail:`; its arguments are the subject (the kernel method's `self`), the
 leaf's own arguments, and the failure block. `Array` and `OrderedCollection`
-share rows 46–50, as they share their payload.
+share rows 43–47, as they share their payload.
 
 A minimal `platform` object exposes the builtin classes, a `collections`
 namespace and a stdout stream object, enough for transcript-style output.
@@ -983,7 +980,7 @@ Each decision below was taken with the user.
 
 **The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
-`Float`, `String`, `Symbol`, `Character`, `UndefinedObject`, `Array`,
+`Float`, `String`, `Symbol`, `UndefinedObject`, `Array`,
 `OrderedCollection` and `Block`. `Top`, the VM mirror's class and `Platform`
 get none: §3.2 lets only `Object` name `Top`, as its superclass; the mirror
 is a capability; and a program is handed the platform through its factory.

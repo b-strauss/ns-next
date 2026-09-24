@@ -31,7 +31,7 @@ that lowering is mostly a transliteration rather than a translation.
 **Loads and moves**
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
-  `Nil | Boolean | SmallInteger | Float | String | Symbol | Character | Array |
+  `Nil | Boolean | SmallInteger | Float | String | Symbol | Array |
   MalformedInteger | UnresolvedIdentifier`, with integer and float text parsed at compile time rather
   than at each execution. The last two are the deferred cases; see "Compilation
   cannot fail".
