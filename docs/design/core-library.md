@@ -663,7 +663,7 @@ Newspeak on Squeak's (`prior-art/newspeak/squeak/KernelForSqueak.ns`):
 
 ```newspeak
 public ifTrue: trueBlock ifFalse: falseBlock = ( ^trueBlock value )   (* True *)
-public and: alternative = ( ^false )                                   (* False *)
+public and: block = ( ^false )                                         (* False *)
 ```
 
 No method tests its receiver and none reaches the mirror; `Boolean` itself

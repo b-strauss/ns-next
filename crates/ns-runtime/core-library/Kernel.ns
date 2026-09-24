@@ -146,9 +146,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public ifFalse: falseBlock = ( ^nil )
         public not = ( ^false )
         public & other = ( ^other )
-        public and: alternative = ( ^alternative value )
+        public and: block = ( ^block value )
         public | other = ( ^true )
-        public or: alternative = ( ^true )
+        public or: block = ( ^true )
         public printString = ( ^'true' )
     )
     public class False = Boolean new () (
@@ -158,9 +158,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public ifFalse: falseBlock = ( ^falseBlock value )
         public not = ( ^true )
         public & other = ( ^false )
-        public and: alternative = ( ^false )
+        public and: block = ( ^false )
         public | other = ( ^other )
-        public or: alternative = ( ^alternative value )
+        public or: block = ( ^block value )
         public printString = ( ^'false' )
     )
     public class Integer = Number new () (
