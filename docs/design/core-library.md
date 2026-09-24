@@ -92,7 +92,9 @@ below); `Integer`'s `+ - * // < >
 `newLine`. `Platform` holds its transcript and its `collections` namespace in
 slots, and `Collections>>List` is `^outer Kernel OrderedCollection`,
 answered without a leaf ("The platform" below).
-`Nil` declares nothing of its own. `True` and `False` reach no leaf at all:
+`UndefinedObject` reaches no leaf either: its nil protocol is quick methods
+and its `printString` an ordinary one ("The nil protocol" below). `True` and
+`False` reach no leaf at all:
 their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
 `hash` ordinary ones. `Boolean` declares nothing of its own either.

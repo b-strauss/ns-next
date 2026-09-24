@@ -29,13 +29,18 @@ implicit-receiver send `self String`, answered without an activation, and
 `LoadBuiltinClass` and its wire tag are retired
 ([core-library.md](design/core-library.md), "The predefined classes are
 accessors on `Object`"; "The predefined classes as accessors on `Object`"
-below). Four more pieces put ahead of it are done too: `True` and `False`
-are Newspeak over quick methods, `nil`'s class is §5.1.3's
-`UndefinedObject` with the nil protocol on it and on `Object`, and
-`"..."` is a string literal with no `Character` class left, and the parser
-refuses §4.1's reserved words as identifiers ("`True` and `False` in
-Newspeak", "`UndefinedObject` and the nil protocol", "Double-quoted strings
-replace characters" and "The reserved words are refused" below). Step 6's first two plans are done: the core library over a VM mirror,
+below). Six more pieces put ahead of it on 2026-09-24 and 2026-09-25 are
+done too, each described below under its own heading: `True` and `False`
+are Newspeak over quick methods ("`True` and `False` in Newspeak");
+`nil`'s class is §5.1.3's `UndefinedObject`, with the nil protocol on it and
+on `Object` ("`UndefinedObject` and the nil protocol"); `"..."` is a string
+literal and there is no `Character` class ("Double-quoted strings replace
+characters"); the parser refuses §4.1's reserved words as identifiers ("The
+reserved words are refused"); the platform declares no accessor for a
+predefined class ("The platform's class accessors are gone"); and the
+platform, its transcript and its `collections` namespace are three values
+of their own classes ("The platform, its transcript and its namespace are
+values"). Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
 ([core-library.md](design/core-library.md), "What exists"). Two pieces of
