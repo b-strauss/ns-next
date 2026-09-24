@@ -86,7 +86,8 @@ below); `Integer`'s `+ - * // < >
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
 `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
 `add:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
-`numArgs`, `whileTrue:` and `whileFalse:`; and the platform's accessors.
+`numArgs`, `whileTrue:` and `whileFalse:`; and the platform's `transcript`,
+`collections`, `List`, `show:` and `newLine`.
 `Nil` declares nothing of its own. `True` and `False` reach no leaf at all:
 their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
@@ -317,7 +318,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 65 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 60 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -325,8 +326,11 @@ selector** — the kernel selector every error text of that leaf names,
 leaf's own arguments, and the failure block. `Array` and `OrderedCollection`
 share rows 43–47, as they share their payload.
 
-A minimal `platform` object exposes the builtin classes, a `collections`
-namespace and a stdout stream object, enough for transcript-style output.
+A minimal `platform` object exposes a `collections` namespace and a stdout
+stream object, enough for transcript-style output. It declares no accessor
+for a predefined class: `platform Array` reaches `Object`'s accessor (§3.2),
+which the platform inherits like every object, so the five it once declared
+were a second way to the same answer and are gone (2026-09-25).
 
 ## The on-demand rule
 

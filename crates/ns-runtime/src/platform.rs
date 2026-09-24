@@ -1,8 +1,10 @@
 //! The minimal `platform` object: exposes the Core Library classes by name
 //! plus a `Transcript`-style stdout stream. See `docs/design/core-library.md`.
 //! The surface is widened only on demand ("The on-demand rule" there):
-//! `transcript`, a handful of class-name accessors, the `collections`
-//! namespace, and the stream's `show:`/`newLine` -- nothing else.
+//! `transcript`, the `collections` namespace, and the stream's
+//! `show:`/`newLine` -- nothing else. The predefined classes are not among
+//! them: `platform Array` reaches `Object`'s accessor, which the platform
+//! inherits like every object (§3.2).
 //!
 //! `Platform`'s methods are kernel primitive methods (`Kernel.ns`): each is
 //! a forwarder to a row of `MIRROR` with a super-send fallback,
@@ -47,24 +49,6 @@ pub fn execute<'gc>(
         }
         _ if tag != 0 => None,
         PlatformPrimitive::Transcript => Some(Ok(Value::Object(mutator.new_stream_object()))),
-        // Class accessors: some real corpus modules reach the Core Library
-        // classes directly off `platform` rather than a named sub-module --
-        // only the Core Library names are supported.
-        PlatformPrimitive::ObjectClass => Some(Ok(Value::Object(
-            mutator.builtin_class(BuiltinClass::Object),
-        ))),
-        PlatformPrimitive::ArrayClass => Some(Ok(Value::Object(
-            mutator.builtin_class(BuiltinClass::Array),
-        ))),
-        PlatformPrimitive::OrderedCollectionClass => Some(Ok(Value::Object(
-            mutator.builtin_class(BuiltinClass::OrderedCollection),
-        ))),
-        PlatformPrimitive::StringClass => Some(Ok(Value::Object(
-            mutator.builtin_class(BuiltinClass::String),
-        ))),
-        PlatformPrimitive::SymbolClass => Some(Ok(Value::Object(
-            mutator.builtin_class(BuiltinClass::Symbol),
-        ))),
         // The Core Library's `collections` namespace. Demand-driven: the
         // `run-corpus` whitelist's `Ducts.ns`, `NewspeakASTs.ns`, and
         // `V5BytecodeSimulation.ns` all open with

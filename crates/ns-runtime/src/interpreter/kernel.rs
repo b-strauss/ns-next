@@ -934,6 +934,31 @@ mod tests {
         });
     }
 
+    /// `Platform` declares no accessor for a predefined class: it inherits
+    /// `Object`'s, which answer the same classes (§3.2), so a copy of its own
+    /// would only be a second way to the same answer.
+    #[test]
+    fn the_platform_declares_no_class_accessor_of_its_own() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let platform = mutator.builtin_class(BuiltinClass::Platform);
+            let application = mutator
+                .heap()
+                .class_application(platform)
+                .expect("Platform has an application");
+            for kind in OBJECT_CLASS_ACCESSORS.iter().copied() {
+                let name = super::kernel_class_name(kind);
+                assert!(
+                    application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern(name))
+                        .is_none(),
+                    "Platform declares its own {name}"
+                );
+            }
+        });
+    }
+
     /// Every row of `QUICK_METHODS` names a method the kernel declares.
     #[test]
     fn every_quick_method_the_table_names_exists() {

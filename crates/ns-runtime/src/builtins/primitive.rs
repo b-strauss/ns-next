@@ -115,11 +115,6 @@ pub enum BlockPrimitive {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformPrimitive {
     Transcript,
-    ObjectClass,
-    ArrayClass,
-    OrderedCollectionClass,
-    StringClass,
-    SymbolClass,
     Collections,
     List,
     Show,
@@ -482,31 +477,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "platformTranscript:ifFail:",
         "transcript",
         Primitive::Platform(PlatformPrimitive::Transcript),
-    ),
-    mirror(
-        "platformObject:ifFail:",
-        "Object",
-        Primitive::Platform(PlatformPrimitive::ObjectClass),
-    ),
-    mirror(
-        "platformArray:ifFail:",
-        "Array",
-        Primitive::Platform(PlatformPrimitive::ArrayClass),
-    ),
-    mirror(
-        "platformOrderedCollection:ifFail:",
-        "OrderedCollection",
-        Primitive::Platform(PlatformPrimitive::OrderedCollectionClass),
-    ),
-    mirror(
-        "platformString:ifFail:",
-        "String",
-        Primitive::Platform(PlatformPrimitive::StringClass),
-    ),
-    mirror(
-        "platformSymbol:ifFail:",
-        "Symbol",
-        Primitive::Platform(PlatformPrimitive::SymbolClass),
     ),
     mirror(
         "platformCollections:ifFail:",

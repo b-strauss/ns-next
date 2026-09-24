@@ -261,11 +261,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
        failure block's `super` send ends in Object's doesNotUnderstand:. *)
     public class Platform = Object new () (
         public transcript = ( ^vmMirror platformTranscript: self ifFail: [^super transcript] )
-        public Object = ( ^vmMirror platformObject: self ifFail: [^super Object] )
-        public Array = ( ^vmMirror platformArray: self ifFail: [^super Array] )
-        public OrderedCollection = ( ^vmMirror platformOrderedCollection: self ifFail: [^super OrderedCollection] )
-        public String = ( ^vmMirror platformString: self ifFail: [^super String] )
-        public Symbol = ( ^vmMirror platformSymbol: self ifFail: [^super Symbol] )
         public collections = ( ^vmMirror platformCollections: self ifFail: [^super collections] )
         public List = ( ^vmMirror platformList: self ifFail: [^super List] )
         public show: text = ( ^vmMirror platform: self show: text ifFail: [^super show: text] )

@@ -4052,6 +4052,18 @@ deviation row in `README.md` is gone. Before, such programs ran, and
 named a temporary `outer` and one image test a method `outer`; both were
 renamed, with no recorded outcome moving.
 
+## The platform's class accessors are gone (2026-09-25)
+
+`Platform` no longer declares `Object`, `Array`, `OrderedCollection`,
+`String` and `Symbol`: since the predefined classes became accessors on
+`Object` (§3.2), `platform Array` answers the same class through the
+inherited one. Their five mirror rows are gone (60 remain), and the
+platform keeps `transcript`, `collections`, `List`, `show:` and `newLine`
+([core-library.md](design/core-library.md), "The on-demand rule").
+`interpreter::kernel`'s `the_platform_declares_no_class_accessor_of_its_own`
+pins the absence, and `tests/platform.rs` that all five still answer.
+Nothing recorded changed.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
