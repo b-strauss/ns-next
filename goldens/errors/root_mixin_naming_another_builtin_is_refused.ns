@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.1: an inheritance clause that does not appear within
+   an enclosing class "is evaluated as if it was a top level expression.
+   Consequently, it will almost certainly fail since no interesting classes
+   are available at top level" -- a top level expression (3.8) has no
+   enclosing object to send to. So a module's root class may inherit only
+   Object or Value, or write Object <: Value; every other root clause is a
+   defect (`docs/design/object-model.md`, "The root rule").
+
+   The refusal is deferred to instantiation: the module loads, its class
+   exists and can be inspected, and only an instance is refused -- which
+   `run` asks for first, so `main:args:` never runs. *)
+class RootMixinNamesAnotherBuiltin usingPlatform: platformAtCreation = Object <: Array () (
+    public main: platform args: arguments = (
+        platform transcript show: 'unreachable'; newLine
+    )
+) : ()

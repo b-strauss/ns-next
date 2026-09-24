@@ -15,6 +15,7 @@ pub(crate) mod resolve;
 mod safepoint;
 pub(crate) mod sends;
 mod slots;
+pub(crate) mod value_class;
 
 use std::rc::Rc;
 
@@ -1484,23 +1485,71 @@ impl<'gc> Mutator<'gc> {
         // and the two predicates must agree: while this one said `false`,
         // `Value new = Value new` answered `true` and `Box v: Value new` was
         // refused as if the instance were no value.
-        let inherits_value = self
+        let is_value_mixin = self
             .value_mixin
             .as_ref()
-            .is_some_and(|value_mixin| Rc::ptr_eq(value_mixin, mixin))
-            || superclass.is_some_and(|application| application.inherits_value);
-        let mutable_value_slot = superclass
-            .and_then(|application| application.mutable_value_slot)
+            .is_some_and(|value_mixin| Rc::ptr_eq(value_mixin, mixin));
+        let inherits_value =
+            is_value_mixin || superclass.is_some_and(|application| application.inherits_value);
+        // The first mutable slot anywhere in the chain, superclass levels
+        // first, recorded whether or not the chain inherits `Value`: a `<:`
+        // clause can put `Value`'s level below an arbitrary class (§6.2), so
+        // a class above that level can bring a mutable slot into a value's
+        // instances even though it is declared nowhere below `Value`. Only
+        // `instantiation_refusal`, below, asks whether the chain inherits
+        // `Value` -- a mixin applied over a superclass that is no value
+        // keeps its mutable slots legally, and this field alone cannot tell
+        // the two cases apart.
+        let first_mutable_slot = superclass
+            .and_then(|application| application.first_mutable_slot)
             .or_else(|| {
-                if !inherits_value {
-                    return None;
-                }
                 mixin.slots.iter().find(|slot| slot.mutable).map(|slot| {
                     crate::mixin::MutableValueSlot {
                         class: mixin.name,
                         slot: slot.name,
                     }
                 })
+            });
+        // A root clause defect refuses every instance of the root and of
+        // anything built on it, so it comes first: a root whose chain is
+        // wrong has no layout worth checking. The mutable slot comes next,
+        // behind `inherits_value` since a mixin applied over a superclass
+        // that is no value keeps its mutable slots legally. §3.1.1's third
+        // condition on a value class comes last, for the same reason and
+        // behind the same guard -- the first level below `Value` -- `Value`'s
+        // own excluded, since its next sentence allows that one, and every
+        // level above `Value` too, whose `==` `Value` overrides -- whose
+        // mixin declares an instance-side `==`
+        // (`InstantiationRefusal::IdentityMethod`). Every verdict is
+        // inherited the same way, through the superclass's own
+        // `instantiation_refusal`: this makes the identity-method condition
+        // a property of the *application* rather than of any class object
+        // built from it, so `Mutator::load_root_class`, which applies a
+        // module's root mixin through this same function but builds no
+        // class object through `nested::after_clause`, is covered without a
+        // check of its own -- unlike the enclosing-object condition, which
+        // stays decided per class object
+        // (`interpreter::value_class::check_value_class`,
+        // `docs/design/object-model.md`, "A value object's four
+        // conditions").
+        let instantiation_refusal = mixin
+            .root_clause_defect
+            .clone()
+            .map(crate::mixin::InstantiationRefusal::RootClause)
+            .or_else(|| {
+                superclass.and_then(|application| application.instantiation_refusal.clone())
+            })
+            .or_else(|| {
+                first_mutable_slot
+                    .filter(|_| inherits_value)
+                    .map(crate::mixin::InstantiationRefusal::MutableValueSlot)
+            })
+            .or_else(|| {
+                (inherits_value
+                    && !is_value_mixin
+                    && mixin.compiled_method(Symbol::IDENTICAL).is_some())
+                .then_some(mixin.name)
+                .map(|declaring| crate::mixin::InstantiationRefusal::IdentityMethod { declaring })
             });
         // The declared slots, in field order, computed here for the same
         // reason `nested_slot` is: nothing about an application changes
@@ -1515,7 +1564,8 @@ impl<'gc> Mutator<'gc> {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
             inherits_value,
-            mutable_value_slot,
+            first_mutable_slot,
+            instantiation_refusal,
             slot_count: next,
             nested_slot,
             declared_slots,

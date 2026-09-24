@@ -100,25 +100,33 @@ impl Resolver {
         .chain(enclosing.iter().copied())
         .collect();
 
-        // The superclass clause's receiver (e.g. `Object` in `Object new`)
-        // is evaluated "as if it occurred inside an instance method of the
-        // enclosing class" (`newspeak-spec.pdf` §6.1; `docs/design/dispatch.md`,
-        // "Binding variants") -- so it is resolved against the
-        // chain of classes *enclosing* this declaration, not against this
-        // class's own not-yet-existing member set.
-        if let Some(clause) = &declaration.superclass {
-            self.resolve_superclass_clause(clause, enclosing);
-        }
-        // §6.2 builds a mixin application out of §6.1's very `inheritanceClause`
-        // production -- "followed by the mixin application operator `<:`,
-        // followed by an inheritance clause" -- so each `<:` clause's receiver
-        // is evaluated under the same rule as the superclass clause's, in the
-        // same enclosing scope. That is why `resolve_superclass_clause` is
-        // called for them rather than a second copy of the rule being written
-        // here. Their deferred *message* arguments are resolved below, beside
-        // the superclass clause's, for the same reason.
-        for clause in &declaration.mixin_applications {
-            self.resolve_superclass_clause(clause, enclosing);
+        // A module root's clauses are decided by the root rule, deferred to
+        // instantiation (`interpreter::instantiate::root_clause_defect`), so
+        // they bind nothing here: a receiver with no binding lowers to
+        // `LoadBuiltinClass` or a deferred `UnresolvedIdentifier`, and a
+        // root's clause receiver is never run. Refusing `Missing` here while
+        // `Array` ran was one rule on two paths.
+        if !enclosing.is_empty() {
+            // The superclass clause's receiver (e.g. `Object` in `Object new`)
+            // is evaluated "as if it occurred inside an instance method of the
+            // enclosing class" (`newspeak-spec.pdf` §6.1; `docs/design/dispatch.md`,
+            // "Binding variants") -- so it is resolved against the
+            // chain of classes *enclosing* this declaration, not against this
+            // class's own not-yet-existing member set.
+            if let Some(clause) = &declaration.superclass {
+                self.resolve_superclass_clause(clause, enclosing);
+            }
+            // §6.2 builds a mixin application out of §6.1's very `inheritanceClause`
+            // production -- "followed by the mixin application operator `<:`,
+            // followed by an inheritance clause" -- so each `<:` clause's receiver
+            // is evaluated under the same rule as the superclass clause's, in the
+            // same enclosing scope. That is why `resolve_superclass_clause` is
+            // called for them rather than a second copy of the rule being written
+            // here. Their deferred *message* arguments are resolved below, beside
+            // the superclass clause's, for the same reason.
+            for clause in &declaration.mixin_applications {
+                self.resolve_superclass_clause(clause, enclosing);
+            }
         }
 
         for method in &declaration.instance_side.methods {

@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before
+'''
+stderr = '''
+Uncaught Newspeak error: cannot instantiate Stamped: a value class's enclosing objects must be values, and Counter's enclosing object, an instance of Holder, is not one
+'''

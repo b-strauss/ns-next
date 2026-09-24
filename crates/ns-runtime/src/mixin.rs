@@ -470,6 +470,13 @@ pub struct Mixin {
     /// The arguments of the clause's factory message, run on every
     /// instantiation (§6.2). `None` when the message takes none.
     pub superclass_message_code: Option<Rc<CompiledCode>>,
+    /// Why this mixin, as a module's root, can never be instantiated (the
+    /// root rule, `interpreter::instantiate::root_clause_defect`). Only a
+    /// module's root mixin built from source carries one; a decoded mixin
+    /// never does, because the decoder refuses a defective root section and
+    /// the encoder never writes one. `Mutator::apply_mixin` turns it into
+    /// `InstantiationRefusal::RootClause` on the application.
+    pub root_clause_defect: Option<RootClauseDefect>,
 }
 
 impl Mixin {
@@ -495,6 +502,7 @@ impl Mixin {
             initializer_code: None,
             superclass_clause_code: None,
             superclass_message_code: None,
+            root_clause_defect: None,
         }
     }
 
@@ -509,15 +517,73 @@ impl Mixin {
     }
 }
 
-/// A mutable slot declared by a class that inherits `Value`, which §3.1.1
-/// forbids: a value object is deeply immutable, so an instance of such a
-/// class could never be one. Both names are recorded because the class that
-/// declares the slot need not be the class being instantiated -- the
-/// refusal has to say which level is at fault.
+/// A mutable slot and the class that declares it, recorded wherever such a
+/// slot exists anywhere in an application's chain -- whether or not that
+/// chain inherits `Value`, since a `<:` clause can put `Value`'s level below
+/// the declaring class (`MixinApplication::first_mutable_slot`). It becomes
+/// a refusal, §3.1.1's "a value object is deeply immutable", only where the
+/// chain does inherit `Value`: a mutable slot is otherwise ordinary and
+/// legal. Both names are recorded because the class that declares the slot
+/// need not be the class being instantiated -- the refusal has to say which
+/// level is at fault.
 #[derive(Debug, Clone, Copy)]
 pub struct MutableValueSlot {
     pub class: Symbol,
     pub slot: Symbol,
+}
+
+/// Why a module's root class can never be instantiated (§6.1, §3.8): its
+/// clauses name something other than `Object`, `Value` or `Object <: Value`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootClauseDefect {
+    /// The superclass clause, as written without its message, when it is
+    /// prefixed or names anything but `Object` or `Value`.
+    Superclass { clause: String },
+    /// A `<:` clause other than one unprefixed `Value`; `index` is 0-based.
+    MixinApplication { index: usize, clause: String },
+    /// `Value <: Value`: the one `<:` clause is right, the superclass is not.
+    ValueOverValue,
+}
+
+impl RootClauseDefect {
+    /// The tail both the instantiation refusal and the encoder print.
+    pub fn describe(&self) -> String {
+        let rule =
+            "a module's root class may inherit only Object or Value, or write Object <: Value";
+        match self {
+            RootClauseDefect::Superclass { clause } => {
+                format!("{rule}, and its superclass clause names {clause}")
+            }
+            RootClauseDefect::MixinApplication { index, clause } => {
+                format!(
+                    "{rule}, and its mixin application clause {} names {clause}",
+                    index + 1
+                )
+            }
+            RootClauseDefect::ValueOverValue => format!("{rule}, and it applies Value to Value"),
+        }
+    }
+}
+
+/// What `decide_instantiation` refuses before it allocates anything.
+#[derive(Debug, Clone)]
+pub enum InstantiationRefusal {
+    RootClause(RootClauseDefect),
+    MutableValueSlot(MutableValueSlot),
+    /// §3.1.1: a value's class "does not define an identity method (==)".
+    /// `declaring` is the first level below `Value` whose mixin declares an
+    /// instance-side `==`. Two kinds of level are never asked: `Value`'s own,
+    /// whose `==` the specification's next sentence allows, and every level
+    /// above `Value`, since `Value`'s `==` overrides whatever they declare. Computed once per application by
+    /// `Mutator::apply_mixin`, the same place `MutableValueSlot` is: this is
+    /// a property of the application, not of any class object built from
+    /// it, so a module's root -- which `apply_mixin` builds an application
+    /// for like any other, but which no class-object-creation hook such as
+    /// `nested::after_clause` ever runs for -- is covered without a check
+    /// of its own.
+    IdentityMethod {
+        declaring: Symbol,
+    },
 }
 
 #[derive(Debug)]
@@ -531,13 +597,32 @@ pub struct MixinApplication {
     /// same mixin applied over a superclass that is no value is no value
     /// either.
     ///
-    /// `Value`'s own application answers `false`: it inherits nothing, and
-    /// `Kernel.ns` gives it no slots for the rule below to be about.
+    /// `Value`'s own application answers `true` (`Mutator::apply_mixin`'s
+    /// `is_value_mixin`; `interpreter::kernel` pins it): §3.2's "subclass of"
+    /// is inclusive, so `Value new` is a value. The enclosing-objects walk
+    /// (`interpreter::value_class::check_value_class`) relies on it: it stops
+    /// early at a class that inherits `Value` and was created as a class of
+    /// its own, and `Value` itself is where that stop happens for every
+    /// class declared as `Value new`. `Kernel.ns` gives `Value` no slots, so
+    /// the rule below finds nothing at its level.
     pub inherits_value: bool,
-    /// The first mutable slot anywhere in this application's chain below
-    /// `Value`, if any: the refusal `interpreter::instantiate` raises when
-    /// something asks for an instance.
-    pub mutable_value_slot: Option<MutableValueSlot>,
+    /// The first mutable slot anywhere in this application's chain, whether
+    /// or not the chain inherits `Value`: a `<:` clause can put `Value`'s
+    /// level below a class that declares one, and the instances of every
+    /// class built on that level carry the slot. `instantiation_refusal`
+    /// turns it into a refusal only where the chain inherits `Value`, so a
+    /// class with no value in its chain keeps its mutable slots legally.
+    pub first_mutable_slot: Option<MutableValueSlot>,
+    /// What `interpreter::instantiate` refuses before allocating an
+    /// instance, computed once per application by `Mutator::apply_mixin`:
+    /// a root clause defect (on this level or inherited), `first_mutable_slot`
+    /// when the chain inherits `Value`, or -- also only then -- the first
+    /// level below `Value` that declares an instance-side `==`
+    /// (`InstantiationRefusal::IdentityMethod`'s own doc comment says which
+    /// levels count). One field, so the instantiation path tests one
+    /// `Option` for all three, and every one of them is inherited through
+    /// the superclass's own `instantiation_refusal` the same way.
+    pub instantiation_refusal: Option<InstantiationRefusal>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached
     /// nested class object; accessing it is a slot read rather than a

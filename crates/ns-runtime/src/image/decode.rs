@@ -195,6 +195,12 @@ pub enum DecodeError {
     /// (`interpreter::nested::superclass_clause_expression`), so such a row
     /// describes a declaration no source has and whose levels nothing builds.
     MixinApplicationWithoutSuperclass,
+    /// The root-class section names no superclass for the module's root
+    /// class. The root rule builds every root over `Object` or `Value`
+    /// (`interpreter::instantiate::root_clause_defect`), so the encoder never
+    /// writes one without, and a root with none would be a class outside
+    /// §3.2's hierarchy, below neither `Object` nor `Top`.
+    RootWithoutSuperclass,
     /// A `CLASS_ROOT_LEVEL` class tag names a position past the levels the
     /// root-class section rebuilt.
     BadRootLevel(u32),
@@ -421,6 +427,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MixinApplicationWithoutSuperclass => write!(
                 f,
                 "a mixin-table row applies mixins but declares no superclass clause to apply them to"
+            ),
+            DecodeError::RootWithoutSuperclass => write!(
+                f,
+                "the image's root class inherits from nothing, but a module's root class must inherit Object or Value"
             ),
             DecodeError::BadRootLevel(position) => write!(
                 f,
@@ -2247,7 +2257,7 @@ pub fn build_root_class<'gc>(
     section: &RootSection,
 ) -> Result<(ClassReference<'gc>, Vec<ClassReference<'gc>>), DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
-    let superclass = section.superclass.map(|kind| mutator.builtin_class(kind));
+    let superclass = Some(mutator.builtin_class(section.superclass));
     let applied: Vec<(usize, Value<'gc>)> = section
         .levels
         .iter()
@@ -2272,17 +2282,19 @@ pub fn build_root_class<'gc>(
     Ok((root_class, levels))
 }
 
-/// The root-class section as read: the builtin the root class inherits from,
-/// if any, and the root's levels, lowest first, each as the position of the
-/// `<:` clause in row 0 that added it and the builtin that clause named.
-#[derive(Debug, Default, PartialEq)]
+/// The root-class section as read: the builtin the root class inherits from
+/// -- `Object` or `Value`, the only two the root rule allows -- and the
+/// root's levels, lowest first, each as the position of the `<:` clause in
+/// row 0 that added it and the builtin that clause named.
+#[derive(Debug, PartialEq)]
 pub struct RootSection {
-    pub superclass: Option<BuiltinClass>,
+    pub superclass: BuiltinClass,
     pub levels: Vec<(u32, BuiltinClass)>,
 }
 
 /// The root-class section: the class the module's root class inherits from,
-/// as an optional builtin tag, then the levels its `<:` clauses add. The
+/// as a builtin tag behind a presence flag, then the levels its `<:` clauses
+/// add. The
 /// inverse of `encode::encode_root_class`, which explains why the format
 /// admits only builtins here.
 ///
@@ -2291,15 +2303,26 @@ pub struct RootSection {
 /// no clause adds two. That bounds the count by row 0's clause count before
 /// anything is reserved for it. Resolving no tag against a live interpreter,
 /// this serves `inspect` as well as `load`.
+///
+/// The reader refuses what the root rule forbids
+/// (`interpreter::instantiate::root_clause_defect`) -- a missing superclass,
+/// a superclass other than `Object` or `Value`, a level naming anything but
+/// `Value`, a second level, a level over anything but `Object` -- so a
+/// crafted artifact cannot bring back a root the encoder would refuse.
 pub fn decode_root_section(
     reader: &mut Reader,
     mixins: &mixins::Decoded,
 ) -> Result<RootSection, DecodeError> {
-    let superclass = if reader.read_boolean()? {
-        Some(read_program_builtin_class(reader)?)
-    } else {
-        None
-    };
+    if !reader.read_boolean()? {
+        return Err(DecodeError::RootWithoutSuperclass);
+    }
+    let superclass = read_program_builtin_class(reader)?;
+    if !matches!(superclass, BuiltinClass::Object | BuiltinClass::Value) {
+        return Err(DecodeError::InvalidTag {
+            what: "builtin class a module's root may inherit",
+            tag: super::encode::builtin_class_tag(superclass),
+        });
+    }
     let clause_count = mixins
         .root()
         .map_or(0, |root| root.mixin_applications.len());
@@ -2308,11 +2331,22 @@ pub fn decode_root_section(
     let mut next_allowed: u32 = 0;
     for _ in 0..count {
         let index = reader.read_u32()?;
-        if index < next_allowed || index as usize >= clause_count {
+        if index < next_allowed
+            || index as usize >= clause_count
+            || !levels.is_empty()
+            || superclass != BuiltinClass::Object
+        {
             return Err(DecodeError::BadMixinApplicationClause { row: 0, index });
         }
         next_allowed = index + 1;
-        levels.push((index, read_program_builtin_class(reader)?));
+        let kind = read_program_builtin_class(reader)?;
+        if kind != BuiltinClass::Value {
+            return Err(DecodeError::InvalidTag {
+                what: "builtin class a module's root may apply",
+                tag: super::encode::builtin_class_tag(kind),
+            });
+        }
+        levels.push((index, kind));
     }
     Ok(RootSection { superclass, levels })
 }
@@ -2382,6 +2416,21 @@ fn rebuild_applications<'gc>(
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
     let mut chain: Vec<usize> = Vec::new();
+    // Recorded in the order each class's application is installed --
+    // superclass first, by construction of the loop below -- and replayed
+    // by the second pass afterward. §3.1.1's enclosing-object condition
+    // reads a level's *enclosing* class's application too
+    // (`is_a_value`, `Heap::describe`), which is a different axis than the
+    // superclass chain this loop orders: an enclosing class can be any
+    // other pending record, done or not, at the point a superclass chain
+    // reaches it. Recomputing a refusal inside this loop, right after its
+    // own application installs, read a not-yet-installed enclosing class's
+    // placeholder application instead of its real one -- answering `Object`
+    // as its name and, had its real answer to `inherits_value` differed
+    // from the placeholder's `false`, potentially the wrong verdict, not
+    // only the wrong text. Running the recompute only once every class in
+    // `pending` already carries its real application avoids both.
+    let mut installed_order: Vec<usize> = Vec::with_capacity(pending.len());
     for start in 0..pending.len() {
         if done[start] {
             continue;
@@ -2413,7 +2462,8 @@ fn rebuild_applications<'gc>(
         for &pending_index in chain.iter().rev() {
             let object = &objects[pending[pending_index].object];
             let mixin = &pending[pending_index].mixin;
-            let super_application = if metaclass_rows.contains(&crate::mixin::mixin_key(mixin)) {
+            let is_metaclass = metaclass_rows.contains(&crate::mixin::mixin_key(mixin));
+            let super_application = if is_metaclass {
                 None
             } else {
                 match context.mutator.heap.class_superclass(*object) {
@@ -2430,17 +2480,69 @@ fn rebuild_applications<'gc>(
             let application = context
                 .mutator
                 .apply_mixin(&pending[pending_index].mixin, super_application.as_ref());
+            let object = *object;
             if !context
                 .mutator
                 .heap
-                .install_class_application(*object, application)
+                .install_class_application(object, application)
             {
                 unreachable!("this object was filled in as a class record");
             }
+            installed_order.push(pending_index);
             done[pending_index] = true;
             on_chain[pending_index] = false;
         }
         chain.clear();
+    }
+    // §3.1.1's enclosing-object condition is decided when the class object
+    // is created (`interpreter::value_class`), never reconstructed from the
+    // wire -- a decoded record starts with no verdict (`ClassData::new`
+    // defaults `None`). A legitimate snapshot can hold a class that was
+    // created carrying one (or one built of decoded pieces would carry,
+    // `Counter`-over-`Holder`-style), so it is recomputed here, exactly as
+    // `after_clause` decides it for a class created from source -- never for
+    // a metaclass or an applied level, neither of which `after_clause`
+    // checks either, and only when the application inherits `Value`,
+    // matching its own guard. A class with no lexical enclosing -- a module
+    // root, a builtin -- never reaches `after_clause` and is skipped the
+    // same way here. The identity-method condition needs no recompute of
+    // its own: it is a property of the application, already folded into
+    // `instantiation_refusal` by the `apply_mixin` call in the loop above,
+    // for a root's application exactly as for any other's.
+    //
+    // A second pass, not folded into the loop above: `installed_order`'s
+    // own doc comment says why every application has to be real first.
+    // Still superclass first, since that is the order `installed_order`
+    // was recorded in.
+    for pending_index in installed_order {
+        let object = objects[pending[pending_index].object];
+        if metaclass_rows.contains(&crate::mixin::mixin_key(&pending[pending_index].mixin)) {
+            continue;
+        }
+        let application = context
+            .mutator
+            .heap
+            .class_application(object)
+            .expect("every pending class was installed above");
+        if !application.inherits_value || context.mutator.heap.class_is_applied_level(object) {
+            continue;
+        }
+        let (Some(enclosing), Some(superclass_class)) = (
+            context.mutator.heap.class_enclosing(object),
+            context.mutator.heap.class_superclass(object),
+        ) else {
+            continue;
+        };
+        if let Some(refusal) = crate::interpreter::value_class::check_value_class(
+            context.mutator,
+            enclosing,
+            superclass_class,
+        ) {
+            context
+                .mutator
+                .heap
+                .set_class_value_refusal(object, refusal);
+        }
     }
     Ok(())
 }

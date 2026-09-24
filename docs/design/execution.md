@@ -1064,7 +1064,13 @@ since shown a **16% spread between builds of the same tree** with the pin in
 place, stable to about 1% within each build, so on that source one build per
 commit measures the build rather than the commit; pool several builds of each
 tree instead ("What `Top`, `Value` and `Number` cost" below, which found it).
-The other seven sources stay within 0.3–2.3% between builds.
+The other seven sources stay within 0.3–2.3% between builds. Pooling several
+plain builds varies nothing when the builds are byte-identical, as they are
+on the machine these measurements ran on ("What the value conditions cost"
+below): build the extra ones with `-C metadata=<word>` added to `RUSTFLAGS`.
+That varies code layout only. The runtime's data layout (which symbol ids,
+arena indices and dispatch ids a program's objects receive) is not varied by
+it, so a difference that follows from data layout survives every such pool.
 
 Medians in ms from the first sitting, each group's mean, and the change of
 the mean in both sittings:
@@ -3095,7 +3101,7 @@ the check returns on its first test. The other two candidates on that path are
 the `Ok`/`Err` match the `InitializeSlot` arm now carries, which is new
 control flow inside `vm::run` where there was a straight store, and
 `MixinApplication` having grown two fields (`inherits_value` and
-`mutable_value_slot`), which `instantiate_class` reads once per instantiation
+the first mutable slot), which `decide_instantiation` reads once per instantiation
 for §3.1.1's first condition. Neither was profiled, and nothing was bisected
 between them. **What would recover it**: deciding the check once per
 activation instead of once per store. The application already knows
@@ -3192,6 +3198,229 @@ instantiating sources by −1.8% (`bench_newarg.ns`) to +0.6%
 (`bench_nested.ns`), the same direction and much of the size. It is unproven,
 though -- one sitting, two builds -- and the one added test per level, per
 descent and per nested-class creation is work that remains alongside it.
+
+### What the value conditions cost
+
+Enforcing §3.1.1's four conditions on a value
+([object-model.md](object-model.md), "A value object's four conditions")
+decides them where a class or an application comes into being and refuses them
+at instantiation. Neither `vm.rs`, `act`, the inline caches nor the compiled
+code of a send changed. What a release build runs that it did not run before:
+
+- `nested::after_clause` tests `application.inherits_value` once per class
+  object created, and only a class that inherits `Value` runs
+  `value_class::check_value_class`.
+- `Mutator::apply_mixin` folds the root clause defect, the mutable slot and the
+  identity method into one `MixinApplication::instantiation_refusal`, once per
+  application. `decide_instantiation` already tested that `Option`, where it
+  had tested `mutable_value_slot`.
+- `decide_instantiation` tests whether `ClassData::value_class_refusal`, a new
+  field of the boxed class data, holds a refusal
+  (`Heap::class_has_value_refusal`), once per instantiation. It does so only
+  for a class whose application inherits `Value`, and reads the refusal
+  itself only on the cold error path (`value_class_refusal_error`).
+- The kernel is `Object <: Value`, so bootstrap builds one applied level for
+  it.
+- The image decoder has a second pass that recomputes each decoded class
+  object's verdict. No source below loads an image.
+
+**The expectation, recorded before any binary was built.** Level on every
+source. The one new test on a path the loops run is the `inherits_value` test
+on the value-class read in `decide_instantiation`, and only the instantiating
+sources reach it. Start-up is level too: one applied level is small beside the
+kernel's compilation.
+
+**Measured 2026-09-24, `d773380` against `cdc0257`**, the merge of mixin
+application and this branch's start, by the protocol of "What removing the
+re-entries moved" above. Every binary was built with the pinned flags. None
+imports `VCRUNTIME140.dll` (`dumpbin -dependents`), and each was checked to
+print the expected answer for every source first. The timing is
+`ns-next bench <source> --iterations 30`, five rounds a sitting, the six
+binaries rotating by one position from round to round. The sources are the four
+fixtures under `goldens/bench/` and the throwaway `bench_do.ns`,
+`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` of that protocol, and one
+more throwaway source, `bench_newvalue.ns`. Its module is `Object <: Value`, and
+its loop makes 20,000 instantiations of `class Cell = Value new ( | public v =
+1. | )`, each followed by `v`. It is the one source that reads the new field.
+
+**Three builds of one tree are one binary.** Building a tree three times
+(separate target directories, or separate checkouts at paths of different
+lengths) gave executables that differ in 20 to 24 bytes: the link timestamp
+and the debug-information identifier. Their code and data are byte for byte
+the same. The first three sittings timed three such copies of each tree, and
+each tree's copies agreed to within 0.3–0.5% on `bench_block.ns`. The 16%
+spread that "What `Top`, `Value` and `Number` cost" found between builds of one
+tree did not appear. For builds that actually differ in layout, the protocol
+used here builds each tree three ways: unperturbed, and twice with an extra
+`-C metadata=<word>` in `RUSTFLAGS` (`layoutprobe` and `secondprobe`). The
+extra metadata changes every symbol hash, and with it the link order. About
+1.85 MB of the 2.4 MB binary differs between them. The tables below are three
+more sittings over those six binaries: `base`, `base-p` and `base-q` from
+`cdc0257`, and `head`, `head-p` and `head-q` from `d773380`.
+
+**`vm::run`'s step is still one function.** A release build with debug
+information of each tree has one function label matching `vm::run` in each,
+and no `vm::run::closure` of its own. The base has **6,508 instructions**,
+the head 6,507. `decide_instantiation` grew from 441 to 503 instructions and
+`after_clause` from 231 to 433. The new refusal errors
+(`instantiation_refusal_error`, `value_class_refusal_error`) are out of line.
+Until the review's fix (below), `decide_instantiation` cloned the class's
+`Option<ValueClassRefusal>` to test it, and `value_class_refusal_error` was
+inlined into it; since `7b2af64` it is **371 instructions**, below the base's
+441.
+
+Means in ms per build, over each sitting's five rounds; sittings 4, 5 and 6:
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.13 | 7.04 | 7.05 | 7.07 | 7.04 | 7.01 |
+| `bench_send.ns` | 8.29 | 8.53 | 8.32 | 8.36 | 8.31 | 8.64 |
+| `bench_block.ns` | 18.66 | 18.60 | 18.45 | 19.58 | 19.33 | 19.28 |
+| `bench_megamorphic.ns` | 11.45 | 11.51 | 11.44 | 11.45 | 11.49 | 11.47 |
+| `bench_do.ns` | 5.69 | 5.71 | 5.70 | 5.67 | 5.75 | 5.72 |
+| `bench_new.ns` | 4.20 | 4.18 | 4.21 | 4.30 | 4.26 | 4.27 |
+| `bench_new2.ns` | 5.23 | 5.23 | 5.29 | 5.26 | 5.22 | 5.24 |
+| `bench_newarg.ns` | 7.19 | 7.16 | 7.14 | 7.10 | 7.11 | 7.16 |
+| `bench_newvalue.ns` | 3.80 | 3.81 | 3.81 | 3.71 | 3.67 | 3.67 |
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.04 | 7.01 | 7.01 | 7.06 | 7.11 | 7.09 |
+| `bench_send.ns` | 8.35 | 8.37 | 8.29 | 8.36 | 8.56 | 8.31 |
+| `bench_block.ns` | 18.51 | 18.39 | 18.53 | 19.31 | 19.34 | 19.36 |
+| `bench_megamorphic.ns` | 11.44 | 11.47 | 11.48 | 11.50 | 11.48 | 11.54 |
+| `bench_do.ns` | 5.68 | 5.74 | 5.71 | 5.70 | 5.69 | 5.69 |
+| `bench_new.ns` | 4.18 | 4.21 | 4.21 | 4.30 | 4.31 | 4.30 |
+| `bench_new2.ns` | 5.21 | 5.22 | 5.28 | 5.27 | 5.22 | 5.33 |
+| `bench_newarg.ns` | 7.17 | 7.18 | 7.14 | 7.13 | 7.15 | 7.09 |
+| `bench_newvalue.ns` | 3.81 | 3.80 | 3.80 | 3.66 | 3.71 | 3.66 |
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.02 | 7.02 | 7.07 | 7.00 | 7.06 | 6.99 |
+| `bench_send.ns` | 8.34 | 8.35 | 8.28 | 8.41 | 8.32 | 8.31 |
+| `bench_block.ns` | 18.55 | 18.55 | 18.71 | 19.39 | 19.45 | 19.34 |
+| `bench_megamorphic.ns` | 11.49 | 11.42 | 11.50 | 11.45 | 11.42 | 11.44 |
+| `bench_do.ns` | 5.68 | 5.74 | 5.70 | 5.68 | 5.69 | 5.68 |
+| `bench_new.ns` | 4.17 | 4.16 | 4.19 | 4.30 | 4.25 | 4.28 |
+| `bench_new2.ns` | 5.23 | 5.21 | 5.26 | 5.25 | 5.20 | 5.36 |
+| `bench_newarg.ns` | 7.19 | 7.18 | 7.14 | 7.16 | 7.16 | 7.07 |
+| `bench_newvalue.ns` | 3.82 | 3.78 | 3.80 | 3.67 | 3.69 | 3.66 |
+
+The three sittings pooled, the base's three layouts against the head's three,
+and, in the last column, the first three sittings' three identical copies of
+each tree, pooled the same way:
+
+| Source | `cdc0257` | `d773380` | Change, pooled | Sitting 4 / 5 / 6 | Sittings 1–3, identical copies |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.04 | 7.05 | +0.1% | −0.4% / +1.0% / −0.3% | +0.0% |
+| `bench_send.ns` | 8.35 | 8.40 | +0.6% | +0.7% / +0.9% / +0.3% | −0.1% |
+| `bench_block.ns` | 18.55 | **19.38** | **+4.5%** | +4.5% / +4.7% / +4.3% | +3.3% |
+| `bench_megamorphic.ns` | 11.47 | 11.47 | +0.0% | +0.0% / +0.4% / −0.3% | +0.4% |
+| `bench_do.ns` | 5.71 | 5.70 | −0.2% | +0.2% / −0.3% / −0.4% | −0.5% |
+| `bench_new.ns` | 4.19 | **4.28** | **+2.2%** | +1.9% / +2.4% / +2.4% | +2.7% |
+| `bench_new2.ns` | 5.24 | 5.26 | +0.4% | −0.2% / +0.8% / +0.7% | +0.4% |
+| `bench_newarg.ns` | 7.17 | 7.12 | −0.6% | −0.6% / −0.6% / −0.5% | −0.7% |
+| `bench_newvalue.ns` | 3.80 | 3.68 | −3.3% | −3.2% / −3.2% / −3.4% | −2.7% |
+
+**Six of the nine are level**: −0.6% to +0.6%, the groups overlapping.
+`bench_newvalue.ns`, the one source that reads the new field, is 3.3%
+*faster*, every head layout below every base layout in every sitting. Nothing
+on its path got cheaper, so the change does not explain it.
+
+**Open finding: `bench_block.ns` is 4.5% slower and `bench_new.ns` 2.2%
+slower**, and both are real by this protocol's criterion. Every head layout
+lies above every base layout in all three sittings, and the three identical
+copies in the first three sittings show the same (+3.3% and +2.7%). Neither
+source falls inside build noise. The spread between one tree's three layouts
+is 0.3–0.6% on each, and `bench_block.ns` did not show its 16% build spread in
+any of the twelve binaries. The expectation said level, and it did not hold
+for these two. Re-measured after the review's fix (below), `bench_new.ns`'s
+gap did not reproduce, before the fix or after it, and `bench_block.ns`'s
+did.
+
+The causes are not isolated. `bench_block.ns` creates no class and
+instantiates nothing in its loop. It makes lexical sends of its slots and
+`bump:`, public sends of `<`, `+` and `value:`, and one block creation per
+iteration, and `vm::run` is the same size in both trees. What the head changed
+that such a loop can reach is data, not code on its path: the kernel instance
+is now a value whose class has one applied level more, which is the enclosing
+object of every builtin class, `Block` and `Integer` included, and every class
+object's `ClassData` grew by `value_class_refusal`. `bench_new.ns` instantiates
+a class that is no value. On its path the new `inherits_value` test sits behind
+a refusal test it already had, inside a `decide_instantiation` that grew by 62
+instructions. Yet `bench_new2.ns` and `bench_newarg.ns`, which run the same
+function with one level more, are level or faster. A control that would
+separate the kernel's applied level from the Rust changes, the head with
+`Kernel.ns`'s root put back to `Object new`, does not bootstrap:
+`kernel.rs` asserts the kernel's root is `Object <: Value`. Nothing was
+profiled.
+
+**Re-measured 2026-09-24 after the review's fix, `7b2af64`.** The final
+review named the clone of `Option<ValueClassRefusal>` on
+`decide_instantiation`'s path, and the inlined refusal error behind it, as
+the concrete candidate for `bench_new.ns`. The fix tests for the refusal's
+presence and keeps both refusal errors `#[cold]` and `#[inline(never)]`. It
+was measured in a new session by the same protocol, over `bench_block.ns`
+and `bench_new.ns` only: three trees, `cdc0257` (`base`), `d9c3f33` (the
+head before the fix, `old`) and `7b2af64` (`head`), each built plain and with
+`-C metadata=layoutprobe` and `=secondprobe`, nine binaries rotating by one
+position from round to round, five rounds a sitting and six sittings. A
+rebuild of the plain base differed from the first in 24 bytes, as before.
+`vm::run` is still 6,507 instructions with no `vm::run::closure`.
+Means in ms per layout over the six sittings (plain, `-p`, `-q`):
+
+| Source | `cdc0257` | `d9c3f33` | `7b2af64` | `7b2af64` against `cdc0257`, pooled | against `d9c3f33` |
+|---|---|---|---|---|---|
+| `bench_block.ns` | 17.27, 18.55, 18.53 | 19.43, 19.39, 19.34 | 19.43, 19.32, 19.33 | +6.9% (+6.7 to +7.1 per sitting) | −0.1% |
+| `bench_new.ns` | 4.30, 4.22, 4.23 | 4.34, 4.22, 4.22 | 4.34, 4.21, 4.23 | +0.2% (−1.3 to +0.9 per sitting) | +0.0% |
+
+**`bench_new.ns` is level, and the fix is not what made it so.** The head
+before the fix measured the same as the head after it, level with the base,
+so the +2.2% above did not reproduce in this session for either tree. The
+head's plain build lies about 3% above its two other layouts in every
+sitting of both measurements here, and the plain build before the fix does
+the same; the base's plain build did so in two of the first six sittings and
+in none of the second six. The `-C metadata` layouts of all three trees lie
+within 0.5% of one another. What the fix did do is shrink
+`decide_instantiation` back below the base.
+
+**`bench_block.ns` is still slower, and the fix did not touch it** (−0.1%
+against the head before it), as expected of a source that instantiates
+nothing. The pooled +6.9% overstates it: the base's plain build is a layout
+outlier in this session, 17.27 ms against 18.55 and 18.53 for its other two
+layouts, in every one of twelve sittings across both measurements here.
+Against the base's two `-C metadata` layouts alone the head is **4.4%**
+slower, which is the finding above.
+
+**Control (a), the seeded symbol: refuted as the cause.** The head seeds
+`==` as a well-known symbol (`Symbol::IDENTICAL`), which shifts every later
+symbol id by one and with it every `IdentityMap<Symbol, …>` bucket. A
+throwaway build of the base with the same seed line, in the same three
+layouts, measured in six more sittings beside the base and the head:
+
+| Source | `cdc0257` | `cdc0257` + seed | `7b2af64` | head against base + seed, per sitting |
+|---|---|---|---|---|
+| `bench_block.ns` | 17.30, 18.49, 18.51 | 18.53, 18.50, 18.54 | 19.44, 19.25, 19.26 | +4.3% (+3.6 to +4.6) |
+| `bench_new.ns` | 4.23, 4.23, 4.24 | 4.22, 4.23, 4.22 | 4.35, 4.22, 4.24 | +1.0% (+0.1 to +1.9) |
+
+The seeded base's three layouts lie with the base's two `-C metadata` ones,
+and the head is as far above them as before, so the shifted symbol ids
+explain none of `bench_block.ns`'s gap. The seed did move the base's plain
+build from 17.30 to 18.53 ms, a layout change like any other. On
+`bench_new.ns` the head's plain build is again the one 3% above the rest.
+The review's two other hypotheses remain open ([PROGRESS.md](../PROGRESS.md),
+"The value conditions"): the kernel's extra `Value`-level class object,
+which shifts every later arena index and dispatch id by one, and hardware
+counters.
+
+**Start-up did not move.** The whole `ns-next run` of a module whose
+`main:args:` answers `0` at once, timed wall-clock from the parent process.
+There were 25 rounds of the six layout binaries rotating, in two sittings, so
+75 runs of each tree a sitting. The base's medians were 4.95 ms and 4.99 ms
+(10th to 90th percentile 4.83–5.23 and 4.79–5.20). The head's were 4.93 ms and
+4.90 ms (4.80–5.11 and 4.73–5.14). The kernel's applied level costs less than
+the scatter.
 
 ## The trampoline
 

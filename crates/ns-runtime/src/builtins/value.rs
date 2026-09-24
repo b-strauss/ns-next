@@ -602,7 +602,7 @@ mod tests {
         let source = indoc! {"
             Newspeak3
             'T'
-            class ValueFixture = Object new () (
+            class ValueFixture = Object <: Value () (
                 class Point x: xValue y: yValue = Value new (
                     | public x = xValue. public y = yValue. |
                 ) ()

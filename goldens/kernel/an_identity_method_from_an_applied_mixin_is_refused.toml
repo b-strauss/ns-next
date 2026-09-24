@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+true
+'''
+stderr = '''
+Uncaught Newspeak error: cannot instantiate Mixed: a value class may not define ==, and Identity defines it
+'''

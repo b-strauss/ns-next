@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before
+'''
+stderr = '''
+Uncaught Newspeak error: cannot instantiate Point: a value class's enclosing objects must be values, and its enclosing object, an instance of ValueInAnOrdinaryModule, is not one
+'''

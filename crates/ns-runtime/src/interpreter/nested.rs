@@ -165,7 +165,7 @@ pub(crate) fn nested_class<'gc>(
     // answer decides whether any code runs.
     if nested.superclass.is_none() {
         // No clause at all (`class N = (...)`): `Object`, the same default
-        // `instantiate::resolve_superclass_receiver` gives a root class.
+        // `Mutator::load_root_class` gives a root class.
         let object = Value::Object(mutator.builtin_class(BuiltinClass::Object));
         return after_clause(mutator, creation, object);
     }
@@ -222,6 +222,19 @@ pub(crate) fn after_clause<'gc>(
     // superclass application share one application, and therefore one
     // compiled body and one instance layout (§6.2).
     let application = mutator.apply_mixin(&nested, Some(&super_application));
+    // §3.1.1's enclosing-object condition, asked once, where this class
+    // object comes into being; a class that is no value pays this one
+    // test. Only *decided* here -- `decide_instantiation` is what refuses,
+    // once the verdict is recorded on the class object below
+    // (`value_class.rs`'s doc comment says why). The other class-level
+    // condition, no identity method, is already folded into `application`'s
+    // own `instantiation_refusal` by `apply_mixin` above, so it needs no
+    // call here.
+    let value_class_refusal = if application.inherits_value {
+        crate::interpreter::value_class::check_value_class(mutator, enclosing, superclass)
+    } else {
+        None
+    };
     // Step 4: identity is per receiver. The class object's superclass chain
     // and its application's superclass chain are linked together here --
     // `dispatch::next_level` steps both and stops if either is missing.
@@ -234,6 +247,9 @@ pub(crate) fn after_clause<'gc>(
         Some(declaring_class),
         Some(superclass),
     );
+    if let Some(refusal) = value_class_refusal {
+        mutator.heap.set_class_value_refusal(class, refusal);
+    }
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
         &mut mutator.heap,

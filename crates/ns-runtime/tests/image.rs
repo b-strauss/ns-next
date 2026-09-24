@@ -1494,7 +1494,11 @@ fn a_mixin_table_with_no_root_row_is_a_decode_error() {
     let mut interpreter = Interpreter::bootstrap();
     let empty = mixins::Decoded::empty();
     interpreter.enter(|mutator| {
-        match decode::build_root_class(mutator, &empty, &decode::RootSection::default()) {
+        let section = decode::RootSection {
+            superclass: BuiltinClass::Object,
+            levels: Vec::new(),
+        };
+        match decode::build_root_class(mutator, &empty, &section) {
             Err(decode::DecodeError::NotAClass) => assert_eq!(
                 decode::DecodeError::NotAClass.to_string(),
                 "the image's mixin table describes no root class"
@@ -1717,6 +1721,17 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
         Err(HostSignal::Error(error)) => {
             panic!("{what}: unexpected Newspeak error: {}", error.message)
         }
+    }
+}
+
+/// The other half of `expect_ok`: unwraps the `NewspeakError`'s message
+/// from a `HostResult` expected to fail, the same way `tests/value_conditions.rs`'s
+/// `expect_error` does.
+fn expect_error(result: HostResult, what: &str) -> String {
+    match result {
+        Ok(_) => panic!("{what}: expected a Newspeak error"),
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(error)) => error.message,
     }
 }
 
@@ -8597,11 +8612,18 @@ fn the_mixin_application_message_frame_kind_decodes() {
     );
 }
 
-/// The root-class section's bytes for a root that inherits from nothing, then
-/// `levels` as (clause position, builtin tag) pairs.
-fn root_section_bytes(levels: &[(u32, u8)]) -> Vec<u8> {
+/// The root-class section's bytes for a root that inherits `superclass` --
+/// written as absent for `None`, which the reader refuses -- then `levels` as
+/// (clause position, builtin tag) pairs.
+fn root_section_bytes(superclass: Option<BuiltinClass>, levels: &[(u32, u8)]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    writer.write_boolean(false); // no superclass
+    match superclass {
+        Some(kind) => {
+            writer.write_boolean(true);
+            writer.write_u8(encode::builtin_class_tag(kind));
+        }
+        None => writer.write_boolean(false),
+    }
     writer.write_u32(levels.len() as u32);
     for (index, tag) in levels {
         writer.write_u32(*index);
@@ -8618,35 +8640,32 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Root = Object new <: Value <: Value () ()
+        class Root = Object new <: Value () ()
     "};
     let decoded = mixin_table_of(&snapshot_of(source));
     let value = encode::builtin_class_tag(BuiltinClass::Value);
     let read = |levels: &[(u32, u8)]| {
         decode::decode_root_section(
-            &mut decode::Reader::new(&root_section_bytes(levels)),
+            &mut decode::Reader::new(&root_section_bytes(Some(BuiltinClass::Object), levels)),
             &decoded,
         )
     };
     assert_eq!(
-        read(&[(0, value), (1, value)]).expect("both clauses, in order"),
+        read(&[(0, value)]).expect("the one clause"),
         decode::RootSection {
-            superclass: None,
-            levels: vec![(0, BuiltinClass::Value), (1, BuiltinClass::Value)],
+            superclass: BuiltinClass::Object,
+            levels: vec![(0, BuiltinClass::Value)],
         }
     );
-    for (levels, index) in [
-        (vec![(2, value)], 2),
-        (vec![(1, value), (0, value)], 0),
-        (vec![(0, value), (0, value)], 0),
-    ] {
+    for (levels, index) in [(vec![(1, value)], 1), (vec![(0, value), (0, value)], 0)] {
         assert_eq!(
             read(&levels),
             Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index })
         );
     }
     let mut huge = encode::Writer::new();
-    huge.write_boolean(false);
+    huge.write_boolean(true);
+    huge.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
     huge.write_u32(u32::MAX); // a count no clause list could back
     assert_eq!(
         decode::decode_root_section(&mut decode::Reader::new(&huge.into_bytes()), &decoded),
@@ -8660,6 +8679,84 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
             tag: mirror
         })
     );
+}
+
+/// The root rule (`docs/design/object-model.md`, "The root rule"), read back:
+/// a root section the encoder could never write is refused, so a crafted
+/// artifact cannot bring back a root the rule forbids.
+#[test]
+fn a_root_section_the_root_rule_forbids_is_refused() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value () ()
+    "};
+    let decoded = mixin_table_of(&snapshot_of(source));
+    let read = |superclass: Option<BuiltinClass>, levels: &[(u32, u8)]| {
+        decode::decode_root_section(
+            &mut decode::Reader::new(&root_section_bytes(superclass, levels)),
+            &decoded,
+        )
+    };
+    let tag = encode::builtin_class_tag;
+    assert_eq!(
+        read(Some(BuiltinClass::Array), &[]),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a module's root may inherit",
+            tag: tag(BuiltinClass::Array),
+        })
+    );
+    assert_eq!(
+        read(Some(BuiltinClass::Object), &[(0, tag(BuiltinClass::Array))]),
+        Err(decode::DecodeError::InvalidTag {
+            what: "builtin class a module's root may apply",
+            tag: tag(BuiltinClass::Array),
+        })
+    );
+    assert_eq!(
+        read(Some(BuiltinClass::Value), &[(0, tag(BuiltinClass::Value))]),
+        Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index: 0 })
+    );
+    assert_eq!(
+        read(None, &[(0, tag(BuiltinClass::Value))]),
+        Err(decode::DecodeError::RootWithoutSuperclass)
+    );
+    assert_eq!(
+        read(None, &[]),
+        Err(decode::DecodeError::RootWithoutSuperclass)
+    );
+}
+
+/// A root the rule forbids can never be instantiated, so neither artifact
+/// kind is written for it, and both say why with the instantiation's text.
+#[test]
+fn the_encoder_refuses_a_root_the_rule_forbids() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Array new () ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let (snapshot, build) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let origin = Origin::File(PathBuf::from("t.ns"));
+        (
+            image::snapshot(mutator, None, &origin, class, &platform, &[]),
+            image::build(
+                mutator.heap(),
+                None,
+                &origin,
+                class,
+                Symbol::intern("main:args:"),
+            ),
+        )
+    });
+    let expected = "image encoding cannot serialize Root: a module's root class may inherit only \
+                    Object or Value, or write Object <: Value, and its superclass clause names Array";
+    assert_eq!(snapshot.err().as_deref(), Some(expected));
+    assert_eq!(build.err().as_deref(), Some(expected));
 }
 
 /// `MIXIN_APPLICATION_MODULE`'s `Applied`, edited by `edit`, reloaded as a
@@ -8861,7 +8958,7 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Host usingPlatform: p = Object new () (
+        class Host usingPlatform: p = Object <: Value () (
             public class Point = Object new <: Value () (
                 public answer = ( ^7 )
             )
@@ -8902,4 +8999,116 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
         "answer",
     );
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+}
+
+/// §3.1.1's enclosing-object condition on a value class is decided when the
+/// class object is created and only *recorded* on it
+/// (`ClassData::value_class_refusal`, `docs/design/object-model.md`, "A
+/// value object's four conditions", "Enclosing objects are values");
+/// `decide_instantiation` is what refuses, at instantiation. A decoded class
+/// object starts with no verdict of its own, so a legitimate snapshot
+/// holding a class that was created carrying one has to have it recomputed
+/// on load (`image::decode::rebuild_applications`) or the round trip would
+/// silently make an already-refused class instantiable.
+///
+/// `Counter` inherits `Value` directly but is enclosed by a fresh `Holder`
+/// each time `MutableCounter` builds one, so it is a refused value class
+/// from the moment it is created -- `goldens/kernel/a_value_subclass_of_a_
+/// refused_value_class_is_refused.ns` pins the same shape as a golden.
+/// `Stamped` inherits `Value` only through `Counter`, with no `<:` clause of
+/// its own, so its own refusal is *inherited* from `Counter`'s recorded
+/// verdict by the walk in `interpreter::value_class::check_value_class` --
+/// exactly the case that has to survive the round trip in the right order,
+/// superclass first, for `Stamped`'s recomputed verdict to name `Counter`
+/// rather than trusting it blindly.
+#[test]
+fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class RefusedValueClassModule usingPlatform: platformAtCreation = Object <: Value () (
+            public class Holder = Object new (
+                | public count ::= 0. |
+            ) (
+                public class Counter = Value new () (
+                    public bump = ( count:: count + 1. ^count )
+                )
+            )
+            public MutableCounter = ( ^Holder new Counter )
+            public class Stamped = MutableCounter new () ()
+        ) : ()
+    "};
+    let (mut interpreter, class, platform, module) = instantiated_world(source);
+    let stamped_class = expect_ok(
+        interpreter.send(&module, Symbol::intern("Stamped"), &[]),
+        "Stamped",
+    );
+    // The shape the bug depends on, confirmed before any round trip:
+    // creating `Stamped` succeeds -- the redesign only records a refusal --
+    // and only instantiating it is refused.
+    let message = expect_error(interpreter.instantiate(&stamped_class, &[]), "Stamped new");
+    assert_eq!(
+        message,
+        "cannot instantiate Stamped: a value class's enclosing objects must be values, and \
+         Counter's enclosing object, an instance of Holder, is not one"
+    );
+
+    let bytes = snapshot_world(
+        &mut interpreter,
+        source,
+        &class,
+        &platform,
+        std::slice::from_ref(&stamped_class),
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded_stamped = loaded
+        .roots
+        .first()
+        .cloned()
+        .expect("the snapshotted Stamped");
+    let message = expect_error(
+        loaded.interpreter.instantiate(&reloaded_stamped, &[]),
+        "Stamped new",
+    );
+    assert_eq!(
+        message,
+        "cannot instantiate Stamped: a value class's enclosing objects must be values, and \
+         Counter's enclosing object, an instance of Holder, is not one"
+    );
+}
+
+/// The no-identity-method condition is decided once per *application*
+/// (`Mutator::apply_mixin`, folded into `MixinApplication::instantiation_refusal`),
+/// not per class object -- unlike the enclosing-object condition, it needs no
+/// `after_clause`, which a module's root never reaches
+/// (`load_root_class` calls `apply_mixin` directly). `snapshot_of` proves the
+/// case the fix depends on: a value module whose root defines `==` snapshots
+/// with no instance ever made, since `load` builds only the class, never an
+/// instance of it -- so the round trip has to be what catches a root that
+/// slipped past every other check
+/// (`goldens/kernel/a_value_module_defining_identity_is_refused.ns` pins the
+/// same shape as a golden).
+#[test]
+fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class ValueModuleDefiningIdentity usingPlatform: platformAtCreation = Object <: Value () (
+            public == other = ( ^false )
+        ) : ()
+    "};
+    let bytes = snapshot_of(source);
+    let mut loaded = image::load(&bytes).expect("load");
+    let platform = loaded.interpreter.platform();
+    let message = expect_error(
+        loaded
+            .interpreter
+            .instantiate(&loaded.root_class, std::slice::from_ref(&platform)),
+        "ValueModuleDefiningIdentity new",
+    );
+    assert_eq!(
+        message,
+        "cannot instantiate ValueModuleDefiningIdentity: a value class may not define ==, and \
+         ValueModuleDefiningIdentity defines it"
+    );
 }

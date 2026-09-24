@@ -43,6 +43,10 @@ Top                     (private; no superclass, declares nothing)
     └── Platform
 ```
 
+The mirror's class is the one builtin `Kernel.ns` does not declare; the
+bootstrap builds it below `Value`, so the mirror is a value ("The bootstrap:
+placeholders first, kernel second" below).
+
 That is §3.2's shape and §3.1.1's, taken literally. §3.2 says "a class is
 either the empty class `Top` or the application of a mixin to another class",
 and "only the class `Object` may have `Top` as its superclass", so `Top`
@@ -189,67 +193,79 @@ does not bound this**: none of the eight benchmark sources sends `=` or
 ([execution.md](execution.md), "What `Top`, `Value` and `Number` cost"). A
 source that does is what would show it, and there is none yet.
 
-**The slot half of §3.1.1's conditions is enforced, and where.** §3.1.1's
-second bullet asks four things of an object taken to be a value: that all
-its slots "are immutable, have been initialized and contain value objects",
-that "its enclosing objects (3.3) are all value objects", and that "its
-class inherits from class `Value` and does not define an identity method
-(`==`)". The slot half is two checks, both refusing rather than silently
-allowing a value that is not one; the enclosing objects and the absent `==`
-are **not** checked, and are listed under "What is still unchecked" below:
+**§3.1.1's four conditions are enforced, and where.** §3.1.1's second
+bullet asks four things of an object taken to be a value: that all its slots
+"are immutable, have been initialized and contain value objects", that "its
+enclosing objects (3.3) are all value objects", and that "its class inherits
+from class `Value` and does not define an identity method (`==`)". Each is
+refused rather than silently allowing a value that is not one, and each where
+an instance would come into being; [object-model.md](object-model.md), "A
+value object's four conditions", has the whole design:
 
-- **A mutable slot below `Value` means no instance.** `Mutator::apply_mixin`
-  computes `inherits_value` and the first `mutable_value_slot` of the whole
-  chain once, when it builds the application;
-  `instantiate::instantiate_class` refuses before it allocates anything, and
-  names both the class asked and the class that declares the slot, since a
-  subclass inherits the fault. §6.3.2's immutable slot is what makes this
-  checkable at all: a value class may declare `| held = … |`, never
-  `| held ::= … |`.
+- **A mutable slot anywhere in a value's chain means no instance.**
+  `Mutator::apply_mixin` computes `inherits_value` and the first mutable slot
+  of the whole chain (`first_mutable_slot`) once, when it builds the
+  application; `decide_instantiation` refuses before it allocates anything,
+  and names both the class asked and the class that declares the slot, since
+  a subclass inherits the fault. The slot counts above the `Value` level too,
+  where a `<:` clause can put a class with slots. §6.3.2's immutable slot is
+  what makes this checkable at all: a value class may declare
+  `| held = … |`, never `| held ::= … |`.
 - **A slot of a value may hold only a value.** `Instruction::InitializeSlot`
   asks `instantiate::check_value_slot` on every store into an instance whose
   class inherits `Value`; anything that is not itself a value — an `Array`,
   an ordinary instance, a class object — is refused with the slot named.
   Deep immutability is then transitive by induction: whatever a value's slot
   holds was itself checked when it was made.
+- **A value class may not define `==`.** Decided once per application, cold,
+  by `Mutator::apply_mixin` — the same place `first_mutable_slot` is decided
+  — and folded into `MixinApplication::instantiation_refusal`, refused at
+  instantiation alongside the root clause defect and the mutable slot. Being
+  a property of the application rather than of any class object built from
+  it is what covers a module's root the same way it covers a nested class:
+  `load_root_class` calls `apply_mixin` too, even though it builds no class
+  object through `nested::after_clause`. `Value`'s own `==` is the
+  declaration the specification's next sentence allows ("If the class
+  `Value` declares an identity method, that method must return the same
+  results as `Value`'s equality method").
+- **A value class's enclosing objects must be values.** Decided once per
+  class object, cold, where one is created (`interpreter/value_class.rs`,
+  from `nested::after_clause`), recorded on it (`ClassData::value_class_refusal`)
+  and refused at instantiation, because §2.3's own example creates a value
+  class whose enclosing object is mutable and never instantiates it (decided
+  with the user on 2026-09-24). The enclosing objects of every level of the
+  class chain count, not only the class's own, since an inherited method
+  reaches its own level's through `outer`.
 
-Both refusals name **the primary factory of the class being instantiated**,
+Every refusal names **the primary factory of the class being instantiated**,
 defaulted to `new` — the selector the program sent. A store in an inherited
 level's initializer is reported under it too, although that level runs in its
 own activation with its own factory (§6.2): the superclass clause sends that
 one, the program does not.
 
+**So a value class lives in a value module.** A class declared in a module
+lives inside that module's instance (§3.3), so a value class's module has to
+be a value too: it declares itself one with §6.2's mixin application,
+`class M = Object <: Value (…)`, as SOMns's
+`class Kernel vmMirror: vmMirror = Object <: Value (`
+(`prior-art/somns/core-lib/Kernel.ns`) does and as `Kernel.ns` does here. A
+value class nested in a module written `= Object new (…)` is refused on
+instantiation, and every golden that declares a value class declares its
+module a value.
+
 **What is still unchecked.**
 
-- **A value's enclosing objects are not checked to be values, and by the
-  letter of §3.1.1 none of the user value classes here has an instance that
-  is a value.** A class declared in a module lives inside that module's
-  instance (§3.3), and a module class is written `= Object new (…)`, so the
-  enclosing object is an ordinary mutable object — including in every
-  golden under `goldens/kernel/` that declares a value class. The condition
-  is not vacuous: SOMns keeps it by declaring its module itself a value,
-  `class Kernel vmMirror: vmMirror = Object <: Value (`
-  (`prior-art/somns/core-lib/Kernel.ns`), a mixin application. **Decided
-  with the user on 2026-09-23: enforce it strictly**, together with the
-  absent `==` below, in the plan after mixin application — which was built
-  first so that a module can declare itself a value the same way
-  ([object-model.md](object-model.md), "Mixin application"). Until that plan
-  lands the documents must not claim the condition holds.
-- **A value class that defines `==` is accepted.** §3.1.1's third
-  requirement is that a value's class "does not define an identity method
-  (`==`)"; nothing refuses a subclass of `Value` that declares one, and such
-  a class silently loses the agreement `Value>>==` gives every other value
-  class. `Value`'s own `==` is the declaration the specification's next
-  sentence allows ("If the class `Value` declares an identity method, that
-  method must return the same results as `Value`'s equality method"), which
-  is why it is not itself the deviation.
-- **A value class nothing instantiates is accepted.** Both refusals sit
-  where an instance comes into being, not where the class does. A class that
-  inherits `Value` and declares a mutable slot is a defect the moment it is
-  written, and it is reported the moment something asks for an instance —
-  never before. The alternative was making class creation fallible, which
-  would turn the public `load_module` into a fallible API at every call site
-  that builds a class, to report a fault that cannot yet have done anything.
+- **A value class nothing creates is never checked, and one nothing
+  instantiates is never refused.** A value class's identity method is
+  decided when its application is built, and its enclosing objects when its
+  class object is created, but both only recorded; they, the mutable slot
+  and the slots' contents are refused only where an instance comes into
+  being. A class that inherits `Value` and
+  declares a mutable slot is a defect the moment it is written, and it is
+  reported the moment something asks for an instance — never before. That is
+  what §2.3 requires: its own example creates such a class and never
+  instantiates it. It also keeps class creation, and the public
+  `load_module`, total.
 - **A ready-made instance decoded from an image is not re-checked.** The
   decoder rebuilds an instance's slots from the artifact's bytes without
   going through `InitializeSlot`, so a crafted image can hand back something
@@ -257,7 +273,16 @@ one, the program does not.
   wrong answer for a crafted artifact, not a crash: the decoder stays
   panic-free, and the derivation declines any shape it cannot rule on rather
   than guessing ([image-format.md](image-format.md), "Verification", on what
-  the two passes do and do not guarantee).
+  the two passes do and do not guarantee). A decoded *class object* is
+  different: its enclosing-object condition is recomputed on load, with the
+  same `check_value_class`, once every decoded class has its real
+  application (`image::decode::rebuild_applications`), so a snapshot of a
+  refused value class decodes refused; its identity-method condition needs
+  no recompute of its own, since `rebuild_applications` builds every decoded
+  class's application through the same `Mutator::apply_mixin` a class built
+  from source goes through, which folds that condition in as it goes. A new
+  instance of any decoded class meets every check an instance made from
+  source does.
 - **`=` and `hash` are expected to agree, not checked to.** A subclass that
   overrides one and not the other breaks the contract silently, as it does
   in every Smalltalk.
@@ -636,7 +661,9 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    already holds the `MIRROR` rows, and its one instance are built here too.
 2. **`Kernel.ns` is compiled but not instantiated.** Its root mixin and its
    nested mixins are built with `Mutator::build_mixin`, compiled under the
-   interpreter's lowering like any module, and `check_kernel_shape` checks
+   interpreter's lowering like any module — the root mixin with
+   `Mutator::build_root_mixin`, as every module's root is built, so the root
+   rule applies to `Kernel` too — and `check_kernel_shape` checks
    what the phase relies on: one nested class per builtin, named as
    `kernel_class_name` says, each with no slots and the default factory; the
    one immutable `vmMirror` slot on the root; a superclass clause on every
@@ -660,18 +687,24 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    `Value`'s own application also carries `inherits_value` (§3.2's "subclass
    of" is inclusive, so `Value new` is a value), and every class below it
    reads the flag off its superclass.
-   `VmMirror` keeps its own Rust mixin, re-applied over the filled `Object`.
+   `VmMirror` keeps its own Rust mixin, re-applied over the filled `Value`
+   (`superclass_of_kind`); `fill_order` sorts by depth, so `Value` is filled
+   first.
 4. **The immediate dispatch-id table is refreshed**, because an immediate's
    ids are read off its class's application, which just changed.
 5. **The kernel class is built and instantiated** from the host, with the
-   mirror as its factory argument: `Kernel vmMirror: theMirror`. The
+   mirror as its factory argument: `Kernel vmMirror: theMirror`. Its root is
+   `Object <: Value`, so its `Value` level is built first, over the filled
+   `Object`, with `nested::build_applied_levels`, as a user root's is. The
    instantiation is an ordinary host run, so the stress modes see it.
 6. **The instance is wired in.** Every builtin class's `enclosing` becomes the
    kernel instance and its `declaring_class` the kernel class, so a kernel
    method's lexical send of `vmMirror` reaches the slot; each hidden
    nested-class slot of the kernel instance is filled with its builtin class,
    so the nested-class accessor `Array` inside kernel code answers the builtin
-   `Array` rather than building a second class object of the same mixin; and
+   `Array` rather than building a second class object of the same mixin;
+   the kernel's own `Value` level, built before the instance existed, is
+   given the kernel instance and class as its lexical context too; and
    the instance is kept as `Mutator::kernel`, a root beside the mirror
    ([memory.md](memory.md), "What the collector traces"). The phase checks
    that the slot holds the mirror, and that no metaclass was built before this
@@ -692,16 +725,22 @@ declared no factory at all, let any count through. `Array new` and
 `OrderedCollection new` still build their own payload
 (`instantiate::decide_factory`).
 
-`Kernel` is declared like any other module, `= Object new (…)`, where SOMns
-writes `= Object <: Value`. Both halves exist now — the `Value` class and
-§6.2's `<:` ([object-model.md](object-model.md), "Mixin application") — and
-`Kernel` has not been changed; whether it becomes a value belongs to the
-strict enforcement of §3.1.1 ("What is still unchecked" above), since its
-one slot holds the VM mirror, which is no value. Nothing depends on it yet. §6.4 makes a module *definition* a value object with nothing
-declared, and §3.1.1's conditions on its *instances* exist for passing
-objects across actor boundaries, which ns-next has none of
+**`Kernel` is a value, and so is the mirror** (decided with the user on
+2026-09-23). `Kernel.ns` declares
+`class Kernel vmMirror: theMirror = Object <: Value (…)`, the header SOMns
+writes, so the kernel instance — the enclosing object of every builtin value
+class — meets §3.1.1's enclosing-object condition, and every builtin value
+class with it. Its one slot holds the mirror, which a value's slot may hold
+because the mirror is a value by the ordinary rule: its class sits below
+`Value`, and it has no slots and no `==` of its own, as SOMns asserts
+(`vm/ObjectSystem.java`, `assert vmMirror.isValue()`). None of the mirror's
+capability guarantees above changes with it.
+`interpreter/kernel.rs`'s `the_kernel_and_the_mirror_are_values` pins both.
+§3.1.1's conditions exist for passing objects across actor boundaries, which
+ns-next has none of yet
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
-exist; the boundary they cross does not").
+exist; the boundary they cross does not"); they are enforced anyway, because
+the specification requires them of every value.
 
 ### Where the library source lives, and how modules are found
 
@@ -878,13 +917,12 @@ and a Newspeak body would have to settle again, visibly:
   after. It is independent of what the slow path looks like — the compiler
   emits the operation under a type guard and falls back to the ordinary send —
   so it was measured on its own and then cushioned the move.
-- **`Kernel` is declared without a `Value` mixin application.** §6.4 already
-  makes a module definition a value object; §3.1.1's instance-side condition
-  serves actor boundaries, which do not exist here, so the value semantics go
-  with the actor work rather than with this step. The same syntax is what
-  §3.1.1's enclosing-object condition needs for a module's value classes;
-  it is built now, and that condition is to be enforced strictly next ("What
-  is still unchecked" above).
+- **`Kernel` is `= Object <: Value`, and the mirror's class sits below
+  `Value`** (decided with the user on 2026-09-23), as in SOMns: §3.1.1's
+  enclosing-object condition, enforced strictly, needs the kernel instance to
+  be a value for any builtin value class to have value instances, and the
+  kernel's one slot holds the mirror ("The bootstrap: placeholders first,
+  kernel second" above).
 - **Modules are to be linked statically, through a namespace on the mirror**
   (decided with the user on 2026-09-21, not built): the CLI fills a table in
   advance and a mirror primitive looks names up in it, so nothing touches the

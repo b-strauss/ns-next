@@ -3,10 +3,14 @@ Newspeak3
 (* A user subclass of a builtin inherits its kernel methods but none of its
    payload, so each leaf those methods forward to declines, and the failure
    block's `super` send reaches Object's method: `=` is identity and
-   `printString` the generic default, family by family. *)
-class FallThrough usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
-) (
+   `printString` the generic default, family by family.
+
+   The module is a value (`Object <: Value`) because §3.1.1 asks a value
+   class's enclosing object to be one; the transcript lives in `Script`,
+   which is no value. `MyArray`, `MyOrderedCollection` and `MyBlock` stay
+   here, at module level, and are no values themselves -- only a value
+   class is asked about its enclosing object. *)
+class FallThrough usingPlatform: platformAtCreation = Object <: Value () (
     class MyBoolean = Boolean new () ()
     class MyInteger = Integer new () ()
     class MyFloat = Float new () ()
@@ -15,18 +19,25 @@ class FallThrough usingPlatform: platform = Object new (
     class MyArray = Array new () ()
     class MyOrderedCollection = OrderedCollection new () ()
     class MyBlock = Block new () ()
-    report: instance = (
-        transcript show: (instance = instance) printString; show: ' '; show: instance printString; newLine
+    class Script on: aTranscript = Object new (
+        | transcript = aTranscript. |
+    ) (
+        report: instance = (
+            transcript show: (instance = instance) printString; show: ' '; show: instance printString; newLine
+        )
+        public run = (
+            report: MyBoolean new.
+            report: MyInteger new.
+            report: MyFloat new.
+            report: MySymbol new.
+            report: MyCharacter new.
+            report: MyArray new.
+            report: MyOrderedCollection new.
+            report: MyBlock new.
+            transcript show: MyArray new size printString; newLine
+        )
     )
-    public main: p args: a = (
-        report: MyBoolean new.
-        report: MyInteger new.
-        report: MyFloat new.
-        report: MySymbol new.
-        report: MyCharacter new.
-        report: MyArray new.
-        report: MyOrderedCollection new.
-        report: MyBlock new.
-        transcript show: MyArray new size printString; newLine
+    public main: platform args: arguments = (
+        (Script on: platform transcript) run
     )
 ) : ()

@@ -224,6 +224,27 @@ fn every_golden_runs_identically_from_source_and_from_a_binary() {
                 lowering.as_ref(),
             ]);
             if !built {
+                // A golden whose root the root rule forbids cannot be built
+                // (`image::encode_describing`); `run` must then fail on the
+                // same defect, at instantiation.
+                if build_error.contains("a module's root class may inherit only") {
+                    let (run_ok, _, run_error) = ns_next(&[
+                        "run".as_ref(),
+                        path.as_os_str(),
+                        "--lowering".as_ref(),
+                        lowering.as_ref(),
+                    ]);
+                    let tail = build_error
+                        .split("a module's root class")
+                        .nth(1)
+                        .expect("the build error names the rule");
+                    assert!(
+                        !run_ok && run_error.contains(tail.trim_end()),
+                        "run of {} must fail on the defect the build refused: {run_error}",
+                        path.display()
+                    );
+                    continue;
+                }
                 // A golden whose root class declares no `main:args:` and
                 // needs an explicit entry is not a failure of this property.
                 // Anything else is, so the reason is asserted rather than

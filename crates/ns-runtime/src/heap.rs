@@ -1703,6 +1703,35 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `class` carries a recorded `ValueClassRefusal`, without
+    /// copying it: `decide_instantiation` asks this on every instantiation
+    /// of a value class, and only the cold error path reads the refusal
+    /// itself (`class_value_refusal`).
+    pub fn class_has_value_refusal(&self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.value_class_refusal.is_some(),
+            _ => false,
+        }
+    }
+
+    /// §3.1.1's enclosing-object condition on a value class, decided when
+    /// `class` was created and read here by `decide_instantiation`'s cold
+    /// error path and by `check_value_class`'s walk --
+    /// `ValueClassRefusal`'s doc comment says why creation and refusal are
+    /// two different moments. `None` for a class that is no value and for a
+    /// value class whose enclosing objects are all values.
+    pub fn class_value_refusal(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<crate::types::ValueClassRefusal> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.value_class_refusal.clone(),
+            _ => None,
+        }
+    }
+
     pub fn class_builtin(&self, class: ClassReference<'gc>) -> Option<BuiltinClass> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -1820,10 +1849,10 @@ impl<'gc> Heap<'gc> {
     /// builtin class to the one its `Kernel.ns` clause names
     /// (`interpreter::kernel`), and `tests/instantiate.rs`'s
     /// `superclass_slot_initializer_runs_before_the_subclass_own_slots`: a
-    /// root class's superclass clause only resolves a fixed list of builtin
-    /// names (`resolve_superclass_receiver`), so linking a subclass to an
-    /// already-loaded sibling *user-defined* class has to happen by hand on
-    /// the class-object chain `super`/`instantiate` walk.
+    /// root class's superclass clause may name only `Object` or `Value`
+    /// (the root rule, `instantiate::root_clause_defect`), so linking a
+    /// subclass to an already-loaded sibling *user-defined* class has to
+    /// happen by hand on the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(
         &mut self,
         class: ClassReference<'gc>,
@@ -1865,6 +1894,25 @@ impl<'gc> Heap<'gc> {
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.enclosing = enclosing;
             data.declaring_class = declaring_class;
+            return true;
+        }
+        false
+    }
+
+    /// Records `class`'s verdict on §3.1.1's enclosing-object condition.
+    /// Two callers: `interpreter::nested::after_clause`, right after it
+    /// creates a class object built from source, and
+    /// `image::decode::rebuild_applications`, which recomputes the verdict
+    /// for a decoded one rather than trusting it from the wire. Answers
+    /// whether the write happened, like the other class setters.
+    pub fn set_class_value_refusal(
+        &mut self,
+        class: ClassReference<'gc>,
+        refusal: crate::types::ValueClassRefusal,
+    ) -> bool {
+        self.check_object_origin(class);
+        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
+            data.value_class_refusal = Some(refusal);
             return true;
         }
         false
@@ -3094,7 +3142,8 @@ mod tests {
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             inherits_value: false,
-            mutable_value_slot: None,
+            first_mutable_slot: None,
+            instantiation_refusal: None,
             nested_slot: crate::hash::IdentityMap::default(),
             declared_slots: Vec::new(),
             slot_count: 0,

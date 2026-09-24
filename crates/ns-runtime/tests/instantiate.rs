@@ -84,13 +84,11 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 ///
 /// `Interpreter::instantiate`'s `climb_levels`/`descend_levels`
 /// step ordering is what this test actually exercises. Linking the two
-/// classes together, though, runs into a real known gap flagged in
-/// `interpreter/instantiate.rs`'s `resolve_superclass_receiver`: a
-/// superclass clause naming a sibling *user-defined* class (as opposed to a
-/// builtin) by name is not resolved there -- only a fixed list of builtin
-/// names is. Rather than expanding that list -- `resolve_superclass_receiver`
-/// says to extend it only when a fixture needs it, and this fixture can route
-/// around it -- `Sub` is parsed with a builtin
+/// classes together, though, cannot go through a module root's superclass
+/// clause: the root rule (`interpreter/instantiate.rs`'s
+/// `root_clause_defect`) lets a root name only `Object` or `Value`, so a
+/// root naming a sibling *user-defined* class is refused at instantiation.
+/// Instead `Sub` is parsed with a builtin
 /// `Object` superclass clause (so `load_module` resolves cleanly through the
 /// ordinary pipeline), and its `ClassData.superclass`/`application` are then
 /// relinked directly to the already-loaded `Sup` class -- both `pub` fields
@@ -374,8 +372,8 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
 /// The two classes are nested inside a module class because that is the
 /// only way a user-defined superclass is linked through the ordinary
 /// pipeline: a nested declaration's clause is evaluated by the accessor
-/// (`interpreter::nested`), while a *root* class's clause receiver
-/// only resolves to a builtin (`resolve_superclass_receiver`).
+/// (`interpreter::nested`), while a *root* class's clause may name only
+/// `Object` or `Value` (the root rule, `root_clause_defect`).
 #[test]
 fn a_superclass_factory_message_receives_its_own_arguments() {
     let source = indoc! {"
@@ -597,7 +595,7 @@ fn a_refused_slot_names_the_factory_the_program_sent() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Holders = Object new () (
+        class Holders = Object <: Value () (
             public class Base held: contents = Value new (
                 | public held = contents. |
             ) ()

@@ -13,12 +13,18 @@ Newspeak3
    that). `show:` answers two transcript streams and fails on the platform
    object, which shares their class, so the third send at the same site --
    the same dispatch id -- ends in `doesNotUnderstand:`
-   (`docs/design/dispatch.md`, "A primitive can fail"). *)
-class CacheFailingPrimitive usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+   (`docs/design/dispatch.md`, "A primitive can fail").
+
+   The module is declared a value (`Object <: Value`, §3.1.1) because it
+   declares a value class, `Text` below `String`, and a value class's
+   enclosing object must be a value; the transcript is therefore read where
+   it is used, never held in a slot. *)
+class CacheFailingPrimitive usingPlatform: thePlatform = Object <: Value () (
     class Text = String new () (
     )
     public main: platform args: args = (
-        | text |
+        | text transcript |
+        transcript:: platform transcript.
         text:: Text new.
         {'abc'. text. 'abc'. text} do: [:each |
             transcript show: (each = each) printString; show: ' '; show: each printString; newLine].

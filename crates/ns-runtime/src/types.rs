@@ -62,6 +62,50 @@ pub enum ObjectData<'gc> {
     Class(Box<ClassData<'gc>>),
 }
 
+/// §3.1.1's enclosing-object condition on a value class -- every enclosing
+/// object, at every level of its class chain, must be a value -- decided
+/// once, where the class object is created
+/// (`interpreter::value_class::check_value_class`, called from
+/// `interpreter::nested::after_clause`), and recorded on `ClassData` rather
+/// than raised there: `decide_instantiation` is what refuses, since the
+/// specification's own §2.3 example creates such a class and never
+/// instantiates it (`docs/design/object-model.md`, "A value object's four
+/// conditions"). Holds no handle -- a `Symbol` and a `String`, both already
+/// rendered at creation time -- so it survives a move. An image carries none
+/// of it: `ClassData::new` defaults every decoded class's field to `None`,
+/// and `image::decode::rebuild_applications` recomputes it with the same
+/// `check_value_class`, once every decoded class's real application is
+/// installed, so a legitimate snapshot of a value class created carrying a
+/// refusal decodes carrying the same one rather than becoming instantiable.
+///
+/// §3.1.1's other class-level condition, no identity method, is not a
+/// `ValueClassRefusal` at all: it is a property of the *application*, not of
+/// any class object built from it, so `Mutator::apply_mixin` folds it
+/// straight into `MixinApplication::instantiation_refusal`
+/// (`mixin::InstantiationRefusal::IdentityMethod`) instead, which covers a
+/// module's root the same way it covers a nested class.
+///
+/// The enclosing-objects walk (`check_value_class`) climbs a new class
+/// object's superclass chain and stops early only at a class that inherits
+/// `Value`, is not a level a `<:` clause added, and carries **no** recorded
+/// refusal of its own -- such a class was checked the same way when it was
+/// created, so everything above it holds by induction. A class that does
+/// carry one is not trusted blindly: the new class inherits the fault
+/// instead, `described` and `level` carried over from that class's own
+/// verdict, except that a `level` of `None` -- a fault in the stopping
+/// class's own enclosing object -- becomes `Some(<the stopping class's
+/// name>)`. A fault inherited over several levels thus keeps naming the
+/// level whose enclosing object is at fault.
+#[derive(Debug, Clone)]
+pub enum ValueClassRefusal {
+    /// `level` is `None` for the class's own enclosing object; `described`
+    /// is `Heap::describe` of the offending object, taken at creation.
+    NonValueEnclosingObject {
+        level: Option<Symbol>,
+        described: String,
+    },
+}
+
 /// A class object is *identity*; everything a class object can *do* lives
 /// on its `MixinApplication`. Two class objects built from the same mixin
 /// and the same superclass application share one `application`, which is
@@ -144,6 +188,16 @@ pub struct ClassData<'gc> {
     /// three: the instantiation walk and the collector read this struct for
     /// every class object, applied level or not.
     pub applied_clause: Option<Box<crate::mixin::AppliedClause>>,
+    /// `ValueClassRefusal`'s own doc comment says where this is decided and
+    /// where it is refused. `None` for every class that is no value and for
+    /// a value class whose enclosing objects are all values -- which is
+    /// most of them, so `decide_instantiation` pays this read only behind
+    /// `application.inherits_value`. `ClassData::new` defaults it to `None`;
+    /// `interpreter::nested::after_clause` sets it to `Some` right after
+    /// creating the class object it is about, for a class built from
+    /// source, and `image::decode::rebuild_applications` does the same for
+    /// a decoded one, recomputed rather than carried over the wire.
+    pub value_class_refusal: Option<ValueClassRefusal>,
 }
 
 impl<'gc> ClassData<'gc> {
@@ -165,6 +219,7 @@ impl<'gc> ClassData<'gc> {
             builtin,
             metaclass: None,
             applied_clause: None,
+            value_class_refusal: None,
         }
     }
 }
@@ -587,7 +642,8 @@ mod tests {
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             inherits_value: false,
-            mutable_value_slot: None,
+            first_mutable_slot: None,
+            instantiation_refusal: None,
             nested_slot: crate::hash::IdentityMap::default(),
             declared_slots: Vec::new(),
             slot_count: 0,

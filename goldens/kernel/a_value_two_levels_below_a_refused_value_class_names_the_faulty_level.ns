@@ -1,0 +1,28 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: `Counter` inherits `Value` directly but is
+   enclosed by a mutable `Holder`, so its class object records a refusal
+   naming no level -- the fault is its own enclosing object. `Stamped`
+   inherits `Value` only through `Counter` and inherits that fault, which
+   its own recorded refusal names as `Counter`'s. `Restamped` is one level
+   further down: the walk that checks its chain stops at `Stamped`, a class
+   that inherits `Value` and was created as a class of its own, and takes
+   over `Stamped`'s refusal. The level that refusal already names must
+   survive the hand-over -- the enclosing object at fault is `Counter`'s,
+   not `Stamped`'s, whose enclosing object is this value module. *)
+class ValueTwoLevelsBelowARefusedValueClass usingPlatform: platformAtCreation = Object <: Value () (
+    public class Holder = Object new (
+        | public count ::= 0. |
+    ) (
+        public class Counter = Value new () (
+            public bump = ( count:: count + 1. ^count )
+        )
+    )
+    public MutableCounter = ( ^Holder new Counter )
+    public class Stamped = MutableCounter new () ()
+    public class Restamped = Stamped new () ()
+    public main: platform args: arguments = (
+        platform transcript show: 'before'; newLine.
+        platform transcript show: Restamped new bump printString; newLine.
+    )
+) : ()

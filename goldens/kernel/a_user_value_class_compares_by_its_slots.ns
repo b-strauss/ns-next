@@ -16,26 +16,35 @@ Newspeak3
    `Point` and holds the same numbers, so it hashes alike -- and is still
    not equal, because equality of state is equality *within* one class.
    The hash column there is informational; the contract says nothing about
-   how two unequal values hash. *)
-class UserValueClass usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
-) (
+   how two unequal values hash.
+
+   The module is a value (`Object <: Value`) because §3.1.1 asks a value
+   class's enclosing object to be one; the transcript lives in `Script`,
+   which is no value. *)
+class UserValueClass usingPlatform: platformAtCreation = Object <: Value () (
     public class Point x: anX y: aY = Value new (
         | public x = anX. public y = aY. |
     ) ()
     public class Pair x: anX y: aY = Value new (
         | public x = anX. public y = aY. |
     ) ()
-    report: label for: first and: second = (
-        transcript show: label; show: ' '; show: (first = second) printString;
-            show: ' '; show: (first == second) printString;
-            show: ' '; show: (first hash = second hash) printString; newLine
+    class Script on: aTranscript = Object new (
+        | transcript = aTranscript. |
+    ) (
+        report: label for: first and: second = (
+            transcript show: label; show: ' '; show: (first = second) printString;
+                show: ' '; show: (first == second) printString;
+                show: ' '; show: (first hash = second hash) printString; newLine
+        )
+        public run = (
+            report: 'equal' for: (Point x: 1 y: 2) and: (Point x: 1 y: 2).
+            report: 'different' for: (Point x: 1 y: 2) and: (Point x: 1 y: 3).
+            report: 'other class' for: (Point x: 1 y: 2) and: (Pair x: 1 y: 2).
+            report: 'nested' for: (Point x: (Point x: 1 y: 2) y: 'a')
+                and: (Point x: (Point x: 1 y: 2) y: 'a').
+        )
     )
-    public main: ignoredPlatform args: arguments = (
-        report: 'equal' for: (Point x: 1 y: 2) and: (Point x: 1 y: 2).
-        report: 'different' for: (Point x: 1 y: 2) and: (Point x: 1 y: 3).
-        report: 'other class' for: (Point x: 1 y: 2) and: (Pair x: 1 y: 2).
-        report: 'nested' for: (Point x: (Point x: 1 y: 2) y: 'a')
-            and: (Point x: (Point x: 1 y: 2) y: 'a').
+    public main: platform args: arguments = (
+        (Script on: platform transcript) run
     )
 ) : ()
