@@ -3563,8 +3563,10 @@ blocks and are inlined. One throwaway source exercises the change,
 `[taken:: taken + 1]` — four sent Boolean methods and three sent
 conditionals per iteration; it prints `300000` under both trees.
 
-**Measured 2026-09-24, the branch head against `ddd9e4f`**, the `master` it
-started from, by the protocol of "What removing the re-entries moved" above:
+**Measured 2026-09-24, `e8a2884` against `ddd9e4f`**, the `master` it
+started from -- before the fix that marks the block a control-flow step only
+for a Boolean receiver (`d4e7924`), one test of the receiver on the quick
+path, which was not measured separately -- by the protocol of "What removing the re-entries moved" above:
 two builds of each tree, every build with the pinned flags, the four
 binaries differing byte for byte; `ns-next bench <source> --iterations 30`,
 five rounds of all four binaries in turn, after one sitting of five rounds
