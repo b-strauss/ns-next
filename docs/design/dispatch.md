@@ -172,19 +172,16 @@ the builtin class directly (`Instruction::LoadBuiltinClass`). The two differ
 only when a user class overrides the accessor — a method named `String` in a
 superclass of the sender — which the direct load ignores.
 
-**Known gap: a `super`-prefixed clause receiver does not dispatch.** For
+**A `super`-prefixed clause receiver is a super send.** For
 `class N = super Foo (...)` the resolver binds the receiver `Foo` as
-`SuperSend` (`resolver::resolve_superclass_clause`), but the lowerer treats a
-`SuperSend`-bound *identifier* like an unbound one: it falls to the
-bare-builtin-name fallback (`LoadBuiltinClass`), and for any other name to the
-deferred `UnresolvedIdentifier`. So the form works only when `Foo` names a builtin
-class, and then answers that builtin rather than the result of sending `Foo`
-with lookup starting above the declaring class, as §6.1 requires; any other
-`Foo` raises an "unresolved identifier" error when the accessor first runs the
-clause. The clause's activation already carries the declaring class as its
-`current_class`, so the fix is a lowering change;
-`crates/ns-runtime/tests/nested_classes.rs`'s
-`a_super_prefixed_clause_answers_a_class_object` pins today's builtin case.
+`SuperSend` (`resolver::resolve_superclass_clause`), and both lowerings emit
+it as `SendSuper` of `Foo`: §6.1 evaluates the clause "as if it occurred
+inside an instance method" of the enclosing class, and the clause's
+activation carries the declaring class as its `current_class`, so the lookup
+starts above the class that declares the clause.
+`goldens/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`
+pins it, and `crates/ns-runtime/tests/nested_classes.rs`'s
+`a_super_prefixed_clause_answers_a_class_object` pins `super Object`.
 
 ### Setter sends
 

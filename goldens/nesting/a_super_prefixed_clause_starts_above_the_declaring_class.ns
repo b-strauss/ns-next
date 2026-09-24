@@ -1,0 +1,24 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.1 lets an inheritance clause's receiver be a unary
+   send to `super`, and evaluates it "as if it occurred inside an instance
+   method" of the enclosing class. `super Helper` in `Derived` is therefore
+   the super send of 5.10: its lookup starts above `Derived`, the class
+   that declares the clause, and finds `Base`'s nested class `Helper`, not
+   the `Helper` `Derived` declares itself. *)
+class SuperPrefixedClause usingPlatform: platformAtCreation = Object new () (
+    class Base = Object new () (
+        public class Helper = Object new () (
+            public tag = ( ^'from Base' )
+        )
+    )
+    class Derived = Base new () (
+        public class Helper = Object new () (
+            public tag = ( ^'from Derived' )
+        )
+        public class Built = super Helper new () ()
+    )
+    public main: platform args: arguments = (
+        platform transcript show: Derived new Built new tag; newLine
+    )
+) : ()

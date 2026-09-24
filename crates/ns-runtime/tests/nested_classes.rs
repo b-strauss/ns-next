@@ -343,12 +343,11 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
 
 /// A `super`-prefixed clause receiver is the one form whose evaluation reads
 /// the clause frame's `current_class` (`resolver::resolve_superclass_clause`
-/// binds it as `Binding::SuperSend`). The lowerer treats a `SuperSend`-bound
-/// *identifier* as the bare-builtin fallback rather than a real super send,
-/// so today `super Object` names the builtin `Object` and the accessor
-/// answers a class object without dispatching -- which is the outcome this
-/// pins. It is the regression guard for the day that form starts
-/// dispatching: by then the frame already carries the declaring class.
+/// binds it as `Binding::SuperSend`, and both lowerings emit it as a super
+/// send, §6.1). `super Object` starts its lookup above `Outer`, at `Object`,
+/// whose accessor for the predefined class (§3.2) answers a class object.
+/// `goldens/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`
+/// pins that the lookup starts above the declaring class.
 const SUPER_PREFIXED_CLAUSE_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
@@ -422,8 +421,8 @@ fn a_self_referential_nested_class_is_a_program_error() {
 /// (`MixinApplication::nested_slot`), so creating the subclass's `Inner` --
 /// whose clause creates the inherited one on the same receiver, through
 /// `super Inner` -- finds the inherited one's slot empty, not in progress.
-/// The clause reaches it through a method because a `super`-prefixed clause
-/// receiver does not dispatch yet (`a_super_prefixed_clause_answers_a_class_object`).
+/// The clause reaches it through a method, which exercises the same super
+/// send from an ordinary activation rather than from the clause's.
 #[test]
 fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
     let source = indoc! {"

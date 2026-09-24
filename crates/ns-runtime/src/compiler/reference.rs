@@ -348,12 +348,22 @@ impl<'a> Body<'a> {
                     call_site,
                 })
             }
+            // A `super`-prefixed inheritance-clause receiver, `super Foo`:
+            // §6.1's super send of `Foo` from the class declaring the clause.
+            Some(Binding::SuperSend) => {
+                let selector = Symbol::intern(&id.name);
+                self.emit_send(|destination, call_site| Instruction::SendSuper {
+                    selector,
+                    argument_registers: vec![],
+                    destination,
+                    call_site,
+                })
+            }
             // No binding: a bare builtin class name, or the deferred
             // unresolved-identifier error (`docs/design/compiler.md`,
-            // "Compilation cannot fail"). A bare identifier bound `SuperSend`
-            // is a `super`-prefixed superclass-clause receiver, which falls to
-            // the same case. `MirrorSend` marks a send, never an identifier.
-            Some(Binding::SuperSend | Binding::MirrorSend) | None => {
+            // "Compilation cannot fail"). `MirrorSend` marks a send, never an
+            // identifier.
+            Some(Binding::MirrorSend) | None => {
                 let destination = self.fresh();
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
                     Some(kind) => self.emit(Instruction::LoadBuiltinClass { destination, kind }),

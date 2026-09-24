@@ -29,7 +29,8 @@ use crate::Symbol;
 /// error a *resolved* module can still carry: an identifier with no binding
 /// that names no builtin class -- a bare `super`, which
 /// `resolver::resolve_identifier` leaves unbound and the lexer does not
-/// reserve, or a `super`-prefixed superclass-clause receiver (see
+/// reserve, or a module root's clause receiver, which the root rule decides
+/// and which never runs (see
 /// `interpreter::literals::unresolved_identifier_error`). Neither variant is a
 /// lowered `ast::Literal`; both are payloads of a `LoadLiteral` that raises
 /// instead of producing a value.

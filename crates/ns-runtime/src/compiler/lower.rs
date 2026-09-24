@@ -761,16 +761,16 @@ impl<'a> Lowerer<'a> {
         register < self.base && self.reachable_by_a_fallback_closure[register as usize]
     }
 
-    /// Whether reading `identifier` dispatches -- an implicit-receiver send --
-    /// rather than loading a register. Mirrors `lower_identifier_read`, whose
-    /// `self` case answers before the binding is consulted; a bare builtin
-    /// class name and the deferred unresolved-identifier case are single
-    /// register loads.
+    /// Whether reading `identifier` dispatches -- an implicit-receiver send,
+    /// or a `super`-prefixed clause receiver's super send -- rather than
+    /// loading a register. Mirrors `lower_identifier_read`, whose `self` case
+    /// answers before the binding is consulted; a bare builtin class name
+    /// and the deferred unresolved-identifier case are single register loads.
     fn identifier_sends(&self, identifier: &ast::Identifier) -> bool {
         identifier.name != "self"
             && matches!(
                 self.bindings.get(&identifier.span),
-                Some(Binding::LexicalSend { .. })
+                Some(Binding::LexicalSend { .. } | Binding::SuperSend)
             )
     }
 
@@ -1117,11 +1117,21 @@ impl<'a> Lowerer<'a> {
                 self.emit_lexical_send(depth, crate::Symbol::intern(&id.name), vec![])
             }
             // The resolver attaches `SuperSend` to a bare identifier in one
-            // place: a `super`-prefixed superclass-clause receiver (the known
-            // gap in `docs/design/dispatch.md`, "Binding variants"). It is
-            // grouped with `None` because both fall to the same builtin-name
-            // fallback. `MirrorSend` marks a send, never an identifier.
-            Some(Binding::SuperSend | Binding::MirrorSend) | None => {
+            // place: a `super`-prefixed inheritance-clause receiver, `super
+            // Foo`. §6.1 evaluates it "as if it occurred inside an instance
+            // method" of the enclosing class, so it is the super send of
+            // `Foo`, whose lookup starts above the clause activation's
+            // `current_class` -- the class that declares the clause.
+            Some(Binding::SuperSend) => {
+                self.emit_send(|destination, call_site| Instruction::SendSuper {
+                    selector: crate::Symbol::intern(&id.name),
+                    argument_registers: vec![],
+                    destination,
+                    call_site,
+                })
+            }
+            // `MirrorSend` marks a send, never an identifier.
+            Some(Binding::MirrorSend) | None => {
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
                     Some(kind) => {
                         let destination = self.allocate_scratch();
