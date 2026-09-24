@@ -258,8 +258,9 @@ lets a program claim every primitive: only `resolver::resolve_kernel` records
 `Binding::MirrorSend`, the mark `SendMirror` and primitive methods are compiled from, and
 only `Kernel.ns` is resolved with it -- a user module goes through `resolve`; the bootstrap
 checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
-(`interpreter::kernel`); no program can name the mirror's class -- no bare name resolves to
-it (`instantiate::builtin_kind_from_name` omits it), and the image decoder refuses builtin
+(`interpreter::kernel`); no program can name the mirror's class -- `Object` declares no
+accessor for it or for `Top` (`interpreter/kernel.rs`'s test pins the accessor set, and the
+recognizer in `compiler::primitive_method` refuses both), and the image decoder refuses builtin
 class tag 14 wherever a program names a class (`read_program_builtin_class`, which refuses
 `Top`'s tag 15 the same way and for the same kind of reason -- §3.2 lets only `Object` name
 it, so no source module can and no artifact may either); the encoder
@@ -279,10 +280,12 @@ read afresh in `act` on every send, never trusted from the entry; today that is
 tell `Array` and `OrderedCollection` from an ordinary instance, a primitive's
 payload check, which `builtins::execute` re-runs, and a class object's own
 `class` field, which `resolve_public` re-reads to fall through to `Object`'s
-methods after a metaclass miss. A primitive method's fast path is decided the same way:
-the entry records a `Method`, and `act` reads the mirror row off that method
-(`MixinMethod.primitive`) on every send, hit or miss, never from anything the entry
-decided (`docs/design/dispatch.md`, "Primitive methods"). Add such a read and its per-send
+methods after a metaclass miss. A kernel method's fast path is decided the same way:
+the entry records a `Method`, and `act` reads the fast path off that method
+(`MixinMethod.fast_path` -- a mirror row, `MethodFastPath::Mirror`, or a builtin class
+for one of `Object`'s accessors, `MethodFastPath::BuiltinClass`) on every send, hit or
+miss, never from anything the entry decided (`docs/design/dispatch.md`, "Primitive
+methods"). Add such a read and its per-send
 re-check goes with it. The reference lowering runs every send uncached, so it
 is the oracle a cache defect shows against (`docs/design/dispatch.md`, "3b — The
 caches").

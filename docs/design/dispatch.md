@@ -9,7 +9,7 @@
 > send), `interpreter/sends.rs` (the uncached lexical and super sends),
 > `interpreter/instantiate.rs` (`decide_factory`, the action of a factory
 > entry and the per-send read a cache key does not cover),
-> `mixin.rs` (`DispatchId`, `MixinMethod.primitive`), `heap.rs`
+> `mixin.rs` (`DispatchId`, `MixinMethod.fast_path`), `heap.rs`
 > (`Heap::dispatch_id`), `builtins/primitive.rs` (the enumerated primitive
 > and the VM mirror's table, `MIRROR`), `interpreter/mirror.rs` (how a send
 > to the mirror runs), `compiler/primitive_method.rs` (which kernel methods
@@ -147,9 +147,10 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
   calls, slot reads, slot writes and references to nested-class accessors. These
   are not three separate cases; per §5.7–§5.9 they are an outer-send at depth
   `k`.
-  Planned: a bare builtin class name becomes one too, `self String`, answered
-  by an accessor on `Object` (§3.2), where today it binds nothing and lowers to
-  `LoadBuiltinClass` ([core-library.md](core-library.md), "Planned: the
+  A bare predefined class name is one too: a name no local and no enclosing
+  declaration declares binds `LexicalSend { depth: 0 }`, so `String` is
+  `self String`, answered by an accessor on `Object` (§3.2) through the
+  receiver's inheritance chain ([core-library.md](core-library.md), "The
   predefined classes are accessors on `Object`").
 - `SuperSend` — a `super m` send (§5.10). Not depth-based; resolved at run time
   against the current activation's `current_class`, which need not be `self`'s
@@ -163,14 +164,29 @@ includes the superclass clause's receiver part, which §6.1 evaluates "as if it
 occurred inside an instance method" of the enclosing class — the same mechanism,
 evaluated at a particular time rather than a distinct binding kind.
 
-**Deviation: a builtin class name is loaded, not sent.** §3.2 has `Object`
-provide "accessors for predefined classes and objects, such as the classes of
-the built-in literals (5.1) e.g., String", so a bare `String` that no enclosing
-declaration declares is, by §5.7, `self String`, answered by `Object`'s
-accessor. The resolver instead leaves such a name unbound and the compiler loads
-the builtin class directly (`Instruction::LoadBuiltinClass`). The two differ
-only when a user class overrides the accessor — a method named `String` in a
-superclass of the sender — which the direct load ignores.
+**A predefined class name is a send to `Object`'s accessor** (built
+2026-09-24). §3.2 has `Object` provide "accessors for predefined classes and
+objects, such as the classes of the built-in literals (5.1) e.g., String", so
+a bare `String` that no enclosing declaration declares is, by §5.7,
+`self String`: the resolver binds it `LexicalSend { depth: 0 }` in a method
+body and in a nested class's superclass clause alike
+(`resolver::resolve_identifier`, `resolve_superclass_clause`), and the
+receiver's inheritance chain answers it. A class that declares or inherits a
+member of that name therefore reaches its own, as §2.3.1 says
+(`goldens/nesting/a_module_that_declares_string_uses_its_own.ns`,
+`goldens/nesting/an_inherited_member_named_like_a_builtin_wins.ns`,
+`goldens/nesting/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
+and a class-side method reaches `Object`'s accessor through the fall-through
+after a metaclass miss
+(`goldens/class-side/a_class_side_method_names_a_builtin.ns`). `Object`
+declares no accessor for `Top`, the VM mirror's class or `Platform`, so
+`self Top`, like a bare `Top`, ends in `doesNotUnderstand:`
+(`goldens/errors/top_is_not_a_name.ns`,
+`goldens/errors/the_mirrors_class_is_not_a_name.ns`). Only two names stay
+unbound: a module root's clause receivers, which the root rule decides and
+which never run, and bare `super`; both lower to the deferred
+`UnresolvedIdentifier` literal, so compiling stays total. The accessor itself
+runs without an activation ("Primitive methods" below).
 
 **A `super`-prefixed clause receiver is a super send.** For
 `class N = super Foo (...)` the resolver binds the receiver `Foo` as
@@ -534,9 +550,25 @@ does not absorb would cost an activation, a lexical send of `vmMirror` and a
 `SendMirror` more than it did as a native entry
 ([execution.md](execution.md), "What the core library's move cost").
 
+**What a method does without an activation is one field,
+`MixinMethod.fast_path: Option<MethodFastPath>`** (`mixin.rs`), with two
+variants:
+
+- `Mirror(row)` — the method forwards to one mirror row: a send runs the
+  row's leaf, and activates the method only when the leaf declines. This is
+  the primitive method proper, described in the rest of this section.
+- `BuiltinClass(kind)` — the method is one of §3.2's accessors for the
+  predefined classes on `Object`, whose body is `^outer Kernel <Name>`: a
+  send answers the builtin class and never activates the method
+  ([core-library.md](core-library.md), "The predefined classes are accessors
+  on `Object`").
+
+Only a `Kernel.ns` method carries either. Every other method, and every method
+decoded from an image, has `None`.
+
 **Recognition** (`compiler/primitive_method.rs`, `recognize`) runs as a
-method is built onto its mixin, and stores the row on the method
-(`MixinMethod.primitive`). It accepts exactly
+method is built onto its mixin, and stores the variant on the method. For
+`Mirror` it accepts exactly
 `^vmMirror <row>: self <the method's parameters, in order> ifFail: [...]`:
 
 - the body is one statement, a `^` of the send, and declares no temporaries;
@@ -555,18 +587,30 @@ ordinary method. Only `resolve_kernel` records `MirrorSend`, so only a
 `Kernel.ns` method can be one; the same text in a user module is an ordinary
 method sending to whatever its `vmMirror` holds. What the failure block
 contains is not examined: it runs only when the method is activated. A method
-decoded from an image never carries a row, since no image carries a kernel
-method.
+decoded from an image never carries a fast path, since no image carries a
+kernel method.
+
+For `BuiltinClass`, `recognize_builtin_class_accessor` accepts a unary method
+whose body is one statement with no temporaries, `^outer Kernel <Name>`, the
+send bound `LexicalSend` and `<Name>` a kernel class other than `Top` and
+`Platform` (`interpreter::kernel::kernel_kind_named`, which never names the
+mirror's class). It runs only when `ResolvedModule.kernel` is set, which
+`resolver::resolve_kernel` alone sets: in a user module `outer Kernel` names
+whatever that module's own `Kernel` is, so the same text there is an ordinary
+method. `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch it off, since an
+accessor runs no leaf.
 
 **The fast path is in `act`** (`interpreter/resolve.rs`), on a
-`Resolved::Method` of any chain but the two handler chains: when the method
-carries a row, `mirror::execute_method` runs the row's leaf with the send's
-receiver, selector and arguments; `Some` is the send's answer, and `None`
-falls through to the ordinary `Step::Method`, whose body then runs the leaf
+`Resolved::Method` of any chain but the two handler chains. A
+`BuiltinClass(kind)` method answers `kind`'s class object at once. For a
+`Mirror(row)` method, `mirror::execute_method` runs the row's leaf with the
+send's receiver, selector and arguments; `Some` is the send's answer, and
+`None` falls through to the ordinary `Step::Method`, whose body then runs the leaf
 again from its own mirror send and, declining, its failure block. A
 `doesNotUnderstand:` handler that is a primitive method — `Object`'s — runs
 its leaf on the reified message in `act_handler_method` the same way, before
-it would activate. The fast path costs one field test on every method send;
+it would activate; an accessor is unary and so is never a handler. The fast
+path costs one field test on every method send;
 the leaf's answer is delivered exactly as a native entry's was, a value or a
 step.
 
@@ -1353,6 +1397,13 @@ dispatches on one.
   `act` without an activation, under both lowerings, recognized from the
   body rather than declared, and only in `Kernel.ns`. Built; see "Primitive
   methods" above.
+- **A predefined class name is a send to an accessor on `Object`**
+  (2026-09-24, §3.2): a bare name no enclosing declaration declares binds
+  `LexicalSend { depth: 0 }`, so a class that declares or inherits the name
+  reaches its own, and the accessor answers the builtin class in `act`
+  without an activation (`MethodFastPath::BuiltinClass`). It replaces the
+  constant load `LoadBuiltinClass`, which ignored such a member. Built; see
+  "Binding variants" and "Primitive methods" above.
 - **Inline caches per heap** (3b, designed 2026-09-15, built 2026-09-16) —
   monomorphic, a polymorphic cache of 4, then megamorphic, with a global
   cache of 1024 entries behind every site — guarded on the mixin

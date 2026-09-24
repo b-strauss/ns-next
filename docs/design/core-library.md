@@ -27,7 +27,8 @@ comparison in [image-format.md](image-format.md).
 
 ```
 Top                     (private; no superclass, declares nothing)
-└── Object              class, ==, =, hash, printString, doesNotUnderstand:
+└── Object              class, ==, =, hash, printString, doesNotUnderstand:,
+    │                   and an accessor per nameable builtin (String, ...)
     ├── Value           =, ==, hash, and the two slot-reading leaves
     │   ├── Boolean     ├── True
     │   │               └── False
@@ -77,7 +78,10 @@ may.
 
 Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
-`printString` and protected `doesNotUnderstand:`; `Boolean`'s conditionals,
+`printString` and protected `doesNotUnderstand:`, beside its fifteen
+accessors for the predefined classes, `Object` to `Block`, each
+`^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
+below); `Boolean`'s conditionals,
 `not`, `&`, `and:`, `|`, `or:` and `printString`; `Integer`'s `+ - * // < >
 <= >= =`, `negated`, `abs`, `printString` and `asString`; `Float`'s
 `+ - * / < > =`, `hash`, `printString` and `asString`; `String`'s `size`,
@@ -565,10 +569,13 @@ one of them lets a program claim every primitive:
 - The bootstrap checks what the resolver cannot: that `Kernel`'s root class
   declares exactly one slot, the immutable `vmMirror`, and that after
   instantiation it holds the mirror (`interpreter::kernel`).
-- No program can name the mirror's class: a bare name resolves only to the
-  builtin classes `instantiate::builtin_kind_from_name` lists, which omit it,
-  and the image decoder refuses builtin class tag 14 wherever a program names
-  a class ([image-format.md](image-format.md), "Verification").
+- No program can name the mirror's class: `Object` declares no accessor for
+  it or for `Top` (`interpreter/kernel.rs`'s
+  `objects_class_accessors_are_exactly_the_nameable_builtins` pins the
+  accessor set, and `compiler::primitive_method` recognizes no accessor for
+  either), so a bare name for it ends in `doesNotUnderstand:`; and the image
+  decoder refuses builtin class tag 14 wherever a program names a class
+  ([image-format.md](image-format.md), "Verification").
 - The image encoder refuses an image whose graph reaches the mirror.
 - `decide_factory` refuses to instantiate the mirror's class, so there is
   never a second mirror.
@@ -854,90 +861,106 @@ That measurement also found that `bench_block.ns` spreads 16% between builds
 of the same tree, which is a fact about the protocol rather than about this
 work.
 
-### Planned: the predefined classes are accessors on `Object`
+### The predefined classes are accessors on `Object`
 
-Designed with the user on 2026-09-24; not built yet, and the next piece of
-work ([PROGRESS.md](../PROGRESS.md), "Where the next session starts"). §3.2
-says `Object` "provides a small number of methods available to all
+Designed with the user on 2026-09-24 and built the same day
+([plan](../superpowers/plans/2026-09-24-2058-ns-next-object-class-accessors.md)).
+§3.2 says `Object` "provides a small number of methods available to all
 classes", which "also include accessors for predefined classes and objects,
 such as the classes of the built-in literals (5.1) e.g., `String`", and the
-methods `Array` and `ByteArray`. Today a bare builtin name is no send at
-all: the resolver's "known builtin" base case records no binding, and both
-lowerings turn the name into `Instruction::LoadBuiltinClass`, a constant.
+methods `Array` and `ByteArray`. A bare builtin name is therefore a send.
 Each decision below was taken with the user.
 
-**The accessors are exactly the names a program can reach today**:
+**The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
 `Float`, `String`, `Symbol`, `Character`, `Nil`, `Array`,
-`OrderedCollection` and `Block` — the set of `builtin_kind_from_name`.
-`Top`, the VM mirror's class and `Platform` get none. Each is an ordinary
-public method of `Kernel.ns`'s `Object`, `public String = ( ^outer Kernel
-String )`, whose body sends the kernel instance its nested-class accessor.
-The `outer Kernel` is required, not style: inside `Object`, §5.7's innermost
-declaration of `String` is `Object` itself, so a bare `^String` would send
-the accessor to itself forever. This is wider
-than both references: SOMns declares only `Object`, `Value` and `kernel` on
-its root class ("This works around restrictions by the absense of a global
-scope, we use inheritance instead", `prior-art/somns/core-lib/Kernel.ns`)
+`OrderedCollection` and `Block`. `Top`, the VM mirror's class and `Platform`
+get none: §3.2 lets only `Object` name `Top`, as its superclass; the mirror
+is a capability; and a program is handed the platform through its factory.
+Each is an ordinary public method of `Kernel.ns`'s `Object`,
+`public String = ( ^outer Kernel String )`, whose body sends the kernel
+instance its nested-class accessor. The `outer Kernel` is required, not
+style: inside `Object`, §5.7's innermost declaration of `String` is `Object`
+itself, so a bare `^String` would send the accessor to itself forever. This
+is wider than both references: SOMns declares only `Object`, `Value` and
+`kernel` on its root class ("This works around restrictions by the absense of
+a global scope, we use inheritance instead", `prior-art/somns/core-lib/Kernel.ns`)
 and has modules fetch the rest from the platform, and Primordial Soup's
 `Object` declares none; §3.2's text is the authority, and every name that
-works today keeps working.
+worked before keeps working. `interpreter/kernel.rs`'s
+`objects_class_accessors_are_exactly_the_nameable_builtins` pins the set,
+the three absent names included.
 
-**A bare name is then an implicit-receiver send.** The resolver drops its
-builtin base case in `resolve_identifier` and in `resolve_superclass_clause`,
-so a name no enclosing declaration declares binds `LexicalSend { depth: 0 }`
+**A bare name is an implicit-receiver send.** The resolver has no builtin
+base case: in `resolve_identifier` and in `resolve_superclass_clause`, a name
+no local and no enclosing declaration declares binds `LexicalSend { depth: 0 }`
 — `self String` — and the receiver's inheritance chain answers it (§2.3.1:
 the lexical chain first, then the receiver's chain). A module or a class may
 therefore redefine `String` for itself, lexically or by inheritance, as the
-specification intends. A nested class's superclass clause `= Object new`
-becomes the same send, run in the clause's activation. A module root's
-clauses stay unbound and are decided by the root rule
+specification intends. A nested class's superclass clause `= Object new` is
+the same send, run in the clause's activation. A module root's clauses stay
+unbound and are decided by the root rule
 ([object-model.md](object-model.md), "The root rule"), since §3.8 leaves a
 top-level expression no receiver. Class-side code reaches the accessors
-through the fall-through to `Object`'s methods after a metaclass miss.
-Neither lowering emits `LoadBuiltinClass` any more; a name with no binding
-— a root clause's receiver, never run, and bare `super` — lowers to the
-deferred `UnresolvedIdentifier`, so compiling stays total.
+through the fall-through to `Object`'s methods after a metaclass miss. A
+name with no binding — a root clause's receiver, never run, and bare
+`super` — lowers to the deferred `UnresolvedIdentifier` under both
+lowerings, so compiling stays total ([dispatch.md](dispatch.md), "Binding
+variants"). A `super`-prefixed clause receiver, `class N = super Foo (...)`,
+is a real super send in both lowerings (§6.1); removing the base case made
+that necessary, since `super Object` had reached the builtin by the same
+fallback.
 
 **The accessor answers without an activation, as a primitive method runs
 its leaf without one** ([dispatch.md](dispatch.md), "Primitive methods").
-`MixinMethod.primitive` becomes `fast_path: Option<MethodFastPath>`, with
-`Mirror(MirrorPrimitive)` as today and `BuiltinClass(BuiltinClass)` new.
-`compiler::primitive_method` recognizes, while compiling `Kernel.ns` only
-(`ResolvedModule` says which module it is, set by `resolve_kernel`), a body
-that is nothing but `^outer Kernel` and the name of a kernel class, and `act`
-reads the variant off the method on every send, hit or miss, and answers
-the builtin class. The inline cache still records only the method it found;
-it decides nothing, and a class that redefines the name reaches its own
-method through the ordinary lookup. What remains per use is a self send
-that hits its cache and a load, which a JIT can fold to a constant under the
-receiver-class guard. A kernel method is never carried by an image, so the
-format needs nothing for it.
+`MixinMethod.fast_path: Option<MethodFastPath>` has two variants,
+`Mirror(MirrorPrimitive)` for a primitive method and
+`BuiltinClass(BuiltinClass)` for an accessor. `compiler::primitive_method`
+recognizes the accessor while compiling `Kernel.ns` only —
+`ResolvedModule.kernel` says which module it is, and only `resolve_kernel`
+sets it — from a body that is nothing but `^outer Kernel` and the name of a
+kernel class other than `Top` and `Platform`, and `act` reads the variant off
+the method on every send, hit or miss, and answers the builtin class. The
+inline cache still records only the method it found; it decides nothing, and
+a class that redefines the name reaches its own method through the ordinary
+lookup. What remains per use is a self send that hits its cache and a load,
+which a JIT can fold to a constant under the receiver-class guard. A kernel
+method is never carried by an image, so the format needed nothing for it.
 
-**`Instruction::LoadBuiltinClass` goes, and its wire tag 2 is retired**
+**`Instruction::LoadBuiltinClass` is gone, and its wire tag 2 is retired**
 into `RETIRED_OPCODES` (`image/opcodes.rs`), never reused: an old artifact
-naming it hits an unknown tag instead of decoding into another program. The
-decoder's `read_program_builtin_class` stays for the class references a
-record carries.
+naming it hits an unknown tag instead of decoding into another program
+([image-format.md](image-format.md)). The decoder's
+`read_program_builtin_class` stays for the class references a record
+carries.
 
-**The mirror's capability lock moves with it.** "No bare name resolves to
-it (`builtin_kind_from_name` omits it)" becomes "`Object` declares no
-accessor for the mirror's class or for `Top`", pinned by a test, and
-`CLAUDE.md`'s list of the six locks says so.
+**The mirror's capability lock moved with it.** The lock that no program can
+name the mirror's class is now that `Object` declares no accessor for it or
+for `Top`, pinned by the kernel test above ("The VM mirror is the whole Rust
+boundary" above; `CLAUDE.md`'s list of the six locks).
 
-**Goldens and measurement.** An outcome can change only where a program
-shadows a builtin name by inheritance: the constant won before, the
-inherited member wins now, as §2.3.1 says. The plan searches the goldens and
-the corpus for that shape and argues each hit against the specification,
-never re-recording one because the code now produces it. New goldens pin a
-module that declares its own `String`, a subclass inheriting a method
-`Array` from a user superclass, a class-side `Array`, and `self Top` and the
-mirror's class name ending in `doesNotUnderstand:`. The order is: the
-accessors and the fast path, additive; the resolver and both lowerings; the
-instruction and its tag; the documents; the stress gates, `run-corpus` and a
-release measurement against `909bf40` by the protocol with `-C metadata`
-layouts ([execution.md](execution.md), "What the value conditions cost"),
-start-up included.
+**What pins it.** An outcome could change only where a program shadows a
+builtin name by inheritance: the constant won before, the inherited member
+wins now, as §2.3.1 says. No existing golden and none of the runnable corpus
+modules had that shape, and no recorded outcome moved. New goldens pin a
+module that declares its own `String`
+(`goldens/nesting/a_module_that_declares_string_uses_its_own.ns`), an
+inherited member named like a builtin
+(`goldens/nesting/an_inherited_member_named_like_a_builtin_wins.ns`), an
+enclosing member named like a builtin as a superclass
+(`goldens/nesting/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
+a class-side `Array` (`goldens/class-side/a_class_side_method_names_a_builtin.ns`),
+`self Top` and the mirror's class name ending in `doesNotUnderstand:`
+(`goldens/errors/top_is_not_a_name.ns`,
+`goldens/errors/the_mirrors_class_is_not_a_name.ns`), and the super-prefixed
+clause (`goldens/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`).
+`crates/ns-runtime/tests/object_class_accessors.rs` pins the recognizer and
+the answer under both lowerings.
+
+**Measured** against `909bf40` by the protocol with `-C metadata` layouts
+([execution.md](execution.md), "What the value conditions cost"), start-up
+included. (Placeholder: filled in by the release measurement at the end of
+this plan.)
 
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers
 
@@ -1015,6 +1038,13 @@ and a Newspeak body would have to settle again, visibly:
   rather than changing the Newspeak side.
 - **The platform grows only against a whitelisted module**, so every capability
   has a test that would notice it breaking.
+- **The predefined classes are accessors on `Object`** (decided with the
+  user on 2026-09-24, built the same day): one public `Kernel.ns` method per
+  nameable builtin, `^outer Kernel <Name>`, answered by
+  `MethodFastPath::BuiltinClass` without an activation, and a bare builtin
+  name is the self send §5.7 makes it, so a class that declares or inherits
+  the name reaches its own. `LoadBuiltinClass` and its wire tag 2 are
+  retired — "The predefined classes are accessors on `Object`" above.
 - **`i64` with an error on overflow**, rather than silent wraparound or a bignum
   library nothing yet needs.
 

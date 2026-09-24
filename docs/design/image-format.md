@@ -183,8 +183,12 @@ Instructions:
 - 0 `LoadLiteral`: loads a literal into a register; a string, symbol, character
   or array literal allocates a fresh object every time it runs.
 - 1 `LoadSelf`: loads the receiver, `self`, into a register.
-- 2 `LoadBuiltinClass`: loads the builtin class a bare name such as `Object`
-  denotes when no enclosing declaration declares that name.
+- 2: retired. It was `LoadBuiltinClass`, which loaded the builtin class a
+  bare name such as `Object` denoted when no enclosing declaration declared
+  that name; such a name is now a send to `Object`'s accessor (§3.2,
+  [dispatch.md](dispatch.md), "Binding variants"), and bytes written under 2
+  meet an unknown tag and are refused (`opcodes::RETIRED_OPCODES`,
+  `the_retired_load_builtin_class_tag_is_refused`).
 - 3 `Move`: copies one register into another.
 - 4 `StoreLocal`: writes a register into a local variable of the running
   activation; reading one needs no instruction, since its register is its value.
@@ -637,13 +641,14 @@ whole Rust boundary"). Its class has builtin class tag **14**
 (`BuiltinClass::VmMirror`, appended to `BuiltinClass::ALL` after `Platform`'s
 13), which `builtin_class_from_tag` knows so that the closing table of
 tag-named hashes can name it as it names every builtin. **Everywhere a
-program names a class — a `LoadBuiltinClass`, a class reference in the graph,
-a root class's superclass, the builtin a `<:` clause named — the decoder reads the tag through
+program names a class — a class reference in the graph, a root class's
+superclass, the builtin a `<:` clause named — the decoder reads the tag through
 `read_program_builtin_class`, which refuses 14** as an invalid tag: an
 artifact that could name the mirror's class could instantiate a second mirror
 or reach the one there is, and so claim every primitive, which no source
-module can (`a_load_builtin_class_naming_the_mirror_is_refused` in
-`crates/ns-runtime/tests/image.rs`). The encoder refuses the other direction:
+module can (`a_level_applying_the_mirrors_or_tops_mixin_is_refused` and
+`a_root_level_naming_a_clause_out_of_place_is_refused`, whose last case is a
+root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder refuses the other direction:
 an image whose graph reaches the mirror object is not written at all, since
 it would hand the capability to whatever loaded it
 (`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`).
@@ -939,6 +944,12 @@ builtins.
   number still needs bounding) — the alternatives 3b's refusal already
   rejected, still true once the refusal moved from checking a claimed number
   to never reading one.
+- **Retiring `LoadBuiltinClass` retired its tag 2** (2026-09-24), never
+  reused: a bare predefined class name became a send to `Object`'s accessor,
+  so no lowering emits the instruction, and a stale artifact's tag-2 bytes
+  meet an unknown tag instead of decoding as whatever instruction took the
+  number next. A kernel method's fast path is never carried, so the format
+  needed nothing new.
 - **`FORMAT_VERSION` is not bumped**, because there are no external users and the
   safety property does not depend on it.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;

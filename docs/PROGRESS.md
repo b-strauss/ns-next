@@ -15,15 +15,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**The next piece of work is making the predefined classes accessors on
-`Object`, as §3.2 says**, designed with the user on 2026-09-24 and not yet
-planned: a bare `String` becomes the implicit-receiver send `self String`,
-answered by a `Kernel.ns` method on `Object` that a fast path answers
-without an activation, and `LoadBuiltinClass` and its wire tag are retired
-([core-library.md](design/core-library.md), "Planned: the predefined classes
-are accessors on `Object`"). The user put it ahead of the next plan.
-
-**After it comes step 6's third plan, `Class`, `Behavior` and
+**The next piece of work is step 6's third plan, `Class`, `Behavior` and
 `Metaclass` in `Kernel.ns`**, which has no plan yet and must settle one
 question left open on 2026-09-24: whether a class object is a value. §6.4
 makes a module definition — a module root's class object — a value object,
@@ -32,7 +24,13 @@ deviations); for a nested class object the specification says nothing, and
 SOMns counts a class a value when its enclosing object is one
 (`SClass.isValue`), only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
-gives. Step 6's first two plans are done: the core library over a VM mirror,
+gives. The piece of work the user put ahead of it is done: the predefined
+classes are accessors on `Object`, as §3.2 says, so a bare `String` is the
+implicit-receiver send `self String`, answered without an activation, and
+`LoadBuiltinClass` and its wire tag are retired
+([core-library.md](design/core-library.md), "The predefined classes are
+accessors on `Object`"; "The predefined classes as accessors on `Object`"
+below). Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
 ([core-library.md](design/core-library.md), "What exists"). Two pieces of
@@ -463,10 +461,6 @@ The measurement, and the template for the next, is
   contribute to one member set for lexical resolution; the specification is
   silent and the canonical compiler scopes the class side apart
   ([dispatch.md](design/dispatch.md), "Resolution").
-- **A builtin class name is loaded, not sent** (§3.2): `Object` and the other
-  builtin names resolve statically rather than as sends to the accessors
-  §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
-  class name is loaded, not sent").
 - **`nil printString` answers `'an Object'`**: the leaf `Object>>printString`
   forwards to is a stub (`crates/ns-runtime/src/builtins/object_class.rs`,
   `an Object` for every receiver); no golden pins the correct answer yet.
@@ -3858,6 +3852,69 @@ remaining hypotheses are about data layout and the machine:
 - (c) *Hardware counters*: instructions retired against cycles and cache
   misses, which would say whether the head executes more or merely waits
   longer.
+
+## The predefined classes as accessors on `Object` (2026-09-24)
+
+Plan:
+[ns-next-object-class-accessors](superpowers/plans/2026-09-24-2058-ns-next-object-class-accessors.md),
+five tasks. Branch `feature/object-class-accessors`, off `master` at
+`909bf40`, on the checked-out tree throughout. §3.2 has `Object` provide
+"accessors for predefined classes and objects, such as the classes of the
+built-in literals (5.1) e.g., `String`", so a bare `String` no enclosing
+declaration declares is §5.7's `self String`; ns-next loaded it as a
+constant instead (`LoadBuiltinClass`), which a class inheriting a member of
+that name could not override. The design is
+[core-library.md](design/core-library.md), "The predefined classes are
+accessors on `Object`", and [dispatch.md](design/dispatch.md), "Binding
+variants" and "Primitive methods".
+
+**Decisions, each taken with the user on 2026-09-24:**
+
+- **An accessor for every name a program could reach**, `Object` to
+  `Block`, fifteen in all, wider than both references; `Top`, the mirror's
+  class and `Platform` get none.
+- **`public String = ( ^outer Kernel String )`**: the `outer Kernel` is
+  required, since inside `Object` a bare `String` would find `Object`'s own
+  accessor and recurse.
+- **A fast path answers the accessor without an activation**:
+  `MixinMethod.primitive` became `fast_path: Option<MethodFastPath>`, with
+  `Mirror(row)` as before and `BuiltinClass(kind)` new, recognized only in
+  `Kernel.ns` and read by `act` on every send.
+- **`LoadBuiltinClass` and its wire tag 2 are retired**, never reused.
+- **The mirror's capability lock moves** from "no bare name resolves to it"
+  to "`Object` declares no accessor for it or for `Top`", pinned by a test.
+
+**What changed, commit by commit:**
+
+- `2a2721d`, `cba6881` — the design, and the correction that the accessor
+  reaches the kernel through `outer Kernel`.
+- `e1d3069` — the plan.
+- `4f34a87` — `Kernel.ns`'s `Object` gets its fifteen accessors;
+  `MixinMethod.fast_path` and `MethodFastPath` replace `primitive`;
+  `ResolvedModule.kernel` confines recognition to the kernel; the recognizer
+  refuses `Top` and the mirror's class; `act` answers `BuiltinClass` without
+  an activation. `interpreter/kernel.rs`'s
+  `objects_class_accessors_are_exactly_the_nameable_builtins` pins the set,
+  and `crates/ns-runtime/tests/object_class_accessors.rs` the recognizer.
+- `ed9d7f9` — a `super`-prefixed inheritance-clause receiver lowers to a
+  real super send in both lowerings (§6.1), which the next commit needed:
+  `super Object` had reached the builtin through the fallback it removes.
+  Accepted by the controller; it closes the known gap `dispatch.md`
+  recorded. One new golden.
+- `46b9cf0` — the resolver binds a name no enclosing declaration declares
+  `LexicalSend { depth: 0 }`, in method bodies and nested clauses alike;
+  both lowerings emit `UnresolvedIdentifier` for an unbound name; the
+  recognizer refuses `Platform` too. Six new goldens; no existing recorded
+  outcome moved, and `run-corpus` stayed at ran 6 / failed 0 / skipped 205.
+  `tests/fixtures/golden-image.bin` is regenerated: its nested class's
+  `Object new` clause now sends `Object`, which adds that symbol.
+- `dd1c70c` — `Instruction::LoadBuiltinClass` and
+  `instantiate::builtin_kind_from_name` are deleted, and opcode 2 joins
+  `RETIRED_OPCODES`.
+- this entry's commit — the documents.
+
+**Measurement.** (Placeholder: filled in by the release measurement at the
+end of this plan.)
 
 ## Notes
 
