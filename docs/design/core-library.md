@@ -94,10 +94,12 @@ their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
 `hash` ordinary ones. `Boolean` declares nothing of its own either.
 
-The other exceptions are `hash` on `Integer` (`^self`), on `Character`
-(`^self asInteger`) and on `True` and `False` (`^1` and `^0`): ordinary
-methods, because the value each answers is already at hand and a
-row for it would only repeat what `Kernel.ns` can say. Every value class
+The other exceptions are `hash` on `Integer` (`^self`) and `asString` on
+`String` (`^self`), both quick methods ("`True` and `False` are quick
+methods" below), and `hash` on `Character` (`^self asInteger`) and on `True`
+and `False` (`^1` and `^0`), ordinary methods: the value each answers is
+already at hand, and a row for it would only repeat what `Kernel.ns` can
+say. Every value class
 declares the `hash` its own `=` demands — §3.1.1 lets a value be copied
 across an actor boundary, so a copy has to hash like its original, and none
 of them may inherit `Object`'s identity hash. `String`'s, `Character`'s, `Symbol`'s and — since 2026-09-23 — `Float`'s `=`

@@ -211,6 +211,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public hash = ( ^vmMirror stringHash: self ifFail: [^super hash] )
         public asSymbol = ( ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol] )
         public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
+        public asString = ( ^self )
     )
     public class Symbol = Value new () (
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )

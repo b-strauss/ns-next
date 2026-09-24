@@ -832,6 +832,7 @@ mod tests {
             MethodFastPath::ValueOfParameter(1),
         ),
         (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
+        (BuiltinClass::String, "asString", MethodFastPath::Receiver),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
