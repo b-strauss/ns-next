@@ -271,7 +271,7 @@ pub struct ActivationHeader<'gc> {
     /// What the run loop does with the activation's value when it returns.
     pub then: Continuation<'gc>,
     /// Whether the activation counts against the depth limit -- every one
-    /// does, except a block a control-flow native activates for a
+    /// does, except a control-flow step's block activated for a
     /// `SendInlinable` (`Mutator::push_step`).
     pub counted: bool,
 }
@@ -1295,7 +1295,7 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Whether `object` is a closure -- what a control-flow native asks of a
+    /// Whether `object` is a closure -- what a control-flow step asks of a
     /// value before activating it as a block.
     pub fn is_closure(&self, object: ObjectReference<'gc>) -> bool {
         self.closure(object).is_some()

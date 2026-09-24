@@ -131,7 +131,7 @@ pub enum Instruction {
     /// An ordinary explicit-receiver send, exactly `SendPublic`, emitted only
     /// by the reference lowering and only for the sends the optimized lowering
     /// inlines (`control_flow::recognize`). The mark is for the depth count: a
-    /// block a builtin control-flow native activates for it is not counted,
+    /// control-flow step's block activated for it is not counted,
     /// because the optimized lowering never activates that block at all
     /// (`docs/design/compiler.md`, "How the limit counts").
     SendInlinable {

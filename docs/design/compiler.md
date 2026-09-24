@@ -921,7 +921,11 @@ that only the reference lowering emits, for exactly the sends
 - **The count agrees at every point of every program.** The optimized lowering
   omits exactly these activations and no others. On a non-Boolean receiver both
   lowerings make the same real send with real closures, and from there count
-  alike; the `mustBeBoolean` send is made alike too.
+  alike; the `mustBeBoolean` send is made alike too. That holds for an
+  instance of a user subclass of `True`, which reaches `True`'s quick
+  methods: they mark the block as a control-flow step only for a Boolean
+  receiver, so its block is counted under both lowerings
+  (`goldens/kernel/recursion_through_a_subclass_of_true_counts_alike_under_both_lowerings`).
 - **The agreement depends on the kernel's fast paths, which is why they
   apply under both lowerings.** The reference lowering's `SendInlinable` of
   `ifTrue:` reaches `True>>ifTrue:`, a kernel method. Activated, that method
@@ -1000,7 +1004,7 @@ interpreter usable, with the counted depth back at 0. A recursion through
 self-recursive `ifTrue:` is rewritten into a `SendInlinable`, which the
 captured-frame condition counts — whether or not the sending block's own
 activation is reified, so the condition cannot be weakened to "the sender has
-a frame". The control-flow natives sent from Rust, where their continuation
+a frame". The control-flow steps sent from Rust, where their continuation
 runs at the floor of the run, answer what they should and leave both depths at
 0. The goldens
 `goldens/limits/thousand_deep_recursion_runs.ns` and
@@ -1012,8 +1016,8 @@ error text, under both lowerings.
 counter that is its only consumer: without the counter it would mean exactly
 `SendPublic`, and nothing could test it. The limit is 100,000
 (`MAX_ACTIVATION_DEPTH`), its error text is `stack overflow: recursion too
-deep`, and the control-flow natives are trampoline steps, so under neither
-lowering does a block they activate cost native stack
+deep`, and control flow answers trampoline steps, so under neither
+lowering does a block it activates cost native stack
 ([execution.md](execution.md), "The trampoline").
 
 ### Status

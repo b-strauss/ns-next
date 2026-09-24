@@ -108,7 +108,7 @@ pub(crate) enum Step<'gc> {
         feedback_base: inline_cache::FeedbackBase,
     },
     /// Activate the closure object `closure`, and do `then` with its value.
-    /// A builtin control-flow native's block is marked by its `arguments`,
+    /// A control-flow step's block is marked by its `arguments`,
     /// `StepArguments::ControlFlow`.
     Block {
         closure: ObjectReference<'gc>,
@@ -166,14 +166,15 @@ pub(crate) enum Step<'gc> {
 pub(crate) enum StepArguments<'gc> {
     /// The send's own arguments.
     Send,
-    /// None, for the block a builtin control-flow native activates --
-    /// `ifTrue:` and its three relatives, `and:`, `or:`, `whileTrue:`,
-    /// `whileFalse:` -- which is the activation the optimized lowering
-    /// inlines away, and which `push_step` therefore exempts from the depth
-    /// count when the send was a `SendInlinable`. Only those natives and
-    /// the `^<parameter> value` quick method
-    /// (`MethodFastPath::ValueOfParameter`) -- `True`'s and `False`'s
-    /// conditionals, `and:` and `or:` -- build it.
+    /// None, for a control-flow step: the block activated for `ifTrue:` and
+    /// its three relatives, `and:` and `or:` on a Boolean receiver -- answered
+    /// by `True`'s and `False`'s `^<parameter> value` quick methods
+    /// (`MethodFastPath::ValueOfParameter`) -- or for `whileTrue:` and
+    /// `whileFalse:` -- answered by their leaves. It is the activation the
+    /// optimized lowering inlines away, and which `push_step` therefore
+    /// exempts from the depth count when the send was a `SendInlinable`.
+    /// Only those build it, and the quick method only for a Boolean
+    /// receiver: an instance of a subclass of `True` is never inlined.
     ///
     /// The mark rides on the arguments rather than in a `bool` of its own on
     /// `Step::Block`. That field measured 4-8% slower on all three
@@ -910,7 +911,7 @@ impl<'gc> Mutator<'gc> {
                     closure_feedback_base
                 };
                 // Exempt exactly the activation the optimized lowering
-                // inlines away: a block a control-flow native activates for
+                // inlines away: a control-flow step's block activated for
                 // a `SendInlinable`, and only if the sending activation
                 // created it -- which every block the reference lowering
                 // passes to one is, and which keeps a crafted artifact from
@@ -1048,8 +1049,8 @@ impl<'gc> Mutator<'gc> {
         )
     }
 
-    /// What a control-flow native does once the block it activated has
-    /// returned `value`: the second half of the native, which the run loop
+    /// What a native does once the block it activated has returned
+    /// `value`: the second half of the native, which the run loop
     /// waits for instead of a Rust frame. `then` is the continuation of the
     /// block's activation, which the loop has just popped. It answers the
     /// value for the caller, or another activation to run in the popped

@@ -39,8 +39,8 @@ a counted one than source can: that number is bounded by how deeply blocks
 nest, which the decoder caps at the parser's own ceiling ("Verification"
 below); see [execution.md](execution.md), "The depth limit". A mutated
 binary that decodes cleanly can still abort while executing — a native that
-indexes an argument it was not given, for one: the control-flow natives read
-`arguments[0]` unchecked, and the decoder does not check a send's argument count
+indexes an argument it was not given, for one: the `whileTrue:` and
+`whileFalse:` leaves read `arguments[0]` unchecked, and the decoder does not check a send's argument count
 against its selector — and that is not a decoder defect.
 
 ## Two artifacts

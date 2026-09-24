@@ -434,20 +434,30 @@ impl<'gc> Mutator<'gc> {
                                 return Ok(Step::Value(*argument));
                             }
                         }
-                        // The step a Boolean leaf used to answer: the block,
-                        // activated as control flow, so that `push_step`
-                        // exempts it for a `SendInlinable` exactly as it
-                        // did. A non-closure activates the method, whose
-                        // `value` send answers what any other send of
-                        // `value` to it would.
+                        // The step a Boolean leaf used to answer: the block
+                        // to activate, with no activation of the method. It
+                        // is marked as control flow -- which `push_step`
+                        // exempts from the depth count for a
+                        // `SendInlinable` -- only for a Boolean receiver,
+                        // the one the optimized lowering inlines; an
+                        // instance of a subclass of `True` reaches the same
+                        // method through a real send under both lowerings,
+                        // so its block is counted under both. A non-closure
+                        // activates the method, whose `value` send answers
+                        // what any other send of `value` to it would.
                         Some(MethodFastPath::ValueOfParameter(position)) => {
                             if let Some(Value::Object(object)) =
                                 arguments.get(usize::from(position)).copied()
                             {
                                 if self.heap().is_closure(object) {
+                                    let block_arguments = if matches!(receiver, Value::Boolean(_)) {
+                                        StepArguments::ControlFlow
+                                    } else {
+                                        StepArguments::Owned(Vec::new())
+                                    };
                                     return Ok(Step::Block {
                                         closure: object,
-                                        arguments: StepArguments::ControlFlow,
+                                        arguments: block_arguments,
                                         then: Continuation::Deliver,
                                     });
                                 }

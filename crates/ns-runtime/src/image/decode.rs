@@ -64,8 +64,8 @@ pub enum DecodeError {
     /// A body in the code table creates blocks nested deeper than the
     /// parser lets source nest them (`MAX_BLOCK_NESTING`). The table is flat
     /// on the wire, so nothing recurses while it is read; the depth matters
-    /// afterwards, twice over. The depth count exempts a block a
-    /// control-flow native activates for a `SendInlinable` when the
+    /// afterwards, twice over. The depth count exempts a control-flow
+    /// step's block activated for a `SendInlinable` when the
     /// activation below created it, so the exempt activations stacked above
     /// one counted activation are bounded by exactly this nesting
     /// (`docs/design/compiler.md`, "How the limit counts") -- unbounded, the

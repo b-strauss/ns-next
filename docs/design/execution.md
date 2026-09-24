@@ -14,7 +14,7 @@
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path, and the indirection vector's reads and writes in
 > `interpreter/locals.rs`), `compiler/capture.rs` (the capture analysis) and
-> `compiler/lower.rs` (the converted register layout), `builtins/boolean.rs`,
+> `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack).
@@ -346,7 +346,7 @@ activations from its callers'.
   caller: `resume_caller` reads the `program_counter` the caller stored at its send, writes
   the value to that send's `destination` and continues at the next instruction — or,
   when the popped activation was `base`, the loop leaves `run` with it. Every
-  other continuation — a control-flow native's, `do:`'s, the nested-class
+  other continuation — a native loop's, `do:`'s, the nested-class
   accessor's, an instantiation's — is applied by `Mutator::resume`, which
   calls into `builtins/` or `interpreter/`; it may answer a value, or another
   activation — a native loop's next block, `do:`'s block for the next element,
@@ -365,8 +365,9 @@ Four kinds of body run, and each reaches the loop one way:
    activation catches a `^` that targets it (`Mutator::catches_return`).
 2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
    closure object; the activation runs the `code` of that object's
-   `ClosureData`. `value`, the control-flow natives and `do:` answer the block
-   as a step.
+   `ClosureData`. `value`, the control-flow steps — `whileTrue:`'s and
+   `whileFalse:`'s leaves and `True`'s and `False`'s `^<parameter> value`
+   quick methods — and `do:` answer the block as a step.
 3. **Instance initializer** — `descend_levels`, one per initializing level of
    the superclass chain, answers that level's compiled initializer: its own
    slot initializers and initializer expressions. While a level below it still
@@ -3647,7 +3648,7 @@ Three things the trampoline settles on its own:
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
   artifact. The limit counts every activation except a block activation that a
-  builtin control-flow native performs for a `SendInlinable`, the send only the
+  builtin control-flow step performs for a `SendInlinable`, the send only the
   reference lowering emits where the optimized one inlines. That makes the
   count agree under both lowerings at every point of every program, so the
   reference lowering checks an overflow too ([compiler.md](compiler.md), "How
@@ -3661,7 +3662,7 @@ Three things the trampoline settles on its own:
 
 ### The depth limit
 
-Decided 2026-09-12. Once sends and the control-flow natives no longer recurse
+Decided 2026-09-12. Once sends and control flow no longer recurse
 and nothing re-enters the run loop from Rust ("No re-entry from Rust" below),
 a recursion runs out of one resource only, the memory its activations take,
 and one counted bound limits it:
@@ -3700,11 +3701,13 @@ yet.
   `Mutator::push_step` ever records an exemption; a method, and every body
   an instantiation or a nested-class accessor runs — an initializer level, a
   superclass clause or its message — are counted by construction.
-- **The exemption is marked by the arguments.** A block a control-flow native
-  activates, and the failure block a sent mirror send activates when its leaf
-  declines ([compiler.md](compiler.md), "Mirror sends"), carry
-  `StepArguments::ControlFlow` — neither has arguments, and only those two
-  build that variant — and `push_step` exempts one when the send
+- **The exemption is marked by the arguments.** A control-flow step's block —
+  one a `whileTrue:` or `whileFalse:` leaf activates, or one a Boolean
+  receiver's `^<parameter> value` quick method answers — and the failure
+  block a sent mirror send activates when its leaf declines
+  ([compiler.md](compiler.md), "Mirror sends"), carry
+  `StepArguments::ControlFlow` — none has arguments, and only those build
+  that variant — and `push_step` exempts one when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through
@@ -4484,7 +4487,7 @@ binds it is that no native code may ever enter an image.
   or without conversion.
 - **Sends run on the activation stack, not the Rust stack**: one loop pushes,
   pops and resumes, and it pops everything it runs on every path out.
-- **The control-flow natives are trampoline steps and depth has one bound**,
+- **Control flow answers trampoline steps and depth has one bound**,
   L = 100,000 activations, counted alike under both lowerings, because a
   callback native would make the reference lowering's native stack grow with
   source nesting; with no re-entry from Rust left, nothing else can run out

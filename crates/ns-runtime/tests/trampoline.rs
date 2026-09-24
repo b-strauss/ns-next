@@ -456,7 +456,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     });
 }
 
-/// A control-flow native sent from Rust, not from the loop: its block is
+/// A control-flow step sent from Rust, not from the loop: its block is
 /// pushed at the floor of the run `Interpreter::send` starts, so the
 /// continuation that pops it -- `Deliver` for `and:` and `or:`, a loop's
 /// `WhileCondition` and `WhileBody` -- runs with no caller in that run, and a loop's next block

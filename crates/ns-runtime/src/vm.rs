@@ -236,8 +236,8 @@ fn execute<'gc>(
             )
         }
         // Decided as `SendPublic` is, but uncached: only the reference
-        // lowering emits it. Only the depth count treats the block a
-        // control-flow native activates for it differently
+        // lowering emits it. Only the depth count treats a control-flow
+        // step's block activated for it differently
         // (`Mutator::push_step`).
         Instruction::SendInlinable {
             selector,
@@ -626,7 +626,7 @@ fn deliver<'gc>(
 
 /// `activation` has returned `value`: pop it and do what its continuation says.
 /// A value -- the usual case -- goes to the send in the caller, which resumes,
-/// or out of `run` when there is no caller in this run; a control-flow native's
+/// or out of `run` when there is no caller in this run; a native loop's
 /// continuation may instead decide another activation -- a native loop's next
 /// block, or a `mustBeBoolean` method -- which runs in the popped activation's
 /// place. `Mutator::resume` applies the continuation and

@@ -1,5 +1,5 @@
-//! The three control-flow natives behind the compiler's inlined forms
-//! (`Block>>whileTrue:`, `Block>>whileFalse:`, `Boolean>>ifFalse:ifTrue:`).
+//! Three of the control-flow steps behind the compiler's inlined forms
+//! (`Block>>whileTrue:`, `Block>>whileFalse:`, `True>>ifFalse:ifTrue:`).
 //! Every block reaches
 //! the send through a variable: the compiler inlines only literal blocks, so
 //! a variable is what makes these the natives running rather than the
