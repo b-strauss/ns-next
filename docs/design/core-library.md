@@ -632,9 +632,12 @@ procedure, not an edge case.
 public + other = ( ^vmMirror integer: self add: other ifFail: [^super + other] )
 ```
 
-Every kernel method is this: the mirror selector, with `self` and then the
-method's own parameters in order, and a literal failure block that resends the
-same message to `super`. The failure path is an explicit `ifFail:` block
+Every kernel method that reaches a leaf is this: the mirror selector, with
+`self` and then the method's own parameters in order, and a literal failure
+block that resends the same message to `super`. The rest reach none — the
+quick methods ("`True` and `False` are quick methods", "The nil protocol"),
+the accessors for the predefined classes, and the few ordinary methods such
+as `True>>printString` or `Value`'s derived equality. The failure path is an explicit `ifFail:` block
 rather than something the runtime does implicitly (decided with the user on
 2026-09-21): a real send to the mirror, as §8.3.1 requires, whose failure
 path is visible Newspeak code, as Cog's method body is. SOMns uses the same
