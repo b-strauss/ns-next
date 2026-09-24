@@ -3913,8 +3913,14 @@ variants" and "Primitive methods".
   `RETIRED_OPCODES`.
 - this entry's commit — the documents.
 
-**Measurement.** (Placeholder: filled in by the release measurement at the
-end of this plan.)
+**Measurement.** No fixture under `goldens/bench/` names a builtin in its
+loop, and all of them are level against `909bf40` within layout noise
+(`bench_block.ns` and `bench_do.ns` read 2–4% faster only because the base's
+two `-C metadata` layouts are slow); start-up is level. A throwaway loop that
+names `Array` and `OrderedCollection` each iteration is 1.5% slower, about
+1.4 ns per class-accessor send against the old constant load, and `vm::run`
+grew from 6,507 to 6,626 instructions, still one function
+([execution.md](design/execution.md), "What the class accessors cost").
 
 ## Notes
 
