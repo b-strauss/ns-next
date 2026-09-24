@@ -24,7 +24,13 @@ without an activation, and `LoadBuiltinClass` and its wire tag are retired
 are accessors on `Object`"). The user put it ahead of the next plan.
 
 **After it comes step 6's third plan, `Class`, `Behavior` and
-`Metaclass` in `Kernel.ns`**, which has no plan yet, only the outline
+`Metaclass` in `Kernel.ns`**, which has no plan yet and must settle one
+question left open on 2026-09-24: whether a class object is a value. §6.4
+makes a module definition — a module root's class object — a value object,
+which ns-next does not yet honour ([README.md](design/README.md),
+deviations); for a nested class object the specification says nothing, and
+SOMns counts a class a value when its enclosing object is one
+(`SClass.isValue`), only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
 gives. Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
