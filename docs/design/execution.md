@@ -3538,6 +3538,54 @@ tree a sitting. The base's medians were 5.49 ms and 5.58 ms (10th to 90th
 percentile 5.21–5.89 and 5.19–6.08), the head's 5.56 ms and 5.63 ms
 (5.27–5.91 and 5.32–6.17): 0.05–0.07 ms apart, inside the scatter.
 
+### What `True` and `False` as quick methods cost
+
+Writing `True` and `False` in Newspeak over quick methods
+([core-library.md](core-library.md), "`True` and `False` are quick methods")
+changed what a release build runs where a Boolean method is *sent* rather
+than inlined: `not`, `&`, `|`, and a conditional, `and:` or `or:` whose
+argument is not a literal block. Each was a primitive method whose mirror row
+ran a leaf; each is now answered by `act` off the method's
+`MethodFastPath::Constant`, `Parameter` or `ValueOfParameter`, with no leaf
+and no activation. What every method send now pays is three more arms in
+`act`'s test of `method.fast_path`; `vm::run` grew from 6,626 to 6,818
+instructions and is still one function, with no `vm::run::closure` of its
+own (`dumpbin -disasm` on a release build with debug information, both
+trees).
+
+**Which sources can move.** The four fixtures under `goldens/bench/` send
+no Boolean method in their loops: their conditionals and loops take literal
+blocks and are inlined. One throwaway source exercises the change,
+`bench_boolean.ns`, a 200,000-iteration `whileTrue:` loop whose body is
+`flag:: flag not. flag ifTrue: block. (flag & true) ifTrue: block.
+(flag | false) ifFalse: block`, with `block` a variable holding
+`[taken:: taken + 1]` — four sent Boolean methods and three sent
+conditionals per iteration; it prints `300000` under both trees.
+
+**Measured 2026-09-24, the branch head against `ddd9e4f`**, the `master` it
+started from, by the protocol of "What removing the re-entries moved" above:
+two builds of each tree, every build with the pinned flags, the four
+binaries differing byte for byte; `ns-next bench <source> --iterations 30`,
+five rounds of all four binaries in turn, after one sitting of five rounds
+of one build each. Medians of the five rounds, in ms:
+
+| Source | before | before, second build | after | after, second build | Pooled |
+|---|---|---|---|---|---|
+| `bench_boolean.ns` | 55.56 | 55.93 | 43.71 | 43.85 | −21.5% |
+| `bench_block.ns` | 19.79 | 19.85 | 19.61 | 19.68 | −0.9% |
+| `bench_megamorphic.ns` | 11.66 | 11.73 | 11.63 | 11.66 | −0.6% |
+| `bench_send.ns` | 8.42 | 8.44 | 8.59 | 8.53 | +1.3% |
+| `bench_loop.ns` | 7.06 | 7.08 | 7.30 | 7.13 | +1.4% |
+
+`bench_boolean.ns` is entirely below: every round of either after-build is
+faster than every round of either before-build, 43.2–44.2 ms against
+55.0–57.0 in the sitting the table reports, and 43.3–44.2 against 55.0–56.3
+in the first. The four fixtures are level by the protocol's gate: for each,
+the after-rounds overlap the before-rounds — in the table's sitting,
+`bench_send.ns` 8.40–8.67
+against 8.31–8.69, `bench_loop.ns` 7.11–7.38 against 7.00–7.28, where the
+two after-builds of `bench_loop.ns` alone are 2.4% apart.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the

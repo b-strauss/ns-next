@@ -29,6 +29,8 @@ implicit-receiver send `self String`, answered without an activation, and
 `LoadBuiltinClass` and its wire tag are retired
 ([core-library.md](design/core-library.md), "The predefined classes are
 accessors on `Object`"; "The predefined classes as accessors on `Object`"
+below). A second piece put ahead of it the same day is done too: `True` and
+`False` are Newspeak over quick methods ("`True` and `False` in Newspeak"
 below). Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
@@ -3932,6 +3934,54 @@ class object exists, and `build_builtin_classes` builds them through the
 `Mutator` itself (`apply_mixin`, `mint_dispatch_ids`). A forged placeholder
 handle, `Option` and `MaybeUninit` were rejected, since each either breaks a
 handle invariant, puts the check back, or needs `unsafe`.
+
+## `True` and `False` in Newspeak (2026-09-24)
+
+`True` and `False` implement their whole protocol as ordinary `Kernel.ns`
+methods, one per branch, as SOMns's, Primordial Soup's and Newspeak on
+Squeak's kernels do, and no longer reach the VM mirror: the ten Boolean
+rows of `MIRROR`, `BooleanPrimitive`, `builtins/boolean.rs` and
+`Continuation::Truthy` are gone ([core-library.md](design/core-library.md),
+"`True` and `False` are quick methods";
+[plan](superpowers/plans/2026-09-24-2320-ns-next-boolean-quick-methods.md)).
+This is the Boolean half of "Planned: real bodies for control flow and
+`do:`", moved ahead of the rest; `whileTrue:`, `whileFalse:`, `do:` and
+`value` stay leaves.
+
+Four decisions, taken with the user on 2026-09-24:
+
+- **The Boolean family moves now**, the loops later, as decision 7 of the
+  kernel move still says for them.
+- **Quick methods keep the depth count agreeing.** The kernel compiler runs
+  a body that is `^true`, `^false`, `^nil`, `^<parameter>` or
+  `^<parameter> value` without an activation (`MethodFastPath::Constant`,
+  `Parameter`, `ValueOfParameter`), as Squeak's and Cog's quick methods,
+  so the reference lowering's `SendInlinable` of `ifTrue:` still counts
+  none where the optimized lowering inlines it.
+- **`and:`, `or:`, `&` and `|` do not coerce**, as in every prior-art
+  kernel: `true and: [3]` answers `3`, under both lowerings.
+- **An argument that is no block is sent `value`**, with no `Object>>value`
+  to answer it, as in Primordial Soup: `true ifTrue: 3` ends in
+  `doesNotUnderstand:`, `false ifTrue: 3` answers `nil`.
+
+**Goldens.** Two changed, both because of the coercion decision:
+`language/and_or_short_circuit` (was `and_or_short_circuit_and_coerce`),
+whose `true and: [3]` answers `3` where it answered `false`, and
+`language/and_or_answer_their_arguments_value` (was
+`variable_and_block_coerces_its_value_to_a_boolean`), likewise, and which
+now also covers `&` and `|` with a non-block argument. Four are new:
+`kernel/recursion_through_and_or_counts_alike_under_both_lowerings`, which
+passed before the move too and fails if any `True`/`False` method is not
+recognized as quick; `language/a_short_circuited_conditional_ignores_its_argument`;
+`errors/a_conditional_sends_value_to_its_argument`; and
+`kernel/a_subclass_of_true_inherits_its_methods` — a user subclass of
+`True` now runs its branches, where the leaves used to decline for want of
+a payload.
+
+**Measured** against `ddd9e4f` ([execution.md](design/execution.md), "What
+`True` and `False` as quick methods cost"): a throwaway source sending
+Boolean methods in its loop is 21.5% faster; the four fixtures are level.
+`vm::run` grew from 6,626 to 6,818 instructions and is still one function.
 
 ## Notes
 
