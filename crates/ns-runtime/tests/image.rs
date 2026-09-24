@@ -1055,8 +1055,7 @@ fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
     }
 }
 
-/// A builtin class tag names no builtin at the root-class section too, not
-/// only where a `LoadBuiltinClass` instruction once carried one:
+/// A builtin class tag names no builtin at the root-class section either:
 /// `decode_root_section` reads its superclass through the same
 /// `read_program_builtin_class`, so an out-of-range byte is refused there as
 /// well, never misread as some other builtin class.
@@ -8451,6 +8450,31 @@ fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
         let tag = encode::builtin_class_tag(kind);
         assert_eq!(
             fixture.decode_error(&builtin_mixin_record(tag, (applied, 0))),
+            decode::DecodeError::InvalidTag {
+                what: "builtin class a program may name",
+                tag
+            }
+        );
+    }
+}
+
+/// An object's class field is a place a program names a class too, so
+/// `decode_class_tag`'s builtin arm refuses the VM mirror's class and `Top`
+/// there as well: an object recorded as an instance of the mirror's class
+/// would be a second mirror.
+#[test]
+fn an_objects_class_naming_the_mirrors_class_or_top_is_refused() {
+    for kind in [BuiltinClass::VmMirror, BuiltinClass::Top] {
+        let tag = encode::builtin_class_tag(kind);
+        let bytes = class_records(1, |writer| {
+            writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+            writer.write_u8(tag);
+            writer.write_u32(5); // identity hash
+            writer.write_u8(OBJECT_ARRAY); // object body: Array
+            writer.write_u32(0); // no elements
+        });
+        assert_eq!(
+            GraphFixture::new().decode_error(&bytes),
             decode::DecodeError::InvalidTag {
                 what: "builtin class a program may name",
                 tag
