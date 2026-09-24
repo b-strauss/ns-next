@@ -16,15 +16,14 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 ## Where the next session starts
 
 **The next piece of work is step 6's third plan, `Class`, `Behavior` and
-`Metaclass` in `Kernel.ns`**, which has no plan yet and must settle one
-question left open on 2026-09-24: whether a class object is a value. §6.4
-makes a module definition — a module root's class object — a value object,
-which ns-next does not yet honour ([README.md](design/README.md),
-deviations); for a nested class object the specification says nothing, and
-SOMns counts a class a value when its enclosing object is one
-(`SClass.isValue`), only the outline
+`Metaclass` in `Kernel.ns`**, which has no plan yet, only the outline
 [object-model.md](design/object-model.md)'s "Class sides and metaclasses"
-gives. The piece of work the user put ahead of it is done: the predefined
+gives. It must settle one question left open on 2026-09-24: whether a class
+object is a value. §6.4 makes a module definition — a module root's class
+object — a value object, which ns-next does not yet honour
+([README.md](design/README.md), deviations); for a nested class object the
+specification says nothing, and SOMns counts a class a value when its
+enclosing object is one (`SClass.isValue`). The piece of work the user put ahead of it is done: the predefined
 classes are accessors on `Object`, as §3.2 says, so a bare `String` is the
 implicit-receiver send `self String`, answered without an activation, and
 `LoadBuiltinClass` and its wire tag are retired
