@@ -2,7 +2,7 @@ Newspeak3
 'Kernel'
 (* True's methods are Newspeak and need no payload, so a user subclass
    inherits them: its instance runs the true branch and prints as true,
-   where Boolean itself declares only hash and an instance of a subclass of
+   where Boolean itself declares nothing and an instance of a subclass of
    it falls to Object's methods
    (`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`).
 

@@ -126,7 +126,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Number = Value new () (
     )
     public class Boolean = Value new () (
-        public hash = ( ^self ifTrue: [1] ifFalse: [0] )
     )
     (* §5.1.2: `true` is the unique instance of `True` and `false` of
        `False`. Each branch is a method of its own, as in every prior-art
@@ -138,7 +137,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
        inlines, counts no activation for it either
        (`docs/design/core-library.md`, "`True` and `False` are quick
        methods"). An argument that is no block is sent `value` like any
-       other object; `printString` alone is an ordinary method. *)
+       other object; `printString` and `hash` alone are ordinary methods. *)
     public class True = Boolean new () (
         public ifTrue: trueBlock ifFalse: falseBlock = ( ^trueBlock value )
         public ifFalse: falseBlock ifTrue: trueBlock = ( ^trueBlock value )
@@ -150,6 +149,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public | other = ( ^true )
         public or: block = ( ^true )
         public printString = ( ^'true' )
+        public hash = ( ^1 )
     )
     public class False = Boolean new () (
         public ifTrue: trueBlock ifFalse: falseBlock = ( ^falseBlock value )
@@ -162,6 +162,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public | other = ( ^other )
         public or: block = ( ^block value )
         public printString = ( ^'false' )
+        public hash = ( ^0 )
     )
     public class Integer = Number new () (
         public + other = ( ^vmMirror integer: self add: other ifFail: [^super + other] )

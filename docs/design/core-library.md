@@ -91,12 +91,12 @@ below); `Integer`'s `+ - * // < >
 `numArgs`, `whileTrue:` and `whileFalse:`; and the platform's accessors.
 `Nil` declares nothing of its own. `True` and `False` reach no leaf at all:
 their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
-("`True` and `False` are quick methods" below), and their `printString` an
-ordinary one.
+("`True` and `False` are quick methods" below), and their `printString` and
+`hash` ordinary ones. `Boolean` declares nothing of its own either.
 
-The three other exceptions are `hash` on `Integer` (`^self`), on `Character`
-(`^self asInteger`) and on `Boolean` (`^self ifTrue: [1] ifFalse: [0]`):
-ordinary methods, because the value each answers is already at hand and a
+The other exceptions are `hash` on `Integer` (`^self`), on `Character`
+(`^self asInteger`) and on `True` and `False` (`^1` and `^0`): ordinary
+methods, because the value each answers is already at hand and a
 row for it would only repeat what `Kernel.ns` can say. Every value class
 declares the `hash` its own `=` demands — §3.1.1 lets a value be copied
 across an actor boundary, so a copy has to hash like its original, and none
@@ -667,7 +667,7 @@ public and: block = ( ^false )                                         (* False 
 ```
 
 No method tests its receiver and none reaches the mirror; `Boolean` itself
-declares only `hash`.
+declares nothing, and each of the two declares the `hash` its `=` demands.
 
 **Every such body is a quick method**, Squeak's and Cog's name for a method
 that answers a constant or an argument and is run without an activation. A
@@ -711,10 +711,11 @@ Two semantic decisions came with the move (decided with the user on
   (`goldens/language/a_short_circuited_conditional_ignores_its_argument`).
 
 A user subclass of `True` inherits these methods, needing no payload for
-them, where a subclass of `Boolean` inherits only `hash` and falls to
-`Object`'s methods for the rest
+them, where a subclass of `Boolean` inherits nothing from it and falls to
+`Value`'s and `Object`'s methods, hashing by its state like any other value
 (`goldens/kernel/a_subclass_of_true_inherits_its_methods`,
-`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`).
+`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`,
+`goldens/kernel/a_subclass_of_boolean_hashes_as_a_value`).
 
 ### The bootstrap: placeholders first, kernel second
 

@@ -294,7 +294,7 @@ fn compare_node<'gc>(
 fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>> {
     match value {
         Value::Nil => Some(Node::Leaf(NIL_HASH)),
-        // `Boolean>>hash`'s two answers, so a boolean slot hashes as the
+        // `True>>hash` and `False>>hash`, so a boolean slot hashes as the
         // boolean itself does.
         Value::Boolean(flag) => Some(Node::Leaf(i64::from(flag))),
         // Not `Integer>>hash`, which answers the integer itself and so can

@@ -658,7 +658,8 @@ mod tests {
     /// forwarder the recognizer silently missed still fails the test below;
     /// an entry is (class, selector).
     const NOT_FORWARDERS: &[(BuiltinClass, &str)] = &[
-        (BuiltinClass::Boolean, "hash"),
+        (BuiltinClass::True, "hash"),
+        (BuiltinClass::False, "hash"),
         (BuiltinClass::Integer, "hash"),
         (BuiltinClass::Character, "hash"),
         // §3.1.1's identity method on a value: a send of `=`, which is what
@@ -675,7 +676,8 @@ mod tests {
         // which a primitive method may not do.
         (BuiltinClass::Value, "valueSlotCountOf:"),
         (BuiltinClass::Value, "valueSlotOf:at:"),
-        // A string literal is no quick answer: an ordinary method.
+        // A string literal is no quick answer: an ordinary method, like
+        // `hash` above, whose integer literal is none either.
         (BuiltinClass::True, "printString"),
         (BuiltinClass::False, "printString"),
     ];
