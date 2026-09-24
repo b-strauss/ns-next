@@ -3922,6 +3922,18 @@ names `Array` and `OrderedCollection` each iteration is 1.5% slower, about
 grew from 6,507 to 6,626 instructions, still one function
 ([execution.md](design/execution.md), "What the class accessors cost").
 
+**Open: `builtin_classes` as a fixed-size array.** `Mutator.builtin_classes`
+is a `Vec`, so `builtin_class(kind)` carries a bounds check, and the
+fast-path arm puts it and its cold panic block at every site `act` is
+inlined into. A `[ClassReference; BuiltinClass::ALL.len()]` would remove
+both and should return most of `vm::run`'s growth from 6,507 to 6,626
+instructions as headroom under LLVM's inlining threshold. It needs the
+bootstrap restructured: `World::new` must initialise the field before any
+class object exists, and `build_builtin_classes` builds them through the
+`Mutator` itself (`apply_mixin`, `mint_dispatch_ids`). A forged placeholder
+handle, `Option` and `MaybeUninit` were rejected, since each either breaks a
+handle invariant, puts the check back, or needs `unsafe`.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of

@@ -3474,7 +3474,10 @@ it is inlined into grew alike: `inline_cache::global_hit` from 909 to 926,
 `send_lexical_first` from 577 to 601, and each of the three
 `inline_cache::miss` instances by 60 to 63. The likely cause of `vm::run`'s
 growth is the same one, the new `fast_path` arm at each place `act` is inlined
-into it; that was not isolated.
+into it; that was not isolated. Storing the builtin classes in a fixed-size array rather than a
+`Vec` would drop `builtin_class`'s bounds check from each of those sites; it
+waits on a bootstrap restructuring ([PROGRESS.md](../PROGRESS.md), "The
+predefined classes as accessors on `Object`").
 
 Means in ms per layout, the four sittings pooled:
 
