@@ -15,7 +15,6 @@ use crate::Symbol;
 pub enum Primitive {
     Object(ObjectPrimitive),
     Value(ValuePrimitive),
-    Boolean(BooleanPrimitive),
     Integer(IntegerPrimitive),
     Float(FloatPrimitive),
     String(StringPrimitive),
@@ -46,18 +45,6 @@ pub enum ValuePrimitive {
     Hash,
     SlotCount,
     SlotAt,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BooleanPrimitive {
-    IfTrueIfFalse,
-    IfFalseIfTrue,
-    IfTrue,
-    IfFalse,
-    Not,
-    And,
-    Or,
-    PrintString,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,7 +208,7 @@ const fn mirror(
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"); a row's index is its
 /// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
-/// rows 56-60, as they share their payload; each of their kernel classes
+/// rows 46-50, as they share their payload; each of their kernel classes
 /// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(
@@ -273,56 +260,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "value:slotAt:ifFail:",
         "slotAt:",
         Primitive::Value(ValuePrimitive::SlotAt),
-    ),
-    mirror(
-        "boolean:ifTrue:ifFalse:ifFail:",
-        "ifTrue:ifFalse:",
-        Primitive::Boolean(BooleanPrimitive::IfTrueIfFalse),
-    ),
-    mirror(
-        "boolean:ifFalse:ifTrue:ifFail:",
-        "ifFalse:ifTrue:",
-        Primitive::Boolean(BooleanPrimitive::IfFalseIfTrue),
-    ),
-    mirror(
-        "boolean:ifTrue:ifFail:",
-        "ifTrue:",
-        Primitive::Boolean(BooleanPrimitive::IfTrue),
-    ),
-    mirror(
-        "boolean:ifFalse:ifFail:",
-        "ifFalse:",
-        Primitive::Boolean(BooleanPrimitive::IfFalse),
-    ),
-    mirror(
-        "booleanNot:ifFail:",
-        "not",
-        Primitive::Boolean(BooleanPrimitive::Not),
-    ),
-    mirror(
-        "boolean:logicalAnd:ifFail:",
-        "&",
-        Primitive::Boolean(BooleanPrimitive::And),
-    ),
-    mirror(
-        "boolean:and:ifFail:",
-        "and:",
-        Primitive::Boolean(BooleanPrimitive::And),
-    ),
-    mirror(
-        "boolean:logicalOr:ifFail:",
-        "|",
-        Primitive::Boolean(BooleanPrimitive::Or),
-    ),
-    mirror(
-        "boolean:or:ifFail:",
-        "or:",
-        Primitive::Boolean(BooleanPrimitive::Or),
-    ),
-    mirror(
-        "booleanPrintString:ifFail:",
-        "printString",
-        Primitive::Boolean(BooleanPrimitive::PrintString),
     ),
     mirror(
         "integer:add:ifFail:",

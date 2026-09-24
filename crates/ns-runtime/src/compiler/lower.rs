@@ -1541,9 +1541,10 @@ impl<'a> Lowerer<'a> {
     }
 
     /// `ifTrue:`/`ifFalse:`/`ifTrue:ifFalse:`/`ifFalse:ifTrue:`: an absent
-    /// branch is `nil`, matching `builtins::boolean`'s one-armed arms. A
-    /// branch's value is only moved into the send's own result, so `use_`
-    /// -- what reads that result -- is what reads the branch's value.
+    /// branch is `nil`, matching `True>>ifFalse:` and `False>>ifTrue:`,
+    /// which answer `nil`. A branch's value is only moved into the send's
+    /// own result, so `use_` -- what reads that result -- is what reads the
+    /// branch's value.
     fn lower_if(
         &mut self,
         send: &ast::Send,

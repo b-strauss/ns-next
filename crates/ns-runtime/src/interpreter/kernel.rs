@@ -503,11 +503,11 @@ fn kernel_application<'gc>(
 
 /// A mirror send in the kernel passes a literal block only as its final,
 /// `ifFail:` argument. A literal block anywhere before it would be a block
-/// the leaf itself activates (`boolean:ifTrue:ifFail:`'s, say), and the
-/// reference lowering, which marks the whole send `SendInlinable` because
-/// its failure block is inlined by the optimized lowering, would exempt
-/// that block's activation from the depth count too -- while the optimized
-/// lowering counts it. The two lowerings would then count activations
+/// the leaf itself activates (as `whileTrue:`'s would be, were it passed
+/// as a literal), and the reference lowering, which marks the whole send
+/// `SendInlinable` because its failure block is inlined by the optimized
+/// lowering, would exempt that block's activation from the depth count too
+/// -- while the optimized lowering counts it. The two lowerings would then count activations
 /// differently (`docs/design/compiler.md`, "How the limit counts"), so the
 /// shape is refused rather than the count special-cased. Such a block is
 /// passed through a local or an argument instead, which neither lowering
@@ -624,6 +624,7 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
 #[cfg(test)]
 mod tests {
     use crate::builtins::primitive::mirror_entry;
+    use crate::mixin::{MethodFastPath, QuickConstant};
     use crate::{BuiltinClass, Interpreter, Value};
 
     /// Every builtin class but the mirror's is the kernel class of its name.
@@ -674,6 +675,99 @@ mod tests {
         // which a primitive method may not do.
         (BuiltinClass::Value, "valueSlotCountOf:"),
         (BuiltinClass::Value, "valueSlotOf:at:"),
+        // A string literal is no quick answer: an ordinary method.
+        (BuiltinClass::True, "printString"),
+        (BuiltinClass::False, "printString"),
+    ];
+
+    /// `True`'s and `False`'s methods, each a quick method: a missed one
+    /// would run correctly as an ordinary method and nothing else would
+    /// notice, except that the reference lowering would count its
+    /// activation against the depth limit and the optimized lowering would
+    /// not.
+    const QUICK_METHODS: &[(BuiltinClass, &str, MethodFastPath)] = &[
+        (
+            BuiltinClass::True,
+            "ifTrue:ifFalse:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::True,
+            "ifFalse:ifTrue:",
+            MethodFastPath::ValueOfParameter(1),
+        ),
+        (
+            BuiltinClass::True,
+            "ifTrue:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::True,
+            "ifFalse:",
+            MethodFastPath::Constant(QuickConstant::Nil),
+        ),
+        (
+            BuiltinClass::True,
+            "not",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (BuiltinClass::True, "&", MethodFastPath::Parameter(0)),
+        (
+            BuiltinClass::True,
+            "and:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::True,
+            "|",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::True,
+            "or:",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::False,
+            "ifTrue:ifFalse:",
+            MethodFastPath::ValueOfParameter(1),
+        ),
+        (
+            BuiltinClass::False,
+            "ifFalse:ifTrue:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::False,
+            "ifTrue:",
+            MethodFastPath::Constant(QuickConstant::Nil),
+        ),
+        (
+            BuiltinClass::False,
+            "ifFalse:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::False,
+            "not",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::False,
+            "&",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::False,
+            "and:",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (BuiltinClass::False, "|", MethodFastPath::Parameter(0)),
+        (
+            BuiltinClass::False,
+            "or:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
@@ -706,9 +800,11 @@ mod tests {
     /// missed `ifTrue:`, `and:` or `whileTrue:` would count against the depth
     /// limit under one lowering and not the other. The fast path's error
     /// texts name the row's reported selector, so they would also drift from
-    /// the selector the program sent if the two differed.
+    /// the selector the program sent if the two differed. `True`'s and
+    /// `False`'s methods are quick methods instead, each checked against
+    /// `QUICK_METHODS`.
     #[test]
-    fn every_kernel_method_is_a_primitive_method_named_after_its_row() {
+    fn every_kernel_method_has_the_fast_path_it_should() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             for kind in BuiltinClass::ALL {
@@ -731,6 +827,17 @@ mod tests {
                         assert!(
                             method.fast_path.is_none(),
                             "{kind:?}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
+                        );
+                        continue;
+                    }
+                    if let Some((_, _, expected)) = QUICK_METHODS
+                        .iter()
+                        .find(|(owner, name, _)| *owner == kind && *name == selector)
+                    {
+                        assert_eq!(
+                            method.fast_path,
+                            Some(*expected),
+                            "{kind:?}>>{selector} is not the quick method it should be"
                         );
                         continue;
                     }
@@ -761,6 +868,28 @@ mod tests {
                         "{kind:?}>>{selector} forwards to a row reported under another selector"
                     );
                 }
+            }
+        });
+    }
+
+    /// Every row of `QUICK_METHODS` names a method the kernel declares.
+    #[test]
+    fn every_quick_method_the_table_names_exists() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            for (kind, selector, _) in QUICK_METHODS {
+                let class = mutator.builtin_class(*kind);
+                let application = mutator
+                    .heap()
+                    .class_application(class)
+                    .expect("a builtin class has an application");
+                assert!(
+                    application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern(selector))
+                        .is_some(),
+                    "{kind:?} declares no {selector}"
+                );
             }
         });
     }
