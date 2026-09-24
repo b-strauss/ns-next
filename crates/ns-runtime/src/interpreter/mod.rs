@@ -170,8 +170,10 @@ pub(crate) enum StepArguments<'gc> {
     /// `ifTrue:` and its three relatives, `and:`, `or:`, `whileTrue:`,
     /// `whileFalse:` -- which is the activation the optimized lowering
     /// inlines away, and which `push_step` therefore exempts from the depth
-    /// count when the send was a `SendInlinable`. Only those natives build
-    /// it.
+    /// count when the send was a `SendInlinable`. Only those natives and
+    /// the `^<parameter> value` quick method
+    /// (`MethodFastPath::ValueOfParameter`) -- `True`'s and `False`'s
+    /// conditionals, `and:` and `or:` -- build it.
     ///
     /// The mark rides on the arguments rather than in a `bool` of its own on
     /// `Step::Block`. That field measured 4-8% slower on all three

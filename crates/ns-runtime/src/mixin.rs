@@ -132,6 +132,36 @@ pub enum MethodFastPath {
     /// The method answers a builtin class (§3.2's accessors on
     /// `Object`): answer it, never activate.
     BuiltinClass(crate::types::BuiltinClass),
+    /// A quick method whose body is `^true`, `^false` or `^nil`: answer
+    /// it, never activate.
+    Constant(QuickConstant),
+    /// A quick method whose body is `^<parameter>`: answer the argument at
+    /// this position, never activate.
+    Parameter(u8),
+    /// A quick method whose body is `^<parameter> value`: a closure
+    /// argument at this position is answered as the block to activate, as
+    /// a control-flow step; anything else activates the method, whose body
+    /// sends `value` for real.
+    ValueOfParameter(u8),
+}
+
+/// The constant a quick method answers (`MethodFastPath::Constant`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickConstant {
+    True,
+    False,
+    Nil,
+}
+
+impl QuickConstant {
+    /// The value a quick method answering this constant answers.
+    pub(crate) fn value<'gc>(self) -> crate::types::Value<'gc> {
+        match self {
+            QuickConstant::True => crate::types::Value::Boolean(true),
+            QuickConstant::False => crate::types::Value::Boolean(false),
+            QuickConstant::Nil => crate::types::Value::Nil,
+        }
+    }
 }
 
 impl MixinMethod {

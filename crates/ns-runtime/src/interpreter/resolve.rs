@@ -422,6 +422,37 @@ impl<'gc> Mutator<'gc> {
                                 return result;
                             }
                         }
+                        Some(MethodFastPath::Constant(constant)) => {
+                            return Ok(Step::Value(constant.value()));
+                        }
+                        // Read with `get` rather than indexed: the lookup
+                        // matched the selector, so the count is right for
+                        // every kernel method, and a missing argument then
+                        // activates the method rather than panicking.
+                        Some(MethodFastPath::Parameter(position)) => {
+                            if let Some(argument) = arguments.get(usize::from(position)) {
+                                return Ok(Step::Value(*argument));
+                            }
+                        }
+                        // The step a Boolean leaf used to answer: the block,
+                        // activated as control flow, so that `push_step`
+                        // exempts it for a `SendInlinable` exactly as it
+                        // did. A non-closure activates the method, whose
+                        // `value` send answers what any other send of
+                        // `value` to it would.
+                        Some(MethodFastPath::ValueOfParameter(position)) => {
+                            if let Some(Value::Object(object)) =
+                                arguments.get(usize::from(position)).copied()
+                            {
+                                if self.heap().is_closure(object) {
+                                    return Ok(Step::Block {
+                                        closure: object,
+                                        arguments: StepArguments::ControlFlow,
+                                        then: Continuation::Deliver,
+                                    });
+                                }
+                            }
+                        }
                         None => {}
                     }
                     Ok(Step::Method {
@@ -502,8 +533,9 @@ impl<'gc> Mutator<'gc> {
         // A primitive method as the handler -- `Object`'s own -- runs its
         // leaf on the message before it is activated, like any primitive
         // method. A builtin-class accessor is unary and so is never a
-        // `doesNotUnderstand:` handler; were one to arrive here it is
-        // activated like any method rather than answered.
+        // `doesNotUnderstand:` handler, and no kernel handler is a quick
+        // method; were either to arrive here it is activated like any
+        // method rather than answered.
         if let Some(MethodFastPath::Mirror(primitive)) = method.fast_path {
             if let Some(result) = crate::interpreter::mirror::execute_method(
                 self,
