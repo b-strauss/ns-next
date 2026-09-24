@@ -133,7 +133,7 @@ impl<'gc> Mutator<'gc> {
     /// `wire_kernel_in` checks the metaclasses.
     fn fill_builtin_classes(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let root_mixin = self.build_root_mixin(declaration, &resolved.bindings);
+        let root_mixin = self.build_root_mixin(declaration, &resolved.bindings, resolved.kernel);
         check_kernel_shape(&root_mixin, resolved);
         for kind in fill_order(&root_mixin) {
             let class = self.builtin_class(kind);
@@ -361,7 +361,7 @@ fn superclass_kind(nested: &Rc<Mixin>) -> Option<BuiltinClass> {
 }
 
 /// The builtin whose kernel class is called `name`, if any.
-fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
+pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
     BuiltinClass::ALL
         .into_iter()
         .find(|kind| *kind != BuiltinClass::VmMirror && kernel_class_name(*kind) == name)
@@ -675,6 +675,27 @@ mod tests {
         (BuiltinClass::Value, "valueSlotOf:at:"),
     ];
 
+    /// §3.2's accessors for the predefined classes, which `Object` declares:
+    /// every builtin a program can name, which is every one but `Top`, the
+    /// mirror's class and `Platform`.
+    const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
+        BuiltinClass::Object,
+        BuiltinClass::Value,
+        BuiltinClass::Boolean,
+        BuiltinClass::True,
+        BuiltinClass::False,
+        BuiltinClass::Number,
+        BuiltinClass::Integer,
+        BuiltinClass::Float,
+        BuiltinClass::String,
+        BuiltinClass::Symbol,
+        BuiltinClass::Character,
+        BuiltinClass::Nil,
+        BuiltinClass::Array,
+        BuiltinClass::OrderedCollection,
+        BuiltinClass::Block,
+    ];
+
     /// Every kernel method is a forwarder the compiler recognized, and is
     /// named after its row's reported selector -- every one but the handful
     /// `NOT_FORWARDERS` names, which reach no leaf. A method the recognizer
@@ -707,12 +728,30 @@ mod tests {
                     let selector = method.selector.as_str();
                     if NOT_FORWARDERS.contains(&(kind, selector)) {
                         assert!(
-                            method.primitive.is_none(),
+                            method.fast_path.is_none(),
                             "{kind:?}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
                         );
                         continue;
                     }
-                    let Some(row) = method.primitive else {
+                    // §3.2's accessors on `Object` are a fast path of their
+                    // own kind, which reaches no row;
+                    // `objects_class_accessors_are_exactly_the_nameable_builtins`
+                    // checks each one.
+                    if kind == BuiltinClass::Object
+                        && OBJECT_CLASS_ACCESSORS
+                            .iter()
+                            .any(|accessor| super::kernel_class_name(*accessor) == selector)
+                    {
+                        assert!(
+                            matches!(
+                                method.fast_path,
+                                Some(crate::mixin::MethodFastPath::BuiltinClass(_))
+                            ),
+                            "Object>>{selector} is not recognized as a class accessor"
+                        );
+                        continue;
+                    }
+                    let Some(crate::mixin::MethodFastPath::Mirror(row)) = method.fast_path else {
                         panic!("{kind:?}>>{selector} is not recognized as a primitive method");
                     };
                     assert_eq!(
@@ -721,6 +760,43 @@ mod tests {
                         "{kind:?}>>{selector} forwards to a row reported under another selector"
                     );
                 }
+            }
+        });
+    }
+
+    /// The accessor set on `Object` is exactly §3.2's nameable builtins,
+    /// each recognized as a fast path answering its own class; `Top`, the
+    /// mirror's class and `Platform` have none, which is one of the locks
+    /// that keep the mirror a capability.
+    #[test]
+    fn objects_class_accessors_are_exactly_the_nameable_builtins() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let object = mutator.builtin_class(BuiltinClass::Object);
+            let application = mutator
+                .heap()
+                .class_application(object)
+                .expect("Object has an application");
+            for kind in OBJECT_CLASS_ACCESSORS.iter().copied() {
+                let selector = crate::Symbol::intern(super::kernel_class_name(kind));
+                let method = application
+                    .mixin
+                    .compiled_method(selector)
+                    .unwrap_or_else(|| panic!("Object declares no accessor {kind:?}"));
+                assert_eq!(
+                    method.fast_path,
+                    Some(crate::mixin::MethodFastPath::BuiltinClass(kind)),
+                    "{kind:?}"
+                );
+            }
+            for absent in ["Top", "Platform", "VmMirror"] {
+                assert!(
+                    application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern(absent))
+                        .is_none(),
+                    "Object must declare no accessor {absent}"
+                );
             }
         });
     }

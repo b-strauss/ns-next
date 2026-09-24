@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
 use crate::dispatch::{self, Lookup};
-use crate::mixin::{AccessorKind, Mixin, MixinMethod};
+use crate::mixin::{AccessorKind, MethodFastPath, Mixin, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
 
@@ -409,14 +409,20 @@ impl<'gc> Mutator<'gc> {
                 }
                 _ => {
                     // Read off the method on every send, hit or miss: the
-                    // cache records `Target::Method` and never decides
-                    // whether its leaf runs.
-                    if let Some(primitive) = method.primitive {
-                        if let Some(result) = crate::interpreter::mirror::execute_method(
-                            self, primitive, receiver, selector, arguments,
-                        ) {
-                            return result;
+                    // cache records `Target::Method` and never decides what
+                    // the method does.
+                    match method.fast_path {
+                        Some(MethodFastPath::BuiltinClass(kind)) => {
+                            return Ok(Step::Value(Value::Object(self.builtin_class(kind))));
                         }
+                        Some(MethodFastPath::Mirror(primitive)) => {
+                            if let Some(result) = crate::interpreter::mirror::execute_method(
+                                self, primitive, receiver, selector, arguments,
+                            ) {
+                                return result;
+                            }
+                        }
+                        None => {}
                     }
                     Ok(Step::Method {
                         receiver,
@@ -495,8 +501,10 @@ impl<'gc> Mutator<'gc> {
         let message = self.handler_message(selector, arguments);
         // A primitive method as the handler -- `Object`'s own -- runs its
         // leaf on the message before it is activated, like any primitive
-        // method.
-        if let Some(primitive) = method.primitive {
+        // method. A builtin-class accessor is unary and so is never a
+        // `doesNotUnderstand:` handler; were one to arrive here it is
+        // activated like any method rather than answered.
+        if let Some(MethodFastPath::Mirror(primitive)) = method.fast_path {
             if let Some(result) = crate::interpreter::mirror::execute_method(
                 self,
                 primitive,
@@ -618,6 +626,40 @@ mod tests {
         }
     }
 
+    /// §3.2's accessor on `Object` is answered by `act` itself: the
+    /// resolution is the ordinary `Method`, and the builtin class comes back
+    /// as a value with nothing activated.
+    #[test]
+    fn act_answers_a_class_accessor_without_an_activation() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let receiver = Value::SmallInteger(3);
+            let selector = Symbol::intern("String");
+            let resolved = mutator.resolve_public(receiver, selector);
+            let Resolved::Method { ref method, .. } = resolved else {
+                panic!("`3 String` must resolve to Object's accessor");
+            };
+            assert_eq!(
+                method.fast_path,
+                Some(MethodFastPath::BuiltinClass(BuiltinClass::String))
+            );
+            let string = mutator.builtin_class(BuiltinClass::String);
+            match mutator.act_with_base(
+                resolved,
+                FeedbackBase::NOT_ASSIGNED,
+                receiver,
+                selector,
+                &[],
+            ) {
+                Ok(Step::Value(Value::Object(answered))) => {
+                    assert!(answered.same(string), "the accessor answers String itself");
+                }
+                _ => panic!("the accessor must answer a value without an activation"),
+            }
+            assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
+        });
+    }
+
     /// `resolve` decides and runs nothing; each send kind's resolution names
     /// the chain it was found on (`docs/design/dispatch.md`, "Resolve, then
     /// act").
@@ -663,29 +705,30 @@ mod tests {
             ));
             // `Integer`'s `+` is a kernel primitive method (`Kernel.ns`),
             // found as a `Resolved::Method` whose
-            // `MixinMethod.primitive` names the mirror row.
+            // `MixinMethod.fast_path` names the mirror row.
             match mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+")) {
                 Resolved::Method {
                     method,
                     chain: Chain::Public,
                     ..
                 } => assert_eq!(
-                    method.primitive,
-                    mirror_primitive_named("integer:add:ifFail:")
+                    method.fast_path,
+                    mirror_primitive_named("integer:add:ifFail:").map(MethodFastPath::Mirror)
                 ),
                 _ => panic!("`3 + 4` must resolve to Integer's `+`"),
             }
             // `Object`'s `doesNotUnderstand:` is a kernel primitive method
             // now (`Kernel.ns`), found as a `Resolved::Method` whose
-            // `MixinMethod.primitive` names the mirror row.
+            // `MixinMethod.fast_path` names the mirror row.
             match mutator.resolve_public(receiver, Symbol::intern("zork")) {
                 Resolved::Method {
                     method,
                     chain: Chain::DoesNotUnderstand,
                     ..
                 } => assert_eq!(
-                    method.primitive,
+                    method.fast_path,
                     mirror_primitive_named("object:doesNotUnderstand:ifFail:")
+                        .map(MethodFastPath::Mirror)
                 ),
                 _ => panic!("an unhandled selector must resolve to Object's doesNotUnderstand:"),
             }

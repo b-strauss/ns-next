@@ -755,7 +755,7 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
                         code: code_at(id),
                         // An image never carries a kernel method: the
                         // kernel is compiled from `Kernel.ns` at bootstrap.
-                        primitive: None,
+                        fast_path: None,
                     })),
                 )
             });

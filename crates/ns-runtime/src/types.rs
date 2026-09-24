@@ -359,6 +359,10 @@ pub struct ResolvedModule {
     /// `Span`. See `docs/design/dispatch.md`, "Shapes the resolver must
     /// recognize", for the exact shapes this covers.
     pub bindings: Rc<HashMap<Span, Binding>>,
+    /// Whether this is `Kernel.ns`: true only for the module
+    /// `resolver::resolve_kernel` answers, false for every user module. It
+    /// is what confines fast paths (`mixin::MethodFastPath`) to the kernel.
+    pub kernel: bool,
 }
 
 #[derive(Debug, Clone)]

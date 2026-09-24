@@ -83,7 +83,7 @@ pub(super) fn is_explicit_super(receiver: &Expression) -> bool {
 /// callers that get `Some(name)` back must resolve `name`'s depth via
 /// `depth_of_named_outer` and use the *outer* `Send`'s own message/selector
 /// (`send.message`) as the actual send, discarding the inner shape.
-pub(super) fn outer_class_name(receiver: &Expression) -> Option<&str> {
+pub(crate) fn outer_class_name(receiver: &Expression) -> Option<&str> {
     let Expression::Send(inner) = receiver else {
         return None;
     };

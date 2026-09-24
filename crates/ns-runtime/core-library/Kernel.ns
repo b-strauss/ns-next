@@ -36,6 +36,28 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public = other = ( ^vmMirror object: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror objectHash: self ifFail: [^super hash] )
         public printString = ( ^vmMirror objectPrintString: self ifFail: [^super printString] )
+        (* §3.2: Object "provides ... accessors for predefined classes and
+           objects, such as the classes of the built-in literals", so a bare
+           `String` anywhere is the implicit send `self String` and lands
+           here unless something nearer declares the name. Each body names
+           the kernel explicitly: inside Object, §5.7's innermost
+           declaration of `String` is this very method. `Top`, the VM
+           mirror's class and `Platform` have no accessor. *)
+        public Object = ( ^outer Kernel Object )
+        public Value = ( ^outer Kernel Value )
+        public Boolean = ( ^outer Kernel Boolean )
+        public True = ( ^outer Kernel True )
+        public False = ( ^outer Kernel False )
+        public Number = ( ^outer Kernel Number )
+        public Integer = ( ^outer Kernel Integer )
+        public Float = ( ^outer Kernel Float )
+        public String = ( ^outer Kernel String )
+        public Symbol = ( ^outer Kernel Symbol )
+        public Character = ( ^outer Kernel Character )
+        public Nil = ( ^outer Kernel Nil )
+        public Array = ( ^outer Kernel Array )
+        public OrderedCollection = ( ^outer Kernel OrderedCollection )
+        public Block = ( ^outer Kernel Block )
         (* §5.5: protected, so an explicit-receiver send of it finds nothing
            through lookupPublic and falls to the access-blind "defined for"
            walk that invokes it for the failing send itself. *)

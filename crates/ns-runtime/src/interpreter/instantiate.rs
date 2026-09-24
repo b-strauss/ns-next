@@ -37,12 +37,13 @@ fn build_methods(
     body: &ast::ClassBody,
     slots: &[MixinSlot],
     bindings: &Rc<HashMap<Span, Binding>>,
+    kernel: bool,
     lowering: crate::compiler::Lowering,
 ) -> IdentityMap<Symbol, MethodEntry> {
     let mut methods: IdentityMap<Symbol, MethodEntry> = slot_accessors(slots).into_iter().collect();
     for declaration in &body.methods {
         let method =
-            MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, lowering);
+            MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, kernel, lowering);
         let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));
         debug_assert!(
             previous.is_none(),
@@ -153,7 +154,7 @@ impl<'gc> Mutator<'gc> {
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let mixin = self.build_root_mixin(declaration, &resolved.bindings);
+        let mixin = self.build_root_mixin(declaration, &resolved.bindings, resolved.kernel);
         // The rule leaves three shapes, and a defective root is built as the
         // first so that its class exists, answers its class side and can be
         // inspected -- only an instance is refused (`apply_mixin` carries the
@@ -210,12 +211,17 @@ impl<'gc> Mutator<'gc> {
     /// -- a nested mixin has no class object of its own until something
     /// materializes it (the accessor), and a class side until
     /// `Mutator::metaclass_of` builds the metaclass that applies it.
+    ///
+    /// `kernel` is the module's `ResolvedModule.kernel`, carried down to
+    /// every method so that only a kernel method can carry a fast path
+    /// (`MixinMethod::from_declaration`).
     pub(crate) fn build_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
+        kernel: bool,
     ) -> Rc<Mixin> {
-        Rc::new(self.mixin_of(declaration, bindings))
+        Rc::new(self.mixin_of(declaration, bindings, kernel))
     }
 
     /// A module's root mixin: `build_mixin`'s, with the root rule's verdict
@@ -224,8 +230,9 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
+        kernel: bool,
     ) -> Rc<Mixin> {
-        let mut mixin = self.mixin_of(declaration, bindings);
+        let mut mixin = self.mixin_of(declaration, bindings, kernel);
         mixin.root_clause_defect = root_clause_defect(declaration);
         Rc::new(mixin)
     }
@@ -235,14 +242,21 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
+        kernel: bool,
     ) -> Mixin {
         let slots = build_slots(&declaration.instance_side);
-        let methods = build_methods(&declaration.instance_side, &slots, bindings, self.lowering);
+        let methods = build_methods(
+            &declaration.instance_side,
+            &slots,
+            bindings,
+            kernel,
+            self.lowering,
+        );
         let nested = declaration
             .instance_side
             .nested_classes
             .iter()
-            .map(|nested| self.build_mixin(nested, bindings))
+            .map(|nested| self.build_mixin(nested, bindings, kernel))
             .collect();
         // §6's unnumbered introduction, before §6.1 begins: "If the
         // signature is omitted it defaults to `new`" -- a class written
@@ -266,7 +280,7 @@ impl<'gc> Mutator<'gc> {
         let class_side = declaration
             .class_side
             .as_ref()
-            .map(|side| self.build_class_side(side, factory, bindings));
+            .map(|side| self.build_class_side(side, factory, bindings, kernel));
         let mut mixin = Mixin {
             name: Symbol::intern(&declaration.name.name),
             access: crate::dispatch::effective_access(declaration.access),
@@ -319,9 +333,10 @@ impl<'gc> Mutator<'gc> {
         side: &ast::ClassBody,
         factory: Factory,
         bindings: &Rc<HashMap<Span, Binding>>,
+        kernel: bool,
     ) -> Rc<Mixin> {
         let slots = build_slots(side);
-        let mut methods = build_methods(side, &slots, bindings, self.lowering);
+        let mut methods = build_methods(side, &slots, bindings, kernel, self.lowering);
         let (selector, entry) = crate::mixin::factory_entry(Some(factory));
         methods.insert(selector, entry);
         let mut mixin = Mixin {

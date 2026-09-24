@@ -3,7 +3,7 @@
 
 mod classes;
 mod scope;
-mod sends;
+pub(crate) mod sends;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -57,6 +57,7 @@ fn resolve_with(
             source,
             origin,
             bindings: Rc::new(resolver.bindings),
+            kernel,
         })
     } else {
         Err(resolver.errors)

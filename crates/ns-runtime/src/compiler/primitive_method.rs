@@ -5,6 +5,12 @@
 //! only when the leaf declines. Cog's primitive methods, with the primitive
 //! recognized from a body that means exactly what it says rather than
 //! declared by a pragma that replaces what the body says.
+//!
+//! The same holds for §3.2's accessors for the predefined classes on
+//! `Object`: a kernel method whose whole body is `^outer Kernel <a kernel
+//! class>` answers that builtin class and is never activated
+//! (`docs/design/core-library.md`, "Planned: the predefined classes are
+//! accessors on `Object`").
 
 use std::collections::HashMap;
 
@@ -13,7 +19,66 @@ use ns_syntax::Span;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::compiler::control_flow;
-use crate::types::Binding;
+use crate::mixin::MethodFastPath;
+use crate::types::{Binding, BuiltinClass};
+
+/// What a send of `declaration` does without an activation, if anything:
+/// the mirror row it forwards to (`recognize_mirror_forwarder`) or, in the
+/// kernel alone, the builtin class it answers
+/// (`recognize_builtin_class_accessor`). `kernel` is the module's
+/// `ResolvedModule.kernel`.
+pub(crate) fn recognize(
+    declaration: &ast::MethodDeclaration,
+    bindings: &HashMap<Span, Binding>,
+    kernel: bool,
+) -> Option<MethodFastPath> {
+    // The mirror forwarder needs no `kernel` check of its own: only
+    // `resolve_kernel`'s bindings carry the `MirrorSend` it requires.
+    if let Some(row) = recognize_mirror_forwarder(declaration, bindings) {
+        return Some(MethodFastPath::Mirror(row));
+    }
+    if !kernel {
+        return None;
+    }
+    recognize_builtin_class_accessor(declaration, bindings).map(MethodFastPath::BuiltinClass)
+}
+
+/// The builtin class `declaration` answers, when its body is exactly
+/// `^outer Kernel <Name>` with `<Name>` a kernel class and the send resolved
+/// lexically: §3.2's accessors on `Object`. The caller has checked that this
+/// is the kernel -- in a user module `outer Kernel` names whatever that
+/// module's own `Kernel` is. A parameter, a temporary, a second statement, a
+/// message with arguments, or a name that is no kernel class makes it an
+/// ordinary method; so does `Top`, which §3.2 lets only `Object` name, as
+/// its superclass, and which has no accessor.
+///
+/// Not switched off by `NS_NEXT_NO_PRIMITIVE_METHODS`: that switch measures
+/// the mirror leaves' fast path, and an accessor runs no leaf.
+fn recognize_builtin_class_accessor(
+    declaration: &ast::MethodDeclaration,
+    bindings: &HashMap<Span, Binding>,
+) -> Option<BuiltinClass> {
+    if !matches!(declaration.pattern, ast::MessagePattern::Unary { .. }) {
+        return None;
+    }
+    let body = &declaration.body;
+    if !body.temporaries.is_empty() || body.statements.len() != 1 {
+        return None;
+    }
+    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+        return None;
+    };
+    if crate::resolver::sends::outer_class_name(&send.receiver) != Some("Kernel") {
+        return None;
+    }
+    let ast::Selector::Unary(name) = &send.message.selector else {
+        return None;
+    };
+    if !matches!(bindings.get(&send.span), Some(Binding::LexicalSend { .. })) {
+        return None;
+    }
+    crate::interpreter::kernel::kernel_kind_named(name).filter(|kind| *kind != BuiltinClass::Top)
+}
 
 /// The row `declaration` forwards to, when its body is exactly
 /// `^vmMirror <row>: self <its parameters, in order> ifFail: [<anything>]`
@@ -21,7 +86,7 @@ use crate::types::Binding;
 /// only `resolve_kernel`'s bindings can satisfy). Anything else -- a
 /// temporary, a second statement, a subject other than `self`, a parameter
 /// out of place, an arity the row does not have -- is an ordinary method.
-pub(crate) fn recognize(
+fn recognize_mirror_forwarder(
     declaration: &ast::MethodDeclaration,
     bindings: &HashMap<Span, Binding>,
 ) -> Option<MirrorPrimitive> {
@@ -114,7 +179,7 @@ mod tests {
         formatdoc! {"
             Newspeak3
             'T'
-            class K vmMirror: theMirror = Object new (
+            class Kernel vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (
               class C = Object new () (
@@ -126,8 +191,8 @@ mod tests {
 
     /// `method` as the one method of a nested class in a kernel-shaped
     /// module resolved by `resolve_kernel`, and what `recognize` answers for
-    /// it, as a row index.
-    fn recognized_in_the_kernel(method: &str) -> Option<usize> {
+    /// it.
+    fn fast_path_in_the_kernel(method: &str) -> Option<MethodFastPath> {
         let source = module_source(method);
         let module = ns_syntax::parse(&source).expect("parse");
         let Ok(resolved) = crate::resolver::resolve_kernel(
@@ -137,8 +202,47 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
+        assert!(
+            resolved.kernel,
+            "resolve_kernel marks its module as the kernel"
+        );
         let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        recognize(&nested.instance_side.methods[0], &resolved.bindings).map(MirrorPrimitive::index)
+        recognize(
+            &nested.instance_side.methods[0],
+            &resolved.bindings,
+            resolved.kernel,
+        )
+    }
+
+    /// `fast_path_in_the_kernel`, as a mirror row index.
+    fn recognized_in_the_kernel(method: &str) -> Option<usize> {
+        match fast_path_in_the_kernel(method) {
+            Some(MethodFastPath::Mirror(row)) => Some(row.index()),
+            Some(MethodFastPath::BuiltinClass(kind)) => {
+                panic!("a mirror forwarder was recognized as the accessor of {kind:?}")
+            }
+            None => None,
+        }
+    }
+
+    /// `method` in the same module resolved by `resolve`, as a user module,
+    /// and what `recognize` answers for it.
+    fn fast_path_outside_the_kernel(method: &str) -> Option<MethodFastPath> {
+        let source = module_source(method);
+        let module = ns_syntax::parse(&source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            std::rc::Rc::from(source.as_str()),
+            crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        assert!(!resolved.kernel, "a user module is not the kernel");
+        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
+        recognize(
+            &nested.instance_side.methods[0],
+            &resolved.bindings,
+            resolved.kernel,
+        )
     }
 
     fn row(selector: &str) -> Option<usize> {
@@ -243,15 +347,94 @@ mod tests {
     /// ordinary method.
     #[test]
     fn does_not_recognize_a_forwarder_outside_the_kernel() {
-        let source = module_source("size = ( ^vmMirror stringSize: self ifFail: [^super size] )");
-        let module = ns_syntax::parse(&source).expect("parse");
-        let resolved = crate::resolve(
-            module,
-            std::rc::Rc::from(source.as_str()),
-            crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
-        )
-        .expect("resolve");
-        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        assert!(recognize(&nested.instance_side.methods[0], &resolved.bindings).is_none());
+        assert_eq!(
+            fast_path_outside_the_kernel(
+                "size = ( ^vmMirror stringSize: self ifFail: [^super size] )"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn recognizes_a_builtin_class_accessor() {
+        assert_eq!(
+            fast_path_in_the_kernel("String = ( ^outer Kernel String )"),
+            Some(MethodFastPath::BuiltinClass(BuiltinClass::String))
+        );
+    }
+
+    /// The name sent to the kernel decides the class, not the method's own
+    /// selector.
+    #[test]
+    fn an_accessor_answers_the_class_it_names_whatever_its_selector() {
+        assert_eq!(
+            fast_path_in_the_kernel("text = ( ^outer Kernel String )"),
+            Some(MethodFastPath::BuiltinClass(BuiltinClass::String))
+        );
+    }
+
+    /// §3.2 lets only `Object` name `Top`, and `Object` names it as its
+    /// superclass, not through an accessor.
+    #[test]
+    fn does_not_recognize_an_accessor_for_top() {
+        assert_eq!(fast_path_in_the_kernel("Top = ( ^outer Kernel Top )"), None);
+    }
+
+    #[test]
+    fn does_not_recognize_an_accessor_for_a_name_that_is_no_kernel_class() {
+        assert_eq!(
+            fast_path_in_the_kernel("Widget = ( ^outer Kernel Widget )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("VmMirror = ( ^outer Kernel VmMirror )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_an_accessor_through_another_enclosing_class() {
+        assert_eq!(
+            fast_path_in_the_kernel("String = ( ^outer C String )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_an_accessor_with_a_temporary_or_a_second_statement() {
+        assert_eq!(
+            fast_path_in_the_kernel("String = ( | temporary | ^outer Kernel String )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("String = ( self foo. ^outer Kernel String )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_an_accessor_that_takes_a_parameter() {
+        assert_eq!(
+            fast_path_in_the_kernel("String: value = ( ^outer Kernel String )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_an_accessor_that_does_not_return_the_class() {
+        assert_eq!(
+            fast_path_in_the_kernel("String = ( outer Kernel String )"),
+            None
+        );
+    }
+
+    /// Outside the kernel, `outer Kernel` names whatever the module's own
+    /// `Kernel` is, so the same text is an ordinary method.
+    #[test]
+    fn does_not_recognize_an_accessor_outside_the_kernel() {
+        assert_eq!(
+            fast_path_outside_the_kernel("String = ( ^outer Kernel String )"),
+            None
+        );
     }
 }
