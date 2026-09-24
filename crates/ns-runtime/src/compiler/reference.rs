@@ -359,19 +359,17 @@ impl<'a> Body<'a> {
                     call_site,
                 })
             }
-            // No binding: a bare builtin class name, or the deferred
-            // unresolved-identifier error (`docs/design/compiler.md`,
-            // "Compilation cannot fail"). `MirrorSend` marks a send, never an
-            // identifier.
+            // No binding: the deferred unresolved-identifier error
+            // (`docs/design/compiler.md`, "Compilation cannot fail") -- bare
+            // `super`, and a module root's clause receivers, which the
+            // resolver leaves unbound for the root rule and which never run.
+            // `MirrorSend` marks a send, never an identifier.
             Some(Binding::MirrorSend) | None => {
                 let destination = self.fresh();
-                match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
-                    Some(kind) => self.emit(Instruction::LoadBuiltinClass { destination, kind }),
-                    None => self.emit(Instruction::LoadLiteral {
-                        destination,
-                        literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
-                    }),
-                }
+                self.emit(Instruction::LoadLiteral {
+                    destination,
+                    literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
+                });
                 destination
             }
         }

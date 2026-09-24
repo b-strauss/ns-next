@@ -764,8 +764,8 @@ impl<'a> Lowerer<'a> {
     /// Whether reading `identifier` dispatches -- an implicit-receiver send,
     /// or a `super`-prefixed clause receiver's super send -- rather than
     /// loading a register. Mirrors `lower_identifier_read`, whose `self` case
-    /// answers before the binding is consulted; a bare builtin class name
-    /// and the deferred unresolved-identifier case are single register loads.
+    /// answers before the binding is consulted; the deferred
+    /// unresolved-identifier case is a single register load.
     fn identifier_sends(&self, identifier: &ast::Identifier) -> bool {
         identifier.name != "self"
             && matches!(
@@ -1131,30 +1131,23 @@ impl<'a> Lowerer<'a> {
                 })
             }
             // `MirrorSend` marks a send, never an identifier.
+            //
+            // Not a compiler-invariant violation: `resolve_identifier`
+            // deliberately records no binding for `super`, and the lexer
+            // deliberately does not reserve it, so `^super` is a program the
+            // language accepts and rejects at *evaluation* time. A module
+            // root's clause receivers, which the resolver leaves unbound for
+            // the root rule, land here too and are never run. Compilation
+            // cannot raise a `NewspeakError`, so the error is deferred
+            // exactly like `MalformedInteger`: the VM raises `literals`' own
+            // error when the instruction executes.
             Some(Binding::MirrorSend) | None => {
-                match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
-                    Some(kind) => {
-                        let destination = self.allocate_scratch();
-                        self.emit(Instruction::LoadBuiltinClass { destination, kind });
-                        destination
-                    }
-                    // Not a compiler-invariant violation: `resolve_identifier`
-                    // deliberately records no binding for `super`, and the
-                    // lexer deliberately does not reserve it, so `^super`
-                    // is a program the language accepts and rejects at
-                    // *evaluation* time. Compilation cannot raise a
-                    // `NewspeakError`, so the error is deferred exactly like
-                    // `MalformedInteger`: the VM raises `literals`' own error
-                    // when the instruction executes.
-                    None => {
-                        let destination = self.allocate_scratch();
-                        self.emit(Instruction::LoadLiteral {
-                            destination,
-                            literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
-                        });
-                        destination
-                    }
-                }
+                let destination = self.allocate_scratch();
+                self.emit(Instruction::LoadLiteral {
+                    destination,
+                    literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
+                });
+                destination
             }
         }
     }
@@ -2948,8 +2941,11 @@ mod tests {
         assert_eq!(body, 0, "nothing reads the loop body's value");
     }
 
+    /// §5.7: a name no enclosing declaration declares is `self
+    /// OrderedCollection`, which `Object`'s accessor answers (§3.2) -- a
+    /// depth-0 lexical send, never a constant load.
     #[test]
-    fn a_bare_builtin_class_name_lowers_to_load_builtin_class() {
+    fn a_bare_builtin_class_name_lowers_to_a_self_send() {
         let source = indoc! {"
             Newspeak3
             'T'
@@ -2962,14 +2958,19 @@ mod tests {
         let mut lowerer = method_lowerer(&foo, &bindings);
         let destination = lowerer.lower_expression(return_expression(&foo));
         let code = lowerer.finish(foo.span);
-        assert_eq!(
-            code.instructions,
-            vec![Instruction::LoadBuiltinClass {
-                destination: 0,
-                kind: crate::types::BuiltinClass::OrderedCollection
-            }]
-        );
-        assert_eq!(destination, 0);
+        let [Instruction::SendLexical {
+            depth: 0,
+            selector,
+            argument_registers,
+            destination: send_destination,
+            ..
+        }] = &code.instructions[..]
+        else {
+            panic!("expected one depth-0 lexical send: {:?}", code.instructions);
+        };
+        assert_eq!(selector.as_str(), "OrderedCollection");
+        assert!(argument_registers.is_empty());
+        assert_eq!(*send_destination, destination);
     }
 
     #[test]
@@ -3011,7 +3012,9 @@ mod tests {
             receiver_registers[1], receiver_registers[2],
             "both cascade sends share one receiver register"
         );
-        assert_eq!(code.family_size, 3);
+        // Four call sites: `self OrderedCollection` (§5.7), `new` and the two
+        // `add:` sends.
+        assert_eq!(code.family_size, 4);
     }
 
     /// The registers the cascade's `add:` sends read their receiver out of.

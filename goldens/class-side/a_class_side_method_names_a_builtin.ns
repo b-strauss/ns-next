@@ -1,0 +1,19 @@
+Newspeak3
+'Test'
+(* A class-side method reaches a predefined class by its bare name, in its
+   own body and inside a block alike. No enclosing construct declares
+   `Array`, so by newspeak-spec.pdf 5.7 it is `self Array`, sent to the class
+   object; 2.3.1 then follows the receiver's inheritance chain, which for a
+   class object falls through to `Object`'s methods, and those include the
+   "accessors for predefined classes" of 3.2. *)
+class ClassSideNamesBuiltin usingPlatform: platformAtCreation = Object new () (
+    class Maker = Object new () (
+    ) : (
+        public make = ( ^Array new )
+        public makeLater = ( ^[Array new] value )
+    )
+    public main: platform args: arguments = (
+        platform transcript show: (Maker make) size printString; newLine.
+        platform transcript show: (Maker makeLater) size printString; newLine
+    )
+) : ()

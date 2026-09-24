@@ -50,7 +50,10 @@ pub(crate) fn recognize(
 /// module's own `Kernel` is. A parameter, a temporary, a second statement, a
 /// message with arguments, or a name that is no kernel class makes it an
 /// ordinary method; so does `Top`, which §3.2 lets only `Object` name, as
-/// its superclass, and which has no accessor.
+/// its superclass, and which has no accessor; and so does `Platform`, whose
+/// one instance a program is handed through its factory and never reaches
+/// by name -- refused here as well as absent from `Kernel.ns`, so that no
+/// accessor for it can ever be recognized.
 ///
 /// Not switched off by `NS_NEXT_NO_PRIMITIVE_METHODS`: that switch measures
 /// the mirror leaves' fast path, and an accessor runs no leaf.
@@ -77,7 +80,8 @@ fn recognize_builtin_class_accessor(
     if !matches!(bindings.get(&send.span), Some(Binding::LexicalSend { .. })) {
         return None;
     }
-    crate::interpreter::kernel::kernel_kind_named(name).filter(|kind| *kind != BuiltinClass::Top)
+    crate::interpreter::kernel::kernel_kind_named(name)
+        .filter(|kind| !matches!(kind, BuiltinClass::Top | BuiltinClass::Platform))
 }
 
 /// The row `declaration` forwards to, when its body is exactly
@@ -378,6 +382,17 @@ mod tests {
     #[test]
     fn does_not_recognize_an_accessor_for_top() {
         assert_eq!(fast_path_in_the_kernel("Top = ( ^outer Kernel Top )"), None);
+    }
+
+    /// No program is handed a `Platform` except through its factory, so
+    /// `Object` has no accessor for it, and none is ever recognized: a second
+    /// lock beside the accessors `Kernel.ns` declares.
+    #[test]
+    fn does_not_recognize_an_accessor_for_platform() {
+        assert_eq!(
+            fast_path_in_the_kernel("Platform = ( ^outer Kernel Platform )"),
+            None
+        );
     }
 
     #[test]

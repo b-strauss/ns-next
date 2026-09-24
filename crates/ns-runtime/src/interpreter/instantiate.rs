@@ -1158,9 +1158,8 @@ fn not_an_argument_list_error<'gc>(
     })
 }
 
-/// `pub(crate)` (rather than private) so `compiler::lower` can reuse this
-/// exact string->`BuiltinClass` mapping for its bare-builtin-name fallback,
-/// instead of duplicating it. Returns `None` for any name that is not a
+/// The string->`BuiltinClass` mapping the lowerings once used to load a bare
+/// builtin class name as a constant. Returns `None` for any name that is not a
 /// builtin class name. `Object` has an explicit arm rather than being a
 /// catch-all default, because a caller must be able to tell "unrecognized
 /// name" apart from a genuine `Object` match; the match arms are the one
@@ -1171,6 +1170,10 @@ fn not_an_argument_list_error<'gc>(
 /// which is why `image::decode::read_program_builtin_class` refuses its tag
 /// as it refuses the mirror's. `Platform` is absent for the reason
 /// `kernel::kernel_class_name` gives.
+#[expect(
+    dead_code,
+    reason = "no lowering loads a builtin class by name any more; removed with LoadBuiltinClass"
+)]
 pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     Some(match name {
         "Object" => BuiltinClass::Object,

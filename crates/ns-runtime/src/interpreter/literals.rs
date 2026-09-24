@@ -7,7 +7,7 @@ use crate::Symbol;
 use super::Signal;
 
 /// The program-level error a bare identifier raises when it has no binding
-/// and names no builtin class -- reachable only for a bare `super`, which
+/// -- reachable only for a bare `super`, which
 /// `resolver::resolve_identifier` deliberately leaves unbound and which the
 /// lexer deliberately does not reserve. A module root's clause receivers are
 /// unbound too, but the root rule decides them and they never run.

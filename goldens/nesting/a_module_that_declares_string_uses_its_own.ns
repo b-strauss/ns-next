@@ -1,0 +1,17 @@
+Newspeak3
+'Test'
+(* A module that declares a member named like a predefined class reaches its
+   own member. newspeak-spec.pdf 3.2 has `Object` provide "accessors for
+   predefined classes", so a bare `String` is at most `self String`; but
+   5.7 first searches the lexically enclosing constructs, and the module
+   declares a method `String`, so the implicit send is `outer
+   ModuleDeclaresString String` and never reaches `Object`'s accessor --
+   2.3.1: "only if no lexically visible matching method is found, do we
+   proceed up the inheritance chain of self". A regression guard: the
+   lexical member won before `String` became a send, and must still. *)
+class ModuleDeclaresString usingPlatform: platformAtCreation = Object new () (
+    String = ( ^'mine' )
+    public main: platform args: arguments = (
+        platform transcript show: String; newLine
+    )
+) : ()

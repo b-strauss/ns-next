@@ -27,10 +27,9 @@ use crate::Symbol;
 ///
 /// `UnresolvedIdentifier` is the same deferral for the other program-level
 /// error a *resolved* module can still carry: an identifier with no binding
-/// that names no builtin class -- a bare `super`, which
-/// `resolver::resolve_identifier` leaves unbound and the lexer does not
-/// reserve, or a module root's clause receiver, which the root rule decides
-/// and which never runs (see
+/// -- a bare `super`, which `resolver::resolve_identifier` leaves unbound and
+/// the lexer does not reserve, or a module root's clause receiver, which the
+/// root rule decides and which never runs (see
 /// `interpreter::literals::unresolved_identifier_error`). Neither variant is a
 /// lowered `ast::Literal`; both are payloads of a `LoadLiteral` that raises
 /// instead of producing a value.
@@ -92,8 +91,9 @@ pub enum Instruction {
     LoadSelf {
         destination: u16,
     },
-    /// A bare builtin class name, which the resolver leaves without a
-    /// `Binding`, resolved at compile time.
+    /// A builtin class, loaded as a constant. No lowering emits it any
+    /// more: a bare builtin class name is §5.7's self send, answered by
+    /// `Object`'s accessor.
     LoadBuiltinClass {
         destination: u16,
         kind: BuiltinClass,
