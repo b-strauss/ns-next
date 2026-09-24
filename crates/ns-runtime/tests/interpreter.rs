@@ -84,7 +84,8 @@ fn method_with_explicit_return_returns_the_returned_value() {
 }
 
 /// A bare `OrderedCollection` (no `platform` prefix, outside any superclass
-/// clause) names the builtin class.
+/// clause) is the self send `self OrderedCollection`, which `Object`'s
+/// accessor answers with the builtin class.
 #[test]
 fn bare_builtin_class_name_reference_produces_a_working_instance() {
     let (mut interpreter, receiver) = instance_of(indoc! {"

@@ -1,6 +1,6 @@
 //! §3.2's accessors for the predefined classes on `Object`
-//! (`docs/design/core-library.md`, "Planned: the predefined classes are
-//! accessors on `Object`").
+//! (`docs/design/core-library.md`, "The predefined classes are accessors
+//! on `Object`").
 
 use indoc::indoc;
 

@@ -9,8 +9,8 @@
 //! The same holds for §3.2's accessors for the predefined classes on
 //! `Object`: a kernel method whose whole body is `^outer Kernel <a kernel
 //! class>` answers that builtin class and is never activated
-//! (`docs/design/core-library.md`, "Planned: the predefined classes are
-//! accessors on `Object`").
+//! (`docs/design/core-library.md`, "The predefined classes are accessors
+//! on `Object`").
 
 use std::collections::HashMap;
 
