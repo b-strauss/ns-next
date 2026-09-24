@@ -139,7 +139,7 @@ impl MixinMethod {
     /// the resolver's `bindings` for the module it belongs to. `kernel` is
     /// that module's `ResolvedModule.kernel`: only a kernel method may carry
     /// a fast path.
-    pub fn from_declaration(
+    pub(crate) fn from_declaration(
         declaration: Rc<ast::MethodDeclaration>,
         bindings: &Rc<HashMap<Span, Binding>>,
         kernel: bool,
