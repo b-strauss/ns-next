@@ -571,10 +571,10 @@ pub enum InstantiationRefusal {
     RootClause(RootClauseDefect),
     MutableValueSlot(MutableValueSlot),
     /// §3.1.1: a value's class "does not define an identity method (==)".
-    /// `declaring` is the first level below `Value` -- `Value`'s own
-    /// excluded, which the specification's next sentence allows, and every
-    /// level above `Value` too, whose `==` `Value` overrides -- whose mixin
-    /// declares an instance-side `==`. Computed once per application by
+    /// `declaring` is the first level below `Value` whose mixin declares an
+    /// instance-side `==`. Two kinds of level are never asked: `Value`'s own,
+    /// whose `==` the specification's next sentence allows, and every level
+    /// above `Value`, since `Value`'s `==` overrides whatever they declare. Computed once per application by
     /// `Mutator::apply_mixin`, the same place `MutableValueSlot` is: this is
     /// a property of the application, not of any class object built from
     /// it, so a module's root -- which `apply_mixin` builds an application
@@ -597,8 +597,14 @@ pub struct MixinApplication {
     /// same mixin applied over a superclass that is no value is no value
     /// either.
     ///
-    /// `Value`'s own application answers `false`: it inherits nothing, and
-    /// `Kernel.ns` gives it no slots for the rule below to be about.
+    /// `Value`'s own application answers `true` (`Mutator::apply_mixin`'s
+    /// `is_value_mixin`; `interpreter::kernel` pins it): §3.2's "subclass of"
+    /// is inclusive, so `Value new` is a value. The enclosing-objects walk
+    /// (`interpreter::value_class::check_value_class`) relies on it: it stops
+    /// early at a class that inherits `Value` and was created as a class of
+    /// its own, and `Value` itself is where that stop happens for every
+    /// class declared as `Value new`. `Kernel.ns` gives `Value` no slots, so
+    /// the rule below finds nothing at its level.
     pub inherits_value: bool,
     /// The first mutable slot anywhere in this application's chain, whether
     /// or not the chain inherits `Value`: a `<:` clause can put `Value`'s

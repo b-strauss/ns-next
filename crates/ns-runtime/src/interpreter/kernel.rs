@@ -194,7 +194,7 @@ impl<'gc> Mutator<'gc> {
         // the filled `Value`, and its lexical context is set once the kernel
         // instance exists (`wire_kernel_in`), as every builtin class's is.
         assert!(
-            root_mixin.root_clause_defect.is_none() && declaration.mixin_applications.len() == 1,
+            root_mixin.root_clause_defect.is_none() && root_mixin.mixin_applications.len() == 1,
             "internal: Kernel.ns's root must be `Object <: Value`"
         );
         let object = self.builtin_class(BuiltinClass::Object);
