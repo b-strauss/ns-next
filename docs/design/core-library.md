@@ -798,7 +798,8 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    `Mutator::build_root_mixin`, as every module's root is built, so the root
    rule applies to `Kernel` too — and `check_kernel_shape` checks
    what the phase relies on: one nested class per builtin, named as
-   `kernel_class_name` says, each with no slots and the default factory; the
+   `kernel_class_name` says, each with no slots but `Platform` ("The
+   platform" above) and with the default factory; the
    one immutable `vmMirror` slot on the root; a superclass clause on every
    class but `Top` that is a bare sibling name, read and never run, naming a
    kernel class, from which the chain reaches `Top` without repeating; that
