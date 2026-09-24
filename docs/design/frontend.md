@@ -153,19 +153,26 @@ so the clauses initialize in declaration order like ordinary ones: in
 is computed. Where the expressions do not raise, this too is silent wrong
 output at exit status 0.
 
-## Deviation: the six reserved words are not lexer-reserved
+## The six reserved words
 
 `newspeak-spec.pdf` §4.1 lists `self`, `super`, `outer`, `true`, `false` and
-`nil` as reserved words, illegal as ordinary identifiers. The lexer treats them
-as ordinary identifiers instead: `true`, `false` and `nil` are recognized as
-literals, and `self`, `super` and `outer` are recognized contextually by name at
-the parser and resolver level. Expression-level `outer N foo` parses correctly,
-checked against `corpus/modules/AccessModifierTesting.ns`, which uses it
-heavily.
+`nil` as reserved words, illegal as ordinary identifiers. The lexer keeps them
+identifiers, as the canonical grammar does (`identifier = tokenFor: id`):
+`true`, `false` and `nil` are recognized as literals, and `self`, `super` and
+`outer` contextually by name at the parser and resolver level. Expression-level
+`outer N foo` parses correctly, checked against
+`corpus/modules/AccessModifierTesting.ns`, which uses it heavily.
 
-This only under-rejects programs that illegally use one of the six as an
-ordinary identifier. It cannot affect a correct program, and no corpus file
-exercises the illegal form.
+**The parser refuses every other use** (decided with the user on
+2026-09-25): a reserved word naming a parameter, a block parameter, a slot or
+temporary, a class or a method, the target of a setter send (`nil:: 3`), or a
+unary selector (`3 nil`, `3 printString; self`) is an error naming what it
+may not be — `` `nil` is a reserved word and cannot name a parameter (§4.1) ``
+(`Parser::refuse_reserved_word`). Until then those programs were accepted, and
+not harmlessly: `foo: nil = ( ^nil )` answered the literal `nil` whatever
+argument it was sent. A keyword that merely begins with one, `ifNil:` or
+`selfish:`, is not an identifier and is unaffected. No corpus module used the
+illegal forms; one golden and one test did, and were renamed.
 
 ## `:=` is refused
 

@@ -29,12 +29,13 @@ implicit-receiver send `self String`, answered without an activation, and
 `LoadBuiltinClass` and its wire tag are retired
 ([core-library.md](design/core-library.md), "The predefined classes are
 accessors on `Object`"; "The predefined classes as accessors on `Object`"
-below). Three more pieces put ahead of it are done too: `True` and `False`
+below). Four more pieces put ahead of it are done too: `True` and `False`
 are Newspeak over quick methods, `nil`'s class is §5.1.3's
 `UndefinedObject` with the nil protocol on it and on `Object`, and
-`"..."` is a string literal with no `Character` class left ("`True` and
-`False` in Newspeak", "`UndefinedObject` and the nil protocol" and
-"Double-quoted strings replace characters" below). Step 6's first two plans are done: the core library over a VM mirror,
+`"..."` is a string literal with no `Character` class left, and the parser
+refuses §4.1's reserved words as identifiers ("`True` and `False` in
+Newspeak", "`UndefinedObject` and the nil protocol", "Double-quoted strings
+replace characters" and "The reserved words are refused" below). Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
 ([core-library.md](design/core-library.md), "What exists"). Two pieces of
@@ -4035,6 +4036,21 @@ accessor for it and `Mutator::new_character` are gone. Its literal tag 6
 and `kernel/a_subclass_of_a_builtin_falls_to_objects_methods`. New:
 `language/double_quoted_string_literals`, `errors/character_is_not_a_name`
 and `kernel/a_string_s_as_string_is_itself`.
+
+## The reserved words are refused (2026-09-25)
+
+§4.1's six reserved words — `self`, `super`, `outer`, `true`, `false`,
+`nil` — can no longer name a parameter, block parameter, slot, temporary,
+class or method, be assigned with a setter send, or be sent as a unary
+selector; the parser reports each with what it may not be
+([frontend.md](design/frontend.md), "The six reserved words"). The lexer
+still reads them as identifiers, as the canonical grammar does. The
+deviation row in `README.md` is gone. Before, such programs ran, and
+`foo: nil = ( ^nil )` answered the literal whatever it was sent.
+
+`parse-corpus` stays at 210/0/1/0. `goldens/capture/nested_blocks_carry_variables`
+named a temporary `outer` and one image test a method `outer`; both were
+renamed, with no recorded outcome moving.
 
 ## Notes
 

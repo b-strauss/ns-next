@@ -114,6 +114,29 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// §4.1: `self`, `super`, `outer`, `true`, `false` and `nil` are
+    /// reserved words, so a program may not declare or send one as an
+    /// ordinary identifier. The lexer keeps them identifiers, as the canonical
+    /// grammar does (`identifier = tokenFor: id`); the parser refuses them at
+    /// every place an identifier is declared or sent, with a message naming
+    /// that place (`docs/design/frontend.md`, "The six reserved words").
+    /// `role` completes "cannot ...": "name a parameter", "be assigned".
+    fn refuse_reserved_word(&mut self, name: &str, span: crate::span::Span, role: &str) {
+        if RESERVED_WORDS.contains(&name) {
+            self.push_error(
+                span,
+                &format!("`{name}` is a reserved word and cannot {role} (§4.1)"),
+            );
+        }
+    }
+
+    /// `identifier`, refused if it is a reserved word (`refuse_reserved_word`).
+    fn declared_identifier(&mut self, role: &str) -> Identifier {
+        let identifier = self.identifier();
+        self.refuse_reserved_word(&identifier.name, identifier.span, role);
+        identifier
+    }
+
     fn push_error(&mut self, span: crate::span::Span, message: &str) {
         self.diagnostics
             .push(crate::diagnostic::Diagnostic::error(span, message));
@@ -287,6 +310,9 @@ impl<'a> Parser<'a> {
     // `parse_expression` and the full precedence ladder live in
     // `expression.rs`.
 }
+
+/// §4.1's reserved words, which no program may use as an ordinary identifier.
+pub(super) const RESERVED_WORDS: [&str; 6] = ["self", "super", "outer", "true", "false", "nil"];
 
 /// Strip the first and last character from a lexeme — the quotes of a
 /// single- or double-quoted string literal, the inner `'...'` of a quoted

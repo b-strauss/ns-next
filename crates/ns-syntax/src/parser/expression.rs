@@ -157,7 +157,7 @@ impl<'a> Parser<'a> {
         while self.at(TokenKind::Colon) {
             self.bump();
             if self.at(TokenKind::Identifier) {
-                parameters.push(self.identifier());
+                parameters.push(self.declared_identifier("name a block parameter"));
                 // `[:x <T> :y <T> | ...]` — block parameters carry the same
                 // declaration-position `<Type>` annotations as method parameters.
                 self.skip_type_annotation();
@@ -289,6 +289,7 @@ impl<'a> Parser<'a> {
                     keyword.span.start + name.len() as u32,
                 ),
             };
+            self.refuse_reserved_word(&target.name, target.span, "be assigned");
             let value = self.parse_expression();
             let span = target.span.merge(expression_span(&value));
             return Expression::Assign {
@@ -436,12 +437,12 @@ impl<'a> Parser<'a> {
                 self.bump(); // `<-`
                 self.bump(); // `:`
             }
-            if !((self.at(TokenKind::Identifier) || self.at(TokenKind::Class))
-                && !self.is_reserved_identifier(self.current()))
-            {
+            if !(self.at(TokenKind::Identifier) || self.at(TokenKind::Class)) {
                 break;
             }
             let selector_token = self.bump();
+            let selector_name = self.text(selector_token).to_string();
+            self.refuse_reserved_word(&selector_name, selector_token.span, "be a message selector");
             let span = expression_span(&receiver).merge(selector_token.span);
             receiver = Expression::Send(Box::new(Send {
                 span,
@@ -499,6 +500,12 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let selector_token = self.expect(TokenKind::Identifier).unwrap_or(self.current());
+                let selector_name = self.text(selector_token).to_string();
+                self.refuse_reserved_word(
+                    &selector_name,
+                    selector_token.span,
+                    "be a message selector",
+                );
                 MessageSend {
                     selector: Selector::Unary(self.text(selector_token).to_string()),
                     arguments: Vec::new(),

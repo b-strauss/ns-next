@@ -111,7 +111,7 @@ impl<'a> Parser<'a> {
         // them via `skip_type_annotation` / `skip_return_type_annotation`.
         let pattern = if self.at_binary_selector_pattern() {
             let selector = self.identifier_from_bump();
-            let parameter = self.identifier();
+            let parameter = self.declared_identifier("name a parameter");
             self.skip_type_annotation();
             MessagePattern::Binary {
                 selector,
@@ -127,14 +127,14 @@ impl<'a> Parser<'a> {
                             name: self.text(keyword).trim_end_matches(':').to_string(),
                             span: keyword.span,
                         };
-                        let parameter = self.identifier();
+                        let parameter = self.declared_identifier("name a parameter");
                         self.skip_type_annotation();
                         parts.push((key, parameter));
                     }
                     MessagePattern::Keyword { parts }
                 }
                 _ => {
-                    let selector = self.identifier();
+                    let selector = self.declared_identifier("be a message selector");
                     // `selectorTypeParameters` (`NewspeakGrammar.ns:446`):
                     // `public List[E] = (...)` — type parameters on the
                     // selector itself. Dropped in Milestone 1.
@@ -200,7 +200,7 @@ impl<'a> Parser<'a> {
                 self.recover_to_dot(close);
                 continue;
             }
-            let name = self.identifier();
+            let name = self.declared_identifier("name a slot or a temporary");
             // `slotName <Type>` — the annotation is dropped in Milestone 1.
             self.skip_type_annotation();
             let (mutability, initializer) = match self.peek() {
@@ -321,7 +321,7 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
         self.expect(TokenKind::Class);
-        let name = self.identifier();
+        let name = self.declared_identifier("name a class");
         // `class List[E] ...` — generic type-parameter declaration
         // (`NewspeakGrammar.ns:465`); dropped in Milestone 1.
         self.skip_type_arguments();
@@ -757,7 +757,7 @@ impl<'a> Parser<'a> {
             }
             modifier
         };
-        let name = self.identifier();
+        let name = self.declared_identifier("name a slot or a temporary");
         self.skip_type_annotation();
         let mutability = if self.eat(TokenKind::ColonColonEquals) {
             SlotMutability::MutableInitialized
@@ -1563,5 +1563,134 @@ mod method_tests {
                 ("z", SlotMutability::MutableBare, false),
             ]
         );
+    }
+}
+
+/// §4.1: `self`, `super`, `outer`, `true`, `false` and `nil` are reserved
+/// words, so none of them may be declared or sent as an ordinary identifier.
+#[cfg(test)]
+mod reserved_word_tests {
+    use indoc::formatdoc;
+
+    const RESERVED_WORDS: [&str; 6] = ["self", "super", "outer", "true", "false", "nil"];
+
+    /// The reserved-word diagnostics `member` produces as the one member of a
+    /// module's root class.
+    fn reserved_word_errors(member: &str) -> Vec<String> {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class Root = Object new () (
+              {member}
+            ) : ()
+        "};
+        match crate::parse(&source) {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .filter(|message| message.contains("reserved word"))
+                .collect(),
+        }
+    }
+
+    fn assert_refused(member: &str, word: &str, role: &str) {
+        let errors = reserved_word_errors(member);
+        let expected = format!("`{word}` is a reserved word and cannot {role}");
+        assert!(
+            errors.iter().any(|message| message.contains(&expected)),
+            "{member}: expected {expected:?}, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_name_a_parameter() {
+        for word in RESERVED_WORDS {
+            assert_refused(&format!("foo: {word} = ( ^0 )"), word, "name a parameter");
+            assert_refused(&format!("+ {word} = ( ^0 )"), word, "name a parameter");
+        }
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_name_a_method() {
+        for word in RESERVED_WORDS {
+            assert_refused(&format!("{word} = ( ^0 )"), word, "be a message selector");
+        }
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_name_a_slot_or_a_temporary() {
+        for word in RESERVED_WORDS {
+            assert_refused(
+                &format!("foo = ( | {word} | ^0 )"),
+                word,
+                "name a slot or a temporary",
+            );
+        }
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_name_a_block_parameter() {
+        for word in RESERVED_WORDS {
+            assert_refused(
+                &format!("foo = ( ^[:{word} | 0] )"),
+                word,
+                "name a block parameter",
+            );
+        }
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_name_a_class() {
+        for word in RESERVED_WORDS {
+            assert_refused(
+                &format!("class {word} = Object new () ()"),
+                word,
+                "name a class",
+            );
+        }
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_be_assigned() {
+        for word in RESERVED_WORDS {
+            assert_refused(&format!("foo = ( {word}:: 3 )"), word, "be assigned");
+        }
+    }
+
+    #[test]
+    fn a_reserved_word_cannot_be_a_unary_selector() {
+        for word in RESERVED_WORDS {
+            assert_refused(
+                &format!("foo = ( ^3 {word} )"),
+                word,
+                "be a message selector",
+            );
+            assert_refused(
+                &format!("foo = ( ^3 printString; {word} )"),
+                word,
+                "be a message selector",
+            );
+        }
+    }
+
+    /// The legal uses stay legal: each as an expression, `super` and `outer`
+    /// as a send's receiver, and a keyword that merely begins with one.
+    #[test]
+    fn the_legal_uses_of_the_reserved_words_are_not_refused() {
+        for member in [
+            "foo = ( ^self )",
+            "foo = ( ^super foo )",
+            "foo = ( ^outer Root foo )",
+            "foo = ( ^{true. false. nil} )",
+            "foo = ( ^3 ifNil: [nil] ifNotNil: [:value | value] )",
+            "selfish: selfless = ( ^selfless )",
+        ] {
+            assert_eq!(
+                reserved_word_errors(member),
+                Vec::<String>::new(),
+                "{member}"
+            );
+        }
     }
 }

@@ -12,10 +12,10 @@ class NestedBlocksCarryVariables usingPlatform: platform = Object new (
 	| transcript = platform transcript. |
 ) (
 	threeDeep = (
-		| first ::= 1. second ::= 10. outer ::= nil. |
-		outer:: [:x | [:y | [:z | first + second + x + y + z]]].
+		| first ::= 1. second ::= 10. outermost ::= nil. |
+		outermost:: [:x | [:y | [:z | first + second + x + y + z]]].
 		second:: 20.
-		^((outer value: 100) value: 1000) value: 10000
+		^((outermost value: 100) value: 1000) value: 10000
 	)
 	innerWrites = (
 		| total ::= 0. numbers ::= nil. |

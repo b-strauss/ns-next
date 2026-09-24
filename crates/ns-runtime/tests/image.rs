@@ -1919,15 +1919,15 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         class X = Object new (
         ) (
           mk = ( ^[ 1 ] )
-          public outer = ( ^mk )
+          public makeClosure = ( ^mk )
         ) : ()
     "};
     let (mut interpreter, class, original, decoded, _max) =
         round_trip_graph(source, |interpreter, class| {
             let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
             let closure = expect_ok(
-                interpreter.send(&instance, Symbol::intern("outer"), &[]),
-                "outer",
+                interpreter.send(&instance, Symbol::intern("makeClosure"), &[]),
+                "makeClosure",
             );
             // Synthetic "paused" state: edit the home frame's program counter
             // and grow its register file before snapshotting.

@@ -219,7 +219,6 @@ four before trusting a program's output.
 |---|---|---|
 | No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the builtin `Object` class; scheduled for step 6's third plan, `Class`, `Behavior` and `Metaclass` in `Kernel.ns` | §3.2 | [object-model.md](object-model.md) |
 | Value objects exist and §3.1.1's second bullet is enforced, but nothing copies one across an actor boundary, and a module definition is not one | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
-| `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | There are no character literals and no `Character` class: `"c"` is a one-character string, as the section itself announces and §5.1.5's `"σ"` form states; a double-quoted string has no escape, and a quote in one is written `"""`, not the section's `""""` | §5.1.4 | [frontend.md](frontend.md) |
