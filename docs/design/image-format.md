@@ -39,8 +39,8 @@ a counted one than source can: that number is bounded by how deeply blocks
 nest, which the decoder caps at the parser's own ceiling ("Verification"
 below); see [execution.md](execution.md), "The depth limit". A mutated
 binary that decodes cleanly can still abort while executing — a native that
-indexes an argument it was not given, for one: the control-flow natives read
-`arguments[0]` unchecked, and the decoder does not check a send's argument count
+indexes an argument it was not given, for one: the `whileTrue:` and
+`whileFalse:` leaves read `arguments[0]` unchecked, and the decoder does not check a send's argument count
 against its selector — and that is not a decoder defect.
 
 ## Two artifacts
@@ -180,8 +180,8 @@ them, and the frame kinds in the order `types::FrameKind` does.
 
 Instructions:
 
-- 0 `LoadLiteral`: loads a literal into a register; a string, symbol, character
-  or array literal allocates a fresh object every time it runs.
+- 0 `LoadLiteral`: loads a literal into a register; a string, symbol or array
+  literal allocates a fresh object every time it runs.
 - 1 `LoadSelf`: loads the receiver, `self`, into a register.
 - 2: retired. It was `LoadBuiltinClass`, which loaded the builtin class a
   bare name such as `Object` denoted when no enclosing declaration declared
@@ -262,7 +262,9 @@ Literals:
 - 3 `Float`: a 64-bit floating-point number.
 - 4 `String`: a string literal.
 - 5 `Symbol`: a symbol literal, `#name`.
-- 6 `Character`: a character literal.
+- 6: retired. It was `Character`, the character literal, until `"c"` became
+  a one-character string (2026-09-25, [frontend.md](frontend.md), "Lexer");
+  a stale artifact's tag-6 literal meets an unknown tag (`RETIRED_LITERALS`).
 - 7 `Array`: a literal array, `#( ... )`, whose elements are literals
   themselves.
 - 8 `MalformedInteger`: an integer literal the lexer accepts and the parser

@@ -67,25 +67,36 @@ fn platform_transcript_show_and_new_line_round_trip() {
     );
 }
 
+/// `platform Array` and the rest answer the builtin class through
+/// `Object`'s accessors (§3.2), which the platform inherits like every
+/// object: it declares none of its own.
 #[test]
 fn platform_class_accessors_return_the_matching_builtin_class() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
 
-    let got = expect_ok(
-        interpreter.send(&platform, Symbol::intern("OrderedCollection"), &[]),
-        "platform OrderedCollection",
-    );
-    interpreter.enter(|mutator| {
-        let expected = mutator.builtin_class(BuiltinClass::OrderedCollection);
-        match mutator.fetch(&got) {
-            Value::Object(object) => assert!(object.same(expected)),
-            other => panic!(
-                "expected Value::Object, got {}",
-                mutator.heap().describe(&other)
-            ),
-        }
-    });
+    for (name, kind) in [
+        ("Object", BuiltinClass::Object),
+        ("Array", BuiltinClass::Array),
+        ("OrderedCollection", BuiltinClass::OrderedCollection),
+        ("String", BuiltinClass::String),
+        ("Symbol", BuiltinClass::Symbol),
+    ] {
+        let got = expect_ok(
+            interpreter.send(&platform, Symbol::intern(name), &[]),
+            &format!("platform {name}"),
+        );
+        interpreter.enter(|mutator| {
+            let expected = mutator.builtin_class(kind);
+            match mutator.fetch(&got) {
+                Value::Object(object) => assert!(object.same(expected), "platform {name}"),
+                other => panic!(
+                    "expected Value::Object, got {}",
+                    mutator.heap().describe(&other)
+                ),
+            }
+        });
+    }
 }
 
 /// `platform collections List` exists because three whitelisted corpus
@@ -138,9 +149,8 @@ fn platform_collections_does_not_invent_a_map() {
     }
 }
 
-/// The transcript stream and the collections namespace share
-/// `BuiltinClass::Platform` and are told apart only by their payload
-/// shape, so this pins that they do not answer each other's protocol.
+/// The transcript and the collections namespace are instances of classes of
+/// their own, so neither answers the other's protocol.
 #[test]
 fn the_collections_namespace_is_not_a_transcript() {
     let mut interpreter = Interpreter::bootstrap();

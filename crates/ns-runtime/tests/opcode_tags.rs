@@ -14,6 +14,7 @@
 //! Adding an instruction is expected to add a line here with the next free
 //! number. Changing a line that already exists is the thing being prevented.
 
+use ns_runtime::image::decode::builtin_class_from_tag;
 use ns_runtime::image::encode::builtin_class_tag;
 use ns_runtime::image::opcodes::*;
 use ns_runtime::BuiltinClass;
@@ -62,7 +63,6 @@ fn literal_tags_are_fixed() {
     assert_eq!(LITERAL_FLOAT, 3);
     assert_eq!(LITERAL_STRING, 4);
     assert_eq!(LITERAL_SYMBOL, 5);
-    assert_eq!(LITERAL_CHARACTER, 6);
     assert_eq!(LITERAL_ARRAY, 7);
     assert_eq!(LITERAL_MALFORMED_INTEGER, 8);
     assert_eq!(LITERAL_UNRESOLVED_IDENTIFIER, 9);
@@ -117,7 +117,6 @@ fn no_two_tags_share_a_number() {
         LITERAL_FLOAT,
         LITERAL_STRING,
         LITERAL_SYMBOL,
-        LITERAL_CHARACTER,
         LITERAL_ARRAY,
         LITERAL_MALFORMED_INTEGER,
         LITERAL_UNRESOLVED_IDENTIFIER,
@@ -127,6 +126,13 @@ fn no_two_tags_share_a_number() {
     let mut deduplicated = sorted.to_vec();
     deduplicated.dedup();
     assert_eq!(deduplicated.len(), literals.len(), "duplicate literal tag");
+    assert_eq!(RETIRED_LITERALS, [6]);
+    for retired in RETIRED_LITERALS {
+        assert!(
+            !literals.contains(&retired),
+            "literal tag {retired} is retired"
+        );
+    }
 }
 
 /// A retired tag stays retired: no live instruction takes its number
@@ -297,14 +303,18 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Float), 5);
     assert_eq!(builtin_class_tag(BuiltinClass::String), 6);
     assert_eq!(builtin_class_tag(BuiltinClass::Symbol), 7);
-    assert_eq!(builtin_class_tag(BuiltinClass::Character), 8);
     assert_eq!(builtin_class_tag(BuiltinClass::Array), 9);
     assert_eq!(builtin_class_tag(BuiltinClass::OrderedCollection), 10);
-    assert_eq!(builtin_class_tag(BuiltinClass::Nil), 11);
+    assert_eq!(builtin_class_tag(BuiltinClass::UndefinedObject), 11);
     assert_eq!(builtin_class_tag(BuiltinClass::Block), 12);
     assert_eq!(builtin_class_tag(BuiltinClass::Platform), 13);
     assert_eq!(builtin_class_tag(BuiltinClass::VmMirror), 14);
     assert_eq!(builtin_class_tag(BuiltinClass::Top), 15);
     assert_eq!(builtin_class_tag(BuiltinClass::Value), 16);
     assert_eq!(builtin_class_tag(BuiltinClass::Number), 17);
+    assert_eq!(builtin_class_tag(BuiltinClass::Transcript), 18);
+    assert_eq!(builtin_class_tag(BuiltinClass::Collections), 19);
+    // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
+    // tag-8 reference names no builtin rather than the next one assigned.
+    assert_eq!(builtin_class_from_tag(8), None);
 }

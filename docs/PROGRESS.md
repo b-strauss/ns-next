@@ -29,7 +29,13 @@ implicit-receiver send `self String`, answered without an activation, and
 `LoadBuiltinClass` and its wire tag are retired
 ([core-library.md](design/core-library.md), "The predefined classes are
 accessors on `Object`"; "The predefined classes as accessors on `Object`"
-below). Step 6's first two plans are done: the core library over a VM mirror,
+below). Four more pieces put ahead of it are done too: `True` and `False`
+are Newspeak over quick methods, `nil`'s class is §5.1.3's
+`UndefinedObject` with the nil protocol on it and on `Object`, and
+`"..."` is a string literal with no `Character` class left, and the parser
+refuses §4.1's reserved words as identifiers ("`True` and `False` in
+Newspeak", "`UndefinedObject` and the nil protocol", "Double-quoted strings
+replace characters" and "The reserved words are refused" below). Step 6's first two plans are done: the core library over a VM mirror,
 which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
 which gave it the specification's object model
 ([core-library.md](design/core-library.md), "What exists"). Two pieces of
@@ -460,18 +466,15 @@ The measurement, and the template for the next, is
   contribute to one member set for lexical resolution; the specification is
   silent and the canonical compiler scopes the class side apart
   ([dispatch.md](design/dispatch.md), "Resolution").
-- **`nil printString` answers `'an Object'`**: the leaf `Object>>printString`
-  forwards to is a stub (`crates/ns-runtime/src/builtins/object_class.rs`,
-  `an Object` for every receiver); no golden pins the correct answer yet.
 
 **The two specification audits' other findings are closed**, in "M4 — The
 specification gaps" below: the member-set fix, the symbol-identity fix and
 the parameter-setter fix. Mixin application (§6.2), the one finding they
 left open, is closed too, on 2026-09-23 ("Mixin application" below).
-**Four goldens are still `skipped`** (`grep -l '^skipped' goldens/*/*.toml`):
-the parameter-and-a-local-of-the-same-name compile check (§3.6), `nil isNil`
-(§5.1.3), the sequential simultaneous slot clauses (§6.3.2) and the eager
-lazy slot (§6.3.3) — the last two also rows in [README.md](design/README.md)'s
+**Three goldens are still `skipped`** (`grep -l '^skipped' goldens/*/*.toml`):
+the parameter-and-a-local-of-the-same-name compile check (§3.6), the
+sequential simultaneous slot clauses (§6.3.2) and the eager lazy slot
+(§6.3.3) — the last two also rows in [README.md](design/README.md)'s
 deviations table, answering a **correct** program **wrongly, at exit status
 0**, and worth reading before trusting a program's output.
 
@@ -3932,6 +3935,159 @@ class object exists, and `build_builtin_classes` builds them through the
 `Mutator` itself (`apply_mixin`, `mint_dispatch_ids`). A forged placeholder
 handle, `Option` and `MaybeUninit` were rejected, since each either breaks a
 handle invariant, puts the check back, or needs `unsafe`.
+
+## `True` and `False` in Newspeak (2026-09-24)
+
+`True` and `False` implement their whole protocol as ordinary `Kernel.ns`
+methods, one per branch, as SOMns's, Primordial Soup's and Newspeak on
+Squeak's kernels do, and no longer reach the VM mirror: the ten Boolean
+rows of `MIRROR`, `BooleanPrimitive`, `builtins/boolean.rs` and
+`Continuation::Truthy` are gone ([core-library.md](design/core-library.md),
+"`True` and `False` are quick methods";
+[plan](superpowers/plans/2026-09-24-2320-ns-next-boolean-quick-methods.md)).
+This is the Boolean half of "Planned: real bodies for control flow and
+`do:`", moved ahead of the rest; `whileTrue:`, `whileFalse:`, `do:` and
+`value` stay leaves.
+
+Four decisions, taken with the user on 2026-09-24:
+
+- **The Boolean family moves now**, the loops later, as decision 7 of the
+  kernel move still says for them.
+- **Quick methods keep the depth count agreeing.** The kernel compiler runs
+  a body that is `^true`, `^false`, `^nil`, `^<parameter>` or
+  `^<parameter> value` without an activation (`MethodFastPath::Constant`,
+  `Parameter`, `ValueOfParameter`), as Squeak's and Cog's quick methods,
+  so the reference lowering's `SendInlinable` of `ifTrue:` still counts
+  none where the optimized lowering inlines it.
+- **`and:`, `or:`, `&` and `|` do not coerce**, as in every prior-art
+  kernel: `true and: [3]` answers `3`, under both lowerings.
+- **An argument that is no block is sent `value`**, with no `Object>>value`
+  to answer it, as in Primordial Soup: `true ifTrue: 3` ends in
+  `doesNotUnderstand:`, `false ifTrue: 3` answers `nil`.
+
+**Goldens.** Two changed, both because of the coercion decision:
+`language/and_or_short_circuit` (was `and_or_short_circuit_and_coerce`),
+whose `true and: [3]` answers `3` where it answered `false`, and
+`language/and_or_answer_their_arguments_value` (was
+`variable_and_block_coerces_its_value_to_a_boolean`), likewise, and which
+now also covers `&` and `|` with a non-block argument. Four are new:
+`kernel/recursion_through_and_or_counts_alike_under_both_lowerings`, which
+passed before the move too and fails if any `True`/`False` method is not
+recognized as quick; `language/a_short_circuited_conditional_ignores_its_argument`;
+`errors/a_conditional_sends_value_to_its_argument`; and
+`kernel/a_subclass_of_true_inherits_its_methods` — a user subclass of
+`True` now runs its branches, where the leaves used to decline for want of
+a payload.
+
+**Measured** against `ddd9e4f` ([execution.md](design/execution.md), "What
+`True` and `False` as quick methods cost"): a throwaway source sending
+Boolean methods in its loop is 21.5% faster; the four fixtures are level.
+`vm::run` grew from 6,626 to 6,818 instructions and is still one function.
+
+## `UndefinedObject` and the nil protocol (2026-09-25)
+
+`nil`'s class is `UndefinedObject`, as §5.1.3 names it; it was `Nil`
+(`BuiltinClass::UndefinedObject`, `Object`'s accessor renamed with it; the
+image tag stays 11). `Object` declares `isNil`, `notNil`, `ifNil:`,
+`ifNotNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:`, and `UndefinedObject`
+the same six the other way round, as SOMns's and Newspeak's JS kernel do
+([core-library.md](design/core-library.md), "The nil protocol").
+
+- **A not-nil block is culled with the receiver** — handed it when it takes
+  an argument, nothing when it takes none — because the Newspeak sources
+  under `corpus/` pass both shapes (386 against 126) and the prior art
+  splits. `Block>>cull:` is an ordinary kernel method stating the rule.
+- **Every one of the twelve is a quick method.** Two shapes joined the
+  quick methods for them, `^self` (`MethodFastPath::Receiver`), which also
+  made `Integer>>hash` quick, and `^<parameter> cull: self`
+  (`MethodFastPath::CullParameter`). The compiler inlines none of these
+  sends, so no block they activate is exempt from the depth count, and
+  both lowerings count alike. A culled block with an argument is handed a
+  one-element `Vec` per send, the one allocation on these paths.
+
+`nil printString` answers `'nil'`, as Primordial Soup's does, instead of
+`Object`'s generic `an Object`.
+
+**Goldens.** `spec/spec_5_1_3_nil_answers_is_nil` is no longer skipped. New:
+`kernel/nil_is_the_undefined_object`, `language/the_nil_protocol`,
+`errors/if_not_nil_culls_its_argument` and
+`errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`. One
+changed, because of the new `printString`: `cache/cache_polymorphic_sites`
+prints `nil` for `nil` where it printed `an Object`.
+
+## Double-quoted strings replace characters (2026-09-25)
+
+`"..."` is a string literal, beside `'...'` (§5.1.5), and character literals
+and the `Character` class are gone, as §5.1.4 announces (decided with the
+user on 2026-09-25; [frontend.md](design/frontend.md), "Lexer"). A
+double-quoted string has no escape and ends at the next `"`, so each kind of
+string holds the other's quote freely; any single character between two
+quotes is a one-character string, `"` included, so the corpus's `"""` still
+reads as a quote and `parse-corpus` stays at 210/0/1/0. `README.md`'s
+deviations table records the difference from §5.1.4's `""""`.
+
+The `Character` class, its three mirror rows (65 remain), `Object`'s
+accessor for it and `Mutator::new_character` are gone. Its literal tag 6
+(`RETIRED_LITERALS`) and builtin class tag 8 are retired and never reused.
+`String` gained `asString`, a `^self` quick method.
+
+**Goldens.** Three changed, each by losing its character lines:
+`kernel/a_value_has_no_identity`, `kernel/value_hashes_follow_value_equality`
+and `kernel/a_subclass_of_a_builtin_falls_to_objects_methods`. New:
+`language/double_quoted_string_literals`, `errors/character_is_not_a_name`
+and `kernel/a_string_s_as_string_is_itself`.
+
+## The reserved words are refused (2026-09-25)
+
+§4.1's six reserved words — `self`, `super`, `outer`, `true`, `false`,
+`nil` — can no longer name a parameter, block parameter, slot, temporary,
+class or method, be assigned with a setter send, or be sent as a unary
+selector; the parser reports each with what it may not be
+([frontend.md](design/frontend.md), "The six reserved words"). The lexer
+still reads them as identifiers, as the canonical grammar does. The
+deviation row in `README.md` is gone. Before, such programs ran, and
+`foo: nil = ( ^nil )` answered the literal whatever it was sent.
+
+`parse-corpus` stays at 210/0/1/0. `goldens/capture/nested_blocks_carry_variables`
+named a temporary `outer` and one image test a method `outer`; both were
+renamed, with no recorded outcome moving.
+
+## The platform's class accessors are gone (2026-09-25)
+
+`Platform` no longer declares `Object`, `Array`, `OrderedCollection`,
+`String` and `Symbol`: since the predefined classes became accessors on
+`Object` (§3.2), `platform Array` answers the same class through the
+inherited one. Their five mirror rows are gone (60 remain), and the
+platform keeps `transcript`, `collections`, `List`, `show:` and `newLine`
+([core-library.md](design/core-library.md), "The on-demand rule").
+`interpreter::kernel`'s `the_platform_declares_no_class_accessor_of_its_own`
+pins the absence, and `tests/platform.rs` that all five still answer.
+Nothing recorded changed.
+
+## The platform, its transcript and its namespace are values (2026-09-25)
+
+`Platform`, `Transcript` and `Collections` are three `Kernel.ns` classes
+below `Value` (decided with the user on 2026-09-25;
+[core-library.md](design/core-library.md), "The platform"). The platform
+holds the other two in immutable slots, `Collections>>List` is
+`^outer Kernel OrderedCollection` answered without a leaf, and only
+`Transcript`'s `show:` and `newLine` reach Rust (57 mirror rows remain).
+Until then the three shared the class `Platform` and were told apart by how
+many empty fields they had, every leaf checking that it had the right one;
+that tagging is gone, and each class declares only its own protocol.
+
+The host builds the one platform in the state `Platform new` would give it
+(`Mutator::platform_value`), so asking for it runs no Newspeak and fills no
+cache; `Platform` alone of the builtins may declare slots. `Transcript` and
+`Collections` took builtin class tags 18 and 19.
+
+**Goldens.** `errors/native_that_fails_on_its_receiver_falls_to_objects`
+changed one line: `p transcript = p transcript` is now `true`, two
+transcripts being equal values. New:
+`kernel/the_platform_and_its_parts_are_values`. `tests/inline_caches.rs`'s
+`a_failing_primitive_keeps_its_entry` relied on the shared class and now
+shows the same thing through `Value>>=`, whose leaf declines on a receiver of
+its own class when a slot's class brings its own `=`.
 
 ## Notes
 

@@ -15,12 +15,10 @@ use crate::Symbol;
 pub enum Primitive {
     Object(ObjectPrimitive),
     Value(ValuePrimitive),
-    Boolean(BooleanPrimitive),
     Integer(IntegerPrimitive),
     Float(FloatPrimitive),
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
-    Character(CharacterPrimitive),
     Collection(CollectionPrimitive),
     Block(BlockPrimitive),
     Platform(PlatformPrimitive),
@@ -46,18 +44,6 @@ pub enum ValuePrimitive {
     Hash,
     SlotCount,
     SlotAt,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BooleanPrimitive {
-    IfTrueIfFalse,
-    IfFalseIfTrue,
-    IfTrue,
-    IfFalse,
-    Not,
-    And,
-    Or,
-    PrintString,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,13 +93,6 @@ pub enum SymbolPrimitive {
     PrintString,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CharacterPrimitive {
-    AsInteger,
-    AsString,
-    Equal,
-}
-
 /// `Array` and `OrderedCollection` share their payload, so they share their
 /// primitives; each class's list names only the ones it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,14 +114,6 @@ pub enum BlockPrimitive {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformPrimitive {
-    Transcript,
-    ObjectClass,
-    ArrayClass,
-    OrderedCollectionClass,
-    StringClass,
-    SymbolClass,
-    Collections,
-    List,
     Show,
     NewLine,
 }
@@ -221,7 +192,7 @@ const fn mirror(
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"); a row's index is its
 /// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
-/// rows 56-60, as they share their payload; each of their kernel classes
+/// rows 43-47, as they share their payload; each of their kernel classes
 /// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(
@@ -273,56 +244,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "value:slotAt:ifFail:",
         "slotAt:",
         Primitive::Value(ValuePrimitive::SlotAt),
-    ),
-    mirror(
-        "boolean:ifTrue:ifFalse:ifFail:",
-        "ifTrue:ifFalse:",
-        Primitive::Boolean(BooleanPrimitive::IfTrueIfFalse),
-    ),
-    mirror(
-        "boolean:ifFalse:ifTrue:ifFail:",
-        "ifFalse:ifTrue:",
-        Primitive::Boolean(BooleanPrimitive::IfFalseIfTrue),
-    ),
-    mirror(
-        "boolean:ifTrue:ifFail:",
-        "ifTrue:",
-        Primitive::Boolean(BooleanPrimitive::IfTrue),
-    ),
-    mirror(
-        "boolean:ifFalse:ifFail:",
-        "ifFalse:",
-        Primitive::Boolean(BooleanPrimitive::IfFalse),
-    ),
-    mirror(
-        "booleanNot:ifFail:",
-        "not",
-        Primitive::Boolean(BooleanPrimitive::Not),
-    ),
-    mirror(
-        "boolean:logicalAnd:ifFail:",
-        "&",
-        Primitive::Boolean(BooleanPrimitive::And),
-    ),
-    mirror(
-        "boolean:and:ifFail:",
-        "and:",
-        Primitive::Boolean(BooleanPrimitive::And),
-    ),
-    mirror(
-        "boolean:logicalOr:ifFail:",
-        "|",
-        Primitive::Boolean(BooleanPrimitive::Or),
-    ),
-    mirror(
-        "boolean:or:ifFail:",
-        "or:",
-        Primitive::Boolean(BooleanPrimitive::Or),
-    ),
-    mirror(
-        "booleanPrintString:ifFail:",
-        "printString",
-        Primitive::Boolean(BooleanPrimitive::PrintString),
     ),
     mirror(
         "integer:add:ifFail:",
@@ -490,21 +411,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Symbol(SymbolPrimitive::PrintString),
     ),
     mirror(
-        "characterAsInteger:ifFail:",
-        "asInteger",
-        Primitive::Character(CharacterPrimitive::AsInteger),
-    ),
-    mirror(
-        "characterAsString:ifFail:",
-        "asString",
-        Primitive::Character(CharacterPrimitive::AsString),
-    ),
-    mirror(
-        "character:equals:ifFail:",
-        "=",
-        Primitive::Character(CharacterPrimitive::Equal),
-    ),
-    mirror(
         "collection:do:ifFail:",
         "do:",
         Primitive::Collection(CollectionPrimitive::Enumerate),
@@ -565,52 +471,12 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Block(BlockPrimitive::WhileFalse),
     ),
     mirror(
-        "platformTranscript:ifFail:",
-        "transcript",
-        Primitive::Platform(PlatformPrimitive::Transcript),
-    ),
-    mirror(
-        "platformObject:ifFail:",
-        "Object",
-        Primitive::Platform(PlatformPrimitive::ObjectClass),
-    ),
-    mirror(
-        "platformArray:ifFail:",
-        "Array",
-        Primitive::Platform(PlatformPrimitive::ArrayClass),
-    ),
-    mirror(
-        "platformOrderedCollection:ifFail:",
-        "OrderedCollection",
-        Primitive::Platform(PlatformPrimitive::OrderedCollectionClass),
-    ),
-    mirror(
-        "platformString:ifFail:",
-        "String",
-        Primitive::Platform(PlatformPrimitive::StringClass),
-    ),
-    mirror(
-        "platformSymbol:ifFail:",
-        "Symbol",
-        Primitive::Platform(PlatformPrimitive::SymbolClass),
-    ),
-    mirror(
-        "platformCollections:ifFail:",
-        "collections",
-        Primitive::Platform(PlatformPrimitive::Collections),
-    ),
-    mirror(
-        "platformList:ifFail:",
-        "List",
-        Primitive::Platform(PlatformPrimitive::List),
-    ),
-    mirror(
-        "platform:show:ifFail:",
+        "transcript:show:ifFail:",
         "show:",
         Primitive::Platform(PlatformPrimitive::Show),
     ),
     mirror(
-        "platformNewLine:ifFail:",
+        "transcriptNewLine:ifFail:",
         "newLine",
         Primitive::Platform(PlatformPrimitive::NewLine),
     ),

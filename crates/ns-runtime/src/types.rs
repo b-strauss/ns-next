@@ -234,12 +234,15 @@ pub enum BuiltinClass {
     Float,
     String,
     Symbol,
-    Character,
     Array,
     OrderedCollection,
-    Nil,
+    UndefinedObject,
     Block,
     Platform,
+    /// The platform's transcript, a value of its own class.
+    Transcript,
+    /// The platform's `collections` namespace, a value of its own class.
+    Collections,
     /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
     /// is the whole Rust boundary"): one instance, built at bootstrap and
     /// handed to the core library alone. No program can name it -- it is
@@ -267,7 +270,7 @@ impl BuiltinClass {
     /// siblings. So this is *not* a superclass-first order: the kernel phase
     /// sorts the kinds by their depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 18] = [
+    pub const ALL: [BuiltinClass; 19] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -276,12 +279,13 @@ impl BuiltinClass {
         BuiltinClass::Float,
         BuiltinClass::String,
         BuiltinClass::Symbol,
-        BuiltinClass::Character,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
-        BuiltinClass::Nil,
+        BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
         BuiltinClass::Platform,
+        BuiltinClass::Transcript,
+        BuiltinClass::Collections,
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Value,
@@ -425,9 +429,6 @@ pub enum FrameKind<'gc> {
 pub enum Continuation<'gc> {
     /// Hand the value to the send that made the activation.
     Deliver,
-    /// `and:` and `or:`: hand on whether the value is exactly `true`
-    /// (`builtins::boolean::truthy`).
-    Truthy,
     /// A native `whileTrue:`/`whileFalse:` loop's condition returned.
     WhileCondition(Box<WhileLoop<'gc>>),
     /// Its body returned.

@@ -5,7 +5,7 @@ an Object
 an Object
 an Object
 an Object
-false
+true
 '''
 stderr = '''
 Uncaught Newspeak error: an object does not understand #size

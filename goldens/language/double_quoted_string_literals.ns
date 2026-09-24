@@ -1,0 +1,19 @@
+Newspeak3
+'T'
+(* §5.1.5: a string literal is written 'σ' or "σ". A double-quoted one has
+   no escape and ends at the next double quote, except that any single
+   character between two quotes is a one-character string -- so """ is the
+   string holding a double quote, as the Newspeak corpus writes it. §5.1.4's
+   character literals are gone, as it announces: "a" is a string, equal to
+   'a'. A quote of the other kind needs no escape at all. *)
+class DoubleQuoted usingPlatform: platform = Object new () (
+    public main: p args: a = (
+        | t |
+        t:: p transcript.
+        t show: "abc"; newLine.
+        t show: ("a" = 'a') printString; show: ' '; show: ("a" class == String) printString; newLine.
+        t show: "it's"; show: ' '; show: '"quoted"'; newLine.
+        t show: """; show: ' '; show: "'"; newLine.
+        t show: "" size printString; show: ' '; show: "a''b" size printString; newLine
+    )
+) : ()

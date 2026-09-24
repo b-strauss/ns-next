@@ -36,12 +36,13 @@ Top                     (private; no superclass, declares nothing)
     │   │               └── Float
     │   ├── String
     │   ├── Symbol
-    │   ├── Character
-    │   └── Nil
+    │   ├── UndefinedObject
+    │   ├── Platform    transcript, collections (slots)
+    │   ├── Transcript  show:, newLine
+    │   └── Collections List
     ├── Array
     ├── OrderedCollection
-    ├── Block
-    └── Platform
+    └── Block
 ```
 
 The mirror's class is the one builtin `Kernel.ns` does not declare; the
@@ -81,29 +82,34 @@ shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 `printString` and protected `doesNotUnderstand:`, beside its fifteen
 accessors for the predefined classes, `Object` to `Block`, each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
-below); `Boolean`'s conditionals,
-`not`, `&`, `and:`, `|`, `or:` and `printString`; `Integer`'s `+ - * // < >
+below); `Integer`'s `+ - * // < >
 <= >= =`, `negated`, `abs`, `printString` and `asString`; `Float`'s
 `+ - * / < > =`, `hash`, `printString` and `asString`; `String`'s `size`,
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
-`hash` and `printString`; `Character`'s `asInteger`, `asString` and `=`;
-`Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
+`hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
 `add:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
-`numArgs`, `whileTrue:` and `whileFalse:`; and the platform's accessors.
-`Nil`, `True` and `False` declare nothing of their own.
+`numArgs`, `whileTrue:` and `whileFalse:`; and `Transcript`'s `show:` and
+`newLine`. `Platform` holds its transcript and its `collections` namespace in
+slots, and `Collections>>List` is `^outer Kernel OrderedCollection`,
+answered without a leaf ("The platform" below).
+`Nil` declares nothing of its own. `True` and `False` reach no leaf at all:
+their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
+("`True` and `False` are quick methods" below), and their `printString` and
+`hash` ordinary ones. `Boolean` declares nothing of its own either.
 
-The three exceptions are `hash` on `Integer` (`^self`), on `Character`
-(`^self asInteger`) and on `Boolean` (`^self ifTrue: [1] ifFalse: [0]`):
-ordinary methods, because the value each answers is already at hand and a
-row for it would only repeat what `Kernel.ns` can say. Every value class
+The other exceptions are `hash` on `Integer` (`^self`) and `asString` on
+`String` (`^self`), both quick methods ("`True` and `False` are quick
+methods" below), and `hash` on `True` and `False` (`^1` and `^0`), ordinary
+methods: the value each answers is
+already at hand, and a row for it would only repeat what `Kernel.ns` can
+say. Every value class
 declares the `hash` its own `=` demands — §3.1.1 lets a value be copied
 across an actor boundary, so a copy has to hash like its original, and none
-of them may inherit `Object`'s identity hash. `String`'s, `Character`'s, `Symbol`'s and — since 2026-09-23 — `Float`'s `=`
-each require an argument of the receiver's own class: `String` and
-`Character` share an `ObjectData::String` payload, so a rule that read the
-payload alone would make `"a" = 'a'` true while the two hash apart, and
-`Float`'s widening did make `1.0 = 1` true while `1.0 hash` and `1 hash`
-differ ("What is still unchecked" below).
+of them may inherit `Object`'s identity hash. `String`'s, `Symbol`'s and —
+since 2026-09-23 — `Float`'s `=` each require an argument of the receiver's
+own class: each class hashes by its own content, so a cross-class equality
+would break the rule, as `Float`'s widening did when it made `1.0 = 1` true
+while `1.0 hash` and `1 hash` differ ("What is still unchecked" below).
 
 **A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
 makes equal symbols one object, so it agrees with `Symbol>>=` by
@@ -300,7 +306,7 @@ module a value.
   made `1.0 = 1` true while `1.0 hash` and `1 hash` differ — the one rule a
   `hash` has — and made `Float`'s own `=` disagree with the derived
   equality, which asks the classes first. Every value class's `=` is
-  class-tight now, `Float`'s like `Character`'s and `String`'s. **Only
+  class-tight now, `Float`'s like `String`'s and `Symbol`'s. **Only
   equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`
   and `>` still take an `Integer` argument and widen it losslessly
   (`builtins/numbers.rs`'s module note), so `1.5 < 2` answers; an `Integer`
@@ -310,22 +316,52 @@ module a value.
   "Gap: an integer has no `/`" below, where the tower it needs is
   recorded.
 The builtin value classes' own immutability rests on there being no mutating
-leaf for a `String`, a `Symbol` or a `Character` — their state is a Rust
+leaf for a `String` or a `Symbol` — their state is a Rust
 payload, not slots, so neither check above is about them. And the actor
 boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 78 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 57 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
 `ifFail:`; its arguments are the subject (the kernel method's `self`), the
 leaf's own arguments, and the failure block. `Array` and `OrderedCollection`
-share rows 56–60, as they share their payload.
+share rows 43–47, as they share their payload.
 
-A minimal `platform` object exposes the builtin classes, a `collections`
-namespace and a stdout stream object, enough for transcript-style output.
+### The platform
+
+The platform a module is handed (§8.3), its transcript and its `collections`
+namespace are three values (§3.1.1), each a `Kernel.ns` class of its own
+below `Value` (decided with the user on 2026-09-25):
+
+```newspeak
+public class Platform = Value new (
+    | public transcript = Transcript new.
+      public collections = Collections new. |
+) ( )
+public class Transcript = Value new () ( show: and newLine, forwarders )
+public class Collections = Value new () ( public List = ( ^outer Kernel OrderedCollection ) )
+```
+
+`transcript` and `collections` are slot getters, `List` the accessor form
+answered without an activation, and only `Transcript`'s output reaches Rust
+(`platform.rs`). Being values, they have no identity: two transcripts are
+equal and so identical, and a transcript kept in an image is the loading
+platform's after the load. None has an accessor on `Object`, since a program
+reaches them through the platform it is given, and the platform declares no
+accessor for a predefined class either: `platform Array` reaches `Object`'s
+(§3.2), which it inherits like every object.
+
+The host builds the one platform (`Mutator::platform_value`) in the state
+`Platform new` would give it — a fresh `Transcript` and `Collections` in the
+slots `Kernel.ns` declares — rather than by running the factory, so that
+asking for the platform, at bootstrap or in `image::load`, runs no Newspeak
+and fills no cache. `goldens/kernel/the_platform_and_its_parts_are_values`
+pins that the two agree (`platform = platform class new`), and
+`interpreter::kernel`'s shape check lets `Platform`, alone of the builtins,
+declare slots, because Rust builds no other instance of it.
 
 ## The on-demand rule
 
@@ -348,22 +384,6 @@ also asks that namespace for `Map`, `IdentityMap`, `IdentitySet`, `WeakArray` an
 or worse, aliasing them onto `OrderedCollection`, which is neither a dictionary
 nor a set — would be a collections library built without a caller. Modules
 needing them stay off the whitelist.
-
-## Tagging inside the platform
-
-The platform singleton, its `transcript` stream and its `collections` namespace
-all share one builtin-class tag and are told apart by payload shape: zero fields
-for the singleton, one for the stream, two for the namespace. None ever holds
-real slot data; the field count is purely a tag.
-
-This is a wart, and it is recorded rather than hidden. It exists because there was
-no second builtin-class slot to spare, and adding one would renumber the image
-format's builtin-class table for no behavioural gain. All three objects'
-selectors are methods of the one kernel class `Platform`, and a selector sent to
-the wrong one of them is a leaf that declines: the method's failure block sends
-the message to `super`, which is `Object`'s, and ends in `doesNotUnderstand:`
-([dispatch.md](dispatch.md), "A primitive can fail"). They keep the shared
-class, since `platform transcript class` answering `Platform` is observable.
 
 ## Deviation: `i64` integers
 
@@ -494,7 +514,7 @@ block answers it as a trampoline step instead of calling it:
 
 | Selector | How it runs its block |
 |---|---|
-| `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the kernel method kept as the guarded fallback. The leaf is a trampoline step: it returns the block to activate instead of calling it, with a continuation for what `and:` and `or:` do with its value ([execution.md](execution.md), "The trampoline") |
+| `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the kernel method kept as the guarded fallback. There is no leaf: `True`'s or `False`'s method is a quick method, and one whose body is `^<parameter> value` answers the block as a trampoline step instead of calling it ("`True` and `False` are quick methods" below; [execution.md](execution.md), "The trampoline") |
 | `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
 | `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the JIT tiers" below |
@@ -640,15 +660,121 @@ Two things about the shape are enforced rather than conventional:
   else at bootstrap (`check_mirror_send_arguments`). The reference lowering
   marks a mirror send whose failure block the optimized lowering inlines as a
   `SendInlinable`, and that mark covers the whole send, so it would exempt
-  from the depth count a literal block the leaf itself activates —
-  `boolean:ifTrue:ifFail:`'s — which the optimized lowering counts; the two
-  lowerings would then overflow at different depths ([compiler.md](compiler.md),
-  "How the limit counts"). `Boolean>>ifTrue:` therefore passes its parameter,
-  which neither lowering marks.
+  from the depth count a literal block the leaf itself activates — as
+  `whileTrue:`'s would be, were a kernel method to pass it one — which the
+  optimized lowering counts; the two lowerings would then overflow at
+  different depths ([compiler.md](compiler.md), "How the limit counts"). A
+  block a leaf activates is therefore passed as a parameter, which neither
+  lowering marks.
 - **A cascade to `vmMirror` is not a mirror send.** The resolver marks only a
   plain explicit-receiver send, so a cascade compiles as ordinary sends to the
   mirror object — which still run their rows, sent, with a real failure block
   ([compiler.md](compiler.md), "Mirror sends"). `Kernel.ns` uses none.
+
+### `True` and `False` are quick methods
+
+`True` and `False` implement their whole protocol in `Kernel.ns`, one method
+per branch, as every prior-art kernel does — SOMns's
+(`prior-art/somns/core-lib/Kernel.ns`), Primordial Soup's
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`) and
+Newspeak on Squeak's (`prior-art/newspeak/squeak/KernelForSqueak.ns`):
+
+```newspeak
+public ifTrue: trueBlock ifFalse: falseBlock = ( ^trueBlock value )   (* True *)
+public and: block = ( ^false )                                         (* False *)
+```
+
+No method tests its receiver and none reaches the mirror; `Boolean` itself
+declares nothing, and each of the two declares the `hash` its `=` demands.
+
+**Every such body is a quick method**, Squeak's and Cog's name for a method
+that answers a constant or an argument and is run without an activation. A
+kernel method whose whole body is `^true`, `^false` or `^nil`
+(`MethodFastPath::Constant`), `^self` (`MethodFastPath::Receiver`),
+`^<parameter>` (`MethodFastPath::Parameter`), `^<parameter> value`
+(`MethodFastPath::ValueOfParameter`) or `^<parameter> cull: self`
+(`MethodFastPath::CullParameter`, "The nil protocol" below) is recognized
+by `compiler::primitive_method` and answered by `act` on every send, like
+the other two fast paths ([dispatch.md](dispatch.md), "Primitive
+methods"). `ValueOfParameter` answers a closure argument as the block to
+activate, as a trampoline step, marked as a control-flow step for a Boolean
+receiver; any other argument activates the method, whose body then sends
+`value` for real. Only `Kernel.ns`'s methods are
+recognized, and `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch them off,
+since they run no leaf.
+
+The reason is the depth count, not speed alone. The reference lowering sends
+`n = 0 ifTrue: [0] ifFalse: [n * (self fact: n - 1)]` as a `SendInlinable`
+that reaches `True>>ifTrue:ifFalse:`; activated, that method and the block
+its `value` activates would count two activations per level where the
+optimized lowering, which inlines the conditional, counts none. As a quick
+method it is never activated, and the block step it answers is exempt
+exactly as a leaf's was ([compiler.md](compiler.md), "How the limit
+counts"). `interpreter::kernel`'s `QUICK_METHODS` table test pins the fast
+path of every `True` and `False` method, and
+`goldens/kernel/recursion_through_and_or_counts_alike_under_both_lowerings`
+the agreement.
+
+Two semantic decisions came with the move (decided with the user on
+2026-09-24):
+
+- **`and:`, `or:`, `&` and `|` do not coerce.** `true and: [3]` answers `3`,
+  as in every prior-art kernel, under both lowerings — the compiler's
+  inlined `and:`/`or:` moves the block's value into the result as it is
+  (`goldens/language/and_or_short_circuit`,
+  `goldens/language/and_or_answer_their_arguments_value`).
+- **An argument that is no block is sent `value`, and nothing answers it**,
+  as in Primordial Soup: there is no `Object>>value`, so `true ifTrue: 3`
+  ends in `doesNotUnderstand:`
+  (`goldens/errors/a_conditional_sends_value_to_its_argument`), while a
+  side that decides alone never looks at its argument — `false ifTrue: 3`
+  answers `nil`
+  (`goldens/language/a_short_circuited_conditional_ignores_its_argument`).
+
+A user subclass of `True` inherits these methods, needing no payload for
+them, where a subclass of `Boolean` inherits nothing from it and falls to
+`Value`'s and `Object`'s methods, hashing by its state like any other value
+(`goldens/kernel/a_subclass_of_true_inherits_its_methods`,
+`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`,
+`goldens/kernel/a_subclass_of_boolean_hashes_as_a_value`).
+
+### The nil protocol
+
+§5.1.3 names `nil`'s class `UndefinedObject` and has it answer `isNil`
+with true. `Object` declares the rest of the protocol every prior-art kernel
+has — `isNil`, `notNil`, `ifNil:`, `ifNotNil:`, `ifNil:ifNotNil:` and
+`ifNotNil:ifNil:` — answering for every object that is not `nil`, and
+`UndefinedObject` declares the same six the other way round, as SOMns's
+(`prior-art/somns/core-lib/Kernel.ns`) and Newspeak's JS kernel
+(`prior-art/newspeak/KernelForJS.ns`) do; `nil ifNotNil:` answers `nil`,
+`3 ifNil:` answers `3`. `nil printString` answers `'nil'`, as Primordial
+Soup's `UndefinedObject` does, where it answered `Object`'s generic
+`an Object` before (`goldens/cache/cache_polymorphic_sites`).
+
+**A block for the not-nil case is culled with the receiver** (decided on
+2026-09-25, from the corpus): it is handed the receiver when it takes an
+argument and nothing when it takes none, Squeak's `cull:`. The prior art
+splits here — SOMns sends `ifNotNil:`'s block `value` and culls
+`ifNil:ifNotNil:`'s, the JS kernel sends every one `value: self` — and the
+canonical Newspeak sources under `corpus/` pass both shapes, 386
+`ifNotNil: [:x | ...]` against 126 `ifNotNil: [...]`, which only `cull:`
+runs. `Block>>cull:` is an ordinary `Kernel.ns` method saying so, and
+`Object`'s bodies are `^notNilBlock cull: self`. A block that takes two
+arguments is handed one and fails the arity check as `value:` would; an
+argument that is no block is sent `cull:`, which nothing but a block
+answers.
+
+Every one of the twelve bodies is a quick method: a constant, `^self`,
+`^block value` or `^block cull: self` (`MethodFastPath::CullParameter`,
+which activates a closure argument with the receiver or with nothing by its
+parameter count, and otherwise activates the method). None of these sends
+is inlined by the compiler, so no block they activate is a control-flow
+step: both lowerings send them and count the block alike.
+`goldens/language/the_nil_protocol`,
+`goldens/errors/if_not_nil_culls_its_argument`,
+`goldens/errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`
+and `goldens/spec/spec_5_1_3_nil_answers_is_nil` pin it, and
+`goldens/kernel/nil_is_the_undefined_object` the class's name.
 
 ### The bootstrap: placeholders first, kernel second
 
@@ -672,7 +798,8 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    `Mutator::build_root_mixin`, as every module's root is built, so the root
    rule applies to `Kernel` too — and `check_kernel_shape` checks
    what the phase relies on: one nested class per builtin, named as
-   `kernel_class_name` says, each with no slots and the default factory; the
+   `kernel_class_name` says, each with no slots but `Platform` ("The
+   platform" above) and with the default factory; the
    one immutable `vmMirror` slot on the root; a superclass clause on every
    class but `Top` that is a bare sibling name, read and never run, naming a
    kernel class, from which the chain reaches `Top` without repeating; that
@@ -873,7 +1000,7 @@ Each decision below was taken with the user.
 
 **The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
-`Float`, `String`, `Symbol`, `Character`, `Nil`, `Array`,
+`Float`, `String`, `Symbol`, `UndefinedObject`, `Array`,
 `OrderedCollection` and `Block`. `Top`, the VM mirror's class and `Platform`
 get none: §3.2 lets only `Object` name `Top`, as its superclass; the mirror
 is a capability; and a program is handed the platform through its factory.
@@ -968,31 +1095,25 @@ grew from 6,507 to 6,626 instructions and is still one function.
 
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers
 
-Would change: `Boolean`'s conditionals, `and:`, `or:`, `Block`'s
-`whileTrue:` and `whileFalse:`, and the collections' `do:` become real
-Newspeak loops and branches instead of forwarders to today's leaves.
+Would change: `Block`'s `whileTrue:` and `whileFalse:` and the
+collections' `do:` become real Newspeak loops instead of forwarders to
+today's leaves. The branches are done: `True`'s and `False`'s methods are
+already Newspeak ("`True` and `False` are quick methods" above).
 
 **Kernel method bodies forward; they do not reimplement** (decided with the
-user on 2026-09-22). The control-flow methods and `do:` are forwarders over
+user on 2026-09-22). The loops and `do:` are forwarders over
 the trampoline-step leaves, as mirror primitives, so `do:`'s loop is still
 opaque: nothing can inline its block or compile the loop as a unit. Rewriting
 them must happen **before the JIT tiers** — they are what the tiers need to
 see through — and pays off **only with one**: before a JIT a Newspeak loop is
 more sends and activations than the leaf it replaces, and costs.
 
-The step owns four semantic decisions, each of which the leaves settle today
-and a Newspeak body would have to settle again, visibly:
+The step owns three semantic decisions, each of which the leaves settle
+today and a Newspeak body would have to settle again, visibly. A fourth,
+what a conditional does with an argument that is no block, is settled for
+the branches: it is sent `value`, and nothing answers it ("`True` and
+`False` are quick methods" above); the loops below would follow it.
 
-- **A non-block argument is taken as its own value.** The conditionals,
-  `and:` and `or:` activate an argument that is a block and take any other
-  argument as the value it stands for, and `and:` and `or:` then coerce that
-  value by `builtins::boolean::truthy`'s rule — only exactly `true` is true —
-  so `true and: three`, with `three` holding `[3]`, answers `false`
-  (`goldens/language/variable_and_block_coerces_its_value_to_a_boolean`). A
-  Newspeak body that sends `value` to its argument needs `Object>>value`
-  answering `self` for the non-block case — which would be a new, observable
-  selector every object answers, not a refactoring — and must keep the
-  coercion.
 - **`do:` iterates over a copy.** `Heap::array_elements` clones the payload
   when the loop starts, so an `add:` inside the block does not extend the
   iteration; a Newspeak loop over `size` and `at:` would see it.
@@ -1003,6 +1124,18 @@ and a Newspeak body would have to settle again, visibly:
   condition alone (`builtins::block`).
 
 ## Decisions
+
+- **`True` and `False` are Newspeak, over quick methods** (decided with the
+  user on 2026-09-24, built the same day): the Boolean half of "Planned:
+  real bodies for control flow and `do:`" moved ahead of the rest; the
+  kernel compiler runs `^true`, `^false`, `^nil`, `^<parameter>` and
+  `^<parameter> value` bodies without an activation, as Squeak's and Cog's
+  quick methods, so the depth count still agrees under both lowerings;
+  `and:`, `or:`, `&` and `|` answer their argument's value without coercion,
+  as every prior-art kernel does; and an argument that is no block is sent
+  `value` with no `Object>>value` to answer it, as in Primordial Soup
+  ("`True` and `False` are quick methods" above;
+  [plan](../superpowers/plans/2026-09-24-2320-ns-next-boolean-quick-methods.md)).
 
 - **Leaf primitives are native Rust; anything that calls back into Newspeak is
   not**, because a Rust callback is a permanent barrier to optimization. This

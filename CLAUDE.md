@@ -282,8 +282,11 @@ payload check, which `builtins::execute` re-runs, and a class object's own
 `class` field, which `resolve_public` re-reads to fall through to `Object`'s
 methods after a metaclass miss. A kernel method's fast path is decided the same way:
 the entry records a `Method`, and `act` reads the fast path off that method
-(`MixinMethod.fast_path` -- a mirror row, `MethodFastPath::Mirror`, or a builtin class
-for one of `Object`'s accessors, `MethodFastPath::BuiltinClass`) on every send, hit or
+(`MixinMethod.fast_path` -- a mirror row, `MethodFastPath::Mirror`, a builtin class
+for one of `Object`'s accessors, `MethodFastPath::BuiltinClass`, or a quick method's
+constant, receiver or argument, `MethodFastPath::Constant`, `Receiver`, `Parameter`,
+`ValueOfParameter` and `CullParameter`, whose argument `act` checks for a closure on
+every send) on every send, hit or
 miss, never from anything the entry decided (`docs/design/dispatch.md`, "Primitive
 methods"). Add such a read and its per-send
 re-check goes with it. The reference lowering runs every send uncached, so it

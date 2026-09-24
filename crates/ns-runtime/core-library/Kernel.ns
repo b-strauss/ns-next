@@ -4,8 +4,8 @@ Newspeak3
    Newspeak source over a VM mirror"). One nested class per builtin class;
    the bootstrap fills the builtin class objects from them before it
    instantiates this module, so a nested class here *is* the class a literal
-   has. Every method reaches Rust through `vmMirror`, the one object that
-   holds the leaves, and nothing else here does.
+   has. Every method that needs a leaf reaches Rust through `vmMirror`, the
+   one object that holds the leaves, and nothing else here does.
 
    A superclass clause below names a sibling by its bare name and nothing
    else: the bootstrap reads the name and never runs the clause, because the
@@ -53,8 +53,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Float = ( ^outer Kernel Float )
         public String = ( ^outer Kernel String )
         public Symbol = ( ^outer Kernel Symbol )
-        public Character = ( ^outer Kernel Character )
-        public Nil = ( ^outer Kernel Nil )
+        public UndefinedObject = ( ^outer Kernel UndefinedObject )
         public Array = ( ^outer Kernel Array )
         public OrderedCollection = ( ^outer Kernel OrderedCollection )
         public Block = ( ^outer Kernel Block )
@@ -62,6 +61,18 @@ class Kernel vmMirror: theMirror = Object <: Value (
            through lookupPublic and falls to the access-blind "defined for"
            walk that invokes it for the failing send itself. *)
         protected doesNotUnderstand: message = ( ^vmMirror object: self doesNotUnderstand: message ifFail: [^super doesNotUnderstand: message] )
+        (* The nil protocol, as SOMns's kernel and Newspeak's own declare it:
+           every object but nil is not nil, and `UndefinedObject` answers the
+           other way. A block for the not-nil case is culled with the
+           receiver, as Squeak's is and as the Newspeak corpus relies on,
+           passing `[:x | ...]` and `[...]` alike. Every body is a quick
+           method (`docs/design/core-library.md`, "The nil protocol"). *)
+        public isNil = ( ^false )
+        public notNil = ( ^true )
+        public ifNil: block = ( ^self )
+        public ifNotNil: block = ( ^block cull: self )
+        public ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )
+        public ifNotNil: notNilBlock ifNil: nilBlock = ( ^notNilBlock cull: self )
     )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
@@ -72,10 +83,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
        the method `=` is overridden ... if `x = y` evaluates to true then
        `x hash = y hash` must evaluate to true." Since a value may be copied
        across an actor boundary, a copy has to hash like its original, so
-       none of them may inherit `Object`'s identity hash. `Integer`'s and
-       `Character`'s are ordinary methods rather than forwarders to a leaf:
-       the value they answer is already at hand, and the activation costs
-       only a program that hashes. *)
+       none of them may inherit `Object`'s identity hash. `Integer`'s,
+       `True`'s and `False`'s are no forwarders to a leaf: the value they
+       answer is already at hand. *)
     public class Value = Object new () (
         (* §3.1.1: a value object is globally unique, in the sense that no
            other object is equal to it -- so equality is derived from state,
@@ -126,21 +136,43 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Number = Value new () (
     )
     public class Boolean = Value new () (
-        public ifTrue: trueBlock ifFalse: falseBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFalse: falseBlock ifFail: [^super ifTrue: trueBlock ifFalse: falseBlock] )
-        public ifFalse: falseBlock ifTrue: trueBlock = ( ^vmMirror boolean: self ifFalse: falseBlock ifTrue: trueBlock ifFail: [^super ifFalse: falseBlock ifTrue: trueBlock] )
-        public ifTrue: trueBlock = ( ^vmMirror boolean: self ifTrue: trueBlock ifFail: [^super ifTrue: trueBlock] )
-        public ifFalse: falseBlock = ( ^vmMirror boolean: self ifFalse: falseBlock ifFail: [^super ifFalse: falseBlock] )
-        public not = ( ^vmMirror booleanNot: self ifFail: [^super not] )
-        public hash = ( ^self ifTrue: [1] ifFalse: [0] )
-        public & other = ( ^vmMirror boolean: self logicalAnd: other ifFail: [^super & other] )
-        public and: alternative = ( ^vmMirror boolean: self and: alternative ifFail: [^super and: alternative] )
-        public | other = ( ^vmMirror boolean: self logicalOr: other ifFail: [^super | other] )
-        public or: alternative = ( ^vmMirror boolean: self or: alternative ifFail: [^super or: alternative] )
-        public printString = ( ^vmMirror booleanPrintString: self ifFail: [^super printString] )
     )
+    (* §5.1.2: `true` is the unique instance of `True` and `false` of
+       `False`. Each branch is a method of its own, as in every prior-art
+       kernel (SOMns's, Primordial Soup's, Newspeak on Squeak's), so no
+       method tests the receiver and none reaches the mirror. Every body is
+       `^true`, `^false`, `^nil`, `^<parameter>` or `^<parameter> value`: a
+       quick method, which runs without an activation, so that the
+       reference lowering, which sends a conditional the optimized lowering
+       inlines, counts no activation for it either
+       (`docs/design/core-library.md`, "`True` and `False` are quick
+       methods"). An argument that is no block is sent `value` like any
+       other object; `printString` and `hash` alone are ordinary methods. *)
     public class True = Boolean new () (
+        public ifTrue: trueBlock ifFalse: falseBlock = ( ^trueBlock value )
+        public ifFalse: falseBlock ifTrue: trueBlock = ( ^trueBlock value )
+        public ifTrue: trueBlock = ( ^trueBlock value )
+        public ifFalse: falseBlock = ( ^nil )
+        public not = ( ^false )
+        public & other = ( ^other )
+        public and: block = ( ^block value )
+        public | other = ( ^true )
+        public or: block = ( ^true )
+        public printString = ( ^'true' )
+        public hash = ( ^1 )
     )
     public class False = Boolean new () (
+        public ifTrue: trueBlock ifFalse: falseBlock = ( ^falseBlock value )
+        public ifFalse: falseBlock ifTrue: trueBlock = ( ^falseBlock value )
+        public ifTrue: trueBlock = ( ^nil )
+        public ifFalse: falseBlock = ( ^falseBlock value )
+        public not = ( ^true )
+        public & other = ( ^false )
+        public and: block = ( ^false )
+        public | other = ( ^other )
+        public or: block = ( ^block value )
+        public printString = ( ^'false' )
+        public hash = ( ^0 )
     )
     public class Integer = Number new () (
         public + other = ( ^vmMirror integer: self add: other ifFail: [^super + other] )
@@ -177,18 +209,13 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public hash = ( ^vmMirror stringHash: self ifFail: [^super hash] )
         public asSymbol = ( ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol] )
         public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
+        public asString = ( ^self )
     )
     public class Symbol = Value new () (
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
         public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror symbolHash: self ifFail: [^super hash] )
         public printString = ( ^vmMirror symbolPrintString: self ifFail: [^super printString] )
-    )
-    public class Character = Value new () (
-        public asInteger = ( ^vmMirror characterAsInteger: self ifFail: [^super asInteger] )
-        public asString = ( ^vmMirror characterAsString: self ifFail: [^super asString] )
-        public = other = ( ^vmMirror character: self equals: other ifFail: [^super = other] )
-        public hash = ( ^self asInteger )
     )
     public class Array = Object new () (
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
@@ -202,7 +229,18 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
-    public class Nil = Value new () (
+    (* §5.1.3: `nil` is the unique instance of `UndefinedObject`, which
+       answers `isNil` with true. It answers the rest of the nil protocol
+       `Object` declares the other way round, each a quick method, and
+       prints as `nil`, as Primordial Soup's does. *)
+    public class UndefinedObject = Value new () (
+        public isNil = ( ^true )
+        public notNil = ( ^false )
+        public ifNil: block = ( ^block value )
+        public ifNotNil: block = ( ^nil )
+        public ifNil: nilBlock ifNotNil: notNilBlock = ( ^nilBlock value )
+        public ifNotNil: notNilBlock ifNil: nilBlock = ( ^nilBlock value )
+        public printString = ( ^'nil' )
     )
     public class Block = Object new () (
         public value = ( ^vmMirror blockValue: self ifFail: [^super value] )
@@ -210,23 +248,34 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public value: first value: second = ( ^vmMirror block: self value: first value: second ifFail: [^super value: first value: second] )
         public value: first value: second value: third = ( ^vmMirror block: self value: first value: second value: third ifFail: [^super value: first value: second value: third] )
         public numArgs = ( ^vmMirror blockNumArgs: self ifFail: [^super numArgs] )
+        (* Squeak's `cull:`: the argument when the block takes one, nothing
+           when it takes none. `Object`'s `ifNotNil:` family means exactly
+           this, and its quick methods do it without sending it. *)
+        public cull: argument = ( ^self numArgs = 0 ifTrue: [self value] ifFalse: [self value: argument] )
         public whileTrue: body = ( ^vmMirror block: self whileTrue: body ifFail: [^super whileTrue: body] )
         public whileFalse: body = ( ^vmMirror block: self whileFalse: body ifFail: [^super whileFalse: body] )
     )
-    (* The platform object, its transcript and its collections namespace share
-       this class and are told apart by payload shape (`platform.rs`), so a
-       leaf declines a platform object that is not the one it serves, and the
-       failure block's `super` send ends in Object's doesNotUnderstand:. *)
-    public class Platform = Object new () (
-        public transcript = ( ^vmMirror platformTranscript: self ifFail: [^super transcript] )
-        public Object = ( ^vmMirror platformObject: self ifFail: [^super Object] )
-        public Array = ( ^vmMirror platformArray: self ifFail: [^super Array] )
-        public OrderedCollection = ( ^vmMirror platformOrderedCollection: self ifFail: [^super OrderedCollection] )
-        public String = ( ^vmMirror platformString: self ifFail: [^super String] )
-        public Symbol = ( ^vmMirror platformSymbol: self ifFail: [^super Symbol] )
-        public collections = ( ^vmMirror platformCollections: self ifFail: [^super collections] )
-        public List = ( ^vmMirror platformList: self ifFail: [^super List] )
-        public show: text = ( ^vmMirror platform: self show: text ifFail: [^super show: text] )
-        public newLine = ( ^vmMirror platformNewLine: self ifFail: [^super newLine] )
+    (* The platform a module is handed (§8.3), its transcript and its
+       collections namespace: three values (§3.1.1), each a class of its own.
+       The platform holds the other two in immutable slots, and only the
+       transcript's output reaches Rust. None of the three has an accessor on
+       `Object`: a program reaches them through the platform it is given. The
+       host builds the one platform in the state `Platform new` would give it
+       (`Mutator::platform_value`), so that asking for it runs nothing. *)
+    public class Platform = Value new (
+        | public transcript = Transcript new.
+          public collections = Collections new. |
+    ) (
+    )
+    public class Transcript = Value new () (
+        public show: text = ( ^vmMirror transcript: self show: text ifFail: [^super show: text] )
+        public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [^super newLine] )
+    )
+    (* The Core Library's `collections` namespace, whose one member is the
+       one a whitelisted corpus module asks for (`docs/design/core-library.md`,
+       "The on-demand rule"): `List`, the growable ordered sequence this
+       runtime has under its Smalltalk name. *)
+    public class Collections = Value new () (
+        public List = ( ^outer Kernel OrderedCollection )
     )
 ) : ()

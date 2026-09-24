@@ -53,10 +53,9 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LeftBracket => self.parse_block(),
             TokenKind::LeftBrace => self.parse_dynamic_array(),
-            TokenKind::Number
-            | TokenKind::String
-            | TokenKind::Symbol
-            | TokenKind::CharacterConstant => Expression::Literal(self.parse_literal()),
+            TokenKind::Number | TokenKind::String | TokenKind::Symbol => {
+                Expression::Literal(self.parse_literal())
+            }
             TokenKind::Identifier => {
                 let token = self.current();
                 match self.text(token) {
@@ -129,13 +128,6 @@ impl<'a> Parser<'a> {
                 value: symbol_body(&raw),
                 span: token.span,
             },
-            TokenKind::CharacterConstant => {
-                let inner = super::lexeme_body(&raw);
-                Literal::Character {
-                    value: inner.chars().next().unwrap_or('\u{0}'),
-                    span: token.span,
-                }
-            }
             _ => unreachable!("parse_literal called on {:?}", token.kind),
         }
     }
@@ -165,7 +157,7 @@ impl<'a> Parser<'a> {
         while self.at(TokenKind::Colon) {
             self.bump();
             if self.at(TokenKind::Identifier) {
-                parameters.push(self.identifier());
+                parameters.push(self.declared_identifier("name a block parameter"));
                 // `[:x <T> :y <T> | ...]` — block parameters carry the same
                 // declaration-position `<Type>` annotations as method parameters.
                 self.skip_type_annotation();
@@ -263,10 +255,7 @@ impl<'a> Parser<'a> {
                     span: id.span,
                 }
             }
-            TokenKind::Number
-            | TokenKind::String
-            | TokenKind::Symbol
-            | TokenKind::CharacterConstant => self.parse_literal(),
+            TokenKind::Number | TokenKind::String | TokenKind::Symbol => self.parse_literal(),
             _ => {
                 let token = self.bump();
                 self.diagnostics.push(crate::diagnostic::Diagnostic::error(
@@ -300,6 +289,7 @@ impl<'a> Parser<'a> {
                     keyword.span.start + name.len() as u32,
                 ),
             };
+            self.refuse_reserved_word(&target.name, target.span, "be assigned");
             let value = self.parse_expression();
             let span = target.span.merge(expression_span(&value));
             return Expression::Assign {
@@ -447,12 +437,12 @@ impl<'a> Parser<'a> {
                 self.bump(); // `<-`
                 self.bump(); // `:`
             }
-            if !((self.at(TokenKind::Identifier) || self.at(TokenKind::Class))
-                && !self.is_reserved_identifier(self.current()))
-            {
+            if !(self.at(TokenKind::Identifier) || self.at(TokenKind::Class)) {
                 break;
             }
             let selector_token = self.bump();
+            let selector_name = self.text(selector_token).to_string();
+            self.refuse_reserved_word(&selector_name, selector_token.span, "be a message selector");
             let span = expression_span(&receiver).merge(selector_token.span);
             receiver = Expression::Send(Box::new(Send {
                 span,
@@ -510,6 +500,12 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let selector_token = self.expect(TokenKind::Identifier).unwrap_or(self.current());
+                let selector_name = self.text(selector_token).to_string();
+                self.refuse_reserved_word(
+                    &selector_name,
+                    selector_token.span,
+                    "be a message selector",
+                );
                 MessageSend {
                     selector: Selector::Unary(self.text(selector_token).to_string()),
                     arguments: Vec::new(),
@@ -544,7 +540,6 @@ fn starts_primary(kind: TokenKind) -> bool {
             | TokenKind::Number
             | TokenKind::String
             | TokenKind::Symbol
-            | TokenKind::CharacterConstant
             | TokenKind::LeftParenthesis
             | TokenKind::LeftBracket
             | TokenKind::LeftBrace
@@ -571,7 +566,6 @@ pub(super) fn literal_span(literal: &Literal) -> crate::span::Span {
         | Literal::Float { span, .. }
         | Literal::String { span, .. }
         | Literal::Symbol { span, .. }
-        | Literal::Character { span, .. }
         | Literal::Boolean { span, .. }
         | Literal::Nil { span }
         | Literal::Array { span, .. }
@@ -579,8 +573,14 @@ pub(super) fn literal_span(literal: &Literal) -> crate::span::Span {
     }
 }
 
+/// A string literal's value: a single-quoted one un-doubles `''`, and a
+/// double-quoted one has no escape at all (`lexer::lex_double_quoted_string`).
 fn unescape_string(raw: &str) -> String {
-    super::lexeme_body(raw).replace("''", "'")
+    if raw.starts_with('"') {
+        super::lexeme_body(raw).to_string()
+    } else {
+        super::lexeme_body(raw).replace("''", "'")
+    }
 }
 
 fn symbol_body(raw: &str) -> String {

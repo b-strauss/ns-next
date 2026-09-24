@@ -46,7 +46,6 @@ class ValueIdentity usingPlatform: platformAtCreation = Object <: Value () (
         )
         public run = (
             report: 'String' for: 'a' and: 'a'.
-            report: 'Character' for: "a" and: "a".
             report: 'Symbol' for: #a and: #a.
             report: 'Integer' for: 3 and: 3.
             report: 'Nil' for: nil and: nil.

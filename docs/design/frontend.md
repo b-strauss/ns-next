@@ -73,8 +73,8 @@ be checked against it. The load-bearing ones:
 - `methodDecl = accessModifier? , messagePattern , '=' , '(' , codeBody , ')'`
 - `block = '[' , blockParameters? , codeBody , ']'`;
   `blockParameters = (':' slotDecl)+ '|'`
-- `literal = pattern | number | symbolConstant | characterConstant | string |
-  tuple`; `tuple = '{' (expression sepOrTermBy '.') '}'`
+- `literal = pattern | number | symbolConstant | string | tuple` — the
+  grammar's `characterConstant` is gone ("Lexer" below); `tuple = '{' (expression sepOrTermBy '.') '}'`
 - comments are `(* ... *)` and nest; `(* :literalmessage: ... *)` is a
   literal-message comment
 
@@ -87,14 +87,23 @@ corpus and note the discrepancy.
 ## Lexer
 
 Hand-written, single pass. It handles nested `(* *)` comments, literal-message
-comments, character constants, string escapes and radix numbers.
+comments, both kinds of string literal, string escapes and radix numbers.
 
-Character constants are double-quote delimited (`"a"`), per the grammar's
-`characterConstant`. The double quote is free for this because comments are
-`(* *)` and strings are `'...'`. `lex_character_constant` consumes exactly one
-character between the delimiters whatever that character is, including `"`
-itself, so `""""` — the quote character — lexes correctly;
-`corpus/modules/VCSSmalltalkSourceMirrors.ns` uses it and parses.
+**A string literal is `'...'` or `"..."`** (§5.1.5), and there are no
+character literals (decided with the user on 2026-09-25): §5.1.4 announces
+"doing away with character literals, and having people use string literals
+instead", so `"a"` is a one-character string and the `Character` class is
+gone. A single-quoted string doubles an embedded `'` (`'it''s'`). A
+double-quoted one has no escape and ends at the next `"`
+(`lex_double_quoted_string`), so each kind holds the other's quote freely —
+`'"'`, `"'"`. The one exception is the one-character form: any single
+character between two quotes is a one-character string, `"` included, so
+`"""` is the string holding a quote. That is how the corpus writes it, in
+seven modules (`corpus/modules/NewspeakGrammar.ns`, `(char: """)`), which the
+old character lexer read as one character whatever it was; §5.1.4's own
+doubling, `""""`, would have lexed those as an unterminated string. `""""`
+therefore reads as `"""` followed by the start of another string, and appears
+in the corpus only inside comments.
 
 Comments are retained as tokens for tooling and skipped by the parser.
 
@@ -144,19 +153,26 @@ so the clauses initialize in declaration order like ordinary ones: in
 is computed. Where the expressions do not raise, this too is silent wrong
 output at exit status 0.
 
-## Deviation: the six reserved words are not lexer-reserved
+## The six reserved words
 
 `newspeak-spec.pdf` §4.1 lists `self`, `super`, `outer`, `true`, `false` and
-`nil` as reserved words, illegal as ordinary identifiers. The lexer treats them
-as ordinary identifiers instead: `true`, `false` and `nil` are recognized as
-literals, and `self`, `super` and `outer` are recognized contextually by name at
-the parser and resolver level. Expression-level `outer N foo` parses correctly,
-checked against `corpus/modules/AccessModifierTesting.ns`, which uses it
-heavily.
+`nil` as reserved words, illegal as ordinary identifiers. The lexer keeps them
+identifiers, as the canonical grammar does (`identifier = tokenFor: id`):
+`true`, `false` and `nil` are recognized as literals, and `self`, `super` and
+`outer` contextually by name at the parser and resolver level. Expression-level
+`outer N foo` parses correctly, checked against
+`corpus/modules/AccessModifierTesting.ns`, which uses it heavily.
 
-This only under-rejects programs that illegally use one of the six as an
-ordinary identifier. It cannot affect a correct program, and no corpus file
-exercises the illegal form.
+**The parser refuses every other use** (decided with the user on
+2026-09-25): a reserved word naming a parameter, a block parameter, a slot or
+temporary, a class or a method, the target of a setter send (`nil:: 3`), or a
+unary selector (`3 nil`, `3 printString; self`) is an error naming what it
+may not be — `` `nil` is a reserved word and cannot name a parameter (§4.1) ``
+(`Parser::refuse_reserved_word`). Until then those programs were accepted, and
+not harmlessly: `foo: nil = ( ^nil )` answered the literal `nil` whatever
+argument it was sent. A keyword that merely begins with one, `ifNil:` or
+`selfish:`, is not an identifier and is unaffected. No corpus module used the
+illegal forms; one golden and one test did, and were renamed.
 
 ## `:=` is refused
 

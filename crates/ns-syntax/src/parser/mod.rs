@@ -114,6 +114,29 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// §4.1: `self`, `super`, `outer`, `true`, `false` and `nil` are
+    /// reserved words, so a program may not declare or send one as an
+    /// ordinary identifier. The lexer keeps them identifiers, as the canonical
+    /// grammar does (`identifier = tokenFor: id`); the parser refuses them at
+    /// every place an identifier is declared or sent, with a message naming
+    /// that place (`docs/design/frontend.md`, "The six reserved words").
+    /// `role` completes "cannot ...": "name a parameter", "be assigned".
+    fn refuse_reserved_word(&mut self, name: &str, span: crate::span::Span, role: &str) {
+        if RESERVED_WORDS.contains(&name) {
+            self.push_error(
+                span,
+                &format!("`{name}` is a reserved word and cannot {role} (§4.1)"),
+            );
+        }
+    }
+
+    /// `identifier`, refused if it is a reserved word (`refuse_reserved_word`).
+    fn declared_identifier(&mut self, role: &str) -> Identifier {
+        let identifier = self.identifier();
+        self.refuse_reserved_word(&identifier.name, identifier.span, role);
+        identifier
+    }
+
     fn push_error(&mut self, span: crate::span::Span, message: &str) {
         self.diagnostics
             .push(crate::diagnostic::Diagnostic::error(span, message));
@@ -288,9 +311,12 @@ impl<'a> Parser<'a> {
     // `expression.rs`.
 }
 
-/// Strip the first and last character from a lexeme — the quotes of a string
-/// literal, the `"` delimiters of a character constant, the inner `'...'` of a
-/// quoted symbol.
+/// §4.1's reserved words, which no program may use as an ordinary identifier.
+pub(super) const RESERVED_WORDS: [&str; 6] = ["self", "super", "outer", "true", "false", "nil"];
+
+/// Strip the first and last character from a lexeme — the quotes of a
+/// single- or double-quoted string literal, the inner `'...'` of a quoted
+/// symbol.
 ///
 /// Panic-safe: a lexeme shorter than two characters is returned unchanged
 /// rather than sliced through a byte range that could underflow or land in the
@@ -691,13 +717,26 @@ mod tests {
         );
     }
 
+    /// A double-quoted string is a string literal (§5.1.5), with no escape:
+    /// a doubled quote inside one is two quotes, and a single quote is
+    /// itself. The one-character form `"""` is the string `"`.
     #[test]
-    fn character_constant_produces_a_character_literal() {
-        let Expression::Literal(Literal::Character { value, .. }) = parse_expression("\"a\"")
-        else {
-            panic!()
-        };
-        assert_eq!(value, 'a');
+    fn a_double_quoted_string_produces_a_string_literal() {
+        for (source, expected) in [
+            ("\"a\"", "a"),
+            ("\"abc\"", "abc"),
+            ("\"'\"", "'"),
+            ("\"\"\"", "\""),
+            ("\"\"", ""),
+            ("\"it''s\"", "it''s"),
+            ("'it''s'", "it's"),
+        ] {
+            let Expression::Literal(Literal::String { value, .. }) = parse_expression(source)
+            else {
+                panic!("{source} is not a string literal")
+            };
+            assert_eq!(value, expected, "{source}");
+        }
     }
 
     #[test]

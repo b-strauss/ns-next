@@ -13,7 +13,7 @@ use crate::Symbol;
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
 /// keeps only what execution needs. Int/float text is parsed once at compile
-/// time; `String`/`Symbol`/`Character`/`Array` still allocate a fresh heap
+/// time; `String`/`Symbol`/`Array` still allocate a fresh heap
 /// object each time they execute (a literal string is a fresh `Object` on every
 /// evaluation).
 ///
@@ -40,7 +40,6 @@ pub enum Literal {
     Float(f64),
     String(String),
     Symbol(Symbol),
-    Character(char),
     /// Element literals, recursively -- mirrors `ast::Literal::Array`.
     Array(Vec<Literal>),
     MalformedInteger(String),
@@ -131,7 +130,7 @@ pub enum Instruction {
     /// An ordinary explicit-receiver send, exactly `SendPublic`, emitted only
     /// by the reference lowering and only for the sends the optimized lowering
     /// inlines (`control_flow::recognize`). The mark is for the depth count: a
-    /// block a builtin control-flow native activates for it is not counted,
+    /// control-flow step's block activated for it is not counted,
     /// because the optimized lowering never activates that block at all
     /// (`docs/design/compiler.md`, "How the limit counts").
     SendInlinable {
@@ -691,7 +690,6 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Float(float) => format!("{float:?}"),
         Literal::String(string) => format!("'{string}'"),
         Literal::Symbol(symbol) => format!("#{symbol}"),
-        Literal::Character(character) => format!("\"{character}\""),
         Literal::Array(elements) => format!(
             "#({})",
             elements
@@ -971,14 +969,13 @@ method foo: (args 1, registers 4)
 
     #[test]
     fn format_literal_covers_every_variant() {
-        let literals = vec![
+        let literals = [
             Literal::Nil,
             Literal::Boolean(true),
             Literal::SmallInteger(-3),
             Literal::Float(2.5),
             Literal::String("s".to_string()),
             Literal::Symbol(Symbol::intern("sym")),
-            Literal::Character('c'),
             Literal::Array(vec![Literal::SmallInteger(1), Literal::Nil]),
             Literal::MalformedInteger("16r1.8".to_string()),
         ];
@@ -992,7 +989,6 @@ method foo: (args 1, registers 4)
                 "2.5",
                 "'s'",
                 "#sym",
-                "\"c\"",
                 "#(1 nil)",
                 "malformed-int '16r1.8'"
             ]

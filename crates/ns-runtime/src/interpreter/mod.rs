@@ -108,7 +108,7 @@ pub(crate) enum Step<'gc> {
         feedback_base: inline_cache::FeedbackBase,
     },
     /// Activate the closure object `closure`, and do `then` with its value.
-    /// A builtin control-flow native's block is marked by its `arguments`,
+    /// A control-flow step's block is marked by its `arguments`,
     /// `StepArguments::ControlFlow`.
     Block {
         closure: ObjectReference<'gc>,
@@ -166,12 +166,15 @@ pub(crate) enum Step<'gc> {
 pub(crate) enum StepArguments<'gc> {
     /// The send's own arguments.
     Send,
-    /// None, for the block a builtin control-flow native activates --
-    /// `ifTrue:` and its three relatives, `and:`, `or:`, `whileTrue:`,
-    /// `whileFalse:` -- which is the activation the optimized lowering
-    /// inlines away, and which `push_step` therefore exempts from the depth
-    /// count when the send was a `SendInlinable`. Only those natives build
-    /// it.
+    /// None, for a control-flow step: the block activated for `ifTrue:` and
+    /// its three relatives, `and:` and `or:` on a Boolean receiver -- answered
+    /// by `True`'s and `False`'s `^<parameter> value` quick methods
+    /// (`MethodFastPath::ValueOfParameter`) -- or for `whileTrue:` and
+    /// `whileFalse:` -- answered by their leaves. It is the activation the
+    /// optimized lowering inlines away, and which `push_step` therefore
+    /// exempts from the depth count when the send was a `SendInlinable`.
+    /// Only those build it, and the quick method only for a Boolean
+    /// receiver: an instance of a subclass of `True` is never inlined.
     ///
     /// The mark rides on the arguments rather than in a `bool` of its own on
     /// `Step::Block`. That field measured 4-8% slower on all three
@@ -673,7 +676,7 @@ impl<'gc> Mutator<'gc> {
                 .instances
         };
         let ids = [
-            instances(self, BuiltinClass::Nil),
+            instances(self, BuiltinClass::UndefinedObject),
             instances(self, BuiltinClass::False),
             instances(self, BuiltinClass::True),
             instances(self, BuiltinClass::Integer),
@@ -908,7 +911,7 @@ impl<'gc> Mutator<'gc> {
                     closure_feedback_base
                 };
                 // Exempt exactly the activation the optimized lowering
-                // inlines away: a block a control-flow native activates for
+                // inlines away: a control-flow step's block activated for
                 // a `SendInlinable`, and only if the sending activation
                 // created it -- which every block the reference lowering
                 // passes to one is, and which keeps a crafted artifact from
@@ -1046,8 +1049,8 @@ impl<'gc> Mutator<'gc> {
         )
     }
 
-    /// What a control-flow native does once the block it activated has
-    /// returned `value`: the second half of the native, which the run loop
+    /// What a native does once the block it activated has returned
+    /// `value`: the second half of the native, which the run loop
     /// waits for instead of a Rust frame. `then` is the continuation of the
     /// block's activation, which the loop has just popped. It answers the
     /// value for the caller, or another activation to run in the popped
@@ -1061,9 +1064,6 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match then {
             Continuation::Deliver => Ok(Step::Value(value)),
-            Continuation::Truthy => Ok(Step::Value(Value::Boolean(
-                crate::builtins::boolean::truthy(value),
-            ))),
             Continuation::WhileCondition(state) => {
                 crate::builtins::block::after_condition(self, state, value)
             }
@@ -1267,7 +1267,7 @@ impl<'gc> Mutator<'gc> {
 
     fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
         let kind = match value {
-            Value::Nil => BuiltinClass::Nil,
+            Value::Nil => BuiltinClass::UndefinedObject,
             Value::Boolean(true) => BuiltinClass::True,
             Value::Boolean(false) => BuiltinClass::False,
             Value::SmallInteger(_) => BuiltinClass::Integer,
@@ -1307,34 +1307,44 @@ impl<'gc> Mutator<'gc> {
         Value::Object(object)
     }
 
-    pub fn new_character(&mut self, character: char) -> ObjectReference<'gc> {
-        // There is no dedicated Character payload variant on
-        // ObjectData -- represent a character as a one-`char` Rust String
-        // wrapped the same way String literals are (String), consistent with
-        // how the language spec itself anticipates going forward: §2.2.3
-        // expects to "make all string literals act as symbols, and represent
-        // characters as a special case of these" (`newspeak-spec.pdf`).
-        // `builtins::text` tags the *class* as `BuiltinClass::Character` so
-        // dispatch still lands on the right native methods; only the payload
-        // representation is shared.
-        let class = self.builtin_class(BuiltinClass::Character);
-        self.new_instance_object(class, ObjectData::String(character.to_string()))
-    }
-
     pub fn new_closure(&mut self, closure: ClosureData<'gc>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Block);
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
 
-    /// The `platform` object (`docs/design/core-library.md`):
-    /// memoized on first call, so every reference within one interpreter
-    /// sees the same object identity.
+    /// The `platform` object (`docs/design/core-library.md`), memoized on
+    /// first call so every reference within one interpreter sees the same
+    /// one. It is the state `Platform new` would produce -- a fresh
+    /// `Transcript` and `Collections` in the slots `Kernel.ns` declares --
+    /// built here rather than by running the factory, so that asking for the
+    /// platform, at bootstrap or in `image::load`, runs no Newspeak and fills
+    /// no cache. The three are values, so `platform = platform class new`
+    /// holds, and `goldens/kernel/the_platform_and_its_parts_are_values` pins
+    /// that the two agree.
     pub(crate) fn platform_value(&mut self) -> Value<'gc> {
-        if let Some(platform) = &self.platform_singleton {
-            return *platform;
+        if let Some(platform) = self.platform_singleton {
+            return platform;
         }
+        let transcript_class = self.builtin_class(BuiltinClass::Transcript);
+        let transcript = self.new_instance_object(transcript_class, ObjectData::Instance(vec![]));
+        let collections_class = self.builtin_class(BuiltinClass::Collections);
+        let collections = self.new_instance_object(collections_class, ObjectData::Instance(vec![]));
         let class = self.builtin_class(BuiltinClass::Platform);
-        let object = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        let application = self
+            .heap
+            .class_application(class)
+            .expect("internal: Platform has an application");
+        let mut fields = vec![Value::Nil; application.slot_count];
+        for (position, slot) in application.mixin.slots.iter().enumerate() {
+            fields[application.own_slot_base + position] = match slot.name.as_str() {
+                "transcript" => Value::Object(transcript),
+                "collections" => Value::Object(collections),
+                other => panic!(
+                    "internal: Kernel.ns's Platform declares a slot {other} the host does not fill"
+                ),
+            };
+        }
+        let object = self.new_instance_object(class, ObjectData::Instance(fields));
         let value = Value::Object(object);
         self.platform_singleton = Some(value);
         value
@@ -1354,28 +1364,6 @@ impl<'gc> Mutator<'gc> {
             (Value::Object(object), Some(Value::Object(mirror))) => object.same(mirror),
             _ => false,
         }
-    }
-
-    /// A `Transcript`-style stdout stream object -- see `crate::platform`'s
-    /// module doc for how its payload shape (a one-field, always-`Nil`
-    /// `Instance`) tells it apart from the `platform` singleton itself
-    /// (a zero-field `Instance`). `pub(crate)`, not `pub`: only
-    /// `crate::platform::execute` (`platform transcript`) ever needs to
-    /// mint one.
-    pub(crate) fn new_stream_object(&mut self) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Platform);
-        self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
-    }
-
-    /// The `platform collections` namespace object -- see `crate::platform`'s
-    /// module doc for how its payload shape (a two-field, always-`Nil`
-    /// `Instance`) tells it apart from the `platform` singleton and the
-    /// transcript stream. Like `new_stream_object`, it is allocated fresh
-    /// per send: the namespace is stateless, so identity across sends
-    /// carries no meaning that any caller could observe.
-    pub(crate) fn new_collections_namespace(&mut self) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Platform);
-        self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil, Value::Nil]))
     }
 
     /// A class object around an already-computed application. For an

@@ -192,16 +192,17 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Float => 5,
         BuiltinClass::String => 6,
         BuiltinClass::Symbol => 7,
-        BuiltinClass::Character => 8,
         BuiltinClass::Array => 9,
         BuiltinClass::OrderedCollection => 10,
-        BuiltinClass::Nil => 11,
+        BuiltinClass::UndefinedObject => 11,
         BuiltinClass::Block => 12,
         BuiltinClass::Platform => 13,
         BuiltinClass::VmMirror => 14,
         BuiltinClass::Top => 15,
         BuiltinClass::Value => 16,
         BuiltinClass::Number => 17,
+        BuiltinClass::Transcript => 18,
+        BuiltinClass::Collections => 19,
     }
 }
 
@@ -729,10 +730,6 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
         Literal::Symbol(symbol) => {
             writer.write_u8(LITERAL_SYMBOL);
             writer.write_u32(symbols.intern(symbol.as_str()));
-        }
-        Literal::Character(character) => {
-            writer.write_u8(LITERAL_CHARACTER);
-            writer.write_u32(*character as u32);
         }
         Literal::Array(elements) => {
             writer.write_u8(LITERAL_ARRAY);

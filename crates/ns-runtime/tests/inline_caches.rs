@@ -638,48 +638,44 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
     assert_eq!(interpreter.cache_statistics().site_entries, 4);
 }
 
-/// A cached kernel method that fails on a receiver of its own class -- the
-/// `transcript` stream shares the `Platform` class with the platform object
-/// -- keeps its entry: the leaf declines, the method is activated, and its
-/// failure block's `super transcript` ends in `Object`'s
-/// `doesNotUnderstand:`. `transcript` is a kernel primitive method
-/// (`Kernel.ns`), so the site's target is a `CachedTargetKind::Method`, not
-/// a `CachedTargetKind::Primitive`.
+/// A cached kernel method whose leaf declines on a receiver of its own class
+/// keeps its entry: `Value>>=` answers from its leaf for a `Pair` of
+/// integers, and declines for a `Pair` holding a `Loud`, whose class brings
+/// its own `=` a leaf may not send -- the method is then activated and its
+/// failure block, `valueEquals:`, sends it, which is why the second answer is
+/// `Loud`'s `false` rather than the `true` two equal states would give. Both
+/// receivers share one application, so the site stays monomorphic on the one
+/// method entry.
 #[test]
 fn a_failing_primitive_keeps_its_entry() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Subject = Object new () (
-          public run: platform = (
-            | stream |
-            stream:: platform transcript.
-            {platform. stream} do: [:each | each transcript].
-            ^0
+        class Subject = Object <: Value () (
+          class Pair of: value = Value new (
+            | public value = value. |
+          ) ()
+          class Loud = Value new () (
+            public = other = ( ^false )
+            public hash = ( ^0 )
+          )
+          public run = (
+            | answers |
+            answers:: OrderedCollection new.
+            {Pair of: 1. Pair of: Loud new} do: [:each | answers add: each = each].
+            ^(answers at: 1) & (answers at: 2) not
           )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
     let instance = instantiate(&mut interpreter, &class);
-    let platform = interpreter.platform();
-    match interpreter.send(&instance, Symbol::intern("run:"), &[platform]) {
-        Err(HostSignal::Error(error)) => assert!(
-            error.message.contains("does not understand #transcript"),
-            "unexpected message: {}",
-            error.message
-        ),
-        _ => panic!("the stream does not understand `transcript`"),
-    }
-    let transcript = CallSiteState::Monomorphic(method("transcript"));
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&answer), Value::Boolean(true)));
+    });
     assert_eq!(
-        states(
-            &mut interpreter,
-            &class,
-            MethodSide::Instance,
-            "run:",
-            "transcript"
-        ),
-        vec![transcript.clone(), transcript]
+        states(&mut interpreter, &class, MethodSide::Instance, "run", "="),
+        vec![CallSiteState::Monomorphic(method("="))]
     );
 }
 

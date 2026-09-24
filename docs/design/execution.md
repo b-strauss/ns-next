@@ -14,7 +14,7 @@
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path, and the indirection vector's reads and writes in
 > `interpreter/locals.rs`), `compiler/capture.rs` (the capture analysis) and
-> `compiler/lower.rs` (the converted register layout), `builtins/boolean.rs`,
+> `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack).
@@ -346,7 +346,7 @@ activations from its callers'.
   caller: `resume_caller` reads the `program_counter` the caller stored at its send, writes
   the value to that send's `destination` and continues at the next instruction — or,
   when the popped activation was `base`, the loop leaves `run` with it. Every
-  other continuation — a control-flow native's, `do:`'s, the nested-class
+  other continuation — a native loop's, `do:`'s, the nested-class
   accessor's, an instantiation's — is applied by `Mutator::resume`, which
   calls into `builtins/` or `interpreter/`; it may answer a value, or another
   activation — a native loop's next block, `do:`'s block for the next element,
@@ -365,8 +365,9 @@ Four kinds of body run, and each reaches the loop one way:
    activation catches a `^` that targets it (`Mutator::catches_return`).
 2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
    closure object; the activation runs the `code` of that object's
-   `ClosureData`. `value`, the control-flow natives and `do:` answer the block
-   as a step.
+   `ClosureData`. `value`, the control-flow steps — `whileTrue:`'s and
+   `whileFalse:`'s leaves and `True`'s and `False`'s `^<parameter> value`
+   quick methods — and `do:` answer the block as a step.
 3. **Instance initializer** — `descend_levels`, one per initializing level of
    the superclass chain, answers that level's compiled initializer: its own
    slot initializers and initializer expressions. While a level below it still
@@ -3538,6 +3539,56 @@ tree a sitting. The base's medians were 5.49 ms and 5.58 ms (10th to 90th
 percentile 5.21–5.89 and 5.19–6.08), the head's 5.56 ms and 5.63 ms
 (5.27–5.91 and 5.32–6.17): 0.05–0.07 ms apart, inside the scatter.
 
+### What `True` and `False` as quick methods cost
+
+Writing `True` and `False` in Newspeak over quick methods
+([core-library.md](core-library.md), "`True` and `False` are quick methods")
+changed what a release build runs where a Boolean method is *sent* rather
+than inlined: `not`, `&`, `|`, and a conditional, `and:` or `or:` whose
+argument is not a literal block. Each was a primitive method whose mirror row
+ran a leaf; each is now answered by `act` off the method's
+`MethodFastPath::Constant`, `Parameter` or `ValueOfParameter`, with no leaf
+and no activation. What every method send now pays is three more arms in
+`act`'s test of `method.fast_path`; `vm::run` grew from 6,626 to 6,818
+instructions and is still one function, with no `vm::run::closure` of its
+own (`dumpbin -disasm` on a release build with debug information, both
+trees).
+
+**Which sources can move.** The four fixtures under `goldens/bench/` send
+no Boolean method in their loops: their conditionals and loops take literal
+blocks and are inlined. One throwaway source exercises the change,
+`bench_boolean.ns`, a 200,000-iteration `whileTrue:` loop whose body is
+`flag:: flag not. flag ifTrue: block. (flag & true) ifTrue: block.
+(flag | false) ifFalse: block`, with `block` a variable holding
+`[taken:: taken + 1]` — four sent Boolean methods and three sent
+conditionals per iteration; it prints `300000` under both trees.
+
+**Measured 2026-09-24, `e8a2884` against `ddd9e4f`**, the `master` it
+started from -- before the fix that marks the block a control-flow step only
+for a Boolean receiver (`d4e7924`), one test of the receiver on the quick
+path, which was not measured separately -- by the protocol of "What removing the re-entries moved" above:
+two builds of each tree, every build with the pinned flags, the four
+binaries differing byte for byte; `ns-next bench <source> --iterations 30`,
+five rounds of all four binaries in turn, after one sitting of five rounds
+of one build each. Medians of the five rounds, in ms:
+
+| Source | before | before, second build | after | after, second build | Pooled |
+|---|---|---|---|---|---|
+| `bench_boolean.ns` | 55.56 | 55.93 | 43.71 | 43.85 | −21.5% |
+| `bench_block.ns` | 19.79 | 19.85 | 19.61 | 19.68 | −0.9% |
+| `bench_megamorphic.ns` | 11.66 | 11.73 | 11.63 | 11.66 | −0.6% |
+| `bench_send.ns` | 8.42 | 8.44 | 8.59 | 8.53 | +1.3% |
+| `bench_loop.ns` | 7.06 | 7.08 | 7.30 | 7.13 | +1.4% |
+
+`bench_boolean.ns` is entirely below: every round of either after-build is
+faster than every round of either before-build, 43.2–44.2 ms against
+55.0–57.0 in the sitting the table reports, and 43.3–44.2 against 55.0–56.3
+in the first. The four fixtures are level by the protocol's gate: for each,
+the after-rounds overlap the before-rounds — in the table's sitting,
+`bench_send.ns` 8.40–8.67
+against 8.31–8.69, `bench_loop.ns` 7.11–7.38 against 7.00–7.28, where the
+two after-builds of `bench_loop.ns` alone are 2.4% apart.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -3568,12 +3619,13 @@ Three things the trampoline settles on its own:
 - **`Block value` is not a callback.** It is a native that answers the closure
   as a `Step::Block`; activating a closure is what the loop already does, so no
   Rust frame sits in the middle, and nothing was rewritten in Newspeak.
-- **Nor are the control-flow natives** (decided 2026-09-12).
-  `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:` and `ifFalse:ifTrue:` on a Boolean
-  answer the block to activate, exactly as `value` does, and its value is the
-  send's (`Continuation::Deliver`). `and:` and `or:` do the same with
-  `Continuation::Truthy`, which coerces the block's value by
-  `builtins::boolean::truthy`'s rule when it returns; `whileTrue:` and
+- **Nor are the control-flow steps** (decided 2026-09-12).
+  `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and
+  `or:` on a Boolean answer the block to activate, exactly as `value` does,
+  and its value is the send's (`Continuation::Deliver`) -- `True`'s and
+  `False`'s `^<parameter> value` quick methods answer it, with no leaf
+  ([core-library.md](core-library.md), "`True` and `False` are quick
+  methods"); `whileTrue:` and
   `whileFalse:` on a block answer the condition block with
   `Continuation::WhileCondition`, which, when it returns, activates the body or
   ends the loop (`builtins::block::after_condition`), and the body's
@@ -3598,7 +3650,7 @@ Three things the trampoline settles on its own:
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
   artifact. The limit counts every activation except a block activation that a
-  builtin control-flow native performs for a `SendInlinable`, the send only the
+  builtin control-flow step performs for a `SendInlinable`, the send only the
   reference lowering emits where the optimized one inlines. That makes the
   count agree under both lowerings at every point of every program, so the
   reference lowering checks an overflow too ([compiler.md](compiler.md), "How
@@ -3612,7 +3664,7 @@ Three things the trampoline settles on its own:
 
 ### The depth limit
 
-Decided 2026-09-12. Once sends and the control-flow natives no longer recurse
+Decided 2026-09-12. Once sends and control flow no longer recurse
 and nothing re-enters the run loop from Rust ("No re-entry from Rust" below),
 a recursion runs out of one resource only, the memory its activations take,
 and one counted bound limits it:
@@ -3651,11 +3703,13 @@ yet.
   `Mutator::push_step` ever records an exemption; a method, and every body
   an instantiation or a nested-class accessor runs — an initializer level, a
   superclass clause or its message — are counted by construction.
-- **The exemption is marked by the arguments.** A block a control-flow native
-  activates, and the failure block a sent mirror send activates when its leaf
-  declines ([compiler.md](compiler.md), "Mirror sends"), carry
-  `StepArguments::ControlFlow` — neither has arguments, and only those two
-  build that variant — and `push_step` exempts one when the send
+- **The exemption is marked by the arguments.** A control-flow step's block —
+  one a `whileTrue:` or `whileFalse:` leaf activates, or one a Boolean
+  receiver's `^<parameter> value` quick method answers — and the failure
+  block a sent mirror send activates when its leaf declines
+  ([compiler.md](compiler.md), "Mirror sends"), carry
+  `StepArguments::ControlFlow` — none has arguments, and only those build
+  that variant — and `push_step` exempts one when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through
@@ -4435,7 +4489,7 @@ binds it is that no native code may ever enter an image.
   or without conversion.
 - **Sends run on the activation stack, not the Rust stack**: one loop pushes,
   pops and resumes, and it pops everything it runs on every path out.
-- **The control-flow natives are trampoline steps and depth has one bound**,
+- **Control flow answers trampoline steps and depth has one bound**,
   L = 100,000 activations, counted alike under both lowerings, because a
   callback native would make the reference lowering's native stack grow with
   source nesting; with no re-entry from Rust left, nothing else can run out

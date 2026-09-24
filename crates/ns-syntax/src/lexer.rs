@@ -141,7 +141,7 @@ impl<'a> Lexer<'a> {
             _ if byte == b'_' || byte.is_ascii_alphabetic() => self.lex_word(),
             _ if byte.is_ascii_digit() => self.lex_number(),
             b'\'' => self.lex_string(),
-            b'"' => self.lex_character_constant(),
+            b'"' => self.lex_double_quoted_string(),
             _ if byte == b'-'
                 && self
                     .peek_at(1)
@@ -372,33 +372,35 @@ impl<'a> Lexer<'a> {
         self.push(TokenKind::Symbol, start, self.position);
     }
 
-    fn lex_character_constant(&mut self) {
+    /// A double-quoted string literal (§5.1.5), which has no escape: it ends
+    /// at the next `"`. The one exception is the one-character form -- any
+    /// single character between two quotes, `"` included -- so `"""` is the
+    /// string `"`, which is how the Newspeak corpus writes it; a `"` anywhere
+    /// else is written in a single-quoted string instead. §5.1.4's character
+    /// literals are gone, as it announces: `"c"` is a one-character string.
+    fn lex_double_quoted_string(&mut self) {
         let start = self.position;
         self.position += 1; // opening `"` (ASCII, one byte)
-                            // The character between the quotes may be any
-                            // single codepoint, including a multi-byte one
-                            // (`"é"`). Advance by its full UTF-8 width so the
-                            // token span never ends mid-codepoint.
-        match self.source[self.position..].chars().next() {
-            Some(character) => self.position += character.len_utf8(),
-            None => {
-                self.diagnostics.push(Diagnostic::error(
-                    Span::new(start as u32, self.position as u32),
-                    "unterminated character constant",
-                ));
-                self.push(TokenKind::CharacterConstant, start, self.position);
+                            // Advance by the whole codepoint, so the span never ends mid-character.
+        if let Some(character) = self.source[self.position..].chars().next() {
+            let after = self.position + character.len_utf8();
+            if self.source.as_bytes().get(after) == Some(&b'"') {
+                self.position = after + 1;
+                self.push(TokenKind::String, start, self.position);
                 return;
             }
         }
-        if self.peek() == Some(b'"') {
-            self.position += 1;
-        } else {
-            self.diagnostics.push(Diagnostic::error(
-                Span::new(start as u32, self.position as u32),
-                "character constant must contain exactly one character",
-            ));
+        match self.source[self.position..].find('"') {
+            Some(offset) => self.position += offset + 1,
+            None => {
+                self.position = self.source.len();
+                self.diagnostics.push(Diagnostic::error(
+                    Span::new(start as u32, self.position as u32),
+                    "unterminated string literal",
+                ));
+            }
         }
-        self.push(TokenKind::CharacterConstant, start, self.position);
+        self.push(TokenKind::String, start, self.position);
     }
 
     /// True when the byte immediately before the current position is ASCII
@@ -423,7 +425,6 @@ impl<'a> Lexer<'a> {
                     | TokenKind::Number
                     | TokenKind::String
                     | TokenKind::Symbol
-                    | TokenKind::CharacterConstant
                     | TokenKind::RightParenthesis
                     | TokenKind::RightBracket
                     | TokenKind::RightBrace
@@ -618,16 +619,43 @@ mod tests {
     }
 
     #[test]
-    fn character_constants() {
+    fn double_quoted_strings() {
         assert_eq!(
-            kinds(r#""a" "'" " ""#),
+            kinds(r#""a" "'" " " "abc" """#),
+            vec![String, String, String, String, String, EndOfInput]
+        );
+    }
+
+    /// The one-character form takes whatever single character stands between
+    /// the quotes, `"` included, so the corpus's `"""` is the string `"`.
+    #[test]
+    fn a_one_character_double_quoted_string_may_be_a_double_quote() {
+        let source = r#"(char: """) x"#;
+        let (tokens, diagnostics) = Lexer::new(source).run();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let strings: Vec<_> = tokens
+            .iter()
+            .filter(|token| token.kind == String)
+            .map(|token| token.span.text(source))
+            .collect();
+        assert_eq!(strings, vec![r#"""""#]);
+        assert_eq!(
+            kinds(r#"(char: """) x"#),
             vec![
-                CharacterConstant,
-                CharacterConstant,
-                CharacterConstant,
+                LeftParenthesis,
+                Keyword,
+                String,
+                RightParenthesis,
+                Identifier,
                 EndOfInput
             ]
         );
+    }
+
+    #[test]
+    fn unterminated_double_quoted_string_is_diagnostic() {
+        let (_tokens, diagnostics) = Lexer::new("\"oops").run();
+        assert_eq!(diagnostics.len(), 1);
     }
 
     #[test]
@@ -680,16 +708,14 @@ mod tests {
     }
 
     #[test]
-    fn character_constant_may_hold_a_multibyte_character() {
-        let source = "\"é\"";
-        let (tokens, diagnostics) = Lexer::new(source).run();
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let character_constants: Vec<_> = tokens
-            .iter()
-            .filter(|token| token.kind == CharacterConstant)
-            .collect();
-        assert_eq!(character_constants.len(), 1);
-        assert_eq!(character_constants[0].span.text(source), "\"é\"");
+    fn a_double_quoted_string_may_hold_a_multibyte_character() {
+        for source in ["\"é\"", "\"éé\""] {
+            let (tokens, diagnostics) = Lexer::new(source).run();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            let strings: Vec<_> = tokens.iter().filter(|token| token.kind == String).collect();
+            assert_eq!(strings.len(), 1);
+            assert_eq!(strings[0].span.text(source), source);
+        }
     }
 
     #[test]

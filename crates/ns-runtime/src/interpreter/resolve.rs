@@ -422,6 +422,74 @@ impl<'gc> Mutator<'gc> {
                                 return result;
                             }
                         }
+                        Some(MethodFastPath::Constant(constant)) => {
+                            return Ok(Step::Value(constant.value()));
+                        }
+                        Some(MethodFastPath::Receiver) => return Ok(Step::Value(receiver)),
+                        // Read with `get` rather than indexed: the lookup
+                        // matched the selector, so the count is right for
+                        // every kernel method, and a missing argument then
+                        // activates the method rather than panicking.
+                        Some(MethodFastPath::Parameter(position)) => {
+                            if let Some(argument) = arguments.get(usize::from(position)) {
+                                return Ok(Step::Value(*argument));
+                            }
+                        }
+                        // The step a Boolean leaf used to answer: the block
+                        // to activate, with no activation of the method. It
+                        // is marked as control flow -- which `push_step`
+                        // exempts from the depth count for a
+                        // `SendInlinable` -- only for a Boolean receiver,
+                        // the one the optimized lowering inlines; an
+                        // instance of a subclass of `True` reaches the same
+                        // method through a real send under both lowerings,
+                        // so its block is counted under both. A non-closure
+                        // activates the method, whose `value` send answers
+                        // what any other send of `value` to it would.
+                        Some(MethodFastPath::ValueOfParameter(position)) => {
+                            if let Some(Value::Object(object)) =
+                                arguments.get(usize::from(position)).copied()
+                            {
+                                if self.heap().is_closure(object) {
+                                    let block_arguments = if matches!(receiver, Value::Boolean(_)) {
+                                        StepArguments::ControlFlow
+                                    } else {
+                                        StepArguments::Owned(Vec::new())
+                                    };
+                                    return Ok(Step::Block {
+                                        closure: object,
+                                        arguments: block_arguments,
+                                        then: Continuation::Deliver,
+                                    });
+                                }
+                            }
+                        }
+                        // `cull:`'s rule, as `Block>>cull:` states it: the
+                        // receiver as the block's argument when it takes one,
+                        // nothing when it takes none. A block that takes more
+                        // is handed the one and fails the arity check exactly
+                        // as `value:` would. Never control flow: no lowering
+                        // inlines these sends, so both count the block.
+                        Some(MethodFastPath::CullParameter(position)) => {
+                            if let Some(Value::Object(object)) =
+                                arguments.get(usize::from(position)).copied()
+                            {
+                                if let Some(parameter_count) =
+                                    self.heap().closure_parameter_count(object)
+                                {
+                                    let block_arguments = if parameter_count == 0 {
+                                        Vec::new()
+                                    } else {
+                                        vec![receiver]
+                                    };
+                                    return Ok(Step::Block {
+                                        closure: object,
+                                        arguments: StepArguments::Owned(block_arguments),
+                                        then: Continuation::Deliver,
+                                    });
+                                }
+                            }
+                        }
                         None => {}
                     }
                     Ok(Step::Method {
@@ -502,8 +570,9 @@ impl<'gc> Mutator<'gc> {
         // A primitive method as the handler -- `Object`'s own -- runs its
         // leaf on the message before it is activated, like any primitive
         // method. A builtin-class accessor is unary and so is never a
-        // `doesNotUnderstand:` handler; were one to arrive here it is
-        // activated like any method rather than answered.
+        // `doesNotUnderstand:` handler, and no kernel handler is a quick
+        // method; were either to arrive here it is activated like any
+        // method rather than answered.
         if let Some(MethodFastPath::Mirror(primitive)) = method.fast_path {
             if let Some(result) = crate::interpreter::mirror::execute_method(
                 self,

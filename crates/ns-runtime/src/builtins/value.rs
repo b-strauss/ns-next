@@ -57,7 +57,7 @@ use crate::{Mutator, Symbol};
 /// below 2^16, so a sum of this many stays far inside an `i64`.
 const NODE_BUDGET: usize = 4096;
 
-/// `nil`'s hash. `Nil` is a singleton below `Value`, so any constant will
+/// `nil`'s hash. `UndefinedObject` is a singleton below `Value`, so any constant will
 /// do; 0 is the one `Object`'s identity hash already answered for it.
 const NIL_HASH: i64 = 0;
 
@@ -294,7 +294,7 @@ fn compare_node<'gc>(
 fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>> {
     match value {
         Value::Nil => Some(Node::Leaf(NIL_HASH)),
-        // `Boolean>>hash`'s two answers, so a boolean slot hashes as the
+        // `True>>hash` and `False>>hash`, so a boolean slot hashes as the
         // boolean itself does.
         Value::Boolean(flag) => Some(Node::Leaf(i64::from(flag))),
         // Not `Integer>>hash`, which answers the integer itself and so can
@@ -309,17 +309,7 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
                 return Some(Node::Leaf(text::symbol_hash(symbol)));
             }
             if let Some(payload) = mutator.heap().str_value(object) {
-                let class = mutator.heap().class_of_object(object);
-                // `String` and `Character` share a payload, and each hashes
-                // as its own class's `hash` does: a character by its code
-                // point, a string by its content.
-                return Some(Node::Leaf(
-                    if mutator.heap().class_builtin(class) == Some(BuiltinClass::Character) {
-                        text::character_of(&payload) as i64
-                    } else {
-                        text::string_hash(&payload)
-                    },
-                ));
+                return Some(Node::Leaf(text::string_hash(&payload)));
             }
             state_is_a_value(mutator, object).then_some(Node::State(object))
         }

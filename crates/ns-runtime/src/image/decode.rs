@@ -64,8 +64,8 @@ pub enum DecodeError {
     /// A body in the code table creates blocks nested deeper than the
     /// parser lets source nest them (`MAX_BLOCK_NESTING`). The table is flat
     /// on the wire, so nothing recurses while it is read; the depth matters
-    /// afterwards, twice over. The depth count exempts a block a
-    /// control-flow native activates for a `SendInlinable` when the
+    /// afterwards, twice over. The depth count exempts a control-flow
+    /// step's block activated for a `SendInlinable` when the
     /// activation below created it, so the exempt activations stacked above
     /// one counted activation are bounded by exactly this nesting
     /// (`docs/design/compiler.md`, "How the limit counts") -- unbounded, the
@@ -721,16 +721,17 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         5 => BuiltinClass::Float,
         6 => BuiltinClass::String,
         7 => BuiltinClass::Symbol,
-        8 => BuiltinClass::Character,
         9 => BuiltinClass::Array,
         10 => BuiltinClass::OrderedCollection,
-        11 => BuiltinClass::Nil,
+        11 => BuiltinClass::UndefinedObject,
         12 => BuiltinClass::Block,
         13 => BuiltinClass::Platform,
         14 => BuiltinClass::VmMirror,
         15 => BuiltinClass::Top,
         16 => BuiltinClass::Value,
         17 => BuiltinClass::Number,
+        18 => BuiltinClass::Transcript,
+        19 => BuiltinClass::Collections,
         _ => return None,
     })
 }
@@ -1849,13 +1850,6 @@ fn decode_literal(
         LITERAL_FLOAT => Literal::Float(reader.read_f64()?),
         LITERAL_STRING => Literal::String(reader.read_str()?),
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
-        LITERAL_CHARACTER => {
-            let code = reader.read_u32()?;
-            Literal::Character(char::from_u32(code).ok_or(DecodeError::InvalidTag {
-                what: "char",
-                tag: 6,
-            })?)
-        }
         LITERAL_ARRAY => {
             let count = reader.read_u32()? as usize;
             let mut elements = reserve_for(count, reader);

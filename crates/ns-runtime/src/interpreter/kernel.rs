@@ -62,7 +62,7 @@ fn resolve_kernel_source() -> ResolvedModule {
 }
 
 /// The name of `kind`'s class in `Kernel.ns`. Every builtin but the mirror's
-/// class has one, `Top` and `Platform` included, unlike the narrower list of
+/// class has one, `Top` and the platform's three included, unlike the narrower list of
 /// names a *program* may write bare -- `Object`'s own accessor methods, which
 /// `tests::OBJECT_CLASS_ACCESSORS` pins.
 pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
@@ -75,12 +75,13 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Float => "Float",
         BuiltinClass::String => "String",
         BuiltinClass::Symbol => "Symbol",
-        BuiltinClass::Character => "Character",
         BuiltinClass::Array => "Array",
         BuiltinClass::OrderedCollection => "OrderedCollection",
-        BuiltinClass::Nil => "Nil",
+        BuiltinClass::UndefinedObject => "UndefinedObject",
         BuiltinClass::Block => "Block",
         BuiltinClass::Platform => "Platform",
+        BuiltinClass::Transcript => "Transcript",
+        BuiltinClass::Collections => "Collections",
         BuiltinClass::Top => "Top",
         BuiltinClass::Value => "Value",
         BuiltinClass::Number => "Number",
@@ -370,7 +371,8 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 
 /// The shape the phase relies on and the resolver cannot check: one nested
 /// class per builtin but the mirror's, named as `kernel_class_name` says,
-/// each declaring no slots and the default factory `new`; a root class with
+/// each declaring no slots -- but `Platform`, whose slots the host fills --
+/// and the default factory `new`; a root class with
 /// exactly one slot, the immutable `vmMirror`; a clause on every class but
 /// `Top`, a bare name with no message arguments -- it is read, never run --
 /// naming a kernel class, from which the chain reaches `Top` without
@@ -406,8 +408,12 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             "internal: Kernel.ns must declare the class {name} exactly once"
         );
         let nested = nested_named(root, name);
+        // Rust builds a builtin's instances with a payload and no fields, so
+        // a slot would have nowhere to live -- except on `Platform`, whose one
+        // instance the host builds with exactly the slots `Kernel.ns`
+        // declares (`Mutator::platform_value`).
         assert!(
-            nested.slots.is_empty(),
+            nested.slots.is_empty() || kind == BuiltinClass::Platform,
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
         );
         let declaration = nested
@@ -503,11 +509,11 @@ fn kernel_application<'gc>(
 
 /// A mirror send in the kernel passes a literal block only as its final,
 /// `ifFail:` argument. A literal block anywhere before it would be a block
-/// the leaf itself activates (`boolean:ifTrue:ifFail:`'s, say), and the
-/// reference lowering, which marks the whole send `SendInlinable` because
-/// its failure block is inlined by the optimized lowering, would exempt
-/// that block's activation from the depth count too -- while the optimized
-/// lowering counts it. The two lowerings would then count activations
+/// the leaf itself activates (as `whileTrue:`'s would be, were it passed
+/// as a literal), and the reference lowering, which marks the whole send
+/// `SendInlinable` because its failure block is inlined by the optimized
+/// lowering, would exempt that block's activation from the depth count too
+/// -- while the optimized lowering counts it. The two lowerings would then count activations
 /// differently (`docs/design/compiler.md`, "How the limit counts"), so the
 /// shape is refused rather than the count special-cased. Such a block is
 /// passed through a local or an argument instead, which neither lowering
@@ -624,6 +630,7 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
 #[cfg(test)]
 mod tests {
     use crate::builtins::primitive::mirror_entry;
+    use crate::mixin::{MethodFastPath, QuickConstant};
     use crate::{BuiltinClass, Interpreter, Value};
 
     /// Every builtin class but the mirror's is the kernel class of its name.
@@ -657,9 +664,8 @@ mod tests {
     /// forwarder the recognizer silently missed still fails the test below;
     /// an entry is (class, selector).
     const NOT_FORWARDERS: &[(BuiltinClass, &str)] = &[
-        (BuiltinClass::Boolean, "hash"),
-        (BuiltinClass::Integer, "hash"),
-        (BuiltinClass::Character, "hash"),
+        (BuiltinClass::True, "hash"),
+        (BuiltinClass::False, "hash"),
         // §3.1.1's identity method on a value: a send of `=`, which is what
         // makes the two agree for every subclass. No leaf could answer it
         // without sending `=` back into Newspeak.
@@ -674,6 +680,171 @@ mod tests {
         // which a primitive method may not do.
         (BuiltinClass::Value, "valueSlotCountOf:"),
         (BuiltinClass::Value, "valueSlotOf:at:"),
+        // A string literal is no quick answer: an ordinary method, like
+        // `hash` above, whose integer literal is none either.
+        (BuiltinClass::True, "printString"),
+        (BuiltinClass::False, "printString"),
+        (BuiltinClass::UndefinedObject, "printString"),
+        // `cull:` tests its own arity, which no quick method does; the quick
+        // methods of the nil protocol do what it says without sending it.
+        (BuiltinClass::Block, "cull:"),
+    ];
+
+    /// The kernel's quick methods: `True`'s and `False`'s, the nil
+    /// protocol on `Object` and `UndefinedObject`, and `Integer>>hash`. A
+    /// missed one would run correctly as an ordinary method and nothing else
+    /// would notice, except that it would cost an activation -- and for
+    /// `True` and `False`, that the reference lowering would count that
+    /// activation against the depth limit and the optimized lowering would
+    /// not.
+    const QUICK_METHODS: &[(BuiltinClass, &str, MethodFastPath)] = &[
+        (
+            BuiltinClass::True,
+            "ifTrue:ifFalse:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::True,
+            "ifFalse:ifTrue:",
+            MethodFastPath::ValueOfParameter(1),
+        ),
+        (
+            BuiltinClass::True,
+            "ifTrue:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::True,
+            "ifFalse:",
+            MethodFastPath::Constant(QuickConstant::Nil),
+        ),
+        (
+            BuiltinClass::True,
+            "not",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (BuiltinClass::True, "&", MethodFastPath::Parameter(0)),
+        (
+            BuiltinClass::True,
+            "and:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::True,
+            "|",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::True,
+            "or:",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::False,
+            "ifTrue:ifFalse:",
+            MethodFastPath::ValueOfParameter(1),
+        ),
+        (
+            BuiltinClass::False,
+            "ifFalse:ifTrue:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::False,
+            "ifTrue:",
+            MethodFastPath::Constant(QuickConstant::Nil),
+        ),
+        (
+            BuiltinClass::False,
+            "ifFalse:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::False,
+            "not",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::False,
+            "&",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::False,
+            "and:",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (BuiltinClass::False, "|", MethodFastPath::Parameter(0)),
+        (
+            BuiltinClass::False,
+            "or:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::Object,
+            "isNil",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::Object,
+            "notNil",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (BuiltinClass::Object, "ifNil:", MethodFastPath::Receiver),
+        (
+            BuiltinClass::Object,
+            "ifNotNil:",
+            MethodFastPath::CullParameter(0),
+        ),
+        (
+            BuiltinClass::Object,
+            "ifNil:ifNotNil:",
+            MethodFastPath::CullParameter(1),
+        ),
+        (
+            BuiltinClass::Object,
+            "ifNotNil:ifNil:",
+            MethodFastPath::CullParameter(0),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "isNil",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "notNil",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNil:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNotNil:",
+            MethodFastPath::Constant(QuickConstant::Nil),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNil:ifNotNil:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNotNil:ifNil:",
+            MethodFastPath::ValueOfParameter(1),
+        ),
+        (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
+        (BuiltinClass::String, "asString", MethodFastPath::Receiver),
+        // Not a quick method but the accessor form, `^outer Kernel <Name>`,
+        // on a class other than `Object`: the namespace's one member.
+        (
+            BuiltinClass::Collections,
+            "List",
+            MethodFastPath::BuiltinClass(BuiltinClass::OrderedCollection),
+        ),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
@@ -690,8 +861,7 @@ mod tests {
         BuiltinClass::Float,
         BuiltinClass::String,
         BuiltinClass::Symbol,
-        BuiltinClass::Character,
-        BuiltinClass::Nil,
+        BuiltinClass::UndefinedObject,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
         BuiltinClass::Block,
@@ -706,9 +876,11 @@ mod tests {
     /// missed `ifTrue:`, `and:` or `whileTrue:` would count against the depth
     /// limit under one lowering and not the other. The fast path's error
     /// texts name the row's reported selector, so they would also drift from
-    /// the selector the program sent if the two differed.
+    /// the selector the program sent if the two differed. `True`'s and
+    /// `False`'s methods are quick methods instead, each checked against
+    /// `QUICK_METHODS`.
     #[test]
-    fn every_kernel_method_is_a_primitive_method_named_after_its_row() {
+    fn every_kernel_method_has_the_fast_path_it_should() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             for kind in BuiltinClass::ALL {
@@ -731,6 +903,17 @@ mod tests {
                         assert!(
                             method.fast_path.is_none(),
                             "{kind:?}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
+                        );
+                        continue;
+                    }
+                    if let Some((_, _, expected)) = QUICK_METHODS
+                        .iter()
+                        .find(|(owner, name, _)| *owner == kind && *name == selector)
+                    {
+                        assert_eq!(
+                            method.fast_path,
+                            Some(*expected),
+                            "{kind:?}>>{selector} is not the quick method it should be"
                         );
                         continue;
                     }
@@ -765,6 +948,53 @@ mod tests {
         });
     }
 
+    /// `Platform` declares no accessor for a predefined class: it inherits
+    /// `Object`'s, which answer the same classes (§3.2), so a copy of its own
+    /// would only be a second way to the same answer.
+    #[test]
+    fn the_platform_declares_no_class_accessor_of_its_own() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let platform = mutator.builtin_class(BuiltinClass::Platform);
+            let application = mutator
+                .heap()
+                .class_application(platform)
+                .expect("Platform has an application");
+            for kind in OBJECT_CLASS_ACCESSORS.iter().copied() {
+                let name = super::kernel_class_name(kind);
+                assert!(
+                    application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern(name))
+                        .is_none(),
+                    "Platform declares its own {name}"
+                );
+            }
+        });
+    }
+
+    /// Every row of `QUICK_METHODS` names a method the kernel declares.
+    #[test]
+    fn every_quick_method_the_table_names_exists() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            for (kind, selector, _) in QUICK_METHODS {
+                let class = mutator.builtin_class(*kind);
+                let application = mutator
+                    .heap()
+                    .class_application(class)
+                    .expect("a builtin class has an application");
+                assert!(
+                    application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern(selector))
+                        .is_some(),
+                    "{kind:?} declares no {selector}"
+                );
+            }
+        });
+    }
+
     /// The accessor set on `Object` is exactly §3.2's nameable builtins,
     /// each recognized as a fast path answering its own class; `Top`, the
     /// mirror's class and `Platform` have none, which is one of the locks
@@ -790,7 +1020,7 @@ mod tests {
                     "{kind:?}"
                 );
             }
-            for absent in ["Top", "Platform", "VmMirror"] {
+            for absent in ["Top", "Platform", "Transcript", "Collections", "VmMirror"] {
                 assert!(
                     application
                         .mixin
@@ -852,12 +1082,13 @@ mod tests {
                 (BuiltinClass::Float, Some(BuiltinClass::Number)),
                 (BuiltinClass::String, Some(BuiltinClass::Value)),
                 (BuiltinClass::Symbol, Some(BuiltinClass::Value)),
-                (BuiltinClass::Character, Some(BuiltinClass::Value)),
-                (BuiltinClass::Nil, Some(BuiltinClass::Value)),
+                (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
                 (BuiltinClass::OrderedCollection, Some(BuiltinClass::Object)),
                 (BuiltinClass::Block, Some(BuiltinClass::Object)),
-                (BuiltinClass::Platform, Some(BuiltinClass::Object)),
+                (BuiltinClass::Platform, Some(BuiltinClass::Value)),
+                (BuiltinClass::Transcript, Some(BuiltinClass::Value)),
+                (BuiltinClass::Collections, Some(BuiltinClass::Value)),
                 (BuiltinClass::Top, None),
             ];
             for (kind, superclass) in expected {
@@ -891,12 +1122,14 @@ mod tests {
             for (kind, expected) in [
                 (BuiltinClass::String, true),
                 (BuiltinClass::Symbol, true),
-                (BuiltinClass::Character, true),
                 (BuiltinClass::Integer, true),
                 (BuiltinClass::Float, true),
                 (BuiltinClass::True, true),
-                (BuiltinClass::Nil, true),
+                (BuiltinClass::UndefinedObject, true),
                 (BuiltinClass::Number, true),
+                (BuiltinClass::Platform, true),
+                (BuiltinClass::Transcript, true),
+                (BuiltinClass::Collections, true),
                 (BuiltinClass::Array, false),
                 (BuiltinClass::OrderedCollection, false),
                 (BuiltinClass::Block, false),

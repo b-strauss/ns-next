@@ -36,7 +36,6 @@ pub enum TokenKind {
     Number,
     String,
     Symbol,
-    CharacterConstant,
     // End of input
     EndOfInput,
 }

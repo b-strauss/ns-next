@@ -11,6 +11,14 @@
 //! class>` answers that builtin class and is never activated
 //! (`docs/design/core-library.md`, "The predefined classes are accessors
 //! on `Object`").
+//!
+//! And for quick methods, Squeak's and Cog's name for a method whose whole
+//! body answers a constant or a parameter: a kernel method whose body is
+//! `^true`, `^false`, `^nil`, `^self`, `^<parameter>`, `^<parameter> value`
+//! or `^<parameter> cull: self` answers without an activation -- the last two
+//! as the block to activate, which is how `True`, `False` and the nil
+//! protocol are written (`docs/design/core-library.md`, "`True`
+//! and `False` are quick methods").
 
 use std::collections::HashMap;
 
@@ -19,13 +27,14 @@ use ns_syntax::Span;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::compiler::control_flow;
-use crate::mixin::MethodFastPath;
+use crate::mixin::{MethodFastPath, QuickConstant};
 use crate::types::{Binding, BuiltinClass};
 
 /// What a send of `declaration` does without an activation, if anything:
 /// the mirror row it forwards to (`recognize_mirror_forwarder`) or, in the
 /// kernel alone, the builtin class it answers
-/// (`recognize_builtin_class_accessor`). `kernel` is the module's
+/// (`recognize_builtin_class_accessor`) or what its quick body answers
+/// (`recognize_quick_method`). `kernel` is the module's
 /// `ResolvedModule.kernel`.
 pub(crate) fn recognize(
     declaration: &ast::MethodDeclaration,
@@ -40,7 +49,91 @@ pub(crate) fn recognize(
     if !kernel {
         return None;
     }
-    recognize_builtin_class_accessor(declaration, bindings).map(MethodFastPath::BuiltinClass)
+    recognize_builtin_class_accessor(declaration, bindings)
+        .map(MethodFastPath::BuiltinClass)
+        .or_else(|| recognize_quick_method(declaration, bindings))
+}
+
+/// A quick method: a kernel method whose whole body is `^true`, `^false`,
+/// `^nil`, `^self`, `^<parameter>`, `^<parameter> value` or
+/// `^<parameter> cull: self` runs without an activation, as Squeak's and
+/// Cog's quick methods do -- the last two extend theirs by the block
+/// activation `True`'s, `False`'s and the nil protocol's methods consist of. `True` and `False`
+/// are written this way (`docs/design/core-library.md`, "`True` and `False`
+/// are quick methods"): an activation of `True>>ifTrue:` would count
+/// against the depth limit under the reference lowering, which sends the
+/// conditional, and not under the optimized one, which inlines it
+/// (`docs/design/compiler.md`, "How the limit counts").
+///
+/// Not switched off by `NS_NEXT_NO_PRIMITIVE_METHODS`: that switch measures
+/// the mirror leaves' fast path, and a quick method runs no leaf.
+fn recognize_quick_method(
+    declaration: &ast::MethodDeclaration,
+    bindings: &HashMap<Span, Binding>,
+) -> Option<MethodFastPath> {
+    let body = &declaration.body;
+    if !body.temporaries.is_empty() || body.statements.len() != 1 {
+        return None;
+    }
+    let ast::Statement::Return(expression) = &body.statements[0] else {
+        return None;
+    };
+    let parameters = parameter_names(&declaration.pattern);
+    match expression {
+        ast::Expression::Literal(ast::Literal::Boolean { value: true, .. }) => {
+            Some(MethodFastPath::Constant(QuickConstant::True))
+        }
+        ast::Expression::Literal(ast::Literal::Boolean { value: false, .. }) => {
+            Some(MethodFastPath::Constant(QuickConstant::False))
+        }
+        ast::Expression::Literal(ast::Literal::Nil { .. }) => {
+            Some(MethodFastPath::Constant(QuickConstant::Nil))
+        }
+        ast::Expression::Identifier(_) if is_self(expression) => Some(MethodFastPath::Receiver),
+        ast::Expression::Identifier(identifier) => {
+            parameter_position(identifier, &parameters, bindings).map(MethodFastPath::Parameter)
+        }
+        ast::Expression::Send(send) => {
+            let ast::Expression::Identifier(identifier) = &send.receiver else {
+                return None;
+            };
+            let shape: fn(u8) -> MethodFastPath =
+                match (&send.message.selector, &send.message.arguments[..]) {
+                    (ast::Selector::Unary(selector), []) if selector == "value" => {
+                        MethodFastPath::ValueOfParameter
+                    }
+                    (ast::Selector::Keyword(selector), [argument])
+                        if selector == "cull:" && is_self(argument) =>
+                    {
+                        MethodFastPath::CullParameter
+                    }
+                    _ => return None,
+                };
+            parameter_position(identifier, &parameters, bindings).map(shape)
+        }
+        _ => None,
+    }
+}
+
+/// The position of the parameter `identifier` names, when the resolver bound
+/// it to that very parameter -- the binding, not the name alone, says it is
+/// not something that shadows it.
+fn parameter_position(
+    identifier: &ast::Identifier,
+    parameters: &[&str],
+    bindings: &HashMap<Span, Binding>,
+) -> Option<u8> {
+    let position = parameters
+        .iter()
+        .position(|name| *name == identifier.name)?;
+    let bound_to_it = matches!(
+        bindings.get(&identifier.span),
+        Some(Binding::Local(local)) if usize::from(*local) == position
+    );
+    if !bound_to_it {
+        return None;
+    }
+    u8::try_from(position).ok()
 }
 
 /// The builtin class `declaration` answers, when its body is exactly
@@ -80,8 +173,15 @@ fn recognize_builtin_class_accessor(
     if !matches!(bindings.get(&send.span), Some(Binding::LexicalSend { .. })) {
         return None;
     }
-    crate::interpreter::kernel::kernel_kind_named(name)
-        .filter(|kind| !matches!(kind, BuiltinClass::Top | BuiltinClass::Platform))
+    crate::interpreter::kernel::kernel_kind_named(name).filter(|kind| {
+        !matches!(
+            kind,
+            BuiltinClass::Top
+                | BuiltinClass::Platform
+                | BuiltinClass::Transcript
+                | BuiltinClass::Collections
+        )
+    })
 }
 
 /// The row `declaration` forwards to, when its body is exactly
@@ -222,9 +322,7 @@ mod tests {
     fn recognized_in_the_kernel(method: &str) -> Option<usize> {
         match fast_path_in_the_kernel(method) {
             Some(MethodFastPath::Mirror(row)) => Some(row.index()),
-            Some(MethodFastPath::BuiltinClass(kind)) => {
-                panic!("a mirror forwarder was recognized as the accessor of {kind:?}")
-            }
+            Some(other) => panic!("a mirror forwarder was recognized as {other:?}"),
             None => None,
         }
     }
@@ -449,6 +547,166 @@ mod tests {
     fn does_not_recognize_an_accessor_outside_the_kernel() {
         assert_eq!(
             fast_path_outside_the_kernel("String = ( ^outer Kernel String )"),
+            None
+        );
+    }
+
+    #[test]
+    fn recognizes_a_constant_answer() {
+        assert_eq!(
+            fast_path_in_the_kernel("not = ( ^false )"),
+            Some(MethodFastPath::Constant(QuickConstant::False))
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("or: alternative = ( ^true )"),
+            Some(MethodFastPath::Constant(QuickConstant::True))
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifFalse: falseBlock = ( ^nil )"),
+            Some(MethodFastPath::Constant(QuickConstant::Nil))
+        );
+    }
+
+    #[test]
+    fn recognizes_a_parameter_answer() {
+        assert_eq!(
+            fast_path_in_the_kernel("& other = ( ^other )"),
+            Some(MethodFastPath::Parameter(0))
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("at: first put: second = ( ^second )"),
+            Some(MethodFastPath::Parameter(1))
+        );
+    }
+
+    #[test]
+    fn recognizes_a_parameter_s_value() {
+        assert_eq!(
+            fast_path_in_the_kernel("ifTrue: trueBlock = ( ^trueBlock value )"),
+            Some(MethodFastPath::ValueOfParameter(0))
+        );
+        assert_eq!(
+            fast_path_in_the_kernel(
+                "ifTrue: trueBlock ifFalse: falseBlock = ( ^falseBlock value )"
+            ),
+            Some(MethodFastPath::ValueOfParameter(1))
+        );
+    }
+
+    /// Only the three shapes: another literal, `self`, another selector or
+    /// an argument to `value` is an ordinary method.
+    #[test]
+    fn does_not_recognize_other_trivial_bodies() {
+        assert_eq!(fast_path_in_the_kernel("size = ( ^3 )"), None);
+        assert_eq!(fast_path_in_the_kernel("text = ( ^'true' )"), None);
+        assert_eq!(
+            fast_path_in_the_kernel("ifTrue: trueBlock = ( ^trueBlock yourself )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifTrue: trueBlock = ( ^trueBlock value: 1 )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifTrue: trueBlock = ( ^trueBlock value value )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_quick_body_with_a_temporary_or_a_second_statement() {
+        assert_eq!(
+            fast_path_in_the_kernel("not = ( | temporary | ^false )"),
+            None
+        );
+        assert_eq!(fast_path_in_the_kernel("not = ( self foo. ^false )"), None);
+        assert_eq!(
+            fast_path_in_the_kernel("ifTrue: trueBlock = ( self foo. ^trueBlock value )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_quick_body_that_does_not_return() {
+        assert_eq!(fast_path_in_the_kernel("not = ( false )"), None);
+        assert_eq!(
+            fast_path_in_the_kernel("ifTrue: trueBlock = ( trueBlock value )"),
+            None
+        );
+    }
+
+    /// A name that is not the method's own parameter -- here the enclosing
+    /// kernel's slot -- is no parameter answer.
+    #[test]
+    fn does_not_recognize_a_name_that_is_not_a_parameter() {
+        assert_eq!(fast_path_in_the_kernel("mirror = ( ^vmMirror )"), None);
+    }
+
+    /// Outside the kernel a quick body is an ordinary method, activated
+    /// like any other.
+    #[test]
+    fn does_not_recognize_a_quick_method_outside_the_kernel() {
+        assert_eq!(fast_path_outside_the_kernel("not = ( ^false )"), None);
+        assert_eq!(fast_path_outside_the_kernel("& other = ( ^other )"), None);
+        assert_eq!(
+            fast_path_outside_the_kernel("ifTrue: trueBlock = ( ^trueBlock value )"),
+            None
+        );
+    }
+
+    #[test]
+    fn recognizes_a_receiver_answer() {
+        assert_eq!(
+            fast_path_in_the_kernel("yourself = ( ^self )"),
+            Some(MethodFastPath::Receiver)
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNil: block = ( ^self )"),
+            Some(MethodFastPath::Receiver)
+        );
+    }
+
+    #[test]
+    fn recognizes_a_parameter_culled_with_the_receiver() {
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block cull: self )"),
+            Some(MethodFastPath::CullParameter(0))
+        );
+        assert_eq!(
+            fast_path_in_the_kernel(
+                "ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )"
+            ),
+            Some(MethodFastPath::CullParameter(1))
+        );
+    }
+
+    /// `cull:` with anything but `self`, or sent to anything but a
+    /// parameter, is an ordinary method.
+    #[test]
+    fn does_not_recognize_another_cull() {
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block cull: 3 )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block cull: block )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^vmMirror cull: self )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block value: self )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_receiver_or_cull_answer_outside_the_kernel() {
+        assert_eq!(fast_path_outside_the_kernel("yourself = ( ^self )"), None);
+        assert_eq!(
+            fast_path_outside_the_kernel("ifNotNil: block = ( ^block cull: self )"),
             None
         );
     }

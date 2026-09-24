@@ -295,7 +295,7 @@ fn immediates_answer_their_builtin_classes_instance_ids() {
         let heap = mutator.heap();
         assert_eq!(
             heap.dispatch_id(&Value::Nil),
-            expected(mutator, BuiltinClass::Nil)
+            expected(mutator, BuiltinClass::UndefinedObject)
         );
         assert_eq!(
             heap.dispatch_id(&Value::Boolean(true)),

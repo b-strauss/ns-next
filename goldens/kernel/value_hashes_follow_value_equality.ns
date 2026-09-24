@@ -11,13 +11,12 @@ Newspeak3
    class has separate instances at all -- `Float`, `String` -- the two are
    built separately, so a hash by identity would show up as `true false`.
    The rest cannot be: a `Symbol` is interned to one object (§5.1.6), and
-   an `Integer`, a `Boolean` and a `Character` literal are immediates or
-   one-`char` payloads the two sides need not keep apart. Those lines pin
+   an `Integer` and a `Boolean` are immediates. Those lines pin
    that the answers agree, not that two objects were compared.
 
-   The `cross:` lines are the other half of the contract: `String` and
-   `Character` share a payload and `Symbol` carries the same text, so each
-   pair below *looks* equal and hashes apart. `=` therefore has to answer
+   The `cross:` lines are the other half of the contract: `Symbol` carries
+   the same text as `String`, so each pair below *looks* equal and hashes
+   apart. `=` therefore has to answer
    `false`, which is the class check in `builtins::text`. The second column
    is informational -- the contract says nothing about how unequal values
    hash -- and records that the two are in fact told apart.
@@ -53,17 +52,13 @@ class ValueHashes usingPlatform: platform = Object new (
         report: 'Float' for: 1.0 + 1.5 and: 2.5.
         report: 'String' for: 'ab' , 'c' and: 'abc'.
         report: 'Symbol' for: 'abc' asSymbol and: #abc.
-        report: 'Character' for: "a" and: "a".
         report: 'Boolean' for: 1 < 2 and: true.
-        cross: 'Character/String' for: "a" and: 'a'.
-        cross: 'String/Character' for: 'a' and: "a".
         cross: 'Symbol/String' for: #a and: 'a'.
         cross: 'String/Symbol' for: 'a' and: #a.
         cross: 'Float/Integer' for: 1.0 and: 1.
         cross: 'Integer/Float' for: 1 and: 1.0.
         show: 3 hash.
         show: 0 hash.
-        show: "a" hash.
         show: true hash.
         show: false hash.
         show: 'abc' hash = 'abd' hash.

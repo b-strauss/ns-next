@@ -19,7 +19,7 @@
 //!   plain `false` (two values of different types are not equal), never an
 //!   error -- matching `Object`'s own `=` and the usual Smalltalk
 //!   convention. Both directions answer `false`: `1 = 1.0` and `1.0 = 1`
-//!   alike, because each `=` is class-tight (`Character>>=` and `String>>=`
+//!   alike, because each `=` is class-tight (`String>>=` and `Symbol>>=`
 //!   are for the same reason). `Float>>=` widened an `Integer` argument
 //!   until 2026-09-23, which made `1.0 = 1` true while `1.0 hash` and
 //!   `1 hash` differ -- the one rule a `hash` has -- and was asymmetric

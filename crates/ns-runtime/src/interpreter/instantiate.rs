@@ -1373,7 +1373,7 @@ pub(crate) fn check_value_slot<'gc>(
 }
 
 /// Whether `object` is a value object: §3.1.1's "its class inherits from
-/// class `Value`", which covers a `String`, a `Symbol`, a `Character`, an
+/// class `Value`", which covers a `String`, a `Symbol`, an
 /// instance of a user class below `Value` and a `Value new` alike -- §3.2's
 /// "subclass of" is inclusive, so `Value`'s own application carries the
 /// flag (`Mutator::apply_mixin`). A class object is not one -- its own
