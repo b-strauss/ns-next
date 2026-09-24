@@ -489,9 +489,13 @@ for a level above `C`).
   was created and everything above it holds by induction. If it does carry
   one, the walk does not trust it: a refused class still exists, since the
   refusal is recorded rather than raised, so the new class inherits the
-  fault instead — a `NonValueEnclosingObject` that names the level the walk
-  stopped at, with the `described` text taken from that level's own verdict
+  fault instead — a `NonValueEnclosingObject` with the `described` text taken
+  from that level's own verdict, naming the level that verdict names, or the
+  level the walk stopped at when it names none
   (`goldens/kernel/a_value_subclass_of_a_refused_value_class_is_refused.ns`).
+  So a fault inherited over several levels still names the level whose
+  enclosing object is at fault, not the last class that passed it on
+  (`goldens/kernel/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`).
   Any other level — one that does not inherit `Value`, or a `<:` level, which
   is never created through `after_clause` — has its enclosing object checked
   with `instantiate.rs`'s `is_a_value`, the predicate the slot check uses,

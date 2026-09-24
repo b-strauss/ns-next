@@ -91,9 +91,11 @@ pub enum ObjectData<'gc> {
 /// refusal of its own -- such a class was checked the same way when it was
 /// created, so everything above it holds by induction. A class that does
 /// carry one is not trusted blindly: the new class inherits the fault
-/// instead, naming the level the walk stopped at (`described` carried over
-/// from that class's own verdict, `level` rebuilt as `Some(<the stopping
-/// class's name>)`).
+/// instead, `described` and `level` carried over from that class's own
+/// verdict, except that a `level` of `None` -- a fault in the stopping
+/// class's own enclosing object -- becomes `Some(<the stopping class's
+/// name>)`. A fault inherited over several levels thus keeps naming the
+/// level whose enclosing object is at fault.
 #[derive(Debug, Clone)]
 pub enum ValueClassRefusal {
     /// `level` is `None` for the class's own enclosing object; `described`

@@ -51,12 +51,19 @@ pub(crate) fn check_value_class<'gc>(
         if heap.class_inherits_value(class) && !heap.class_is_applied_level(class) {
             return match heap.class_value_refusal(class) {
                 None => None,
-                Some(ValueClassRefusal::NonValueEnclosingObject { described, .. }) => {
+                Some(ValueClassRefusal::NonValueEnclosingObject {
+                    level: refused_level,
+                    described,
+                }) => {
+                    // A refusal naming no level is about the stop class's
+                    // own enclosing object, so it names the stop class; one
+                    // that already names a level inherited its fault from
+                    // further up, and that level is still the one at fault.
                     let level_name = heap
                         .class_application(class)
                         .map(|application| application.mixin.name);
                     Some(ValueClassRefusal::NonValueEnclosingObject {
-                        level: level_name,
+                        level: refused_level.or(level_name),
                         described,
                     })
                 }
