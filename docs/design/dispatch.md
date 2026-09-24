@@ -551,7 +551,7 @@ does not absorb would cost an activation, a lexical send of `vmMirror` and a
 ([execution.md](execution.md), "What the core library's move cost").
 
 **What a method does without an activation is one field,
-`MixinMethod.fast_path: Option<MethodFastPath>`** (`mixin.rs`), with two
+`MixinMethod.fast_path: Option<MethodFastPath>`** (`mixin.rs`), with five
 variants:
 
 - `Mirror(row)` — the method forwards to one mirror row: a send runs the
@@ -562,8 +562,16 @@ variants:
   send answers the builtin class and never activates the method
   ([core-library.md](core-library.md), "The predefined classes are accessors
   on `Object`").
+- `Constant(constant)`, `Parameter(position)` and
+  `ValueOfParameter(position)` — the method is a quick method, whose whole
+  body is `^true`, `^false` or `^nil`, `^<parameter>`, or
+  `^<parameter> value`: a send answers the constant or the argument, or, for
+  the last, a closure argument as the block to activate, and never
+  activates the method except when that argument is no closure
+  ([core-library.md](core-library.md), "`True` and `False` are quick
+  methods").
 
-Only a `Kernel.ns` method carries either. Every other method, and every method
+Only a `Kernel.ns` method carries one. Every other method, and every method
 decoded from an image, has `None`.
 
 **Recognition** (`compiler/primitive_method.rs`, `recognize`) runs as a
@@ -600,16 +608,28 @@ whatever that module's own `Kernel` is, so the same text there is an ordinary
 method. `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch it off, since an
 accessor runs no leaf.
 
+For the quick methods, `recognize_quick_method` accepts a method whose body is
+one statement with no temporaries, a `^` of `true`, `false`, `nil`, a
+parameter, or a unary `value` sent to a parameter -- the parameter by
+binding, as for `Mirror`. It runs only in the kernel, like the accessor, and
+is not switched off either: a quick method runs no leaf.
+
 **The fast path is in `act`** (`interpreter/resolve.rs`), on a
 `Resolved::Method` of any chain but the two handler chains. A
-`BuiltinClass(kind)` method answers `kind`'s class object at once. For a
+`BuiltinClass(kind)` method answers `kind`'s class object at once, a
+`Constant` its constant and a `Parameter` its argument. A `ValueOfParameter`
+method answers a closure argument as a `Step::Block` with
+`StepArguments::ControlFlow`, the step a control-flow leaf answers, and
+otherwise falls through to the ordinary `Step::Method`, whose body sends
+`value` to the argument. For a
 `Mirror(row)` method, `mirror::execute_method` runs the row's leaf with the
 send's receiver, selector and arguments; `Some` is the send's answer, and
 `None` falls through to the ordinary `Step::Method`, whose body then runs the leaf
 again from its own mirror send and, declining, its failure block. A
 `doesNotUnderstand:` handler that is a primitive method — `Object`'s — runs
 its leaf on the reified message in `act_handler_method` the same way, before
-it would activate; an accessor is unary and so is never a handler. The fast
+it would activate; an accessor is unary and so is never a handler, and no
+kernel handler is a quick method. The fast
 path costs one field test on every method send;
 the leaf's answer is delivered exactly as a native entry's was, a value or a
 step.
@@ -618,19 +638,23 @@ step.
 reference lowering's sends reach `act` like the optimized lowering's. It has
 to. The depth count holds both lowerings to the same count of activations
 ([compiler.md](compiler.md), "How the limit counts"), and the reference
-lowering's `SendInlinable` of `ifTrue:` reaches `Boolean>>ifTrue:`: without
+lowering's `SendInlinable` of `ifTrue:` reaches `True>>ifTrue:`: without
 the fast path that is a counted activation of the kernel method, and the
-literal block its leaf then activates fails the exemption's condition, since
-that activation did not create it — two counted where the optimized lowering,
-which inlines the whole send, counts none. With it, the leaf answers the block
-straight to the `SendInlinable`'s sender, and the exemption applies unchanged.
+literal block its `value` then activates fails the exemption's condition,
+since that activation did not create it — two counted where the optimized
+lowering, which inlines the whole send, counts none. With it, the quick
+method answers the block straight to the `SendInlinable`'s sender, and the
+exemption applies unchanged. `whileTrue:` and `whileFalse:` reach a
+primitive method and its leaf the same way.
 `goldens/kernel/recursion_through_the_core_library_counts_alike_under_both_lowerings`
-pins it.
+and `goldens/kernel/recursion_through_and_or_counts_alike_under_both_lowerings`
+pin it.
 
 **`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without the marks, for
 measuring only.** It lets one binary run with and without the fast path, so a
 measurement can report both what the move costs and what the fast path
-recovers. It breaks the agreement above, so an overflow compared across the
+recovers. It leaves the quick methods alone, but breaks the agreement above
+for `whileTrue:` and `whileFalse:`, so an overflow compared across the
 lowerings is not valid under it, and no gate runs with it. It is read once per
 process, and only once a kernel mirror send has been recognized, so no method
 outside the kernel consults the environment.

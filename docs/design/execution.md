@@ -3568,12 +3568,13 @@ Three things the trampoline settles on its own:
 - **`Block value` is not a callback.** It is a native that answers the closure
   as a `Step::Block`; activating a closure is what the loop already does, so no
   Rust frame sits in the middle, and nothing was rewritten in Newspeak.
-- **Nor are the control-flow natives** (decided 2026-09-12).
-  `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:` and `ifFalse:ifTrue:` on a Boolean
-  answer the block to activate, exactly as `value` does, and its value is the
-  send's (`Continuation::Deliver`). `and:` and `or:` do the same with
-  `Continuation::Truthy`, which coerces the block's value by
-  `builtins::boolean::truthy`'s rule when it returns; `whileTrue:` and
+- **Nor are the control-flow steps** (decided 2026-09-12).
+  `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and
+  `or:` on a Boolean answer the block to activate, exactly as `value` does,
+  and its value is the send's (`Continuation::Deliver`) -- `True`'s and
+  `False`'s `^<parameter> value` quick methods answer it, with no leaf
+  ([core-library.md](core-library.md), "`True` and `False` are quick
+  methods"); `whileTrue:` and
   `whileFalse:` on a block answer the condition block with
   `Continuation::WhileCondition`, which, when it returns, activates the body or
   ends the loop (`builtins::block::after_condition`), and the body's

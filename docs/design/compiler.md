@@ -881,8 +881,9 @@ by exempting it from the comparison:
 - **The recursion-depth limit**, below.
 
 Everything else was checked and agrees: all eight inlined forms exist as
-kernel methods over leaves that follow the rules the inlined code reproduces
-(`builtins::boolean::truthy` for `and:` and `or:`, `mustBeBoolean` for a
+kernel methods that follow the rules the inlined code reproduces (`True`'s
+and `False`'s quick methods for the six branches, which answer the block's
+value as it is, and leaves for the two loops, with `mustBeBoolean` for a
 non-Boolean loop condition); a mirror send's failure block runs the same code
 whether it is inlined or activated; a
 method's `^` inside a block the optimized lowering inlines is a `Return` there
@@ -905,11 +906,13 @@ level optimized and two under the reference lowering.
 
 **The limit counts every activation on the activation stack — method, block,
 initializer level, superclass clause and message — except a block activation
-that a builtin control-flow leaf performs for a `SendInlinable`, and a mirror
-send's failure block activated for one.** The leaves are `ifTrue:`,
+that a builtin control-flow step performs for a `SendInlinable`, and a mirror
+send's failure block activated for one.** The steps are `ifTrue:`,
 `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and `or:` on a
-Boolean, and `whileTrue:` and `whileFalse:` on a block, reached through their
-kernel methods; the failure block is the one `interpreter::mirror`'s
+Boolean, answered by `True`'s and `False`'s `^<parameter> value` quick
+methods ([core-library.md](core-library.md), "`True` and `False` are quick
+methods"), and `whileTrue:` and `whileFalse:` on a block, answered by their
+leaves through their kernel methods; the failure block is the one `interpreter::mirror`'s
 `execute_sent` activates when a sent mirror send's leaf declines, which it
 marks as a control-flow block. `SendInlinable` is an ordinary public send
 that only the reference lowering emits, for exactly the sends
@@ -919,17 +922,19 @@ that only the reference lowering emits, for exactly the sends
   omits exactly these activations and no others. On a non-Boolean receiver both
   lowerings make the same real send with real closures, and from there count
   alike; the `mustBeBoolean` send is made alike too.
-- **The agreement depends on primitive methods, which is why they apply under
-  both lowerings.** The reference lowering's `SendInlinable` of `ifTrue:`
-  reaches `Boolean>>ifTrue:`, a kernel method. Activated, that method would
-  be counted, and the literal block its leaf activates would fail the
-  captured-frame condition below, since that activation did not create it —
-  two counted where the optimized lowering counts none. As a primitive method
-  it is never activated when its leaf succeeds: the leaf answers the block
+- **The agreement depends on the kernel's fast paths, which is why they
+  apply under both lowerings.** The reference lowering's `SendInlinable` of
+  `ifTrue:` reaches `True>>ifTrue:`, a kernel method. Activated, that method
+  would be counted, and the literal block its `value` activates would fail
+  the captured-frame condition below, since that activation did not create
+  it — two counted where the optimized lowering counts none. As a quick
+  method it is never activated for a block argument: it answers the block
   straight to the `SendInlinable`'s sender, and the exemption applies as it
-  always did ([dispatch.md](dispatch.md), "Primitive methods").
-  `NS_NEXT_NO_PRIMITIVE_METHODS=1`, which compiles the kernel without them,
-  breaks the agreement, and is for measuring only.
+  always did; `whileTrue:`'s primitive method does the same through its leaf
+  ([dispatch.md](dispatch.md), "Primitive methods").
+  `NS_NEXT_NO_PRIMITIVE_METHODS=1`, which compiles the kernel without its
+  primitive methods — the quick methods stay — breaks the agreement for the
+  loops, and is for measuring only.
 - **Depth stays bounded.** A literal block can run again only if the body
   enclosing it runs again, so every recursive cycle contains a counted
   activation, and the uncounted activations per counted one are bounded by the
