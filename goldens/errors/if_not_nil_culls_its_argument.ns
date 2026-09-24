@@ -1,0 +1,11 @@
+Newspeak3
+'T'
+(* Object>>ifNotNil: is ^block cull: self: an argument that is no block is
+   sent cull: like any other object, and nothing but a block answers it. *)
+class NotABlock usingPlatform: platform = Object new () (
+    public main: p args: a = (
+        | five |
+        five:: 5.
+        ^3 ifNotNil: five
+    )
+) : ()

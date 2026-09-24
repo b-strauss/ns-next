@@ -8,12 +8,7 @@ Newspeak3
    Only nil is probed here. 5.1.3 lists isNil as an exception to nil's own
    messageNotUnderstood behaviour rather than as a method of Object, and
    isNil appears nowhere else in the specification, so what a non-nil
-   receiver answers is not a rule this file may record.
-
-   Object's method table declares no isNil
-   (crates/ns-runtime/src/builtins/), so this raises
-   doesNotUnderstand: #isNil at exit status 1 instead. Loud, not silent.
-   Skipped until nil answers isNil. *)
+   receiver answers is not a rule this file may record. *)
 class Spec513NilIsNil usingPlatform: p = Object new (| t = p transcript. |) (
     public main: platform args: arguments = (
         t show: nil isNil printString; newLine.

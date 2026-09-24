@@ -135,6 +135,9 @@ pub enum MethodFastPath {
     /// A quick method whose body is `^true`, `^false` or `^nil`: answer
     /// it, never activate.
     Constant(QuickConstant),
+    /// A quick method whose body is `^self`: answer the receiver, never
+    /// activate.
+    Receiver,
     /// A quick method whose body is `^<parameter>`: answer the argument at
     /// this position, never activate.
     Parameter(u8),
@@ -143,6 +146,12 @@ pub enum MethodFastPath {
     /// a control-flow step; anything else activates the method, whose body
     /// sends `value` for real.
     ValueOfParameter(u8),
+    /// A quick method whose body is `^<parameter> cull: self`: a closure
+    /// argument at this position is answered as the block to activate, with
+    /// the receiver as its argument when it takes one and with none when it
+    /// takes none; anything else activates the method, whose body sends
+    /// `cull:` for real.
+    CullParameter(u8),
 }
 
 /// The constant a quick method answers (`MethodFastPath::Constant`).

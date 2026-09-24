@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: wrong number of block arguments: block takes 2, got 1
+'''

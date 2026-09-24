@@ -660,7 +660,6 @@ mod tests {
     const NOT_FORWARDERS: &[(BuiltinClass, &str)] = &[
         (BuiltinClass::True, "hash"),
         (BuiltinClass::False, "hash"),
-        (BuiltinClass::Integer, "hash"),
         (BuiltinClass::Character, "hash"),
         // §3.1.1's identity method on a value: a send of `=`, which is what
         // makes the two agree for every subclass. No leaf could answer it
@@ -680,11 +679,16 @@ mod tests {
         // `hash` above, whose integer literal is none either.
         (BuiltinClass::True, "printString"),
         (BuiltinClass::False, "printString"),
+        // `cull:` tests its own arity, which no quick method does; the quick
+        // methods of the nil protocol do what it says without sending it.
+        (BuiltinClass::Block, "cull:"),
     ];
 
-    /// `True`'s and `False`'s methods, each a quick method: a missed one
-    /// would run correctly as an ordinary method and nothing else would
-    /// notice, except that the reference lowering would count its
+    /// The kernel's quick methods: `True`'s and `False`'s, the nil
+    /// protocol on `Object` and `UndefinedObject`, and `Integer>>hash`. A
+    /// missed one would run correctly as an ordinary method and nothing else
+    /// would notice, except that it would cost an activation -- and for
+    /// `True` and `False`, that the reference lowering would count that
     /// activation against the depth limit and the optimized lowering would
     /// not.
     const QUICK_METHODS: &[(BuiltinClass, &str, MethodFastPath)] = &[
@@ -770,6 +774,63 @@ mod tests {
             "or:",
             MethodFastPath::ValueOfParameter(0),
         ),
+        (
+            BuiltinClass::Object,
+            "isNil",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::Object,
+            "notNil",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (BuiltinClass::Object, "ifNil:", MethodFastPath::Receiver),
+        (
+            BuiltinClass::Object,
+            "ifNotNil:",
+            MethodFastPath::CullParameter(0),
+        ),
+        (
+            BuiltinClass::Object,
+            "ifNil:ifNotNil:",
+            MethodFastPath::CullParameter(1),
+        ),
+        (
+            BuiltinClass::Object,
+            "ifNotNil:ifNil:",
+            MethodFastPath::CullParameter(0),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "isNil",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "notNil",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNil:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNotNil:",
+            MethodFastPath::Constant(QuickConstant::Nil),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNil:ifNotNil:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        (
+            BuiltinClass::UndefinedObject,
+            "ifNotNil:ifNil:",
+            MethodFastPath::ValueOfParameter(1),
+        ),
+        (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:

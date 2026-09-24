@@ -425,6 +425,7 @@ impl<'gc> Mutator<'gc> {
                         Some(MethodFastPath::Constant(constant)) => {
                             return Ok(Step::Value(constant.value()));
                         }
+                        Some(MethodFastPath::Receiver) => return Ok(Step::Value(receiver)),
                         // Read with `get` rather than indexed: the lookup
                         // matched the selector, so the count is right for
                         // every kernel method, and a missing argument then
@@ -458,6 +459,32 @@ impl<'gc> Mutator<'gc> {
                                     return Ok(Step::Block {
                                         closure: object,
                                         arguments: block_arguments,
+                                        then: Continuation::Deliver,
+                                    });
+                                }
+                            }
+                        }
+                        // `cull:`'s rule, as `Block>>cull:` states it: the
+                        // receiver as the block's argument when it takes one,
+                        // nothing when it takes none. A block that takes more
+                        // is handed the one and fails the arity check exactly
+                        // as `value:` would. Never control flow: no lowering
+                        // inlines these sends, so both count the block.
+                        Some(MethodFastPath::CullParameter(position)) => {
+                            if let Some(Value::Object(object)) =
+                                arguments.get(usize::from(position)).copied()
+                            {
+                                if let Some(parameter_count) =
+                                    self.heap().closure_parameter_count(object)
+                                {
+                                    let block_arguments = if parameter_count == 0 {
+                                        Vec::new()
+                                    } else {
+                                        vec![receiver]
+                                    };
+                                    return Ok(Step::Block {
+                                        closure: object,
+                                        arguments: StepArguments::Owned(block_arguments),
                                         then: Continuation::Deliver,
                                     });
                                 }

@@ -14,9 +14,10 @@
 //!
 //! And for quick methods, Squeak's and Cog's name for a method whose whole
 //! body answers a constant or a parameter: a kernel method whose body is
-//! `^true`, `^false`, `^nil`, `^<parameter>` or `^<parameter> value` answers
-//! without an activation -- the last as the block to activate, which is how
-//! `True` and `False` are written (`docs/design/core-library.md`, "`True`
+//! `^true`, `^false`, `^nil`, `^self`, `^<parameter>`, `^<parameter> value`
+//! or `^<parameter> cull: self` answers without an activation -- the last two
+//! as the block to activate, which is how `True`, `False` and the nil
+//! protocol are written (`docs/design/core-library.md`, "`True`
 //! and `False` are quick methods").
 
 use std::collections::HashMap;
@@ -54,8 +55,10 @@ pub(crate) fn recognize(
 }
 
 /// A quick method: a kernel method whose whole body is `^true`, `^false`,
-/// `^nil`, `^<parameter>` or `^<parameter> value` runs without an
-/// activation, as Squeak's and Cog's quick methods do. `True` and `False`
+/// `^nil`, `^self`, `^<parameter>`, `^<parameter> value` or
+/// `^<parameter> cull: self` runs without an activation, as Squeak's and
+/// Cog's quick methods do -- the last two extend theirs by the block
+/// activation `True`'s, `False`'s and the nil protocol's methods consist of. `True` and `False`
 /// are written this way (`docs/design/core-library.md`, "`True` and `False`
 /// are quick methods"): an activation of `True>>ifTrue:` would count
 /// against the depth limit under the reference lowering, which sends the
@@ -86,21 +89,27 @@ fn recognize_quick_method(
         ast::Expression::Literal(ast::Literal::Nil { .. }) => {
             Some(MethodFastPath::Constant(QuickConstant::Nil))
         }
+        ast::Expression::Identifier(_) if is_self(expression) => Some(MethodFastPath::Receiver),
         ast::Expression::Identifier(identifier) => {
             parameter_position(identifier, &parameters, bindings).map(MethodFastPath::Parameter)
         }
         ast::Expression::Send(send) => {
-            let ast::Selector::Unary(selector) = &send.message.selector else {
-                return None;
-            };
             let ast::Expression::Identifier(identifier) = &send.receiver else {
                 return None;
             };
-            if selector != "value" {
-                return None;
-            }
-            parameter_position(identifier, &parameters, bindings)
-                .map(MethodFastPath::ValueOfParameter)
+            let shape: fn(u8) -> MethodFastPath =
+                match (&send.message.selector, &send.message.arguments[..]) {
+                    (ast::Selector::Unary(selector), []) if selector == "value" => {
+                        MethodFastPath::ValueOfParameter
+                    }
+                    (ast::Selector::Keyword(selector), [argument])
+                        if selector == "cull:" && is_self(argument) =>
+                    {
+                        MethodFastPath::CullParameter
+                    }
+                    _ => return None,
+                };
+            parameter_position(identifier, &parameters, bindings).map(shape)
         }
         _ => None,
     }
@@ -582,7 +591,6 @@ mod tests {
     #[test]
     fn does_not_recognize_other_trivial_bodies() {
         assert_eq!(fast_path_in_the_kernel("size = ( ^3 )"), None);
-        assert_eq!(fast_path_in_the_kernel("yourself = ( ^self )"), None);
         assert_eq!(fast_path_in_the_kernel("text = ( ^'true' )"), None);
         assert_eq!(
             fast_path_in_the_kernel("ifTrue: trueBlock = ( ^trueBlock yourself )"),
@@ -635,6 +643,63 @@ mod tests {
         assert_eq!(fast_path_outside_the_kernel("& other = ( ^other )"), None);
         assert_eq!(
             fast_path_outside_the_kernel("ifTrue: trueBlock = ( ^trueBlock value )"),
+            None
+        );
+    }
+
+    #[test]
+    fn recognizes_a_receiver_answer() {
+        assert_eq!(
+            fast_path_in_the_kernel("yourself = ( ^self )"),
+            Some(MethodFastPath::Receiver)
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNil: block = ( ^self )"),
+            Some(MethodFastPath::Receiver)
+        );
+    }
+
+    #[test]
+    fn recognizes_a_parameter_culled_with_the_receiver() {
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block cull: self )"),
+            Some(MethodFastPath::CullParameter(0))
+        );
+        assert_eq!(
+            fast_path_in_the_kernel(
+                "ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )"
+            ),
+            Some(MethodFastPath::CullParameter(1))
+        );
+    }
+
+    /// `cull:` with anything but `self`, or sent to anything but a
+    /// parameter, is an ordinary method.
+    #[test]
+    fn does_not_recognize_another_cull() {
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block cull: 3 )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block cull: block )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^vmMirror cull: self )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block value: self )"),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_recognize_a_receiver_or_cull_answer_outside_the_kernel() {
+        assert_eq!(fast_path_outside_the_kernel("yourself = ( ^self )"), None);
+        assert_eq!(
+            fast_path_outside_the_kernel("ifNotNil: block = ( ^block cull: self )"),
             None
         );
     }
