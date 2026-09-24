@@ -1064,7 +1064,13 @@ since shown a **16% spread between builds of the same tree** with the pin in
 place, stable to about 1% within each build, so on that source one build per
 commit measures the build rather than the commit; pool several builds of each
 tree instead ("What `Top`, `Value` and `Number` cost" below, which found it).
-The other seven sources stay within 0.3–2.3% between builds.
+The other seven sources stay within 0.3–2.3% between builds. Pooling several
+plain builds varies nothing when the builds are byte-identical, as they are
+on the machine these measurements ran on ("What the value conditions cost"
+below): build the extra ones with `-C metadata=<word>` added to `RUSTFLAGS`.
+That varies code layout only. The runtime's data layout (which symbol ids,
+arena indices and dispatch ids a program's objects receive) is not varied by
+it, so a difference that follows from data layout survives every such pool.
 
 Medians in ms from the first sitting, each group's mean, and the change of
 the mean in both sittings:
@@ -3208,9 +3214,11 @@ code of a send changed. What a release build runs that it did not run before:
   identity method into one `MixinApplication::instantiation_refusal`, once per
   application. `decide_instantiation` already tested that `Option`, where it
   had tested `mutable_value_slot`.
-- `decide_instantiation` reads `ClassData::value_class_refusal`, a new field of
-  the boxed class data, once per instantiation. It does so only for a class
-  whose application inherits `Value`.
+- `decide_instantiation` tests whether `ClassData::value_class_refusal`, a new
+  field of the boxed class data, holds a refusal
+  (`Heap::class_has_value_refusal`), once per instantiation. It does so only
+  for a class whose application inherits `Value`, and reads the refusal
+  itself only on the cold error path (`value_class_refusal_error`).
 - The kernel is `Object <: Value`, so bootstrap builds one applied level for
   it.
 - The image decoder has a second pass that recomputes each decoded class
@@ -3256,6 +3264,10 @@ and no `vm::run::closure` of its own. The base has **6,508 instructions**,
 the head 6,507. `decide_instantiation` grew from 441 to 503 instructions and
 `after_clause` from 231 to 433. The new refusal errors
 (`instantiation_refusal_error`, `value_class_refusal_error`) are out of line.
+Until the review's fix (below), `decide_instantiation` cloned the class's
+`Option<ValueClassRefusal>` to test it, and `value_class_refusal_error` was
+inlined into it; since `7b2af64` it is **371 instructions**, below the base's
+441.
 
 Means in ms per build, over each sitting's five rounds; sittings 4, 5 and 6:
 
@@ -3323,7 +3335,9 @@ copies in the first three sittings show the same (+3.3% and +2.7%). Neither
 source falls inside build noise. The spread between one tree's three layouts
 is 0.3–0.6% on each, and `bench_block.ns` did not show its 16% build spread in
 any of the twelve binaries. The expectation said level, and it did not hold
-for these two.
+for these two. Re-measured after the review's fix (below), `bench_new.ns`'s
+gap did not reproduce, before the fix or after it, and `bench_block.ns`'s
+did.
 
 The causes are not isolated. `bench_block.ns` creates no class and
 instantiates nothing in its loop. It makes lexical sends of its slots and
@@ -3341,6 +3355,64 @@ separate the kernel's applied level from the Rust changes, the head with
 `Kernel.ns`'s root put back to `Object new`, does not bootstrap:
 `kernel.rs` asserts the kernel's root is `Object <: Value`. Nothing was
 profiled.
+
+**Re-measured 2026-09-24 after the review's fix, `7b2af64`.** The final
+review named the clone of `Option<ValueClassRefusal>` on
+`decide_instantiation`'s path, and the inlined refusal error behind it, as
+the concrete candidate for `bench_new.ns`. The fix tests for the refusal's
+presence and keeps both refusal errors `#[cold]` and `#[inline(never)]`. It
+was measured in a new session by the same protocol, over `bench_block.ns`
+and `bench_new.ns` only: three trees, `cdc0257` (`base`), `d9c3f33` (the
+head before the fix, `old`) and `7b2af64` (`head`), each built plain and with
+`-C metadata=layoutprobe` and `=secondprobe`, nine binaries rotating by one
+position from round to round, five rounds a sitting and six sittings. A
+rebuild of the plain base differed from the first in 24 bytes, as before.
+`vm::run` is still 6,507 instructions with no `vm::run::closure`.
+Means in ms per layout over the six sittings (plain, `-p`, `-q`):
+
+| Source | `cdc0257` | `d9c3f33` | `7b2af64` | `7b2af64` against `cdc0257`, pooled | against `d9c3f33` |
+|---|---|---|---|---|---|
+| `bench_block.ns` | 17.27, 18.55, 18.53 | 19.43, 19.39, 19.34 | 19.43, 19.32, 19.33 | +6.9% (+6.7 to +7.1 per sitting) | −0.1% |
+| `bench_new.ns` | 4.30, 4.22, 4.23 | 4.34, 4.22, 4.22 | 4.34, 4.21, 4.23 | +0.2% (−1.3 to +0.9 per sitting) | +0.0% |
+
+**`bench_new.ns` is level, and the fix is not what made it so.** The head
+before the fix measured the same as the head after it, level with the base,
+so the +2.2% above did not reproduce in this session for either tree. The
+head's plain build lies about 3% above its two other layouts in every
+sitting of both measurements here, and the plain build before the fix does
+the same; the base's plain build did so in two of the first six sittings and
+in none of the second six. The `-C metadata` layouts of all three trees lie
+within 0.5% of one another. What the fix did do is shrink
+`decide_instantiation` back below the base.
+
+**`bench_block.ns` is still slower, and the fix did not touch it** (−0.1%
+against the head before it), as expected of a source that instantiates
+nothing. The pooled +6.9% overstates it: the base's plain build is a layout
+outlier in this session, 17.27 ms against 18.55 and 18.53 for its other two
+layouts, in every one of twelve sittings across both measurements here.
+Against the base's two `-C metadata` layouts alone the head is **4.4%**
+slower, which is the finding above.
+
+**Control (a), the seeded symbol: refuted as the cause.** The head seeds
+`==` as a well-known symbol (`Symbol::IDENTICAL`), which shifts every later
+symbol id by one and with it every `IdentityMap<Symbol, …>` bucket. A
+throwaway build of the base with the same seed line, in the same three
+layouts, measured in six more sittings beside the base and the head:
+
+| Source | `cdc0257` | `cdc0257` + seed | `7b2af64` | head against base + seed, per sitting |
+|---|---|---|---|---|
+| `bench_block.ns` | 17.30, 18.49, 18.51 | 18.53, 18.50, 18.54 | 19.44, 19.25, 19.26 | +4.3% (+3.6 to +4.6) |
+| `bench_new.ns` | 4.23, 4.23, 4.24 | 4.22, 4.23, 4.22 | 4.35, 4.22, 4.24 | +1.0% (+0.1 to +1.9) |
+
+The seeded base's three layouts lie with the base's two `-C metadata` ones,
+and the head is as far above them as before, so the shifted symbol ids
+explain none of `bench_block.ns`'s gap. The seed did move the base's plain
+build from 17.30 to 18.53 ms, a layout change like any other. On
+`bench_new.ns` the head's plain build is again the one 3% above the rest.
+The review's two other hypotheses remain open ([PROGRESS.md](../PROGRESS.md),
+"The value conditions"): the kernel's extra `Value`-level class object,
+which shifts every later arena index and dispatch id by one, and hardware
+counters.
 
 **Start-up did not move.** The whole `ns-next run` of a module whose
 `main:args:` answers `0` at once, timed wall-clock from the parent process.

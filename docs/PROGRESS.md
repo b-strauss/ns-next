@@ -3783,6 +3783,17 @@ conditions" and "Mixin application", "The root rule".
   milestone entry used to record as a known gap. A golden and an image
   round-trip test pin a value module whose root defines `==`; every other
   recorded outcome held.
+- **The final review's fixes.** `d704928`: a refusal inherited through the
+  early stop keeps the level its own verdict names, rather than renaming it
+  after the class the walk stopped at, so a fault passed on over two levels
+  still names the faulty level
+  (`goldens/kernel/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`,
+  new; no recorded outcome moved). `07bd995`: the root-section reader
+  refuses a section naming no superclass (`DecodeError::RootWithoutSuperclass`),
+  and the encoder refuses to write one. `521e6ec`: comment corrections.
+  `7b2af64`: `decide_instantiation` tests for a class's refusal instead of
+  cloning it, and both refusal errors are out of line and cold. The commit
+  after it records the re-measurement.
 
 **Measurement.** Against `cdc0257`, over three sittings and three layouts per
 tree (varied with `-C metadata`, because three plain builds of one tree were
@@ -3793,11 +3804,46 @@ slower and `bench_new.ns` 2.2% slower, every head layout above every base
 layout in every sitting, with causes not isolated. See
 [execution.md](design/execution.md), "What the value conditions cost".
 
+**Re-measured after the review's fix** (`7b2af64`, six sittings, the base,
+the head before the fix and the head after it in three layouts each):
+`decide_instantiation` is 371 instructions, below the base's 441 (503 before
+the fix). `bench_new.ns` is level, +0.2% pooled, and the head before the fix
+measured the same, so the earlier +2.2% did not reproduce in this session and
+the fix is not what closed it. `bench_block.ns` is still slower and the fix
+did not touch it: +4.4% against the base's two `-C metadata` layouts, +6.9%
+pooled with the base's plain build, a fast layout outlier in this session.
+Control (a) below was run and refuted: a base seeded with `==` measures
+like the base, and the head stays 4.3% above it.
+
 **Known gaps**, each recorded where it applies:
 
 - **A ready-made instance decoded from an image is not re-checked**, as
   before; a decoded class object now is
   ([image-format.md](design/image-format.md), "Verification").
+- **No test pins the error selector and receiver of the instantiation
+  refusals.** The goldens pin each refusal's message only; that
+  `decide_instantiation` names the class's own primary factory as the
+  selector and the class as the receiver is untested.
+- **A subclass inheriting a root-clause refusal is untested.** A root whose
+  clause the rule refuses can never be instantiated, so reaching a subclass
+  of it is practically impossible; the path exists but nothing exercises it.
+
+**Open: `bench_block.ns`'s 4.4%.** Not isolated. What `-C metadata` varies is
+code layout, and the gap survives every layout measured, so the review's
+remaining hypotheses are about data layout and the machine:
+
+- (a) *The seeded symbol* -- run and refuted on 2026-09-24
+  ([execution.md](design/execution.md), "What the value conditions cost").
+  Appending `IDENTICAL` to the seeded symbols shifts every later symbol id by
+  one and so every `IdentityMap<Symbol, …>` bucket distribution; a base with
+  the same seed measures like the base.
+- (b) *The kernel's extra `Value`-level class object*, which shifts every
+  later arena index and dispatch id by one. The control is a throwaway head
+  build with a plain `Object new` kernel and `kernel.rs`'s `Object <: Value`
+  assertion removed.
+- (c) *Hardware counters*: instructions retired against cycles and cache
+  misses, which would say whether the head executes more or merely waits
+  longer.
 
 ## Notes
 
