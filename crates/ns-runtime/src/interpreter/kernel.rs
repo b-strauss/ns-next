@@ -737,21 +737,21 @@ mod tests {
         (BuiltinClass::Behavior, "enclosingOf:"),
         (BuiltinClass::Behavior, "superclassOf:"),
         (BuiltinClass::Metaclass, "thisClassOf:"),
-        // §3.1.1's identity method on a value, a send of `=` as `Value`'s
-        // is: a metaclass's `=` falls back to its classes' `=`.
-        (BuiltinClass::Metaclass, "=="),
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
     /// than their own, each with that row's reported selector. `Behavior>>==`
-    /// forwards to `value:sameAs:ifFail:`, reported `=`, so that
-    /// `self class == other class` stays one leaf and no activation; §3.1.1
+    /// and `Metaclass>>==` forward to `value:sameAs:ifFail:`, reported `=`,
+    /// so that `self class == other class` stays one leaf and no activation;
+    /// §3.1.1
     /// asks a value's identity method to answer what its `=` answers, and
     /// the one leaf is what makes them agree. The reported selector only
     /// ever names an error text, and that row raises none -- it answers or
     /// declines.
-    const REPORTED_UNDER_ANOTHER_SELECTOR: &[(BuiltinClass, &str, &str)] =
-        &[(BuiltinClass::Behavior, "==", "=")];
+    const REPORTED_UNDER_ANOTHER_SELECTOR: &[(BuiltinClass, &str, &str)] = &[
+        (BuiltinClass::Behavior, "==", "="),
+        (BuiltinClass::Metaclass, "==", "="),
+    ];
 
     /// The kernel's quick methods: `True`'s and `False`'s, the nil
     /// protocol on `Object` and `UndefinedObject`, and `Integer>>hash`. A

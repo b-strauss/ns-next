@@ -360,6 +360,22 @@ fn derived_equality<'gc>(
     left: Value<'gc>,
     right: Value<'gc>,
 ) -> Option<bool> {
+    // Two class objects are the operands of `Behavior>>=` and `==`, and so
+    // of every `self class == other class`, which was `Object`'s identity
+    // leaf before class objects became values: answered here without
+    // building the walk wherever the walk's first step would decide. Only
+    // for class objects -- an instance is never equal to itself on identity
+    // alone, since a value holding a NaN is unequal to itself.
+    if let (Value::Object(first), Value::Object(second)) = (left, right) {
+        if mutator.heap().is_class(first) && mutator.heap().is_class(second) {
+            if first.same(second) {
+                return Some(true);
+            }
+            if !classes_can_be_equal(mutator, first, second) {
+                return Some(false);
+            }
+        }
+    }
     let mut work = vec![(left, right)];
     let mut assumed: HashSet<(usize, usize)> = HashSet::new();
     // The root pair is on the stack already.
@@ -1458,6 +1474,95 @@ mod tests {
             !answered_flag(&mut interpreter, &equal, "a Tag's Inner and an Outer's"),
             "two declarations are two classes"
         );
+    }
+
+    /// The answers `derived_equality` gives two class objects before it
+    /// builds its walk -- `self class == other class`'s path: identical
+    /// class objects are equal, whether values or not, and two distinct
+    /// ones that are not values of one application are unequal, metaclasses
+    /// included. Each is checked against `=` and `==` sent in Newspeak, and
+    /// an equal pair against its hash.
+    #[test]
+    fn two_class_objects_are_decided_before_the_walk() {
+        let (mut interpreter, fixture) = a_fixture();
+        let builtin = |interpreter: &mut Interpreter, kind: crate::BuiltinClass| {
+            interpreter.enter(|mutator| {
+                let class = mutator.builtin_class(kind);
+                mutator.stash(Value::Object(class))
+            })
+        };
+        let string = builtin(&mut interpreter, crate::BuiltinClass::String);
+        let symbol = builtin(&mut interpreter, crate::BuiltinClass::Symbol);
+        let string_metaclass = send(&mut interpreter, &string, "class", &[]);
+        let symbol_metaclass = send(&mut interpreter, &symbol, "class", &[]);
+        let marker = send(&mut interpreter, &fixture, "marker", &[]);
+        let marker_class = send(&mut interpreter, &marker, "class", &[]);
+        for (first, second, expected, what) in [
+            (&string, &string, true, "a value class object and itself"),
+            (
+                &marker_class,
+                &marker_class,
+                true,
+                "a class that is no value and itself",
+            ),
+            (
+                &string_metaclass,
+                &string_metaclass,
+                true,
+                "a metaclass and itself",
+            ),
+            (&string, &symbol, false, "two builtin classes"),
+            (
+                &string_metaclass,
+                &symbol_metaclass,
+                false,
+                "two builtin metaclasses",
+            ),
+            (
+                &string,
+                &string_metaclass,
+                false,
+                "a class and its metaclass",
+            ),
+            (
+                &string,
+                &marker_class,
+                false,
+                "a value class and one that is none",
+            ),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                first,
+                std::slice::from_ref(second),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, what),
+                Some(expected),
+                "{what}: the leaf"
+            );
+            for selector in ["=", "=="] {
+                let equal = send(
+                    &mut interpreter,
+                    first,
+                    selector,
+                    std::slice::from_ref(second),
+                );
+                assert_eq!(
+                    answered_flag(&mut interpreter, &equal, what),
+                    expected,
+                    "{what}: {selector}"
+                );
+            }
+            if expected {
+                let first_hash = send(&mut interpreter, first, "hash", &[]);
+                let first_hash = answered_number(&mut interpreter, &first_hash, what);
+                let second_hash = send(&mut interpreter, second, "hash", &[]);
+                let second_hash = answered_number(&mut interpreter, &second_hash, what);
+                assert_eq!(first_hash, second_hash, "{what}: equal, so hashing alike");
+            }
+        }
     }
 
     /// `Looped`'s slot holds its own `Inner`, whose enclosing object is the

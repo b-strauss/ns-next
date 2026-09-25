@@ -116,9 +116,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public printString = ( ^name )
         (* A metaclass's enclosing object is its class's and its superclass
            is always `Class`, so its class is all its state: two metaclasses
-           are equal exactly when their classes are. *)
+           are equal exactly when their classes are. `==` is the same
+           forwarder as `=`, as `Behavior`'s is, so that it answers what `=`
+           answers (§3.1.1) and costs no activation. *)
         public = other = ( ^vmMirror value: self sameAs: other ifFail: [^(self thisClassOf: self) = (self thisClassOf: other)] )
-        public == other = ( ^self = other )
+        public == other = ( ^vmMirror value: self sameAs: other ifFail: [^(self thisClassOf: self) = (self thisClassOf: other)] )
         (* Primordial Soup's `Metaclass` keeps its class in a slot of this
            name; here it is `ClassData`'s, read through a leaf. *)
         private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
