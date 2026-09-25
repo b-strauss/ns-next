@@ -939,6 +939,65 @@ for the builtins", because that decision is about what an artifact arriving
 from outside may carry; bytes compiled into the binary are as trustworthy as
 the Rust beside them.
 
+### Planned: the platform and collections as core-library modules
+
+**Status: decided with the user on 2026-09-25, not designed in detail and
+not built; it comes after exceptions, which `List` needs to report its
+errors.** `Kernel.ns` is to hold only what the VM must know — the classes
+whose instances the VM creates or on which dispatch depends — and the rest
+of the library moves into modules the runtime ships and loads at every
+start. Primordial Soup splits it this way (`KernelForPrimordialSoup.ns`
+beside `Runtime.ns`, whose `Platform` is built from modules such as
+`Collections.ns`), and so does SOMns (`core-lib/Platform.ns` loading
+`Collections.ns`, `System.ns` and the rest); §8.3 describes the platform as
+an object that "provides accessors to various modules". What was decided:
+
+- **Scope.** `Platform`, `Transcript` and `Collections` leave `Kernel.ns`
+  for a platform module, and `OrderedCollection` is replaced by a `List`
+  written in Newspeak over a fixed `Array` in a `Collections.ns` module, as
+  Primordial Soup's `List` is. That removes the one payload that grows in
+  place (`Heap::array_push`) and its leaf, which answers the question step 7
+  has to settle first.
+- **The mirror is a capability handed over, and shipped source is resolved
+  as the kernel is.** The host boots the platform module with
+  `usingVmMirror:`, as SOMns's `Platform usingVmMirror:` is booted, and the
+  platform module hands the mirror only to the modules that need leaves —
+  `Collections.ns` needs none, using only `Array`'s public protocol. Core
+  library modules shipped with the runtime are resolved with
+  `resolve_kernel`, so their sends to the mirror are `SendMirror` with the
+  inlined fast path. The rule in `CLAUDE.md` becomes: only shipped
+  core-library source is resolved with `MirrorSend`, and only what the
+  bootstrap or another core-library module hands it holds the mirror; a
+  user module never does.
+- **One module namespace, on the mirror** (the decision of 2026-09-21 in
+  "Where the library source lives, and how modules are found", now needed):
+  a mirror primitive such as `moduleNamed:` looks a module up in a table the
+  host fills in advance, and the platform module fetches the others through
+  it, as SOMns's `vmMirror load: 'Collections.ns' nextTo: self` does. The
+  same table later holds user modules and falls back to the file system for
+  loading at run time. **Loading is unified; trust and visibility are not.**
+  Every entry carries whether it is shipped core-library source, set by the
+  host and never by the module; only such an entry is resolved with
+  `resolve_kernel`. The loader a program is later handed through the
+  platform sees user modules only: a program reaches the standard modules
+  as the instances the platform built (`platform collections`), never as
+  module definitions, whose code was compiled for a trusted context.
+- **No `OrderedCollection` accessor on `Object`.** §3.2's accessors are for
+  the classes of the literals and the array factories; the goldens that
+  write `OrderedCollection new` move to `platform collections List`, with
+  their recorded outcomes unchanged.
+- **Core-library objects in an image are named by reference**, as builtin
+  classes are today: a class of a shipped module is written as that
+  module's name and the class's path in it, and resolved on load against
+  the loading interpreter's own core library; the module instances are
+  prebuilt and named by tag, as the platform is. Since the code and the
+  layout come from the loading binary, the decoder checks every such
+  record's field count against its class's layout and refuses a mismatch.
+  Serializing the modules' mixins instead would put code compiled with
+  `SendMirror`, which has no wire tag on purpose, into an artifact. The
+  builtin class tags of `Platform`, `Transcript`, `Collections` and
+  `OrderedCollection` retire.
+
 ### What this step did not break
 
 The goldens are what made the move verifiable: `Integer>>+`,

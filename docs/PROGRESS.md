@@ -25,17 +25,22 @@ class object's class is its own metaclass, its class side applied to
 value exactly when its enclosing object is, which settles the question left
 open on 2026-09-24 and honours §6.4's "Module definitions are value
 objects"; see "`Behavior`, `Class` and `Metaclass`" below. **The next piece
-of work is the platform as a core-library module of its own** (put ahead of
-step 7 by the user on 2026-09-25, not yet designed): `Kernel.ns` keeps only
-what the VM must know, and `Platform`, `Transcript` and `Collections` move
-out into a module the runtime ships and loads at every start, as Primordial
-Soup's `Runtime.ns` builds its `Platform` from modules beside
-`KernelForPrimordialSoup.ns` and as §8.3 describes the platform, an object
-that "provides accessors to various modules". It needs the bootstrap to load
-more than one core-library module, and a way for that module to reach its
-leaves while the VM mirror stays the kernel's alone. It is also the natural
-home for a Newspeak `OrderedCollection` over a fixed `Array`, which answers
-the question step 7 has to settle first. **Then step 7, the payload space**
+of work is exceptions** (put first by the user on 2026-09-25, not yet
+designed): `Exception` and `Error` in `Kernel.ns`, the errors the VM raises
+itself (`MessageNotUnderstood` with a real `Message` rather than today's
+`{selector. arguments}` array), `signal`, `on:do:`, `ensure:` and
+`ifCurtailed:`, `return:`, `retry`, `resume:` and `pass`, handler search
+over the activation stack and unwinding through the machinery non-local
+return already uses; every `NewspeakError` a leaf raises today becomes a
+signalled exception, and an uncaught one still prints "Uncaught Newspeak
+error: …". **Then the platform and collections as core-library modules**
+(decided the same day, [core-library.md](design/core-library.md),
+"Planned: the platform and collections as core-library modules"):
+`Kernel.ns` keeps only what the VM must know, `Platform`, `Transcript` and
+`Collections` move into a shipped platform module booted with the mirror,
+and a Newspeak `List` over a fixed `Array` in a `Collections.ns` module
+replaces `OrderedCollection` — which needs exceptions for its errors and
+answers the question step 7 has to settle first. **Then step 7, the payload space**
 (item 4 of the list under "What came next was the third plan, now done, and
 then step 7" below), whose open question is that one: the space was ordered
 after step 6 because a Newspeak `OrderedCollection` over a fixed `Array`
