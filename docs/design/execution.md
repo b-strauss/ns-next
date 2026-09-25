@@ -4578,6 +4578,38 @@ second did not. "What closure conversion moved", in the measurements section
 above, is the measurement, with the reasoning for why the memory moved the way
 it did and how far that reasoning is evidence.
 
+## Planned: tail calls, skipped but kept
+
+**Status: a direction the user set on 2026-09-25, not designed and not
+built.** Today every send pushes an activation and nothing is eliminated.
+§3.6 specifies tail-call elimination through the continuation object —
+when the sender has nothing left to do, the invoked activation's
+continuation is the sender's own — "to the extent that it is observable",
+marks it "Unimplemented", and in the same section requires that
+"programming environments must always allow developers to retain
+activations during debugging", noting that elimination "runs counter to
+Newspeak philosophy" when it throws history away.
+
+**The direction is the middle way, not a debug switch.** Making elimination
+depend on a debug mode was considered and rejected for two reasons:
+elimination is observable through stack depth, so a program that runs with
+it would hit the depth limit without it, and the recorded outcomes would
+depend on the mode; and a live system has no mode decided in advance — the
+debugger opens on an uncaught error, a `halt` or an interrupt, by which time
+eliminated activations would be gone. Instead, when it is built, a tail send
+**skips** the sender in the continuation — the return goes straight to the
+sender's continuation, which is what makes the stack not grow — while the
+skipped activations stay reachable for the debugger, as the specification's
+split between continuation and activation allows; MIT Scheme's bounded
+history of eliminated frames is the prior art for keeping the recent ones
+visible without keeping all of them. How much is kept is for the design to
+settle.
+
+**One constraint is fixed already:** an activation the exception machinery
+marks — `on:do:`, whose `^self value` is a tail send — is never skipped, or
+`signal` would no longer find its handler. `ensure:` is never in tail
+position, since `onUnwind value` follows `self value`.
+
 ## Planned: JIT tiers
 
 Beyond inline caches nothing is designed. The tiering model is sketched in
