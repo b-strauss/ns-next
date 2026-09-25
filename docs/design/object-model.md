@@ -997,23 +997,41 @@ Two consequences:
   rather than copying them, which §3.1.1 allows ("copied freely … or
   shared") and which makes identity unobservable as a difference.
 
-**The image format.** A metaclass is never a record of its own; it is
-derived, never stored twice, as the factory entry is. A reference to a
-metaclass anywhere in the graph — which today can only be a class-side
-activation's `current_class`, and afterwards can be any slot holding
-`Foo class` — is written as "the metaclass of" a class reference, a record id
-or a builtin class tag. The decoder allocates a class record's metaclass
-placeholder beside the class's own, which keeps a metaclass's identity across
-a round trip and ends the case `image::decode` documents today, a decoded
-metaclass built a second time beside the one the class mints. That changes
-the amplification bound ([memory.md](memory.md)), which is recomputed and
-stays proportional to the input through `bounded_count`.
+**The image format.** A metaclass stores nothing twice: everything about
+it — its mixin, its application, its enclosing object and declaring class —
+is derived from its class, as the factory entry is. A reference to one can
+sit anywhere in the graph — today only a class-side activation's
+`current_class`, afterwards any slot holding `Foo class` — and every class
+record's own header names one. How it is written depends on its class
+(decided with the user on 2026-09-25):
+
+- **The metaclass of a class record is a record of its own**, object body
+  `OBJECT_METACLASS`, whose body is only the class reference back to its
+  class record. It gets a placeholder in the decoder's first pass like any
+  record and is referred to by an ordinary id, so a slot can name it before
+  its class record is decoded, its identity hash travels in its record, and
+  the amplification bound ([memory.md](memory.md)) does not move: it is a
+  record of at least the minimum size, one placeholder like any other. The
+  alternative — a "metaclass of record N" reference with no record — would
+  have had to patch every place such a reference can sit once the class
+  records are decoded, a mechanism across the whole decoder to keep safe
+  against a crafted image.
+- **The metaclass of a prebuilt class** — a builtin, the module's root class
+  or one of the root's levels, none of which is a record — is named by tag,
+  `CLASS_METACLASS` followed by that class's own tag, and its identity hash
+  travels in the closing hash table (`HASHED_METACLASS`, followed by the
+  class tag), as the builtin classes' own do.
+
+Verification checks the pairing both ways: a class record's header names a
+metaclass record whose back-reference is that class record, and no
+metaclass record is named by anything but its own class's header or an
+ordinary reference. That keeps a metaclass's identity across a round trip
+and ends the case `image::decode` documents today, a decoded metaclass
+built a second time beside the one the class mints.
 `rebuild_applications`'s flat special case becomes the ordinary application
-over `Class`. Verification additionally checks that every class object's
-class is a metaclass whose `this_class` is that class object. The new wire
-forms — the metaclass reference and builtin class tags for `Behavior`,
-`Class` and `Metaclass` — take the next free numbers, and nothing is
-renumbered. `read_program_builtin_class` refuses the three new tags wherever
+over `Class`. The new wire forms — `OBJECT_METACLASS`, `CLASS_METACLASS`,
+`HASHED_METACLASS` and builtin class tags for `Behavior`, `Class` and
+`Metaclass` — take the next free numbers, and nothing is renumbered. `read_program_builtin_class` refuses the three new tags wherever
 a program *names* a class, as it refuses `Top`'s, since no source module can
 name them; as values in the graph they are accepted, since
 `3 class class class` reaches them.
