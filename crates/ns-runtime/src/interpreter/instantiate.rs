@@ -1389,9 +1389,9 @@ pub(crate) fn check_value_slot<'gc>(
 /// class `Value`", which covers a `String`, a `Symbol`, an
 /// instance of a user class below `Value` and a `Value new` alike -- §3.2's
 /// "subclass of" is inclusive, so `Value`'s own application carries the
-/// flag (`Mutator::apply_mixin`). A class object is not one -- the
-/// `is_class` guard above excludes it, whatever its own class (its
-/// metaclass) inherits.
+/// flag (`Mutator::apply_mixin`). A class object is one when its enclosing
+/// object is (`class_object_is_a_value`), whatever its own class (its
+/// metaclass) inherits: `Behavior` does not inherit `Value`.
 ///
 /// **The other predicate about "is a value" is
 /// `builtins::value::state_is_a_value`**, which asks the narrower question
@@ -1399,10 +1399,42 @@ pub(crate) fn check_value_slot<'gc>(
 /// about everything this one accepts and that one unfolds, and they
 /// disagreed about `Value new` until 2026-09-23.
 pub(crate) fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
-    !mutator.heap().is_class(object)
-        && mutator
-            .heap()
-            .class_inherits_value(mutator.heap().class_of_object(object))
+    if mutator.heap().is_class(object) {
+        return class_object_is_a_value(mutator, object);
+    }
+    mutator
+        .heap()
+        .class_inherits_value(mutator.heap().class_of_object(object))
+}
+
+/// Whether the class object `class` is a value: exactly when its enclosing
+/// object is (`docs/design/object-model.md`, "Class sides and metaclasses",
+/// after SOMns's `SClass.isValue`). A module definition has none and is one
+/// (§6.4: "Module definitions are value objects"); a nested class's only
+/// state is its enclosing object (§6.1), so §3.1.1's condition on enclosing
+/// objects decides it. A metaclass shares its class's enclosing object
+/// (`Mutator::attach_metaclass`) and so its verdict.
+///
+/// The equality walk (`builtins::value`) asks this of every pair of
+/// distinct classes it meets, and a slot of a value asks it of a class it
+/// is handed, so the answer must not depend on anything but the class
+/// object itself.
+pub(crate) fn class_object_is_a_value<'gc>(
+    mutator: &Mutator<'gc>,
+    class: ClassReference<'gc>,
+) -> bool {
+    match mutator.heap().class_enclosing(class) {
+        None => true,
+        // An enclosing object is always an instance, never a class object,
+        // so this does not recurse -- and an image that claims otherwise
+        // gets `false`, the answer that refuses rather than accepts.
+        Some(enclosing) => {
+            !mutator.heap().is_class(enclosing)
+                && mutator
+                    .heap()
+                    .class_inherits_value(mutator.heap().class_of_object(enclosing))
+        }
+    }
 }
 
 /// The refusal itself, off the checking path so that the check stays a

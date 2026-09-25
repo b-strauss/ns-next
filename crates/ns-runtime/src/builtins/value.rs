@@ -6,13 +6,26 @@
 //! across an actor boundary, so a copy has to be equal to, and hash like,
 //! its original: **a value has no observable identity**, and deciding
 //! either from one is exactly the mistake these leaves exist to avoid. Two
-//! values are equal when their classes agree and their states do, all the
-//! way down.
+//! values are equal when their classes are equal -- identical, or two
+//! value class objects equal by their own state -- and their states are,
+//! all the way down.
+//!
+//! **A class object is a node too.** One is a value exactly when its
+//! enclosing object is (`instantiate::class_object_is_a_value`), and then
+//! it has no identity either: its state is its mixin application, its
+//! enclosing object and its superclass class object, and a metaclass's is
+//! its class (`docs/design/object-model.md`, "Class sides and
+//! metaclasses"). Two values of one nested declaration under two equal
+//! enclosing values therefore have two distinct but equal classes, so the
+//! class of every pair of nodes is itself a pair the walk compares, not an
+//! identity test. A class object that is no value compares by identity.
+//! Its hash is its name's (`hash_node`, which says why).
 //!
 //! Neither walk recurses. An image is untrusted input and the graph a
 //! decoded value reaches is the image's to choose, so both walks run an
 //! explicit work stack; the equality walk remembers the pairs it has
-//! already assumed equal, so a cycle terminates in `true` rather than
+//! already assumed equal -- instances and class objects alike -- so a
+//! cycle, through slots or through classes, terminates in `true` rather than
 //! running forever, and both stop once `NODE_BUDGET` nodes have gone *onto*
 //! that stack, so neither runs for as long as the input likes and neither
 //! stack grows past the budget.
@@ -35,6 +48,7 @@ use std::rc::Rc;
 use crate::builtins::primitive::ValuePrimitive;
 use crate::builtins::{numbers, text};
 use crate::dispatch::{self, Lookup};
+use crate::interpreter::instantiate::class_object_is_a_value;
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
@@ -170,12 +184,14 @@ fn with_declared_slots<'gc, T>(
     mutator.heap().with_class_declared_slots(class, read)
 }
 
-/// What a walk found at one node of a value: either a verdict the shape's
-/// own rule decides outright, or an instance whose state is its slots and
-/// so has to be unfolded.
+/// What a walk found at one node of a value: a verdict the shape's own rule
+/// decides outright, an instance whose state is its slots, or two class
+/// objects whose state is their application, enclosing object and
+/// superclass -- the last two have to be unfolded.
 enum Pair<'gc> {
     Decided(bool),
     State(ObjectReference<'gc>, ObjectReference<'gc>),
+    Classes(ClassReference<'gc>, ClassReference<'gc>),
 }
 
 /// What a walk found at one node while hashing, the same two ways.
@@ -246,17 +262,15 @@ fn slots_of<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> Vec<Va
 }
 
 /// One node of the equality walk: `None` declines the whole comparison.
+///
+/// The two nodes' classes are `derived_equality`'s to compare, before this
+/// runs: they are identical, or two class objects of one application that
+/// the walk goes on to compare as a pair of their own.
 fn compare_node<'gc>(
     mutator: &Mutator<'gc>,
     first: Value<'gc>,
     second: Value<'gc>,
 ) -> Option<Pair<'gc>> {
-    // The class first, for every shape: §3.1.1's equality is equality of
-    // state *within* a class, so two values of different classes are
-    // unequal whatever their states look like.
-    if !mutator.class_of(&first).same(mutator.class_of(&second)) {
-        return Some(Pair::Decided(false));
-    }
     match (first, second) {
         (Value::Nil, Value::Nil) => Some(Pair::Decided(true)),
         (Value::Boolean(left), Value::Boolean(right)) => Some(Pair::Decided(left == right)),
@@ -265,6 +279,9 @@ fn compare_node<'gc>(
         }
         (Value::Float(left), _) => Some(Pair::Decided(numbers::float_equals(left, Some(&second)))),
         (Value::Object(left), Value::Object(right)) => {
+            if mutator.heap().is_class(left) && mutator.heap().is_class(right) {
+                return Some(Pair::Classes(left, right));
+            }
             if let Some(symbol) = mutator.heap().symbol_value(left) {
                 return Some(Pair::Decided(text::symbol_equals(
                     mutator.heap(),
@@ -283,9 +300,9 @@ fn compare_node<'gc>(
             }
             state_is_a_value(mutator, left).then_some(Pair::State(left, right))
         }
-        // One class, two shapes: nothing builds such a pair today, and
-        // answering "unequal" is the reading that cannot claim an equality
-        // it did not check.
+        // One application, two shapes: nothing builds such a pair today,
+        // and answering "unequal" is the reading that cannot claim an
+        // equality it did not check.
         _ => Some(Pair::Decided(false)),
     }
 }
@@ -305,6 +322,22 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
         Value::SmallInteger(integer) => Some(Node::Leaf(crate::hash::content_hash(integer))),
         Value::Float(float) => Some(Node::Leaf(numbers::float_hash(float))),
         Value::Object(object) => {
+            // A value class object hashes as its name: two equal ones share
+            // an application, hence a mixin, hence a name, so this is a
+            // valid hash, and unlike one that folded in the enclosing
+            // object's it never unfolds a builtin class's enclosing
+            // `Kernel`, whose `vmMirror` slot the walk declines. The name,
+            // not a dispatch id, because a name survives a copy and an
+            // image round trip. A class object that is no value declines,
+            // and `Behavior>>hash` answers its identity hash -- as its `=`
+            // is identity.
+            if mutator.heap().is_class(object) {
+                return class_object_is_a_value(mutator, object).then(|| {
+                    Node::Leaf(text::string_hash(
+                        &mutator.heap().class_display_name(object),
+                    ))
+                });
+            }
             if let Some(symbol) = mutator.heap().symbol_value(object) {
                 return Some(Node::Leaf(text::symbol_hash(symbol)));
             }
@@ -332,17 +365,54 @@ fn derived_equality<'gc>(
     // The root pair is on the stack already.
     let mut charged = 1usize;
     while let Some((first, second)) = work.pop() {
+        // The classes first, for every shape: §3.1.1's equality is equality
+        // of state *within* a class, so two values whose classes are unequal
+        // are unequal whatever their states look like. Two distinct classes
+        // can still be equal -- one nested declaration under two equal
+        // enclosing values -- so they are a pair of their own, pushed after
+        // this node's own pairs and so examined next: a class that settles
+        // the answer does so before a slot can decline it.
+        let first_class = mutator.class_of(&first);
+        let second_class = mutator.class_of(&second);
+        let classes = if first_class.same(second_class) {
+            None
+        } else {
+            // What `Pair::Classes` would decide at once, asked here so that
+            // two values of unrelated classes -- the common unequal pair --
+            // answer without unfolding either.
+            if !classes_can_be_equal(mutator, first_class, second_class) {
+                return Some(false);
+            }
+            if charged >= NODE_BUDGET {
+                return None;
+            }
+            charged += 1;
+            Some((Value::Object(first_class), Value::Object(second_class)))
+        };
         match compare_node(mutator, first, second)? {
             Pair::Decided(true) => {}
             Pair::Decided(false) => return Some(false),
-            Pair::State(first_object, second_object) => {
-                let key = (
-                    mutator.heap().object_identity_key(first_object),
-                    mutator.heap().object_identity_key(second_object),
-                );
-                if !assumed.insert(key) {
-                    continue;
+            // Assumed like a pair of instances, so a cycle through classes
+            // -- a class whose enclosing value's slot holds that very class
+            // -- ends where one through slots does.
+            Pair::Classes(first_class, second_class)
+                if !first_class.same(second_class)
+                    && assumed.insert(identity_pair(mutator, first_class, second_class)) =>
+            {
+                let Some(pairs) = class_state_pairs(mutator, first_class, second_class) else {
+                    return Some(false);
+                };
+                // Charged before they are pushed, like an instance's slots.
+                if pairs.len() > NODE_BUDGET - charged {
+                    return None;
                 }
+                charged += pairs.len();
+                work.extend(pairs);
+            }
+            Pair::Classes(..) => {}
+            Pair::State(first_object, second_object)
+                if assumed.insert(identity_pair(mutator, first_object, second_object)) =>
+            {
                 let first_slots = slots_of(mutator, first_object);
                 let second_slots = slots_of(mutator, second_object);
                 // One class lays out one set of slots, so this holds
@@ -363,9 +433,88 @@ fn derived_equality<'gc>(
                 charged += first_slots.len();
                 work.extend(first_slots.into_iter().zip(second_slots));
             }
+            Pair::State(..) => {}
         }
+        work.extend(classes);
     }
     Some(true)
+}
+
+/// The key `assumed` remembers a pair of objects by, instances and class
+/// objects alike.
+fn identity_pair<'gc>(
+    mutator: &Mutator<'gc>,
+    first: ObjectReference<'gc>,
+    second: ObjectReference<'gc>,
+) -> (usize, usize) {
+    (
+        mutator.heap().object_identity_key(first),
+        mutator.heap().object_identity_key(second),
+    )
+}
+
+/// Whether two distinct class objects can be equal at all: both are values
+/// -- a class object that is no value has its identity, and two distinct
+/// ones are unequal -- and both apply one mixin application. Every pair
+/// `Pair::Classes` answers `true` for passes this, a metaclass pair
+/// included, since one application of a class's mixin has one application
+/// of its class side over `Class` (`Mutator::attach_metaclass`).
+fn classes_can_be_equal<'gc>(
+    mutator: &Mutator<'gc>,
+    first: ClassReference<'gc>,
+    second: ClassReference<'gc>,
+) -> bool {
+    if !class_object_is_a_value(mutator, first) || !class_object_is_a_value(mutator, second) {
+        return false;
+    }
+    match (
+        mutator.heap().class_application(first),
+        mutator.heap().class_application(second),
+    ) {
+        (Some(first_application), Some(second_application)) => {
+            Rc::ptr_eq(&first_application, &second_application)
+        }
+        _ => false,
+    }
+}
+
+/// The pairs two distinct class objects are equal by, or `None` when they
+/// are unequal outright. Two metaclasses are equal when their classes are:
+/// a metaclass's enclosing object is its class's and its superclass is
+/// always `Class`, so its class is all its state. Any other two are equal
+/// when they are values of one application whose enclosing objects are
+/// equal and whose superclass class objects are -- the application alone
+/// is not enough, because it is keyed by the superclass's *application*,
+/// and two classes can share one over distinct superclass class objects
+/// (§6.1).
+fn class_state_pairs<'gc>(
+    mutator: &Mutator<'gc>,
+    first: ClassReference<'gc>,
+    second: ClassReference<'gc>,
+) -> Option<Vec<(Value<'gc>, Value<'gc>)>> {
+    let heap = mutator.heap();
+    if let (Some(first_class), Some(second_class)) =
+        (heap.class_this_class(first), heap.class_this_class(second))
+    {
+        return Some(vec![(
+            Value::Object(first_class),
+            Value::Object(second_class),
+        )]);
+    }
+    if !classes_can_be_equal(mutator, first, second) {
+        return None;
+    }
+    let as_value = |object: Option<ObjectReference<'gc>>| object.map_or(Value::Nil, Value::Object);
+    Some(vec![
+        (
+            as_value(heap.class_enclosing(first)),
+            as_value(heap.class_enclosing(second)),
+        ),
+        (
+            as_value(heap.class_superclass(first)),
+            as_value(heap.class_superclass(second)),
+        ),
+    ])
 }
 
 /// The hash `value`'s state gives it; `None` is the decline. Every node
@@ -588,6 +737,11 @@ mod tests {
     /// out of the decision, since the leaf recognizes `Value`'s method by
     /// identity. `Boxed` is the one class whose instances therefore reach
     /// both paths, depending on what their slot holds.
+    ///
+    /// `Outer`'s `Inner` is a class object per `Outer` instance, and a value
+    /// because its enclosing `Outer` is. `Looped` holds its own `Inner` in a
+    /// slot, so its state reaches itself through a class object's enclosing
+    /// object: a cycle through classes.
     fn a_value_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
             Newspeak3
@@ -599,13 +753,26 @@ mod tests {
                 class Tag = Value new () (
                     public = other = ( ^self class == other class )
                     public hash = ( ^7 )
+                    public class Inner = Value new () ()
                 )
                 class Boxed on: contents = Value new (
                     | public contents = contents. |
                 ) ()
+                class Outer x: xValue = Value new (
+                    | public x = xValue. |
+                ) (
+                    public class Inner = Value new () ()
+                )
+                class Looped x: xValue = Value new (
+                    | public x = xValue. public inner = Inner. |
+                ) (
+                    public class Inner = Value new () ()
+                )
                 public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
                 public tag = ( ^Tag new )
                 public boxed: contents = ( ^Boxed on: contents )
+                public outer: xValue = ( ^Outer x: xValue )
+                public looped: xValue = ( ^Looped x: xValue )
             ) : ()
         "};
         let module = ns_syntax::parse(source).expect("the value fixture parses");
@@ -1041,6 +1208,298 @@ mod tests {
         }
     }
 
+    /// `outer: x`'s nested `Inner`, one class object per `Outer`.
+    fn an_inner_class(interpreter: &mut Interpreter, fixture: &Root, x_value: i64) -> Root {
+        let argument = interpreter.stash(Value::SmallInteger(x_value));
+        let outer = send(interpreter, fixture, "outer:", &[argument]);
+        send(interpreter, &outer, "Inner", &[])
+    }
+
+    /// Two `Inner`s of two equal `Outer`s are two class objects, and one
+    /// value: §3.1.1 makes the two `Outer`s the same value and §6.1 has the
+    /// same receiver answer the same class. `==` answers what `=` does.
+    #[test]
+    fn two_value_class_objects_of_one_declaration_compare_equal() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let first = an_inner_class(&mut interpreter, &fixture, 1);
+        let second = an_inner_class(&mut interpreter, &fixture, 1);
+        assert!(
+            !interpreter.enter(|mutator| {
+                let first = mutator.fetch(&first);
+                let second = mutator.fetch(&second);
+                matches!((first, second), (Value::Object(left), Value::Object(right)) if left.same(right))
+            }),
+            "each Outer has a class object of its own"
+        );
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &first,
+            std::slice::from_ref(&second),
+        );
+        assert_eq!(
+            answered_boolean(&mut interpreter, compared, "two equal Inners"),
+            Some(true)
+        );
+        for selector in ["=", "=="] {
+            let equal = send(
+                &mut interpreter,
+                &first,
+                selector,
+                std::slice::from_ref(&second),
+            );
+            assert!(
+                answered_flag(&mut interpreter, &equal, selector),
+                "Inner {selector} Inner"
+            );
+        }
+    }
+
+    /// The same declaration under two unequal `Outer`s: the class objects'
+    /// enclosing objects differ, so they do.
+    #[test]
+    fn class_objects_of_one_declaration_under_unequal_values_compare_unequal() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let first = an_inner_class(&mut interpreter, &fixture, 1);
+        let second = an_inner_class(&mut interpreter, &fixture, 2);
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &first,
+            std::slice::from_ref(&second),
+        );
+        assert_eq!(
+            answered_boolean(&mut interpreter, compared, "Inners of unequal Outers"),
+            Some(false)
+        );
+        let equal = send(&mut interpreter, &first, "==", &[second]);
+        assert!(!answered_flag(&mut interpreter, &equal, "=="));
+    }
+
+    /// An instance's class is compared as a pair, not by identity, so two
+    /// instances of two equal class objects are one value -- and two of two
+    /// unequal ones are not, although both are stateless.
+    #[test]
+    fn instances_of_equal_class_objects_compare_equal() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let first_class = an_inner_class(&mut interpreter, &fixture, 1);
+        let second_class = an_inner_class(&mut interpreter, &fixture, 1);
+        let other_class = an_inner_class(&mut interpreter, &fixture, 2);
+        let first = send(&mut interpreter, &first_class, "new", &[]);
+        let second = send(&mut interpreter, &second_class, "new", &[]);
+        let other = send(&mut interpreter, &other_class, "new", &[]);
+        for (argument, expected, what) in [
+            (&second, Some(true), "instances of equal classes"),
+            (&other, Some(false), "instances of unequal classes"),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                &first,
+                std::slice::from_ref(argument),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, what),
+                expected,
+                "{what}"
+            );
+        }
+        let first_hash = send(&mut interpreter, &first, "hash", &[]);
+        let first_hash = answered_number(&mut interpreter, &first_hash, "an Inner's hash");
+        let second_hash = send(&mut interpreter, &second, "hash", &[]);
+        let second_hash = answered_number(&mut interpreter, &second_hash, "an Inner's hash");
+        assert_eq!(first_hash, second_hash, "two equal instances hash alike");
+    }
+
+    /// `Fixture` is an ordinary object, so a class nested in it is no value
+    /// and keeps its identity: equal to itself, unequal to the same
+    /// declaration under another `Fixture`. Its hash is `Object`'s identity
+    /// hash, so the hash leaf declines while the equality leaf answers --
+    /// consistent, because that equality is identity.
+    #[test]
+    fn a_class_object_that_is_no_value_compares_by_identity() {
+        let (mut interpreter, fixture) = a_fixture();
+        let fixture_class = send(&mut interpreter, &fixture, "class", &[]);
+        let other_fixture = send(&mut interpreter, &fixture_class, "new", &[]);
+        let marker = send(&mut interpreter, &fixture, "marker", &[]);
+        let marker_class = send(&mut interpreter, &marker, "class", &[]);
+        let other_marker = send(&mut interpreter, &other_fixture, "marker", &[]);
+        let other_marker_class = send(&mut interpreter, &other_marker, "class", &[]);
+        for (argument, expected, what) in [
+            (
+                &marker_class,
+                true,
+                "a class that is no value against itself",
+            ),
+            (
+                &other_marker_class,
+                false,
+                "one declaration under two ordinary objects",
+            ),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                &marker_class,
+                std::slice::from_ref(argument),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, what),
+                Some(expected),
+                "{what}"
+            );
+            for selector in ["=", "=="] {
+                let equal = send(
+                    &mut interpreter,
+                    &marker_class,
+                    selector,
+                    std::slice::from_ref(argument),
+                );
+                assert_eq!(
+                    answered_flag(&mut interpreter, &equal, what),
+                    expected,
+                    "{what}: {selector}"
+                );
+            }
+        }
+        let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &marker_class, &[]);
+        assert_eq!(
+            answered_integer(&mut interpreter, hashed, "a class that is no value"),
+            DECLINED,
+            "a class object that is no value keeps its identity hash"
+        );
+        let first_hash = send(&mut interpreter, &marker_class, "hash", &[]);
+        let first_hash = answered_number(&mut interpreter, &first_hash, "Marker hash");
+        let again = send(&mut interpreter, &marker_class, "hash", &[]);
+        let again = answered_number(&mut interpreter, &again, "Marker hash");
+        assert_eq!(first_hash, again, "an identity hash is stable");
+    }
+
+    /// Two equal class objects hash alike, through the leaf and through
+    /// `Behavior>>hash` alike, and so do their metaclasses.
+    #[test]
+    fn equal_class_objects_hash_alike() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let first = an_inner_class(&mut interpreter, &fixture, 1);
+        let second = an_inner_class(&mut interpreter, &fixture, 1);
+        let first_hash = leaf(&mut interpreter, "valueHash:ifFail:", &first, &[]);
+        let first_hash = answered_integer(&mut interpreter, first_hash, "the first Inner");
+        let second_hash = leaf(&mut interpreter, "valueHash:ifFail:", &second, &[]);
+        let second_hash = answered_integer(&mut interpreter, second_hash, "the second Inner");
+        assert_ne!(
+            first_hash, DECLINED,
+            "a value class object's hash is decided"
+        );
+        assert_eq!(first_hash, second_hash);
+        let first_metaclass = send(&mut interpreter, &first, "class", &[]);
+        let second_metaclass = send(&mut interpreter, &second, "class", &[]);
+        let equal = send(
+            &mut interpreter,
+            &first_metaclass,
+            "=",
+            std::slice::from_ref(&second_metaclass),
+        );
+        assert!(answered_flag(
+            &mut interpreter,
+            &equal,
+            "two equal metaclasses"
+        ));
+        let first_hash = send(&mut interpreter, &first_metaclass, "hash", &[]);
+        let first_hash = answered_number(&mut interpreter, &first_hash, "a metaclass's hash");
+        let second_hash = send(&mut interpreter, &second_metaclass, "hash", &[]);
+        let second_hash = answered_number(&mut interpreter, &second_hash, "a metaclass's hash");
+        assert_eq!(first_hash, second_hash, "two equal metaclasses hash alike");
+    }
+
+    /// `Tag` brings its own `=`, so the walk declines on a pair of `Tag`s
+    /// and the Newspeak side of `Behavior>>=` compares two `Tag`s' `Inner`s
+    /// instead, reading their state through the three leaves it has for
+    /// it. The two agree with what the leaf decides where it can: two
+    /// `Inner`s of two equal `Tag`s are equal, and hash alike, while an
+    /// `Inner` and an `Outer`'s `Inner` share no application.
+    #[test]
+    fn a_class_object_under_a_value_with_its_own_equality_is_compared_in_newspeak() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let first_tag = send(&mut interpreter, &fixture, "tag", &[]);
+        let second_tag = send(&mut interpreter, &fixture, "tag", &[]);
+        let first = send(&mut interpreter, &first_tag, "Inner", &[]);
+        let second = send(&mut interpreter, &second_tag, "Inner", &[]);
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &first,
+            std::slice::from_ref(&second),
+        );
+        assert_eq!(
+            answered_boolean(&mut interpreter, compared, "two Tags' Inners"),
+            None,
+            "a Tag's own `=` takes the leaf out of the decision"
+        );
+        for selector in ["=", "=="] {
+            let equal = send(
+                &mut interpreter,
+                &first,
+                selector,
+                std::slice::from_ref(&second),
+            );
+            assert!(
+                answered_flag(&mut interpreter, &equal, selector),
+                "two Tags' Inners: {selector}"
+            );
+        }
+        let first_hash = send(&mut interpreter, &first, "hash", &[]);
+        let first_hash = answered_number(&mut interpreter, &first_hash, "an Inner's hash");
+        let second_hash = send(&mut interpreter, &second, "hash", &[]);
+        let second_hash = answered_number(&mut interpreter, &second_hash, "an Inner's hash");
+        assert_eq!(first_hash, second_hash, "two equal Inners hash alike");
+        let unrelated = an_inner_class(&mut interpreter, &fixture, 1);
+        let equal = send(&mut interpreter, &first, "=", &[unrelated]);
+        assert!(
+            !answered_flag(&mut interpreter, &equal, "a Tag's Inner and an Outer's"),
+            "two declarations are two classes"
+        );
+    }
+
+    /// `Looped`'s slot holds its own `Inner`, whose enclosing object is the
+    /// `Looped` again: the walk assumes the class pair as it does an
+    /// instance pair, so it terminates rather than unfolding the cycle.
+    #[test]
+    fn a_cycle_through_a_nested_class_terminates() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let two = interpreter.stash(Value::SmallInteger(2));
+        let first = send(
+            &mut interpreter,
+            &fixture,
+            "looped:",
+            std::slice::from_ref(&one),
+        );
+        let second = send(&mut interpreter, &fixture, "looped:", &[one]);
+        let other = send(&mut interpreter, &fixture, "looped:", &[two]);
+        for (argument, expected, what) in [
+            (&second, Some(true), "two equal loops"),
+            (&other, Some(false), "two unequal loops"),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                &first,
+                std::slice::from_ref(argument),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, what),
+                expected,
+                "{what}"
+            );
+        }
+        let first_hash = leaf(&mut interpreter, "valueHash:ifFail:", &first, &[]);
+        let first_hash = answered_integer(&mut interpreter, first_hash, "a loop's hash");
+        let second_hash = leaf(&mut interpreter, "valueHash:ifFail:", &second, &[]);
+        let second_hash = answered_integer(&mut interpreter, second_hash, "a loop's hash");
+        assert_ne!(first_hash, DECLINED);
+        assert_eq!(first_hash, second_hash, "two equal loops hash alike");
+    }
+
     /// The two derivations decline on exactly the same shapes. They ask one
     /// predicate about an instance -- `state_is_a_value`, which is one
     /// function for this reason -- and each shape's own rule decides the
@@ -1078,7 +1537,22 @@ mod tests {
             ),
             ("a String", a_string(&mut interpreter, "abc")),
             ("an Array", an_array(&mut interpreter)),
-            ("a class object", a_class),
+            ("an instance whose slot holds an Array", {
+                let array = an_array(&mut interpreter);
+                send(
+                    &mut interpreter,
+                    &fixture,
+                    "pair:and:",
+                    &[one.clone(), array],
+                )
+            }),
+            // A builtin class: enclosed by the `Kernel`, which is a value,
+            // so a value class object, which both leaves decide. A class
+            // object that is no value is the one shape where they part --
+            // the equality answers identity and the hash declines to the
+            // identity hash -- which
+            // `a_class_object_that_is_no_value_compares_by_identity` pins.
+            ("a value class object", a_class),
             ("an Integer", one),
             ("nil", interpreter.stash(Value::Nil)),
             ("a Boolean", interpreter.stash(Value::Boolean(true))),

@@ -45,7 +45,7 @@ pub(crate) fn execute<'gc>(
             value::execute(mutator, primitive, receiver, selector, arguments).map(wrap_error)
         }
         Primitive::Behavior(primitive) => {
-            behavior::execute(mutator, primitive, receiver).map(wrap_error)
+            behavior::execute(mutator, primitive, receiver, arguments).map(wrap_error)
         }
         Primitive::Integer(primitive) => {
             numbers::execute_integer(mutator, primitive, receiver, arguments).map(wrap_error)

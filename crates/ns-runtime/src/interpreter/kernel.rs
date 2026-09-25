@@ -728,7 +728,30 @@ mod tests {
         (BuiltinClass::Class, "printString"),
         (BuiltinClass::Metaclass, "name"),
         (BuiltinClass::Metaclass, "printString"),
+        // The Newspeak side of a value class object's equality, which runs
+        // when the leaf declines: it sends `=` to an enclosing object and a
+        // superclass, which a leaf may not.
+        (BuiltinClass::Behavior, "behaviorEquals:"),
+        // Forwarders in shape, but of their subject rather than of `self`,
+        // for the reason `Value`'s slot readers above are.
+        (BuiltinClass::Behavior, "enclosingOf:"),
+        (BuiltinClass::Behavior, "superclassOf:"),
+        (BuiltinClass::Metaclass, "thisClassOf:"),
+        // §3.1.1's identity method on a value, a send of `=` as `Value`'s
+        // is: a metaclass's `=` falls back to its classes' `=`.
+        (BuiltinClass::Metaclass, "=="),
     ];
+
+    /// The kernel forwarders whose row is reported under a selector other
+    /// than their own, each with that row's reported selector. `Behavior>>==`
+    /// forwards to `value:sameAs:ifFail:`, reported `=`, so that
+    /// `self class == other class` stays one leaf and no activation; §3.1.1
+    /// asks a value's identity method to answer what its `=` answers, and
+    /// the one leaf is what makes them agree. The reported selector only
+    /// ever names an error text, and that row raises none -- it answers or
+    /// declines.
+    const REPORTED_UNDER_ANOTHER_SELECTOR: &[(BuiltinClass, &str, &str)] =
+        &[(BuiltinClass::Behavior, "==", "=")];
 
     /// The kernel's quick methods: `True`'s and `False`'s, the nil
     /// protocol on `Object` and `UndefinedObject`, and `Integer>>hash`. A
@@ -978,9 +1001,13 @@ mod tests {
                     let Some(crate::mixin::MethodFastPath::Mirror(row)) = method.fast_path else {
                         panic!("{kind:?}>>{selector} is not recognized as a primitive method");
                     };
+                    let reported = REPORTED_UNDER_ANOTHER_SELECTOR
+                        .iter()
+                        .find(|(owner, name, _)| *owner == kind && *name == selector)
+                        .map_or(selector, |(_, _, reported)| *reported);
                     assert_eq!(
                         mirror_entry(row).reported,
-                        selector,
+                        reported,
                         "{kind:?}>>{selector} forwards to a row reported under another selector"
                     );
                 }

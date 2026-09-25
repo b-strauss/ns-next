@@ -83,6 +83,29 @@ class Kernel vmMirror: theMirror = Object <: Value (
        runtime (`ClassData`), as SOMns keeps it in `SClass`; these three
        carry behaviour only. `Object` declares no accessor for any of them. *)
     public class Behavior = Object new () (
+        (* A class object that is a value has no identity: two are equal
+           when they apply one mixin application to equal enclosing objects
+           over equal superclasses (docs/design/object-model.md, "Class
+           sides and metaclasses"). The leaf answers every case it can
+           decide without sending, identity included for a class object
+           that is no value; it declines only where an enclosing object's
+           class brings its own `=`. `==` answers what `=` does, as §3.1.1
+           asks of a value's identity method, and forwards to the same leaf
+           rather than sending `=`, so that `self class == other class`
+           costs no activation. *)
+        public = other = ( ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other] )
+        public == other = ( ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other] )
+        public hash = ( ^vmMirror valueHash: self ifFail: [^super hash] )
+        private behaviorEquals: other = (
+            (vmMirror behavior: self sharesApplicationWith: other ifFail: [^false]) ifFalse: [^false].
+            ((self enclosingOf: self) = (self enclosingOf: other)) ifFalse: [^false].
+            ^(self superclassOf: self) = (self superclassOf: other)
+        )
+        (* Both name their subject, as `Value`'s slot readers do: the other
+           side's state has to be read through the same leaf as this
+           side's. *)
+        private enclosingOf: subject = ( ^vmMirror behaviorEnclosing: subject ifFail: [^nil] )
+        private superclassOf: subject = ( ^vmMirror behaviorSuperclass: subject ifFail: [^nil] )
     )
     public class Class = Behavior new () (
         public name = ( ^vmMirror className: self ifFail: [^nil] )
@@ -91,9 +114,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Metaclass = Behavior new () (
         public name = ( ^thisClass name, ' class' )
         public printString = ( ^name )
+        (* A metaclass's enclosing object is its class's and its superclass
+           is always `Class`, so its class is all its state: two metaclasses
+           are equal exactly when their classes are. *)
+        public = other = ( ^vmMirror value: self sameAs: other ifFail: [^(self thisClassOf: self) = (self thisClassOf: other)] )
+        public == other = ( ^self = other )
         (* Primordial Soup's `Metaclass` keeps its class in a slot of this
            name; here it is `ClassData`'s, read through a leaf. *)
         private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
+        private thisClassOf: subject = ( ^vmMirror metaclassThisClass: subject ifFail: [^nil] )
     )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every

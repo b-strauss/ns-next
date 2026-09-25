@@ -55,6 +55,14 @@ pub enum BehaviorPrimitive {
     Name,
     /// A metaclass's class; declines for anything else.
     ThisClass,
+    /// Whether two class objects apply one mixin application; declines
+    /// when either is no class object. The first of the three leaves the
+    /// Newspeak side of a value class object's `=` reads its state through.
+    SharesApplication,
+    /// A class object's enclosing object, `nil` for a module definition.
+    Enclosing,
+    /// A class object's superclass class object, `nil` for `Top`.
+    Superclass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,6 +510,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "metaclassThisClass:ifFail:",
         "thisClass",
         Primitive::Behavior(BehaviorPrimitive::ThisClass),
+    ),
+    mirror(
+        "behavior:sharesApplicationWith:ifFail:",
+        "sharesApplicationWith:",
+        Primitive::Behavior(BehaviorPrimitive::SharesApplication),
+    ),
+    mirror(
+        "behaviorEnclosing:ifFail:",
+        "enclosingObject",
+        Primitive::Behavior(BehaviorPrimitive::Enclosing),
+    ),
+    mirror(
+        "behaviorSuperclass:ifFail:",
+        "superclass",
+        Primitive::Behavior(BehaviorPrimitive::Superclass),
     ),
 ];
 
