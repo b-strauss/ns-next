@@ -7,3 +7,4 @@
 pub mod analysis;
 pub mod documents;
 pub mod semantic_tokens;
+pub mod token_dump;
