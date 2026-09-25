@@ -327,6 +327,13 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Behavior), 20);
     assert_eq!(builtin_class_tag(BuiltinClass::Class), 21);
     assert_eq!(builtin_class_tag(BuiltinClass::Metaclass), 22);
+    assert_eq!(builtin_class_tag(BuiltinClass::Activation), 23);
+    assert_eq!(builtin_class_tag(BuiltinClass::Exception), 24);
+    assert_eq!(builtin_class_tag(BuiltinClass::Error), 25);
+    assert_eq!(builtin_class_tag(BuiltinClass::MessageNotUnderstood), 26);
+    assert_eq!(builtin_class_tag(BuiltinClass::Message), 27);
+    assert_eq!(builtin_class_tag(BuiltinClass::Halt), 28);
+    assert_eq!(builtin_class_tag(BuiltinClass::KernelNamespace), 29);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);

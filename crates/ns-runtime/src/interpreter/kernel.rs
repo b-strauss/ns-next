@@ -88,6 +88,13 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Behavior => "Behavior",
         BuiltinClass::Class => "Class",
         BuiltinClass::Metaclass => "Metaclass",
+        BuiltinClass::Activation => "Activation",
+        BuiltinClass::Exception => "Exception",
+        BuiltinClass::Error => "Error",
+        BuiltinClass::MessageNotUnderstood => "MessageNotUnderstood",
+        BuiltinClass::Message => "Message",
+        BuiltinClass::Halt => "Halt",
+        BuiltinClass::KernelNamespace => "KernelNamespace",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -446,9 +453,23 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         // Rust builds a builtin's instances with a payload and no fields, so
         // a slot would have nowhere to live -- except on `Platform`, whose one
         // instance the host builds with exactly the slots `Kernel.ns`
-        // declares (`Mutator::platform_value`).
+        // declares (`Mutator::platform_value`), and on the exception classes,
+        // whose instances `decide_instantiation` gives an ordinary field
+        // vector like any other class's (`docs/design/core-library.md`,
+        // "Planned: exceptions"). `Activation` and `KernelNamespace` declare
+        // no slots of their own: an activation's state lives in the running
+        // activation it wraps, and the namespace is stateless.
         assert!(
-            nested.slots.is_empty() || kind == BuiltinClass::Platform,
+            nested.slots.is_empty()
+                || matches!(
+                    kind,
+                    BuiltinClass::Platform
+                        | BuiltinClass::Exception
+                        | BuiltinClass::Error
+                        | BuiltinClass::MessageNotUnderstood
+                        | BuiltinClass::Message
+                        | BuiltinClass::Halt
+                ),
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
         );
         let declaration = nested
@@ -907,6 +928,33 @@ mod tests {
             "List",
             MethodFastPath::BuiltinClass(BuiltinClass::OrderedCollection),
         ),
+        // `platform kernel`'s accessors, the same form
+        // (`docs/design/core-library.md`, "Planned: exceptions").
+        (
+            BuiltinClass::KernelNamespace,
+            "Exception",
+            MethodFastPath::BuiltinClass(BuiltinClass::Exception),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "Error",
+            MethodFastPath::BuiltinClass(BuiltinClass::Error),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "MessageNotUnderstood",
+            MethodFastPath::BuiltinClass(BuiltinClass::MessageNotUnderstood),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "Halt",
+            MethodFastPath::BuiltinClass(BuiltinClass::Halt),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "Message",
+            MethodFastPath::BuiltinClass(BuiltinClass::Message),
+        ),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
@@ -1102,9 +1150,11 @@ mod tests {
     /// §6.3.1 defaults an undeclared member to protected, and a protected
     /// nested class is unreachable from outside the module that declares it,
     /// so every kernel class has to say `public` for a program to name it --
-    /// every one but `Top`, which §3.2 lets only `Object` name.
+    /// every one but `Top`, which §3.2 lets only `Object` name, and
+    /// `Activation`, which no program may reach at all
+    /// (`docs/design/core-library.md`, "Planned: exceptions").
     #[test]
-    fn only_top_is_private() {
+    fn only_top_and_activation_are_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(Value::Object(kernel)) = mutator.kernel else {
@@ -1117,8 +1167,10 @@ mod tests {
                 "the kernel declares one class per builtin but the mirror's"
             );
             let top = super::kernel_class_name(BuiltinClass::Top);
+            let activation = super::kernel_class_name(BuiltinClass::Activation);
             for nested in &application.mixin.nested {
-                let expected = if nested.name.as_str() == top {
+                let name = nested.name.as_str();
+                let expected = if name == top || name == activation {
                     ns_syntax::ast::AccessModifier::Private
                 } else {
                     ns_syntax::ast::AccessModifier::Public

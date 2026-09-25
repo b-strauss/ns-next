@@ -206,6 +206,13 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Behavior => 20,
         BuiltinClass::Class => 21,
         BuiltinClass::Metaclass => 22,
+        BuiltinClass::Activation => 23,
+        BuiltinClass::Exception => 24,
+        BuiltinClass::Error => 25,
+        BuiltinClass::MessageNotUnderstood => 26,
+        BuiltinClass::Message => 27,
+        BuiltinClass::Halt => 28,
+        BuiltinClass::KernelNamespace => 29,
     }
 }
 

@@ -1221,12 +1221,13 @@ impl<'gc> Mutator<'gc> {
     /// The `platform` object (`docs/design/core-library.md`), memoized on
     /// first call so every reference within one interpreter sees the same
     /// one. It is the state `Platform new` would produce -- a fresh
-    /// `Transcript` and `Collections` in the slots `Kernel.ns` declares --
-    /// built here rather than by running the factory, so that asking for the
-    /// platform, at bootstrap or in `image::load`, runs no Newspeak and fills
-    /// no cache. The three are values, so `platform = platform class new`
-    /// holds, and `goldens/kernel/the_platform_and_its_parts_are_values` pins
-    /// that the two agree.
+    /// `Transcript`, `Collections` and `KernelNamespace` in the slots
+    /// `Kernel.ns` declares -- built here rather than by running the
+    /// factory, so that asking for the platform, at bootstrap or in
+    /// `image::load`, runs no Newspeak and fills no cache. The four are
+    /// values, so `platform = platform class new` holds, and
+    /// `goldens/kernel/the_platform_and_its_parts_are_values` pins that the
+    /// two agree.
     pub(crate) fn platform_value(&mut self) -> Value<'gc> {
         if let Some(platform) = self.platform_singleton {
             return platform;
@@ -1235,6 +1236,9 @@ impl<'gc> Mutator<'gc> {
         let transcript = self.new_instance_object(transcript_class, ObjectData::Instance(vec![]));
         let collections_class = self.builtin_class(BuiltinClass::Collections);
         let collections = self.new_instance_object(collections_class, ObjectData::Instance(vec![]));
+        let kernel_namespace_class = self.builtin_class(BuiltinClass::KernelNamespace);
+        let kernel_namespace =
+            self.new_instance_object(kernel_namespace_class, ObjectData::Instance(vec![]));
         let class = self.builtin_class(BuiltinClass::Platform);
         let application = self
             .heap
@@ -1245,6 +1249,7 @@ impl<'gc> Mutator<'gc> {
             fields[application.own_slot_base + position] = match slot.name.as_str() {
                 "transcript" => Value::Object(transcript),
                 "collections" => Value::Object(collections),
+                "kernel" => Value::Object(kernel_namespace),
                 other => panic!(
                     "internal: Kernel.ns's Platform declares a slot {other} the host does not fill"
                 ),

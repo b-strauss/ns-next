@@ -126,6 +126,49 @@ class Kernel vmMirror: theMirror = Object <: Value (
         private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
         private thisClassOf: subject = ( ^vmMirror metaclassThisClass: subject ifFail: [^nil] )
     )
+    (* §8.6: exception handling is a library issue, built here over the
+       activation (docs/design/core-library.md, "Exceptions"). The slots are
+       the exception's own state; `originSelector` and `originReceiver` are
+       set by the VM for an error it raises, so a host still receives the
+       selector and receiver it received before exceptions existed. *)
+    public class Exception = Object new (
+        | private signalActivation ::= nil.
+          private handlerActivation ::= nil.
+          private reachedDefault ::= false.
+          private originSelector ::= nil.
+          private originReceiver ::= nil.
+          public messageText ::= nil. |
+    ) (
+    ) : (
+    )
+    public class Error = Exception new () (
+    )
+    public class MessageNotUnderstood = Error new (
+        | public message ::= nil.
+          public receiver ::= nil. |
+    ) (
+    )
+    public class Halt = Exception new () (
+    )
+    public class Message = Object new (
+        | public selector ::= nil.
+          public arguments ::= nil. |
+    ) (
+    )
+    (* A running activation as an object: the frame it wraps, and nothing a
+       program can reach -- it reads other frames and unwinds stacks, a
+       capability Newspeak hands out only through mirrors. *)
+    private class Activation = Object new () (
+    )
+    (* `platform kernel`: the kernel classes a program may name, as
+       Primordial Soup's `Kernel wrapping:` facet answers them. *)
+    public class KernelNamespace = Value new () (
+        public Exception = ( ^outer Kernel Exception )
+        public Error = ( ^outer Kernel Error )
+        public MessageNotUnderstood = ( ^outer Kernel MessageNotUnderstood )
+        public Halt = ( ^outer Kernel Halt )
+        public Message = ( ^outer Kernel Message )
+    )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
        class whose instances are values hangs below this one.
@@ -307,16 +350,18 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public whileTrue: body = ( ^vmMirror block: self whileTrue: body ifFail: [^super whileTrue: body] )
         public whileFalse: body = ( ^vmMirror block: self whileFalse: body ifFail: [^super whileFalse: body] )
     )
-    (* The platform a module is handed (§8.3), its transcript and its
-       collections namespace: three values (§3.1.1), each a class of its own.
-       The platform holds the other two in immutable slots, and only the
-       transcript's output reaches Rust. None of the three has an accessor on
-       `Object`: a program reaches them through the platform it is given. The
-       host builds the one platform in the state `Platform new` would give it
-       (`Mutator::platform_value`), so that asking for it runs nothing. *)
+    (* The platform a module is handed (§8.3), its transcript, its
+       collections namespace and its kernel namespace: four values (§3.1.1),
+       each a class of its own. The platform holds the other three in
+       immutable slots, and only the transcript's output reaches Rust. None
+       of the four has an accessor on `Object`: a program reaches them
+       through the platform it is given. The host builds the one platform in
+       the state `Platform new` would give it (`Mutator::platform_value`),
+       so that asking for it runs nothing. *)
     public class Platform = Value new (
         | public transcript = Transcript new.
-          public collections = Collections new. |
+          public collections = Collections new.
+          public kernel = KernelNamespace new. |
     ) (
     )
     public class Transcript = Value new () (

@@ -759,6 +759,13 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         20 => BuiltinClass::Behavior,
         21 => BuiltinClass::Class,
         22 => BuiltinClass::Metaclass,
+        23 => BuiltinClass::Activation,
+        24 => BuiltinClass::Exception,
+        25 => BuiltinClass::Error,
+        26 => BuiltinClass::MessageNotUnderstood,
+        27 => BuiltinClass::Message,
+        28 => BuiltinClass::Halt,
+        29 => BuiltinClass::KernelNamespace,
         _ => return None,
     })
 }
@@ -773,16 +780,20 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 
 /// A builtin class referenced in the graph: a class reference recorded as a
 /// value (`CLASS_BUILTIN`), which from Task 4 on can hold `Metaclass` -- `3
-/// class class class` reaches it. Two tags are refused here, because no
+/// class class class` reaches it. Three tags are refused here, because no
 /// source module can produce them and an artifact that carried one would
 /// decode into a program the language does not admit. The VM mirror's class:
 /// there is exactly one mirror, and an artifact that could name its class
 /// could instantiate or reach a second one, and so claim every primitive.
 /// `Top`: §3.2 lets only `Object` have it as a superclass, so a class named
 /// over `Top` would sit outside `Object`'s chain and inherit none of its
-/// methods. `Object` declares an accessor for neither, for the same reasons,
-/// which is what keeps source and artifact agreed on the names a program has.
-/// Only the closing hash table names them, by tag, as it names every builtin.
+/// methods. `Activation`: a running activation as an object reads other
+/// frames and unwinds stacks, a capability Newspeak hands out only through
+/// mirrors, so no artifact may name its class either
+/// (`docs/design/core-library.md`, "Planned: exceptions"). `Object` declares
+/// an accessor for none of the three, for the same reasons, which is what
+/// keeps source and artifact agreed on the names a program has. Only the
+/// closing hash table names them, by tag, as it names every builtin.
 pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     match read_builtin_class(reader)? {
         BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
@@ -792,6 +803,10 @@ pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass
         BuiltinClass::Top => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
             tag: 15,
+        }),
+        BuiltinClass::Activation => Err(DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 23,
         }),
         kind => Ok(kind),
     }

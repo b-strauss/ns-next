@@ -263,6 +263,26 @@ pub enum BuiltinClass {
     Class,
     /// §3.2: every metaclass is an instance of `Metaclass`.
     Metaclass,
+    /// A running activation as an object (`docs/design/core-library.md`,
+    /// "Planned: exceptions"): the frame it wraps, and nothing a program can
+    /// reach -- it reads other frames and unwinds stacks, a capability
+    /// Newspeak hands out only through mirrors. No program can name it:
+    /// `Object` declares no accessor for it, and the image decoder refuses
+    /// its tag wherever the graph names a class, as it refuses `Top`'s.
+    Activation,
+    /// §8.6: exception handling, built here over the activation. The root
+    /// of the exception hierarchy; its slots are the exception's own state.
+    Exception,
+    Error,
+    MessageNotUnderstood,
+    /// A reified message send: the selector and arguments a
+    /// `doesNotUnderstand:` was sent, or a `MessageNotUnderstood`'s own
+    /// `message`.
+    Message,
+    Halt,
+    /// `platform kernel`: the kernel classes a program may name, as
+    /// Primordial Soup's `Kernel wrapping:` facet answers them.
+    KernelNamespace,
 }
 
 impl BuiltinClass {
@@ -274,7 +294,7 @@ impl BuiltinClass {
     /// siblings. So this is *not* a superclass-first order: the kernel phase
     /// sorts the kinds by their depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 22] = [
+    pub const ALL: [BuiltinClass; 29] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -297,6 +317,13 @@ impl BuiltinClass {
         BuiltinClass::Behavior,
         BuiltinClass::Class,
         BuiltinClass::Metaclass,
+        BuiltinClass::Activation,
+        BuiltinClass::Exception,
+        BuiltinClass::Error,
+        BuiltinClass::MessageNotUnderstood,
+        BuiltinClass::Message,
+        BuiltinClass::Halt,
+        BuiltinClass::KernelNamespace,
     ];
 }
 
