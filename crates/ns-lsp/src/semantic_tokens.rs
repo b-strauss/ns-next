@@ -9,7 +9,7 @@ use ns_syntax::{Span, Token, TokenKind};
 
 use crate::documents::{utf16_length, LineIndex};
 
-/// The token types of the legend, in legend order (`legend_types`).
+/// The token types of the legend, in legend order (`legend`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenCategory {
     Parameter,
@@ -230,15 +230,26 @@ impl Classifier<'_> {
 
         self.emit(declaration.name.span, TokenCategory::Class, true, false);
         // A module root's clauses bind nothing; a nested class's receivers
-        // resolve against the chain enclosing it.
+        // resolve against the chain enclosing it. `resolve_superclass_clause`
+        // records a binding at the receiver's span for every prefix, not
+        // only a bare one: `self`/`outer N` record `LexicalSend`, which
+        // `member_use` looks up the same way a bare receiver's does, and
+        // `super` records `SuperSend`, classified as a `Method` directly --
+        // the same way a `super` send's selector is, since the clause reads
+        // the applying class's own binding, never the enclosing chain's.
         if !enclosing.is_empty() {
             for clause in declaration
                 .superclass
                 .iter()
                 .chain(&declaration.mixin_applications)
             {
-                if clause.prefix.is_none() {
-                    self.member_use(clause.receiver.span, &clause.receiver.name, enclosing);
+                match &clause.prefix {
+                    Some(ast::SuperclassPrefix::SuperPrefix) => {
+                        self.emit(clause.receiver.span, TokenCategory::Method, false, false);
+                    }
+                    _ => {
+                        self.member_use(clause.receiver.span, &clause.receiver.name, enclosing);
+                    }
                 }
             }
         }
@@ -646,6 +657,64 @@ mod tests {
     #[test]
     fn a_module_roots_clause_is_not_classified() {
         assert_eq!(classified_at("Object", 0), None);
+    }
+
+    #[test]
+    fn a_nested_class_clause_classifies_every_prefix_form() {
+        // `resolve_superclass_clause` (`crates/ns-runtime/src/resolver/mod.rs`)
+        // records a binding at the receiver's span for every prefix, not only
+        // a bare one: `self`/`outer Shapes` record `Binding::LexicalSend`, the
+        // same as a bare receiver, so `Inner` there is looked up against
+        // `Shapes` and found as the nested class it declares; `super` records
+        // `Binding::SuperSend`, classified as a `Method` -- the same way a
+        // `super` send's selector is -- never looked up against `Shapes` at
+        // all.
+        let text = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Shapes = Object new () (
+              class Inner = Object new () ()
+              class ViaSelf = self Inner new () ()
+              class ViaOuter = outer Shapes Inner new () ()
+              class ViaSuper = super Inner new () ()
+            ) : ()
+        "};
+        let analysis = crate::analysis::analyze(text);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let classified_at = |occurrence: usize| {
+            let start = text
+                .match_indices("Inner")
+                .nth(occurrence)
+                .expect("`Inner` occurrence")
+                .0 as u32;
+            analysis
+                .classified
+                .iter()
+                .find(|classified| classified.span.start == start)
+                .map(|classified| {
+                    (
+                        classified.category,
+                        classified.declaration,
+                        classified.readonly,
+                    )
+                })
+        };
+        assert_eq!(
+            classified_at(0),
+            Some((Class, true, false)),
+            "the declaration"
+        );
+        assert_eq!(classified_at(1), Some((Class, false, false)), "self Inner");
+        assert_eq!(
+            classified_at(2),
+            Some((Class, false, false)),
+            "outer Shapes Inner"
+        );
+        assert_eq!(
+            classified_at(3),
+            Some((Method, false, false)),
+            "super Inner"
+        );
     }
 
     #[test]
