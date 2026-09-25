@@ -371,10 +371,12 @@ impl<'gc> Mutator<'gc> {
                             return Ok(Step::Value(constant.value()));
                         }
                         Some(MethodFastPath::Receiver) => return Ok(Step::Value(receiver)),
-                        // Read with `get` rather than indexed: the lookup
-                        // matched the selector, so the count is right for
-                        // every kernel method, and a missing argument then
-                        // activates the method rather than panicking.
+                        // Read with `get` rather than indexed: a send the
+                        // compiler emitted matches its selector's count,
+                        // but `Message>>sentTo:` delivers whatever
+                        // arguments a program put in the message, so a
+                        // missing one activates the method -- whose arity
+                        // check refuses the count -- rather than panicking.
                         Some(MethodFastPath::Parameter(position)) => {
                             if let Some(argument) = arguments.get(usize::from(position)) {
                                 return Ok(Step::Value(*argument));

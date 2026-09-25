@@ -14,11 +14,13 @@
 //! no marker costs one test.
 
 use crate::bytecode::UnwindMarker;
-use crate::heap::ActivationReference;
+use crate::heap::{ActivationHeader, ActivationReference};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvaluationResult, Mutator, Signal, Step, StepArguments};
+use super::{
+    EvaluationResult, Mutator, Signal, Step, StepArguments, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH,
+};
 
 /// Where an unwind stopped.
 pub(crate) enum UnwindOutcome<'gc> {
@@ -56,20 +58,21 @@ pub(crate) enum UnwindOutcome<'gc> {
 ///
 /// An error a step raised is no unwind at all: once the kernel is
 /// installed it becomes a signalled `Error` (`start_signalling`), and
-/// nothing is popped until a handler, or the default action, decides.
-/// Before that -- while the kernel itself is being instantiated, when there
-/// is no `Error` class yet -- or when not even `signal`'s activation can be
-/// pushed, which is the depth limit, it pops every activation of the run,
-/// `base` included, and leaves the run with the error for the host that
-/// started it (`Interpreter::run_from_host`), running no block.
+/// nothing is popped until a handler, or the default action, decides --
+/// unless not even `signal`'s activation can be pushed, the depth limit's
+/// reserve used up, which ends the run as a termination. Before that --
+/// while the kernel itself is being instantiated, when there is no `Error`
+/// class yet -- it pops every activation of the run, `base` included, and
+/// leaves the run with the error for the host that started it
+/// (`Interpreter::run_from_host`), running no block.
 pub(crate) fn unwind_signal<'gc>(
     mutator: &mut Mutator<'gc>,
     signal: Signal<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
     if let Signal::Error(error) = &signal {
-        if let Some(activation) = start_signalling(mutator, error) {
-            return UnwindOutcome::Signalling(activation);
+        if let Some(outcome) = start_signalling(mutator, error, floor) {
+            return outcome;
         }
     }
     let pending = match signal {
@@ -255,27 +258,59 @@ pub(crate) fn dead_activation_error<'gc>(selector: Symbol) -> NewspeakError<'gc>
 /// `signal`'s activation, pushed above the top of the stack -- the
 /// activation where the error arose -- with the continuation that ends the
 /// run should `signal` ever return (`Continuation::VmErrorSignalled`).
-/// `None` when there is no kernel yet, or when the push is refused: a
-/// stack too deep to push `signal` on is too deep to signal on, and the
-/// run then ends with `error` unsignalled, as it did before there were
-/// exceptions -- which is also what keeps a refusal from being signalled,
-/// refused and signalled again for ever.
+///
+/// An error raised within `DEPTH_RESERVE` activations of the depth limit,
+/// the limit's own error included, takes the reserve first, unless a
+/// `signal` already holds it: `signal`'s activation and everything it runs
+/// may then go that far past the limit, until it is gone
+/// (`Mutator::depth_reserve_held`). Far from the limit nothing is taken, so
+/// an ordinary error, and the handler it runs, meet the limit where any
+/// code does.
+///
+/// A push refused even so -- the reserve is held and used up -- ends the
+/// run with `error`, unsignalled: it is the error being signalled, so the
+/// run ends with it rather than with the depth error the refusal raised.
+///
+/// `None` only when there is no kernel yet: the run then ends with `error`
+/// unsignalled, as it did before there were exceptions.
 fn start_signalling<'gc>(
     mutator: &mut Mutator<'gc>,
     error: &NewspeakError<'gc>,
-) -> Option<ActivationReference> {
+    floor: usize,
+) -> Option<UnwindOutcome<'gc>> {
     mutator.kernel?;
     let step = match mutator.signal_vm_error(error.clone()) {
         Ok(Step::Value(_)) | Err(_) => return None,
         Ok(step) => step,
     };
+    let taking = !mutator.depth_reserve_held()
+        && mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE;
+    if taking {
+        mutator.depth_reserve = Some(mutator.heap.activation_depth());
+        mutator.taking_depth_reserve = true;
+    }
     let sender = mutator.heap.top_activation();
-    let activation = mutator.push_step(step, &[], sender, false).ok()?;
-    mutator.heap.set_activation_continuation(
-        activation,
-        Continuation::VmErrorSignalled(Box::new(error.clone())),
-    );
-    Some(activation)
+    let pushed = mutator.push_step(step, &[], sender, false);
+    mutator.taking_depth_reserve = false;
+    match pushed {
+        Ok(activation) => {
+            mutator.heap.set_activation_continuation(
+                activation,
+                Continuation::VmErrorSignalled(Box::new(error.clone())),
+            );
+            Some(UnwindOutcome::Signalling(activation))
+        }
+        Err(_) => {
+            if taking {
+                mutator.depth_reserve = None;
+            }
+            let pending = PendingUnwind {
+                target: None,
+                action: UnwindAction::Terminate(error.clone()),
+            };
+            Some(unwind(mutator, pending, floor))
+        }
+    }
 }
 
 impl<'gc> Mutator<'gc> {
@@ -301,7 +336,56 @@ impl<'gc> Mutator<'gc> {
             "signalActivation" | "handlerActivation" => Value::Nil,
             other => panic!("internal: Kernel.ns's Error has a slot {other} the VM does not fill"),
         });
-        self.decide_send(Value::Object(exception), Symbol::intern("signal"), &[])
+        self.decide_send(Value::Object(exception), Symbol::SIGNAL, &[])
+    }
+
+    /// What the run ends with when a push overruns the depth limit's
+    /// reserve, for the activation `header` describes. When the refusal
+    /// came from the signalling machinery -- the innermost VM error being
+    /// signalled is still looking for its handler, or running its default
+    /// action -- it is that error: the run ends as it would have had there
+    /// been room to signal it, not as the depth limit. When a handler, or
+    /// anything else that runs once a handler has been found, overran the
+    /// reserve, it is the depth limit's own error.
+    ///
+    /// Walks the stack from its top to that `signal`: once per run, since
+    /// an overrun ends it.
+    pub(crate) fn overrun_of_the_reserve(
+        &self,
+        header: &ActivationHeader<'gc>,
+    ) -> NewspeakError<'gc> {
+        let mut current = self.heap.top_activation();
+        while let Some(activation) = current {
+            if let Some(error) = self.heap.activation_signalled_vm_error(activation) {
+                let exception = self.heap.activation_receiver(activation);
+                if self.is_finding_its_handler(exception) {
+                    return error;
+                }
+                break;
+            }
+            current = self.heap.activation_sender(activation);
+        }
+        super::recursion_too_deep_error(header)
+    }
+
+    /// Whether `exception`'s `signal` is still in the kernel's own hands:
+    /// the search has not found a handler yet -- `signal` sets
+    /// `handlerActivation` to its own activation, and
+    /// `invokeHandlerAt:disabling:` to the handler's -- or has found none
+    /// and is running the default action. Read off the slots `Kernel.ns`'s
+    /// `Exception` declares.
+    fn is_finding_its_handler(&self, exception: Value<'gc>) -> bool {
+        let Value::Object(object) = exception else {
+            return false;
+        };
+        let slot = |name: &str| self.kernel_slot(object, BuiltinClass::Exception, name);
+        if matches!(slot("reachedDefault"), Some(Value::Boolean(true))) {
+            return true;
+        }
+        match (slot("signalActivation"), slot("handlerActivation")) {
+            (Some(Value::Object(signal)), Some(Value::Object(handler))) => signal.same(handler),
+            _ => false,
+        }
     }
 
     /// Pushes what runs `block` -- an `ensure:` or `ifCurtailed:` argument

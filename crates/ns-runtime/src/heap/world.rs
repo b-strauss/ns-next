@@ -43,6 +43,8 @@ impl World {
                 next_dispatch_id: 0,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
                 unhandled_exceptions_to_resume: 0,
+                depth_reserve: None,
+                taking_depth_reserve: false,
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());

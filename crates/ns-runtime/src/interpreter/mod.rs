@@ -101,6 +101,22 @@ pub struct HostError {
 /// as well (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 
+/// How far past L the stack may grow while a VM error raised near L is
+/// being signalled: `signal`, the handler search and the handler itself are
+/// activations too, and without room for them an error raised a few
+/// activations below L -- L's own error included -- could only end the run
+/// as L, uncatchable and under the wrong name. CPython does the same with
+/// its `RecursionError`, allowing a little headroom above the recursion
+/// limit until the depth falls back below it, and HotSpot with its stack's
+/// yellow zone, unprotected for the `StackOverflowError`'s handler and
+/// protected again once the stack has unwound past it. Here the reserve is
+/// taken when a VM error is signalled within this many activations of L,
+/// and given back once that `signal` activation is gone
+/// (`Mutator::depth_reserve_held`); a push past it ends the run
+/// unsignalled, since signalling needs the room that has just run out
+/// (`Mutator::overrun_of_the_reserve`).
+pub const DEPTH_RESERVE: usize = 1_000;
+
 /// What a send decided, before anything runs (`docs/design/execution.md`,
 /// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
 /// `doesNotUnderstand:`, the natives, the nested-class accessor -- and running
@@ -329,6 +345,17 @@ pub struct Mutator<'gc> {
     /// `Interpreter::resume_unhandled_exceptions`, standing in for the
     /// debugger. Zero outside a test that asks.
     pub(crate) unhandled_exceptions_to_resume: usize,
+    /// The stack index of the `signal` activation that holds the depth
+    /// limit's reserve (`DEPTH_RESERVE`), while it holds it. An index and
+    /// not a handle: the reserve is held exactly while the activation at
+    /// that index is a VM error's `signal` (`Heap::signals_vm_error_at`),
+    /// which is what a stale index reused by anything else fails, so it is
+    /// checked rather than trusted, and only once the depth has reached L.
+    pub(crate) depth_reserve: Option<usize>,
+    /// Whether `unwind::start_signalling` is pushing the `signal` that
+    /// takes the reserve: the one moment the reserve is held with nothing
+    /// at its index yet.
+    pub(crate) taking_depth_reserve: bool,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -866,6 +893,10 @@ impl<'gc> Mutator<'gc> {
     /// Pushes an activation, refusing one that would take the counted depth
     /// past `MAX_ACTIVATION_DEPTH`. Every activation in the runtime is pushed
     /// here, so the count and the check cannot be skipped by a new site.
+    ///
+    /// The check is the one compare it always was: the reserve is looked at
+    /// only once the depth has reached L (`push_past_the_limit`), so an
+    /// error far from L, and every push below it, pays nothing for it.
     pub(crate) fn push(
         &mut self,
         header: ActivationHeader<'gc>,
@@ -873,9 +904,46 @@ impl<'gc> Mutator<'gc> {
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
-            return Err(recursion_too_deep(&header));
+            return self.push_past_the_limit(header, arguments, temporaries);
         }
         Ok(self.heap.push_activation(header, arguments, temporaries))
+    }
+
+    /// A counted push at or past L. While a VM error's `signal` holds the
+    /// reserve, the push is allowed up to `DEPTH_RESERVE` further; past it,
+    /// the run ends (`overrun_of_the_reserve`). Otherwise it is refused
+    /// with L's error, which the unwinder signals -- taking the reserve.
+    #[cold]
+    #[inline(never)]
+    fn push_past_the_limit(
+        &mut self,
+        header: ActivationHeader<'gc>,
+        arguments: &[Value<'gc>],
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        if !self.depth_reserve_held() {
+            return Err(recursion_too_deep(&header));
+        }
+        if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
+            return Ok(self.heap.push_activation(header, arguments, temporaries));
+        }
+        Err(Signal::Terminate(self.overrun_of_the_reserve(&header)))
+    }
+
+    /// Whether the depth limit's reserve is held: its `signal` is being
+    /// pushed, or is still on the stack at the index it took. Forgets a
+    /// reserve whose `signal` is gone -- handled, or ended -- which is how
+    /// the reserve is given back without the pop that ended it paying for
+    /// it.
+    pub(crate) fn depth_reserve_held(&mut self) -> bool {
+        let Some(position) = self.depth_reserve else {
+            return false;
+        };
+        if self.taking_depth_reserve || self.heap.signals_vm_error_at(position) {
+            return true;
+        }
+        self.depth_reserve = None;
+        false
     }
 
     /// Pushes the activation `step` describes. `send_arguments` are the
@@ -1352,6 +1420,41 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::Instance(fields))
     }
 
+    /// The slot `name` that the kernel class `kind` declares, read from
+    /// `object` -- an instance of it or of a subclass, whose own slots of
+    /// the same name are other slots. The level is found by its mixin, so
+    /// the read does not depend on the slots a subclass adds. `None` for an
+    /// object that is not such an instance.
+    pub(crate) fn kernel_slot(
+        &self,
+        object: ObjectReference<'gc>,
+        kind: BuiltinClass,
+        name: &str,
+    ) -> Option<Value<'gc>> {
+        let kernel_mixin = self
+            .heap
+            .class_application(self.builtin_class(kind))?
+            .mixin
+            .clone();
+        let mut level = Some(self.class_of(&Value::Object(object)));
+        while let Some(current) = level {
+            if let Some(application) = self.heap.class_application(current) {
+                if Rc::ptr_eq(&application.mixin, &kernel_mixin) {
+                    let position = application
+                        .mixin
+                        .slots
+                        .iter()
+                        .position(|slot| slot.name.as_str() == name)?;
+                    return self
+                        .heap
+                        .instance_field(object, application.own_slot_base + position);
+                }
+            }
+            level = self.heap.class_superclass(current);
+        }
+        None
+    }
+
     /// The VM mirror. Built by `bootstrap_builtin_classes`, before anything
     /// can ask; the kernel phase hands it to `Kernel.ns`.
     pub(crate) fn vm_mirror(&self) -> Value<'gc> {
@@ -1638,22 +1741,26 @@ fn check_block_arity<'gc>(
 }
 
 /// L's error, for the activation `header` describes. The error does not name
-/// its limit, so that changing it changes no recorded answer. It is kept out
-/// of line, so that the check on every push is a compare and a branch and
-/// nothing more.
-#[cold]
-#[inline(never)]
+/// its limit, so that changing it changes no recorded answer. It is reached
+/// only out of line (`Mutator::push_past_the_limit`), so that the check on
+/// every push is a compare and a branch and nothing more.
 fn recursion_too_deep<'gc>(header: &ActivationHeader<'gc>) -> Signal<'gc> {
+    Signal::Error(recursion_too_deep_error(header))
+}
+
+/// The error inside `recursion_too_deep`'s signal: what an overrun of the
+/// reserve ends the run with too.
+pub(crate) fn recursion_too_deep_error<'gc>(header: &ActivationHeader<'gc>) -> NewspeakError<'gc> {
     let selector = match &header.kind {
         FrameKind::Method(method) => method.selector,
         FrameKind::Closure(_) => Symbol::VALUE,
         _ => Symbol::NEW,
     };
-    Signal::Error(NewspeakError {
+    NewspeakError {
         selector,
         receiver: header.receiver,
         message: "stack overflow: recursion too deep".to_string(),
-    })
+    }
 }
 
 /// Every `BuiltinClass` -- including `Object` itself -- gets the same shared

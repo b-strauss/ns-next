@@ -293,8 +293,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
           public receiver ::= nil. |
     ) (
         public isResumable = ( ^true )
-        protected hostSelector = ( ^message selector )
-        protected hostReceiver = ( ^receiver )
+        (* One a program signals itself may carry no message: it then ends
+           the run as any other exception does. *)
+        protected hostSelector = ( ^message isNil ifTrue: [super hostSelector] ifFalse: [message selector] )
+        protected hostReceiver = ( ^message isNil ifTrue: [super hostReceiver] ifFalse: [receiver] )
     ) : (
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )

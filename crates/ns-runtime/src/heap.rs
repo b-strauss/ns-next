@@ -2514,6 +2514,32 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].then = then;
     }
 
+    /// The VM error `activation` is the `signal` of, if the unwinder pushed
+    /// it to signal one (`Continuation::VmErrorSignalled`). Read by the
+    /// depth limit's reserve, on a refused push only.
+    pub(crate) fn activation_signalled_vm_error(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<NewspeakError<'gc>> {
+        self.check_activation(activation);
+        match &self.stack.entries[activation.index as usize].then {
+            Continuation::VmErrorSignalled(error) => Some((**error).clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether the activation at stack index `position` is the `signal` of
+    /// a VM error: how the depth limit's reserve, which records only the
+    /// index its `signal` took, tells that the signal is still running
+    /// rather than holding a handle past its pop. An index popped and
+    /// reused by anything else answers false.
+    pub(crate) fn signals_vm_error_at(&self, position: usize) -> bool {
+        self.stack
+            .entries
+            .get(position)
+            .is_some_and(|entry| matches!(entry.then, Continuation::VmErrorSignalled(_)))
+    }
+
     /// The `program_counter` last stored for `activation` -- at a send, the
     /// send's own index, which is where the run loop resumes it from when its
     /// callee returns.

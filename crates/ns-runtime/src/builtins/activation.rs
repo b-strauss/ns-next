@@ -198,7 +198,7 @@ fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Signal<'g
         Value::Object(object) => mutator.heap.symbol_value(object),
         _ => None,
     }
-    .unwrap_or_else(|| Symbol::intern("signal"));
+    .unwrap_or(Symbol::SIGNAL);
     let description = argument(2);
     let message = match description {
         Value::Object(object) => mutator.heap.str_value(object).or_else(|| {

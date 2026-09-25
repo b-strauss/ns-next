@@ -6,8 +6,6 @@
 //! `Message>>sendTo:` reaches none. It answers the step the send decided,
 //! which the run loop runs as any send's; it runs nothing itself.
 
-use std::rc::Rc;
-
 use crate::builtins::primitive::MessagePrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
@@ -42,37 +40,17 @@ fn message_parts<'gc>(
     let Value::Object(object) = subject else {
         return None;
     };
-    let message_class = mutator.builtin_class(BuiltinClass::Message);
-    let message_mixin = mutator.heap.class_application(message_class)?.mixin.clone();
-    let mut level = Some(mutator.class_of(&subject));
-    while let Some(current) = level {
-        if let Some(application) = mutator.heap.class_application(current) {
-            if Rc::ptr_eq(&application.mixin, &message_mixin) {
-                let field = |name: &str| {
-                    let position = application
-                        .mixin
-                        .slots
-                        .iter()
-                        .position(|slot| slot.name.as_str() == name)?;
-                    mutator
-                        .heap
-                        .instance_field(object, application.own_slot_base + position)
-                };
-                let Value::Object(selector) = field("selector")? else {
-                    return None;
-                };
-                let Value::Object(message_arguments) = field("arguments")? else {
-                    return None;
-                };
-                return Some((
-                    mutator.heap.symbol_value(selector)?,
-                    mutator.heap.array_elements(message_arguments)?,
-                ));
-            }
-        }
-        level = mutator.heap.class_superclass(current);
-    }
-    None
+    let field = |name: &str| mutator.kernel_slot(object, BuiltinClass::Message, name);
+    let Value::Object(selector) = field("selector")? else {
+        return None;
+    };
+    let Value::Object(message_arguments) = field("arguments")? else {
+        return None;
+    };
+    Some((
+        mutator.heap.symbol_value(selector)?,
+        mutator.heap.array_elements(message_arguments)?,
+    ))
 }
 
 /// A step that activates something "with the send's own arguments" means
