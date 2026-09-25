@@ -2537,6 +2537,21 @@ impl<'gc> Heap<'gc> {
         activation.index as usize
     }
 
+    /// The activation `activation` returns to: the entry below it, since a
+    /// callee -- a method, a block a leaf activated, an `ensure:` block the
+    /// unwinder runs -- is always pushed above the activation it answers
+    /// to. `None` for the bottom of the stack.
+    pub fn activation_sender(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<ActivationReference> {
+        self.check_activation(activation);
+        activation
+            .index
+            .checked_sub(1)
+            .map(|index| self.activation_handle(index))
+    }
+
     /// What `activation` was activated for.
     pub fn activation_kind(&self, activation: ActivationReference) -> FrameKind<'gc> {
         self.check_activation(activation);

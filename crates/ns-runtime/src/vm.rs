@@ -709,10 +709,13 @@ fn resume_caller<'gc>(
 /// return").
 fn unwind<'gc>(mutator: &mut Mutator<'gc>, signal: Signal<'gc>, floor: usize) -> Flow {
     match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
-        UnwindOutcome::Arrived {
-            target,
-            action: UnwindAction::Return(value),
-        } => finish(mutator, target, value, floor),
+        UnwindOutcome::Returned { target, value } => finish(mutator, target, value, floor),
+        UnwindOutcome::Restarted { target } => Flow::Switch {
+            activation: target,
+            code: mutator.heap.activation_code(target),
+            program_counter: 0,
+            feedback_base: mutator.heap.activation_feedback_base(target),
+        },
         UnwindOutcome::RunBlock { block, then } => match mutator.start_unwind_block(block, then) {
             Ok(next) => Flow::Switch {
                 activation: next,

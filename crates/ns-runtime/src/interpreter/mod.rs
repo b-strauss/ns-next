@@ -46,6 +46,15 @@ pub(crate) enum Signal<'gc> {
     /// (`docs/design/execution.md`, "Non-local return").
     Return(FrameReference<'gc>, Value<'gc>),
     Error(NewspeakError<'gc>),
+    /// `Exception>>retry`: unwind to this `on:do:` activation's frame,
+    /// running the `ensure:` blocks on the way, and run it again from its
+    /// start (`interpreter::unwind`).
+    Restart(FrameReference<'gc>),
+    /// An unhandled exception's `defaultAction`: unwind to the run's floor,
+    /// running every pending `ensure:` block, and leave the run with this
+    /// error, which the host receives as it received every error before
+    /// there were exceptions.
+    Terminate(NewspeakError<'gc>),
 }
 
 pub(crate) type EvaluationResult<'gc> = Result<Value<'gc>, Signal<'gc>>;
@@ -784,12 +793,19 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn to_host(&self, result: EvaluationResult<'gc>) -> HostResult {
         match result {
             Ok(value) => Ok(self.stash(value)),
-            Err(Signal::Error(error)) => Err(HostSignal::Error(HostError {
-                selector: error.selector,
-                receiver: self.stash(error.receiver),
-                message: error.message,
-            })),
-            Err(Signal::Return(..)) => Err(HostSignal::Return),
+            Err(Signal::Error(error) | Signal::Terminate(error)) => {
+                Err(HostSignal::Error(HostError {
+                    selector: error.selector,
+                    receiver: self.stash(error.receiver),
+                    message: error.message,
+                }))
+            }
+            // A run's unwinder leaves with neither a restart nor a
+            // termination (`unwind::exit_signal`); only a leaf a host's own
+            // send to the mirror decided, before any run, comes here with
+            // one. A restart then aimed, like such a `^`, at no activation
+            // of the host's.
+            Err(Signal::Return(..) | Signal::Restart(_)) => Err(HostSignal::Return),
         }
     }
 

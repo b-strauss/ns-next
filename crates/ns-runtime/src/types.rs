@@ -508,8 +508,16 @@ pub struct PendingUnwind<'gc> {
 /// What an unwind does once it arrives.
 #[derive(Debug, Clone)]
 pub enum UnwindAction<'gc> {
-    /// A non-local return: the target returns this value.
+    /// A non-local return, or `Exception>>return:` and `resume:`: the
+    /// target returns this value.
     Return(Value<'gc>),
+    /// `Exception>>retry`: the target, an `on:do:` activation, runs again
+    /// from its first instruction, its registers kept.
+    Restart,
+    /// An unhandled exception's `defaultAction`: the unwind has no target,
+    /// runs every pending `ensure:` and `ifCurtailed:` block down to the
+    /// run's floor, and the run then leaves with this error.
+    Terminate(NewspeakError<'gc>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its

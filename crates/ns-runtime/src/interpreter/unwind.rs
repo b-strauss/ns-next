@@ -23,11 +23,16 @@ use super::{EvaluationResult, Mutator, Signal, Step, StepArguments};
 /// Where an unwind stopped.
 pub(crate) enum UnwindOutcome<'gc> {
     /// Popped down to the target, which is now the top of the stack; it
-    /// does what `action` says -- returns the value.
-    Arrived {
+    /// returns `value` through the ordinary return path.
+    Returned {
         target: ActivationReference,
-        action: UnwindAction<'gc>,
+        value: Value<'gc>,
     },
+    /// Popped down to the target, an `on:do:` activation `retry` asked to
+    /// run again: its program counter is back at 0 and the loop switches
+    /// to it, its registers as they are -- its first instruction sets
+    /// `handlerActive` again.
+    Restarted { target: ActivationReference },
     /// An `ensure:` or `ifCurtailed:` argument to run first, above the
     /// marked activation, which stays on the stack: the loop starts it with
     /// `Mutator::start_unwind_block`, and the unwind resumes when it returns
@@ -41,26 +46,31 @@ pub(crate) enum UnwindOutcome<'gc> {
 }
 
 /// A signal leaving the running activation. A non-local return is an
-/// unwind to its home (`unwind`). An error pops every activation of the run,
-/// `base` included, and leaves the run with the signal for the host that
-/// started it (`Interpreter::run_from_host`), as it did before there was
-/// anything to run on the way: an `ensure:` block does not run for it until
-/// errors are signalled exceptions, whose termination runs them after the
-/// error is reported.
+/// unwind to its home, a restart an unwind to the `on:do:` activation it
+/// restarts, and a termination an unwind with no target, which runs every
+/// pending block on its way to the floor (`unwind`). An error pops every
+/// activation of the run, `base` included, and leaves the run with the
+/// signal for the host that started it (`Interpreter::run_from_host`),
+/// running no block: an error that is not yet a signalled exception ends
+/// the run as it did before there were any.
 pub(crate) fn unwind_signal<'gc>(
     mutator: &mut Mutator<'gc>,
     signal: Signal<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
-    match signal {
-        Signal::Return(target, value) => unwind(
-            mutator,
-            PendingUnwind {
-                target: Some(target),
-                action: UnwindAction::Return(value),
-            },
-            floor,
-        ),
+    let pending = match signal {
+        Signal::Return(target, value) => PendingUnwind {
+            target: Some(target),
+            action: UnwindAction::Return(value),
+        },
+        Signal::Restart(target) => PendingUnwind {
+            target: Some(target),
+            action: UnwindAction::Restart,
+        },
+        Signal::Terminate(error) => PendingUnwind {
+            target: None,
+            action: UnwindAction::Terminate(error),
+        },
         error @ Signal::Error(_) => {
             while mutator.heap.activation_depth() > floor {
                 let top = mutator
@@ -70,21 +80,23 @@ pub(crate) fn unwind_signal<'gc>(
                 let popped = mutator.heap.pop_activation(top);
                 mutator.abandon(popped.then);
             }
-            UnwindOutcome::Exit(Err(error))
+            return UnwindOutcome::Exit(Err(error));
         }
-    }
+    };
+    unwind(mutator, pending, floor)
 }
 
 /// Carries `pending` on from the top of the stack. A target that is still
 /// running (`Heap::frame_activation`), sits at or above the run's floor and
 /// catches a return (`Mutator::catches_return`: a method, or a superclass
 /// clause or its message) ends the unwind: everything above it is popped,
-/// and it returns the value through the ordinary return path. Any other
-/// target -- a home that has returned meanwhile, or a running initializer,
-/// which catches none (the known gap in `docs/design/execution.md`,
-/// "Non-local return") -- pops every activation of the run, `base`
-/// included, and the run leaves with the signal, still naming it, for the
-/// host.
+/// and it returns the value through the ordinary return path, or runs
+/// again from its start for a restart. Any other target -- a home that has
+/// returned meanwhile, or a running initializer, which catches none (the
+/// known gap in `docs/design/execution.md`, "Non-local return") -- and a
+/// termination, which has none, pop every activation of the run, `base`
+/// included, and the run leaves with what `exit_signal` makes of the
+/// unwind.
 ///
 /// The target is found by its frame, not by an activation handle, because
 /// the blocks this runs push activations while the unwind is in progress:
@@ -106,7 +118,7 @@ pub(crate) fn unwind<'gc>(
         });
     loop {
         if mutator.heap.activation_depth() <= floor {
-            return UnwindOutcome::Exit(Err(signal_of(pending)));
+            return UnwindOutcome::Exit(Err(exit_signal(pending)));
         }
         let top = mutator
             .heap
@@ -114,10 +126,7 @@ pub(crate) fn unwind<'gc>(
             .expect("internal: a stack deeper than the floor has a top");
         if let Some(target) = destination {
             if top.same(target) {
-                return UnwindOutcome::Arrived {
-                    target,
-                    action: pending.action,
-                };
+                return arrive(mutator, target, pending.action);
             }
         }
         if let Some(block) = block_to_run(mutator, top) {
@@ -165,9 +174,27 @@ fn block_to_run<'gc>(
     Some(mutator.heap.activation_local(activation, block_register))
 }
 
+/// What the unwind does at its target, now the top of the stack.
+fn arrive<'gc>(
+    mutator: &mut Mutator<'gc>,
+    target: ActivationReference,
+    action: UnwindAction<'gc>,
+) -> UnwindOutcome<'gc> {
+    match action {
+        UnwindAction::Return(value) => UnwindOutcome::Returned { target, value },
+        UnwindAction::Restart => {
+            mutator.heap.set_activation_program_counter(target, 0);
+            UnwindOutcome::Restarted { target }
+        }
+        UnwindAction::Terminate(_) => {
+            unreachable!("internal: a termination has no target to arrive at")
+        }
+    }
+}
+
 /// The signal `pending` was, raised again: how an unwind carries on once a
-/// block it ran has returned (`Mutator::resume`), and how it leaves the run
-/// when it reaches the floor.
+/// block it ran has returned (`Mutator::resume`), as what it was -- a
+/// return, a restart or a termination.
 pub(crate) fn signal_of(pending: PendingUnwind<'_>) -> Signal<'_> {
     match pending.action {
         UnwindAction::Return(value) => {
@@ -176,6 +203,37 @@ pub(crate) fn signal_of(pending: PendingUnwind<'_>) -> Signal<'_> {
             };
             Signal::Return(target, value)
         }
+        UnwindAction::Restart => {
+            let Some(target) = pending.target else {
+                unreachable!("internal: a restart always names its on:do: activation")
+            };
+            Signal::Restart(target)
+        }
+        UnwindAction::Terminate(error) => Signal::Terminate(error),
+    }
+}
+
+/// What the run leaves with when `pending` reached the floor. A `^` still
+/// names its home, for the host; a termination has run every pending block
+/// and ends in its error, the `HostError` the host received before there
+/// were exceptions; and a restart whose `on:do:` activation is no longer
+/// running -- it had returned by the time the unwind got there -- is §7.2's
+/// `cannotReturn`, as a `return:` to it is (`builtins::activation`).
+fn exit_signal(pending: PendingUnwind<'_>) -> Signal<'_> {
+    match pending.action {
+        UnwindAction::Terminate(error) => Signal::Error(error),
+        UnwindAction::Restart => Signal::Error(dead_activation_error(Symbol::intern("restart"))),
+        UnwindAction::Return(_) => signal_of(pending),
+    }
+}
+
+/// §7.2's `cannotReturn` for an activation that has already returned,
+/// named after the leaf that aimed at it.
+pub(crate) fn dead_activation_error<'gc>(selector: Symbol) -> NewspeakError<'gc> {
+    NewspeakError {
+        selector,
+        receiver: Value::Nil,
+        message: "cannotReturn: the activation has already returned".to_string(),
     }
 }
 
@@ -191,6 +249,11 @@ impl<'gc> Mutator<'gc> {
     /// instantiation of several activations, and only the kernel method's
     /// own return is one place to hang the continuation on for all of them.
     /// Both are counted, alike under both lowerings.
+    ///
+    /// A push the depth limit refuses drops `then`, and the pending unwind
+    /// with it: the run then ends with the depth error the refusal raised,
+    /// which is the intended outcome -- a stack too deep to run the block
+    /// on is too deep to carry the unwind on.
     pub(crate) fn start_unwind_block(
         &mut self,
         block: Value<'gc>,
@@ -341,7 +404,7 @@ mod tests {
                 },
                 floor,
             );
-            let UnwindOutcome::Arrived {
+            let UnwindOutcome::Returned {
                 target: arrived, ..
             } = outcome
             else {
@@ -349,6 +412,52 @@ mod tests {
             };
             assert!(arrived.same(target));
             mutator.heap.pop_activation(target);
+            assert_eq!(mutator.heap.activation_depth(), floor);
+        });
+    }
+
+    /// A restart arrives at its target as a return does, and leaves it at
+    /// its first instruction; a termination, which has no target, pops to
+    /// the floor and leaves as the error it carries.
+    #[test]
+    fn a_restart_rewinds_its_target_and_a_termination_exits_with_its_error() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(BuiltinClass::Object);
+            let floor = mutator.heap.activation_depth();
+            let target = mutator.heap.push_activation(header(class), &[], 1);
+            mutator.heap.set_activation_program_counter(target, 5);
+            let frame = mutator.heap.reify(target);
+            mutator.heap.push_activation(header(class), &[], 1);
+            let outcome = unwind(
+                mutator,
+                PendingUnwind {
+                    target: Some(frame),
+                    action: UnwindAction::Restart,
+                },
+                floor,
+            );
+            let UnwindOutcome::Restarted { target: arrived } = outcome else {
+                panic!("the restart must arrive at its running target");
+            };
+            assert!(arrived.same(target));
+            assert_eq!(mutator.heap.activation_program_counter(target), 0);
+            let outcome = unwind(
+                mutator,
+                PendingUnwind {
+                    target: None,
+                    action: UnwindAction::Terminate(NewspeakError {
+                        selector: crate::Symbol::intern("signal"),
+                        receiver: Value::Nil,
+                        message: "boom".to_string(),
+                    }),
+                },
+                floor,
+            );
+            let UnwindOutcome::Exit(Err(crate::interpreter::Signal::Error(error))) = outcome else {
+                panic!("a termination must exit with its error");
+            };
+            assert_eq!(error.message, "boom");
             assert_eq!(mutator.heap.activation_depth(), floor);
         });
     }

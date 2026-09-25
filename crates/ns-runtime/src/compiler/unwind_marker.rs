@@ -51,7 +51,42 @@ pub(crate) fn recognize(
         "internal: Kernel.ns's Block>>{selector} keeps a local in an indirection vector, \
          where the unwinder cannot read it"
     );
+    // The local's register is read off the layout, not off the code; the
+    // body itself must write it there -- `ensure:`'s `complete:: true`,
+    // `on:do:`'s `handlerActive ::= true` -- or a lowering change has moved
+    // the local and the unwinder or `signal` would read another register.
+    // `ifCurtailed:` writes nothing: its `complete` starts nil, which is
+    // every register's initial value, and only the unwinder sets it.
+    let written = match marker {
+        UnwindMarker::Handler {
+            active_register, ..
+        } => Some(active_register),
+        UnwindMarker::Ensure {
+            complete_register, ..
+        } => Some(complete_register),
+        UnwindMarker::IfCurtailed { .. } => None,
+    };
+    if let Some(register) = written {
+        debug_assert!(
+            code.instructions
+                .iter()
+                .any(|instruction| writes_register(instruction, register)),
+            "internal: Kernel.ns's Block>>{selector} never writes register {register}, \
+             where its marker says the local lives"
+        );
+    }
     Some(marker)
+}
+
+/// Whether `instruction` stores into `register` of its own activation.
+fn writes_register(instruction: &Instruction, register: u16) -> bool {
+    match instruction {
+        Instruction::StoreLocal { slot, .. } => *slot == register,
+        Instruction::LoadLiteral { destination, .. } | Instruction::Move { destination, .. } => {
+            *destination == register
+        }
+        _ => false,
+    }
 }
 
 /// The register of the named temporary `name`, which the kernel method

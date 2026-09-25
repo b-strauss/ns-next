@@ -764,6 +764,43 @@ mod tests {
         (BuiltinClass::Block, "on:do:"),
         (BuiltinClass::Block, "ensure:"),
         (BuiltinClass::Block, "ifCurtailed:"),
+        // A forwarder in shape, but of its argument rather than of `self`,
+        // for the reason `Value`'s slot readers above are: the leaf's
+        // subject is the exception, and the class is its argument.
+        (BuiltinClass::Class, "handles:"),
+        // `Object>>halt` signals a `Halt`: sends, no leaf.
+        (BuiltinClass::Object, "halt"),
+        // The exception protocol (`docs/design/core-library.md`, "Planned:
+        // exceptions") is Newspeak over the activation leaves: each method
+        // sends, keeps state in the exception's slots, or makes several
+        // mirror sends, none of them a forwarder of `self` alone.
+        (BuiltinClass::Exception, "description"),
+        (BuiltinClass::Exception, "printString"),
+        (BuiltinClass::Exception, "reachedDefaultHandler"),
+        (BuiltinClass::Exception, "signal"),
+        (BuiltinClass::Exception, "signal:"),
+        (BuiltinClass::Exception, "pass"),
+        (BuiltinClass::Exception, "return:"),
+        (BuiltinClass::Exception, "return"),
+        (BuiltinClass::Exception, "retry"),
+        (BuiltinClass::Exception, "resume:"),
+        (BuiltinClass::Exception, "resume"),
+        (BuiltinClass::Exception, "defaultAction"),
+        (BuiltinClass::Exception, "hostSelector"),
+        (BuiltinClass::Exception, "hostReceiver"),
+        (BuiltinClass::Exception, "invokeNextHandler"),
+        (BuiltinClass::Exception, "isHandledAt:"),
+        (BuiltinClass::Exception, "invokeHandlerAt:"),
+        (BuiltinClass::Exception, "notInAHandler:"),
+        // The class sides' `signal` and `signal:`, `^self new signal`: an
+        // instantiation and a send. §3.2's metaclasses are flat, so each
+        // kernel exception class declares its own.
+        (BuiltinClass::Error, "signal"),
+        (BuiltinClass::Error, "signal:"),
+        (BuiltinClass::MessageNotUnderstood, "signal"),
+        (BuiltinClass::MessageNotUnderstood, "signal:"),
+        (BuiltinClass::Halt, "signal"),
+        (BuiltinClass::Halt, "signal:"),
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
@@ -934,6 +971,17 @@ mod tests {
             BuiltinClass::Block,
             "valueOnUnwind:",
             MethodFastPath::ValueOfParameter(0),
+        ),
+        // Whether a handler may resume the exception.
+        (
+            BuiltinClass::Exception,
+            "isResumable",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Error,
+            "isResumable",
+            MethodFastPath::Constant(QuickConstant::False),
         ),
         // Not a quick method but the accessor form, `^outer Kernel <Name>`,
         // on a class other than `Object`: the namespace's one member.

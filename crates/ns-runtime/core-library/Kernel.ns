@@ -73,6 +73,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public ifNotNil: block = ( ^block cull: self )
         public ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )
         public ifNotNil: notNilBlock ifNil: nilBlock = ( ^notNilBlock cull: self )
+        (* Signals a `Halt`, whose `defaultAction` is the hook the debugger
+           will replace; handled, it resumes after the send. *)
+        public halt = ( ^outer Kernel Halt new signal )
     )
     (* §3.2: "Each class is an instance of a unique metaclass. All
        metaclasses are instances of class Metaclass, and are direct
@@ -110,6 +113,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Class = Behavior new () (
         public name = ( ^vmMirror className: self ifFail: [^nil] )
         public printString = ( ^name )
+        (* ANSI's `handles:`, by default "an instance of me or of a
+           subclass", compared by mixin so that a nested exception class
+           catches its instances under any enclosing instance. Here rather
+           than on `Exception`'s class side because §3.2's metaclasses are
+           flat: a class side is not inherited, so only `Class` reaches every
+           exception class, and a class side that declares its own
+           `handles:` is searched first and overrides it
+           (docs/design/core-library.md, "Planned: exceptions"). *)
+        public handles: exception = ( ^vmMirror object: exception inheritsMixinOf: self ifFail: [false] )
     )
     public class Metaclass = Behavior new () (
         public name = ( ^thisClass name, ' class' )
@@ -139,16 +151,118 @@ class Kernel vmMirror: theMirror = Object <: Value (
           private originReceiver ::= nil.
           public messageText ::= nil. |
     ) (
+        public description = ( ^messageText isNil ifTrue: [self class name] ifFalse: [messageText] )
+        public printString = ( ^self description )
+        public isResumable = ( ^true )
+        public reachedDefaultHandler = ( ^reachedDefault )
+        (* ANSI's signal: the handler runs on top of the stack, above this
+           activation, and nothing is unwound until it decides. *)
+        public signal = (
+            signalActivation:: vmMirror currentActivation: self ifFail: [nil].
+            handlerActivation:: signalActivation.
+            ^self invokeNextHandler
+        )
+        public signal: text = (
+            messageText:: text.
+            ^self signal
+        )
+        public pass = (
+            handlerActivation isNil ifTrue: [^self notInAHandler: #pass].
+            ^self invokeNextHandler
+        )
+        public return: value = (
+            | target |
+            target:: handlerActivation.
+            (target isNil or: [target == signalActivation]) ifTrue: [^self notInAHandler: #return:].
+            signalActivation:: nil.
+            handlerActivation:: nil.
+            ^vmMirror activation: target returnValue: value ifFail: [nil]
+        )
+        public return = ( ^self return: nil )
+        public retry = (
+            | target |
+            target:: handlerActivation.
+            (target isNil or: [target == signalActivation]) ifTrue: [^self notInAHandler: #retry].
+            signalActivation:: nil.
+            handlerActivation:: nil.
+            ^vmMirror activationRestart: target ifFail: [nil]
+        )
+        public resume: value = (
+            | target |
+            self isResumable ifFalse: [^(outer Kernel Error new) signal: 'cannot resume a non-resumable exception'].
+            target:: signalActivation.
+            target isNil ifTrue: [^self notInAHandler: #resume:].
+            signalActivation:: nil.
+            handlerActivation:: nil.
+            ^vmMirror activation: target returnValue: value ifFail: [nil]
+        )
+        public resume = ( ^self resume: nil )
+        (* No handler: the run ends through the leaf, once the pending
+           `ensure:` blocks have run. The one place the debugger will
+           replace. *)
+        public defaultAction = (
+            | selector receiver |
+            selector:: self hostSelector.
+            receiver:: self hostReceiver.
+            ^vmMirror terminate: self selector: selector receiver: receiver description: self description ifFail: [nil]
+        )
+        protected hostSelector = ( ^originSelector isNil ifTrue: [#signal] ifFalse: [originSelector] )
+        protected hostReceiver = ( ^originReceiver isNil ifTrue: [self] ifFalse: [originReceiver] )
+        private invokeNextHandler = (
+            | activation |
+            activation:: vmMirror activationSender: handlerActivation ifFail: [nil].
+            [activation isNil] whileFalse: [
+                (self isHandledAt: activation) ifTrue: [^self invokeHandlerAt: activation].
+                activation:: vmMirror activationSender: activation ifFail: [nil]].
+            reachedDefault:: true.
+            handlerActivation:: nil.
+            ^self defaultAction
+        )
+        private isHandledAt: activation = (
+            | exceptionClass |
+            (vmMirror activationIsActiveHandler: activation ifFail: [false]) ifFalse: [^false].
+            exceptionClass:: vmMirror activationHandlerClass: activation ifFail: [nil].
+            ^exceptionClass handles: self
+        )
+        (* The handler's own `on:do:` is disabled while it runs, so that an
+           exception it signals searches further out; its value is an
+           implicit `return:`. *)
+        private invokeHandlerAt: activation = (
+            | handler result |
+            handlerActivation:: activation.
+            handler:: vmMirror activationHandlerBlock: activation ifFail: [nil].
+            vmMirror activation: activation handlerActive: false ifFail: [nil].
+            result:: handler cull: self.
+            vmMirror activation: activation handlerActive: true ifFail: [nil].
+            ^self return: result
+        )
+        private notInAHandler: selector = (
+            ^(outer Kernel Error new) signal: selector asString, ' sent to an exception that is not being handled'
+        )
     ) : (
+        (* §3.2's metaclasses are flat, so each kernel exception class
+           declares these on its own class side; `handles:` is `Class`'s. *)
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
     )
     public class Error = Exception new () (
+        public isResumable = ( ^false )
+    ) : (
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
     )
     public class MessageNotUnderstood = Error new (
         | public message ::= nil.
           public receiver ::= nil. |
     ) (
+    ) : (
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
     )
     public class Halt = Exception new () (
+    ) : (
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
     )
     public class Message = Object new (
         | public selector ::= nil.

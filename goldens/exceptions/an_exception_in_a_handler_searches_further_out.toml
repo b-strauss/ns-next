@@ -1,0 +1,4 @@
+stdout = '''
+outer caught second
+outer resumed
+'''

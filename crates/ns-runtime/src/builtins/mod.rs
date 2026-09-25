@@ -2,11 +2,13 @@
 //! per `BuiltinClass` family -- `object_class` for `Object` itself, `value`
 //! for what §3.1.1's value objects derive from their state, `behavior` for
 //! what §3.2's `Class` and `Metaclass` forward to, then `numbers`, `text`,
-//! `collections` and `block`. `primitive` names every one of them as a
+//! `collections` and `block`, and `activation` for the exceptions
+//! `Kernel.ns` builds over the running activations. `primitive` names every one of them as a
 //! `Primitive` and lists them as the rows of the VM mirror, the one builtin
 //! whose method table holds primitive entries (`dispatch::Lookup::Primitive`);
 //! every other builtin's methods are `Kernel.ns`'s, which forward to those
 //! rows. `execute` runs one leaf.
+pub mod activation;
 pub mod behavior;
 pub mod block;
 pub mod collections;
@@ -65,6 +67,9 @@ pub(crate) fn execute<'gc>(
         Primitive::Block(primitive) => block::execute(mutator, primitive, receiver, arguments),
         Primitive::Platform(primitive) => {
             platform::execute(mutator, primitive, receiver, arguments).map(wrap_error)
+        }
+        Primitive::Activation(primitive) => {
+            activation::execute(mutator, primitive, receiver, arguments)
         }
         // Always `Some`: a leaf that declines here runs the failure block
         // the send carries, so a mirror row never answers `None`.

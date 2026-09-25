@@ -23,6 +23,7 @@ pub enum Primitive {
     Collection(CollectionPrimitive),
     Block(BlockPrimitive),
     Platform(PlatformPrimitive),
+    Activation(ActivationPrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
 }
@@ -135,6 +136,25 @@ pub enum BlockPrimitive {
 pub enum PlatformPrimitive {
     Show,
     NewLine,
+}
+
+/// The activation leaves `Kernel.ns`'s `Exception` is built on
+/// (`docs/design/core-library.md`, "Planned: exceptions"): reading the
+/// stack, the `on:do:` activations' marked registers, and the three ways an
+/// exception leaves -- a return from, or a restart of, an activation, and
+/// the termination an unhandled one ends in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationPrimitive {
+    Current,
+    Sender,
+    IsActiveHandler,
+    HandlerClass,
+    HandlerBlock,
+    SetHandlerActive,
+    ReturnValue,
+    Restart,
+    InheritsMixinOf,
+    Terminate,
 }
 
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
@@ -525,6 +545,58 @@ pub const MIRROR: &[MirrorEntry] = &[
         "behaviorSuperclass:ifFail:",
         "superclass",
         Primitive::Behavior(BehaviorPrimitive::Superclass),
+    ),
+    mirror(
+        "currentActivation:ifFail:",
+        "currentActivation",
+        Primitive::Activation(ActivationPrimitive::Current),
+    ),
+    mirror(
+        "activationSender:ifFail:",
+        "sender",
+        Primitive::Activation(ActivationPrimitive::Sender),
+    ),
+    mirror(
+        "activationIsActiveHandler:ifFail:",
+        "isActiveHandler",
+        Primitive::Activation(ActivationPrimitive::IsActiveHandler),
+    ),
+    mirror(
+        "activationHandlerClass:ifFail:",
+        "handlerClass",
+        Primitive::Activation(ActivationPrimitive::HandlerClass),
+    ),
+    mirror(
+        "activationHandlerBlock:ifFail:",
+        "handlerBlock",
+        Primitive::Activation(ActivationPrimitive::HandlerBlock),
+    ),
+    mirror(
+        "activation:handlerActive:ifFail:",
+        "handlerActive:",
+        Primitive::Activation(ActivationPrimitive::SetHandlerActive),
+    ),
+    mirror(
+        "activation:returnValue:ifFail:",
+        "returnValue:",
+        Primitive::Activation(ActivationPrimitive::ReturnValue),
+    ),
+    mirror(
+        "activationRestart:ifFail:",
+        "restart",
+        Primitive::Activation(ActivationPrimitive::Restart),
+    ),
+    mirror(
+        "object:inheritsMixinOf:ifFail:",
+        "inheritsMixinOf:",
+        Primitive::Activation(ActivationPrimitive::InheritsMixinOf),
+    ),
+    mirror(
+        "terminate:selector:receiver:description:ifFail:",
+        // Named with its three arguments, since a row's arity is counted
+        // from its reported selector; it raises no error text of its own.
+        "terminateSelector:receiver:description:",
+        Primitive::Activation(ActivationPrimitive::Terminate),
     ),
 ];
 

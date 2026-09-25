@@ -171,6 +171,8 @@ impl Trace for PendingUnwind<'_> {
         }
         match action {
             UnwindAction::Return(value) => tracer.value(value),
+            UnwindAction::Restart => {}
+            UnwindAction::Terminate(error) => tracer.value(&mut error.receiver),
         }
     }
 }
