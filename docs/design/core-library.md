@@ -939,6 +939,181 @@ for the builtins", because that decision is about what an artifact arriving
 from outside may carry; bytes compiled into the binary are as trustworthy as
 the Rust beside them.
 
+### Planned: exceptions
+
+**Status: designed with the user on 2026-09-25, not built.** It is the next
+piece of work; the platform and collections modules below come after it,
+because `List` reports its errors through it.
+
+**Where the machinery lives.** §8.6: "Because Newspeak provides reflective
+access to the activation, exception handling is purely a library issue. The
+platform provides a standard library that supports throwing, catching and
+resuming exceptions, much as in Smalltalk." The only exceptions the
+specification names are §5.5's — `Object`'s default `doesNotUnderstand:`
+"causes a `MessageNotUnderstood` exception to be thrown" — and §7's
+`cannotReturn`. So exceptions are Newspeak in `Kernel.ns` over a few
+activation leaves, as Primordial Soup builds them
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`, `Exception`
+and `Activation`), not native in the VM as SOMns maps them onto Truffle and
+Java exceptions. That keeps the methods optimizable Newspeak, lets a class
+decide which exceptions it handles (`handles:`, which Rust could not ask
+without calling back into Newspeak), and makes the activation objects the
+foundation the reflection step's `ActivationMirror` and the debugger build
+on. They are kernel material by the rule for `Kernel.ns` above: delivering
+an error is the VM's business.
+
+**The classes**, all under `Object`, none under `Value`:
+
+- `Exception`, with private slots for its signal activation, its handler
+  activation and `messageText`. Instance side: `signal`, `signal:`,
+  `messageText`, `description` (the `messageText`, or else the class name),
+  `printString` (the `description`), `isResumable` (`true`),
+  `defaultAction`, `return:` and `return`, `retry`, `resume:` and `resume`,
+  `pass`. Class side: `signal`, `signal:`, and `handles: anException`, by
+  default "an instance of me or of a subclass", which a class may
+  override.
+- `Error` under `Exception`: `isResumable` is `false`, and `resume:` on one
+  signals an `Error` of its own, as in Squeak.
+- `MessageNotUnderstood` under `Error`: `message`, `receiver`, and
+  `isResumable` `true`, as in Squeak, so the live system can offer to create
+  the missing method and continue (below).
+- `Halt` under `Exception`, resumable, signalled by `Object>>halt`, as in
+  Squeak rather than SOMns's `vmMirror halt: self` breakpoint primitive: a
+  halt and an unhandled error reach the debugger through the same place,
+  `defaultAction` on an intact stack.
+- `Message`: `selector`, `arguments`, and `sentTo: receiver`, which sends the
+  message as an ordinary *public* send (§5.5), as Primordial Soup's
+  `Message>>sendTo:` does — a program can obtain and build messages, so a
+  send through one must not reach a protected or private method.
+- `Activation`: private to the kernel, like `Top` (below).
+
+`Block` gains `on: exceptionClass do: handler`, `ensure: aBlock` and
+`ifCurtailed: aBlock`. The three are marked methods (below); `on:do:`'s body
+is `^self value`, and `ensure:`'s runs its block after `self value` in
+Newspeak on the normal path.
+
+**The semantics are ANSI's, as Squeak and Primordial Soup implement them.**
+`signal` walks the sender chain from its own activation for a marked
+`on:do:` activation whose exception class answers `handles:` true, and runs
+the handler block **on top of the stack**: nothing is unwound until the
+handler decides. While a handler runs, its own `on:do:` is disabled — an
+exception signalled in the handler searches further out — by a local flag
+in `on:do:`'s body, Primordial Soup's `handlerActive`. The handler block's
+value becomes the value of `on:do:`, an implicit `return:`. `return:` unwinds
+to the `on:do:` activation and returns the value from it; `retry` unwinds to
+it and restarts it, evaluating the protected block again; `resume:` makes
+the value the result of `signal`, unwinding what lies between the handler
+and the signal; `pass` searches for the next handler out. With no handler,
+`signal` runs `defaultAction`: for `Exception`, `Error` and `Halt` it ends
+the program through a leaf, printing "Uncaught Newspeak error: " and the
+`description` and exiting with status 1 — every recorded outcome stays as it
+is — after running the pending `ensure:` blocks, as Pharo does when it
+terminates a process. A `^` out of a handler block is a non-local return
+through `signal` and the handler's activation, and goes through the same
+unwinder. An exception signalled in an `ensure:` block while an unwind is
+running behaves as any exception does at that point: if its handler unwinds
+beyond the running unwind's target, that unwind is abandoned, and otherwise
+it continues once the block returns.
+
+**`doesNotUnderstand:` and creating the missing method.** `Object>>doesNotUnderstand: message`
+is Squeak's: it signals a `MessageNotUnderstood`; when the default handler
+resumed it (`reachedDefaultHandler`) it re-sends the message with
+`message sentTo: self`, and otherwise it answers the resumption value. The
+default handler today ends the program; the live system replaces that one
+place with "open the debugger and wait", where creating the method and
+proceeding re-sends the message into it — the user's requirement for a
+live system, and why `MessageNotUnderstood` is resumable although it is an
+`Error`. Its `messageText` is today's "… does not understand #…", so the
+goldens are unchanged, and the mirror row `object:doesNotUnderstand:ifFail:`
+retires.
+
+**The VM side.**
+
+- **Activation objects.** A new object kind, `ObjectData::Activation(FrameReference)`,
+  of the private kernel class `Activation`, which no program can name — no
+  accessor on `Object`, and its builtin class tag is refused wherever an
+  image names a class, as `Top`'s is. An activation reads another frame's
+  temporaries and unwinds stacks, so it is a capability, and Newspeak hands
+  those out only through mirrors, which the reflection step builds on it.
+  The leaves, all on the mirror: `currentActivation`, which reifies the
+  activation that called the kernel method; an activation's `sender`, its
+  `marker`, `argumentAt:`, `localAt:` and `localAt:put:` (the handler flag),
+  `isLive`, `unwindTo:returning:` and `unwindToRestart:` (for `retry`, as
+  Primordial Soup's `restart` resets the program counter), and
+  `terminateWith:` for `defaultAction`. The tracer follows the frame
+  reference, so the stress modes cover it.
+- **Markers.** Whether a method is `on:do:`, `ensure:` or `ifCurtailed:` is
+  a property of its compiled code, recognized when the kernel is compiled,
+  as the quick methods are; only kernel methods can carry one. The unwinder
+  reads it off each activation's code afresh, never from an inline cache.
+- **One unwinder**, in `interpreter/` (taking over `vm::unwind`), for every
+  cause: non-local return, `unwindTo:returning:`, `unwindToRestart:` and
+  termination. It pops from the top towards its target; at an `ensure:`
+  activation whose block has not run — or an `ifCurtailed:` one, which runs
+  only on this path — it marks the block run, starts it as a trampoline
+  step and continues once it returns. That is the run loop scheduling steps,
+  not a leaf calling back. Popped activations' continuations go to
+  `Mutator::abandon` as today. A normal return needs no unwinder and costs
+  nothing; a non-local return pays one flag test per popped activation.
+  A Primordial Soup-style unwind in Newspeak was weighed and rejected: the
+  non-local return would still need a path of its own in the VM (Squeak's
+  `aboutToReturn:through:`), two mechanisms doing one thing, and unwinding
+  would cost several sends per frame on exception-heavy code.
+- **An unwind target is a `FrameReference`, never an `ActivationReference`.**
+  Once code runs while an unwind is in progress, a pushed activation can
+  reuse a target's stack index, and a release build does not check the
+  generation ("Non-local return" in [execution.md](execution.md) names the
+  hazard). A reified frame keeps its identity; whether it is still live is
+  `Heap::frame_activation`, in every build. `Signal::Return` carries the
+  home's `FrameReference`, which `closure_home` already is.
+- **Every VM error becomes a signalled `Error`.** Where a step answers
+  `Signal::Error(NewspeakError)` today, `interpreter/` creates an `Error`
+  whose `messageText` is today's text and whose private slots keep the
+  selector and receiver, and starts `signal` on it as a send step from the
+  activation where it arose. So `on: Error do:` catches an index error from
+  `Array>>at:`, a wrong block arity, an instantiation refusal or a
+  `cannotReturn`, and an uncaught one ends the host's run with the same
+  `HostError` and the same line as today. Finer classes (`ArgumentError`,
+  `CannotReturn`, …) come when something wants to catch one alone. Until the
+  kernel is installed, errors stay host errors, as there is no `Error` class
+  yet.
+- **The depth limit keeps a reserve**, as Python's `RecursionError` and the
+  JVM's yellow zone do: on reaching the limit of 100,000 activations it is
+  raised by 1,000 for as long as the signal is handled, and restored once
+  the stack falls below the limit again; a handler that overruns the reserve
+  too ends the run at once, unsignalled, with the same message. Both
+  lowerings keep counting alike.
+- **Actors**, when they come, need no change here: whoever receives the
+  signal decides in `defaultAction`, and for an asynchronous message that
+  will be breaking the promise (§3.7).
+
+**The image format.** An `Activation` is a record whose body is a frame id
+(`OBJECT_ACTIVATION`, the next free body tag), validated as every frame
+reference is. `Activation`, `Exception`, `Error`, `MessageNotUnderstood`,
+`Message` and `Halt` take the next free builtin class tags. A snapshot in
+the middle of an unwind is no more possible than one in the middle of a
+loop today: the continuation "carry the unwind on to its target" joins the
+list [image-format.md](image-format.md)'s "Planned: suspend and resume" says
+that step must encode; the "has this `ensure:` block run" flag is a local of
+the frame and travels in its record already.
+
+**Deliberately left out**, to come on demand: `ExceptionSet`,
+`Notification` and `Warning`, `outer`, `retryUsing:`, `signalerContext`,
+`Object>>error:` and the finer `Error` subclasses. The known gap of a `^`
+into an initializer that is still running ("internal: non-local return
+escaped the entry send", [execution.md](execution.md)) stays as it is; the
+new unwinder must not make it worse.
+
+**Tail calls.** An `on:do:` activation is never skipped by a later
+tail-call elimination, since its `^self value` is a tail send and `signal`
+would no longer find the handler ([execution.md](execution.md), "Planned:
+tail calls, skipped but kept").
+
+**Measured** by the usual protocol: every `bench` source against `master`,
+expected level, since none uses exceptions; plus `on:do:` and `ensure:` in a
+hot path with nothing signalled, and a signal caught twenty activations
+down.
+
 ### Planned: the platform and collections as core-library modules
 
 **Status: decided with the user on 2026-09-25, not designed in detail and
