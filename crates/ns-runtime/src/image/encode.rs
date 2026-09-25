@@ -328,19 +328,22 @@ pub fn root_levels<'gc>(
 }
 
 /// The builtin a level's `<:` clause named, as the format can name it: a
-/// builtin a program can name at all. `Top` and the VM mirror's class are
-/// refused here because the decoder refuses their tags wherever a program
-/// names a class (`decode::read_program_builtin_class`), so writing one would
-/// produce an image nothing can load; no source can name either.
+/// builtin a program can name at all. `Top`, the VM mirror's class and
+/// `Activation` are refused here because the decoder refuses their tags
+/// wherever a program names a class (`decode::read_program_builtin_class`),
+/// so writing one would produce an image nothing can load; no source can
+/// name any of them.
 fn named_builtin(applied: &crate::mixin::AppliedClause) -> Result<BuiltinClass, String> {
     match applied.named_builtin {
-        Some(BuiltinClass::Top | BuiltinClass::VmMirror) | None => Err(format!(
-            "image encoding cannot serialize a level that `<:` clause {} of class `{}` added: \
+        Some(BuiltinClass::Top | BuiltinClass::VmMirror | BuiltinClass::Activation) | None => {
+            Err(format!(
+                "image encoding cannot serialize a level that `<:` clause {} of class `{}` added: \
              it applies a mixin that is neither part of the module's declaration tree nor a \
              builtin class a program can name",
-            applied.index + 1,
-            applied.declaration.name
-        )),
+                applied.index + 1,
+                applied.declaration.name
+            ))
+        }
         Some(kind) => Ok(kind),
     }
 }
@@ -827,13 +830,15 @@ fn is_class_tag<'gc>(
 }
 
 /// `object` described, when it is a class object an image may not name:
-/// `Top` or the VM mirror's class, which the decoder refuses wherever the
-/// graph names a class (`decode::read_program_builtin_class`), or the
-/// metaclass of either, which it refuses behind a `CLASS_METACLASS`
-/// reference the same way. No source module can name any of the four --
-/// `Object` declares no accessor for `Top` or the mirror's class -- so only
-/// a graph reaching into the kernel can; writing one would produce an
-/// image nothing loads, so the encoder refuses it instead.
+/// `Top`, the VM mirror's class or `Activation`, which the decoder refuses
+/// wherever the graph names a class (`decode::read_referenced_builtin_class`),
+/// or the metaclass of one of them, which it refuses behind a
+/// `CLASS_METACLASS` reference the same way. No source module can name any
+/// of the six -- `Object` declares no accessor for them -- so only a graph
+/// reaching into the kernel can; writing one would produce an image nothing
+/// loads, so the encoder refuses it instead. An activation object's header
+/// is not such a reference: `GraphTable::visit_value` never walks it, and
+/// the decoder accepts `Activation` there and only there.
 fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
     let (class, suffix) = match heap.class_this_class(object) {
         Some(this_class) => (this_class, " class"),
@@ -842,6 +847,7 @@ fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Opti
     match heap.class_builtin(class) {
         Some(BuiltinClass::Top) => Some(format!("Top{suffix}")),
         Some(BuiltinClass::VmMirror) => Some(format!("the VM mirror's class{suffix}")),
+        Some(BuiltinClass::Activation) => Some(format!("Activation{suffix}")),
         _ => None,
     }
 }
@@ -877,7 +883,8 @@ pub struct GraphTable<'gc> {
     frames: Vec<FrameReference<'gc>>,
     frame_ids: HashMap<usize, u32>,
     /// The first class the traversal reached that no program may name --
-    /// `Top`, the VM mirror's class, or the metaclass of either -- which
+    /// `Top`, the VM mirror's class, `Activation`, or the metaclass of one of
+    /// them -- which
     /// `encode_graph_section` refuses (`unnameable_class`).
     unnameable: Option<String>,
 }
@@ -956,8 +963,15 @@ impl<'gc> GraphTable<'gc> {
             // An object's own class is a reference like every other: now
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
-            // `encode_class_tag` with an id that was never assigned.
-            stack.push(Pending::Value(Value::Object(record.class)));
+            // `encode_class_tag` with an id that was never assigned. An
+            // activation object's is not walked: it is always the builtin
+            // `Activation`, which its header names by tag and needs no id
+            // for, and which `unnameable_class` refuses wherever else the
+            // graph reaches it -- the header of its own instances is the one
+            // place an image may name it.
+            if !matches!(record.data, ObjectData::Activation(_)) {
+                stack.push(Pending::Value(Value::Object(record.class)));
+            }
             match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
                     stack.extend(fields.iter().copied().map(Pending::Value));
@@ -986,6 +1000,7 @@ impl<'gc> GraphTable<'gc> {
                         class_references(data).map(|class| Pending::Value(Value::Object(class))),
                     );
                 }
+                ObjectData::Activation(frame) => stack.push(Pending::Frame(*frame)),
                 ObjectData::String(_) | ObjectData::Symbol(_) => {}
             }
         }
@@ -1407,6 +1422,12 @@ fn encode_object<'gc>(
             writer.write_u8(OBJECT_CLASS);
             encode_class_record(writer, data, context)?;
         }
+        // One frame id, never absent: an activation object always reifies
+        // a frame, so the record carries no presence flag.
+        ObjectData::Activation(frame) => {
+            writer.write_u8(OBJECT_ACTIVATION);
+            writer.write_u32(context.table.frame_id(context.heap, *frame));
+        }
     }
     Ok(())
 }
@@ -1535,10 +1556,10 @@ pub fn encode_graph_section<'gc>(
 ///
 /// Every builtin is considered, not only those the graph reaches: a program
 /// can keep `Integer hash` in a slot without keeping `Integer`. The
-/// metaclasses of `Top` and of the VM mirror's class are not: the decoder
-/// refuses both tags behind a metaclass reference, as it does wherever the
-/// graph names a class, and no program can reach either metaclass to give it
-/// a hash.
+/// metaclasses of `Top`, of the VM mirror's class and of `Activation` are
+/// not: the decoder refuses those tags behind a metaclass reference, as it
+/// does wherever the graph names a class, and no program can reach any of
+/// the three metaclasses to give it a hash.
 pub fn encode_tag_named_hashes<'gc>(
     writer: &mut Writer,
     mutator: &Mutator<'gc>,
@@ -1565,7 +1586,12 @@ pub fn encode_tag_named_hashes<'gc>(
     }
     let mut prebuilt: Vec<(ClassReference<'gc>, Vec<u8>)> = BuiltinClass::ALL
         .into_iter()
-        .filter(|kind| !matches!(kind, BuiltinClass::Top | BuiltinClass::VmMirror))
+        .filter(|kind| {
+            !matches!(
+                kind,
+                BuiltinClass::Top | BuiltinClass::VmMirror | BuiltinClass::Activation
+            )
+        })
         .map(|kind| {
             (
                 mutator.builtin_class(kind),

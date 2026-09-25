@@ -1459,6 +1459,21 @@ impl<'gc> Heap<'gc> {
         })
     }
 
+    /// The frame activation object `object` reifies, or `None` when `object`
+    /// is not an activation object. `None` rather than a panic, so that a
+    /// kernel leaf handed some other object by a program answers a failure
+    /// instead of aborting.
+    pub fn activation_object_frame(
+        &self,
+        object: ObjectReference<'gc>,
+    ) -> Option<FrameReference<'gc>> {
+        self.check_object_origin(object);
+        match &self.objects[object.index as usize].data {
+            ObjectData::Activation(frame) => Some(*frame),
+            _ => None,
+        }
+    }
+
     /// The whole of `object`'s record -- `class`, `identity_hash` and `data`
     /// -- in the one borrow all three live behind.
     /// `image::encode::encode_object` writes a whole object record and
@@ -1513,6 +1528,7 @@ impl<'gc> Heap<'gc> {
                     ObjectData::Symbol(symbol) => format!("the Symbol #{symbol}"),
                     ObjectData::Array(items) => format!("an Array of {}", items.len()),
                     ObjectData::Closure(_) => "a Block".to_string(),
+                    ObjectData::Activation(_) => "an Activation".to_string(),
                     ObjectData::Class(_) => {
                         format!("the class {}", self.class_display_name(*object))
                     }
@@ -3889,6 +3905,46 @@ mod tests {
 
         let marker = heap.mark_from_roots_for_test();
 
+        assert!(marker.frames.is_set(frame.index));
+        heap.pop_activation(activation);
+    }
+
+    /// An activation object answers the frame it reifies and describes itself
+    /// as an Activation; any other object answers no frame rather than
+    /// panicking, which is what a kernel leaf handed the wrong object relies
+    /// on.
+    #[test]
+    fn an_activation_object_answers_its_frame() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let frame = heap.allocate_frame(top_level_frame());
+        let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
+        let other = heap.allocate_object(class, ObjectData::String("other".to_string()));
+
+        let answered = heap
+            .activation_object_frame(activation_object)
+            .expect("an activation object answers its frame");
+        assert_eq!(answered.index, frame.index);
+        assert!(heap.activation_object_frame(other).is_none());
+        assert_eq!(
+            heap.describe(&Value::Object(activation_object)),
+            "an Activation"
+        );
+    }
+
+    /// The collector traces an activation object's frame: a frame that only
+    /// an activation object reaches stays alive.
+    #[test]
+    fn marking_reaches_a_frame_through_an_activation_object() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let frame = heap.allocate_frame(top_level_frame());
+        let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
+        let activation = heap.push_activation(header(), &[Value::Object(activation_object)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(activation_object.index));
         assert!(marker.frames.is_set(frame.index));
         heap.pop_activation(activation);
     }

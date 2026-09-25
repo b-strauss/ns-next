@@ -1218,6 +1218,15 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
 
+    /// An instance of the kernel-private `Activation` class over `frame`,
+    /// which the caller has already reified (`Heap::reify`): an object keeps
+    /// a `FrameReference`, never an `ActivationReference`, since only a
+    /// reified frame survives its activation's pop.
+    pub fn new_activation_object(&mut self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Activation);
+        self.new_instance_object(class, ObjectData::Activation(frame))
+    }
+
     /// The `platform` object (`docs/design/core-library.md`), memoized on
     /// first call so every reference within one interpreter sees the same
     /// one. It is the state `Platform new` would produce -- a fresh

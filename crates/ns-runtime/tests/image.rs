@@ -7067,6 +7067,79 @@ fn a_frames_sender_survives_a_round_trip() {
     });
 }
 
+/// An activation object is a record of its own: its header names the
+/// kernel-private `Activation` class, the one place an image may name it,
+/// and its body the frame it reifies. A load answers an activation object
+/// over the loaded counterpart of that frame -- whose receiver is the loaded
+/// holder, not a copy of it.
+#[test]
+fn an_activation_object_round_trips() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder = Object new (
+          | held |
+        ) (
+          public makeClosure = ( ^[ 1 ] )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    // The block's captured frame is `makeClosure`'s activation, reified
+    // because the block captured it, and its receiver is `instance`.
+    let closure = expect_ok(
+        interpreter.send(&instance, Symbol::intern("makeClosure"), &[]),
+        "makeClosure",
+    );
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let closure = mutator.fetch(&closure);
+        let frame = mutator
+            .heap()
+            .closure_captured_frame(*object(&closure))
+            .expect("makeClosure answers a closure");
+        let activation = mutator.new_activation_object(frame);
+        assert!(
+            mutator
+                .heap_mut()
+                .set_instance_field(*object(&instance), 0, Value::Object(activation)),
+            "the holder has a slot"
+        );
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let holder = *object(&mutator.fetch(&loaded.roots[0]));
+        let activation_class = mutator.builtin_class(BuiltinClass::Activation);
+        let heap = mutator.heap();
+        let held = heap
+            .instance_field(holder, 0)
+            .expect("the loaded holder has its slot");
+        let held = *object(&held);
+        assert!(heap.class_of_object(held).same(activation_class));
+        let frame = heap
+            .activation_object_frame(held)
+            .expect("the slot holds an activation object");
+        let receiver = heap.frame_receiver(frame);
+        assert!(
+            object(&receiver).same(holder),
+            "the loaded activation reifies the loaded frame, whose receiver is the loaded holder"
+        );
+    });
+}
+
 /// A decoded frame never ran in the loading world, so it is never married and
 /// no `^` can return into it -- whatever its record's `uncontinuable` flag
 /// says. `raise_return` decides a home's liveness by `Heap::frame_activation`,
@@ -8309,10 +8382,13 @@ fn a_root_level_metaclass_round_trips_by_tag() {
     });
 }
 
-/// No program may name `Top`, the VM mirror's class or the metaclass of
-/// either, and the loader refuses an image that does, so the encoder refuses
-/// to write one rather than produce an image nothing loads. No source module
-/// reaches any of the four; a graph built from Rust does.
+/// No program may name `Top`, the VM mirror's class, `Activation` or the
+/// metaclass of one of them, and the loader refuses an image that does, so
+/// the encoder refuses to write one rather than produce an image nothing
+/// loads. No source module reaches any of the six; a graph built from Rust
+/// does. An activation *object* is no such reach: its header names
+/// `Activation` by tag, which the loader accepts there alone
+/// (`an_activation_object_round_trips`).
 #[test]
 fn a_graph_reaching_an_unnameable_class_is_refused() {
     let source = indoc! {"
@@ -8331,11 +8407,17 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
         let mirror_metaclass = mutator
             .metaclass_of(mirror_class)
             .expect("the mirror's class has a metaclass");
+        let activation = mutator.builtin_class(BuiltinClass::Activation);
+        let activation_metaclass = mutator
+            .metaclass_of(activation)
+            .expect("Activation has a metaclass");
         for (unnameable, described) in [
             (top, "Top"),
             (mirror_class, "the VM mirror's class"),
             (top_metaclass, "Top class"),
             (mirror_metaclass, "the VM mirror's class class"),
+            (activation, "Activation"),
+            (activation_metaclass, "Activation class"),
         ] {
             let refused = image::snapshot(
                 mutator,
@@ -9152,14 +9234,19 @@ fn a_builtin_levels_clause_is_checked_like_any_levels() {
     );
 }
 
-/// The VM mirror's class and `Top` are refused wherever a program names a
-/// class, and a level's builtin mixin is such a place: a level applying the
-/// mirror's mixin would hand its instances every primitive.
+/// The VM mirror's class, `Top` and `Activation` are refused wherever a
+/// program names a class, and a level's builtin mixin is such a place: a
+/// level applying the mirror's mixin would hand its instances every
+/// primitive.
 #[test]
 fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let applied = row_named(&fixture, "Applied");
-    for kind in [BuiltinClass::VmMirror, BuiltinClass::Top] {
+    for kind in [
+        BuiltinClass::VmMirror,
+        BuiltinClass::Top,
+        BuiltinClass::Activation,
+    ] {
         let tag = encode::builtin_class_tag(kind);
         assert_eq!(
             fixture.decode_error(&builtin_mixin_record(tag, (applied, 0))),
@@ -9194,6 +9281,130 @@ fn an_objects_class_naming_the_mirrors_class_or_top_is_refused() {
             }
         );
     }
+}
+
+/// One activation record, its header written by `header`, its body tag
+/// `body` and frame id `frame`; `frames` minimal top-level frames follow it,
+/// and no roots.
+fn activation_record(
+    header: impl FnOnce(&mut encode::Writer),
+    body: u8,
+    frame: u32,
+    frames: u32,
+) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1, frames);
+    header(&mut writer);
+    writer.write_u32(5); // identity hash
+    writer.write_u8(body);
+    writer.write_u32(frame);
+    for _ in 0..frames {
+        writer.write_u8(VALUE_NIL); // receiver: nil
+        writer.write_u32(0); // no arguments
+        writer.write_u32(0); // no temporaries
+        writer.write_u32(0); // program_counter
+        writer.write_boolean(false); // no sender
+        writer.write_boolean(false); // no home
+        writer.write_boolean(false); // no current class
+        writer.write_u8(FRAME_TOP_LEVEL);
+        writer.write_boolean(true); // uncontinuable
+    }
+    writer.write_u32(0); // no roots
+    writer.into_bytes()
+}
+
+/// The one header an activation record may carry: the builtin `Activation`.
+fn activation_header(writer: &mut encode::Writer) {
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Activation));
+}
+
+/// A well-formed activation record decodes into an activation object over
+/// the frame it names. The refusals below are this record with one thing
+/// changed.
+#[test]
+fn an_activation_record_decodes_over_its_frame() {
+    let bytes = activation_record(activation_header, OBJECT_ACTIVATION, 0, 1);
+    GraphFixture::new().decoded(&bytes, "an activation record", |heap, graph| {
+        let frame = heap
+            .activation_object_frame(graph.objects[0])
+            .expect("an activation object");
+        assert!(frame.same(graph.frames[0]));
+    });
+}
+
+/// An activation record's frame id is range-checked like every other: an id
+/// past the frame table is a decode error, not a panic.
+#[test]
+fn an_activation_record_naming_no_frame_is_refused() {
+    let bytes = activation_record(activation_header, OBJECT_ACTIVATION, 99, 0);
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::BadFrameId(99)
+    );
+}
+
+/// An activation record under any class but `Activation` would be an
+/// activation answering that class's methods; no live world has one.
+#[test]
+fn an_activation_record_under_another_class_is_refused() {
+    let bytes = activation_record(
+        |writer| {
+            writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+            writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        },
+        OBJECT_ACTIVATION,
+        0,
+        1,
+    );
+    let error = GraphFixture::new().decode_error(&bytes);
+    assert_eq!(error, decode::DecodeError::ActivationHeader);
+    assert_eq!(
+        error.to_string(),
+        "an object in the image is an Activation without an activation's record, \
+         or an activation's record under another class"
+    );
+}
+
+/// The `Activation` header is accepted on an activation record only: on any
+/// other record it would make an ordinary object answer `Activation`'s
+/// methods, which read other frames and unwind the stack.
+#[test]
+fn an_activation_header_on_another_record_is_refused() {
+    let bytes = class_records(1, |writer| {
+        activation_header(writer);
+        writer.write_u32(5); // identity hash
+        writer.write_u8(OBJECT_ARRAY); // object body: Array
+        writer.write_u32(0); // no elements
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::ActivationHeader
+    );
+}
+
+/// Everywhere but an activation record's header, `Activation` is refused
+/// like `Top`: as a value, and behind a metaclass reference.
+#[test]
+fn activation_named_anywhere_else_is_refused() {
+    let tag = encode::builtin_class_tag(BuiltinClass::Activation);
+    let refused = decode::DecodeError::InvalidTag {
+        what: "builtin class a program may name",
+        tag,
+    };
+    let as_value = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(tag);
+    });
+    assert_eq!(GraphFixture::new().decode_error(&as_value), refused);
+    let as_metaclass = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(tag);
+    });
+    assert_eq!(GraphFixture::new().decode_error(&as_metaclass), refused);
 }
 
 /// Tag 5 was the class record before its mixin became a tagged reference;

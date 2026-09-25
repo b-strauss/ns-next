@@ -66,6 +66,7 @@ impl Trace for ObjectData<'_> {
             ObjectData::String(_) | ObjectData::Symbol(_) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
+            ObjectData::Activation(frame) => tracer.frame(frame),
         }
     }
 }

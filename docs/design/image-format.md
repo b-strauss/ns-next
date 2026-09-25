@@ -459,13 +459,15 @@ what "verbatim" promises for every other object.
 
 ## How frames actually get into an image
 
-Only through a closure. A running activation lives on the activation stack and
-is not in the object graph at all; a frame exists for it only once a block
-captured it ([execution.md](execution.md), "Activations"). So a frame enters the
+Only through a closure or an activation object. A running activation lives on
+the activation stack and is not in the object graph at all; a frame exists for
+it only once a block captured it or an activation object reified it
+([execution.md](execution.md), "Activations"). So a frame enters the
 table only as a closure's `captured_frame` — a closure a value names, or the
-one a closure frame already in the table runs — or as the `home` of a frame
-already in it. (A closure has no `home` field of its own to bring one in:
-`Heap::closure_home` derives it from the captured frame.) A snapshot is taken
+one a closure frame already in the table runs — as the frame an activation
+object reifies, or as the `home` of a frame already in it. (A closure has no
+`home` field of its own to bring one in: `Heap::closure_home` derives it from
+the captured frame.) A snapshot is taken
 at a **quiesced** point —
 after instantiation, optionally after an entry send, with the Rust call stack
 already unwound and the activation stack empty; `image::snapshot` refuses to
@@ -699,9 +701,9 @@ root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder re
 an image whose graph reaches the mirror object is not written at all, since
 it would hand the capability to whatever loaded it
 (`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
-and neither is one whose graph reaches the mirror's class, `Top` or the
-metaclass of either (`encode::unnameable_class`), which the decoder would
-refuse.
+and neither is one whose graph reaches the mirror's class, `Top`,
+`Activation` or the metaclass of one of them (`encode::unnameable_class`),
+which the decoder would refuse.
 Neither can happen to a program built from source, which cannot obtain the
 mirror; both are there for the day something could.
 
@@ -735,6 +737,23 @@ instantiate a class object like any class below `Behavior`. An object record tha
 instantiation as a class object — an instance of `Class`, `Metaclass` or a
 metaclass — is `InstanceOfAClassClass`, and a class record whose row is some
 row's class side is `ClassRecordAppliesAClassSide`: no source makes either.
+
+**An activation object is a record of its own; its class is named nowhere
+else.** `ObjectData::Activation`, an instance of the kernel-private
+`Activation` class (builtin tag **23**), is written as object body tag 9,
+`OBJECT_ACTIVATION`, whose body is one frame id, resolved and range-checked
+like a closure's captured frame (`BadFrameId`). Its header is `CLASS_BUILTIN`
+followed by tag 23, and that header is the one place an image may name
+`Activation`: `decode_object_header` accepts it there, holds header and body
+to each other both ways — an activation record under any other class, or the
+`Activation` header on any other record, is `ActivationHeader` — and
+`read_referenced_builtin_class` refuses tag 23 everywhere else, as a value, a
+superclass, a `<:` clause's builtin and behind `CLASS_METACLASS`, exactly as
+it refuses `Top`'s 15. An activation reads other frames and unwinds stacks, a
+capability Newspeak hands out only through mirrors, so no program may name its
+class; the encoder never walks an activation object's header as a reference
+(`GraphTable::visit_value`), so writing activations never trips the refusal of
+a graph that reaches the class itself.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns

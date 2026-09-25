@@ -60,6 +60,11 @@ pub enum ObjectData<'gc> {
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
     /// "The dispatch id").
     Class(Box<ClassData<'gc>>),
+    /// An instance of the kernel-private `Activation` class: a reified
+    /// activation, reachable only from `Kernel.ns`, which the exception
+    /// machinery walks and unwinds to. It stores the `FrameReference`, never
+    /// an `ActivationReference`, since only a reified frame outlives its pop.
+    Activation(FrameReference<'gc>),
 }
 
 /// §3.1.1's enclosing-object condition on a value class -- every enclosing

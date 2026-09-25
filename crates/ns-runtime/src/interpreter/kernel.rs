@@ -1113,7 +1113,9 @@ mod tests {
     /// The accessor set on `Object` is exactly §3.2's nameable builtins,
     /// each recognized as a fast path answering its own class; `Top`, the
     /// mirror's class and `Platform` have none, which is one of the locks
-    /// that keep the mirror a capability.
+    /// that keep the mirror a capability. Neither have the exception
+    /// classes and `KernelNamespace`, which a program reaches through
+    /// `platform kernel`, nor `Activation`, which it does not reach at all.
     #[test]
     fn objects_class_accessors_are_exactly_the_nameable_builtins() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1135,7 +1137,20 @@ mod tests {
                     "{kind:?}"
                 );
             }
-            for absent in ["Top", "Platform", "Transcript", "Collections", "VmMirror"] {
+            for absent in [
+                "Top",
+                "Platform",
+                "Transcript",
+                "Collections",
+                "VmMirror",
+                "Exception",
+                "Error",
+                "MessageNotUnderstood",
+                "Halt",
+                "Message",
+                "Activation",
+                "KernelNamespace",
+            ] {
                 assert!(
                     application
                         .mixin
