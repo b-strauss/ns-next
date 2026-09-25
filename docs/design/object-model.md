@@ -813,9 +813,8 @@ rather than objects hand-built in Rust — both references declare them exactly 
 `prior-art/newspeak/KernelForJS.ns`) — and which sits immediately before the
 reflection work that cannot be done without them: a mirror's test for a
 metaclass is `Metaclass = classOf: reflectee`, which needs the instance-of
-relation reified. Pulling it earlier would cost a metaclass per class object,
-built eagerly where it is lazy today, and a change to the decoder's placeholder
-scheme (below); nothing built so far depends on it. See
+relation reified. Nothing built so far depends on it. The design is settled
+(below, "Planned: `Behavior`, `Class` and `Metaclass`"); see also
 [liveness-and-reflection.md](liveness-and-reflection.md).
 
 One consequence is load-bearing elsewhere: `Object::class` is not an
@@ -823,8 +822,189 @@ One consequence is load-bearing elsewhere: `Object::class` is not an
 builtin `Object` class, which exists from the first moment of the bootstrap.
 The image decoder relies on that: it allocates every record as a placeholder
 pointing at the builtin `Object` before it reads the record that says what
-the class really is. Building §3.2's hierarchy would make
-a class object's class a real, distinct object and would invalidate it.
+the class really is. The planned hierarchy keeps that: the builtin `Object`
+stays the placeholder's class, and decoding a class record overwrites it with
+the record's metaclass, as it already overwrites every other placeholder
+field.
+
+### Planned: `Behavior`, `Class` and `Metaclass`
+
+**Status: designed with the user on 2026-09-25, not built.** Step 6's third
+plan builds it; when it lands, this subsection becomes the description of
+what exists and the deviation paragraph above goes.
+
+**Where a class object's state lives.** In `ClassData`, as today. The three
+kernel classes carry behaviour only, as SOMns's do (`Class = Object ()`,
+`Metaclass = Class ()()` in `prior-art/somns/core-lib/Kernel.ns`, the state in
+the Java `SClass`) and as `KernelForJS.ns`'s do. Primordial Soup instead makes
+a class object an ordinary instance whose first six slots the VM knows by
+position (`Behavior` in `KernelForPrimordialSoup.ns`); taking that shape would
+move lookup, the caches, the collector and the image format onto slot indices
+and read every lookup step out of a `Value` slot, for no conformance gain:
+§3.2 fixes the relations — instance-of, subclass-of, flatness — and says
+nothing about how a class object is stored.
+
+**The hierarchy** is Primordial Soup's:
+
+```
+Object
+  Behavior      what a class and a metaclass share
+    Class       the superclass of every metaclass
+    Metaclass   the class of every metaclass
+```
+
+The specification names neither `Behavior` nor `Metaclass`'s superclass.
+`Behavior` is there so that what only a real class has — being instantiable
+by its declaration, a name of its own — sits on `Class` and a metaclass does
+not inherit it: §3.2's "Metaclasses may not be subclassed", and a metaclass
+that could be instantiated would give a class a second metaclass, which
+§3.2's "unique" rules out. SOMns's `Metaclass = Class` would make every
+metaclass carry `Class`'s protocol and override it away again. None of the
+three inherits `Value`: whether a class object is a value is decided per
+object (below), and under the strict enforcement of §3.1.1 a subclass of
+`Value` refuses every instance that is not one.
+
+**The relations.** A class `Foo`'s metaclass is the application of `Foo`'s
+metaclass mixin — its class side together with its primary factory, §6.3 —
+**to `Class`**: §6's "the application of the metaclass mixin defined by the
+class' class side to the class `Class`", taken literally. Today's metaclass
+has no superclass application and a miss falls through to `Object`'s
+behaviour; that asymmetry goes. The metaclass becomes an ordinary
+application whose superclass application is `Class`'s, so the ordinary lookup
+walks class side, `Class`, `Behavior`, `Object`, and a class-side `super`
+send lands in `Class`. It is still flat: its superclass is always `Class`,
+never the metaclass of `Foo`'s superclass. `Foo`'s header `class` is its
+metaclass, and every metaclass's header `class` is `Metaclass`. `Metaclass`
+is a kernel class with a metaclass of its own, whose class is `Metaclass`
+again, which closes the loop without a regress. A class that declares no
+class side keeps the synthesized, memoized mixin that holds only the factory
+entry.
+
+**Eager, not lazy.** `new_class_object` builds the metaclass together with
+the class object, so the header is right from the start. The alternative —
+a header that points somewhere provisional until something asks for the
+metaclass — would make every direct reader of an object's class a source of
+silent wrong answers for class objects. SOMns builds the two together, as
+Squeak's Newspeak does. `ClassData.metaclass`, the lazy cache, goes: the
+metaclass is the header `class`. `ClassData` gains `this_class`, a
+metaclass's link back to its class, which `Metaclass>>name` needs, as
+Primordial Soup's `Metaclass` carries `thisClass`. The cost is one more class
+object per class object — for a nested class, once per enclosing instance,
+on the first access — measured by the usual protocol
+([execution.md](execution.md), "What removing the re-entries moved").
+
+**The bootstrap** creates class objects — `Top`, `Object`, `Behavior`, the
+`Kernel` module's own — before `Class` and `Metaclass` exist. They get the
+builtin `Object` as a provisional header `class` and are repaired once
+`Class` and `Metaclass` are built, as Primordial Soup's and Squeak's
+bootstraps do. After the bootstrap the invariant holds without exception —
+every class object's class is a metaclass, every metaclass's class is
+`Metaclass` — and a test pins it.
+
+**Dispatch becomes uniform.** A class object's dispatch id is its class's
+instances id, the metaclass's, the same rule as for every other object; the
+class side's "plus one" special case in the stamping goes, as
+[dispatch.md](dispatch.md) announces ("Step 6 makes the stamping uniform").
+The inline caches still guard on the header id and change in nothing.
+
+**The protocol is minimal, as Primordial Soup's is.** Reflection is a
+mirror's job, which the reflection step after this one builds; a class does
+not answer `superclass`, `selectors` or its methods at the base level, so
+holding a class grants no reflective capability. `Class>>name` answers the
+mixin's name through a new VM-mirror leaf and `Class>>printString` answers
+`name`; `Metaclass>>name` answers `thisClass name, ' class'`, reading
+`this_class` through a leaf, and `Metaclass>>printString` answers `name`.
+`Object` gets **no accessor** for `Behavior`, `Class` or `Metaclass`: none of
+the three references declares one, §3.2's accessors are for the classes of
+the built-in literals and the array factories, and the mirror code that will
+need the names lives in the kernel or the platform, where it names them
+directly. `interpreter/kernel.rs`'s accessor-set test stays as it is.
+
+**Instantiation is refused.** The three are reachable anyway —
+`3 class class` is a metaclass and its `class` is `Metaclass` — so refusing
+to instantiate them is needed whatever is nameable. `Mutator::apply_mixin`
+records per application whether the chain inherits `Behavior`
+(`inherits_behavior`, beside `inherits_value`), and
+`instantiate::decide_factory` refuses every such class with an ordinary
+Newspeak error under its factory selector, its text in
+`interpreter/instantiate.rs`: class objects are made only by evaluating a
+declaration. That covers `3 class class class new` and any subclass of
+`Class` a program manages to declare.
+
+**A class object is a value exactly when its enclosing object is**, as SOMns
+decides it (`SClass.isValue`). A module definition has no enclosing object
+and is always one, which is what §6.4 requires ("Module definitions are value
+objects"). A nested class of a value is one too: its only state is its
+enclosing object (§6.1) and, where its superclass clause depends on the
+enclosing instance, its superclass, so §3.1.1's condition on enclosing
+objects is what decides it. A metaclass is a value exactly when its class is.
+Two consequences:
+
+- **Step 4 of the value conditions** ("A value object's four conditions",
+  above) accepts a class object that is a value in a slot of a value's
+  instance, and still refuses one that is not.
+- **A value class object has no identity.** Its `=` and `hash` are derived
+  from its state: two class objects are equal when they share their mixin
+  application, their enclosing objects are `=` and their superclass class
+  objects are `=`. The application alone is not enough, because it is keyed
+  by the superclass's *application*, so two classes can share one while their
+  superclass class objects differ (§6.1: "the superclass of a nested class
+  might be distinct in different instances, as it might be a parameter to a
+  module"). This is an inference, not a sentence of the specification: §2.3's
+  `Outer new Inner = Outer new Inner` is false for an ordinary `Outer`,
+  because the class's only state is its enclosing object (§6.1) and two
+  ordinary instances are not equal; §3.1.1 makes two equal values the same
+  value ("no other object is equal to it"), and §6.1 has the same receiver
+  answer the same class. So the equality of a nested class follows the
+  equality of its enclosing object: false for two `Outer new` of an ordinary
+  `Outer`, true for two of a value `Outer` whose slots are equal, false again
+  for `(Outer x: 1) Inner = (Outer x: 2) Inner`. Without it two values equal
+  by §3.1.1 could be told apart through their nested class. SOMns compares
+  values by identity (`EqualsPrim.doValues`), and so would answer false; it
+  does not derive a value's equality from its state at all, which ns-next
+  does, so it is no guide here.
+
+  `Behavior` declares `=`, `==` (answering `self = other`, as §3.1.1 asks of
+  a value's identity method) and `hash`. `=` starts with a leaf that answers
+  at once when the two are identical, when either is no value or when their
+  applications differ, and declines only for two value class objects of one
+  application with distinct enclosing or superclass objects, which Newspeak
+  then compares with `=` — a leaf may not send, exactly as for `Value>>=`.
+  The common `self class == other class` stays one leaf and no activation.
+  `hash` of a value class object is derived from its application and the
+  hashes of its enclosing and superclass objects; every other class object
+  keeps its identity hash.
+
+**The image format.** A metaclass is never a record of its own; it is
+derived, never stored twice, as the factory entry is. A reference to a
+metaclass anywhere in the graph — which today can only be a class-side
+activation's `current_class`, and afterwards can be any slot holding
+`Foo class` — is written as "the metaclass of" a class reference, a record id
+or a builtin class tag. The decoder allocates a class record's metaclass
+placeholder beside the class's own, which keeps a metaclass's identity across
+a round trip and ends the case `image::decode` documents today, a decoded
+metaclass built a second time beside the one the class mints. That changes
+the amplification bound ([memory.md](memory.md)), which is recomputed and
+stays proportional to the input through `bounded_count`.
+`rebuild_applications`'s flat special case becomes the ordinary application
+over `Class`. Verification additionally checks that every class object's
+class is a metaclass whose `this_class` is that class object. The new wire
+forms — the metaclass reference and builtin class tags for `Behavior`,
+`Class` and `Metaclass` — take the next free numbers, and nothing is
+renumbered. `read_program_builtin_class` refuses the three new tags wherever
+a program *names* a class, as it refuses `Top`'s, since no source module can
+name them; as values in the graph they are accepted, since
+`3 class class class` reaches them.
+
+**What changes in the goldens.**
+`goldens/class-side/class_side_super_reaches_object.ns` becomes
+`class_side_super_reaches_class.ns`: a class-side `super printString` now
+answers `Class`'s, the class's name. New goldens pin `Foo class printString`
+answering `Foo class`, the loop `Foo class class == Foo class class class class`,
+the equality and hash of value class objects over two equal enclosing values,
+a value slot accepting a value class object and refusing one that is not,
+and the refusal of `Metaclass new`. Every other golden whose output changes
+is justified one by one before it is updated.
 
 ## Source retention and provenance
 
