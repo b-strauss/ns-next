@@ -34,6 +34,6 @@ pub use interpreter::{
     HostSignal, Interpreter, MethodSide, Mutator,
 };
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
-pub use resolver::resolve;
+pub use resolver::{resolve, resolve_for_editor};
 pub use symbol::Symbol;
 pub use types::*;

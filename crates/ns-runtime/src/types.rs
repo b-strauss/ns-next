@@ -376,6 +376,17 @@ pub struct ResolvedModule {
     pub kernel: bool,
 }
 
+/// What the editor's language server needs from a resolution: every binding
+/// the walk recorded *and* every error it found, together. `resolve` answers
+/// one or the other, which is right for compiling -- a module with an error
+/// must not run -- but an editor must keep colouring the rest of a file while
+/// one name in it is wrong. Never compiled from: only `ResolvedModule` is.
+pub struct EditorResolution {
+    pub module: ast::Module,
+    pub bindings: HashMap<Span, Binding>,
+    pub errors: Vec<ResolveError>,
+}
+
 #[derive(Debug, Clone)]
 pub enum SourceOrigin {
     File(PathBuf),

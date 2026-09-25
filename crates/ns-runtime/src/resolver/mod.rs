@@ -11,7 +11,7 @@ use std::rc::Rc;
 use ns_syntax::ast::{self, Expression, Statement};
 use ns_syntax::Span;
 
-use crate::types::{Binding, ResolveError, ResolvedModule, SourceOrigin};
+use crate::types::{Binding, EditorResolution, ResolveError, ResolvedModule, SourceOrigin};
 use crate::Symbol;
 
 use scope::{LocalScope, ScopeStack};
@@ -45,23 +45,44 @@ fn resolve_with(
     origin: SourceOrigin,
     kernel: bool,
 ) -> Result<ResolvedModule, Vec<ResolveError>> {
+    let (bindings, errors) = walk(&module, kernel);
+    if errors.is_empty() {
+        Ok(ResolvedModule {
+            module: Rc::new(module),
+            source,
+            origin,
+            bindings: Rc::new(bindings),
+            kernel,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+/// `resolve`'s walk for the editor's language server, answering what it
+/// found whether or not it found errors. Always the user path (`kernel` is
+/// false): no `Binding::MirrorSend` is ever recorded here, so this entry
+/// cannot be used to reach the VM mirror (`docs/design/core-library.md`,
+/// "The VM mirror is the whole Rust boundary"), and `Kernel.ns` opened in an
+/// editor shows its `vmMirror` sends as the ordinary sends they are to it.
+pub fn resolve_for_editor(module: ast::Module) -> EditorResolution {
+    let (bindings, errors) = walk(&module, false);
+    EditorResolution {
+        module,
+        bindings,
+        errors,
+    }
+}
+
+/// The walk every entry shares.
+fn walk(module: &ast::Module, kernel: bool) -> (HashMap<Span, Binding>, Vec<ResolveError>) {
     let mut resolver = Resolver {
         bindings: HashMap::new(),
         errors: Vec::new(),
         kernel,
     };
     resolver.resolve_class(&module.root_class, &[]);
-    if resolver.errors.is_empty() {
-        Ok(ResolvedModule {
-            module: Rc::new(module),
-            source,
-            origin,
-            bindings: Rc::new(resolver.bindings),
-            kernel,
-        })
-    } else {
-        Err(resolver.errors)
-    }
+    (resolver.bindings, resolver.errors)
 }
 
 struct Resolver {
@@ -502,5 +523,56 @@ fn member_name_of_message(message: &ast::MessageSend) -> Symbol {
         ast::Selector::Unary(name) | ast::Selector::Binary(name) | ast::Selector::Keyword(name) => {
             Symbol::intern(name)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::Binding;
+
+    #[test]
+    fn the_editor_entry_answers_bindings_and_errors_together() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Module = Object new (
+            ) (
+              public broken = ( ^outer Missing foo )
+              public echo: argument = ( ^argument )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolution = crate::resolve_for_editor(module);
+        assert_eq!(resolution.errors.len(), 1, "one `outer Missing`");
+        assert!(
+            resolution.errors[0].message.contains("outer Missing"),
+            "{}",
+            resolution.errors[0].message
+        );
+        let start = source.rfind("argument )").expect("the use of `argument`") as u32;
+        let use_of_argument = ns_syntax::Span::new(start, start + "argument".len() as u32);
+        assert_eq!(
+            resolution.bindings.get(&use_of_argument),
+            Some(&Binding::Local(0)),
+            "the error in `broken` must not cost `echo:` its bindings"
+        );
+    }
+
+    #[test]
+    fn the_editor_entry_resolves_the_kernel_without_the_mirror_mark() {
+        let source = include_str!("../../core-library/Kernel.ns");
+        let module = ns_syntax::parse(source).expect("Kernel.ns parses");
+        let resolution = crate::resolve_for_editor(module);
+        assert!(
+            resolution.errors.is_empty(),
+            "Kernel.ns resolves through the user path too"
+        );
+        assert!(
+            !resolution
+                .bindings
+                .values()
+                .any(|binding| *binding == Binding::MirrorSend),
+            "only resolve_kernel may record MirrorSend"
+        );
     }
 }
