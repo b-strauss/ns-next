@@ -19,6 +19,7 @@ fn main() -> ExitCode {
 
 fn execute(arguments: &[String]) -> ExitCode {
     match arguments.split_first() {
+        None => serve(),
         Some((command, files)) if command == "dump-tokens" => dump_tokens(files),
         _ => {
             eprintln!("usage: ns-next-lsp                        (speak LSP on stdin and stdout)");
@@ -26,6 +27,24 @@ fn execute(arguments: &[String]) -> ExitCode {
                 "       ns-next-lsp dump-tokens <file>...  (print each file's tokens as JSON)"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn serve() -> ExitCode {
+    let (connection, io_threads) = lsp_server::Connection::stdio();
+    let outcome = ns_lsp::server::run(connection);
+    // Joining the I/O threads flushes the last response before exiting.
+    let joined = io_threads.join();
+    match (outcome, joined) {
+        (Ok(()), Ok(())) => ExitCode::SUCCESS,
+        (Err(error), _) => {
+            eprintln!("ns-next-lsp: {error}");
+            ExitCode::FAILURE
+        }
+        (_, Err(error)) => {
+            eprintln!("ns-next-lsp: {error}");
+            ExitCode::FAILURE
         }
     }
 }
