@@ -34,7 +34,12 @@ still a forwarder to that leaf, and no plan yet names the step that removes
 it. The reflection work, which needed the reified instance-of relation this
 plan built, can now start as well
 ([liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
-and MirrorBuilder").
+and MirrorBuilder"). An open performance item remains from this plan's
+measurement: [execution.md](design/execution.md), "What the profile shows
+beyond it" (after "What `Behavior`, `Class` and `Metaclass` cost") finds
+about a quarter of `bench_send.ns`'s samples sitting on 16-byte loads of
+`Value`s written piecewise, in `decide_slot_accessor`, `vm::make_value` and
+`push_activation`.
 
 Everything the user put ahead of the third plan is done, each described
 below under its own heading: the predefined classes are accessors on
@@ -4158,12 +4163,14 @@ layout it is within 0.4% (16.00 → 16.07). The throwaway `bench_metaclass.ns`,
 100,000 × `Outer new Inner make`, is **14.5% slower** (38.68 → 44.29 ms),
 about 56 ns an iteration for the eager metaclass of each nested class object.
 Before `1c1f624` the fixtures were not level: `bench_send.ns` 6.0% slower,
-`bench_loop.ns` and `bench_megamorphic.ns` 3.4%, the step of the two send
-sources all on `baf6f65`. **Its cause** was code generation: with
-`chain_start`'s class-side arm gone, LLVM's SROA split the `SendKey`'s copy
-of the receiver into five pieces and stored them back one by one wherever a
-whole `Value` was needed, so the next 16-byte load of it -- building
-`Step::Method` on a hit, the key a megamorphic send hands `miss` -- failed
+`bench_loop.ns` and `bench_megamorphic.ns` 3.4% of the pooled medians before
+rounding, and `bench_metaclass.ns` 17.3% slower (against the 14.5% above),
+the step of the two send sources all on `baf6f65`. **Its cause** was code
+generation: with `chain_start`'s class-side arm gone, LLVM's SROA split the
+`SendKey`'s copy of the receiver into five pieces and stored them back one
+by one wherever a whole `Value` was needed, so the next 16-byte load of
+it -- building `Step::Method` on a hit, the key a megamorphic send hands
+`miss` -- failed
 store-to-load forwarding (a sampling profile put 3,000 of 75,000 samples of
 `bench_send.ns` on that one load). `1c1f624` holds the key's receiver by
 reference to the send's own local, which keeps it one object in memory.

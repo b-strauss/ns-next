@@ -3658,11 +3658,15 @@ of the base.
 **The step `baf6f65` put on a hit, and its cause.** Measured at the branch's
 last feature commit, `f6e2b64`, the fixtures were not level: `bench_send.ns`
 6.0% slower (8.58 → 9.10 ms), `bench_loop.ns` and `bench_megamorphic.ns`
-3.4% (7.31 → 7.57, 11.73 → 12.12), by the same protocol. A pinned build of
-every commit put the whole step of the two send sources on `baf6f65`, "a
-class object's class is its metaclass". Nothing on the path of a cache hit
-changed there -- the size of `Target`, `CacheEntry`, `Resolved` and `Step`
-did not move (only `ClassData` and `DispatchIds` shrank), `--cache-statistics`
+3.4% of the pooled medians before they are rounded to two places for display
+here (7.31 → 7.57, 11.73 → 12.12 -- recomputing from the rounded pair alone
+gives 3.6% and 3.3%), by the same protocol; `bench_metaclass.ns` was 17.3%
+slower at `f6e2b64` (38.76 → 45.45 ms), against the 14.5% it measures at
+`1c1f624` above. A pinned build of every commit put the whole step of the
+two send sources on `baf6f65`, "a class object's class is its metaclass".
+Nothing on the path of a cache hit changed there -- the size of `Target`,
+`CacheEntry`, `Resolved` and `Step` did not move (only `ClassData` and
+`DispatchIds` shrank), `--cache-statistics`
 and `--collector-statistics` report the same fills and no collection for
 both commits, and `vm::run` calls the same set of functions out of line --
 so the step was code generation. A sampling profile (`samply` at 8 kHz,
@@ -3671,9 +3675,9 @@ put the extra time in `vm::run` (+3,800 of about 74,000 samples), and 2,500
 to 3,000 of it on one instruction: the 16-byte load of a send's receiver
 that builds `Step::Method` for `tick:`, just after that receiver had been
 stored into the same slot as five pieces -- a byte for the tag, a byte for a
-Boolean, the two bytes of padding, a handle's word and the payload word. A
-load that spans several narrower stores cannot be forwarded from the store
-buffer and waits for them to retire.
+Boolean, the two bytes of padding, a handle's doubleword and the payload
+word. A load that spans several narrower stores cannot be forwarded from the
+store buffer and waits for them to retire.
 
 The pieces came from the `SendKey` a cached send carries. It held the
 receiver as a `Value`, and once LLVM's SROA split the key's copy into the
