@@ -489,6 +489,13 @@ pub enum Continuation<'gc> {
     /// carry the unwind on (`interpreter::unwind`). Abandoned with its
     /// activation when a newer unwind or an error pops it first.
     Unwind(Box<PendingUnwind<'gc>>),
+    /// The `signal` the run loop sent to the `Error` a VM error became
+    /// (`Mutator::signal_vm_error`) returned: an `Error` is not resumable,
+    /// so returning here means nothing ended the signal as it should have,
+    /// and the run ends with the error as it would have before there were
+    /// exceptions. Boxed so that every other continuation stays as small as
+    /// it was.
+    VmErrorSignalled(Box<NewspeakError<'gc>>),
 }
 
 /// An unwind in progress (`interpreter::unwind`): where it is going and what

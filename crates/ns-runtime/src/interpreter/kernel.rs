@@ -770,6 +770,13 @@ mod tests {
         (BuiltinClass::Class, "handles:"),
         // `Object>>halt` signals a `Halt`: sends, no leaf.
         (BuiltinClass::Object, "halt"),
+        // `Object>>doesNotUnderstand:` signals a `MessageNotUnderstood` and
+        // may send the message again: sends, no leaf.
+        (BuiltinClass::Object, "doesNotUnderstand:"),
+        // What a `MessageNotUnderstood` hands a host: its message's
+        // selector, a send, and its receiver, a slot.
+        (BuiltinClass::MessageNotUnderstood, "hostSelector"),
+        (BuiltinClass::MessageNotUnderstood, "hostReceiver"),
         // The exception protocol (`docs/design/core-library.md`, "Planned:
         // exceptions") is Newspeak over the activation leaves: each method
         // sends, keeps state in the exception's slots, or makes several
@@ -982,6 +989,11 @@ mod tests {
             BuiltinClass::Error,
             "isResumable",
             MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::MessageNotUnderstood,
+            "isResumable",
+            MethodFastPath::Constant(QuickConstant::True),
         ),
         // Not a quick method but the accessor form, `^outer Kernel <Name>`,
         // on a class other than `Object`: the namespace's one member.

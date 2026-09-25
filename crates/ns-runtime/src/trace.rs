@@ -159,6 +159,7 @@ impl Trace for Continuation<'_> {
             Continuation::NestedClass(state) => state.trace(tracer),
             Continuation::Instantiate(state) => state.trace(tracer),
             Continuation::Unwind(pending) => pending.trace(tracer),
+            Continuation::VmErrorSignalled(error) => tracer.value(&mut error.receiver),
         }
     }
 }

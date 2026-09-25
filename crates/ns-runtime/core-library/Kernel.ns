@@ -59,8 +59,22 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Block = ( ^outer Kernel Block )
         (* §5.5: protected, so an explicit-receiver send of it finds nothing
            through lookupPublic and falls to the access-blind "defined for"
-           walk that invokes it for the failing send itself. *)
-        protected doesNotUnderstand: message = ( ^vmMirror object: self doesNotUnderstand: message ifFail: [^super doesNotUnderstand: message] )
+           walk that invokes it for the failing send itself.
+
+           §5.5: Object's default `doesNotUnderstand:` throws a
+           `MessageNotUnderstood`. As in Squeak, if the default handler
+           resumed it -- the debugger, once the missing method has been
+           created -- the message is sent again, into the new method. *)
+        protected doesNotUnderstand: message = (
+            | exception value |
+            exception:: outer Kernel MessageNotUnderstood new.
+            exception message: message.
+            exception receiver: self.
+            exception messageText: 'an object does not understand #', message selector asString.
+            value:: exception signal.
+            exception reachedDefaultHandler ifTrue: [^message sentTo: self].
+            ^value
+        )
         (* The nil protocol, as SOMns's kernel and Newspeak's own declare it:
            every object but nil is not nil, and `UndefinedObject` answers the
            other way. A block for the not-nil case is culled with the
@@ -208,8 +222,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
             receiver:: self hostReceiver.
             ^vmMirror terminate: self selector: selector receiver: receiver description: self description ifFail: [nil]
         )
+        (* The VM sets the origin as a pair, and its receiver may be nil,
+           so whether there is one is read off the selector. *)
         protected hostSelector = ( ^originSelector isNil ifTrue: [#signal] ifFalse: [originSelector] )
-        protected hostReceiver = ( ^originReceiver isNil ifTrue: [self] ifFalse: [originReceiver] )
+        protected hostReceiver = ( ^originSelector isNil ifTrue: [self] ifFalse: [originReceiver] )
         (* The search walks the senders from where the last one stopped and
            collects every enabled `on:do:` it passes, the one that handles
            this exception included, for `invokeHandlerAt:disabling:`. *)
@@ -268,10 +284,17 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
     )
+    (* §5.5's exception. Resumable although an `Error`, as in Squeak, so
+       that the debugger can create the missing method and carry on:
+       `Object>>doesNotUnderstand:` then sends the message again. A host
+       receives the selector and receiver of the send nothing understood. *)
     public class MessageNotUnderstood = Error new (
         | public message ::= nil.
           public receiver ::= nil. |
     ) (
+        public isResumable = ( ^true )
+        protected hostSelector = ( ^message selector )
+        protected hostReceiver = ( ^receiver )
     ) : (
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
@@ -281,10 +304,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
     )
+    (* What a `doesNotUnderstand:` handler receives. `sentTo:` sends it as
+       an ordinary public send (§5.5), as Primordial Soup's `sendTo:` does:
+       a program can build a message, so a send through one must reach no
+       protected or private method. *)
     public class Message = Object new (
         | public selector ::= nil.
           public arguments ::= nil. |
     ) (
+        public sentTo: receiver = ( ^vmMirror message: self sendTo: receiver ifFail: [nil] )
     )
     (* A running activation as an object: the frame it wraps, and nothing a
        program can reach -- it reads other frames and unwinds stacks, a

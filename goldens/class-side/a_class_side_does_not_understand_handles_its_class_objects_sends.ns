@@ -9,7 +9,7 @@ Newspeak3
 class AClassSideDoesNotUnderstandHandlesItsClassObjectsSends usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
 	class Foo = Object new () (
 	) : (
-		protected doesNotUnderstand: message = ( ^'caught ', (message at: 1) printString )
+		protected doesNotUnderstand: message = ( ^'caught ', message selector printString )
 		public tryImplicit = ( ^zap )
 	)
 	public main: platform args: args = (

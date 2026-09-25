@@ -218,8 +218,8 @@ impl<'gc> Mutator<'gc> {
 
     /// The `doesNotUnderstand:` defined for `class`. A user-overridden one
     /// arrives as a method; so does `Object`'s own, a kernel method every
-    /// class that does not override it inherits -- `act` runs its mirror
-    /// row's leaf before activating it, like any primitive method.
+    /// class that does not override it inherits, which signals a
+    /// `MessageNotUnderstood`.
     fn resolve_handler(&mut self, class: ClassReference<'gc>, chain: Chain) -> Resolved<'gc> {
         match dispatch::lookup_defined_for(&self.heap, class, Symbol::DOES_NOT_UNDERSTAND) {
             // A nested declaration can never be the handler: `walk` matches
@@ -512,23 +512,10 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let message = self.handler_message(selector, arguments);
-        // A primitive method as the handler -- `Object`'s own -- runs its
-        // leaf on the message before it is activated, like any primitive
-        // method. A builtin-class accessor is unary and so is never a
-        // `doesNotUnderstand:` handler, and no kernel handler is a quick
-        // method; were either to arrive here it is activated like any
-        // method rather than answered.
-        if let Some(MethodFastPath::Mirror(primitive)) = method.fast_path {
-            if let Some(result) = crate::interpreter::mirror::execute_method(
-                self,
-                primitive,
-                receiver,
-                Symbol::DOES_NOT_UNDERSTAND,
-                std::slice::from_ref(&message),
-            ) {
-                return result;
-            }
-        }
+        // Activated whatever its fast path: `Object`'s own handler is
+        // Newspeak that signals a `MessageNotUnderstood`, and no kernel
+        // handler forwards to a leaf; a builtin-class accessor is unary and
+        // a quick method answers no message, so neither is one either.
         Ok(handler_method_step(
             receiver,
             method,
@@ -570,17 +557,24 @@ impl<'gc> Mutator<'gc> {
     /// and §3.2 makes the metaclass flat, so a factory is reached by the
     /// ordinary class-side lookup or not at all.
     ///
-    /// The message is a minimal message-mirror-shaped value: an Array
-    /// `{selector. arguments}` rather than a real MessageMirror object, since
-    /// mirrors do not exist yet (`docs/design/liveness-and-reflection.md`,
-    /// "Mirrors and MirrorBuilder"). Callers relying on a real
-    /// `MessageMirror` API are out of scope. It is built once the handler is
-    /// found; allocation order is unobservable, identity hashes being drawn
-    /// lazily.
+    /// The message is a `Message` of the kernel's, its `selector` a Symbol
+    /// and its `arguments` an Array, which `Object>>doesNotUnderstand:`
+    /// sends again with `sentTo:` when the debugger resumed it
+    /// (`docs/design/core-library.md`, "Planned: exceptions"). It is built
+    /// once the handler is found; allocation order is unobservable, identity
+    /// hashes being drawn lazily.
     fn handler_message(&mut self, selector: Symbol, arguments: &[Value<'gc>]) -> Value<'gc> {
         let selector_value = self.new_symbol(selector);
         let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
-        Value::Object(self.new_array(vec![selector_value, arguments_value]))
+        Value::Object(
+            self.new_kernel_instance(BuiltinClass::Message, |name| match name {
+                "selector" => selector_value,
+                "arguments" => arguments_value,
+                other => {
+                    panic!("internal: Kernel.ns's Message has a slot {other} the VM does not fill")
+                }
+            }),
+        )
     }
 }
 
@@ -733,19 +727,14 @@ mod tests {
                 ),
                 _ => panic!("`3 + 4` must resolve to Integer's `+`"),
             }
-            // `Object`'s `doesNotUnderstand:` is a kernel primitive method
-            // now (`Kernel.ns`), found as a `Resolved::Method` whose
-            // `MixinMethod.fast_path` names the mirror row.
+            // `Object`'s `doesNotUnderstand:` is an ordinary kernel method
+            // (`Kernel.ns`), which signals a `MessageNotUnderstood`.
             match mutator.resolve_public(receiver, Symbol::intern("zork")) {
                 Resolved::Method {
                     method,
                     chain: Chain::DoesNotUnderstand,
                     ..
-                } => assert_eq!(
-                    method.fast_path,
-                    mirror_primitive_named("object:doesNotUnderstand:ifFail:")
-                        .map(MethodFastPath::Mirror)
-                ),
+                } => assert_eq!(method.fast_path, None),
                 _ => panic!("an unhandled selector must resolve to Object's doesNotUnderstand:"),
             }
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");

@@ -1,0 +1,8 @@
+stdout = '''
+42
+43
+#zork
+1
+3
+an object does not understand #zork
+'''

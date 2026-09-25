@@ -324,6 +324,11 @@ pub struct Mutator<'gc> {
     /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
     /// means nothing in another heap.
     pub(crate) caches: inline_cache::InlineCaches,
+    /// How many more unhandled exceptions `defaultAction` resumes with
+    /// `nil` instead of ending the run: the test hook
+    /// `Interpreter::resume_unhandled_exceptions`, standing in for the
+    /// debugger. Zero outside a test that asks.
+    pub(crate) unhandled_exceptions_to_resume: usize,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -642,6 +647,24 @@ impl Interpreter {
     /// this wrong panics rather than the cache rounding it silently.
     pub fn set_global_cache_size(&mut self, entries: usize) {
         self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
+    }
+
+    /// A test hook standing in for the debugger, not an input path a
+    /// program can reach: the next `count` unhandled exceptions are resumed
+    /// with `nil` by `defaultAction`'s leaf instead of ending the run --
+    /// what the debugger will do once it has let the user fix the cause
+    /// (`docs/design/core-library.md`, "Planned: exceptions"). A
+    /// `MessageNotUnderstood` resumed this way sends its message again.
+    #[doc(hidden)]
+    pub fn resume_unhandled_exceptions(&mut self, count: usize) {
+        self.enter(|mutator| mutator.unhandled_exceptions_to_resume = count);
+    }
+
+    /// How many of the exceptions `resume_unhandled_exceptions` asked for
+    /// are still to be resumed. A test hook, as that one is.
+    #[doc(hidden)]
+    pub fn unhandled_exceptions_left_to_resume(&mut self) -> usize {
+        self.enter(|mutator| mutator.unhandled_exceptions_to_resume)
     }
 }
 
@@ -1099,6 +1122,7 @@ impl<'gc> Mutator<'gc> {
             // raised again as the signal it was, from the activation it had
             // stopped at -- now the top of the stack again.
             Continuation::Unwind(pending) => Err(unwind::signal_of(*pending)),
+            Continuation::VmErrorSignalled(error) => Err(Signal::Terminate(*error)),
         }
     }
 
@@ -1297,6 +1321,35 @@ impl<'gc> Mutator<'gc> {
         let value = Value::Object(object);
         self.platform_singleton = Some(value);
         value
+    }
+
+    /// An instance of the kernel class `kind`, every slot its chain declares
+    /// filled by name with what `slot_value` answers for it, built as
+    /// `platform_value` builds the platform: without running the factory,
+    /// so that the run loop can make one -- a `Message` for a
+    /// `doesNotUnderstand:` handler, an `Error` for a VM error -- in the
+    /// middle of deciding a step, where no Newspeak can run.
+    /// `slot_value` panics for a name it does not know, so that a slot
+    /// `Kernel.ns` adds cannot go unfilled unnoticed.
+    pub(crate) fn new_kernel_instance(
+        &mut self,
+        kind: BuiltinClass,
+        mut slot_value: impl FnMut(&str) -> Value<'gc>,
+    ) -> ObjectReference<'gc> {
+        let class = self.builtin_class(kind);
+        let application = self
+            .heap
+            .class_application(class)
+            .expect("internal: a kernel class has an application");
+        let mut fields = vec![Value::Nil; application.slot_count];
+        let mut level = Some(application);
+        while let Some(current) = level {
+            for (position, slot) in current.mixin.slots.iter().enumerate() {
+                fields[current.own_slot_base + position] = slot_value(slot.name.as_str());
+            }
+            level = current.superclass.clone();
+        }
+        self.new_instance_object(class, ObjectData::Instance(fields))
     }
 
     /// The VM mirror. Built by `bootstrap_builtin_classes`, before anything

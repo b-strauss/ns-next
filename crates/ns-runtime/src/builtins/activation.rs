@@ -37,6 +37,14 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::InheritsMixinOf => {
             inherits_mixin_of(mutator, subject, arguments).map(|answer| Ok(Step::Value(answer)))
         }
+        // The test hook standing in for the debugger
+        // (`Interpreter::resume_unhandled_exceptions`) resumes instead:
+        // `defaultAction` answers `nil`, and so does the `signal` that
+        // reached it.
+        ActivationPrimitive::Terminate if mutator.unhandled_exceptions_to_resume > 0 => {
+            mutator.unhandled_exceptions_to_resume -= 1;
+            Some(Ok(Step::Value(Value::Nil)))
+        }
         ActivationPrimitive::Terminate => Some(Err(terminate(mutator, arguments))),
         _ => {
             let Value::Object(object) = subject else {

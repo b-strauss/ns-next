@@ -1,0 +1,6 @@
+stdout = '''
+the public one
+an object does not understand #secret
+an object does not understand #guarded
+8
+'''

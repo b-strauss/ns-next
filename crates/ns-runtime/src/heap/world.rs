@@ -42,6 +42,7 @@ impl World {
                 argument_buffer: Vec::new(),
                 next_dispatch_id: 0,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
+                unhandled_exceptions_to_resume: 0,
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());

@@ -41,6 +41,10 @@ pub(crate) enum UnwindOutcome<'gc> {
         block: Value<'gc>,
         then: Box<PendingUnwind<'gc>>,
     },
+    /// A VM error became an `Error`, whose `signal` has been pushed above
+    /// the activation where the error arose (`Mutator::signal_vm_error`):
+    /// the loop switches to it at its first instruction.
+    Signalling(ActivationReference),
     /// Popped down to the run's floor: the run ends with this.
     Exit(EvaluationResult<'gc>),
 }
@@ -48,16 +52,26 @@ pub(crate) enum UnwindOutcome<'gc> {
 /// A signal leaving the running activation. A non-local return is an
 /// unwind to its home, a restart an unwind to the `on:do:` activation it
 /// restarts, and a termination an unwind with no target, which runs every
-/// pending block on its way to the floor (`unwind`). An error pops every
-/// activation of the run, `base` included, and leaves the run with the
-/// signal for the host that started it (`Interpreter::run_from_host`),
-/// running no block: an error that is not yet a signalled exception ends
-/// the run as it did before there were any.
+/// pending block on its way to the floor (`unwind`).
+///
+/// An error a step raised is no unwind at all: once the kernel is
+/// installed it becomes a signalled `Error` (`start_signalling`), and
+/// nothing is popped until a handler, or the default action, decides.
+/// Before that -- while the kernel itself is being instantiated, when there
+/// is no `Error` class yet -- or when not even `signal`'s activation can be
+/// pushed, which is the depth limit, it pops every activation of the run,
+/// `base` included, and leaves the run with the error for the host that
+/// started it (`Interpreter::run_from_host`), running no block.
 pub(crate) fn unwind_signal<'gc>(
     mutator: &mut Mutator<'gc>,
     signal: Signal<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
+    if let Signal::Error(error) = &signal {
+        if let Some(activation) = start_signalling(mutator, error) {
+            return UnwindOutcome::Signalling(activation);
+        }
+    }
     let pending = match signal {
         Signal::Return(target, value) => PendingUnwind {
             target: Some(target),
@@ -237,7 +251,59 @@ pub(crate) fn dead_activation_error<'gc>(selector: Symbol) -> NewspeakError<'gc>
     }
 }
 
+/// Starts signalling `error` as an `Error`, once the kernel is installed:
+/// `signal`'s activation, pushed above the top of the stack -- the
+/// activation where the error arose -- with the continuation that ends the
+/// run should `signal` ever return (`Continuation::VmErrorSignalled`).
+/// `None` when there is no kernel yet, or when the push is refused: a
+/// stack too deep to push `signal` on is too deep to signal on, and the
+/// run then ends with `error` unsignalled, as it did before there were
+/// exceptions -- which is also what keeps a refusal from being signalled,
+/// refused and signalled again for ever.
+fn start_signalling<'gc>(
+    mutator: &mut Mutator<'gc>,
+    error: &NewspeakError<'gc>,
+) -> Option<ActivationReference> {
+    mutator.kernel?;
+    let step = match mutator.signal_vm_error(error.clone()) {
+        Ok(Step::Value(_)) | Err(_) => return None,
+        Ok(step) => step,
+    };
+    let sender = mutator.heap.top_activation();
+    let activation = mutator.push_step(step, &[], sender, false).ok()?;
+    mutator.heap.set_activation_continuation(
+        activation,
+        Continuation::VmErrorSignalled(Box::new(error.clone())),
+    );
+    Some(activation)
+}
+
 impl<'gc> Mutator<'gc> {
+    /// §8.6 and `docs/design/core-library.md`, "Planned: exceptions": a VM
+    /// error becomes an `Error` -- its `messageText` the error's text, its
+    /// private `originSelector` and `originReceiver` the selector and
+    /// receiver the host received before there were exceptions, which
+    /// `defaultAction` hands back -- and the step that sends it `signal`.
+    /// The instance is built by name, as the platform is, since no Newspeak
+    /// can run while a step is being decided.
+    pub(crate) fn signal_vm_error(
+        &mut self,
+        error: NewspeakError<'gc>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        let text = Value::Object(self.new_string(error.message));
+        let selector = self.new_symbol(error.selector);
+        let receiver = error.receiver;
+        let exception = self.new_kernel_instance(BuiltinClass::Error, |name| match name {
+            "messageText" => text,
+            "originSelector" => selector,
+            "originReceiver" => receiver,
+            "reachedDefault" => Value::Boolean(false),
+            "signalActivation" | "handlerActivation" => Value::Nil,
+            other => panic!("internal: Kernel.ns's Error has a slot {other} the VM does not fill"),
+        });
+        self.decide_send(Value::Object(exception), Symbol::intern("signal"), &[])
+    }
+
     /// Pushes what runs `block` -- an `ensure:` or `ifCurtailed:` argument
     /// the unwinder answered -- above the marked activation, which is the
     /// top of the stack, with the unwind to carry on as its continuation.

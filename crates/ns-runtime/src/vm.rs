@@ -703,8 +703,8 @@ fn resume_caller<'gc>(
 
 /// A signal leaving the running activation, handed to the one unwinder
 /// (`interpreter::unwind`), whose outcome the loop only carries out: the
-/// target returns its value, a block the unwind runs on its way is pushed
-/// and switched to, or the run ends. Deciding which is `interpreter/`'s, so
+/// target returns its value, a block the unwind runs on its way -- or the
+/// `signal` an error became -- is pushed and switched to, or the run ends. Deciding which is `interpreter/`'s, so
 /// a JIT reaches the same unwinding (`docs/design/execution.md`, "Non-local
 /// return").
 fn unwind<'gc>(mutator: &mut Mutator<'gc>, signal: Signal<'gc>, floor: usize) -> Flow {
@@ -715,6 +715,12 @@ fn unwind<'gc>(mutator: &mut Mutator<'gc>, signal: Signal<'gc>, floor: usize) ->
             code: mutator.heap.activation_code(target),
             program_counter: 0,
             feedback_base: mutator.heap.activation_feedback_base(target),
+        },
+        UnwindOutcome::Signalling(next) => Flow::Switch {
+            activation: next,
+            code: mutator.heap.activation_code(next),
+            program_counter: 0,
+            feedback_base: mutator.heap.activation_feedback_base(next),
         },
         UnwindOutcome::RunBlock { block, then } => match mutator.start_unwind_block(block, then) {
             Ok(next) => Flow::Switch {
