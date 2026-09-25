@@ -723,6 +723,11 @@ mod tests {
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
         (BuiltinClass::Block, "cull:"),
+        // A send to `self` is no leaf: `printString` reads the class's own
+        // `name`, and a metaclass's `name` reads its own `thisClass` first.
+        (BuiltinClass::Class, "printString"),
+        (BuiltinClass::Metaclass, "name"),
+        (BuiltinClass::Metaclass, "printString"),
     ];
 
     /// The kernel's quick methods: `True`'s and `False`'s, the nil

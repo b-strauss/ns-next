@@ -85,8 +85,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Behavior = Object new () (
     )
     public class Class = Behavior new () (
+        public name = ( ^vmMirror className: self ifFail: [^nil] )
+        public printString = ( ^name )
     )
     public class Metaclass = Behavior new () (
+        public name = ( ^thisClass name, ' class' )
+        public printString = ( ^name )
+        (* Primordial Soup's `Metaclass` keeps its class in a slot of this
+           name; here it is `ClassData`'s, read through a leaf. *)
+        private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
     )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every

@@ -15,6 +15,7 @@ use crate::Symbol;
 pub enum Primitive {
     Object(ObjectPrimitive),
     Value(ValuePrimitive),
+    Behavior(BehaviorPrimitive),
     Integer(IntegerPrimitive),
     Float(FloatPrimitive),
     String(StringPrimitive),
@@ -44,6 +45,16 @@ pub enum ValuePrimitive {
     Hash,
     SlotCount,
     SlotAt,
+}
+
+/// §3.2's `Class` and `Metaclass` forward to these; nothing else about a
+/// class object is answered at the base level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviorPrimitive {
+    /// A class's name, its mixin's, as a `String`; declines for a metaclass.
+    Name,
+    /// A metaclass's class; declines for anything else.
+    ThisClass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,6 +490,18 @@ pub const MIRROR: &[MirrorEntry] = &[
         "transcriptNewLine:ifFail:",
         "newLine",
         Primitive::Platform(PlatformPrimitive::NewLine),
+    ),
+    // Appended, so no row above moves ("A wire tag is assigned once",
+    // `CLAUDE.md`).
+    mirror(
+        "className:ifFail:",
+        "name",
+        Primitive::Behavior(BehaviorPrimitive::Name),
+    ),
+    mirror(
+        "metaclassThisClass:ifFail:",
+        "thisClass",
+        Primitive::Behavior(BehaviorPrimitive::ThisClass),
     ),
 ];
 
