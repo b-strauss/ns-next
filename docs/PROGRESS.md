@@ -25,8 +25,8 @@ class object's class is its own metaclass, its class side applied to
 value exactly when its enclosing object is, which settles the question left
 open on 2026-09-24 and honours §6.4's "Module definitions are value
 objects"; see "`Behavior`, `Class` and `Metaclass`" below. **The next piece
-of work is step 7, the payload space** (item 4 of the list under "What comes
-next is the third plan and then step 7" below), and it has one question to
+of work is step 7, the payload space** (item 4 of the list under "What came
+next was the third plan, now done, and then step 7" below), and it has one question to
 settle before it is planned: the space was ordered after step 6 because a
 Newspeak `OrderedCollection` over a fixed `Array` removes the one payload
 that grows in place (`Heap::array_push`), but `OrderedCollection>>add:` is
@@ -313,7 +313,7 @@ sends the interpreter dispatches; the numbers above are what that work has to
 spend before it shows as a regression against `6f5a5b1`, and the fast path is
 what supplies it.
 
-**The rest of step 6 breaks into three plans, and the first two are done.**
+**The rest of step 6 breaks into three plans, and all three are done.**
 The first — the core
 library over a VM mirror — is done (2026-09-22;
 [ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md);
@@ -366,8 +366,8 @@ seven of the eight sources are level and `bench_new2.ns` is 3.6% slower**;
 see "`Top`, `Value` and the value semantics" below, which also carries one
 open defect and a finding about the measurement protocol itself.
 
-**What comes next is the third plan and then step 7**, deliberately not
-one plan, for the reason the leaf inlining was split off first: each
+**What came next was the third plan, now done, and then step 7**,
+deliberately not one plan, for the reason the leaf inlining was split off first: each
 produces working, measured software on its own, and each one's measurement
 informs the next. §6.2's mixin application and the strict enforcement of
 §3.1.1's value conditions were inserted ahead of the third plan on
@@ -911,13 +911,13 @@ Then, after M4 and before the JIT tiers:
    done** (2026-09-22): every builtin method a forwarder in
    `crates/ns-runtime/core-library/Kernel.ns`, primitive methods absorbing what the
    forwarding costs, and no source measurably slower; see "Where the next
-   session starts" above. **Still to come in this step: `Class`, `Behavior`
-   and `Metaclass`** — the rest of §3.2 (decided 2026-09-18), declared kernel
-   classes as they are in both references, with a class object's own class
-   becoming its metaclass: the reified instance-of relation that mirrors need
-   and that nothing before this step does
-   ([object-model.md](design/object-model.md), "Class sides and
-   metaclasses"). The kernel's control-flow methods and `do:` stay forwarders
+   session starts" above. **`Class`, `Behavior` and `Metaclass` are done
+   too** (2026-09-25), the step's third plan — the rest of §3.2 (decided
+   2026-09-18): declared kernel classes as they are in both references, with
+   a class object's own class its metaclass, the reified instance-of
+   relation that mirrors need ([object-model.md](design/object-model.md),
+   "Class sides and metaclasses"; "`Behavior`, `Class` and `Metaclass`"
+   below). The kernel's control-flow methods and `do:` stay forwarders
    over today's leaves; rewriting them as Newspeak loops is a separate step
    right before the tiers ([core-library.md](design/core-library.md),
    "Planned: real bodies for control flow and `do:`, before the JIT tiers").
