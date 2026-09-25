@@ -16,6 +16,7 @@ pub(crate) mod resolve;
 mod safepoint;
 pub(crate) mod sends;
 mod slots;
+pub(crate) mod unwind;
 pub(crate) mod value_class;
 
 use std::rc::Rc;
@@ -39,7 +40,11 @@ pub use inline_cache::{
 };
 
 pub(crate) enum Signal<'gc> {
-    Return(ActivationReference, Value<'gc>),
+    /// A non-local return: its home's frame, never its activation, since the
+    /// unwind that carries it runs `ensure:` blocks on its way, and an
+    /// activation they push can reuse a popped activation's stack index
+    /// (`docs/design/execution.md`, "Non-local return").
+    Return(FrameReference<'gc>, Value<'gc>),
     Error(NewspeakError<'gc>),
 }
 
@@ -1074,14 +1079,20 @@ impl<'gc> Mutator<'gc> {
                 nested::after_clause(self, *creation, value)
             }
             Continuation::Instantiate(state) => self.advance_instantiation(state, value),
+            // The block's value is dropped: the unwind it ran for goes on,
+            // raised again as the signal it was, from the activation it had
+            // stopped at -- now the top of the stack again.
+            Continuation::Unwind(pending) => Err(unwind::signal_of(*pending)),
         }
     }
 
     /// What a continuation undoes when its activation is thrown away rather
-    /// than returned from: the counterpart of `resume`, which `vm::unwind`
+    /// than returned from: the counterpart of `resume`, which `unwind::unwind`
     /// calls for every activation it pops. Only a nested class's creation has
     /// begun anything -- its cache slot is marked as in progress -- so only it
-    /// has anything to undo; every other continuation is simply dropped.
+    /// has anything to undo; every other continuation is simply dropped, a
+    /// `Continuation::Unwind` included: a newer unwind, or an error, has
+    /// replaced the one it would have carried on.
     pub(crate) fn abandon(&mut self, then: Continuation<'gc>) {
         if let Continuation::NestedClass(creation) = then {
             nested::end_creation(self, &creation);
@@ -1137,16 +1148,18 @@ impl<'gc> Mutator<'gc> {
     /// while that activation is still running: its reified frame is married
     /// to a live stack entry exactly until the activation returns, and a
     /// frame the image decoder built never is. A dead home is §7.2's
-    /// `cannotReturn`. Every other activation's `^` returns from itself.
+    /// `cannotReturn`. Every other activation's `^` -- an initializer's from
+    /// an inlined block -- returns from itself, reified here so that the
+    /// signal can name it by frame.
     pub(crate) fn raise_return(
         &mut self,
         activation: ActivationReference,
         value: Value<'gc>,
     ) -> Signal<'gc> {
         let target = match self.heap.activation_home(activation) {
-            None => activation,
+            None => self.heap.reify(activation),
             Some(home) => match self.heap.frame_activation(home) {
-                Some(live) => live,
+                Some(_) => home,
                 None => {
                     return Signal::Error(NewspeakError {
                         selector: Symbol::CARET,

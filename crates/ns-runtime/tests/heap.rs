@@ -390,6 +390,7 @@ fn trivial_code() -> std::rc::Rc<CompiledCode> {
         family_size: 0,
         copied_count: 0,
         outer_reach: 0,
+        unwind_marker: None,
         source: ns_syntax::Span::new(0, 0),
     })
 }

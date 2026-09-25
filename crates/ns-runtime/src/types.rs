@@ -485,6 +485,31 @@ pub enum Continuation<'gc> {
     /// carry the walk on (`Mutator::advance_instantiation`). The last
     /// initializer's activation delivers instead (`descend_levels` says why).
     Instantiate(Box<Instantiation<'gc>>),
+    /// An `ensure:` or `ifCurtailed:` block the unwinder started returned:
+    /// carry the unwind on (`interpreter::unwind`). Abandoned with its
+    /// activation when a newer unwind or an error pops it first.
+    Unwind(Box<PendingUnwind<'gc>>),
+}
+
+/// An unwind in progress (`interpreter::unwind`): where it is going and what
+/// happens there. Boxed in a `Continuation::Unwind` while one of the blocks
+/// it runs on its way is running, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct PendingUnwind<'gc> {
+    /// The frame the unwind ends at, never the activation: code runs while
+    /// the unwind is in progress, and an activation pushed meanwhile can
+    /// reuse a popped activation's stack index, where a reified frame keeps
+    /// its identity and says whether it still runs
+    /// (`Heap::frame_activation`). `None` is the floor of the run.
+    pub(crate) target: Option<FrameReference<'gc>>,
+    pub(crate) action: UnwindAction<'gc>,
+}
+
+/// What an unwind does once it arrives.
+#[derive(Debug, Clone)]
+pub enum UnwindAction<'gc> {
+    /// A non-local return: the target returns this value.
+    Return(Value<'gc>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its

@@ -306,6 +306,52 @@ fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
     }
 }
 
+/// `ensure:`, `ifCurtailed:` and `on:do:` are ordinary kernel methods, each
+/// an activation and each activating its receiver block, so a level of
+/// `marked:` is seven counted activations under either lowering -- the
+/// method, the three kernel methods and their three blocks -- and the
+/// deepest recursion that fits is the same under both: 7 x 14,285 + 1 is
+/// 99,996 activations, 7 x 14,286 + 1 is past the limit.
+#[test]
+fn the_marked_block_methods_count_alike_under_both_lowerings() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Marked = Object new (
+        ) (
+            public marked: n = (
+                n = 0 ifTrue: [^0].
+                ^[[[marked: n - 1] on: nil do: nil] ifCurtailed: []] ensure: []
+            )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let what = format!("marked: under {lowering:?}");
+        expect_ok(
+            interpreter.send(
+                &instance,
+                Symbol::intern("marked:"),
+                &[interpreter.stash(Value::SmallInteger(14_285))],
+            ),
+            &what,
+        );
+        expect_too_deep(
+            interpreter.send(
+                &instance,
+                Symbol::intern("marked:"),
+                &[interpreter.stash(Value::SmallInteger(14_286))],
+            ),
+            &what,
+        );
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap().activation_depth(), 0, "{what}");
+            assert_eq!(mutator.heap().counted_depth(), 0, "{what}");
+        });
+    }
+}
+
 /// A block activated through `value` is counted like any other activation,
 /// so a recursion through blocks alone ends in the same error.
 #[test]
@@ -686,7 +732,7 @@ fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() 
 }
 
 /// A `^` whose home is a method below a superclass clause's activation pops
-/// the clause on its way to that method (the first loop of `vm::unwind`), and
+/// the clause on its way to that method (`interpreter::unwind`), and
 /// the creation the clause had begun ends with it: the next access evaluates
 /// the clause again rather than reporting the class as depending on itself.
 #[test]

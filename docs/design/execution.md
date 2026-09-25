@@ -354,10 +354,12 @@ activations from its callers'.
   `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
   in the popped activation's place ("The trampoline" below).
 - **A signal** — a Newspeak error, or a non-local return — goes to
-  `vm::unwind`, which pops what it has to and either returns from the
-  non-local return's target or leaves `run` with the signal ("Non-local
-  return" below). Every activation it pops hands its continuation to
-  `Mutator::abandon`, which undoes what that continuation had begun.
+  `vm::unwind`, which hands it to the one unwinder,
+  `interpreter::unwind`, and carries out what it answers: the non-local
+  return's target returns, an `ensure:` or `ifCurtailed:` block the unwind
+  runs on its way is pushed, or `run` ends with the signal ("Non-local
+  return" below). Every activation the unwinder pops hands its continuation
+  to `Mutator::abandon`, which undoes what that continuation had begun.
 
 Four kinds of body run, and each reaches the loop one way:
 
@@ -470,36 +472,55 @@ A closure's `home` is the reified frame of the method, initializer,
 superclass-clause or superclass-message activation that lexically encloses it.
 It is not a field: `Heap::closure_home` derives it from the closure's
 `captured_frame` ("The closure keeps its defining activation").
-`Signal::Return` carries an `ActivationReference`, its target, and `raise_return` picks
-it: for a closure activation, its closure's `home` — the stack entry that frame is
-married to (`Heap::frame_activation`) while its activation is still running, and
+`Signal::Return` carries a `FrameReference`, its target, and `raise_return` picks
+it: for a closure activation, its closure's `home`, while the stack entry that
+frame is married to (`Heap::frame_activation`) is still running, and
 `cannotReturn` if it is dead, either divorced because the activation returned or
 built by the image decoder, which never marries a frame. For any other activation
-the target is the activation itself.
+— an initializer's `^` from an inlined block — the target is the activation
+itself, reified for the purpose.
 
-The loop unwinds the activation stack to it (`vm::unwind`). A target that is
-still live (`Heap::activation_is_live`), sits at or above the run's floor and
-catches a return (`Mutator::catches_return`: a method, a superclass
-clause or its message) ends the unwind: every activation above it is popped,
-and the target returns the value through the ordinary return path, so a
-reified frame is divorced exactly as on any return. The popped activations'
-continuations are not applied, so a `^` out of an `and:` block, a native
-loop's body or a `do:` block abandons the coercion or the loop; they go to
-`Mutator::abandon` instead, which unmarks a nested class's creation in its
-cache slot and drops every other. Any other signal — an error, or a
-return whose target catches none — pops every activation of the run, `base`
-included, through `abandon` in the same way, and leaves `vm::run` with it, for
-the host that started the run.
+The one unwinder, `interpreter::unwind`, carries it down the stack; `vm::unwind`
+only does what it answers. A target whose frame is still married to a running
+activation, which sits at or above the run's floor and catches a return
+(`Mutator::catches_return`: a method, a superclass clause or its message), ends
+the unwind: every activation above it is popped, and the target returns the
+value through the ordinary return path, so a reified frame is divorced exactly
+as on any return. The popped activations' continuations are not applied, so a
+`^` out of an `and:` block, a native loop's body or a `do:` block abandons the
+coercion or the loop; they go to `Mutator::abandon` instead, which unmarks a
+nested class's creation in its cache slot and drops every other. A return
+whose target catches none, or has returned meanwhile, pops every activation of
+the run, `base` included, in the same way — running the blocks below on its
+way — and leaves `vm::run` with the signal, for the host that started the run;
+so does an error, which runs nothing on its way until errors are signalled
+exceptions ([core-library.md](core-library.md), "Planned: exceptions").
 
-Because there is one stack, a live target is always below the activation
-raising the return, and nothing is pushed while the signal propagates, so the
-target's index cannot have been reused by the time the unwind compares it
-(`ActivationReference::same`). In a release build that is also all
-`Heap::activation_is_live` rests on — it compares the index with the stack's
-depth, where a debug build also checks a generation — so anything that runs
-code while a signal propagates, an `ensure:` or an `on:do:` handler, would
-have to carry the generation into every build first, or a release build would
-land the return in whichever activation reused the target's index.
+**`ensure:` and `ifCurtailed:` blocks run on the way.** `Block>>ensure:` and
+`ifCurtailed:` are kernel methods whose code carries an unwind marker
+(`bytecode::UnwindMarker`, recognized when the kernel is compiled,
+`compiler::unwind_marker`) naming the registers of their block and of their
+`complete` local. Before the unwinder pops an activation whose marker is one of
+the two and whose `complete` is still nil, it sets `complete` and answers the
+block; the loop pushes it above the marked activation, which stays on the stack,
+with `Continuation::Unwind` holding the unwind in progress, and when the block
+returns `Mutator::resume` raises the signal again, which carries on from the
+marked activation. A newer unwind or an error that pops the block first drops
+the old one. `ensure:`'s own normal path sets `complete` before it runs the
+block, so the block runs exactly once whichever path gets there first. An
+argument that is no closure is sent `value` through the kernel's
+`Block>>valueOnUnwind:`, whose own return carries the unwind on. An activation
+without a marker costs the unwinder one test.
+
+Because those blocks run code while an unwind is in progress, an activation
+they push can reuse the stack index a popped target used. That is why the
+target is a frame, never an `ActivationReference`: a release build has no
+generation to tell two activations at one index apart, while a frame is
+divorced on its activation's pop and married to nothing afterwards, so a
+target popped meanwhile is found dead rather than mistaken for its successor
+(`interpreter::unwind`'s `a_target_survives_its_index_being_reused`). The
+unwinder asks the frame for its activation afresh each time it carries on,
+and compares only that handle (`ActivationReference::same`).
 
 **An initializer home follows the same rule.** A block created during
 initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization has
@@ -3830,7 +3851,7 @@ yet.
   activation the runtime pushes goes through, refuses a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
-  `vm::unwind` like any other — leaves it exact. Whether an activation counts
+  `interpreter::unwind` like any other — leaves it exact. Whether an activation counts
   is recorded on its stack entry. Only the block arm of
   `Mutator::push_step` ever records an exemption; a method, and every body
   an instantiation or a nested-class accessor runs — an initializer level, a
@@ -3997,7 +4018,7 @@ when these paths ran in nested runs of the loop.
   index, so an image's clause body can overwrite the slot, and a debug build
   counts the marks rather than asserting on the slot's contents, which such an
   image could turn into a panic. `abandon` is `resume`'s counterpart for a
-  continuation whose activation `vm::unwind` throws away rather than returns
+  continuation whose activation the unwinder throws away rather than returns
   from: the loop forwards every popped entry's continuation to it and decides
   nothing, as `vm::finish` forwards to `resume`.
 - **Instantiation** (`interpreter/instantiate.rs`) is a state machine.

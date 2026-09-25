@@ -396,6 +396,7 @@ fn every_instruction_once() -> CompiledCode {
         family_size: 0,
         copied_count: 2,
         outer_reach: 0,
+        unwind_marker: None,
         source: Span::new(1, 2),
     });
     CompiledCode {
@@ -521,6 +522,7 @@ fn every_instruction_once() -> CompiledCode {
         copied_count: 0,
         // Its own `LoadOuterLocal`/`StoreOuterLocal` reach two frames out.
         outer_reach: 2,
+        unwind_marker: None,
         source: Span::new(10, 20),
     }
 }
@@ -3111,6 +3113,7 @@ fn block_code(argument_count: u16, copied_count: u16) -> Rc<CompiledCode> {
         family_size: 0,
         copied_count,
         outer_reach: 0,
+        unwind_marker: None,
         source: Span::new(0, 0),
     })
 }
@@ -3565,6 +3568,7 @@ fn code_with(
         family_size: 0,
         copied_count: 0,
         outer_reach: 0,
+        unwind_marker: None,
         source: Span::new(0, 0),
     })
 }
@@ -5771,6 +5775,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 0),
         });
         let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| {

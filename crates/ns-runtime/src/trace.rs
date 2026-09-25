@@ -158,6 +158,19 @@ impl Trace for Continuation<'_> {
             Continuation::DoElement(state) => state.trace(tracer),
             Continuation::NestedClass(state) => state.trace(tracer),
             Continuation::Instantiate(state) => state.trace(tracer),
+            Continuation::Unwind(pending) => pending.trace(tracer),
+        }
+    }
+}
+
+impl Trace for PendingUnwind<'_> {
+    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
+        let PendingUnwind { target, action } = self;
+        if let Some(target) = target {
+            tracer.frame(target);
+        }
+        match action {
+            UnwindAction::Return(value) => tracer.value(value),
         }
     }
 }

@@ -1641,6 +1641,7 @@ fn decode_code(
         // `outer_reach`, which is already filled because post-order puts a
         // block's code before its parent's.
         outer_reach: crate::bytecode::outer_reach_of(&instructions),
+        unwind_marker: None,
         instructions,
         argument_count,
         register_count,

@@ -362,7 +362,41 @@ pub struct CompiledCode {
     /// registers when it returns, and the reads answer `nil` -- silent wrong
     /// output at exit status 0, not a crash.
     pub outer_reach: u16,
+    /// Whether this is the body of `Block>>on:do:`, `ensure:` or
+    /// `ifCurtailed:`, and where its parameters and locals live: recognized
+    /// only when the kernel is compiled (`compiler::unwind_marker`), so no
+    /// other body carries one. The unwinder reads it off each activation's
+    /// code as it pops (`interpreter::unwind`). Never on the wire: a decoded
+    /// body carries none.
+    pub unwind_marker: Option<UnwindMarker>,
     pub source: Span,
+}
+
+/// What makes an activation matter to the unwinder
+/// (`docs/design/core-library.md`, "Planned: exceptions"): each variant
+/// names the registers of the kernel method's parameters and locals, in the
+/// layout `docs/design/compiler.md`, "Registers" gives a method -- its
+/// parameters, then its named temporaries in declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnwindMarker {
+    /// `on:do:`: the registers holding the exception class, the handler
+    /// block and the `handlerActive` local.
+    Handler {
+        class_register: u16,
+        block_register: u16,
+        active_register: u16,
+    },
+    /// `ensure:`: the block to run and the `complete` local that says it ran.
+    Ensure {
+        block_register: u16,
+        complete_register: u16,
+    },
+    /// `ifCurtailed:`: the block, run only on an unwind, and its `complete`
+    /// local.
+    IfCurtailed {
+        block_register: u16,
+        complete_register: u16,
+    },
 }
 
 /// The OR-pattern naming every instruction variant that carries a call
@@ -724,6 +758,7 @@ mod tests {
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 10),
         };
         assert_eq!(code.instructions.len(), 2);
@@ -747,6 +782,7 @@ mod tests {
                 family_size: 0,
                 copied_count: 0,
                 outer_reach,
+                unwind_marker: None,
                 source: Span::new(0, 0),
             })
         };
@@ -860,6 +896,7 @@ mod tests {
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 5),
         });
         let make = Instruction::MakeClosure {
@@ -892,6 +929,7 @@ mod tests {
             family_size: 0,
             copied_count: 0,
             outer_reach: 1,
+            unwind_marker: None,
             source: Span::new(0, 5),
         });
         let code = CompiledCode {
@@ -919,6 +957,7 @@ mod tests {
             family_size: 2,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 10),
         };
         let text = disassemble(&code, "foo:");
@@ -949,6 +988,7 @@ method foo: (args 1, registers 4)
             family_size: 0,
             copied_count: 2,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 5),
         });
         let copying = format_instruction(&Instruction::MakeClosure {

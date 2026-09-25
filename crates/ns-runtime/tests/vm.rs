@@ -643,6 +643,7 @@ fn a_vector_round_trips_a_value_through_its_slot() {
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 0),
         };
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "compute", Rc::new(body));
@@ -691,6 +692,7 @@ fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 0),
         };
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));
@@ -754,6 +756,7 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 0),
         };
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));

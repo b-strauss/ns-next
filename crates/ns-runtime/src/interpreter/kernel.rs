@@ -686,6 +686,7 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
 #[cfg(test)]
 mod tests {
     use crate::builtins::primitive::mirror_entry;
+    use crate::bytecode::UnwindMarker;
     use crate::mixin::{MethodFastPath, QuickConstant};
     use crate::{BuiltinClass, Interpreter, Value};
 
@@ -758,6 +759,11 @@ mod tests {
         (BuiltinClass::Behavior, "enclosingOf:"),
         (BuiltinClass::Behavior, "superclassOf:"),
         (BuiltinClass::Metaclass, "thisClassOf:"),
+        // The marked methods (`UNWIND_MARKERS`): each keeps a local the
+        // unwinder or `signal` reads, and sends `value` to `self`.
+        (BuiltinClass::Block, "on:do:"),
+        (BuiltinClass::Block, "ensure:"),
+        (BuiltinClass::Block, "ifCurtailed:"),
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
@@ -921,6 +927,14 @@ mod tests {
         ),
         (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
         (BuiltinClass::String, "asString", MethodFastPath::Receiver),
+        // Quick in shape, though only the unwinder activates it, pushing it
+        // as a method so that its return carries the unwind on
+        // (`Mutator::start_unwind_block`).
+        (
+            BuiltinClass::Block,
+            "valueOnUnwind:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
         // Not a quick method but the accessor form, `^outer Kernel <Name>`,
         // on a class other than `Object`: the namespace's one member.
         (
@@ -1086,6 +1100,88 @@ mod tests {
                 );
             }
         });
+    }
+
+    /// The kernel methods that carry an unwind marker, each with the
+    /// marker: its registers are its parameters from 0, then its named
+    /// temporaries in declaration order (`docs/design/compiler.md`,
+    /// "Registers").
+    const UNWIND_MARKERS: &[(&str, UnwindMarker)] = &[
+        (
+            "on:do:",
+            UnwindMarker::Handler {
+                class_register: 0,
+                block_register: 1,
+                active_register: 2,
+            },
+        ),
+        (
+            "ensure:",
+            UnwindMarker::Ensure {
+                block_register: 0,
+                complete_register: 1,
+            },
+        ),
+        (
+            "ifCurtailed:",
+            UnwindMarker::IfCurtailed {
+                block_register: 0,
+                complete_register: 1,
+            },
+        ),
+    ];
+
+    /// `Block>>on:do:`, `ensure:` and `ifCurtailed:` carry the markers
+    /// `UNWIND_MARKERS` says, under both lowerings, and no other kernel
+    /// method's code carries one: the unwinder would run a block for it.
+    #[test]
+    fn only_the_three_block_methods_carry_an_unwind_marker() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let mut interpreter = Interpreter::bootstrap_with(lowering);
+            interpreter.enter(|mutator| {
+                for kind in BuiltinClass::ALL {
+                    let class = mutator.builtin_class(kind);
+                    let application = mutator
+                        .heap()
+                        .class_application(class)
+                        .expect("a builtin class has an application");
+                    let mixin = &application.mixin;
+                    let class_side = mixin
+                        .class_side
+                        .iter()
+                        .flat_map(|side| side.compiled_methods());
+                    for method in mixin.compiled_methods().chain(class_side) {
+                        let selector = method.selector.as_str();
+                        let expected = if kind == BuiltinClass::Block {
+                            UNWIND_MARKERS
+                                .iter()
+                                .find(|(name, _)| *name == selector)
+                                .map(|(_, marker)| *marker)
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            method.code.unwind_marker, expected,
+                            "{lowering:?}: {kind:?}>>{selector}"
+                        );
+                    }
+                }
+                let block = mutator.builtin_class(BuiltinClass::Block);
+                let application = mutator
+                    .heap()
+                    .class_application(block)
+                    .expect("Block has an application");
+                for (selector, _) in UNWIND_MARKERS {
+                    assert!(
+                        application
+                            .mixin
+                            .compiled_method(crate::Symbol::intern(selector))
+                            .is_some(),
+                        "Block declares no {selector}"
+                    );
+                }
+            });
+        }
     }
 
     /// Every row of `QUICK_METHODS` names a method the kernel declares.

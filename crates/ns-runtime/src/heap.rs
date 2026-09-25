@@ -168,9 +168,10 @@ pub struct FrameReference<'gc> {
 
 impl<'gc> FrameReference<'gc> {
     /// Frame identity. Guarded like an accessor: see `ObjectReference::same`.
-    /// `Signal::Return` names its target by `ActivationReference`, not by
-    /// frame, so nothing in the runtime compares frames: the callers are the
-    /// image round-trip tests (`tests/image.rs`) and this module's unit tests.
+    /// The unwinder finds its target through the frame's marriage
+    /// (`frame_activation`) rather than by comparing frames, so nothing in
+    /// the runtime compares them: the callers are the image round-trip tests
+    /// (`tests/image.rs`) and this module's unit tests.
     pub fn same(self, other: FrameReference<'gc>) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -221,12 +222,12 @@ pub struct ActivationReference {
 }
 
 impl ActivationReference {
-    /// Activation identity: `vm::unwind` finds the activation a
-    /// `Signal::Return` targets by it. Two handles at the same index are the
-    /// same activation because a return only ever unwinds downward -- nothing
-    /// is pushed while a `Signal::Return` propagates, so the target's index
-    /// cannot have been reused by the time the unwind compares it. A debug
-    /// build checks that rather than assuming it.
+    /// Activation identity: the unwinder stops at its target by it
+    /// (`interpreter::unwind`). Two handles at the same index are the same
+    /// activation only while neither has been popped, which is why the
+    /// unwinder compares against a handle it has just asked the target's
+    /// frame for (`Heap::frame_activation`) and never keeps one across the
+    /// blocks it runs. A debug build checks that rather than assuming it.
     pub fn same(self, other: ActivationReference) -> bool {
         #[cfg(debug_assertions)]
         {
@@ -2487,6 +2488,32 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].code.clone()
     }
 
+    /// The unwind marker of the code `activation` runs, read afresh on every
+    /// call: the unwinder asks it of every activation it pops, so an
+    /// activation without one costs it this one test.
+    pub(crate) fn activation_unwind_marker(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<crate::bytecode::UnwindMarker> {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize]
+            .code
+            .unwind_marker
+    }
+
+    /// Replaces what `activation` does with its value when it returns. The
+    /// unwinder's one use: the activation it pushes to run an `ensure:`
+    /// argument that is no block is pushed as a method, which delivers, and
+    /// its return has to carry the unwind on instead.
+    pub(crate) fn set_activation_continuation(
+        &mut self,
+        activation: ActivationReference,
+        then: Continuation<'gc>,
+    ) {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize].then = then;
+    }
+
     /// The `program_counter` last stored for `activation` -- at a send, the
     /// send's own index, which is where the run loop resumes it from when its
     /// callee returns.
@@ -2508,42 +2535,6 @@ impl<'gc> Heap<'gc> {
     pub fn activation_position(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
         activation.index as usize
-    }
-
-    /// Whether `activation` is still on the stack -- the one question that may
-    /// be asked of a handle whose activation has returned. A non-local return
-    /// into an activation that catches none (an initializer) pops its target on
-    /// its way out and goes on naming it, out to the host that started the run;
-    /// the unwind asks this before it reads a target, and a host holding the
-    /// escaped signal may ask nothing else. Nothing is pushed while a signal
-    /// propagates (`ActivationReference::same`), so the target is live exactly
-    /// while the stack still reaches its index; a debug build checks that the
-    /// entry there is still the one the handle was minted for.
-    ///
-    /// A release build has only the index, so its answer is sound only
-    /// while that holds. Anything that runs code while a signal propagates
-    /// -- an `ensure:`, an `on:do:` handler, any unwind protection -- pushes
-    /// activations at the indices the popped target used, and a release
-    /// build would then take one of them for the target and land the return
-    /// in the wrong activation. Such a mechanism needs a generation in every
-    /// build, not only in a debug one.
-    pub fn activation_is_live(&self, activation: ActivationReference) -> bool {
-        let live = (activation.index as usize) < self.stack.entries.len();
-        #[cfg(debug_assertions)]
-        {
-            assert_eq!(
-                activation.origin, self.heap_id,
-                "handle belongs to a different heap (handle from heap {}, read through heap {})",
-                activation.origin, self.heap_id
-            );
-            if live {
-                assert_eq!(
-                    self.stack.entries[activation.index as usize].generation, activation.generation,
-                    "stale activation handle: its index was reused while it was still named"
-                );
-            }
-        }
-        live
     }
 
     /// What `activation` was activated for.
@@ -3173,8 +3164,6 @@ mod tests {
     /// Frame identity is what the image round trip checks sharing by -- a
     /// closure's `captured_frame` and `home` naming one frame or two -- so two
     /// reified frames may never compare equal however alike their contents are.
-    /// (`Signal::Return` names its target by `ActivationReference`, not by
-    /// frame.)
     #[test]
     fn two_frames_are_never_the_same_activation() {
         let mut heap = Heap::new();
@@ -3286,6 +3275,7 @@ mod tests {
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: ns_syntax::Span::new(0, 0),
         })
     }
@@ -3502,8 +3492,8 @@ mod tests {
         let _ = other.activation_local(mine, 0);
     }
 
-    /// `ActivationReference::same` is how `vm::unwind` finds the activation a
-    /// `Signal::Return` targets, and it is handed two handles
+    /// `ActivationReference::same` is how the unwinder stops at its target,
+    /// and it is handed two handles
     /// and no `Heap`, so no accessor guard can reach it. Both handles below
     /// are the first entry of their own heap's stack, so they share an index
     /// and a release build answers "identical".
@@ -3518,12 +3508,11 @@ mod tests {
         let _ = mine.same(theirs);
     }
 
-    /// The comparison `same`'s doc comment argues cannot happen: a catcher
-    /// holding a handle whose entry was popped, compared against the
-    /// activation that reused its index. A release build answers
-    /// "identical", which would land a return in the wrong activation; a
-    /// debug build must refuse the comparison instead of trusting that
-    /// argument.
+    /// The comparison `same`'s doc comment says the unwinder never makes: a
+    /// handle whose entry was popped, compared against the activation that
+    /// reused its index. A release build answers "identical", which would
+    /// land a return in the wrong activation -- the reason an unwind's
+    /// target is a frame -- and a debug build must refuse the comparison.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(
@@ -3535,21 +3524,6 @@ mod tests {
         heap.pop_activation(first);
         let second = heap.push_activation(header(), &[], 1);
         let _ = first.same(second);
-    }
-
-    /// `activation_is_live` is the one accessor a popped handle may reach:
-    /// an escaping non-local return goes on naming the target it popped.
-    #[test]
-    fn a_popped_activation_is_no_longer_live() {
-        let mut heap = Heap::new();
-        let outer = heap.push_activation(header(), &[], 1);
-        let inner = heap.push_activation(header(), &[], 1);
-        assert!(heap.activation_is_live(inner));
-        heap.pop_activation(inner);
-        assert!(!heap.activation_is_live(inner));
-        assert!(heap.activation_is_live(outer));
-        heap.pop_activation(outer);
-        assert!(!heap.activation_is_live(outer));
     }
 
     /// Popping below the top would truncate the registers of every
@@ -3629,6 +3603,7 @@ mod tests {
                         family_size: 0,
                         copied_count: 0,
                         outer_reach: 0,
+                        unwind_marker: None,
                         source: ns_syntax::Span::new(0, 0),
                     }),
                     captured_frame,

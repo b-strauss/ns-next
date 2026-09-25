@@ -55,6 +55,7 @@ well_known_symbols! {
     UNKNOWN => "unknown",
     EQUALS => "=",
     IDENTICAL => "==",
+    VALUE_ON_UNWIND => "valueOnUnwind:",
 }
 
 struct Interner {
