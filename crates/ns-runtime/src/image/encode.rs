@@ -819,10 +819,34 @@ fn is_class_tag<'gc>(
             .is_some_and(|this_class| is_prebuilt_class(heap, this_class, root_class, root_levels))
 }
 
+/// `object` described, when it is a class object an image may not name:
+/// `Top` or the VM mirror's class, which the decoder refuses wherever the
+/// graph names a class (`decode::read_program_builtin_class`), or the
+/// metaclass of either, which it refuses behind a `CLASS_METACLASS`
+/// reference the same way. No source module can name any of the four --
+/// `Object` declares no accessor for `Top` or the mirror's class -- so only
+/// a graph reaching into the kernel can; writing one would produce an
+/// image nothing loads, so the encoder refuses it instead.
+fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
+    let (class, suffix) = match heap.class_this_class(object) {
+        Some(this_class) => (this_class, " class"),
+        None => (object, ""),
+    };
+    match heap.class_builtin(class) {
+        Some(BuiltinClass::Top) => Some(format!("Top{suffix}")),
+        Some(BuiltinClass::VmMirror) => Some(format!("the VM mirror's class{suffix}")),
+        _ => None,
+    }
+}
+
 /// Whether `object` is a builtin, the module's root class or one of its
-/// levels -- the class objects the loading world has before the graph. The
-/// mirror of `decode::is_prebuilt_class`, including its explicit,
-/// today-redundant `is_class` guard -- see that function's doc comment.
+/// levels -- the class objects the loading world has before the graph, and
+/// what `decode::read_prebuilt_class` reads behind a `CLASS_METACLASS`
+/// reference. The explicit `is_class` guard is redundant with
+/// `object.same(root_class)` today -- that can only be true when `object` is
+/// literally `root_class`, a class by construction -- but it keeps this
+/// answering `false` for a non-class object on its own terms, so it stays
+/// honest if either check's meaning shifts later.
 fn is_prebuilt_class<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
@@ -845,6 +869,10 @@ pub struct GraphTable<'gc> {
     object_ids: HashMap<usize, u32>,
     frames: Vec<FrameReference<'gc>>,
     frame_ids: HashMap<usize, u32>,
+    /// The first class the traversal reached that no program may name --
+    /// `Top`, the VM mirror's class, or the metaclass of either -- which
+    /// `encode_graph_section` refuses (`unnameable_class`).
+    unnameable: Option<String>,
 }
 
 impl<'gc> GraphTable<'gc> {
@@ -868,6 +896,7 @@ impl<'gc> GraphTable<'gc> {
             object_ids: HashMap::new(),
             frames: Vec::new(),
             frame_ids: HashMap::new(),
+            unnameable: None,
         };
         let mut stack: Vec<Pending> = roots
             .iter()
@@ -898,7 +927,13 @@ impl<'gc> GraphTable<'gc> {
         stack: &mut Vec<Pending<'gc>>,
     ) {
         let Value::Object(object) = value else { return };
-        if is_same_object(value, platform) || is_class_tag(heap, *object, root_class, root_levels) {
+        if is_same_object(value, platform) {
+            return;
+        }
+        if is_class_tag(heap, *object, root_class, root_levels) {
+            if self.unnameable.is_none() {
+                self.unnameable = unnameable_class(heap, *object);
+            }
             return;
         }
         let key = heap.object_identity_key(*object);
@@ -937,17 +972,11 @@ impl<'gc> GraphTable<'gc> {
                             .map(|class| Pending::Value(Value::Object(*class))),
                     );
                 }
-                // A class object's three references, and its metaclass,
-                // which its record's header names -- the header `class`
-                // from the reified hierarchy on, `ClassData.metaclass` until
-                // then.
+                // A class object's three references; its metaclass is its
+                // header, pushed above like every object's class.
                 ObjectData::Class(data) => {
                     stack.extend(
-                        data.metaclass
-                            .iter()
-                            .copied()
-                            .chain(class_references(data))
-                            .map(|class| Pending::Value(Value::Object(class))),
+                        class_references(data).map(|class| Pending::Value(Value::Object(class))),
                     );
                 }
                 ObjectData::String(_) | ObjectData::Symbol(_) => {}
@@ -1022,6 +1051,12 @@ impl<'gc> GraphTable<'gc> {
             .frame_ids
             .get(&heap.frame_identity_key(frame))
             .expect("frame was visited by build()")
+    }
+
+    /// The class no program may name that the traversal reached, described
+    /// for the refusal; `None` when it reached none.
+    pub fn unnameable_class(&self) -> Option<&str> {
+        self.unnameable.as_deref()
     }
 
     pub fn objects(&self) -> &[ObjectReference<'gc>] {
@@ -1220,8 +1255,9 @@ fn encode_closure_record<'gc>(
 /// megamorphic.
 ///
 /// `builtin` is not written either -- a record only ever describes a user
-/// class, since a builtin is a class *tag* -- and neither is `metaclass`:
-/// the record's header names it (`encode_object`).
+/// class, since a builtin is a class *tag* -- and neither is its metaclass:
+/// the record's header names it, as every record's header names its class
+/// (`encode_object`).
 ///
 /// A metaclass never reaches here. It is written as a record of its own
 /// shape, `OBJECT_METACLASS`, holding only the reference back to its class,
@@ -1315,23 +1351,9 @@ fn encode_object<'gc>(
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let record = context.heap.object_snapshot(object);
-    // A class record's header names its metaclass and a metaclass record's
-    // names `Metaclass`, as the reified hierarchy's header `class` does. Until
-    // that hierarchy lands both live headers are still the builtin `Object`,
-    // so the class record's is read off `ClassData.metaclass` instead.
-    match &record.data {
-        ObjectData::Class(data) if data.this_class.is_some() => {
-            writer.write_u8(CLASS_BUILTIN);
-            writer.write_u8(builtin_class_tag(BuiltinClass::Metaclass));
-        }
-        ObjectData::Class(data) => {
-            let metaclass = data.metaclass.ok_or_else(|| {
-                "image encoding cannot serialize a class object without a metaclass".to_string()
-            })?;
-            encode_class_tag(writer, metaclass, context);
-        }
-        _ => encode_class_tag(writer, record.class, context),
-    }
+    // Every header is the object's class: a class record's names its
+    // metaclass, and a metaclass record's names `Metaclass` (§3.2).
+    encode_class_tag(writer, record.class, context);
     writer.write_u32(record.identity_hash);
     match &record.data {
         ObjectData::Instance(fields) => {
@@ -1435,6 +1457,28 @@ pub fn encode_graph_section<'gc>(
 ) -> Result<(), String> {
     let root_levels = root_levels(heap, root_class);
     let table = GraphTable::build(heap, roots, platform, root_class, &root_levels);
+    // The VM mirror is a capability the bootstrap hands to the core library
+    // alone (`docs/design/core-library.md`, "The VM mirror is the whole Rust
+    // boundary"); an artifact that carried it would hand it to whatever
+    // loaded it. Checked ahead of the unnameable classes below, which a
+    // graph reaching the mirror reaches too (its class), so that the
+    // refusal names the capability rather than its class.
+    for object in table.objects() {
+        if heap.class_builtin(heap.class_of_object(*object)) == Some(BuiltinClass::VmMirror) {
+            return Err(
+                "image encoding refuses the VM mirror: it is a capability the \
+                 bootstrap hands to the core library alone, and an artifact that \
+                 carried it would hand it to whatever loaded it"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(unnameable) = table.unnameable_class() {
+        return Err(format!(
+            "image encoding refuses {unnameable}: no program may name it, and the \
+             loader refuses an image that does"
+        ));
+    }
     let context = EncodeContext {
         table: &table,
         code_ids,
@@ -1447,18 +1491,6 @@ pub fn encode_graph_section<'gc>(
     writer.write_u32(u32_field("object table entry count", table.objects().len()));
     writer.write_u32(u32_field("frame table entry count", table.frames().len()));
     for object in table.objects() {
-        // The VM mirror is a capability the bootstrap hands to the core
-        // library alone (`docs/design/core-library.md`, "The VM mirror is
-        // the whole Rust boundary"); an artifact that carried it would hand
-        // it to whatever loaded it.
-        if heap.class_builtin(heap.class_of_object(*object)) == Some(BuiltinClass::VmMirror) {
-            return Err(
-                "image encoding refuses the VM mirror: it is a capability the \
-                 bootstrap hands to the core library alone, and an artifact that \
-                 carried it would hand it to whatever loaded it"
-                    .to_string(),
-            );
-        }
         encode_object(writer, *object, &context, symbols)?;
     }
     for frame in table.frames() {

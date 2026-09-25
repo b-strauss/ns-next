@@ -11,9 +11,12 @@ use crate::Symbol;
 use super::Mutator;
 
 impl<'gc> Mutator<'gc> {
-    /// `class`'s metaclass, which exists for every class object once the
-    /// bootstrap has filled `Class` (`give_existing_class_objects_metaclasses`);
-    /// `None` before that, and for a handle that is no class object.
+    /// `class`'s metaclass -- its class, since §3.2 makes every class "an
+    /// instance of a unique metaclass" -- which exists for every class
+    /// object once the bootstrap has filled `Class`
+    /// (`give_existing_class_objects_metaclasses`); `None` before that, for
+    /// a metaclass, whose class is `Metaclass`, and for a handle that is no
+    /// class object.
     ///
     /// `newspeak-spec.pdf` §3.2: "All metaclasses are instances of class
     /// Metaclass, and are direct subclasses of Class. Metaclasses may not be
@@ -45,7 +48,20 @@ impl<'gc> Mutator<'gc> {
     /// -- gets a metaclass of one application, and so one dispatch id: a
     /// per-class-object application would send every `X new` site
     /// megamorphic.
+    ///
+    /// Both headers change here (§3.2): the class object becomes an
+    /// instance of its metaclass, and the metaclass an instance of
+    /// `Metaclass`. So the class object's dispatch id is its metaclass's
+    /// instances id from here on, and a send to it searches its class side,
+    /// then `Class`, `Behavior` and `Object`, by the ordinary lookup.
     pub(crate) fn attach_metaclass(&mut self, class: ClassReference<'gc>) -> ClassReference<'gc> {
+        // A metaclass's class is `Metaclass`, never a metaclass of its own:
+        // `Heap::class_display_name` recurses through `this_class` once and
+        // relies on it.
+        debug_assert!(
+            self.heap.class_this_class(class).is_none(),
+            "internal: a metaclass never gets a metaclass of its own"
+        );
         let application = self
             .heap
             .class_application(class)
@@ -65,8 +81,11 @@ impl<'gc> Mutator<'gc> {
         if !self.heap.set_class_this_class(metaclass, class) {
             unreachable!("internal: a metaclass is a class object");
         }
-        if !self.heap.set_class_metaclass(class, metaclass) {
-            unreachable!("internal: attach_metaclass is handed a class object");
+        let metaclass_class = self.builtin_class(BuiltinClass::Metaclass);
+        if !self.heap.set_object_class(metaclass, metaclass_class)
+            || !self.heap.set_object_class(class, metaclass)
+        {
+            unreachable!("internal: `Metaclass` and a metaclass are class objects");
         }
         metaclass
     }
@@ -105,6 +124,12 @@ impl<'gc> Mutator<'gc> {
     /// `Class` was filled -- the builtins and `others`, the kernel's
     /// `Value` level and the kernel's own class -- gets its metaclass, and
     /// from here on `new_class_object` builds one with every class object.
+    ///
+    /// Until here every one of them had the builtin `Object` as its
+    /// provisional header, and `Object` had itself; each header becomes
+    /// its metaclass now, `Object`'s and `Metaclass`'s included --
+    /// `Metaclass`'s metaclass is an instance of `Metaclass` like every
+    /// other metaclass.
     pub(crate) fn give_existing_class_objects_metaclasses(
         &mut self,
         others: &[ClassReference<'gc>],

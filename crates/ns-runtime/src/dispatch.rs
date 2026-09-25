@@ -32,11 +32,13 @@ pub enum Lookup<'gc> {
     /// A row never passes its level over: its failure path is the failure
     /// block its send carries.
     Primitive(Primitive, ClassReference<'gc>),
-    /// §6.3's primary factory, found on the receiver's metaclass. It carries
-    /// no level: §6.3 instantiates the *receiver* of the factory message,
-    /// whichever level of the metaclass mixin's chain the entry was found at
-    /// -- and with a flat metaclass (§3.2) there is only ever the one.
-    Factory,
+    /// §6.3's primary factory, with the class object of the level whose
+    /// method table holds it, as `Primitive` carries its level. §6.3
+    /// instantiates the *receiver* of the factory message, not the level;
+    /// the level is what lets the resolution honour the entry only when it
+    /// was found on the receiver's own class, its metaclass
+    /// (`interpreter::resolve`'s `resolved_for`).
+    Factory(ClassReference<'gc>),
     NotFound,
 }
 
@@ -322,8 +324,8 @@ fn walk<'gc>(
 /// with its field resolved against that level's application -- the level
 /// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
 /// `InitializeSlot` places a slot's initial value) -- a primitive with
-/// that level, which an inline cache counts from, or the primary factory, which
-/// needs no level at all because §6.3 instantiates the receiver.
+/// that level, which an inline cache counts from, or the primary factory with
+/// that level, which the resolution checks is the receiver's own metaclass.
 fn found_entry<'gc>(
     entry: &MethodEntry,
     application: &MixinApplication,
@@ -336,7 +338,7 @@ fn found_entry<'gc>(
             application.own_slot_base + accessor.own_index as usize,
         ),
         MethodEntry::Primitive(method) => Lookup::Primitive(method.primitive, level_class),
-        MethodEntry::Factory(_) => Lookup::Factory,
+        MethodEntry::Factory(_) => Lookup::Factory(level_class),
     }
 }
 

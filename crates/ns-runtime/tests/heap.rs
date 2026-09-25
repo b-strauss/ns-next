@@ -268,12 +268,12 @@ fn instances_of_a_nested_class_share_a_dispatch_id_across_enclosing_objects() {
         assert_eq!(
             id(&first_class),
             id(&second_class),
-            "one application, one class-side id"
+            "one metaclass application, one class object id"
         );
         assert_ne!(
             id(&first),
             id(&first_class),
-            "instances and class side differ"
+            "a class and its metaclass are different applications"
         );
         assert_ne!(id(&first), id(&other), "another application");
         assert_ne!(id(&first), DispatchId::NONE);
@@ -346,6 +346,7 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
             panic!("expected a class object")
         };
         let before = mutator.heap().class_dispatch_ids(class_object);
+        let class_object_id = mutator.heap().dispatch_id(&Value::Object(class_object));
         let application = mutator
             .heap()
             .class_application(class_object)
@@ -362,9 +363,18 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
         assert_ne!(before, after, "a new application mints new ids");
         let instance = mutator.fetch(&instance);
         assert_eq!(mutator.heap().dispatch_id(&instance), after.instances);
+        // The class object is an instance of its metaclass, not of itself,
+        // so its own id is its metaclass's and does not move.
         assert_eq!(
             mutator.heap().dispatch_id(&Value::Object(class_object)),
-            after.class_side
+            class_object_id
+        );
+        let metaclass = mutator
+            .metaclass_of(class_object)
+            .expect("every class object has a metaclass");
+        assert_eq!(
+            class_object_id,
+            mutator.heap().class_dispatch_ids(metaclass).instances
         );
     });
 }

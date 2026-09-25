@@ -357,11 +357,12 @@ impl<'gc> Mutator<'gc> {
     /// class").
     ///
     /// No re-check of what the lookup decided: the entry was found on the
-    /// receiver's own metaclass, whose dispatch id is the class-side guard a
-    /// cache entry is keyed by, so a hit and a miss reach the same class
-    /// (§3.2 makes a metaclass flat, so there is no inherited class side an
-    /// entry could have come from). `class` is the receiver itself, read per
-    /// send rather than carried in an entry.
+    /// receiver's own metaclass (`resolve::resolved_for` refuses one found
+    /// anywhere else), whose instances id is the guard a cache entry is
+    /// keyed by, so a hit and a miss reach the same class (§3.2 makes a
+    /// metaclass flat, so there is no inherited class side an entry could
+    /// have come from). `class` is the receiver itself, read per send
+    /// rather than carried in an entry.
     ///
     /// No double-dispatch risk against the superclass clause's own factory
     /// message (`Object new` in `class Foo = Object new (...)`). That message

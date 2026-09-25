@@ -3324,9 +3324,15 @@ fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
         assert_ne!(ids.instances, DispatchId::NONE);
         let instance = mutator.fetch(&loaded.roots[0]);
         assert_eq!(mutator.heap().dispatch_id(&instance), ids.instances);
+        // A class object is an instance of its metaclass.
+        let metaclass = mutator
+            .metaclass_of(root_class)
+            .expect("the root class has a metaclass");
+        let metaclass_ids = mutator.heap().class_dispatch_ids(metaclass);
+        assert_ne!(metaclass_ids.instances, DispatchId::NONE);
         assert_eq!(
             mutator.heap().dispatch_id(&Value::Object(root_class)),
-            ids.class_side
+            metaclass_ids.instances
         );
     });
 }
@@ -8031,8 +8037,8 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
 // ---------------------------------------------------------------------------
 
 /// A root with a nested class whose metaclass a slot can hold. `Holder
-/// class` does not answer the metaclass until class objects' headers name
-/// their metaclasses, so the tests below put it in the slot from Rust.
+/// class` answers that metaclass (`tests/metaclasses.rs`); the tests below
+/// put it in the slot from Rust, read off the heap the world was built in.
 const METACLASS_MODULE: &str = indoc! {"
     Newspeak3
     'Test'
@@ -8118,6 +8124,10 @@ fn a_metaclass_in_a_slot_is_the_decoded_class_metaclass() {
             .expect("the decoded class record has its metaclass");
         assert!(kept.same(metaclass), "one metaclass, not two");
         assert!(
+            mutator.heap().class_of_object(loaded_holder).same(kept),
+            "the decoded class is an instance of the decoded metaclass"
+        );
+        assert!(
             mutator
                 .heap()
                 .class_this_class(kept)
@@ -8172,6 +8182,9 @@ fn a_builtin_metaclass_round_trips_by_tag() {
         assert!(mutator
             .metaclass_of(loaded_class)
             .is_some_and(|metaclass| metaclass.same(other)));
+        // Each is its class's class, as the header says.
+        assert!(mutator.heap().class_of_object(integer).same(kept));
+        assert!(mutator.heap().class_of_object(loaded_class).same(other));
     });
 }
 
@@ -8291,7 +8304,108 @@ fn a_root_level_metaclass_round_trips_by_tag() {
         assert!(mutator
             .metaclass_of(level)
             .is_some_and(|level_metaclass| level_metaclass.same(metaclass)));
+        assert!(mutator.heap().class_of_object(level).same(metaclass));
         assert_eq!(mutator.heap().identity_hash(metaclass), hash);
+    });
+}
+
+/// No program may name `Top`, the VM mirror's class or the metaclass of
+/// either, and the loader refuses an image that does, so the encoder refuses
+/// to write one rather than produce an image nothing loads. No source module
+/// reaches any of the four; a graph built from Rust does.
+#[test]
+fn a_graph_reaching_an_unnameable_class_is_refused() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new () ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let top = mutator.builtin_class(BuiltinClass::Top);
+        let mirror_class = mutator.builtin_class(BuiltinClass::VmMirror);
+        let top_metaclass = mutator.metaclass_of(top).expect("Top has a metaclass");
+        let mirror_metaclass = mutator
+            .metaclass_of(mirror_class)
+            .expect("the mirror's class has a metaclass");
+        for (unnameable, described) in [
+            (top, "Top"),
+            (mirror_class, "the VM mirror's class"),
+            (top_metaclass, "Top class"),
+            (mirror_metaclass, "the VM mirror's class class"),
+        ] {
+            let refused = image::snapshot(
+                mutator,
+                None,
+                &Origin::File(PathBuf::from("t.ns")),
+                root_class,
+                &platform,
+                &[Value::Object(unnameable)],
+            );
+            let Err(message) = refused else {
+                panic!("a graph reaching {described} was encoded");
+            };
+            assert_eq!(
+                message,
+                format!(
+                    "image encoding refuses {described}: no program may name it, and the \
+                     loader refuses an image that does"
+                )
+            );
+        }
+    });
+}
+
+/// A graph reaching the VM mirror reaches its class too, and the refusal
+/// names the capability: the mirror is checked first.
+#[test]
+fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new () ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        // The kernel instance encloses every builtin class and holds the
+        // mirror in its `vmMirror` slot.
+        let object = mutator.builtin_class(BuiltinClass::Object);
+        let mirror_class = mutator.builtin_class(BuiltinClass::VmMirror);
+        let heap = mutator.heap();
+        let kernel = heap
+            .class_enclosing(object)
+            .expect("the kernel instance encloses Object");
+        let field_count = heap
+            .instance_field_count(kernel)
+            .expect("the kernel instance has fields");
+        let mirror = (0..field_count)
+            .filter_map(|index| heap.instance_field(kernel, index))
+            .find(|field| match field {
+                Value::Object(field) => heap.class_of_object(*field).same(mirror_class),
+                _ => false,
+            })
+            .expect("the kernel holds the mirror");
+        let refused = image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            &platform,
+            &[mirror],
+        );
+        let Err(message) = refused else {
+            panic!("a graph reaching the mirror was encoded");
+        };
+        assert!(
+            message.starts_with("image encoding refuses the VM mirror:"),
+            "{message}"
+        );
     });
 }
 

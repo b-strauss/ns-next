@@ -11,7 +11,7 @@ use crate::builtins::primitive::Primitive;
 use crate::dispatch::{self, Lookup};
 use crate::mixin::{AccessorKind, MethodFastPath, Mixin, MixinMethod};
 use crate::types::*;
-use crate::Symbol;
+use crate::{Heap, Symbol};
 
 use super::{nested, FeedbackBase, Mutator, Signal, Step, StepArguments};
 
@@ -19,14 +19,11 @@ use super::{nested, FeedbackBase, Mutator, Signal, Step, StepArguments};
 /// counted from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Chain {
-    /// §5.5's lookupPublic, from the receiver's class.
+    /// §5.5's lookupPublic, from the receiver's class -- for a class
+    /// object, its metaclass (§3.2), so its class side is searched first.
     Public,
-    /// §5.5 on the receiver's metaclass (§6.3); the receiver is a class object.
-    PublicClassSide,
     /// §5.9's lookupProtected, from the class of `o`.
     Protected,
-    /// §5.9 on `o`'s metaclass.
-    ProtectedClassSide,
     /// §5.9's private rule: N's own member, N itself the level.
     Private,
     /// §5.10: lookupProtected from S, the superclass of `current_class`.
@@ -65,9 +62,10 @@ pub(crate) enum Resolved<'gc> {
     },
     /// §6.3's primary factory, found on `level`'s metaclass; `level` is the
     /// class object §6.3 instantiates, which is the send's receiver. `chain`
-    /// is `PublicClassSide` or `ProtectedClassSide`: a factory entry lives
-    /// on a metaclass and metaclasses are flat (§3.2), so no other chain
-    /// reaches one.
+    /// is `Public` or `Protected`: a factory entry lives on a metaclass,
+    /// which only a class object's own public or protected lookup starts
+    /// from, and metaclasses are flat (§3.2), so no other chain reaches
+    /// one (`resolved_for`).
     Factory {
         level: ClassReference<'gc>,
         chain: Chain,
@@ -92,33 +90,19 @@ impl Resolved<'_> {
 
 impl<'gc> Mutator<'gc> {
     /// §5.5, the explicit-receiver send's lookup, which `decide_send` acts
-    /// on: a class object's class side first (§6.3), then `lookupPublic` on
-    /// the class, then `doesNotUnderstand:`.
+    /// on: `lookupPublic` on the receiver's class, then
+    /// `doesNotUnderstand:`.
     ///
-    /// `ClassName new` needs no case ahead of the lookup: §6.3 makes the
-    /// primary factory an entry of the metaclass mixin, so the class-side
-    /// lookup below finds it like any other member.
-    ///
-    /// §6.3: a class object's class-side methods are reached through its
-    /// metaclass, consulted before the class object's own (ordinary,
-    /// `Object`-native) behaviour. A whole branch of its own, called out of
-    /// line, rather than a `Lookup` folded into the walk below: a receiver
-    /// that is not a class object -- every receiver on a hot send path --
-    /// then pays one `is_class` test and nothing else.
+    /// A class object needs no case of its own: its class is its metaclass
+    /// (§3.2), so the one lookup searches its class side, then `Class`,
+    /// `Behavior` and `Object` (§6). `ClassName new` needs none either:
+    /// §6.3 makes the primary factory an entry of the metaclass mixin, so
+    /// the lookup finds it like any other member.
     pub(crate) fn resolve_public(
         &mut self,
         receiver: Value<'gc>,
         selector: Symbol,
     ) -> Resolved<'gc> {
-        if let Value::Object(object) = receiver {
-            if self.heap.is_class(object) {
-                if let Some(resolved) =
-                    self.resolve_class_side(object, selector, Chain::PublicClassSide)
-                {
-                    return resolved;
-                }
-            }
-        }
         let class = self.class_of(&receiver);
         let lookup = dispatch::lookup_public(&self.heap, class, selector);
         self.resolved_public(lookup, receiver)
@@ -141,63 +125,20 @@ impl<'gc> Mutator<'gc> {
             Lookup::NotFound => {
                 self.resolve_does_not_understand(receiver, Chain::DoesNotUnderstand)
             }
-            found => resolved(found, Chain::Public),
-        }
-    }
-
-    /// The class side, first (§6.3): a metaclass that answers is the
-    /// resolution -- its chain runs on through `Class`, `Behavior` and
-    /// `Object` (§6), so what a class side does not declare is found there;
-    /// one that does not falls through to the class object's own
-    /// behaviour. There is no second `doesNotUnderstand:` path here,
-    /// only a second class to try first. `#[inline(never)]`: only a class
-    /// object reaches it.
-    ///
-    /// A metaclass primitive on the public chain is resolved like any
-    /// member. No metaclass holds a primitive -- a metaclass's mixin is
-    /// always a class side, never the VM mirror's instance mixin -- so that
-    /// is reached only in principle.
-    #[inline(never)]
-    fn resolve_class_side(
-        &mut self,
-        class_object: ObjectReference<'gc>,
-        selector: Symbol,
-        chain: Chain,
-    ) -> Option<Resolved<'gc>> {
-        let metaclass = self.metaclass_of(class_object)?;
-        let lookup = match chain {
-            Chain::PublicClassSide => dispatch::lookup_public(&self.heap, metaclass, selector),
-            _ => dispatch::lookup_protected(&self.heap, metaclass, selector),
-        };
-        match lookup {
-            Lookup::NotFound => None,
-            // §5.9 on a class side: only a real declaration stops the
-            // search, so a primitive there -- which no metaclass holds --
-            // falls to the class-object chain.
-            Lookup::Primitive(..) if chain == Chain::ProtectedClassSide => None,
-            found => Some(resolved_on_class_side(
-                found,
-                Value::Object(class_object),
-                chain,
-            )),
+            found => resolved_for(&self.heap, found, receiver, Chain::Public),
         }
     }
 
     /// §5.7-§5.9, the lexical send's lookup:
     /// N's private member first (`lexical_class` is N, `None` when the
-    /// chain is shorter than the depth), then the class side of `o` when
-    /// `o` is a class object, then lookupProtected on `o`'s class; nothing
-    /// found is an ordinary send to `o`.
+    /// chain is shorter than the depth), then lookupProtected on `o`'s
+    /// class; nothing found is an ordinary send to `o`.
     ///
-    /// §6.3: a class object's class side is the behaviour of that class
-    /// object, so a send written inside a class-side method with no explicit
-    /// receiver has to search the metaclass before the class object's own
-    /// behaviour, `Object`'s primitives -- the same order `resolve_public`
-    /// gives an explicit-receiver send. Without it a class side reaches only
-    /// what `lookup_public` on the metaclass happens to answer once the send
-    /// has fallen all the way through to the public chain: its `protected`
-    /// and `private` members are unreachable, and any selector `Object`
-    /// answers natively silently wins over the class side's own declaration.
+    /// When `o` is a class object -- a send written inside a class-side
+    /// method with no explicit receiver -- `o`'s class is its metaclass
+    /// (§3.2), so lookupProtected searches the class side first, with its
+    /// `protected` members, and `Class`, `Behavior` and `Object` after it,
+    /// in the order `resolve_public` gives an explicit-receiver send.
     pub(crate) fn resolve_lexical(
         &mut self,
         enclosing: Value<'gc>,
@@ -210,19 +151,10 @@ impl<'gc> Mutator<'gc> {
                 found => return resolved(found, Chain::Private),
             }
         }
-        if let Value::Object(object) = enclosing {
-            if self.heap.is_class(object) {
-                if let Some(resolved) =
-                    self.resolve_class_side(object, selector, Chain::ProtectedClassSide)
-                {
-                    return resolved;
-                }
-            }
-        }
         let class = self.class_of(&enclosing);
         match dispatch::lookup_protected(&self.heap, class, selector) {
             Lookup::NotFound => self.resolve_public(enclosing, selector),
-            found => resolved(found, Chain::Protected),
+            found => resolved_for(&self.heap, found, enclosing, Chain::Protected),
         }
     }
 
@@ -257,7 +189,8 @@ impl<'gc> Mutator<'gc> {
     /// a metaclass flat, so a factory entry is reachable only on the
     /// receiver's own metaclass, never on S -- and S, for a class-side
     /// method, is `Class` (§6: a metaclass is its class side applied to
-    /// `Class`).
+    /// `Class`, and a class-side method's `current_class` is the
+    /// metaclass).
     ///
     /// `#[cold]`: it is what a `super` send does when nothing answered it.
     #[cold]
@@ -326,36 +259,45 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
             chain,
         },
         // §6.3's factory is a member of a metaclass mixin, and the only
-        // lookups that search a metaclass hand their answer to
-        // `resolved_on_class_side` below, which maps it. Reaching here means
-        // an instance mixin's method table holds a factory entry, which only
-        // a crafted image can arrange (`image::mixins::decode` derives one
-        // for a class-side row alone): refused, rather than instantiating
-        // whatever object happened to receive the send.
-        Lookup::Factory => Resolved::Unhandled,
+        // lookups that can start from a metaclass -- a public or protected
+        // lookup from a class object's class -- hand their answer to
+        // `resolved_for` below, which maps it. Reaching here means a
+        // private, `super` or handler lookup found one, which only a crafted
+        // image can arrange (`image::mixins::decode` derives one for a
+        // class-side row alone): refused, rather than instantiating whatever
+        // object happened to receive the send.
+        Lookup::Factory(_) => Resolved::Unhandled,
         Lookup::NotFound => unreachable!("internal: the caller resolves what nothing found"),
     }
 }
 
-/// A found `Lookup` as a resolution on one of the two metaclass chains
-/// (§6.3), where `receiver` is the class object whose metaclass was
-/// searched.
+/// A found `Lookup` of a public or protected lookup from `receiver`'s class
+/// as a resolution on `chain`.
 ///
-/// §6.3 instantiates the class object the primary factory message was
-/// *sent to*, whichever level of the metaclass chain held the entry -- and
-/// §3.2's flat metaclass leaves only the one level anyway. So the factory
-/// resolution names the receiver, and no level is counted or recorded.
+/// §6.3's primary factory is an entry of a metaclass mixin, and it
+/// instantiates the class object the message was sent to -- so it is
+/// honoured only when it was found on that receiver's own class, its
+/// metaclass. Found anywhere else it could only have been put there by a
+/// crafted image (`image::mixins::decode` derives one for a class-side row
+/// alone), and it is refused rather than instantiating whatever received
+/// the send.
 #[inline(always)]
-fn resolved_on_class_side<'gc>(
+fn resolved_for<'gc>(
+    heap: &Heap<'gc>,
     lookup: Lookup<'gc>,
     receiver: Value<'gc>,
     chain: Chain,
 ) -> Resolved<'gc> {
     match (lookup, receiver) {
-        (Lookup::Factory, Value::Object(class_object)) => Resolved::Factory {
-            level: class_object,
-            chain,
-        },
+        (Lookup::Factory(level), Value::Object(class_object))
+            if heap.is_class(class_object) && heap.class_of_object(class_object).same(level) =>
+        {
+            Resolved::Factory {
+                level: class_object,
+                chain,
+            }
+        }
+        (Lookup::Factory(_), _) => Resolved::Unhandled,
         (found, _) => resolved(found, chain),
     }
 }
@@ -759,19 +701,21 @@ mod tests {
                     ..
                 }
             ));
+            // A class object's class is its metaclass (§3.2), so its class
+            // side is found by the ordinary public lookup.
             assert!(matches!(
                 mutator.resolve_public(class_object, Symbol::intern("make")),
                 Resolved::Method {
-                    chain: Chain::PublicClassSide,
+                    chain: Chain::Public,
                     ..
                 }
             ));
             // §6.3: the factory is an entry of the metaclass mixin, so the
-            // class-side lookup is what finds it -- not a case ahead of it.
+            // ordinary lookup is what finds it -- not a case ahead of it.
             assert!(matches!(
                 mutator.resolve_public(class_object, Symbol::NEW),
                 Resolved::Factory {
-                    chain: Chain::PublicClassSide,
+                    chain: Chain::Public,
                     ..
                 }
             ));

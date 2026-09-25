@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.2: "Each class is an instance of a unique metaclass.
+   All metaclasses are instances of class Metaclass". So a class's class is
+   its metaclass, every metaclass's class is `Metaclass`, and `Metaclass`'s
+   own metaclass is an instance of `Metaclass` too. *)
+class TheClassOfAClass usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+	class Foo = Object new () ()
+	class Bar = Object new () ()
+	public main: platform args: args = (
+		transcript show: (Foo class == Foo class) printString; newLine.
+		transcript show: (Foo class == Bar class) printString; newLine.
+		transcript show: (Foo class class == Bar class class) printString; newLine.
+		transcript show: (Foo class class == Foo class class class class) printString; newLine.
+		transcript show: (3 class class class == Foo class class) printString; newLine.
+		transcript show: (Foo class == Foo) printString; newLine.
+	)
+) : ()

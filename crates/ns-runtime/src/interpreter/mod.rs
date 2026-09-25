@@ -695,39 +695,27 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_immediate_dispatch_ids(ids);
     }
 
-    /// The next pair of dispatch ids, or `DispatchIds::NONE` once the counter
-    /// is exhausted: an application built after that point is simply never
+    /// The next dispatch id, or `DispatchIds::NONE` once the counter is
+    /// exhausted: an application built after that point is simply never
     /// cached, which is slower but never wrong, so running out is not an
     /// error. Stopping strictly before `DispatchId::VACANT` and
     /// `DispatchId::NONE` -- rather than at them -- is what keeps
     /// `DispatchId::from_counter`'s assertion from ever firing on a minted
     /// id.
     ///
-    /// Always mints the pair consecutively -- `instances` then `instances +
-    /// 1` for `class_side` -- because `ClassData` stores only `instances`
-    /// and derives the other id from it (`DispatchId::class_side`) to keep a
-    /// class object the size `CLAUDE.md`'s image-amplification paragraph
-    /// assumes. The `debug_assert_eq!` below is what would catch the two
-    /// drifting apart if this ever minted them any other way.
+    /// One id per application: a class object's class is its metaclass, an
+    /// application of its own, so no second, class-side id goes with it.
     pub(crate) fn mint_dispatch_ids(&mut self) -> crate::mixin::DispatchIds {
         let first = self.next_dispatch_id;
-        let Some(after) = first.checked_add(2) else {
+        let Some(after) = first.checked_add(1) else {
             return crate::mixin::DispatchIds::NONE;
         };
         if after > u32::MAX - 1 {
             return crate::mixin::DispatchIds::NONE;
         }
         self.next_dispatch_id = after;
-        let instances = crate::mixin::DispatchId::from_counter(first);
-        let class_side = crate::mixin::DispatchId::from_counter(first + 1);
-        debug_assert_eq!(
-            class_side,
-            instances.class_side(),
-            "internal: a minted pair's class-side id must be exactly one past its instances id"
-        );
         crate::mixin::DispatchIds {
-            instances,
-            class_side,
+            instances: crate::mixin::DispatchId::from_counter(first),
         }
     }
 
@@ -1294,9 +1282,8 @@ impl<'gc> Mutator<'gc> {
     /// (`Mutator::attach_metaclass`).
     ///
     /// Once the kernel phase has filled `Class` (`metaclasses_ready`), the
-    /// class object's metaclass is built here with it. The class object's
-    /// own header `.class` is still the shared `Object` placeholder;
-    /// `metaclass_of` reaches the metaclass through `ClassData::metaclass`.
+    /// class object's metaclass is built here with it and becomes its
+    /// header class (`Mutator::attach_metaclass`).
     pub(crate) fn new_class_object(
         &mut self,
         application: Rc<crate::mixin::MixinApplication>,
@@ -1337,6 +1324,12 @@ impl<'gc> Mutator<'gc> {
         class
     }
 
+    /// Allocates a class object under the builtin `Object`, a provisional
+    /// header: `attach_metaclass` replaces it before `new_class_object`
+    /// returns, except during the kernel phase, where
+    /// `give_existing_class_objects_metaclasses` replaces it once `Class`
+    /// is filled. A metaclass is allocated here too, and `attach_metaclass`
+    /// makes it an instance of `Metaclass`.
     fn allocate_class_object(&mut self, data: ClassData<'gc>) -> ClassReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
         self.heap
@@ -2088,35 +2081,38 @@ mod tests {
     fn minting_never_reaches_vacant_and_answers_none_once_exhausted() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            // One pair below the ceiling: the last mintable pair is
-            // (MAX - 3, MAX - 2), immediately below `VACANT` (MAX - 1).
-            mutator.next_dispatch_id = u32::MAX - 3;
+            // One id below the ceiling: the last mintable id is MAX - 2,
+            // immediately below `VACANT` (MAX - 1).
+            mutator.next_dispatch_id = u32::MAX - 2;
             let last = mutator.mint_dispatch_ids();
+            assert_eq!(
+                last.instances,
+                crate::mixin::DispatchId::from_counter(u32::MAX - 2)
+            );
             assert_ne!(last.instances, crate::mixin::DispatchId::VACANT);
-            assert_ne!(last.class_side, crate::mixin::DispatchId::VACANT);
             assert_ne!(last.instances, crate::mixin::DispatchId::NONE);
-            assert_ne!(last.class_side, crate::mixin::DispatchId::NONE);
 
             let exhausted = mutator.mint_dispatch_ids();
             assert_eq!(exhausted, crate::mixin::DispatchIds::NONE);
         });
     }
 
-    /// `ClassData` stores only a pair's `instances` id and derives
-    /// `class_side` from it (`DispatchId::class_side`), which only answers
-    /// the right id because `mint_dispatch_ids` always mints the pair
-    /// consecutively. Minting a handful of pairs and checking each one
-    /// against the derivation is what would catch that invariant breaking,
-    /// beyond the single check `mint_dispatch_ids`'s own `debug_assert_eq!`
-    /// makes on every call.
+    /// Every application gets an id of its own, and one only: minting
+    /// advances the counter by one, so a handful of mints answer
+    /// consecutive, distinct ids.
     #[test]
-    fn every_minted_pairs_class_side_is_its_instances_id_derived() {
+    fn every_mint_answers_the_next_single_id() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            for _ in 0..5 {
-                let pair = mutator.mint_dispatch_ids();
-                assert_eq!(pair.class_side, pair.instances.class_side());
+            let start = mutator.next_dispatch_id;
+            for offset in 0..5 {
+                let minted = mutator.mint_dispatch_ids();
+                assert_eq!(
+                    minted.instances,
+                    crate::mixin::DispatchId::from_counter(start + offset)
+                );
             }
+            assert_eq!(mutator.next_dispatch_id, start + 5);
         });
     }
 }

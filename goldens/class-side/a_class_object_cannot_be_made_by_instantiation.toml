@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before
+'''
+stderr = '''
+Uncaught Newspeak error: cannot instantiate Metaclass: a class object is made only by evaluating its declaration
+'''

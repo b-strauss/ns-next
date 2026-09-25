@@ -34,8 +34,9 @@ use crate::types::Binding;
 use crate::Symbol;
 
 /// The guard an inline cache compares: a dense number, minted per heap, that
-/// names one mixin application's behaviour for its instances or for its
-/// class objects (`docs/design/dispatch.md`, "The dispatch id").
+/// names one mixin application's behaviour for its instances
+/// (`docs/design/dispatch.md`, "The dispatch id"). A class object is an
+/// instance of its metaclass, so its id is its metaclass's application's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DispatchId(u32);
 
@@ -53,36 +54,20 @@ impl DispatchId {
         debug_assert!(value < DispatchId::VACANT.0);
         DispatchId(value)
     }
-
-    /// The class-side id that goes with this instances id, derived rather
-    /// than stored: `mint_dispatch_ids` always mints a pair consecutively
-    /// (instances first, class side immediately after), so `ClassData` needs
-    /// to keep only the instances id and this recovers the other -- which is
-    /// what keeps a class object the size `CLAUDE.md`'s image-amplification
-    /// paragraph assumes. `NONE` maps to `NONE`, since there is no pair to
-    /// derive one from.
-    pub(crate) fn class_side(self) -> DispatchId {
-        if self == DispatchId::NONE {
-            DispatchId::NONE
-        } else {
-            DispatchId(self.0 + 1)
-        }
-    }
 }
 
-/// An application's two ids: one for its instances, one for its class
-/// objects' class side, since every class object shares one placeholder
-/// class and its behaviour depends on its application alone.
+/// An application's id, for its instances. There is no second, class-side
+/// id: a class object's class is its metaclass (`newspeak-spec.pdf` §3.2),
+/// an application of its own, so a class object's id is that application's
+/// instances id like any other object's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DispatchIds {
     pub instances: DispatchId,
-    pub class_side: DispatchId,
 }
 
 impl DispatchIds {
     pub const NONE: DispatchIds = DispatchIds {
         instances: DispatchId::NONE,
-        class_side: DispatchId::NONE,
     };
 }
 

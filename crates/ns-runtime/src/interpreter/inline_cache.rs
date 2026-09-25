@@ -69,8 +69,9 @@ pub(crate) enum Target {
         chain: Chain,
     },
     /// §6.3's primary factory. It carries no level, unlike every other
-    /// target: §6.3 instantiates the *receiver*, which the guard already
-    /// names.
+    /// target: §6.3 instantiates the *receiver*, a class object, and the
+    /// guard -- its metaclass's instances id -- already names the one
+    /// application whose own method table held the entry.
     Factory {
         chain: Chain,
     },
@@ -546,10 +547,6 @@ fn chain_start<'gc>(
         Chain::Public | Chain::Protected | Chain::DoesNotUnderstand => {
             Some(mutator.class_of(&key.receiver))
         }
-        Chain::PublicClassSide | Chain::ProtectedClassSide => match key.receiver {
-            Value::Object(object) => mutator.metaclass_of(object),
-            _ => None,
-        },
         Chain::Private => key.lexical_class,
         Chain::Super | Chain::SuperDoesNotUnderstand => key.superclass,
     }
@@ -713,10 +710,11 @@ fn materialize<'gc>(
         }
         // §6.3 instantiates the class object the factory message was sent
         // to, so the entry records no level: the class a hit instantiates is
-        // the receiver, which the guard -- that class object's class-side
-        // dispatch id -- already determines. A factory entry is reachable
-        // only on the receiver's own metaclass (§3.2), so no chain walk can
-        // have reached one from another class object's.
+        // the receiver, and the guard -- its metaclass's instances id --
+        // names the application whose own method table held the entry
+        // (`resolve::resolved_for` records nothing found anywhere else). A
+        // receiver with that id is a class object of that metaclass's
+        // declaration, so a hit reaches what a miss would.
         Target::Factory { chain } => match key.receiver {
             Value::Object(class_object) => (
                 Resolved::Factory {

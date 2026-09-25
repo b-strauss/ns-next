@@ -39,8 +39,8 @@ pub struct Object<'gc> {
     /// constraint).
     pub identity_hash: u32,
     /// The id an inline cache guards this object's sends on
-    /// (`docs/design/dispatch.md`, "The dispatch id"): an instance's class's
-    /// instances id, a class object's own class-side id. A copy, so that a
+    /// (`docs/design/dispatch.md`, "The dispatch id"): its class's instances
+    /// id -- a class object's class is its metaclass. A copy, so that a
     /// guard is one load and one compare rather than a walk to the class --
     /// which makes every place a class's application changes responsible for
     /// restamping it (`Heap::set_class_application`,
@@ -149,19 +149,10 @@ pub struct ClassData<'gc> {
     /// like any other class's, and the only primitive entries are the VM
     /// mirror's.
     pub builtin: Option<BuiltinClass>,
-    /// The metaclass built from this class's mixin's `class_side` together
-    /// with its primary factory (§6.3), applied over `Class` (§6) and built
-    /// with the class object (`Mutator::attach_metaclass`), so metaclass
-    /// identity stays stable (the inline caches key on it). Lives on `ClassData`, not as a slot on an *instance*: a
-    /// class object's own payload is `ObjectData::Class`, never `Instance`,
-    /// so it cannot share the nested-class hidden-slot mechanism
-    /// (`nested_slot`), which stores its cache in an instance's field vector.
-    /// `None` only for a class object built during the kernel phase, before
-    /// `Class` is filled, and for one decoded from an image, until
-    /// `Mutator::metaclass_of` builds it.
-    pub metaclass: Option<ClassReference<'gc>>,
     /// A metaclass's class: the class object whose class side this metaclass
-    /// applies. `None` for every class object that is not a metaclass.
+    /// applies. `None` for every class object that is not a metaclass. The
+    /// other direction needs no field: a class object's metaclass is its
+    /// header class (`Heap::class_metaclass`).
     pub this_class: Option<ClassReference<'gc>>,
     /// A copy of `application.dispatch_ids.instances`. A cache's guard does
     /// not read it (it reads `Object::dispatch_id` in the header, through
@@ -169,10 +160,9 @@ pub struct ClassData<'gc> {
     /// class, `Heap::class_dispatch_ids` and restamping
     /// (`Heap::header_dispatch_id`) read the instances id from. Kept equal to
     /// the application's by `ClassData::new` and
-    /// `Heap::install_class_application`, the only ways either changes. The
-    /// class-side id is not stored beside it: it is derived on demand
-    /// (`DispatchId::class_side`) from the invariant that `mint_dispatch_ids`
-    /// mints the pair consecutively.
+    /// `Heap::install_class_application`, the only ways either changes. A
+    /// class object's own id is not this one but its metaclass's, read off
+    /// its header like any object's.
     pub dispatch_id: crate::mixin::DispatchId,
     /// For a level a mixin application added (`newspeak-spec.pdf` §6.2), the
     /// `<:` clause that added it -- which of the applying declaration's
@@ -204,8 +194,9 @@ pub struct ClassData<'gc> {
 }
 
 impl<'gc> ClassData<'gc> {
-    /// A class object's data around `application`, with no metaclass yet
-    /// (`Mutator::attach_metaclass` builds it).
+    /// A class object's data around `application`. Its metaclass is not
+    /// part of it: `Mutator::attach_metaclass` builds one and makes it the
+    /// class object's header class.
     pub fn new(
         application: Rc<crate::mixin::MixinApplication>,
         enclosing: Option<ObjectReference<'gc>>,
@@ -220,7 +211,6 @@ impl<'gc> ClassData<'gc> {
             declaring_class,
             superclass,
             builtin,
-            metaclass: None,
             this_class: None,
             applied_clause: None,
             value_class_refusal: None,
