@@ -25,13 +25,23 @@ class object's class is its own metaclass, its class side applied to
 value exactly when its enclosing object is, which settles the question left
 open on 2026-09-24 and honours §6.4's "Module definitions are value
 objects"; see "`Behavior`, `Class` and `Metaclass`" below. **The next piece
-of work is step 7, the payload space** (item 4 of the list under "What came
-next was the third plan, now done, and then step 7" below), and it has one question to
-settle before it is planned: the space was ordered after step 6 because a
-Newspeak `OrderedCollection` over a fixed `Array` removes the one payload
-that grows in place (`Heap::array_push`), but `OrderedCollection>>add:` is
-still a forwarder to that leaf, and no plan yet names the step that removes
-it. The reflection work, which needed the reified instance-of relation this
+of work is the platform as a core-library module of its own** (put ahead of
+step 7 by the user on 2026-09-25, not yet designed): `Kernel.ns` keeps only
+what the VM must know, and `Platform`, `Transcript` and `Collections` move
+out into a module the runtime ships and loads at every start, as Primordial
+Soup's `Runtime.ns` builds its `Platform` from modules beside
+`KernelForPrimordialSoup.ns` and as §8.3 describes the platform, an object
+that "provides accessors to various modules". It needs the bootstrap to load
+more than one core-library module, and a way for that module to reach its
+leaves while the VM mirror stays the kernel's alone. It is also the natural
+home for a Newspeak `OrderedCollection` over a fixed `Array`, which answers
+the question step 7 has to settle first. **Then step 7, the payload space**
+(item 4 of the list under "What came next was the third plan, now done, and
+then step 7" below), whose open question is that one: the space was ordered
+after step 6 because a Newspeak `OrderedCollection` over a fixed `Array`
+removes the one payload that grows in place (`Heap::array_push`), but
+`OrderedCollection>>add:` is still a forwarder to that leaf, and no plan yet
+names the step that removes it. The reflection work, which needed the reified instance-of relation this
 plan built, can now start as well
 ([liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
 and MirrorBuilder"). An open performance item remains from this plan's
