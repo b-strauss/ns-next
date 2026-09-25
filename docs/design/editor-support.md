@@ -137,15 +137,19 @@ capability invariant (`CLAUDE.md`, "The VM mirror is a capability") is not
 touched, and `Kernel.ns`, opened in the editor, shows its `vmMirror` sends as
 ordinary sends.
 
-To check in the implementation plan: that `Kernel.ns` resolves without errors
-through `resolve` rather than `resolve_kernel`. If it does not, that is a
-finding to record, not something to paper over in the server.
+`Kernel.ns` resolves without errors this way: the `kernel` flag decides only
+whether a send to `vmMirror` is marked (`resolver/mod.rs`, `resolve_send`),
+never whether anything is an error. A test pins it.
 
 ### Classification
 
 Legend: token types `parameter`, `variable` (a local), `property` (a slot),
-`class`, `method`, `keyword` (for `self`, `super`, `outer`); modifiers
-`declaration` and `readonly` (a slot declared with `=`).
+`class`, `method`; modifiers `declaration` and `readonly` (a slot or local
+declared with `=`). There is no `keyword` type: the reserved words (§4.1:
+`self`, `super`, `outer`, `true`, `false`, `nil`) are coloured by the plugin's
+lexer, which knows them from their text, so the server would add nothing.
+A keyword message's span starts at its receiver, so the receiver's span is
+excluded when the selector's tokens are found.
 
 - **Declarations** come from the AST: class names, slots, message patterns,
   parameters, temporaries.
@@ -181,14 +185,14 @@ published — name `Newspeak (ns-next)`, vendor Benjamin Strauß, MIT licence li
 the repository. The name says whose parser and messages these are rather than
 suggesting the Newspeak project's own plugin.
 
-**Platform version.** `sinceBuild` 2026.1.4, `untilBuild` open. JetBrains
+**Platform version.** `sinceBuild` `261.26222` (IntelliJ IDEA 2026.1.4 is
+build 261.26222.65), `untilBuild` open. JetBrains
 reworked the LSP API in 2026.1.4 — module `com.intellij.modules.lsp`, extension
 point `com.intellij.platform.lsp.integrationProvider`, classes
 `LspIntegrationProvider` and `ProjectWideLspClientDescriptor`, replacing
 `modules.ultimate`, `serverSupportProvider` and `LspServerSupportProvider`.
 Targeting the new API alone keeps one code path with no deprecated calls for
-the verifier to report; older IDE versions are the price. The exact build
-number of 2026.1.4 is fixed in the implementation plan.
+the verifier to report; older IDE versions are the price.
 
 Components:
 
@@ -243,9 +247,9 @@ same tree, with no change to the plugin's code.
 - **Gradle project** under `editors/jetbrains/`, with the wrapper committed,
   Kotlin, and the IntelliJ Platform Gradle Plugin 2.x, built against IntelliJ
   IDEA 2026.2.x. Bytecode targets Java 21, the runtime of the 2026 platform.
-  To check in the implementation plan: whether Gradle runs on the Corretto 26
-  JDK installed on the development machine, or a JDK 21 toolchain is
-  provisioned automatically.
+  Gradle 9.8 runs on any JDK from 17 to 26; the JDK 21 the build compiles with
+  is a toolchain the foojay resolver provisions, so the build does not depend
+  on which JDK happens to run Gradle.
 - **Rust from Gradle.** A `buildLanguageServer` task runs `cargo build -p
   ns-lsp` at the repository root; `prepareSandbox` and `buildPlugin` copy the
   binary into `bin/windows-x64/`. The tests use the debug binary; only
@@ -277,13 +281,17 @@ from environment variables when publishing, never from the repository.
   error, checking range and message;
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
-  `self` / `super` / `outer`, keyword parts), recorded as `insta` snapshots;
+  a receiver inside a keyword message's span), each expected category asserted
+  directly, so every expectation is stated and reviewed rather than accepted
+  from a snapshot;
 - the resolver entry — for every module in `corpus/modules`, `goldens/` and
   `Kernel.ns`, the same bindings and errors as `resolve`, so the two cannot
   drift;
 - robustness — no analysis over that same set produces an "internal error",
-  nor over every truncation of each file at a token boundary, which is what a
-  file looks like while it is being typed;
+  nor over truncations of each file at token boundaries, which is what a file
+  looks like while it is being typed: every boundary of every golden and of
+  the kernel, and 64 evenly spaced boundaries of each corpus module, since
+  every prefix of every corpus module is quadratic in its size;
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
   `initialize`, `didOpen`, the expected `publishDiagnostics`,
   `semanticTokens/full`, `shutdown`.
