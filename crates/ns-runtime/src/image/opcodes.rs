@@ -170,7 +170,7 @@ pub const VALUE_CLASS_TAG: u8 = 6;
 pub const VALUE_PLATFORM: u8 = 7;
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 8.
+/// Next free number: 9.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -180,6 +180,13 @@ pub const OBJECT_CLOSURE: u8 = 6;
 /// A class object, in one of the two shapes its mixin reference
 /// (`MIXIN_ROW`/`MIXIN_BUILTIN`) selects.
 pub const OBJECT_CLASS: u8 = 7;
+/// The metaclass of a class *record*: a record of its own, so a slot can
+/// name it by id before its class record is decoded and its identity hash
+/// travels in its header like any record's. Its header class tag is
+/// `Metaclass`'s, and its body is one class reference, back to its class --
+/// everything else about a metaclass is derived from that class
+/// (`docs/design/object-model.md`, "The image format").
+pub const OBJECT_METACLASS: u8 = 8;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home
@@ -209,10 +216,17 @@ pub const MIXIN_BUILTIN: u8 = 1;
 /// bootstrap, the mixin table and the root-class section produce them -- so
 /// only `CLASS_RECORD` indexes the object table. `CLASS_ROOT_LEVEL` is
 /// followed by the level's position among the root's levels, lowest first.
+/// `CLASS_METACLASS` names the metaclass of one of those prebuilt classes,
+/// which is no record either, and is followed by that class's own reference
+/// -- `CLASS_BUILTIN`, `CLASS_USER_ROOT` or `CLASS_ROOT_LEVEL`, never a
+/// second `CLASS_METACLASS` or a `CLASS_RECORD` (whose metaclass is a
+/// record, `OBJECT_METACLASS`), which bounds the nesting at one.
+/// Next free number: 5.
 pub const CLASS_BUILTIN: u8 = 0;
 pub const CLASS_USER_ROOT: u8 = 1;
 pub const CLASS_RECORD: u8 = 2;
 pub const CLASS_ROOT_LEVEL: u8 = 3;
+pub const CLASS_METACLASS: u8 = 4;
 
 /// What a frame was activated for, numbered in the order `types::FrameKind`
 /// declares it.
@@ -228,11 +242,15 @@ pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
 
 /// Which tag-named object an entry of the graph section's closing hash table
-/// names. The three are exactly the objects `CLASS_BUILTIN`, `CLASS_USER_ROOT`
-/// and `VALUE_PLATFORM` name: none of them is a record, so without this table
+/// names. The four are exactly the objects `CLASS_BUILTIN`, `CLASS_USER_ROOT`,
+/// `VALUE_PLATFORM` and `CLASS_METACLASS` name: none of them is a record, so without this table
 /// nothing in an image would carry a hash one of them was given
 /// (`docs/design/image-format.md`, "Identity hashes are preserved verbatim").
-/// A builtin-class entry is followed by its builtin class tag.
+/// A builtin-class entry is followed by its builtin class tag. A metaclass
+/// entry names the metaclass of a prebuilt class -- a builtin, the root
+/// class or a root level -- and is followed by that class's reference, the
+/// three tags `CLASS_METACLASS` allows. Next free number: 4.
 pub const HASHED_BUILTIN_CLASS: u8 = 0;
 pub const HASHED_ROOT_CLASS: u8 = 1;
 pub const HASHED_PLATFORM: u8 = 2;
+pub const HASHED_METACLASS: u8 = 3;

@@ -39,8 +39,12 @@ fn a_metaclass_is_the_class_side_applied_to_class() {
         let Value::Object(class_object) = mutator.fetch(&class) else {
             panic!("a loaded module is a class object");
         };
+        // Read off the class object itself, not through `metaclass_of`: the
+        // metaclass is built with the class object, so a creation path that
+        // skipped it fails here.
         let metaclass = mutator
-            .metaclass_of(class_object)
+            .heap()
+            .class_metaclass(class_object)
             .expect("every class object has a metaclass");
         let class_class = mutator.builtin_class(BuiltinClass::Class);
         let heap = mutator.heap();

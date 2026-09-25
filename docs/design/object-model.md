@@ -786,11 +786,10 @@ which §3.2 makes `Class` for a metaclass, and `Object`'s behaviour is what
 stands in for `Class` here — so a class-side `super new` no longer
 instantiates, because `Object` declares no factory for it to find.
 
-A metaclass that reaches an image — as a class-side activation's
-`current_class`, captured in a frame — is rebuilt with the same asymmetry:
-its record names the superclass `Object`'s class object like any other, and
-`image::decode::rebuild_applications` recognizes a record whose mixin is some
-declaration's class side and applies it with no superclass application
+A metaclass reaches an image with its class — every class record's header
+names its metaclass record, and a slot or a class-side activation's
+`current_class` can name one too — and is rebuilt from its class, over
+`Class`, as "The image format" below describes
 ([image-format.md](image-format.md), "What is *not* serialized").
 
 Every class object has a metaclass, a class that declares no class side

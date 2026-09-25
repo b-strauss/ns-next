@@ -29,16 +29,8 @@ impl<'gc> Mutator<'gc> {
     /// *together with the primary factory method*, so `X new` is an entry of
     /// this mixin's method table and a class without one would not be
     /// instantiable. The empty case is `metaclass_mixin` below.
-    pub fn metaclass_of(&mut self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
-        if !self.heap.is_class(class) {
-            return None;
-        }
-        if let Some(existing) = self.heap.class_metaclass(class) {
-            return Some(existing);
-        }
-        // A class object decoded from an image has none until the decoder
-        // gives it its metaclass record; built here meanwhile.
-        self.metaclasses_ready.then(|| self.attach_metaclass(class))
+    pub fn metaclass_of(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
+        self.heap.class_metaclass(class)
     }
 
     /// Builds `class`'s metaclass: §6's "the application of the metaclass
@@ -170,10 +162,12 @@ mod tests {
         interpreter.enter(|mutator| {
             for kind in BuiltinClass::ALL {
                 let class = mutator.builtin_class(kind);
-                let metaclass = mutator
-                    .metaclass_of(class)
-                    .unwrap_or_else(|| panic!("{kind:?} has a metaclass"));
+                // Read off the class object itself: the bootstrap attaches
+                // every builtin's metaclass, so one it skipped fails here.
                 let heap = mutator.heap();
+                let metaclass = heap
+                    .class_metaclass(class)
+                    .unwrap_or_else(|| panic!("{kind:?} has a metaclass"));
                 assert!(
                     heap.class_this_class(metaclass)
                         .is_some_and(|this_class| this_class.same(class)),

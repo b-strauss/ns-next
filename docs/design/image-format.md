@@ -114,13 +114,17 @@ surface is.
   rebuilt as class objects decode. This removes a section, a verification pass,
   and the possibility of loading an image whose stored layout disagrees with its
   mixins. It is also what proves two instances that shared an application before
-  a snapshot still share one after it. A **metaclass** is the one record the
-  rebuild does not read a superclass for: it is written as an ordinary class
-  record whose superclass is `Object`'s class object, and rebuilding it from
-  that link would chain its application and un-flatten it (§3.2). The decoder
-  recognizes a record whose mixin is some declaration's class side and applies
-  it with no superclass application, the shape `Mutator::metaclass_of` mints
-  ([object-model.md](object-model.md), "Class sides and metaclasses").
+  a snapshot still share one after it. A **metaclass** stores nothing twice:
+  its mixin, application, enclosing object and declaring class all follow from
+  its class. The metaclass of a class *record* is a record of its own
+  (`OBJECT_METACLASS`, header `Metaclass`) whose body is only the class
+  reference back to its class, and the decoder applies its class's metaclass
+  mixin over `Class`, as `Mutator::attach_metaclass` does (§6); a class
+  record's header names its metaclass record. The metaclass of a builtin, the
+  root class or a root level is named by tag, `CLASS_METACLASS` followed by
+  that class's own reference, one level deep. A class record applying some
+  row's class side is refused (`ClassRecordAppliesAClassSide`)
+  ([object-model.md](object-model.md), "The image format").
 - **Inline-cache state and dispatch ids.** No cache entry, polymorphic block,
   global-cache entry or code family's range is written, and no activation's or
   closure's `feedback_base`: a decoded closure carries "not assigned" and is
@@ -391,12 +395,15 @@ loaded one. A record's 0 means "not yet assigned" and is preserved the same way
 ([object-model.md](object-model.md)).
 
 **The exception is an object the image names by tag rather than by record**: a
-builtin class, the module's root class and the `platform` singleton
+builtin class, the module's root class, the `platform` singleton and the
+metaclass of a builtin, of the root class or of a root level
 (`encode::is_class_tag`, and the platform check beside it in
 `GraphTable::visit_value`). None of them is a record, so nothing about a record
 could carry its hash. Instead the graph section closes, after its roots, with a
 table of exactly the tag-named objects whose stored hash is not 0 — the builtin
-classes in wire-tag order, then the root class, then `platform` — each entry a
+classes in wire-tag order, then the root class, then `platform`, then the
+metaclasses (`HASHED_METACLASS` followed by the class's reference) of the
+builtins in wire-tag order, of the root class and of its levels — each entry a
 tag from the `HASHED_*` family in `opcodes.rs` naming the object, and its hash
 (`encode::encode_tag_named_hashes`). `load` restores each hash onto the object
 the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
@@ -538,6 +545,23 @@ What is not checked is that a level sits directly above a class of its applying
 row; the instantiation walk re-checks a clause body's arity against the
 arguments it is given and raises a Newspeak error rather than indexing past
 them.
+
+**A class record and its metaclass record are held to each other both ways.**
+A class record's header must name a metaclass record whose reference back is
+that class record, a metaclass record's reference back must name a class
+record, every metaclass record must be named by exactly one class record's
+header, and a metaclass record's own header must be `Metaclass` — anything
+else is `MetaclassPairing` (`rebuild_metaclasses` and `pair_metaclasses` in
+`decode.rs`). A live class has exactly one metaclass (§3.2, "unique"), so this
+refuses nothing a snapshot writes, and it is what keeps a metaclass's identity
+across a round trip: the metaclass a slot holds is the one its class answers.
+Metaclass records are applied before the class records, since each needs only
+its class's mixin and `Class`'s application, so a crafted class record whose
+superclass is a metaclass record is applied over the metaclass's real
+application. An object record that is not a class object but whose class's
+application refuses instantiation as a class object — an instance of `Class`,
+`Metaclass` or a metaclass, which no source can make — is
+`InstanceOfAClassClass`.
 
 **A root the root rule forbids is refused on both sides.** The encoder refuses
 a module whose root mixin carries a root defect, at `build` and `snapshot`

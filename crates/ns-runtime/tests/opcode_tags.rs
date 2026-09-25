@@ -216,6 +216,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_ARRAY, 3);
     assert_eq!(OBJECT_CLOSURE, 6);
     assert_eq!(OBJECT_CLASS, 7);
+    assert_eq!(OBJECT_METACLASS, 8);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_BUILTIN, 1);
@@ -224,6 +225,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(CLASS_USER_ROOT, 1);
     assert_eq!(CLASS_RECORD, 2);
     assert_eq!(CLASS_ROOT_LEVEL, 3);
+    assert_eq!(CLASS_METACLASS, 4);
 
     assert_eq!(FRAME_METHOD, 0);
     assert_eq!(FRAME_CLOSURE, 1);
@@ -236,6 +238,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(HASHED_BUILTIN_CLASS, 0);
     assert_eq!(HASHED_ROOT_CLASS, 1);
     assert_eq!(HASHED_PLATFORM, 2);
+    assert_eq!(HASHED_METACLASS, 3);
 }
 
 /// Within each family a number means one thing. Nothing but a copy-paste
@@ -260,6 +263,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_ARRAY,
             OBJECT_CLOSURE,
             OBJECT_CLASS,
+            OBJECT_METACLASS,
         ],
         &[MIXIN_ROW, MIXIN_BUILTIN],
         &[
@@ -267,6 +271,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             CLASS_USER_ROOT,
             CLASS_RECORD,
             CLASS_ROOT_LEVEL,
+            CLASS_METACLASS,
         ],
         &[
             FRAME_METHOD,
@@ -277,7 +282,12 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_SUPERCLASS_MESSAGE,
             FRAME_MIXIN_APPLICATION_MESSAGE,
         ],
-        &[HASHED_BUILTIN_CLASS, HASHED_ROOT_CLASS, HASHED_PLATFORM],
+        &[
+            HASHED_BUILTIN_CLASS,
+            HASHED_ROOT_CLASS,
+            HASHED_PLATFORM,
+            HASHED_METACLASS,
+        ],
     ];
     for family in families {
         let mut seen = family.to_vec();

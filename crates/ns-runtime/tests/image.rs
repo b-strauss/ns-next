@@ -2424,18 +2424,18 @@ fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
 // before it indexes anything.
 // ---------------------------------------------------------------------------
 
-/// One class record: its own `.class` (the builtin `Object`, as
-/// `Mutator::new_class_object` gives every class object), an identity
-/// hash, the body tag, the mixin-table row id, then the three references
-/// `references` writes, and no applied clause -- an ordinary class, not a
-/// level a mixin application added.
+/// One class record: its header, naming its metaclass -- the record
+/// `metaclass_id` -- an identity hash, the body tag, the mixin-table row id,
+/// then the three references `references` writes, and no applied clause --
+/// an ordinary class, not a level a mixin application added.
 fn class_record(
     writer: &mut encode::Writer,
+    metaclass_id: u32,
     mixin_id: u32,
     references: impl FnOnce(&mut encode::Writer),
 ) {
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+    writer.write_u32(metaclass_id);
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
     writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
@@ -2444,11 +2444,24 @@ fn class_record(
     writer.write_boolean(false); // not an applied level
 }
 
-/// A graph section holding one class record and no roots.
+/// One metaclass record: its header naming `Metaclass`, an identity hash,
+/// the body tag and the reference back to its class, the record `class_id`.
+fn metaclass_record(writer: &mut encode::Writer, class_id: u32) {
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Metaclass));
+    writer.write_u32(8); // identity hash
+    writer.write_u8(OBJECT_METACLASS); // object body: Metaclass
+    writer.write_u8(CLASS_RECORD); // its class: an object-table record
+    writer.write_u32(class_id);
+}
+
+/// A graph section holding one class record (object 0), its metaclass
+/// record (object 1) and no roots.
 fn one_class_object(mixin_id: u32, references: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
-    class_record(&mut writer, mixin_id, references);
+    graph_counts(&mut writer, 2, 0);
+    class_record(&mut writer, 1, mixin_id, references);
+    metaclass_record(&mut writer, 0);
     writer.write_u32(0); // no roots
     writer.into_bytes()
 }
@@ -2487,9 +2500,11 @@ fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() 
     // the two records ties them together, so if `apply_mixin`'s cache did
     // not answer both, sharing could only come back by accident.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2, 0);
-    class_record(&mut writer, 0, no_class_references);
-    class_record(&mut writer, 0, no_class_references);
+    graph_counts(&mut writer, 4, 0);
+    class_record(&mut writer, 2, 0, no_class_references);
+    class_record(&mut writer, 3, 0, no_class_references);
+    metaclass_record(&mut writer, 0);
+    metaclass_record(&mut writer, 1);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     GraphFixture::new().decoded(&bytes, "two class records", |heap, graph| {
@@ -2520,7 +2535,7 @@ fn a_class_records_superclass_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_class_object(0, |writer| {
         writer.write_boolean(true);
         writer.write_u8(CLASS_RECORD); // class tag: object-table record
-        writer.write_u32(9); // ... past the end of a one-object table
+        writer.write_u32(9); // ... past the end of a two-object table
         writer.write_boolean(false);
         writer.write_boolean(false);
     });
@@ -2581,8 +2596,8 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     // class tag to name a *class* record, and a class object whose
     // superclass is an array has no application chain to rebuild.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2, 0);
-    class_record(&mut writer, 0, |writer| {
+    graph_counts(&mut writer, 3, 0);
+    class_record(&mut writer, 2, 0, |writer| {
         writer.write_boolean(true);
         writer.write_u8(CLASS_RECORD);
         writer.write_u32(1); // object 1, which is an array
@@ -2594,6 +2609,7 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_ARRAY); // object body: Array
     writer.write_u32(0); // no elements
+    metaclass_record(&mut writer, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     assert_eq!(
@@ -2608,9 +2624,9 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
     // order in which the two could be rebuilt. Refusing is what keeps the
     // rebuild a finite walk rather than one that never ends.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2, 0);
-    for other in [1u32, 0] {
-        class_record(&mut writer, 0, move |writer| {
+    graph_counts(&mut writer, 4, 0);
+    for (metaclass, other) in [(2u32, 1u32), (3, 0)] {
+        class_record(&mut writer, metaclass, 0, move |writer| {
             writer.write_boolean(true);
             writer.write_u8(CLASS_RECORD);
             writer.write_u32(other);
@@ -2618,6 +2634,8 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
             writer.write_boolean(false);
         });
     }
+    metaclass_record(&mut writer, 0);
+    metaclass_record(&mut writer, 1);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     assert_eq!(
@@ -4945,13 +4963,13 @@ fn a_tag_named_hash_at_the_ceiling_is_refused() {
 fn an_unknown_tag_named_hash_tag_is_refused() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(HASHED_PLATFORM + 1); // one past the last tag-named hash
+    writer.write_u8(HASHED_METACLASS + 1); // one past the last tag-named hash
     writer.write_u32(5);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
         Err(decode::DecodeError::InvalidTag {
             what: "tag-named hash",
-            tag: HASHED_PLATFORM + 1
+            tag: HASHED_METACLASS + 1
         })
     );
 }
@@ -6592,12 +6610,13 @@ fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
 }
 
 /// `levels` class records, each inheriting from the next, with the
-/// outermost as the image's single root.
+/// outermost as the image's single root, followed by their `levels`
+/// metaclass records in the same order.
 fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, levels, 0);
+    graph_counts(&mut writer, 2 * levels, 0);
     for level in 0..levels {
-        class_record(&mut writer, 0, |writer| {
+        class_record(&mut writer, levels + level, 0, |writer| {
             if level + 1 < levels {
                 writer.write_boolean(true);
                 writer.write_u8(CLASS_RECORD); // class tag: object-table record
@@ -6608,6 +6627,9 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
             writer.write_boolean(false); // no enclosing object
             writer.write_boolean(false); // no declaring class
         });
+    }
+    for level in 0..levels {
+        metaclass_record(&mut writer, level);
     }
     writer.write_u32(1); // one root
     writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
@@ -6724,30 +6746,24 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_
 }
 
 #[test]
-fn a_class_object_whose_own_class_is_another_record_is_refused() {
-    // `Mutator::new_class_object` gives every class object the shared
-    // bootstrap `Object` placeholder, so no real world contains one -- and
-    // `class` is the single reference `Object`'s iterative `Drop` cannot
-    // hand to its worklist, so a chain of them is the one link that would
-    // still release recursively.
+fn a_class_object_whose_own_class_is_another_class_record_is_refused() {
+    // A class record's header names its metaclass, so a header naming an
+    // ordinary class record pairs the class with something that is no
+    // metaclass. `class` is also the single reference `Object`'s iterative
+    // `Drop` cannot hand to its worklist, so a chain of them would be the one
+    // link that would still release recursively.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2, 0);
+    graph_counts(&mut writer, 3, 0);
     // Object 0: a class record whose own class is object 1.
-    writer.write_u8(CLASS_RECORD); // class tag: object-table record
-    writer.write_u32(1);
-    writer.write_u32(7); // identity hash
-    writer.write_u8(OBJECT_CLASS); // object body: Class
-    writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
-    writer.write_u32(0); // mixin id
-    no_class_references(&mut writer);
-    writer.write_boolean(false); // not an applied level
-                                 // Object 1: an ordinary class record.
-    class_record(&mut writer, 0, no_class_references);
+    class_record(&mut writer, 1, 0, no_class_references);
+    // Object 1: an ordinary class record, with its metaclass, object 2.
+    class_record(&mut writer, 2, 0, no_class_references);
+    metaclass_record(&mut writer, 1);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::ClassOfAClassIsARecord
+        decode::DecodeError::MetaclassPairing
     );
 }
 
@@ -7909,12 +7925,11 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
 /// metaclass is "the application of the metaclass mixin defined by the
 /// class' class side to the class Class").
 ///
-/// A metaclass is written as an ordinary class record -- naming the class
-/// side's mixin row -- and `rebuild_applications` recognizes the row as a
-/// class side and applies it over `Class`, whatever superclass the record
-/// names; its class-object superclass is `Class`'s class object, the link
-/// the live metaclass has, so the two chains `dispatch::next_level` steps
-/// together agree.
+/// A metaclass is written as a metaclass record naming its class, and
+/// `rebuild_applications` applies its class's metaclass mixin over `Class`;
+/// its class-object superclass is `Class`'s class object, the link the live
+/// metaclass has, so the two chains `dispatch::next_level` steps together
+/// agree. And it is the decoded class's own metaclass, not a second one.
 ///
 /// A class-side method that answers a block the module keeps is what puts
 /// the metaclass in the graph: the closure's captured frame is the
@@ -7995,7 +8010,516 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
                 .is_some_and(|superclass| superclass.same(class_class)),
             "a decoded metaclass's superclass is Class, as the live one's is"
         );
+        let widget = mutator
+            .heap()
+            .class_this_class(metaclass)
+            .expect("a decoded metaclass links back to its class");
+        assert!(
+            mutator
+                .metaclass_of(widget)
+                .is_some_and(|widget_metaclass| widget_metaclass.same(metaclass)),
+            "the frame's metaclass is the one its class answers"
+        );
     });
+}
+
+// ---------------------------------------------------------------------------
+// Metaclasses on the wire (`docs/design/object-model.md`, "The image
+// format"): the metaclass of a class record is a record of its own, the
+// metaclass of a prebuilt class is named by tag, and the two sides of every
+// class record's pairing with its metaclass record are checked on load.
+// ---------------------------------------------------------------------------
+
+/// A root with a nested class whose metaclass a slot can hold. `Holder
+/// class` does not answer the metaclass until class objects' headers name
+/// their metaclasses, so the tests below put it in the slot from Rust.
+const METACLASS_MODULE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: platform = Object new (
+      | public kept ::= nil. public other ::= nil. |
+    ) (
+      public class Holder = Object new () (
+      ) : (
+        public made = ( ^1 )
+      )
+    ) : ()
+"};
+
+/// `METACLASS_MODULE` instantiated, with its nested class accessed so the
+/// root's hidden slot holds it: the world, its root class, the platform, the
+/// root instance and the nested class object.
+fn metaclass_world() -> (Interpreter, Root, Root, Root, Root) {
+    let (mut interpreter, class, platform, outer) = instantiated_world(METACLASS_MODULE);
+    let holder = expect_ok(
+        interpreter.send(&outer, Symbol::intern("Holder"), &[]),
+        "Holder",
+    );
+    (interpreter, class, platform, outer, holder)
+}
+
+/// Stores `value` into `outer`'s slot `selector` names, through its setter.
+fn store(interpreter: &mut Interpreter, outer: &Root, selector: &str, value: Root) {
+    expect_ok(
+        interpreter.send(outer, Symbol::intern(selector), &[value]),
+        selector,
+    );
+}
+
+/// The metaclass of the class object `class` holds, rooted.
+fn metaclass_root(interpreter: &mut Interpreter, class: &Root) -> Root {
+    interpreter.enter(|mutator| {
+        let Value::Object(class) = mutator.fetch(class) else {
+            panic!("a class object");
+        };
+        let metaclass = mutator
+            .metaclass_of(class)
+            .expect("every class object has a metaclass");
+        mutator.stash(Value::Object(metaclass))
+    })
+}
+
+/// A metaclass keeps its identity across a round trip: `Holder class` held
+/// in a slot is the decoded class's metaclass, not a second one.
+#[test]
+fn a_metaclass_in_a_slot_is_the_decoded_class_metaclass() {
+    let (mut interpreter, class, platform, outer, holder) = metaclass_world();
+    let holder_metaclass = metaclass_root(&mut interpreter, &holder);
+    store(&mut interpreter, &outer, "kept:", holder_metaclass);
+    let bytes = snapshot_world(
+        &mut interpreter,
+        METACLASS_MODULE,
+        &class,
+        &platform,
+        std::slice::from_ref(&outer),
+    );
+    let report = image::inspect::inspect(&bytes).expect("inspect walks an image with metaclasses");
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("metaclass of object")),
+        "the metaclass record is walked: {:?}",
+        report.graph_objects
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let loaded_outer = loaded.roots[0].clone();
+    let kept = send_to(&mut loaded, &loaded_outer, "kept");
+    let loaded_holder = nested_class_of(&mut loaded, &loaded_outer, "Holder");
+    loaded.interpreter.enter(|mutator| {
+        let (Value::Object(kept), Value::Object(loaded_holder)) =
+            (mutator.fetch(&kept), mutator.fetch(&loaded_holder))
+        else {
+            panic!("the slot and the accessor both answer class objects");
+        };
+        let metaclass = mutator
+            .heap()
+            .class_metaclass(loaded_holder)
+            .expect("the decoded class record has its metaclass");
+        assert!(kept.same(metaclass), "one metaclass, not two");
+        assert!(
+            mutator
+                .heap()
+                .class_this_class(kept)
+                .is_some_and(|this_class| this_class.same(loaded_holder)),
+            "the decoded metaclass links back to the decoded class"
+        );
+    });
+    // And it is the class side the class answers a class-side send with.
+    let made = send_to(&mut loaded, &loaded_holder, "made");
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&made), Value::SmallInteger(1)));
+    });
+}
+
+/// The metaclass of a builtin and of the root class is named by tag and
+/// resolves to the loading world's own.
+#[test]
+fn a_builtin_metaclass_round_trips_by_tag() {
+    let (mut interpreter, class, platform, outer, _holder) = metaclass_world();
+    let integer = interpreter.enter(|mutator| {
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        mutator.stash(Value::Object(integer))
+    });
+    let integer_metaclass = metaclass_root(&mut interpreter, &integer);
+    let root_metaclass = metaclass_root(&mut interpreter, &class);
+    store(&mut interpreter, &outer, "kept:", integer_metaclass);
+    store(&mut interpreter, &outer, "other:", root_metaclass);
+    let bytes = snapshot_world(
+        &mut interpreter,
+        METACLASS_MODULE,
+        &class,
+        &platform,
+        std::slice::from_ref(&outer),
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let loaded_outer = loaded.roots[0].clone();
+    let kept = send_to(&mut loaded, &loaded_outer, "kept");
+    let other = send_to(&mut loaded, &loaded_outer, "other");
+    let loaded_class = loaded.root_class.clone();
+    loaded.interpreter.enter(|mutator| {
+        let (Value::Object(kept), Value::Object(other), Value::Object(loaded_class)) = (
+            mutator.fetch(&kept),
+            mutator.fetch(&other),
+            mutator.fetch(&loaded_class),
+        ) else {
+            panic!("both slots hold metaclasses");
+        };
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        assert!(mutator
+            .metaclass_of(integer)
+            .is_some_and(|metaclass| metaclass.same(kept)));
+        assert!(mutator
+            .metaclass_of(loaded_class)
+            .is_some_and(|metaclass| metaclass.same(other)));
+    });
+}
+
+/// A metaclass's identity hash travels with it: in its record for the
+/// metaclass of a class record, in the closing hash table for the metaclass
+/// of a builtin and of the root class.
+#[test]
+fn a_metaclass_identity_hash_survives() {
+    let (mut interpreter, class, platform, outer, holder) = metaclass_world();
+    let holder_metaclass = metaclass_root(&mut interpreter, &holder);
+    store(&mut interpreter, &outer, "kept:", holder_metaclass);
+    let hashes = interpreter.enter(|mutator| {
+        let (Value::Object(holder), Value::Object(root_class)) =
+            (mutator.fetch(&holder), mutator.fetch(&class))
+        else {
+            panic!("class objects");
+        };
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        let metaclasses: Vec<ClassReference> = [holder, integer, root_class]
+            .into_iter()
+            .map(|class| mutator.metaclass_of(class).expect("a metaclass"))
+            .collect();
+        metaclasses
+            .into_iter()
+            .map(|metaclass| mutator.heap_mut().ensure_identity_hash(metaclass))
+            .collect::<Vec<u32>>()
+    });
+    let bytes = snapshot_world(
+        &mut interpreter,
+        METACLASS_MODULE,
+        &class,
+        &platform,
+        std::slice::from_ref(&outer),
+    );
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_tag_named_hashes
+            .iter()
+            .any(|entry| entry.starts_with("metaclass of Integer hash")),
+        "{:?}",
+        report.graph_tag_named_hashes
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let loaded_outer = loaded.roots[0].clone();
+    let loaded_holder = nested_class_of(&mut loaded, &loaded_outer, "Holder");
+    let loaded_class = loaded.root_class.clone();
+    loaded.interpreter.enter(|mutator| {
+        let (Value::Object(holder), Value::Object(root_class)) =
+            (mutator.fetch(&loaded_holder), mutator.fetch(&loaded_class))
+        else {
+            panic!("class objects");
+        };
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        let loaded_hashes: Vec<u32> = [holder, integer, root_class]
+            .into_iter()
+            .map(|class| {
+                let metaclass = mutator.metaclass_of(class).expect("a metaclass");
+                mutator.heap().identity_hash(metaclass)
+            })
+            .collect();
+        assert_eq!(loaded_hashes, hashes);
+    });
+}
+
+/// The metaclass of a root level is named by tag, behind the level's own
+/// `CLASS_ROOT_LEVEL`, and its identity hash travels in the closing table:
+/// the root and its levels are built before the graph, metaclasses
+/// included, so both resolve to the loading world's own.
+#[test]
+fn a_root_level_metaclass_round_trips_by_tag() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new <: Value () ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let (bytes, hash) = interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let level = mutator
+            .heap()
+            .class_superclass(root_class)
+            .expect("the root's level");
+        let metaclass = mutator.metaclass_of(level).expect("a metaclass");
+        let hash = mutator.heap_mut().ensure_identity_hash(metaclass);
+        let platform = mutator.fetch(&platform);
+        let bytes = image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            &platform,
+            &[Value::Object(metaclass)],
+        )
+        .expect("snapshot");
+        (bytes, hash)
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.graph_roots,
+        vec!["class metaclass of <root class level 0>".to_string()]
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let root = loaded.roots[0].clone();
+    let loaded_class = loaded.root_class.clone();
+    loaded.interpreter.enter(|mutator| {
+        let (Value::Object(metaclass), Value::Object(root_class)) =
+            (mutator.fetch(&root), mutator.fetch(&loaded_class))
+        else {
+            panic!("class objects");
+        };
+        let level = mutator
+            .heap()
+            .class_superclass(root_class)
+            .expect("the loaded root's level");
+        assert!(mutator
+            .metaclass_of(level)
+            .is_some_and(|level_metaclass| level_metaclass.same(metaclass)));
+        assert_eq!(mutator.heap().identity_hash(metaclass), hash);
+    });
+}
+
+/// Two class records swap their metaclasses: each header names the other
+/// class's metaclass record. Unswapped, the same records decode and pair.
+#[test]
+fn a_class_record_naming_another_classs_metaclass_is_refused() {
+    let two_classes = |first_metaclass: u32, second_metaclass: u32| {
+        let mut writer = encode::Writer::new();
+        graph_counts(&mut writer, 4, 0);
+        class_record(&mut writer, first_metaclass, 0, no_class_references);
+        class_record(&mut writer, second_metaclass, 0, no_class_references);
+        metaclass_record(&mut writer, 0);
+        metaclass_record(&mut writer, 1);
+        writer.write_u32(0); // no roots
+        writer.into_bytes()
+    };
+    let mut fixture = GraphFixture::new();
+    fixture.decoded(&two_classes(2, 3), "paired records", |heap, graph| {
+        for (class, metaclass) in [(0, 2), (1, 3)] {
+            assert!(heap
+                .class_metaclass(graph.objects[class])
+                .is_some_and(|found| found.same(graph.objects[metaclass])));
+        }
+    });
+    let error = fixture.decode_error(&two_classes(3, 2));
+    assert_eq!(error, decode::DecodeError::MetaclassPairing);
+    assert_eq!(
+        error.to_string(),
+        "a class in the image and the metaclass it names do not belong to each other"
+    );
+}
+
+/// A metaclass record no class record's header names is a second metaclass
+/// beside the one its class answers.
+#[test]
+fn a_metaclass_record_named_by_no_class_record_is_refused() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 3, 0);
+    class_record(&mut writer, 1, 0, no_class_references);
+    metaclass_record(&mut writer, 0);
+    metaclass_record(&mut writer, 0); // a second metaclass of object 0
+    writer.write_u32(0); // no roots
+    assert_eq!(
+        GraphFixture::new().decode_error(&writer.into_bytes()),
+        decode::DecodeError::MetaclassPairing
+    );
+}
+
+/// A metaclass record's reference back must name a class record; here it
+/// names an instance.
+#[test]
+fn a_metaclass_record_naming_a_non_class_is_refused() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 3, 0);
+    class_record(&mut writer, 1, 0, no_class_references);
+    metaclass_record(&mut writer, 2); // names object 2, an instance
+    writer.write_u8(CLASS_BUILTIN); // object 2's class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_u32(3); // identity hash
+    writer.write_u8(OBJECT_INSTANCE);
+    writer.write_u32(0); // no fields
+    writer.write_u32(0); // no roots
+    assert_eq!(
+        GraphFixture::new().decode_error(&writer.into_bytes()),
+        decode::DecodeError::MetaclassPairing
+    );
+}
+
+/// A metaclass record is an instance of `Metaclass`; a header naming
+/// anything else would give one metaclass two encodings.
+#[test]
+fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 2, 0);
+    class_record(&mut writer, 1, 0, no_class_references);
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin, not `Metaclass`
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Class));
+    writer.write_u32(8); // identity hash
+    writer.write_u8(OBJECT_METACLASS);
+    writer.write_u8(CLASS_RECORD);
+    writer.write_u32(0);
+    writer.write_u32(0); // no roots
+    assert_eq!(
+        GraphFixture::new().decode_error(&writer.into_bytes()),
+        decode::DecodeError::MetaclassPairing
+    );
+}
+
+/// A metaclass reference names a prebuilt class's metaclass, one level
+/// deep: behind `CLASS_METACLASS` a second `CLASS_METACLASS`, or a
+/// `CLASS_RECORD` -- whose metaclass is a record of its own -- is refused.
+#[test]
+fn a_nested_metaclass_reference_is_refused() {
+    let integer = encode::builtin_class_tag(BuiltinClass::Integer);
+    let mut fixture = GraphFixture::new();
+    let mut one_level = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(integer);
+    });
+    one_level.extend_from_slice(&[0, 0, 0, 0]); // no roots
+    fixture.decoded(&one_level, "Integer's metaclass by tag", |heap, graph| {
+        let Some(Value::Object(element)) = heap.array_at(graph.objects[0], 0) else {
+            panic!("the array holds a class object");
+        };
+        assert!(heap.class_this_class(element).is_some());
+    });
+    let nested = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(integer);
+    });
+    assert_eq!(
+        fixture.decode_error(&nested),
+        decode::DecodeError::InvalidTag {
+            what: "prebuilt class",
+            tag: CLASS_METACLASS
+        }
+    );
+    let of_a_record = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_RECORD);
+        writer.write_u32(0);
+    });
+    assert_eq!(
+        fixture.decode_error(&of_a_record),
+        decode::DecodeError::InvalidTag {
+            what: "prebuilt class",
+            tag: CLASS_RECORD
+        }
+    );
+}
+
+/// No source can make an instance of `Metaclass`, `Class` or a metaclass,
+/// so an image recording one is refused.
+#[test]
+fn an_instance_of_metaclass_is_refused() {
+    let instance_of = |class: &dyn Fn(&mut encode::Writer)| {
+        let mut writer = encode::Writer::new();
+        graph_counts(&mut writer, 1, 0);
+        class(&mut writer);
+        writer.write_u32(3); // identity hash
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0); // no fields
+        writer.write_u32(0); // no roots
+        writer.into_bytes()
+    };
+    let builtin = |kind: BuiltinClass| {
+        move |writer: &mut encode::Writer| {
+            writer.write_u8(CLASS_BUILTIN);
+            writer.write_u8(encode::builtin_class_tag(kind));
+        }
+    };
+    let integer_metaclass = |writer: &mut encode::Writer| {
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Integer));
+    };
+    let mut fixture = GraphFixture::new();
+    let refused: [&dyn Fn(&mut encode::Writer); 3] = [
+        &builtin(BuiltinClass::Metaclass),
+        &builtin(BuiltinClass::Class),
+        &integer_metaclass,
+    ];
+    for class in refused {
+        let error = fixture.decode_error(&instance_of(class));
+        assert_eq!(error, decode::DecodeError::InstanceOfAClassClass);
+        assert_eq!(
+            error.to_string(),
+            "an object in the image is an instance of Class, Metaclass or a metaclass, \
+             which only a class object may be"
+        );
+    }
+    fixture.decoded(
+        &instance_of(&builtin(BuiltinClass::Object)),
+        "an instance of Object",
+        |_, _| {},
+    );
+}
+
+/// A class side is applied only by a metaclass record; a class record
+/// applying one would be a second, unpaired metaclass.
+#[test]
+fn a_class_record_applying_a_class_side_is_refused() {
+    let mut fixture = GraphFixture::with_source(METACLASS_MODULE);
+    let class_side_row = fixture
+        .mixins
+        .iter()
+        .position(|row| {
+            fixture.mixins.iter().any(|other| {
+                other
+                    .class_side
+                    .as_ref()
+                    .is_some_and(|class_side| Rc::ptr_eq(class_side, row))
+            })
+        })
+        .expect("Holder's class side is a row") as u32;
+    let error = fixture.decode_error(&one_class_object(class_side_row, no_class_references));
+    assert_eq!(error, decode::DecodeError::ClassRecordAppliesAClassSide);
+    assert_eq!(
+        error.to_string(),
+        "a class object in the image applies a class side, which only its metaclass may"
+    );
+}
+
+/// `inspect` reads every metaclass form the way `load` does, and refuses a
+/// nested metaclass reference the same way.
+#[test]
+fn inspect_refuses_a_nested_metaclass_reference() {
+    let mut graph = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_METACLASS);
+    });
+    graph.extend_from_slice(&[0, 0, 0, 0]); // no roots
+    graph.extend_from_slice(&[0, 0, 0, 0]); // no tag-named hashes
+    let bytes = image_with_graph_section(&graph);
+    let error = match image::inspect::inspect(&bytes) {
+        Ok(_) => panic!("inspect accepted a nested metaclass reference"),
+        Err(error) => error,
+    };
+    assert_eq!(error, "invalid prebuilt class tag 4");
+    assert_eq!(load_error(&bytes), error);
 }
 
 // ---------------------------------------------------------------------------
@@ -8310,15 +8834,16 @@ fn row_named(fixture: &GraphFixture, name: &str) -> u32 {
 
 /// One class record describing a level a `<:` clause added: it applies row
 /// `mixin_row`'s mixin over the object-table record `superclass` (or no
-/// superclass), and was added by clause `clause` of row `applying_row`.
+/// superclass), and was added by clause `clause` of row `applying_row`. Its
+/// metaclass is the record `metaclass_id`.
 fn applied_level_record(
     writer: &mut encode::Writer,
-    mixin_row: u32,
+    (metaclass_id, mixin_row): (u32, u32),
     superclass: Option<u32>,
     (applying_row, clause): (u32, u32),
 ) {
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+    writer.write_u32(metaclass_id);
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
     writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
@@ -8352,8 +8877,9 @@ fn a_well_formed_applied_level_record_decodes_with_its_clause() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let marker = row_named(&fixture, "Marker");
     let applied = row_named(&fixture, "Applied");
-    let bytes = class_records(1, |writer| {
-        applied_level_record(writer, marker, None, (applied, 0));
+    let bytes = class_records(2, |writer| {
+        applied_level_record(writer, (1, marker), None, (applied, 0));
+        metaclass_record(writer, 0);
     });
     fixture.decoded(&bytes, "an applied level", |heap, graph| {
         let clause = heap
@@ -8368,8 +8894,9 @@ fn a_well_formed_applied_level_record_decodes_with_its_clause() {
 fn an_applied_levels_applying_row_out_of_range_is_a_decode_error_not_a_panic() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let marker = row_named(&fixture, "Marker");
-    let bytes = class_records(1, |writer| {
-        applied_level_record(writer, marker, None, (99, 0));
+    let bytes = class_records(2, |writer| {
+        applied_level_record(writer, (1, marker), None, (99, 0));
+        metaclass_record(writer, 0);
     });
     assert_eq!(
         fixture.decode_error(&bytes),
@@ -8386,8 +8913,9 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
     let marker = row_named(&fixture, "Marker");
     let applied = row_named(&fixture, "Applied");
     for (row, index) in [(applied, 1), (marker, 0), (applied, u32::MAX)] {
-        let bytes = class_records(1, |writer| {
-            applied_level_record(writer, marker, None, (row, index));
+        let bytes = class_records(2, |writer| {
+            applied_level_record(writer, (1, marker), None, (row, index));
+            metaclass_record(writer, 0);
         });
         let error = fixture.decode_error(&bytes);
         assert_eq!(
@@ -8413,12 +8941,15 @@ fn applied_levels_inheriting_from_each_other_in_a_cycle_are_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let marker = row_named(&fixture, "Marker");
     let applied = row_named(&fixture, "Applied");
-    let through_another = class_records(2, |writer| {
-        applied_level_record(writer, marker, Some(1), (applied, 0));
-        applied_level_record(writer, applied, Some(0), (applied, 0));
+    let through_another = class_records(4, |writer| {
+        applied_level_record(writer, (2, marker), Some(1), (applied, 0));
+        applied_level_record(writer, (3, applied), Some(0), (applied, 0));
+        metaclass_record(writer, 0);
+        metaclass_record(writer, 1);
     });
-    let directly = class_records(1, |writer| {
-        applied_level_record(writer, marker, Some(0), (applied, 0));
+    let directly = class_records(2, |writer| {
+        applied_level_record(writer, (1, marker), Some(0), (applied, 0));
+        metaclass_record(writer, 0);
     });
     for bytes in [through_another, directly] {
         assert_eq!(
@@ -8450,13 +8981,13 @@ fn an_unknown_mixin_reference_tag_is_a_decode_error_not_a_panic() {
 }
 
 /// A class record for a level applying the mixin of the builtin `kind_tag`
-/// names, with no superclass, added by clause `index` of row `row`. Such a
-/// record carries no enclosing object or declaring class: both are the
-/// builtin's.
+/// names, with no superclass, added by clause `index` of row `row`, and its
+/// metaclass record. Such a record carries no enclosing object or declaring
+/// class: both are the builtin's.
 fn builtin_mixin_record(kind_tag: u8, (row, index): (u32, u32)) -> Vec<u8> {
-    class_records(1, |writer| {
-        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    class_records(2, |writer| {
+        writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+        writer.write_u32(1);
         writer.write_u32(7); // identity hash
         writer.write_u8(OBJECT_CLASS); // object body: Class
         writer.write_u8(MIXIN_BUILTIN); // mixin reference: a builtin's
@@ -8464,6 +8995,7 @@ fn builtin_mixin_record(kind_tag: u8, (row, index): (u32, u32)) -> Vec<u8> {
         writer.write_boolean(false); // no superclass
         writer.write_u32(row);
         writer.write_u32(index);
+        metaclass_record(writer, 0);
     })
 }
 
