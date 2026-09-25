@@ -4181,6 +4181,20 @@ samples on `Value`s a callee writes through its out-parameter in pieces that
 do not line up with the load that reads them -- an open performance item
 recorded there.
 
+**Small follow-ups the reviews deferred**, none affecting an outcome:
+`HASHED_METACLASS` has no crafted-input test of its own (its readers,
+`read_prebuilt_class` and `read_root_level`, are shared with
+`CLASS_METACLASS` and tested there); the encoder's refusal of a class record
+without a metaclass has no test, since no class object without one is
+reachable after the bootstrap -- a unit test inside `ns-runtime` could build
+one; `builtins::value`'s `derived_equality` pushes a class pair again when it
+is already assumed, and charges a metaclass pair several budget units, which
+is bounded and correct but wasted work; the hash of a value class object,
+from its mixin's name alone, collides for every same-named nested class
+under different enclosing values, which is valid and coarse; and every level
+a `<:` clause adds gets a metaclass no program can send to, part of the
+measured eager cost.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
