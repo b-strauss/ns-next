@@ -12,7 +12,11 @@ pub fn dump(text: &str) -> serde_json::Value {
     let mut utf16_at = vec![0u32; text.len() + 1];
     let mut units = 0u32;
     for (byte_offset, character) in text.char_indices() {
-        for element in utf16_at.iter_mut().skip(byte_offset).take(character.len_utf8()) {
+        for element in utf16_at
+            .iter_mut()
+            .skip(byte_offset)
+            .take(character.len_utf8())
+        {
             *element = units;
         }
         units += character.len_utf16() as u32;

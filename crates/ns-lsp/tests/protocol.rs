@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use indoc::indoc;
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use serde_json::{json, Value};
 
@@ -80,7 +81,11 @@ fn an_editor_session() {
 
     // Non-ASCII text before the error on its own line, so a position counted
     // in bytes or in chars rather than UTF-16 units would be off.
-    let broken = "Newspeak3\n'Test'\nclass Module = Object new () ( (* Grüße 😀 *) public broken = ( ^outer Missing foo ) ) : ()\n";
+    let broken = indoc! {"
+        Newspeak3
+        'Test'
+        class Module = Object new () ( (* Grüße 😀 *) public broken = ( ^outer Missing foo ) ) : ()
+    "};
     notify(
         &client,
         "textDocument/didOpen",
@@ -100,7 +105,11 @@ fn an_editor_session() {
         json!({ "line": 2, "character": column })
     );
 
-    let fixed = "Newspeak3\n'Test'\nclass Module = Object new () ( public echo: argument = ( ^argument ) ) : ()\n";
+    let fixed = indoc! {"
+        Newspeak3
+        'Test'
+        class Module = Object new () ( public echo: argument = ( ^argument ) ) : ()
+    "};
     notify(
         &client,
         "textDocument/didChange",
