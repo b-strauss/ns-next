@@ -2650,6 +2650,12 @@ fn rebuild_metaclasses<'gc>(
         let Some(&this_position) = position.get(&key) else {
             return Err(DecodeError::MetaclassPairing);
         };
+        // `position` is keyed from `pending`, which holds only `OBJECT_CLASS`
+        // records (`decode_class_record` never sets `this_class`), so this
+        // can never fire through the lookup above -- an untrusted image is
+        // decoded input, so the check stays as a second, independent guard
+        // of the same invariant rather than relying only on `position`'s
+        // construction elsewhere in this file.
         if context.mutator.heap.class_this_class(this_class).is_some() {
             return Err(DecodeError::MetaclassPairing);
         }

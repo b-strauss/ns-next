@@ -743,9 +743,8 @@ mod tests {
     /// than their own, each with that row's reported selector. `Behavior>>==`
     /// and `Metaclass>>==` forward to `value:sameAs:ifFail:`, reported `=`,
     /// so that `self class == other class` stays one leaf and no activation;
-    /// §3.1.1
-    /// asks a value's identity method to answer what its `=` answers, and
-    /// the one leaf is what makes them agree. The reported selector only
+    /// §3.1.1 asks a value's identity method to answer what its `=` answers,
+    /// and the one leaf is what makes them agree. The reported selector only
     /// ever names an error text, and that row raises none -- it answers or
     /// declines.
     const REPORTED_UNDER_ANOTHER_SELECTOR: &[(BuiltinClass, &str, &str)] = &[
@@ -912,7 +911,8 @@ mod tests {
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
-    /// mirror's class and `Platform`.
+    /// mirror's class, `Platform`, `Transcript`, `Collections`, `Behavior`,
+    /// `Class` and `Metaclass`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,

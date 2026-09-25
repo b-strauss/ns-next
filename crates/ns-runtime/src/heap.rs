@@ -1513,8 +1513,8 @@ impl<'gc> Heap<'gc> {
                     ObjectData::Symbol(symbol) => format!("the Symbol #{symbol}"),
                     ObjectData::Array(items) => format!("an Array of {}", items.len()),
                     ObjectData::Closure(_) => "a Block".to_string(),
-                    ObjectData::Class(data) => {
-                        format!("the class {}", data.application.mixin.name)
+                    ObjectData::Class(_) => {
+                        format!("the class {}", self.class_display_name(*object))
                     }
                     ObjectData::Instance(_) => {
                         let class = &self.objects[object.index as usize].class;
