@@ -749,11 +749,12 @@ fn a_cached_factory_instantiates_the_receiver_it_is_sent_to() {
     }
 }
 
-/// The guard is the receiver's class-side dispatch id, so a `Factory` entry
-/// recorded for a class whose factory selector is `new` cannot answer for
-/// `Beta`, whose factory is `with:`. §3.2's flat metaclass is what makes the
-/// entry safe without a re-check: `new` is not a member of `Beta`'s
-/// metaclass, and no class side is inherited for it to come from.
+/// The guard is the receiver's metaclass's instances id -- a class object's
+/// dispatch id is its metaclass's, since its class is its metaclass -- so a
+/// `Factory` entry recorded for a class whose factory selector is `new`
+/// cannot answer for `Beta`, whose factory is `with:`. §3.2's flat metaclass
+/// is what makes the entry safe without a re-check: `new` is not a member of
+/// `Beta`'s metaclass, and no class side is inherited for it to come from.
 #[test]
 fn a_cached_factory_does_not_answer_a_class_with_another_factory_selector() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {

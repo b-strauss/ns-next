@@ -1389,8 +1389,9 @@ pub(crate) fn check_value_slot<'gc>(
 /// class `Value`", which covers a `String`, a `Symbol`, an
 /// instance of a user class below `Value` and a `Value new` alike -- §3.2's
 /// "subclass of" is inclusive, so `Value`'s own application carries the
-/// flag (`Mutator::apply_mixin`). A class object is not one -- its own
-/// class is `Object`.
+/// flag (`Mutator::apply_mixin`). A class object is not one -- the
+/// `is_class` guard above excludes it, whatever its own class (its
+/// metaclass) inherits.
 ///
 /// **The other predicate about "is a value" is
 /// `builtins::value::state_is_a_value`**, which asks the narrower question

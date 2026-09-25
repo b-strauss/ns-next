@@ -1351,6 +1351,21 @@ fn encode_object<'gc>(
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let record = context.heap.object_snapshot(object);
+    // A class object -- never a metaclass, which always has one -- whose
+    // header is not its metaclass has none: either it never got one
+    // (`Mutator::new_class_object`, before the kernel phase's
+    // `metaclasses_ready`) or something else is wrong with its pairing.
+    // Writing the placeholder header anyway would silently claim it as the
+    // metaclass every class record's header names (`encode_object`'s next
+    // line), so this is refused up front rather than left for the loader
+    // to reject an image the encoder should never have written.
+    if let ObjectData::Class(data) = &record.data {
+        if data.this_class.is_none() && context.heap.class_metaclass(object).is_none() {
+            return Err(
+                "image encoding cannot serialize a class object without a metaclass".to_string(),
+            );
+        }
+    }
     // Every header is the object's class: a class record's names its
     // metaclass, and a metaclass record's names `Metaclass` (§3.2).
     encode_class_tag(writer, record.class, context);

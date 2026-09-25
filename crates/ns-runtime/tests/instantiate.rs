@@ -558,8 +558,9 @@ fn a_value_class_that_declares_a_mutable_slot_cannot_be_instantiated() {
 }
 
 /// §3.1.1's other half: *deeply* immutable, so a slot of a value may hold
-/// only another value. A class object is not one -- its own class is
-/// `Object` -- so storing one is refused as the slot is initialized, under
+/// only another value. A class object is not one -- `is_a_value`'s
+/// `is_class` guard excludes it, whatever its own class (its metaclass)
+/// inherits -- so storing one is refused as the slot is initialized, under
 /// the factory's selector.
 #[test]
 fn a_value_class_refuses_a_slot_that_is_not_a_value() {

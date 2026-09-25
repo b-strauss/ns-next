@@ -1,0 +1,6 @@
+stdout = '''
+caught #bar
+caught #zap
+caught #zork:with:
+an Object
+'''
