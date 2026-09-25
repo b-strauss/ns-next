@@ -4147,8 +4147,23 @@ default. New: `class-side/the_class_of_a_class_is_its_metaclass`,
 `kernel/a_value_modules_nested_class_is_a_value` and
 `kernel/a_values_slot_refuses_a_class_that_is_no_value`.
 
-**Measurement: not yet recorded — the measurement step (the plan's Task 8)
-replaces this paragraph with the numbers against `master`.**
+**Measured** against `3defb78`, the `master` it started from
+([execution.md](design/execution.md), "What `Behavior`, `Class` and
+`Metaclass` cost"), three layouts of each tree, four sittings pooled: **the
+fixtures are not level.** `bench_send.ns` is **6.0% slower** (8.58 → 9.10
+ms), `bench_loop.ns` 3.4% (7.31 → 7.57), `bench_megamorphic.ns` 3.4% (11.73
+→ 12.12) and `bench_block.ns` 3.5% against the base's two slower layouts
+(18.68 → 19.33; the base's plain build is the known fast layout, 16.06), each
+in every sitting. None of them creates a class object in its loop. A pinned
+build of every commit of the branch puts the whole step of `bench_send.ns`
+(+5%) and `bench_megamorphic.ns` (+4%) on `baf6f65`, "a class object's class
+is its metaclass"; `bench_loop.ns` climbs by 0.1–0.2 ms over several commits
+with no single step. What of `baf6f65` costs a send whose inline cache hits
+was not isolated; it is **an open finding**. The throwaway `bench_metaclass.ns`,
+100,000 × `Outer new Inner make`, is **17.3% slower** (38.76 → 45.45 ms),
+about 67 ns an iteration for the eager metaclass of each nested class object
+and its share of the send slowdown. `vm::run` shrank from 7,055 to 6,989
+instructions and is still one function, with no `vm::run::closure`.
 
 ## Notes
 

@@ -3589,6 +3589,97 @@ the after-rounds overlap the before-rounds — in the table's sitting,
 against 8.31–8.69, `bench_loop.ns` 7.11–7.38 against 7.00–7.28, where the
 two after-builds of `bench_loop.ns` alone are 2.4% apart.
 
+### What `Behavior`, `Class` and `Metaclass` cost
+
+Reifying §3.2's class hierarchy ([object-model.md](object-model.md), "Class
+sides and metaclasses") changed three things a release build runs.
+`resolve_public` and `resolve_lexical` lost their `is_class` branch: a class
+object is dispatched on its metaclass's instances id like any object, and the
+class-side chains are gone. Every class object is created with its metaclass
+(`Mutator::attach_metaclass`), so a nested class object made per enclosing
+instance costs two class objects where it cost one. A class object's `==` and
+`=` go through `Behavior`'s forwarders to the `value:sameAs:ifFail:` leaf.
+
+**Which sources can move.** The four fixtures under `goldens/bench/` create
+no class object in their loops and send no class-side message there. One
+throwaway source exercises the change, `bench_metaclass.ns`: a
+100,000-iteration `whileTrue:` loop whose body is `Outer new Inner make`,
+with `Inner` a public nested class of `Outer` whose class side declares
+`make = ( ^self new )` -- per iteration one instance of `Outer`, one class
+object `Inner` with its metaclass, one class-side send and one factory send.
+It prints `100000` under both trees.
+
+**Measured 2026-09-25, `f6e2b64` against `3defb78`**, the `master` it started
+from, by the protocol of "What removing the re-entries moved" above, with the
+layout variation of "What the value conditions cost": each tree built plain
+and with `-C metadata=layoutprobe` and `=secondprobe`, every build with the
+pinned flags, the six binaries differing byte for byte. None imports
+`VCRUNTIME140.dll`, and each printed the expected answer for every source
+first. The timing is `ns-next bench <source> --iterations 30`, five rounds a
+sitting, the six binaries rotating by one position from round to round, four
+sittings. Medians in ms per layout, the four sittings pooled (the median of
+the 20 round medians):
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.24 | 7.26 | 7.24 | 7.55 | 7.53 | 7.54 |
+| `bench_send.ns` | 8.54 | 8.57 | 8.53 | 9.07 | 9.13 | 9.14 |
+| `bench_block.ns` | 16.06 | 18.62 | 18.68 | 19.12 | 19.48 | 19.34 |
+| `bench_megamorphic.ns` | 11.69 | 11.67 | 11.86 | 12.12 | 12.07 | 12.16 |
+| `bench_metaclass.ns` | 38.45 | 38.87 | 38.88 | 45.14 | 45.69 | 45.40 |
+
+The base's three layouts against the head's three, means of the round
+medians, and the range of every round median of each tree:
+
+| Source | `3defb78` | `f6e2b64` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.31 | 7.57 | **+3.4%** | +3.5% / +3.7% / +2.5% / +3.9% | 7.14–7.55 / 7.33–8.65 |
+| `bench_send.ns` | 8.58 | 9.10 | **+6.0%** | +5.9% / +5.6% / +6.7% / +5.8% | 8.38–8.80 / 8.88–9.32 |
+| `bench_block.ns` | 17.86 | 19.33 | +8.2% | +9.1% / +7.2% / +8.0% / +8.6% | 15.92–19.24 / 18.75–19.86 |
+| `bench_megamorphic.ns` | 11.73 | 12.12 | **+3.4%** | +3.4% / +3.7% / +2.5% / +3.8% | 11.44–12.63 / 11.86–12.36 |
+| `bench_metaclass.ns` | 38.76 | 45.45 | **+17.3%** | +17.2% / +17.8% / +17.0% / +17.0% | 37.96–39.93 / 44.48–46.40 |
+
+**The fixtures are not level: `bench_send.ns` is 6.0% slower,
+`bench_loop.ns` and `bench_megamorphic.ns` 3.4%.** For `bench_send.ns` every
+round median of the head lies above every round median of the base; for the
+other two every layout mean of the head lies above every layout mean of the
+base, in every sitting, and the base's three layouts are within 0.3% (loop)
+and 1.6% (megamorphic) of each other. `bench_block.ns`'s plain base build is
+the fast layout of "What `Top`, `Value` and `Number` cost", 16.06 ms against
+18.62–18.68 for the base's other two; against those two alone the head is
+3.5% slower (+4.3% / +3.4% / +2.8% / +3.6% by sitting), with the groups
+overlapping. None of the four creates a class object or sends a class-side
+message in its loop, so this is not the eager metaclass.
+
+**One commit carries the fixtures' step.** A single pinned build of every
+commit of the branch, three rounds each: `bench_send.ns` stays at
+8.59–8.74 ms through `59f812a` and is 9.00–9.08 from `baf6f65` ("a class
+object's class is its metaclass") on; `bench_megamorphic.ns` stays at
+11.63–11.75 and is 12.06–12.17 from the same commit on. `bench_loop.ns`
+climbs in steps of 0.1–0.2 ms across several commits (7.13–7.21 at the base
+and the first commit, 7.31–7.35 from `0e9a2eb`, 7.37–7.54 from `e43b66a`) and
+has no single step. `baf6f65` removed the class-side chains from resolution
+and changed how dispatch ids are minted (one per application, where an
+application took an instances id and a class-side id); what of it costs a
+send whose inline cache hits was not isolated. It is an open
+finding ([PROGRESS.md](../PROGRESS.md), "`Behavior`, `Class` and
+`Metaclass`").
+
+**`bench_metaclass.ns` is 17.3% slower**, about 6.7 ms over 100,000
+iterations, some 67 ns for each `Outer new Inner make`: the metaclass built
+with each class object `Inner`, and whatever share of the send slowdown above
+its four sends pay. Every round of the head is above every round of the base.
+
+**`vm::run`'s step is still one function, and it shrank.** A release build
+with debug information of each tree, `dumpbin -disasm`: one function label
+`ns_runtime::vm::run` in each and no `vm::run::closure`. The base has **7,055
+instructions**, the head **6,989**. `resolve_public` grew from 148 to 178
+instructions and `resolve_lexical` from 319 to 377, both now reaching
+`resolved_for`, which has no label of its own and so is inlined into each,
+`inline_cache::global_hit` shrank from 1,040 to
+1,004, and each of the three `inline_cache::miss` instances grew by 135 to
+144; `resolve_class_side` is gone.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
