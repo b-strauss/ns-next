@@ -3609,7 +3609,7 @@ with `Inner` a public nested class of `Outer` whose class side declares
 object `Inner` with its metaclass, one class-side send and one factory send.
 It prints `100000` under both trees.
 
-**Measured 2026-09-25, `f6e2b64` against `3defb78`**, the `master` it started
+**Measured 2026-09-25, `1c1f624` against `3defb78`**, the `master` it started
 from, by the protocol of "What removing the re-entries moved" above, with the
 layout variation of "What the value conditions cost": each tree built plain
 and with `-C metadata=layoutprobe` and `=secondprobe`, every build with the
@@ -3622,63 +3622,100 @@ the 20 round medians):
 
 | Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
 |---|---|---|---|---|---|---|
-| `bench_loop.ns` | 7.24 | 7.26 | 7.24 | 7.55 | 7.53 | 7.54 |
-| `bench_send.ns` | 8.54 | 8.57 | 8.53 | 9.07 | 9.13 | 9.14 |
-| `bench_block.ns` | 16.06 | 18.62 | 18.68 | 19.12 | 19.48 | 19.34 |
-| `bench_megamorphic.ns` | 11.69 | 11.67 | 11.86 | 12.12 | 12.07 | 12.16 |
-| `bench_metaclass.ns` | 38.45 | 38.87 | 38.88 | 45.14 | 45.69 | 45.40 |
+| `bench_loop.ns` | 7.24 | 7.22 | 7.25 | 7.18 | 7.19 | 7.18 |
+| `bench_send.ns` | 8.51 | 8.56 | 8.52 | 8.57 | 8.56 | 8.61 |
+| `bench_block.ns` | 16.90 | 16.00 | 16.23 | 16.07 | 18.60 | 18.66 |
+| `bench_megamorphic.ns` | 11.68 | 11.73 | 11.66 | 11.37 | 11.37 | 11.44 |
+| `bench_metaclass.ns` | 38.92 | 38.62 | 38.51 | 44.34 | 44.07 | 44.22 |
 
 The base's three layouts against the head's three, means of the round
 medians, and the range of every round median of each tree:
 
-| Source | `3defb78` | `f6e2b64` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+| Source | `3defb78` | `1c1f624` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
 |---|---|---|---|---|---|
-| `bench_loop.ns` | 7.31 | 7.57 | **+3.4%** | +3.5% / +3.7% / +2.5% / +3.9% | 7.14–7.55 / 7.33–8.65 |
-| `bench_send.ns` | 8.58 | 9.10 | **+6.0%** | +5.9% / +5.6% / +6.7% / +5.8% | 8.38–8.80 / 8.88–9.32 |
-| `bench_block.ns` | 17.86 | 19.33 | +8.2% | +9.1% / +7.2% / +8.0% / +8.6% | 15.92–19.24 / 18.75–19.86 |
-| `bench_megamorphic.ns` | 11.73 | 12.12 | **+3.4%** | +3.4% / +3.7% / +2.5% / +3.8% | 11.44–12.63 / 11.86–12.36 |
-| `bench_metaclass.ns` | 38.76 | 45.45 | **+17.3%** | +17.2% / +17.8% / +17.0% / +17.0% | 37.96–39.93 / 44.48–46.40 |
+| `bench_loop.ns` | 7.35 | 7.24 | −1.4% | −1.0% / −1.2% / −2.3% / −1.1% | 7.13–8.36 / 7.07–7.50 |
+| `bench_send.ns` | 8.59 | 8.64 | +0.5% | +0.5% / +0.8% / +0.1% / +0.8% | 8.41–9.62 / 8.48–9.63 |
+| `bench_block.ns` | 16.42 | 17.81 | see below | +8.2% / +9.0% / +8.7% / +8.0% | 15.82–18.95 / 15.85–19.28 |
+| `bench_megamorphic.ns` | 11.70 | 11.45 | −2.1% | −1.4% / −2.5% / −2.0% / −2.7% | 11.45–12.15 / 11.27–12.34 |
+| `bench_metaclass.ns` | 38.68 | 44.29 | **+14.5%** | +14.5% / +14.3% / +14.8% / +14.4% | 38.09–39.34 / 43.32–45.79 |
 
-**The fixtures are not level: `bench_send.ns` is 6.0% slower,
-`bench_loop.ns` and `bench_megamorphic.ns` 3.4%.** For `bench_send.ns` every
-round median of the head lies above every round median of the base; for the
-other two every layout mean of the head lies above every layout mean of the
-base, in every sitting, and the base's three layouts are within 0.3% (loop)
-and 1.6% (megamorphic) of each other. `bench_block.ns`'s plain base build is
-the fast layout of "What `Top`, `Value` and `Number` cost", 16.06 ms against
-18.62–18.68 for the base's other two; against those two alone the head is
-3.5% slower (+4.3% / +3.4% / +2.8% / +3.6% by sitting), with the groups
-overlapping. None of the four creates a class object or sends a class-side
-message in its loop, so this is not the eager metaclass.
+**The fixtures are level.** `bench_send.ns` is within 0.5% and every layout
+of the head lies inside the base's range; `bench_loop.ns` and
+`bench_megamorphic.ns` are 1.4% and 2.1% faster, in every sitting.
+`bench_block.ns` is the bimodal source of "What `Top`, `Value` and `Number`
+cost": each tree has a fast layout near 16.0 ms and a slow one near 18.6, and
+the lottery gave the base two fast layouts (16.00, 16.23) and the head one
+(16.07). Fast layout against fast layout the head is 0.4% slower than
+`base-p`, which is the comparison that means anything here; the pooled +8.5%
+counts layouts, not the change. None of the four creates a class object or
+sends a class-side message in its loop.
 
-**One commit carries the fixtures' step.** A single pinned build of every
-commit of the branch, three rounds each: `bench_send.ns` stays at
-8.59–8.74 ms through `59f812a` and is 9.00–9.08 from `baf6f65` ("a class
-object's class is its metaclass") on; `bench_megamorphic.ns` stays at
-11.63–11.75 and is 12.06–12.17 from the same commit on. `bench_loop.ns`
-climbs in steps of 0.1–0.2 ms across several commits (7.13–7.21 at the base
-and the first commit, 7.31–7.35 from `0e9a2eb`, 7.37–7.54 from `e43b66a`) and
-has no single step. `baf6f65` removed the class-side chains from resolution
-and changed how dispatch ids are minted (one per application, where an
-application took an instances id and a class-side id); what of it costs a
-send whose inline cache hits was not isolated. It is an open
-finding ([PROGRESS.md](../PROGRESS.md), "`Behavior`, `Class` and
-`Metaclass`").
+**`bench_metaclass.ns` is 14.5% slower**, about 5.6 ms over 100,000
+iterations, some 56 ns for each `Outer new Inner make`: the metaclass built
+with each class object `Inner`. Every round of the head is above every round
+of the base.
 
-**`bench_metaclass.ns` is 17.3% slower**, about 6.7 ms over 100,000
-iterations, some 67 ns for each `Outer new Inner make`: the metaclass built
-with each class object `Inner`, and whatever share of the send slowdown above
-its four sends pay. Every round of the head is above every round of the base.
+**The step `baf6f65` put on a hit, and its cause.** Measured at the branch's
+last feature commit, `f6e2b64`, the fixtures were not level: `bench_send.ns`
+6.0% slower (8.58 → 9.10 ms), `bench_loop.ns` and `bench_megamorphic.ns`
+3.4% (7.31 → 7.57, 11.73 → 12.12), by the same protocol. A pinned build of
+every commit put the whole step of the two send sources on `baf6f65`, "a
+class object's class is its metaclass". Nothing on the path of a cache hit
+changed there -- the size of `Target`, `CacheEntry`, `Resolved` and `Step`
+did not move (only `ClassData` and `DispatchIds` shrank), `--cache-statistics`
+and `--collector-statistics` report the same fills and no collection for
+both commits, and `vm::run` calls the same set of functions out of line --
+so the step was code generation. A sampling profile (`samply` at 8 kHz,
+1,000 iterations of `bench_send.ns`, `dumpbin -disasm` of the same build)
+put the extra time in `vm::run` (+3,800 of about 74,000 samples), and 2,500
+to 3,000 of it on one instruction: the 16-byte load of a send's receiver
+that builds `Step::Method` for `tick:`, just after that receiver had been
+stored into the same slot as five pieces -- a byte for the tag, a byte for a
+Boolean, the two bytes of padding, a handle's word and the payload word. A
+load that spans several narrower stores cannot be forwarded from the store
+buffer and waits for them to retire.
 
-**`vm::run`'s step is still one function, and it shrank.** A release build
-with debug information of each tree, `dumpbin -disasm`: one function label
+The pieces came from the `SendKey` a cached send carries. It held the
+receiver as a `Value`, and once LLVM's SROA split the key's copy into the
+pieces the hit path reads (the tag, a Boolean's byte for its immediate id, an
+object's handle), every later whole `Value` -- the temporary a native takes by
+value, `Step::Method`'s receiver, the key a megamorphic send hands `miss` --
+was stored back piece by piece. `baf6f65` removed `chain_start`'s class-side
+arm, which read the key's receiver to find a metaclass; with it gone SROA
+split the key where before it had kept one memory copy. Putting a dead arm
+of the same shape back restores the base's time (8.61 against 9.13 ms on
+`bench_send.ns`, 11.67 against 12.19 on `bench_megamorphic.ns`), which is
+what located it; the arm alone, without the read of the receiver, restores
+about half. The fix is `1c1f624`: `SendKey` holds the receiver by
+reference, to the send's own local, so the local stays one object in memory
+and every whole copy of it is a single 16-byte move, whatever SROA does to
+the rest of the key. `vm::run` shrank from 6,989 to 6,741 instructions, its
+samples in that profile from 46,300 to 42,500, and the stalled load is gone.
+
+**What the profile shows beyond it.** The same kind of stall costs every
+tree, the base included, far more than this step did. In `bench_send.ns`
+about a quarter of all samples sit on three 16-byte loads in `vm::run` of a
+`Value` a callee has just written through its out-parameter with stores that
+do not line up with the load: the `Step::Value` `decide_slot_accessor`
+answers (a byte for the tag, two overlapping quadwords for the rest), at two
+sites, and the literal `vm::make_value` answers. `decide_slot_accessor`
+stalls the same way inside (another quarter of the samples, most of them on
+two instructions), and so does `push_activation` on the activation
+description `push_step` writes as a doubleword and a quadword and reads as
+one 16-byte field. None of them moved with this branch. Handing a `Value`
+back in a form that is written the way it is read is an open performance
+item, not part of this measurement.
+
+**`vm::run`'s step is still one function.** A release build with debug
+information of each tree, `dumpbin -disasm`: one function label
 `ns_runtime::vm::run` in each and no `vm::run::closure`. The base has **7,055
-instructions**, the head **6,989**. `resolve_public` grew from 148 to 178
-instructions and `resolve_lexical` from 319 to 377, both now reaching
-`resolved_for`, which has no label of its own and so is inlined into each,
-`inline_cache::global_hit` shrank from 1,040 to
-1,004, and each of the three `inline_cache::miss` instances grew by 135 to
-144; `resolve_class_side` is gone.
+instructions**, `f6e2b64` **6,989** and `1c1f624` **6,741**. From the base
+to `f6e2b64`, `resolve_public` grew from 148 to 178 instructions and
+`resolve_lexical` from 319 to 377, both now reaching `resolved_for`, which
+has no label of its own and so is inlined into each,
+`inline_cache::global_hit` shrank from 1,040 to 1,004, and each of the three
+`inline_cache::miss` instances grew by 135 to 144; `resolve_class_side` is
+gone.
 
 ## The trampoline
 
