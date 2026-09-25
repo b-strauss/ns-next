@@ -964,16 +964,38 @@ Two consequences:
   does not derive a value's equality from its state at all, which ns-next
   does, so it is no guide here.
 
-  `Behavior` declares `=`, `==` (answering `self = other`, as §3.1.1 asks of
-  a value's identity method) and `hash`. `=` starts with a leaf that answers
-  at once when the two are identical, when either is no value or when their
-  applications differ, and declines only for two value class objects of one
-  application with distinct enclosing or superclass objects, which Newspeak
-  then compares with `=` — a leaf may not send, exactly as for `Value>>=`.
-  The common `self class == other class` stays one leaf and no activation.
-  `hash` of a value class object is derived from its application and the
-  hashes of its enclosing and superclass objects; every other class object
-  keeps its identity hash.
+  The comparison is `builtins::value`'s existing walk, extended by class
+  objects as a node kind, not a second walk beside it. That walk compares
+  the classes of every pair of nodes by identity today, which would make
+  `a Nested new = b Nested new` false for `a = b` once those two classes
+  are distinct objects; so the class comparison at every node becomes a
+  pushed pair too. Two identical class objects are equal at once; two value
+  class objects of one application push the pair of their enclosing objects
+  and the pair of their superclass class objects; two metaclasses push the
+  pair of their `this_class`; anything else is unequal. The walk's node
+  budget and its handling of cycles cover class objects with that. Where
+  the walk declines — an enclosing value whose class brings its own `=` —
+  Newspeak compares, as `Value>>=`'s fallback already does, since a leaf may
+  not send.
+
+  `Behavior` declares `=` and `==` (the same answer, as §3.1.1 asks of a
+  value's identity method), both forwarding to that leaf, so the common
+  `self class == other class` stays one leaf and no activation, and `hash`.
+  The hash of a class object that is a value is derived from its mixin's
+  name alone: equal class objects share an application, hence a mixin,
+  hence a name, so it is a valid hash, and unlike one that folds in the
+  enclosing object's hash it never unfolds a builtin class's enclosing
+  `Kernel` instance, whose `vmMirror` slot the walk declines. The name, not
+  the application's dispatch id, because a name survives a copy and an
+  image round trip and a dispatch id is minted afresh on load. Classes of
+  one mixin under different enclosing objects collide, which is coarse, not
+  wrong. Every other class object keeps its identity hash. None of the
+  references decides either question: SOMns compares values by identity
+  (`EqualsPrim.doValues`) and hashes a class by identity, Newspeak on
+  Squeak's `Value` overrides neither `=` nor `hash`, and Primordial Soup has
+  no `Value` — each shares values between actors in one address space
+  rather than copying them, which §3.1.1 allows ("copied freely … or
+  shared") and which makes identity unobservable as a difference.
 
 **The image format.** A metaclass is never a record of its own; it is
 derived, never stored twice, as the factory entry is. A reference to a
