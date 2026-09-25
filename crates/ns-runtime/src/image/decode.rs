@@ -732,6 +732,9 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         17 => BuiltinClass::Number,
         18 => BuiltinClass::Transcript,
         19 => BuiltinClass::Collections,
+        20 => BuiltinClass::Behavior,
+        21 => BuiltinClass::Class,
+        22 => BuiltinClass::Metaclass,
         _ => return None,
     })
 }
@@ -744,9 +747,9 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
     })
 }
 
-/// A builtin class a *program* names: a class reference in the graph, a root
-/// class's superclass, the builtin a `<:` clause named (a class record's
-/// `MIXIN_BUILTIN`, a root level). Two tags are refused here, because no
+/// A builtin class referenced in the graph: a class reference recorded as a
+/// value (`CLASS_BUILTIN`), which from Task 4 on can hold `Metaclass` -- `3
+/// class class class` reaches it. Two tags are refused here, because no
 /// source module can produce them and an artifact that carried one would
 /// decode into a program the language does not admit. The VM mirror's class:
 /// there is exactly one mirror, and an artifact that could name its class
@@ -756,7 +759,7 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// methods. `Object` declares an accessor for neither, for the same reasons,
 /// which is what keeps source and artifact agreed on the names a program has.
 /// Only the closing hash table names them, by tag, as it names every builtin.
-pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     match read_builtin_class(reader)? {
         BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
@@ -766,6 +769,24 @@ pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, D
             what: "builtin class a program may name",
             tag: 15,
         }),
+        kind => Ok(kind),
+    }
+}
+
+/// A builtin class a *program* names as a superclass or as the mixin of a
+/// `<:` clause. `read_referenced_builtin_class`'s two refusals, and three
+/// more: `Behavior`, `Class` and `Metaclass`, which `Object` declares no
+/// accessor for, so no source module can name them either; a class over
+/// one of them could never be instantiated (`InstantiationRefusal::ClassObject`).
+pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+    let kind = read_referenced_builtin_class(reader)?;
+    match kind {
+        BuiltinClass::Behavior | BuiltinClass::Class | BuiltinClass::Metaclass => {
+            Err(DecodeError::InvalidTag {
+                what: "builtin class a program may name",
+                tag: crate::image::encode::builtin_class_tag(kind),
+            })
+        }
         kind => Ok(kind),
     }
 }
@@ -1947,7 +1968,7 @@ pub fn decode_class_tag<'gc>(
     match reader.read_u8()? {
         CLASS_BUILTIN => Ok(context
             .mutator
-            .builtin_class(read_program_builtin_class(reader)?)),
+            .builtin_class(read_referenced_builtin_class(reader)?)),
         CLASS_USER_ROOT => Ok(*context.root_class),
         CLASS_RECORD => decode_object_id(reader, tables),
         CLASS_ROOT_LEVEL => {

@@ -74,6 +74,20 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )
         public ifNotNil: notNilBlock ifNil: nilBlock = ( ^notNilBlock cull: self )
     )
+    (* §3.2: "Each class is an instance of a unique metaclass. All
+       metaclasses are instances of class Metaclass, and are direct
+       subclasses of Class." The specification names neither `Behavior`
+       nor `Metaclass`'s superclass; this is Primordial Soup's hierarchy,
+       which keeps what only a real class has on `Class` so that a
+       metaclass does not inherit it. A class object's state lives in the
+       runtime (`ClassData`), as SOMns keeps it in `SClass`; these three
+       carry behaviour only. `Object` declares no accessor for any of them. *)
+    public class Behavior = Object new () (
+    )
+    public class Class = Behavior new () (
+    )
+    public class Metaclass = Behavior new () (
+    )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
        class whose instances are values hangs below this one.

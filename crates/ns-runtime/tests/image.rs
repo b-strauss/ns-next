@@ -1085,6 +1085,61 @@ fn an_invalid_builtin_class_tag_at_the_root_section_is_a_decode_error_not_a_pani
     );
 }
 
+/// A root class's superclass tag can decode to `Metaclass` once
+/// `CLASS_BUILTIN` can hold it (a value's class chain reaching it, from Task
+/// 4 on), but a program may still not *declare* a root over it:
+/// `decode_root_section` reads the superclass through
+/// `read_program_builtin_class`, which refuses `Behavior`, `Class` and
+/// `Metaclass` the same way it refuses the VM mirror's class and `Top`.
+/// Patched into a real binary and located the way `corrupt_first_symbol_id`
+/// locates the symbol table's count, so this exercises the whole `load`
+/// pipeline, not `decode_root_section` alone.
+#[test]
+fn a_root_superclass_naming_metaclass_is_refused() {
+    let (mut interpreter, class) = load(ENTRY_SOURCE);
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let mut binary = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build")
+    });
+
+    let superclass_tag_at = {
+        let mut reader = decode::Reader::new(&binary);
+        let header = decode::read_header(&mut reader).expect("valid header");
+        if header.has_source {
+            reader.read_str().expect("source");
+        }
+        decode::decode_source_origin(&mut reader).expect("origin");
+        let symbols = symbols::decode(&mut reader).expect("symbols");
+        let mut table = decode::decode_code_table(&mut reader, &symbols).expect("code table");
+        decode::verify_code_table(&table).expect("verify code table");
+        decode::number_call_site_families(&mut table).expect("number call site families");
+        mixins::decode(&mut reader, &symbols, &table.codes).expect("mixins");
+        // The root section opens with the "has superclass" boolean, then the
+        // superclass's builtin-class tag byte.
+        reader.position() + 1
+    };
+    binary[superclass_tag_at] = encode::builtin_class_tag(BuiltinClass::Metaclass);
+
+    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has no
+    // `Debug` impl, so neither type has one.
+    let error = match image::load(&binary) {
+        Ok(_) => panic!("a root superclass naming Metaclass must be refused"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("builtin class a program may name"),
+        "unexpected error: {error}"
+    );
+}
+
 #[test]
 fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     // An unknown operation byte must be refused, never defaulted to an

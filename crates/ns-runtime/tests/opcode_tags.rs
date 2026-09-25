@@ -314,6 +314,9 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Number), 17);
     assert_eq!(builtin_class_tag(BuiltinClass::Transcript), 18);
     assert_eq!(builtin_class_tag(BuiltinClass::Collections), 19);
+    assert_eq!(builtin_class_tag(BuiltinClass::Behavior), 20);
+    assert_eq!(builtin_class_tag(BuiltinClass::Class), 21);
+    assert_eq!(builtin_class_tag(BuiltinClass::Metaclass), 22);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);

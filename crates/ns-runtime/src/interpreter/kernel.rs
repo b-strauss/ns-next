@@ -85,6 +85,9 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Top => "Top",
         BuiltinClass::Value => "Value",
         BuiltinClass::Number => "Number",
+        BuiltinClass::Behavior => "Behavior",
+        BuiltinClass::Class => "Class",
+        BuiltinClass::Metaclass => "Metaclass",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }

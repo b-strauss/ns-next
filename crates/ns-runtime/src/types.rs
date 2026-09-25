@@ -259,6 +259,16 @@ pub enum BuiltinClass {
     /// §3.1.1 lists `Number` among the classes whose instances are values;
     /// `Integer` and `Float` are its subclasses.
     Number,
+    /// What a class and a metaclass share (`newspeak-spec.pdf` §3.2 names
+    /// neither this class nor `Metaclass`'s superclass; the hierarchy is
+    /// Primordial Soup's). No program can name it, and no class that
+    /// inherits it can be instantiated: class objects are made only by
+    /// evaluating a declaration.
+    Behavior,
+    /// §3.2: every metaclass is a direct subclass of `Class`.
+    Class,
+    /// §3.2: every metaclass is an instance of `Metaclass`.
+    Metaclass,
 }
 
 impl BuiltinClass {
@@ -270,7 +280,7 @@ impl BuiltinClass {
     /// siblings. So this is *not* a superclass-first order: the kernel phase
     /// sorts the kinds by their depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 19] = [
+    pub const ALL: [BuiltinClass; 22] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -290,6 +300,9 @@ impl BuiltinClass {
         BuiltinClass::Top,
         BuiltinClass::Value,
         BuiltinClass::Number,
+        BuiltinClass::Behavior,
+        BuiltinClass::Class,
+        BuiltinClass::Metaclass,
     ];
 }
 

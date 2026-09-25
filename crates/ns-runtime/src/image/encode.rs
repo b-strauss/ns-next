@@ -203,6 +203,9 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Number => 17,
         BuiltinClass::Transcript => 18,
         BuiltinClass::Collections => 19,
+        BuiltinClass::Behavior => 20,
+        BuiltinClass::Class => 21,
+        BuiltinClass::Metaclass => 22,
     }
 }
 
