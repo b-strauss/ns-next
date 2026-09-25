@@ -1,9 +1,9 @@
 # Core library and the platform
 
 > **Status:** partial — the core library is built as Newspeak source,
-> `Kernel.ns`, over one VM mirror; missing are `Class`, `Behavior` and
-> `Metaclass` (step 6's third plan) and `Integer>>/`, and the surface grows
-> on demand, not speculatively.
+> `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
+> `Metaclass` included; missing is `Integer>>/`, and the surface grows on
+> demand, not speculatively.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
@@ -42,12 +42,27 @@ Top                     (private; no superclass, declares nothing)
     │   └── Collections List
     ├── Array
     ├── OrderedCollection
-    └── Block
+    ├── Block
+    └── Behavior        =, ==, hash (a class object's, derived from its state
+        │               when it is a value)
+        ├── Class       name, printString
+        └── Metaclass   name, printString, =, ==
 ```
 
 The mirror's class is the one builtin `Kernel.ns` does not declare; the
 bootstrap builds it below `Value`, so the mirror is a value ("The bootstrap:
 placeholders first, kernel second" below).
+
+`Behavior`, `Class` and `Metaclass` are §3.2's reified class hierarchy: every
+class object's class is its own metaclass — its class side applied to
+`Class` — and every metaclass's class is `Metaclass`. They carry behaviour
+only; a class object's state stays in the runtime's `ClassData`, and their
+leaves are in `builtins/behavior.rs`: a class's name
+(`className:ifFail:`), a metaclass's class (`metaclassThisClass:ifFail:`),
+and the three parts of a class object's state `Behavior>>=`'s fallback
+compares. `Object` declares no accessor for any of the three, and nothing
+below `Behavior` can be instantiated
+([object-model.md](object-model.md), "Class sides and metaclasses").
 
 That is §3.2's shape and §3.1.1's, taken literally. §3.2 says "a class is
 either the empty class `Top` or the application of a mixin to another class",
@@ -479,19 +494,17 @@ the last of those is sketched in
 [liveness-and-reflection.md](liveness-and-reflection.md). Beyond that, "widen
 when a whitelisted module demands it" still governs what gets added.
 
-**Step 6 also carries the rest of §3.2** (decided 2026-09-18): `Class`,
-`Behavior` and `Metaclass` become declared kernel classes rather than objects
-hand-built in Rust, and a class object's own class becomes its metaclass. That
-is its third plan, not built yet. Both references declare exactly these three
-in their kernel source
-(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
-`prior-art/newspeak/KernelForJS.ns`); the reflection work right after this
-step cannot start without them — a mirror's test for a metaclass is
-`Metaclass = classOf: reflectee`, which needs the instance-of relation
-reified. The flat metaclass hierarchy that §3.2 also requires did *not* wait
-for this step: it was corrected ahead of 3c, because the primary factory's
-special cases depended on it ([object-model.md](object-model.md), "Class
-sides and metaclasses").
+**Step 6 also carried the rest of §3.2** (decided 2026-09-18, built
+2026-09-25 by its third plan): `Class`, `Behavior` and `Metaclass` are
+declared kernel classes, and a class object's own class is its metaclass
+("What exists" above). Both references declare exactly these three in their
+kernel source (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
+`prior-art/newspeak/KernelForJS.ns`), and the reflection work needs them — a
+mirror's test for a metaclass is `Metaclass = classOf: reflectee`, which
+needs the instance-of relation reified. The flat metaclass hierarchy that
+§3.2 also requires came first: it was corrected ahead of 3c, because the
+primary factory's special cases depended on it
+([object-model.md](object-model.md), "Class sides and metaclasses").
 
 What is decided is *where a builtin may live*, and it is a constraint on future
 work rather than a wish. Everything in this runtime must stay optimizable,
@@ -596,9 +609,10 @@ one of them lets a program claim every primitive:
   `objects_class_accessors_are_exactly_the_nameable_builtins` pins the
   accessor set, and `compiler::primitive_method` recognizes no accessor for
   either), so a bare name for it ends in `doesNotUnderstand:`; and the image
-  decoder refuses builtin class tag 14 wherever a program names a class
+  decoder refuses builtin class tag 14 wherever the graph names a class
   ([image-format.md](image-format.md), "Verification").
-- The image encoder refuses an image whose graph reaches the mirror.
+- The image encoder refuses an image whose graph reaches the mirror, its
+  class or its class's metaclass.
 - `decide_factory` refuses to instantiate the mirror's class, so there is
   never a second mirror.
 - `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
@@ -821,11 +835,12 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    — installed with `Heap::set_class_application`, which restamps the
    dispatch id of the few objects that exist this early, and the class
    object's superclass link set to match. `Value`'s *mixin* is recorded just
-   before `Value` is filled, rather than its application after the loop:
+   before `Value` is filled, and `Behavior`'s just before `Behavior` is, rather than its application after the loop:
    `apply_mixin` asks whether the mixin it is applying is that one, so that
    `Value`'s own application also carries `inherits_value` (§3.2's "subclass
-   of" is inclusive, so `Value new` is a value), and every class below it
-   reads the flag off its superclass.
+   of" is inclusive, so `Value new` is a value) and `Behavior`'s carries the
+   refusal to instantiate a class object, and every class below each reads
+   it off its superclass.
    `VmMirror` keeps its own Rust mixin, re-applied over the filled `Value`
    (`superclass_of_kind`); `fill_order` sorts by depth, so `Value` is filled
    first.
@@ -834,7 +849,13 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
 5. **The kernel class is built and instantiated** from the host, with the
    mirror as its factory argument: `Kernel vmMirror: theMirror`. Its root is
    `Object <: Value`, so its `Value` level is built first, over the filled
-   `Object`, with `nested::build_applied_levels`, as a user root's is. The
+   `Object`, with `nested::build_applied_levels`, as a user root's is. Before
+   the instantiation, every class object built so far — each builtin, the
+   `Value` level and the kernel's own class — gets its metaclass over the
+   filled `Class` (`Mutator::give_existing_class_objects_metaclasses`): until
+   here each carried the builtin `Object` as a provisional class, and from
+   here on `new_class_object` builds a metaclass with every class object
+   ([object-model.md](object-model.md), "Class sides and metaclasses"). The
    instantiation is an ordinary host run, so the stress modes see it.
 6. **The instance is wired in.** Every builtin class's `enclosing` becomes the
    kernel instance and its `declaring_class` the kernel class, so a kernel
@@ -845,9 +866,10 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    the kernel's own `Value` level, built before the instance existed, is
    given the kernel instance and class as its lexical context too; and
    the instance is kept as `Mutator::kernel`, a root beside the mirror
-   ([memory.md](memory.md), "What the collector traces"). The phase checks
-   that the slot holds the mirror, and that no metaclass was built before this
-   point, since a metaclass copies its class's lexical context.
+   ([memory.md](memory.md), "What the collector traces"). Each of those
+   classes' metaclasses is given the same lexical context, since a metaclass
+   shares its class's (§6.3 writes a class side inside its class's
+   declaration). The phase checks that the slot holds the mirror.
 
 The resolved kernel is parsed and resolved once per thread and kept
 (`thread_local!`): the test suite bootstraps an interpreter well over a
@@ -1034,7 +1056,8 @@ the same send, run in the clause's activation. A module root's clauses stay
 unbound and are decided by the root rule
 ([object-model.md](object-model.md), "The root rule"), since §3.8 leaves a
 top-level expression no receiver. Class-side code reaches the accessors
-through the fall-through to `Object`'s methods after a metaclass miss. A
+through its class object's ordinary lookup, which searches the class side,
+then `Class`, `Behavior` and `Object`. A
 name with no binding — a root clause's receiver, never run, and bare
 `super` — lowers to the deferred `UnresolvedIdentifier` under both
 lowerings, so compiling stays total ([dispatch.md](dispatch.md), "Binding

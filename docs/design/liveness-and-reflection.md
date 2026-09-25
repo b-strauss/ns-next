@@ -3,7 +3,7 @@
 > **Status:** planned. Nothing in this document is built. What *is* built is the
 > groundwork every part of it depends on — reified activations, the safepoint
 > statement→program-counter table, stable call-site identity, source and provenance retention,
-> identity hashes — each described in the document for its own aspect.
+> identity hashes, §3.2's reified class hierarchy — each described in the document for its own aspect.
 > **Code:** none yet.
 
 This is the constraints document. It binds every milestone even though it
@@ -154,6 +154,16 @@ A **MirrorBuilder** applies class changes:
 Edit-and-continue is then a special case: a mirror on the suspended activation,
 plus a method replacement, plus the ability to resume.
 
+**The instance-of relation a class mirror needs exists.** A mirror tells a
+metaclass from a class by `Metaclass = classOf: reflectee`, which needs every
+class object's class to be its metaclass and every metaclass's class to be
+`Metaclass`, as §3.2 says. Both hold: `Behavior`, `Class` and `Metaclass`
+are declared classes of `Kernel.ns`
+([object-model.md](object-model.md), "Class sides and metaclasses"). The
+classes themselves answer only `name` and `printString`; `superclass`,
+`selectors` and the rest are the mirror's to answer, so holding a class
+grants no reflective capability.
+
 **The VM mirror's class must be sealed against it.** The compiler binds a
 kernel mirror send to its leaf at compile time (`Instruction::SendMirror`),
 and a primitive method carries its leaf on the method, both on the ground
@@ -253,8 +263,14 @@ any level of the class chain, that is not a value
 a value class lives in a module that declares itself a value with §6.2's
 mixin application, `= Object <: Value`, as `Kernel.ns` does.
 
+A class object is a value exactly when its enclosing object is, so a module
+definition, which has none, is one (§6.4), and so is a class nested in a
+value; such a class has no identity either, its `=` and `hash` derived from
+its state ([object-model.md](object-model.md), "Class sides and
+metaclasses").
+
 What is missing is the boundary: there are no actors, so nothing copies a value
-across one, and a module definition is not yet a value object (§8.1). Neither is
+across one. Neither is
 a looser "provably non-aliased or frozen data" notion to be substituted when
 concurrency arrives — the vocabulary above is the specification's own.
 

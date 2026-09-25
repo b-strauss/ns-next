@@ -176,8 +176,8 @@ member of that name therefore reaches its own, as §2.3.1 says
 (`goldens/nesting/a_module_that_declares_string_uses_its_own.ns`,
 `goldens/nesting/an_inherited_member_named_like_a_builtin_wins.ns`,
 `goldens/nesting/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
-and a class-side method reaches `Object`'s accessor through the fall-through
-after a metaclass miss
+and a class-side method reaches `Object`'s accessor through its class
+object's ordinary lookup — class side, `Class`, `Behavior`, `Object`
 (`goldens/class-side/a_class_side_method_names_a_builtin.ns`). `Object`
 declares no accessor for `Top`, the VM mirror's class or `Platform`, so
 `self Top`, like a bare `Top`, ends in `doesNotUnderstand:`
@@ -309,17 +309,13 @@ by the presence-only "defined for" relation instead: the first
 `doesNotUnderstand:` found walking the receiver's class chain, whatever its
 access modifier.
 
-**Deviation: a class side's own `doesNotUnderstand:` is unreachable.** An
-ordinary send to a class object searches the metaclass, so a class-side method
-answers; but the `doesNotUnderstand:` walk starts at `class_of(receiver)`,
-which for a class object is the builtin `Object` class rather than the
-metaclass, so a `doesNotUnderstand:` declared on a class side is never
-invoked and the send raises the default error instead. §5.5 gives the handler
-no such exception: it is "the `#doesNotUnderstand:` method defined for the
-class of the receiver", and the class side is part of what a class object
-answers to. The asymmetry is the implementation's own -- class-side *methods*
-are reachable by the same receiver -- rather than a consequence of reifying no
-`Class`, though it disappears when §3.2's hierarchy is reified in step 6.
+**A class side's own `doesNotUnderstand:` handles its class object's
+sends.** §5.5's handler is "the `#doesNotUnderstand:` method defined for the
+class of the receiver", and a class object's class is its metaclass (§3.2),
+so the walk from `class_of(receiver)` meets a class side's
+`doesNotUnderstand:` before `Object`'s, for an explicit-receiver send, an
+implicit-receiver send inside a class-side method and a keyword send alike
+(`goldens/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
 
 **Deviation: the reified message is a two-element tuple.** §3.4 says a message
 "may be *reified* by the implementation by means of a *message mirror*", "an
@@ -738,7 +734,8 @@ should not look for them: a vacant lexical site *may* read the global cache,
 since its `Lexical` key carries N's application ("The global cache"); a
 `super` send's handler target re-checks no factory, since §6.3's factory
 entry and §3.2's flat metaclass leave a factory reachable only on the
-receiver's own metaclass, which the class-side guard determines; and the
+receiver's own metaclass, which the guard — that metaclass's instances id —
+determines; and the
 decoder requires no dense call-site numbering on the wire, because it assigns
 a family's numbers itself ("Bytecode and image").
 
@@ -777,19 +774,22 @@ two sittings ([execution.md](execution.md), "What the inline caches moved").
 #### The dispatch id
 
 The id (`mixin::DispatchId`) is a dense `u32`, minted per heap by a
-counter in the `Mutator` when `apply_mixin` creates an application — two per
-application, one for its instances and one for its class objects' class side,
-since every class object's class is the one builtin `Object` class and its behaviour
-(its metaclass, the factory among its members, then `Object`'s own) depends
-on its application alone. The
-two are minted consecutively, so the class side's is always the instances id
-plus one (`DispatchId::class_side`). `MixinApplication.dispatch_ids` keeps
-the pair; a class object keeps a copy of the instances id
-(`ClassData.dispatch_id`), which is where allocation and restamping read it.
+counter in the `Mutator` when `apply_mixin` creates an application — one per
+application, for its instances (`MixinApplication.dispatch_ids`,
+`DispatchIds.instances`). There is no second, class-side id: a class
+object's class is its metaclass (§3.2), an application of its own, so a
+class object's id is that metaclass's instances id like any other object's,
+and its behaviour — its class side, the factory among its members, then
+`Class`, `Behavior` and `Object` — is what that application's lookup finds.
+A class object keeps a copy of its application's instances id
+(`ClassData.dispatch_id`), which is where allocation and restamping read it
+for the objects whose class it is.
 
 **The id a guard reads is in the object header** (`Object.dispatch_id`),
-stamped at allocation — an instance's from its class's instances id, a class
-object's from its own class-side id — so `Heap::dispatch_id(value)` answers
+stamped at allocation from the object's class's instances id — an
+instance's from its class, a class object's from its metaclass — and
+restamped by `Heap::set_object_class` when `Mutator::attach_metaclass`
+changes a header, so `Heap::dispatch_id(value)` answers
 an object's in one arena load, and a guard is that load and one compare, for
 instances and class objects alike. It is where V8 (the map), HotSpot (the
 klass pointer), Cog (the class index) and Primordial Soup (the class id) keep
@@ -835,8 +835,10 @@ In `interpreter/resolve.rs`, a send's decision is split in two.
 three lookup algorithms" and "Resolving a lexical send at run time", their order
 and their rules unchanged, and each answers a `Resolved`: what it found, with
 its defining class as a handle, and the `Chain` it was found on — `Public`,
-`PublicClassSide`, `Protected`, `ProtectedClassSide`, `Private`, `Super`, or one
-of the handler chains, `DoesNotUnderstand` and `SuperDoesNotUnderstand`. The
+`Protected`, `Private`, `Super`, or one of the handler chains,
+`DoesNotUnderstand` and `SuperDoesNotUnderstand`. A class object needs no
+chain of its own: its public and protected lookups start at its class, its
+metaclass, like any object's. The
 chain says which class object the defining class is counted from. A
 `Resolved` is one of:
 
@@ -848,9 +850,10 @@ chain says which class object the defining class is counted from. A
 - `Primitive` — the primitive and its level: a mirror row, found only on the
   mirror's class;
 - `Factory` — §6.3's primary factory, an entry of the receiver's metaclass
-  mixin, with the class object §6.3 instantiates: the receiver, whichever
-  level of the metaclass chain held the entry. Found on one of the two
-  class-side chains and nowhere else;
+  mixin, with the class object §6.3 instantiates: the receiver. Honoured
+  only when the lookup found it on the receiver's own class, its metaclass
+  (`resolved_for`), on the `Public` or `Protected` chain; found anywhere
+  else — which only a crafted image can arrange — it is `Unhandled`;
 - `Unhandled` — nothing handles the send, not even `doesNotUnderstand:`.
 
 A `doesNotUnderstand:` handler is a `Method` or `Slot` on a handler chain
@@ -890,7 +893,7 @@ and three states a site can be in, each guarded by `VACANT`: `Vacant`,
 no handle. The defining class is a class object per enclosing instance, so it
 is not recorded but recomputed on a hit, `level` superclass steps from the
 chain's start (`chain_start`): the receiver's class for `Public`, `Protected`
-and `DoesNotUnderstand`, its metaclass for the two class-side chains, N itself
+and `DoesNotUnderstand` — for a class object, its metaclass — N itself
 for `Private`, and S, the superclass of `current_class`, for the two `super`
 chains. `level` is 0 in the common case, and a target more than `u16::MAX`
 levels up is not recorded; nor is `Unhandled`. A release `Target` is 16 bytes
@@ -1028,8 +1031,9 @@ so it gains no dispatch logic:
 
 1. The site's index; none means the uncached send.
 2. The key (`SendKey`). `SendPublic`: `dispatch_id(receiver)`; for a class
-   object that is its class side, which covers the order of metaclass —
-   class-side members and the factory alike — then `Object`'s behaviour. `SendLexical`:
+   object that is its metaclass's instances id, which covers the order of
+   the whole lookup — class-side members and the factory, then `Class`,
+   `Behavior` and `Object`. `SendLexical`:
    `o = kth_enclosing_object(...)`, then `dispatch_id(o)`, or N's instances
    id at a private site (below). `SendSuper`: the instances id of
    `current_class`'s application; the receiver stays `self`, and a send with
@@ -1065,8 +1069,8 @@ failure block ("A primitive can fail" above). An entry whose primitive
 method's leaf declined stays, as Cog keeps a method whose primitive
 failed. `Factory` instantiates the receiver (`instantiate::decide_factory`),
 re-checking nothing the lookup decided — §3.2's flat metaclass leaves the
-entry reachable only on the receiver's own metaclass, which the class-side
-guard determines — but reading `ClassData.builtin` off the receiver on every
+entry reachable only on the receiver's own metaclass, which the guard
+determines — but reading `ClassData.builtin` off the receiver on every
 send, because `Array` and `OrderedCollection` need an `ObjectData::Array`
 payload and no entry carries which kind of instance to build ("Every target is
 a function of its key and its site" below). A
@@ -1086,16 +1090,9 @@ records, and `act` reads it off that method on every send. A class object's fact
 selector is no longer among them: §6.3 makes it the selector the entry is
 filed under in the metaclass's method table, which the guard covers.
 
-The audit also covers the class-side fall-through: once the metaclass lookup
-finds nothing, `resolve_public` re-reads the class object's own `class` field
-(`class_of`) to reach `Object`'s methods, and that read is outside the key
-too — the class-side guard is
-the metaclass's dispatch id, never the class object's own. Built from source
-this is never a problem: every class object's class is the one builtin
-`Object` class, so the field never varies. A crafted image could still give a class object a
-different `class` than the guard assumes; the result is wrong but safe, never
-a panic, because the level walk from there runs through the same
-`Option`-returning steps (`metaclass_of`, `class_of`) as any other lookup.
+A class object's own `class` field is not such a read: it is the metaclass
+the lookup starts from, and the guard is that metaclass's instances id, so
+the key covers it as it covers an instance's class.
 
 #### The private rule, decided once per site
 
@@ -1221,8 +1218,8 @@ under the gate. Targeted tests pin, through a test view of a site's state
   `InitializeSlot`;
 - `super` in a mixin applied under two superclasses;
 - a private lexical site with a changing `o`;
-- class objects: a factory send, a class-side method and `Object`'s
-  behaviour, at one site that also sees instances;
+- class objects: a factory send, a class-side method and `Class`'s and
+  `Object`'s behaviour, at one site that also sees instances;
 - `doesNotUnderstand:` with `Object`'s handler, a user handler, and the
   setter of a slot named `doesNotUnderstand`;
 - a cached primitive that fails;
@@ -1331,15 +1328,15 @@ interpreter's measurement cannot see:
 
 - **A JIT tier's guard.** With the id in the header, a compiled guard is one
   compare against the receiver at a fixed offset. On the class object it is
-  two dependent loads, a check that the class is a class object, and a branch
-  for the class side's plus one. V8, HotSpot, Cog and Primordial Soup all keep
+  two dependent loads, a check that the class is a class object, and — as it
+  was then — a branch for the class side's id. V8, HotSpot, Cog and Primordial Soup all keep
   it in the header. In the interpreter the difference is lost in the run
   loop's own overhead, which is why the protocol cannot show it.
-- **Step 6 makes the stamping uniform.** Once `Class`, `Behavior` and
+- **Step 6 made the stamping uniform.** `Class`, `Behavior` and
   `Metaclass` are reified and a class object's class is its metaclass
-  ([object-model.md](object-model.md), "Class sides and metaclasses"), every
-  header id comes from the object's class, and the class-side special case in
-  the stamping goes.
+  ([object-model.md](object-model.md), "Class sides and metaclasses"), so
+  every header id comes from the object's class, and the class-side special
+  case in the stamping is gone.
 - **Between the two header variants, C2+ is the smaller for the same
   speed**: C2 costs 8 bytes an object, the amplification and the working set
   for nothing measured. The open question beside it — whether closure
@@ -1515,7 +1512,7 @@ dispatches on one.
     a `super` send's `doesNotUnderstand:` target. The re-checks are
     unnecessary once metaclasses are flat (the decision below, taken with
     this one): a factory entry is then reachable only on the receiver's own
-    metaclass, which the class-side guard — that metaclass's dispatch id —
+    metaclass, which the guard — that metaclass's dispatch id —
     determines, and never on a `super` chain or through inheritance. The
     builtin branch of 3b's pre-lookup factory check goes into the entry's action, since
     `Array` and `OrderedCollection` need an `ObjectData::Array` payload rather
@@ -1563,27 +1560,25 @@ dispatches on one.
     out at its `Mixin` comment), SOMns's class side over `new SClass[]
     {Classes.classClass}` (`MixinDefinition.createClassFactory`), and the
     canonical compiler applying "the runtime metamixin to […] the runtime
-    class of `Class`" (`Newspeak2JSCompilation.ns`). Since ns-next reifies no
-    `Class`, a metaclass's superclass becomes `Object`'s behaviour — the
-    fall-through the class-side chain already ends in, reached directly
-    instead of after a walk. A class-side chain then finds a member on the
-    receiver's own metaclass or not at all, and §5.10 in a class-side method
-    looks in `Object`'s behaviour. Built; the two recorded outcomes that
+    class of `Class`" (`Newspeak2JSCompilation.ns`). ns-next reified no
+    `Class` then, so a metaclass's superclass was `Object`'s behaviour until
+    step 6's third plan made it `Class` itself
+    ([object-model.md](object-model.md), "Class sides and metaclasses"):
+    a class object's lookup finds a member on its own metaclass or on
+    `Class`, `Behavior` and `Object`, never on an ancestor's class side, and
+    §5.10 in a class-side method looks in `Class`. Built; the two recorded
+    outcomes that
     pinned the inheritance were re-cut to pin the conforming rule instead.
     `goldens/class-side/class_side.ns` sent `SpecialWidget describe` for an
     inherited class-side method; its subclass now declares its own
     `describe`, since a class side that declares none answers nothing. A
     cache golden rested on
     a class-side `doesNotUnderstand:` declared by a superclass, which a flat
-    metaclass makes unreachable; it is gone, replaced by
-    `goldens/class-side/class_side_super_reaches_object.ns`, whose class-side
-    `super printString` answers `Object`'s: §5.10 makes S the superclass of
-    the running activation's current class, which §3.2 makes `Class` for a
-    metaclass, and `Object`'s behaviour is what stands in for `Class` here.
-    The rest of §3.2 — the reified instance-of relation and the
-    `Class`, `Behavior` and `Metaclass` kernel classes — is scheduled for
-    step 6, the core library in Newspeak ([object-model.md](object-model.md),
-    "Class sides and metaclasses").
+    metaclass makes unreachable; it is gone, replaced by a golden of
+    class-side `super`, now `goldens/class-side/class_side_super_reaches_class.ns`,
+    whose class-side `super printString` answers `Class`'s, the class's
+    name: §5.10 makes S the superclass of the running activation's current
+    class, which §3.2 makes `Class` for a metaclass.
   - **Call-site numbers are not serialized**: the decoder numbers each family
     in the compiler's order — a body's sends in order, a block's at its
     `MakeClosure` — so a number is a property of the code, never read from
@@ -1642,7 +1637,8 @@ dispatches on one.
   chose the header for what the interpreter cannot measure: a JIT tier's
   guard is one compare at a fixed offset instead of two dependent loads, a
   class check and a class-side branch, as in V8, HotSpot, Cog and Primordial
-  Soup; step 6's reified metaclasses make the stamping uniform; and boxing
+  Soup; step 6's reified metaclasses would make the stamping uniform, as they
+  since have; and boxing
   `ClassData` keeps `Object` at 56 bytes where the header alone grows it to
   64. Accepted: a further indirection on every read of a class's data, an
   allocation per class object, and restamping wherever a class's application

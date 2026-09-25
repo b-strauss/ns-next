@@ -3755,8 +3755,8 @@ arguments kept, then the initializers from the top down — the order of every
 observable effect a per-level recursion had. Recursing once per level would
 escape the limit: a level with no initializer code pushes no activation, so
 the count would not see a long chain of such levels, and its length is an
-image's to choose — the same exposure `metaclass_of` and `dispatch::walk` were
-made iterative for.
+image's to choose — the same exposure `dispatch::walk` was made iterative
+for.
 
 ### What the golden outcomes are trusted on
 

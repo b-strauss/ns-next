@@ -199,8 +199,8 @@ which `Rc<Mixin>`'s own drop glue is one. A ceiling is rejected where it would
 refuse valid programs, not on principle.
 
 The same reasoning applies to traversal rather than teardown: the image encoder
-walks the graph over an explicit stack, and `metaclass_of` walks its chain
-iteratively, because an image controls both depths.
+walks the graph over an explicit stack, because an image controls its
+depth.
 
 ### The seam
 
@@ -579,7 +579,8 @@ time.
   in `heap.rs`, where its fields are private.
 - Every arena record: an object's class and payload — an instance's or an
   array's fields, a closure's captured frame and its copied values, a class's enclosing
-  object, declaring class, superclass and metaclass — and a frame's receiver,
+  object, declaring class, superclass and, for a metaclass, its class
+  (`this_class`) — and a frame's receiver,
   registers, sender, home, current class and kind. A married frame's registers
   are its entry's, traced with the stack.
 - The host root table.
