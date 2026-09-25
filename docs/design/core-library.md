@@ -1109,6 +1109,25 @@ tail-call elimination, since its `^self value` is a tail send and `signal`
 would no longer find the handler ([execution.md](execution.md), "Planned:
 tail calls, skipped but kept").
 
+**Pinned by** new goldens under `goldens/exceptions/`: a handler's value
+answered by `on:do:`; `return:`, `retry` (with a counter, so it ends),
+`resume:` on an `Exception` and refused on an `Error`, `pass` reaching an
+outer handler; an overridden `handles:`; an exception in a handler searching
+further out; `ensure:` running on a normal end, a `^` from a block, a
+`return:` and termination after an uncaught error (after the error line),
+and `ifCurtailed:` only on an unwind; an exception in an `ensure:` block
+during an unwind; a `^` out of a handler block; an index error from
+`Array>>at:` and a `doesNotUnderstand:` caught with `on: Error do:`, and
+`on: MessageNotUnderstood do: [:e | e resume: 42]` answering 42; the depth
+limit caught, and a recursive handler overrunning the reserve; a caught
+`cannotReturn`; `on: Halt do: [:e | e resume: 7]` continuing after the
+`halt`, and an uncaught `halt` ending the run. Rust tests pin the re-send
+after the default handler resumed a `MessageNotUnderstood` (with
+`defaultAction` replaced and the missing method defined), that no program
+reaches an `Activation`, that an unwind target survives the reuse of its
+stack index in a release build, and the crafted-image refusals for
+`OBJECT_ACTIVATION`. No existing golden's outcome changes.
+
 **Measured** by the usual protocol: every `bench` source against `master`,
 expected level, since none uses exceptions; plus `on:do:` and `ensure:` in a
 hot path with nothing signalled, and a signal caught twenty activations
