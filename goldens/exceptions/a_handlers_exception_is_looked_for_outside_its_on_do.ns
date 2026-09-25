@@ -1,0 +1,25 @@
+Newspeak3
+'Test'
+(* ANSI's handler environment, as Squeak implements it: an exception
+   signalled in a handler is looked for in the handler's own nested
+   `on:do:`s and then outside the `on:do:` that caught the first one --
+   never in an `on:do:` of the protected block, between the first signal
+   and its handler, although those are still on the stack. So the inner
+   `on: Halt` below is passed by, the outermost one catches the halt, and
+   without one the halt is unhandled and ends the run -- last. *)
+class AHandlersExceptionIsLookedForOutsideItsOnDo usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private Halt = thePlatform kernel Halt.
+      private Error = thePlatform kernel Error. |
+) (
+    public main: platform args: arguments = (
+        transcript show: ([Error signal: 'one'] on: Error do: [:e |
+                              [self halt. 'not reached'] on: Halt do: [:h | 'the handler''s own']]); newLine.
+        transcript show: ([[[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']]
+                               on: Error do: [:e | self halt. 'outer handler done']]
+                              on: Halt do: [:h | 'outermost']); newLine.
+        transcript show: ([[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']]
+                              on: Error do: [:e | self halt. 'outer handler done']); newLine.
+        transcript show: 'not reached'; newLine.
+    )
+) : ()

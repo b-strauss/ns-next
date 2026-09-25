@@ -199,7 +199,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public resume = ( ^self resume: nil )
         (* No handler: the run ends through the leaf, once the pending
            `ensure:` blocks have run. The one place the debugger will
-           replace. *)
+           replace. The leaf takes any selector, receiver and description
+           and never declines, so the failure block never runs and an
+           unhandled exception cannot carry on. *)
         public defaultAction = (
             | selector receiver |
             selector:: self hostSelector.
@@ -208,11 +210,17 @@ class Kernel vmMirror: theMirror = Object <: Value (
         )
         protected hostSelector = ( ^originSelector isNil ifTrue: [#signal] ifFalse: [originSelector] )
         protected hostReceiver = ( ^originReceiver isNil ifTrue: [self] ifFalse: [originReceiver] )
+        (* The search walks the senders from where the last one stopped and
+           collects every enabled `on:do:` it passes, the one that handles
+           this exception included, for `invokeHandlerAt:disabling:`. *)
         private invokeNextHandler = (
-            | activation |
+            | activation passed |
+            passed:: outer Kernel OrderedCollection new.
             activation:: vmMirror activationSender: handlerActivation ifFail: [nil].
             [activation isNil] whileFalse: [
-                (self isHandledAt: activation) ifTrue: [^self invokeHandlerAt: activation].
+                (vmMirror activationIsActiveHandler: activation ifFail: [false]) ifTrue: [
+                    passed add: activation.
+                    (self isHandledAt: activation) ifTrue: [^self invokeHandlerAt: activation disabling: passed]].
                 activation:: vmMirror activationSender: activation ifFail: [nil]].
             reachedDefault:: true.
             handlerActivation:: nil.
@@ -220,20 +228,29 @@ class Kernel vmMirror: theMirror = Object <: Value (
         )
         private isHandledAt: activation = (
             | exceptionClass |
-            (vmMirror activationIsActiveHandler: activation ifFail: [false]) ifFalse: [^false].
             exceptionClass:: vmMirror activationHandlerClass: activation ifFail: [nil].
             ^exceptionClass handles: self
         )
-        (* The handler's own `on:do:` is disabled while it runs, so that an
-           exception it signals searches further out; its value is an
-           implicit `return:`. *)
-        private invokeHandlerAt: activation = (
+        (* ANSI's handler environment: an exception signalled while a handler
+           runs is looked for outside the `on:do:` that caught this one --
+           not in it, and not in any `on:do:` between it and the signal, the
+           protected block's own. Squeak gets there by skipping, during the
+           search, from a handled exception's `signal` to its handler
+           (`Context>>findNextHandlerOrSignalingContext`); here every
+           `on:do:` the search passed is disabled while the handler runs,
+           which needs no way to recognize another exception's `signal`
+           activation and costs the search's own walk again.
+           They are enabled again however the handler is left: returning,
+           `resume:`, `retry`, `return:`, or a `^` out of it, as Squeak's
+           `Context>>handleSignal:` restores its flag in an `ensure:`. The
+           handler's value is an implicit `return:`. *)
+        private invokeHandlerAt: activation disabling: handlers = (
             | handler result |
             handlerActivation:: activation.
             handler:: vmMirror activationHandlerBlock: activation ifFail: [nil].
-            vmMirror activation: activation handlerActive: false ifFail: [nil].
-            result:: handler cull: self.
-            vmMirror activation: activation handlerActive: true ifFail: [nil].
+            handlers do: [:each | vmMirror activation: each handlerActive: false ifFail: [nil]].
+            result:: [handler cull: self] ensure: [
+                handlers do: [:each | vmMirror activation: each handlerActive: true ifFail: [nil]]].
             ^self return: result
         )
         private notInAHandler: selector = (

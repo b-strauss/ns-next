@@ -1,0 +1,8 @@
+status = 1
+stdout = '''
+the handler's own
+outermost
+'''
+stderr = '''
+Uncaught Newspeak error: Halt
+'''

@@ -790,7 +790,7 @@ mod tests {
         (BuiltinClass::Exception, "hostReceiver"),
         (BuiltinClass::Exception, "invokeNextHandler"),
         (BuiltinClass::Exception, "isHandledAt:"),
-        (BuiltinClass::Exception, "invokeHandlerAt:"),
+        (BuiltinClass::Exception, "invokeHandlerAt:disabling:"),
         (BuiltinClass::Exception, "notInAHandler:"),
         // The class sides' `signal` and `signal:`, `^self new signal`: an
         // instantiation and a send. §3.2's metaclasses are flat, so each

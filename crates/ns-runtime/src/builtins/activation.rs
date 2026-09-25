@@ -14,7 +14,7 @@ use crate::bytecode::UnwindMarker;
 use crate::heap::ActivationReference;
 use crate::interpreter::{unwind, Signal, Step};
 use crate::types::*;
-use crate::Mutator;
+use crate::{Mutator, Symbol};
 
 /// Runs `primitive` on `subject`. `None` -- the kernel method's failure
 /// block -- for a subject or an argument of the wrong shape.
@@ -37,7 +37,7 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::InheritsMixinOf => {
             inherits_mixin_of(mutator, subject, arguments).map(|answer| Ok(Step::Value(answer)))
         }
-        ActivationPrimitive::Terminate => terminate(mutator, arguments).map(Err),
+        ActivationPrimitive::Terminate => Some(Err(terminate(mutator, arguments))),
         _ => {
             let Value::Object(object) = subject else {
                 return None;
@@ -103,7 +103,7 @@ fn activation_leaf<'gc>(
             let value = *arguments.first()?;
             return Some(Err(match live {
                 Some(_) => Signal::Return(frame, value),
-                None => Signal::Error(unwind::dead_activation_error(crate::Symbol::intern(
+                None => Signal::Error(unwind::dead_activation_error(Symbol::intern(
                     "returnValue:",
                 ))),
             }));
@@ -111,9 +111,7 @@ fn activation_leaf<'gc>(
         ActivationPrimitive::Restart => {
             return Some(Err(match live {
                 Some(_) => Signal::Restart(frame),
-                None => Signal::Error(unwind::dead_activation_error(crate::Symbol::intern(
-                    "restart",
-                ))),
+                None => Signal::Error(unwind::dead_activation_error(Symbol::intern("restart"))),
             }));
         }
         ActivationPrimitive::Current
@@ -181,16 +179,32 @@ fn inherits_mixin_of<'gc>(
 
 /// The termination an unhandled exception's `defaultAction` asks for: the
 /// error the host will receive, built from the selector, receiver and
-/// description the kernel hands over.
-fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Option<Signal<'gc>> {
-    let [Value::Object(selector), receiver, Value::Object(description)] = arguments else {
-        return None;
-    };
-    let selector = mutator.heap.symbol_value(*selector)?;
-    let message = mutator.heap.str_value(*description)?;
-    Some(Signal::Terminate(NewspeakError {
+/// description the kernel hands over. Total over its arguments, so that no
+/// program can make an unhandled exception carry on: a subclass's
+/// `description` may answer anything, which is rendered -- a String's or a
+/// Symbol's text as it is, anything else as `Heap::describe` names it --
+/// and a selector that is no Symbol is reported as `signal`'s.
+fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Signal<'gc> {
+    let argument = |position: usize| arguments.get(position).copied().unwrap_or(Value::Nil);
+    let selector = match argument(0) {
+        Value::Object(object) => mutator.heap.symbol_value(object),
+        _ => None,
+    }
+    .unwrap_or_else(|| Symbol::intern("signal"));
+    let description = argument(2);
+    let message = match description {
+        Value::Object(object) => mutator.heap.str_value(object).or_else(|| {
+            mutator
+                .heap
+                .symbol_value(object)
+                .map(|symbol| symbol.to_string())
+        }),
+        _ => None,
+    }
+    .unwrap_or_else(|| mutator.heap.describe(&description));
+    Signal::Terminate(NewspeakError {
         selector,
-        receiver: *receiver,
+        receiver: argument(1),
         message,
-    }))
+    })
 }
