@@ -1,0 +1,29 @@
+[package]
+name = "ns-lsp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Language server for Newspeak, on ns-next's front end and resolver"
+
+# A binary of its own, so that the LSP transport and JSON never reach the
+# `ns-next` binary: the editor pays for them, the runtime does not.
+[[bin]]
+name = "ns-next-lsp"
+path = "src/main.rs"
+
+[dependencies]
+ns-syntax = { path = "../ns-syntax" }
+ns-runtime = { path = "../ns-runtime" }
+# The LSP protocol is large and still growing; writing its types and
+# transport by hand would be code with nothing to do with Newspeak, unlike
+# the image format, where owning every byte is the point.
+lsp-server = "0.10"
+lsp-types = "0.97"
+serde_json = "1"
+
+[dev-dependencies]
+indoc.workspace = true
+
+[lints]
+workspace = true
