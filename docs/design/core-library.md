@@ -987,6 +987,17 @@ an error is the VM's business.
   send through one must not reach a protected or private method.
 - `Activation`: private to the kernel, like `Top` (below).
 
+**Programs name them through `platform kernel`** (decided with the user on
+2026-09-25), as the corpus does — `private Exception = platform kernel
+Exception.` appears 16 times, `platform kernel MessageNotUnderstood` 11 —
+and as Primordial Soup's `Kernel wrapping:` facet provides them: the
+platform gains a `kernel` slot holding a value of a small class,
+`KernelNamespace`, whose accessors answer `Exception`, `Error`,
+`MessageNotUnderstood`, `Halt` and `Message`, as `Collections` does for
+`platform collections`. `Object` gains no accessor, so its set stays what
+§3.2 names. `KernelNamespace` lives in `Kernel.ns` while the platform does,
+and moves with it into the platform module afterwards.
+
 `Block` gains `on: exceptionClass do: handler`, `ensure: aBlock` and
 `ifCurtailed: aBlock`. The three are marked methods (below); `on:do:`'s body
 is `^self value`, and `ensure:`'s runs its block after `self value` in
