@@ -131,11 +131,12 @@ impl<'gc> Mutator<'gc> {
     /// subclasses, so that one is filled already -- and the mirror's class,
     /// which `Kernel.ns` does not declare, keeps its mixin over the filled
     /// `Object`. Then the kernel's own class is built over the filled
-    /// `Object`, and answered for the host to instantiate.
+    /// `Object`, every class object built so far is given its metaclass over
+    /// the filled `Class`, and the kernel's class is answered for the host
+    /// to instantiate.
     ///
-    /// Nothing has run yet, so no inline cache, metaclass or instance built
-    /// before this phase can still hold a placeholder application:
-    /// `wire_kernel_in` checks the metaclasses.
+    /// Nothing has run yet, so no inline cache or instance built before
+    /// this phase can still hold a placeholder application.
     fn fill_builtin_classes(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
         let root_mixin = self.build_root_mixin(declaration, &resolved.bindings, resolved.kernel);
@@ -164,6 +165,14 @@ impl<'gc> Mutator<'gc> {
             // `Value`.
             if kind == BuiltinClass::Value {
                 self.value_mixin = Some(mixin.clone());
+            }
+            // Recorded before `Behavior`'s own application is built, for the
+            // reason `value_mixin` is: `apply_mixin` refuses to instantiate
+            // `Behavior` and everything below it
+            // (`InstantiationRefusal::ClassObject`) by asking whether the
+            // mixin it is applying is this one.
+            if kind == BuiltinClass::Behavior {
+                self.behavior_mixin = Some(mixin.clone());
             }
             let application = self.apply_mixin(&mixin, super_application.as_ref());
             if !self.heap.set_class_application(class, application) {
@@ -215,7 +224,13 @@ impl<'gc> Mutator<'gc> {
         };
         let level_application = self.heap.class_application(level);
         let application = self.apply_mixin(&root_mixin, level_application.as_ref());
-        self.new_class_object(application, None, None, Some(level))
+        let kernel_class = self.new_class_object(application, None, None, Some(level));
+        // `Class` is filled, so every class object built so far -- each
+        // builtin, the `Value` level and the kernel's own class -- can get
+        // its metaclass now, and every one built from here on gets it with
+        // the class object.
+        self.give_existing_class_objects_metaclasses(&[level, kernel_class]);
+        kernel_class
     }
 
     /// The kernel instance becomes every kernel class's enclosing object,
@@ -261,13 +276,11 @@ impl<'gc> Mutator<'gc> {
             {
                 unreachable!("internal: a builtin class is a class object");
             }
-            // A metaclass copies its class's lexical context when it is
-            // built, so one built before this point would keep the
-            // placeholder's.
-            debug_assert!(
-                self.heap.class_metaclass(class).is_none(),
-                "internal: a metaclass built before the kernel was wired in borrowed the placeholder's context"
-            );
+            // The metaclass was built at the end of the fill, when the
+            // builtin's lexical context was still the placeholder's; §6.3
+            // puts a class side in its class's declaration, so it takes the
+            // same context.
+            self.set_metaclass_lexical_context(class, kernel, kernel_class);
         }
         // The kernel's own `Value` level was built before the kernel
         // instance existed, over `Value`'s then-empty context.
@@ -282,9 +295,28 @@ impl<'gc> Mutator<'gc> {
             {
                 unreachable!("internal: an applied level is a class object");
             }
+            self.set_metaclass_lexical_context(class, kernel, kernel_class);
             level = self.heap.class_superclass(class);
         }
         self.kernel = Some(Value::Object(kernel));
+    }
+
+    /// Gives `class`'s metaclass the lexical context `wire_kernel_in` just
+    /// gave `class`: the kernel instance and the kernel's class.
+    fn set_metaclass_lexical_context(
+        &mut self,
+        class: ClassReference<'gc>,
+        kernel: ObjectReference<'gc>,
+        kernel_class: ClassReference<'gc>,
+    ) {
+        if let Some(metaclass) = self.heap.class_metaclass(class) {
+            if !self
+                .heap
+                .set_class_lexical_context(metaclass, Some(kernel), Some(kernel_class))
+            {
+                unreachable!("internal: a metaclass is a class object");
+            }
+        }
     }
 }
 

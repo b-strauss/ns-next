@@ -146,8 +146,10 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The class side, first (§6.3): a metaclass that answers is the
-    /// resolution; one that does not falls through to the class object's
-    /// own behaviour. There is no second `doesNotUnderstand:` path here,
+    /// resolution -- its chain runs on through `Class`, `Behavior` and
+    /// `Object` (§6), so what a class side does not declare is found there;
+    /// one that does not falls through to the class object's own
+    /// behaviour. There is no second `doesNotUnderstand:` path here,
     /// only a second class to try first. `#[inline(never)]`: only a class
     /// object reaches it.
     ///
@@ -254,7 +256,8 @@ impl<'gc> Mutator<'gc> {
     /// could be the only way to reach the receiver's own factory. §3.2 makes
     /// a metaclass flat, so a factory entry is reachable only on the
     /// receiver's own metaclass, never on S -- and S, for a class-side
-    /// method, is `Object`'s behaviour.
+    /// method, is `Class` (§6: a metaclass is its class side applied to
+    /// `Class`).
     ///
     /// `#[cold]`: it is what a `super` send does when nothing answered it.
     #[cold]

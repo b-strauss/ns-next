@@ -94,6 +94,7 @@ impl Trace for ClassData<'_> {
             superclass,
             builtin: _,
             metaclass,
+            this_class,
             dispatch_id: _, // not a handle
             // A clause and its compiled message: code, which holds no handle.
             applied_clause: _,
@@ -103,6 +104,7 @@ impl Trace for ClassData<'_> {
         trace_optional_object(declaring_class, tracer);
         trace_optional_object(superclass, tracer);
         trace_optional_object(metaclass, tracer);
+        trace_optional_object(this_class, tracer);
     }
 }
 

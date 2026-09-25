@@ -150,16 +150,19 @@ pub struct ClassData<'gc> {
     /// mirror's.
     pub builtin: Option<BuiltinClass>,
     /// The metaclass built from this class's mixin's `class_side` together
-    /// with its primary factory (§6.3), created on first use and cached here
-    /// (`Mutator::metaclass_of`) so a repeated class-side send does not
-    /// rebuild it and so metaclass identity stays stable (the inline caches
-    /// key on it). Lives on `ClassData`, not as a slot on an *instance*: a
+    /// with its primary factory (§6.3), applied over `Class` (§6) and built
+    /// with the class object (`Mutator::attach_metaclass`), so metaclass
+    /// identity stays stable (the inline caches key on it). Lives on `ClassData`, not as a slot on an *instance*: a
     /// class object's own payload is `ObjectData::Class`, never `Instance`,
     /// so it cannot share the nested-class hidden-slot mechanism
     /// (`nested_slot`), which stores its cache in an instance's field vector.
-    /// `None` for every class object until its first class-side send -- which
-    /// `X new` is, since the factory is one of the metaclass's members.
+    /// `None` only for a class object built during the kernel phase, before
+    /// `Class` is filled, and for one decoded from an image, until
+    /// `Mutator::metaclass_of` builds it.
     pub metaclass: Option<ClassReference<'gc>>,
+    /// A metaclass's class: the class object whose class side this metaclass
+    /// applies. `None` for every class object that is not a metaclass.
+    pub this_class: Option<ClassReference<'gc>>,
     /// A copy of `application.dispatch_ids.instances`. A cache's guard does
     /// not read it (it reads `Object::dispatch_id` in the header, through
     /// `Heap::dispatch_id`); this is where allocating an instance of this
@@ -202,7 +205,7 @@ pub struct ClassData<'gc> {
 
 impl<'gc> ClassData<'gc> {
     /// A class object's data around `application`, with no metaclass yet
-    /// (`Mutator::metaclass_of` builds it on first use).
+    /// (`Mutator::attach_metaclass` builds it).
     pub fn new(
         application: Rc<crate::mixin::MixinApplication>,
         enclosing: Option<ObjectReference<'gc>>,
@@ -218,6 +221,7 @@ impl<'gc> ClassData<'gc> {
             superclass,
             builtin,
             metaclass: None,
+            this_class: None,
             applied_clause: None,
             value_class_refusal: None,
         }

@@ -2378,19 +2378,15 @@ struct PendingClass {
 /// here and get the same `Rc` back, which is what keeps a call site
 /// monomorphic across a save/load.
 ///
-/// A metaclass is the exception, and is applied flat: `newspeak-spec.pdf`
-/// §3.2 makes a metaclass a direct subclass of `Class`, so the live
-/// `Mutator::metaclass_of` gives it no superclass *application* even though
-/// its class object's superclass link names `Object`'s
-/// (`dispatch::next_level` rests on exactly that asymmetry). A metaclass
+/// A metaclass is the exception, and is applied over `Class`:
+/// `newspeak-spec.pdf` §6 makes a class's metaclass "the application of the
+/// metaclass mixin defined by the class' class side to the class Class",
+/// which is what the live `Mutator::attach_metaclass` builds. A metaclass
 /// reaches the graph as an ordinary class record -- as a class-side
-/// activation's `current_class` -- naming the class side's own mixin row and
-/// the superclass `Object`, so applying the record's superclass here the way
-/// every other record's is applied would rebuild it chained and silently
-/// un-flatten it: an ordinary lookup that missed on the decoded metaclass
-/// would step into `Object`'s own methods. `metaclass_rows` below names
-/// exactly the rows a metaclass applies, the same way
-/// `mixins::metaclass_factory_entries` does.
+/// activation's `current_class` -- naming the class side's own mixin row, so
+/// its application is rebuilt over `Class`'s here whatever superclass the
+/// record names. `metaclass_rows` below names exactly the rows a metaclass
+/// applies, the same way `mixins::metaclass_factory_entries` does.
 ///
 /// The order is the catch: a class object's record may name a superclass
 /// whose own record appears later in the table. Each class has at most one
@@ -2470,7 +2466,10 @@ fn rebuild_applications<'gc>(
             let mixin = &pending[pending_index].mixin;
             let is_metaclass = metaclass_rows.contains(&crate::mixin::mixin_key(mixin));
             let super_application = if is_metaclass {
-                None
+                context
+                    .mutator
+                    .heap
+                    .class_application(context.mutator.builtin_class(BuiltinClass::Class))
             } else {
                 match context.mutator.heap.class_superclass(*object) {
                     Some(superclass) => Some(
@@ -2555,7 +2554,8 @@ fn rebuild_applications<'gc>(
 
 /// The mixin keys of the rows that are some other row's class side -- the
 /// rows a decoded class object applies as a metaclass, and the only ones
-/// `rebuild_applications` applies with no superclass application.
+/// `rebuild_applications` applies over `Class`'s application rather than
+/// over the one of the superclass the record names.
 ///
 /// Derived from the decoded table rather than from anything the graph
 /// section writes, so a crafted class record cannot claim to be a metaclass
@@ -2924,18 +2924,17 @@ fn decode_class_record<'gc>(
     // A record only ever describes a user class: a builtin is a class *tag*,
     // resolved through the bootstrap, and never an object-table entry.
     //
-    // `ClassData::new` also sets `metaclass: None`, rebuilt by
-    // `Mutator::metaclass_of` on the first class-side send, exactly as it is
-    // for a class object the accessor just created.
+    // `ClassData::new` also sets `metaclass: None`, built by
+    // `Mutator::metaclass_of` on the first class-side send.
     //
     // Not the *same* metaclass, though, in one case: a metaclass that was
     // itself in the graph -- as a class-side activation's `current_class` --
     // decodes as a class record of its own and is never linked back into the
     // class it belongs to, so `metaclass_of` mints a second one beside it.
     // The two share one `MixinApplication`, so they share behaviour, layout
-    // and dispatch ids: both are the class side's own row applied flat, and
-    // `apply_mixin`'s cache is keyed by exactly that pair
-    // (`rebuild_applications` is what applies the decoded one flat).
+    // and dispatch ids: both are the class side's own row applied over
+    // `Class`, and `apply_mixin`'s cache is keyed by exactly that pair
+    // (`rebuild_applications` is what applies the decoded one over `Class`).
     // Nothing observes the difference today: `metaclass_of` is reached only
     // from `Interpreter::send`'s dispatch, so no Newspeak value names a
     // metaclass and no two of them can be compared. Recording it rather than

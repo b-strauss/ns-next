@@ -7903,25 +7903,24 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     assert_eq!(loaded.interpreter.cache_statistics().site_entries, 5);
 }
 
-/// A metaclass that reaches the graph is rebuilt **flat**: its application
-/// names no superclass application, exactly as the live
-/// `Mutator::metaclass_of` mints it (`newspeak-spec.pdf` §3.2, a metaclass
-/// is a direct subclass of `Class`).
+/// A metaclass that reaches the graph is rebuilt **over `Class`**: its
+/// application is applied over `Class`'s, exactly as the live
+/// `Mutator::attach_metaclass` builds it (`newspeak-spec.pdf` §6, a
+/// metaclass is "the application of the metaclass mixin defined by the
+/// class' class side to the class Class").
 ///
 /// A metaclass is written as an ordinary class record -- naming the class
-/// side's mixin row and the superclass `Object` -- so the generic rule
-/// `rebuild_applications` applies to every other record would chain it onto
-/// `Object`'s application. Nothing walks from a decoded metaclass today, so
-/// the difference is silent; `dispatch::next_level`'s whole flat rule rests
-/// on the asymmetry between the class-object link (`Object`) and the
-/// application link (none), which is why it is pinned here rather than left
-/// to the first lookup that starts from one.
+/// side's mixin row -- and `rebuild_applications` recognizes the row as a
+/// class side and applies it over `Class`, whatever superclass the record
+/// names; its class-object superclass is `Class`'s class object, the link
+/// the live metaclass has, so the two chains `dispatch::next_level` steps
+/// together agree.
 ///
 /// A class-side method that answers a block the module keeps is what puts
 /// the metaclass in the graph: the closure's captured frame is the
 /// class-side activation, whose `current_class` is the metaclass.
 #[test]
-fn a_decoded_metaclass_is_rebuilt_with_no_superclass_application() {
+fn a_decoded_metaclass_is_rebuilt_over_class() {
     let source = indoc! {"
         Newspeak3
         'T'
@@ -7977,16 +7976,24 @@ fn a_decoded_metaclass_is_rebuilt_with_no_superclass_application() {
             .heap()
             .class_application(metaclass)
             .expect("the decoded metaclass has an application");
+        let class_class = mutator.builtin_class(BuiltinClass::Class);
+        let class_application = mutator
+            .heap()
+            .class_application(class_class)
+            .expect("Class is a class object");
         assert!(
-            application.superclass.is_none(),
-            "a decoded metaclass must be applied flat -- a superclass \
-             application here lets an ordinary lookup step into Object's own \
-             methods and un-flattens the metaclass"
+            application
+                .superclass
+                .as_ref()
+                .is_some_and(|superclass| Rc::ptr_eq(superclass, &class_application)),
+            "a decoded metaclass is applied over Class (§6)"
         );
         assert!(
-            mutator.heap().class_superclass(metaclass).is_some(),
-            "the class-object superclass link stays: it is the asymmetry \
-             dispatch::next_level rests on, not an oversight"
+            mutator
+                .heap()
+                .class_superclass(metaclass)
+                .is_some_and(|superclass| superclass.same(class_class)),
+            "a decoded metaclass's superclass is Class, as the live one's is"
         );
     });
 }

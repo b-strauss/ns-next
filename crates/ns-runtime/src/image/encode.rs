@@ -911,10 +911,11 @@ impl<'gc> GraphTable<'gc> {
                     // its own.
                     stack.extend(closure.copied.iter().copied().map(Pending::Value));
                 }
-                // A class object's three references. `metaclass` is not one
-                // of them: it is a lazy cache `Mutator::metaclass_of`
-                // rebuilds on demand, and nothing hands a metaclass to
-                // Newspeak code, so no value in the graph can point at one.
+                // A class object's three references. `metaclass` and
+                // `this_class` are not among them: `Mutator::metaclass_of`
+                // rebuilds a decoded class's metaclass on demand, and
+                // nothing hands a metaclass to Newspeak code, so no value in
+                // the graph can point at one.
                 ObjectData::Class(data) => {
                     stack.extend(
                         class_references(data).map(|class| Pending::Value(Value::Object(class))),
@@ -1173,8 +1174,8 @@ fn encode_closure_record<'gc>(
 /// megamorphic.
 ///
 /// `builtin` is not written either -- a record only ever describes a user
-/// class, since a builtin is a class *tag* -- and neither is `metaclass`, a
-/// lazy cache `Mutator::metaclass_of` rebuilds on the first class-side send.
+/// class, since a builtin is a class *tag* -- and neither is `metaclass`,
+/// which `Mutator::metaclass_of` rebuilds on the first class-side send.
 ///
 /// A metaclass can still reach here as a record of its own, through the one
 /// reference that names one: a class-side activation's `current_class`,
@@ -1182,11 +1183,11 @@ fn encode_closure_record<'gc>(
 /// class side (`newspeak-spec.pdf` §3.2; ns-next's own representation is
 /// `docs/design/object-model.md`, "Class sides and metaclasses"), which is
 /// part of the module's declaration tree like any other mixin, so the id
-/// lookup below finds it. The superclass written for it is `Object`'s class
-/// object, the link `metaclass_of` gives a metaclass; the *application* it
-/// is rebuilt with is flat all the same, because
+/// lookup below finds it. The superclass written for it is `Class`'s class
+/// object, the link `Mutator::attach_metaclass` gives a metaclass, and the
+/// *application* it is rebuilt with is over `Class`'s too, because
 /// `decode::rebuild_applications` recognizes a record whose mixin is some
-/// row's class side and applies it with no superclass application. The other
+/// row's class side and applies it over `Class` (§6). The other
 /// kind of metaclass mixin --
 /// the otherwise empty one `metaclass_of` synthesizes for a class that
 /// declares no class side, so that §6.3's factory entry has somewhere to

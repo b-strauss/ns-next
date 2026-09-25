@@ -31,6 +31,8 @@ impl World {
                 kernel: None,
                 value_equality_method: None,
                 value_mixin: None,
+                behavior_mixin: None,
+                metaclasses_ready: false,
                 applications: IdentityMap::default(),
                 metaclass_mixins: IdentityMap::default(),
                 #[cfg(debug_assertions)]

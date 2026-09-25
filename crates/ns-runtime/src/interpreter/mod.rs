@@ -9,6 +9,7 @@ pub mod instantiate;
 pub(crate) mod kernel;
 pub(crate) mod literals;
 pub(crate) mod locals;
+mod metaclass;
 pub(crate) mod mirror;
 pub(crate) mod nested;
 pub(crate) mod resolve;
@@ -248,6 +249,15 @@ pub struct Mutator<'gc> {
     /// `None` until that moment, so the placeholder applications the world
     /// is built with inherit nothing.
     pub(crate) value_mixin: Option<Rc<crate::mixin::Mixin>>,
+    /// `Kernel.ns`'s `Behavior` mixin, recorded by the kernel phase before
+    /// `Behavior`'s own application is built, so that `apply_mixin` can
+    /// refuse to instantiate anything below it
+    /// (`InstantiationRefusal::ClassObject`).
+    pub(crate) behavior_mixin: Option<Rc<crate::mixin::Mixin>>,
+    /// Whether `new_class_object` builds a metaclass with every class
+    /// object; false only during the kernel phase, before `Class` is filled
+    /// (`Mutator::give_existing_class_objects_metaclasses`).
+    pub(crate) metaclasses_ready: bool,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -1173,98 +1183,6 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    /// The class object's metaclass, built on first use.
-    ///
-    /// `newspeak-spec.pdf` §3.2: "All metaclasses are instances of class
-    /// Metaclass, and are direct subclasses of Class. Metaclasses may not be
-    /// subclassed. [...] The metaclass hierarchy in Newspeak is deliberately
-    /// kept very flat." §6 gives the construction: the class is an instance
-    /// of "a metaclass that is the application of the metaclass mixin defined
-    /// by the class' class side to the class Class".
-    ///
-    /// So a class side is *not* inherited: an ordinary class-side send that
-    /// misses here never continues onto an ancestor's class side. ns-next
-    /// reifies no `Class`, so the application has no superclass application
-    /// and a miss falls through to the class object's own behaviour, which
-    /// is what a class-side chain already ends in
-    /// (`docs/design/object-model.md`, "Class sides and metaclasses").
-    ///
-    /// Every class object has a metaclass, including one whose declaration
-    /// writes no class side: §6.3 makes the metaclass mixin the class side
-    /// *together with the primary factory method*, so `X new` is an entry of
-    /// this mixin's method table and a class without one would not be
-    /// instantiable. The empty case is `metaclass_mixin` below.
-    ///
-    /// The metaclass's own *class-object* superclass link is not `None`,
-    /// though: §5.10 says a `super` send inside a class-side method starts
-    /// its lookup at S, the superclass of `current_class`, and §6 makes
-    /// that superclass `Class` -- approximated, since ns-next reifies no
-    /// `Class`, as `Object`'s behaviour (the same fall-through above). That
-    /// link is read only by a `super` send (`decide_super_send`,
-    /// `inline_cache::send_super`), never by the ordinary lookup `walk`,
-    /// which requires the *application* chain to agree before it steps
-    /// (`dispatch::next_level`) -- and the metaclass's application names no
-    /// superclass application above, so an ordinary class-side send still
-    /// stops at this one level, exactly as "not inherited" requires.
-    ///
-    /// No walk, no stack: the chain this used to climb was the reason the
-    /// function was iterative.
-    pub fn metaclass_of(&mut self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
-        if !self.heap.is_class(class) {
-            return None;
-        }
-        if let Some(cached) = self.heap.class_metaclass(class) {
-            return Some(cached);
-        }
-        let application = self.heap.class_application(class)?;
-        let class_side_mixin = self.metaclass_mixin(&application.mixin);
-        let enclosing = self.heap.class_enclosing(class);
-        let declaring_class = self.heap.class_declaring(class);
-        let metaclass_application = self.apply_mixin(&class_side_mixin, None);
-        let object_class = self.builtin_class(BuiltinClass::Object);
-        // §6.3: a class side is written inside the same class declaration
-        // its instance side is, so a class-side method's `outer` must reach
-        // exactly the objects an instance-side method's does. The metaclass
-        // borrows the class's own place in the declaration chain.
-        let metaclass = self.new_class_object(
-            metaclass_application,
-            enclosing,
-            declaring_class,
-            Some(object_class),
-        );
-        if !self.heap.set_class_metaclass(class, metaclass) {
-            unreachable!("is_class was checked above");
-        }
-        Some(metaclass)
-    }
-
-    /// The mixin `metaclass_of` applies for `mixin`'s class objects: §6.3's
-    /// "the class side, together with the primary factory method".
-    ///
-    /// A declared class side already carries the factory entry -- it is
-    /// inserted where the class side is built, from source
-    /// (`instantiate::build_class_side`) and on the way out of an image
-    /// (`image::mixins::decode`) alike. A class that declares none still
-    /// needs a metaclass to hold that one entry, and gets an otherwise empty
-    /// mixin here: the case that covers every builtin, whose behaviour is
-    /// native and whose factory is `new` -- the default §6's unnumbered
-    /// introduction gives an omitted factory signature, before §6.1 begins.
-    fn metaclass_mixin(&mut self, mixin: &Rc<crate::mixin::Mixin>) -> Rc<crate::mixin::Mixin> {
-        if let Some(class_side) = &mixin.class_side {
-            return class_side.clone();
-        }
-        let key = crate::mixin::mixin_key(mixin);
-        if let Some(existing) = self.metaclass_mixins.get(&key) {
-            return existing.clone();
-        }
-        let synthesized = Rc::new(crate::mixin::Mixin {
-            methods: std::iter::once(crate::mixin::factory_entry(mixin.factory)).collect(),
-            ..crate::mixin::Mixin::empty(Symbol::CLASS_SIDE)
-        });
-        self.metaclass_mixins.insert(key, synthesized.clone());
-        synthesized
-    }
-
     fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
         let kind = match value {
             Value::Nil => BuiltinClass::UndefinedObject,
@@ -1371,22 +1289,14 @@ impl<'gc> Mutator<'gc> {
     /// relies on is established: `superclass` is linked exactly when
     /// `application`'s own `superclass` is (callers derive `application`
     /// from `superclass` through `apply_mixin`), so the two chains it steps
-    /// together stay the same length.
+    /// together stay the same length. A metaclass keeps it too: its
+    /// superclass is `Class` and its application is applied over `Class`'s
+    /// (`Mutator::attach_metaclass`).
     ///
-    /// `Mutator::metaclass_of` is the one deliberate exception: it passes a
-    /// `superclass` of `Object` (so a `super` send inside a class-side
-    /// method reaches `Object`'s behaviour, `newspeak-spec.pdf` §5.10) but
-    /// an `application` whose own `superclass` is `None` (§3.2: a class
-    /// side is not inherited, so the metaclass's application has nothing
-    /// above it to apply against). See `dispatch::next_level`'s doc comment
-    /// for why that mismatch is safe rather than a defect.
-    ///
-    /// `class` is the shared `Object` placeholder: a class object's own
-    /// `.class` field never points at its metaclass. `metaclass_of` reaches
-    /// a class side through a separate cache (`ClassData::metaclass`), not
-    /// through this field -- §3.2's "every class an instance of a unique
-    /// metaclass" stays unbuilt, by design (see `metaclass_of`'s doc
-    /// comment).
+    /// Once the kernel phase has filled `Class` (`metaclasses_ready`), the
+    /// class object's metaclass is built here with it. The class object's
+    /// own header `.class` is still the shared `Object` placeholder;
+    /// `metaclass_of` reaches the metaclass through `ClassData::metaclass`.
     pub(crate) fn new_class_object(
         &mut self,
         application: Rc<crate::mixin::MixinApplication>,
@@ -1394,13 +1304,17 @@ impl<'gc> Mutator<'gc> {
         declaring_class: Option<ClassReference<'gc>>,
         superclass: Option<ClassReference<'gc>>,
     ) -> ClassReference<'gc> {
-        self.allocate_class_object(ClassData::new(
+        let class = self.allocate_class_object(ClassData::new(
             application,
             enclosing,
             declaring_class,
             superclass,
             None,
-        ))
+        ));
+        if self.metaclasses_ready {
+            self.attach_metaclass(class);
+        }
+        class
     }
 
     /// A level a mixin application adds (`newspeak-spec.pdf` §6.2): a class
@@ -1416,7 +1330,11 @@ impl<'gc> Mutator<'gc> {
     ) -> ClassReference<'gc> {
         let mut data = ClassData::new(application, enclosing, declaring_class, superclass, None);
         data.applied_clause = Some(Box::new(clause));
-        self.allocate_class_object(data)
+        let class = self.allocate_class_object(data);
+        if self.metaclasses_ready {
+            self.attach_metaclass(class);
+        }
+        class
     }
 
     fn allocate_class_object(&mut self, data: ClassData<'gc>) -> ClassReference<'gc> {
@@ -1520,12 +1438,19 @@ impl<'gc> Mutator<'gc> {
         // (`interpreter::value_class::check_value_class`,
         // `docs/design/object-model.md`, "A value object's four
         // conditions").
+        let is_behavior_mixin = self
+            .behavior_mixin
+            .as_ref()
+            .is_some_and(|behavior_mixin| Rc::ptr_eq(behavior_mixin, mixin));
         let instantiation_refusal = mixin
             .root_clause_defect
             .clone()
             .map(crate::mixin::InstantiationRefusal::RootClause)
             .or_else(|| {
                 superclass.and_then(|application| application.instantiation_refusal.clone())
+            })
+            .or_else(|| {
+                is_behavior_mixin.then_some(crate::mixin::InstantiationRefusal::ClassObject)
             })
             .or_else(|| {
                 first_mutable_slot

@@ -639,6 +639,12 @@ pub enum InstantiationRefusal {
     IdentityMethod {
         declaring: Symbol,
     },
+    /// §3.2: a class object is made only by evaluating a declaration --
+    /// the one way a metaclass stays unique to its class. Every class
+    /// whose chain reaches `Behavior` is refused: `Class`, `Metaclass`,
+    /// every metaclass, and any subclass of them a program manages to
+    /// declare.
+    ClassObject,
 }
 
 #[derive(Debug)]

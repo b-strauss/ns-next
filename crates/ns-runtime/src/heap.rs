@@ -1762,6 +1762,30 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// A metaclass's class (`ClassData::this_class`); `None` for a class
+    /// object that is no metaclass and for a handle that is no class object.
+    pub fn class_this_class(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.this_class,
+            _ => None,
+        }
+    }
+
+    /// The name a class object is shown by: its mixin's for a class, and
+    /// its class's followed by ` class` for a metaclass, as
+    /// `Metaclass>>name` answers it (`Kernel.ns`). For the refusal texts
+    /// that name what could not be instantiated.
+    pub fn class_display_name(&self, class: ClassReference<'gc>) -> String {
+        match self.class_this_class(class) {
+            Some(this_class) => format!("{} class", self.class_display_name(this_class)),
+            None => self.class_application(class).map_or_else(
+                || "a class".to_string(),
+                |application| application.mixin.name.to_string(),
+            ),
+        }
+    }
+
     /// The id `dispatch_id` answers for an object of `class` holding `data`:
     /// a class object's own class-side id, an instance's class's instances
     /// id, `NONE` when the class is not a class object -- only a crafted
@@ -1822,13 +1846,13 @@ impl<'gc> Heap<'gc> {
 
     /// Answers whether the write happened, mirroring `array_set`,
     /// `set_instance_field` and `set_class_superclass`/`set_class_application`
-    /// below. `Mutator::metaclass_of` is the only caller, and it only
-    /// ever calls this on a level it just confirmed is a class object a few
-    /// lines above -- a wrong-shape `class` here would mean an uncached
-    /// metaclass, which is silent: every later class-side send would rebuild
-    /// instead of hitting the cache, and metaclass identity would stop being
-    /// stable, which is what inline caches are meant to key on. The caller
-    /// turns a `false` into an `unreachable!` rather than swallowing it.
+    /// below. `Mutator::attach_metaclass` is the only caller, on the class
+    /// object whose application it just read -- a wrong-shape `class` here
+    /// would mean an unrecorded metaclass, which is silent: the next
+    /// `metaclass_of` would build another, and metaclass identity would stop
+    /// being stable, which is what inline caches are meant to key on. The
+    /// caller turns a `false` into an `unreachable!` rather than swallowing
+    /// it.
     pub fn set_class_metaclass(
         &mut self,
         class: ClassReference<'gc>,
@@ -1837,6 +1861,23 @@ impl<'gc> Heap<'gc> {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.metaclass = Some(metaclass);
+            return true;
+        }
+        false
+    }
+
+    /// Links a metaclass to its class (`ClassData::this_class`). Answers
+    /// whether the write happened, like the other class setters;
+    /// `Mutator::attach_metaclass` is the one caller, on a metaclass it has
+    /// just built.
+    pub(crate) fn set_class_this_class(
+        &mut self,
+        metaclass: ClassReference<'gc>,
+        class: ClassReference<'gc>,
+    ) -> bool {
+        self.check_object_origin(metaclass);
+        if let ObjectData::Class(data) = &mut self.objects[metaclass.index as usize].data {
+            data.this_class = Some(class);
             return true;
         }
         false

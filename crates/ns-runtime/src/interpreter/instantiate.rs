@@ -210,7 +210,7 @@ impl<'gc> Mutator<'gc> {
     /// superclass is resolved, no slot layout computed, no class object built)
     /// -- a nested mixin has no class object of its own until something
     /// materializes it (the accessor), and a class side until
-    /// `Mutator::metaclass_of` builds the metaclass that applies it.
+    /// `Mutator::attach_metaclass` builds the metaclass that applies it.
     ///
     /// `kernel` is the module's `ResolvedModule.kernel`, carried down to
     /// every method so that only a kernel method can carry a fast path
@@ -429,8 +429,10 @@ impl<'gc> Mutator<'gc> {
         // (`Mutator::apply_mixin`).
         if let Some(application) = application.as_ref() {
             if let Some(refusal) = &application.instantiation_refusal {
+                let display_name = self.heap.class_display_name(class);
                 return Err(Signal::Error(instantiation_refusal_error(
                     class,
+                    &display_name,
                     application,
                     refusal,
                 )));
@@ -1208,10 +1210,13 @@ fn clause_as_written(clause: &ast::SuperclassClause) -> String {
 }
 
 /// The refusal `decide_instantiation` raises, named under the class's own
-/// primary factory as both value refusals are.
+/// primary factory as both value refusals are. `display_name` is
+/// `Heap::class_display_name`'s, which this function has no heap to ask:
+/// `Foo class` names a metaclass where its mixin's name would not.
 #[cold]
 fn instantiation_refusal_error<'gc>(
     class: ClassReference<'gc>,
+    display_name: &str,
     application: &crate::mixin::MixinApplication,
     refusal: &crate::mixin::InstantiationRefusal,
 ) -> NewspeakError<'gc> {
@@ -1231,6 +1236,13 @@ fn instantiation_refusal_error<'gc>(
         crate::mixin::InstantiationRefusal::IdentityMethod { declaring } => {
             identity_method_error(class, application, *declaring)
         }
+        crate::mixin::InstantiationRefusal::ClassObject => NewspeakError {
+            selector: factory_selector(application),
+            receiver: Value::Object(class),
+            message: format!(
+                "cannot instantiate {display_name}: a class object is made only by evaluating its declaration"
+            ),
+        },
     }
 }
 
