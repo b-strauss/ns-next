@@ -519,16 +519,28 @@ impl GlobalCache {
 /// The caches") -- and what `materialize` and `act` need: the receiver (`o`
 /// for a lexical send, `self` for `super`), N's class for a private lexical
 /// site, S for `super`.
+///
+/// The receiver is held by reference, to the send's own local, not copied
+/// into the key. A `Value` field lets LLVM's SROA split the key's copy of it
+/// into the pieces the hit path reads (the tag, a Boolean's byte, a handle's
+/// word, the gap between them, the payload word) and store them one by one
+/// wherever a whole `Value` is needed again -- the temporary a native takes,
+/// `Step::Method`'s receiver, the key `miss` is handed -- so the next
+/// 16-byte load of it fails store-to-load forwarding. That stall cost
+/// `bench_send` 6% and `bench_megamorphic` 3.4% once a change elsewhere
+/// tipped SROA over (`docs/design/execution.md`, "What `Behavior`, `Class`
+/// and `Metaclass` cost"). Behind a reference the local stays one object
+/// in memory and every whole copy is a single 16-byte move.
 #[derive(Clone, Copy)]
-struct SendKey<'gc> {
+struct SendKey<'send, 'gc> {
     guard: DispatchId,
     rule: CacheRule,
-    receiver: Value<'gc>,
+    receiver: &'send Value<'gc>,
     lexical_class: Option<ClassReference<'gc>>,
     superclass: Option<ClassReference<'gc>>,
 }
 
-impl SendKey<'_> {
+impl SendKey<'_, '_> {
     fn private(&self) -> bool {
         self.rule == CacheRule::LexicalPrivate
     }
@@ -541,11 +553,11 @@ impl SendKey<'_> {
 fn chain_start<'gc>(
     mutator: &mut Mutator<'gc>,
     chain: Chain,
-    key: SendKey<'gc>,
+    key: SendKey<'_, 'gc>,
 ) -> Option<ClassReference<'gc>> {
     match chain {
         Chain::Public | Chain::Protected | Chain::DoesNotUnderstand => {
-            Some(mutator.class_of(&key.receiver))
+            Some(mutator.class_of(key.receiver))
         }
         Chain::Private => key.lexical_class,
         Chain::Super | Chain::SuperDoesNotUnderstand => key.superclass,
@@ -591,7 +603,7 @@ fn level_above<'gc>(
 fn record<'gc>(
     mutator: &mut Mutator<'gc>,
     resolved: &Resolved<'gc>,
-    key: SendKey<'gc>,
+    key: SendKey<'_, 'gc>,
 ) -> Option<Target> {
     let chain = resolved.chain()?;
     let needs_start = matches!(
@@ -648,7 +660,7 @@ fn record<'gc>(
 fn materialize<'gc>(
     mutator: &mut Mutator<'gc>,
     target: Target,
-    key: SendKey<'gc>,
+    key: SendKey<'_, 'gc>,
 ) -> Option<(Resolved<'gc>, FeedbackBase)> {
     Some(match target {
         Target::Method {
@@ -715,7 +727,7 @@ fn materialize<'gc>(
         // (`resolve::resolved_for` records nothing found anywhere else). A
         // receiver with that id is a class object of that metaclass's
         // declaration, so a hit reaches what a miss would.
-        Target::Factory { chain } => match key.receiver {
+        Target::Factory { chain } => match *key.receiver {
             Value::Object(class_object) => (
                 Resolved::Factory {
                     level: class_object,
@@ -749,7 +761,7 @@ pub(crate) fn send_public<'gc>(
     let key = SendKey {
         guard: mutator.heap.dispatch_id(&receiver),
         rule: CacheRule::Public,
-        receiver,
+        receiver: &receiver,
         lexical_class: None,
         superclass: None,
     };
@@ -821,7 +833,7 @@ pub(crate) fn send_lexical<'gc>(
                 mutator.heap.class_dispatch_ids(class).instances
             }),
             rule: CacheRule::LexicalPrivate,
-            receiver: enclosing,
+            receiver: &enclosing,
             lexical_class,
             superclass: None,
         }
@@ -831,7 +843,7 @@ pub(crate) fn send_lexical<'gc>(
             // A placeholder payload: `miss` fills it in only on a genuine
             // miss, so a monomorphic hit still never computes N.
             rule: CacheRule::Lexical(DispatchId::NONE),
-            receiver: enclosing,
+            receiver: &enclosing,
             lexical_class: None,
             superclass: None,
         }
@@ -897,7 +909,7 @@ fn send_lexical_first<'gc>(
         let private_key = SendKey {
             guard: lexical_id,
             rule: CacheRule::LexicalPrivate,
-            receiver: enclosing,
+            receiver: &enclosing,
             lexical_class,
             superclass: None,
         };
@@ -910,7 +922,7 @@ fn send_lexical_first<'gc>(
         let public_key = SendKey {
             guard,
             rule: CacheRule::Lexical(lexical_id),
-            receiver: enclosing,
+            receiver: &enclosing,
             lexical_class: None,
             superclass: None,
         };
@@ -928,7 +940,7 @@ fn send_lexical_first<'gc>(
     let key = SendKey {
         guard,
         rule,
-        receiver: enclosing,
+        receiver: &enclosing,
         lexical_class,
         superclass: None,
     };
@@ -942,7 +954,7 @@ fn send_lexical_first<'gc>(
 fn global_hit<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    key: SendKey<'gc>,
+    key: SendKey<'_, 'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
@@ -955,7 +967,7 @@ fn global_hit<'gc>(
     mutator
         .caches
         .advance(index, key.guard, target, key.private());
-    Some(mutator.act_with_base(resolved, base, key.receiver, selector, arguments))
+    Some(mutator.act_with_base(resolved, base, *key.receiver, selector, arguments))
 }
 
 /// A `super` send (§5.10), cached, keyed by the running method's
@@ -985,7 +997,7 @@ pub(crate) fn send_super<'gc>(
     let key = SendKey {
         guard: mutator.heap.class_dispatch_ids(current_class).instances,
         rule: CacheRule::Super,
-        receiver: self_value,
+        receiver: &self_value,
         lexical_class: None,
         superclass: Some(superclass),
     };
@@ -1009,7 +1021,7 @@ pub(crate) fn send_super<'gc>(
 fn cached<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    key: SendKey<'gc>,
+    key: SendKey<'_, 'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
     lexical_of: impl FnOnce(&Mutator<'gc>) -> DispatchId,
@@ -1019,7 +1031,7 @@ fn cached<'gc>(
         if entry.guard == key.guard {
             let target = entry.target.clone();
             if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(resolved, base, key.receiver, selector, arguments);
+                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
             }
         }
     }
@@ -1039,7 +1051,7 @@ fn cached<'gc>(
 fn miss<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    mut key: SendKey<'gc>,
+    mut key: SendKey<'_, 'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
     lexical_of: impl FnOnce(&Mutator<'gc>) -> DispatchId,
@@ -1048,7 +1060,7 @@ fn miss<'gc>(
     if key.guard != DispatchId::NONE {
         if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
             if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(resolved, base, key.receiver, selector, arguments);
+                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
             }
         }
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
@@ -1064,13 +1076,13 @@ fn miss<'gc>(
                 mutator
                     .caches
                     .advance(index, key.guard, target, key.private());
-                return mutator.act_with_base(resolved, base, key.receiver, selector, arguments);
+                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
             }
         }
     }
     let resolved = resolve(mutator);
     fill(mutator, index, key, selector, &resolved);
-    mutator.act(resolved, key.receiver, selector, arguments)
+    mutator.act(resolved, *key.receiver, selector, arguments)
 }
 
 /// Records `resolved` in the global cache and at the site -- unless the key
@@ -1083,7 +1095,7 @@ fn miss<'gc>(
 fn fill<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    key: SendKey<'gc>,
+    key: SendKey<'_, 'gc>,
     selector: Symbol,
     resolved: &Resolved<'gc>,
 ) {
