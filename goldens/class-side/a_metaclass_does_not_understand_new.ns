@@ -1,0 +1,15 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.2: all metaclasses "are direct subclasses of Class"
+   and "may not be subclassed", and 6.3 puts the primary factory on the
+   class's own metaclass only. A metaclass is no class a declaration
+   evaluates to, so it has no metaclass of its own holding a factory:
+   `Foo class new` is not understood. *)
+class AMetaclassDoesNotUnderstandNew usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+	class Foo = Object new () ()
+	public main: platform args: args = (
+		transcript show: 'before'; newLine.
+		Foo class new.
+		transcript show: 'not reached'; newLine.
+	)
+) : ()

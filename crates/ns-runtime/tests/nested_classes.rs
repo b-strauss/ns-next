@@ -489,8 +489,8 @@ fn a_class_side_method_dispatches_on_the_class_object() {
 }
 
 /// A class with no class side at all must still fall through to the
-/// ordinary `doesNotUnderstand:` -- `metaclass_of` returns `None` and the
-/// send path must not panic or invent a different error shape for a class
+/// ordinary `doesNotUnderstand:` -- its metaclass holds only the factory,
+/// nothing above it answers, and the send path must not panic or invent a different error shape for a class
 /// object than for any other receiver.
 #[test]
 fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
@@ -575,9 +575,10 @@ fn application_of<'gc>(
 /// `Widget` class object, but both apply the same declaration, so
 /// `apply_mixin`'s (mixin
 /// identity, superclass) cache must answer the same metaclass application
-/// for both -- flat metaclasses key that application on the mixin alone
-/// (`Mutator::metaclass_of` applies it with no superclass application),
-/// which is what keeps this from splitting a second time.
+/// for both -- every metaclass is applied over the one `Class`
+/// (`Mutator::attach_metaclass`), so that application is keyed on the class
+/// side's mixin alone, which is what keeps this from splitting a second
+/// time.
 #[test]
 fn two_class_objects_sharing_an_application_share_their_class_sides_application() {
     let (mut interpreter, class) = load(CLASS_SIDE_INHERITANCE_SOURCE);

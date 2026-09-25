@@ -15,49 +15,48 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**The next piece of work is step 6's third plan, `Class`, `Behavior` and
-`Metaclass` in `Kernel.ns`**, which has no plan yet, only the outline
-[object-model.md](design/object-model.md)'s "Class sides and metaclasses"
-gives. It must settle one question left open on 2026-09-24: whether a class
-object is a value. §6.4 makes a module definition — a module root's class
-object — a value object, which ns-next does not yet honour
-([README.md](design/README.md), deviations); for a nested class object the
-specification says nothing, and SOMns counts a class a value when its
-enclosing object is one (`SClass.isValue`). The piece of work the user put ahead of it is done: the predefined
-classes are accessors on `Object`, as §3.2 says, so a bare `String` is the
-implicit-receiver send `self String`, answered without an activation, and
-`LoadBuiltinClass` and its wire tag are retired
-([core-library.md](design/core-library.md), "The predefined classes are
-accessors on `Object`"; "The predefined classes as accessors on `Object`"
-below). Six more pieces put ahead of it on 2026-09-24 and 2026-09-25 are
-done too, each described below under its own heading: `True` and `False`
-are Newspeak over quick methods ("`True` and `False` in Newspeak");
-`nil`'s class is §5.1.3's `UndefinedObject`, with the nil protocol on it and
-on `Object` ("`UndefinedObject` and the nil protocol"); `"..."` is a string
-literal and there is no `Character` class ("Double-quoted strings replace
-characters"); the parser refuses §4.1's reserved words as identifiers ("The
-reserved words are refused"); the platform declares no accessor for a
-predefined class ("The platform's class accessors are gone"); and the
-platform, its transcript and its `collections` namespace are three values
-of their own classes ("The platform, its transcript and its namespace are
-values"). Step 6's first two plans are done: the core library over a VM mirror,
-which gave it the specification's dispatch, and `Top`, `Value` and `Number`,
-which gave it the specification's object model
-([core-library.md](design/core-library.md), "What exists"). Two pieces of
-work were put ahead of the third plan on 2026-09-23 and are done too:
-§6.2's mixin application, so that a module can declare itself a value, and
-the strict enforcement of §3.1.1's value conditions and the root rule that
-goes with it ("Mixin application" and "The value conditions" below;
-[object-model.md](design/object-model.md), "A value object's four
-conditions"). All are described below, from "Step 6's first part" on, after
-the account of how M4 got here. A follow-up fix on 2026-09-24 moved the
-no-identity-method condition from the class object to the application it is
-really a property of: decided at class-object creation, the condition never
-reached a module's root, which `load_root_class` builds with no class object
-of its own, so such a root defining `==` instantiated; decided per
-application instead, where `apply_mixin` builds every application root and
-nested alike, the root is refused the same way a nested class is ("The value
-conditions" below, "What changed, commit by commit").
+**Step 6's third plan, `Behavior`, `Class` and `Metaclass`, is done**
+(2026-09-25;
+[ns-next-class-behavior-metaclass](superpowers/plans/2026-09-25-1331-ns-next-class-behavior-metaclass.md);
+[object-model.md](design/object-model.md), "Class sides and metaclasses"),
+and with it step 6: the three are declared classes of `Kernel.ns`, every
+class object's class is its own metaclass, its class side applied to
+`Class`, every metaclass's class is `Metaclass`, and a class object is a
+value exactly when its enclosing object is, which settles the question left
+open on 2026-09-24 and honours §6.4's "Module definitions are value
+objects"; see "`Behavior`, `Class` and `Metaclass`" below. **The next piece
+of work is step 7, the payload space** (item 4 of the list under "What came
+next was the third plan, now done, and then step 7" below), and it has one question to
+settle before it is planned: the space was ordered after step 6 because a
+Newspeak `OrderedCollection` over a fixed `Array` removes the one payload
+that grows in place (`Heap::array_push`), but `OrderedCollection>>add:` is
+still a forwarder to that leaf, and no plan yet names the step that removes
+it. The reflection work, which needed the reified instance-of relation this
+plan built, can now start as well
+([liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
+and MirrorBuilder"). An open performance item remains from this plan's
+measurement: [execution.md](design/execution.md), "What the profile shows
+beyond it" (after "What `Behavior`, `Class` and `Metaclass` cost") finds
+about a quarter of `bench_send.ns`'s samples sitting on 16-byte loads of
+`Value`s written piecewise, in `decide_slot_accessor`, `vm::make_value` and
+`push_activation`.
+
+Everything the user put ahead of the third plan is done, each described
+below under its own heading: the predefined classes are accessors on
+`Object` ("The predefined classes as accessors on `Object`"); `True` and
+`False` are Newspeak over quick methods ("`True` and `False` in Newspeak");
+`nil`'s class is §5.1.3's `UndefinedObject` ("`UndefinedObject` and the nil
+protocol"); `"..."` is a string literal and there is no `Character` class
+("Double-quoted strings replace characters"); the parser refuses §4.1's
+reserved words as identifiers ("The reserved words are refused"); the
+platform declares no accessor for a predefined class ("The platform's class
+accessors are gone"); the platform, its transcript and its `collections`
+namespace are values ("The platform, its transcript and its namespace are
+values"); and §6.2's mixin application and the strict enforcement of
+§3.1.1's value conditions ("Mixin application" and "The value conditions").
+Step 6's first two plans — the core library over a VM mirror, and `Top`,
+`Value` and `Number` — are described from "Step 6's first part" on, after
+the account of how M4 got here.
 
 M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
 in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
@@ -114,9 +113,10 @@ Designing the factory change is what added the first two: §3.2 settles, from
 a section the earlier reading had not reached, that a class side is not
 inherited at all.
 - **Metaclasses are flat** (§3.2, §6): a class side is applied to `Class` —
-  to `Object`'s behaviour here, since ns-next reifies no `Class` — instead of
-  to the superclass's metaclass, so a class side is not inherited and a
-  class-side `super` send looks in `Object`'s behaviour.
+  to `Object`'s behaviour then, since ns-next reified no `Class` until step
+  6's third plan — instead of to the superclass's metaclass, so a class side
+  is not inherited and a class-side `super` send looked in `Object`'s
+  behaviour; it looks in `Class` now.
 - **The primary factory is a class-side method** (§6.3), an entry of the
   metaclass mixin's method table found by the ordinary lookups. With flat
   metaclasses the factory's special cases went with nothing in their place:
@@ -137,10 +137,9 @@ inherited at all.
   unmeasured (the finding below).
 
 The rest of §3.2 — the reified instance-of relation and the `Class`,
-`Behavior` and `Metaclass` kernel classes — is **scheduled for step 6, the
-core library in Newspeak**, where both references declare them and which sits
-immediately before the reflection work that cannot be done without them
-([object-model.md](design/object-model.md), "Class sides and metaclasses").
+`Behavior` and `Metaclass` kernel classes — was scheduled for step 6, the
+core library in Newspeak, where both references declare them, and is done
+("`Behavior`, `Class` and `Metaclass`" below).
 
 **3c, the dispatch id's place, is done** (2026-09-19): a guard reads the id
 from the object header, and a class object's data is boxed so that an
@@ -319,7 +318,7 @@ sends the interpreter dispatches; the numbers above are what that work has to
 spend before it shows as a regression against `6f5a5b1`, and the fast path is
 what supplies it.
 
-**The rest of step 6 breaks into three plans, and the first two are done.**
+**The rest of step 6 breaks into three plans, and all three are done.**
 The first — the core
 library over a VM mirror — is done (2026-09-22;
 [ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md);
@@ -372,8 +371,8 @@ seven of the eight sources are level and `bench_new2.ns` is 3.6% slower**;
 see "`Top`, `Value` and the value semantics" below, which also carries one
 open defect and a finding about the measurement protocol itself.
 
-**What comes next is the third plan and then step 7**, deliberately not
-one plan, for the reason the leaf inlining was split off first: each
+**What came next was the third plan, now done, and then step 7**,
+deliberately not one plan, for the reason the leaf inlining was split off first: each
 produces working, measured software on its own, and each one's measurement
 informs the next. §6.2's mixin application and the strict enforcement of
 §3.1.1's value conditions were inserted ahead of the third plan on
@@ -381,16 +380,11 @@ informs the next. §6.2's mixin application and the strict enforcement of
 can declare itself a value, and both are done ("Mixin application" and "The
 value conditions" below). Numbered as step 6's plans are:
 
-3. **`Class`, `Behavior` and `Metaclass`** — the rest of §3.2: the three
-   become declared classes of `Kernel.ns`, and a class object's own class
-   becomes its metaclass instead of the builtin `Object` class
+3. **`Class`, `Behavior` and `Metaclass`. Done** (2026-09-25) — the rest
+   of §3.2: the three are declared classes of `Kernel.ns`, and a class
+   object's own class is its metaclass instead of the builtin `Object` class
    ([object-model.md](design/object-model.md), "Class sides and
-   metaclasses", its deviation paragraph; [core-library.md](design/core-library.md),
-   "The core library as Newspeak source over a VM mirror"). The reflection
-   work after step 6 cannot start without the reified instance-of relation,
-   and the decoder's placeholder scheme and the class-side `doesNotUnderstand:`
-   deviation ([dispatch.md](design/dispatch.md)) both change with it. No plan
-   exists yet; write one from those sections.
+   metaclasses"; "`Behavior`, `Class` and `Metaclass`" below).
 4. **The payload space**, step 7 of the order of work below, whose own
    measurements are named under [memory.md](design/memory.md), "Payloads
    belong to the Rust allocator, and what that costs". Run one of them before
@@ -922,13 +916,13 @@ Then, after M4 and before the JIT tiers:
    done** (2026-09-22): every builtin method a forwarder in
    `crates/ns-runtime/core-library/Kernel.ns`, primitive methods absorbing what the
    forwarding costs, and no source measurably slower; see "Where the next
-   session starts" above. **Still to come in this step: `Class`, `Behavior`
-   and `Metaclass`** — the rest of §3.2 (decided 2026-09-18), declared kernel
-   classes as they are in both references, with a class object's own class
-   becoming its metaclass: the reified instance-of relation that mirrors need
-   and that nothing before this step does
-   ([object-model.md](design/object-model.md), "Class sides and
-   metaclasses"). The kernel's control-flow methods and `do:` stay forwarders
+   session starts" above. **`Class`, `Behavior` and `Metaclass` are done
+   too** (2026-09-25), the step's third plan — the rest of §3.2 (decided
+   2026-09-18): declared kernel classes as they are in both references, with
+   a class object's own class its metaclass, the reified instance-of
+   relation that mirrors need ([object-model.md](design/object-model.md),
+   "Class sides and metaclasses"; "`Behavior`, `Class` and `Metaclass`"
+   below). The kernel's control-flow methods and `do:` stay forwarders
    over today's leaves; rewriting them as Newspeak loops is a separate step
    right before the tiers ([core-library.md](design/core-library.md),
    "Planned: real bodies for control flow and `do:`, before the JIT tiers").
@@ -4093,6 +4087,113 @@ transcripts being equal values. New:
 `a_failing_primitive_keeps_its_entry` relied on the shared class and now
 shows the same thing through `Value>>=`, whose leaf declines on a receiver of
 its own class when a slot's class brings its own `=`.
+
+## `Behavior`, `Class` and `Metaclass` (2026-09-25)
+
+§3.2's reified class hierarchy, step 6's third plan
+([ns-next-class-behavior-metaclass](superpowers/plans/2026-09-25-1331-ns-next-class-behavior-metaclass.md);
+[object-model.md](design/object-model.md), "Class sides and metaclasses").
+`Kernel.ns` declares `Behavior` below `Object`, and `Class` and `Metaclass`
+below `Behavior` (builtin class tags 20, 21 and 22). Every class object's
+class is its own metaclass — its class side, with its primary factory,
+applied to `Class` — built eagerly with the class object
+(`Mutator::attach_metaclass`), and every metaclass's class is `Metaclass`,
+whose own metaclass is again an instance of `Metaclass`. A class object's
+dispatch id is its metaclass's instances id: the class-side id, the
+class-side chains and the class-side resolution are gone, a factory is
+honoured only on the receiver's own metaclass (`resolve::resolved_for`), and
+a class side's `doesNotUnderstand:` now handles its class object's
+unhandled sends, which removes the §5.5 deviation row. `Class>>name`,
+`Class>>printString`, `Metaclass>>name` (`Foo class`) and
+`Metaclass>>printString` answer through two new leaves
+(`builtins/behavior.rs`), nothing below `Behavior` can be instantiated
+(`InstantiationRefusal::ClassObject`), and a class object is a value exactly
+when its enclosing object is, with `=`, `==` and `hash` derived from its
+state — which removes the §3.2 deviation row and the §3.1.1 row's "a module
+definition is not one". The image format carries a class record's metaclass
+as a record of its own (`OBJECT_METACLASS`) and a prebuilt class's by tag
+(`CLASS_METACLASS`, `HASHED_METACLASS`), holds each class record and its
+metaclass record to each other (`MetaclassPairing`), and retires
+`ClassOfAClassIsARecord`; the decode amplification does not move.
+
+**The nine decisions** (the user, 2026-09-25; the plan's "Decisions this
+plan implements"): a class object is a value exactly when its enclosing
+object is (SOMns's `SClass.isValue`), a metaclass when its class is; the
+state stays in `ClassData`, the kernel classes carry behaviour only;
+metaclasses are eager, `ClassData.metaclass` is gone and `this_class` links
+a metaclass back to its class; the hierarchy is Primordial Soup's, `Object`
+→ `Behavior` → {`Class`, `Metaclass`}, none of them below `Value`; the
+protocol is Primordial Soup's minimal one, `name` and `printString`; `Object`
+declares no accessor for the three, and instantiating anything below
+`Behavior` is refused; a value class object's equality is derived from its
+application, enclosing object and superclass — a metaclass's from its class
+— by extending `builtins::value`'s walk with class objects as a node kind;
+its hash is derived from its mixin's name alone; and in the image a class
+record's metaclass is a record of its own, a prebuilt class's is named by
+tag, and the amplification bound does not move. Two more were settled while
+building it: `Behavior>>==` and `Metaclass>>==` are the same forwarder as
+`=`, to the same leaf, so `self class == other class` costs no activation;
+and the hash of a value class object is taken from its mixin's name, which
+survives a copy and a round trip where a dispatch id does not.
+
+**Goldens.** Two recorded outcomes changed, each justified line by line in
+its commit. `class-side/class_side_super_reaches_object` became
+`class-side/class_side_super_reaches_class`: a class-side `super printString`
+reaches `Class>>printString` and answers the class's name, `Simple`, instead
+of `Object`'s `an Object`, since a metaclass's superclass is now `Class`.
+`cache/cache_class_objects_and_instances_at_one_site` changed three lines:
+the class objects `Plain`, `Maker` and `Plain` again declare no class-side
+`printString` and now answer `Class`'s, their names, instead of `Object`'s
+default. New: `class-side/the_class_of_a_class_is_its_metaclass`,
+`class-side/a_class_object_cannot_be_made_by_instantiation`,
+`class-side/a_metaclass_does_not_understand_new`,
+`class-side/a_class_and_its_metaclass_print_their_names`,
+`class-side/a_class_side_does_not_understand_handles_its_class_objects_sends`,
+`kernel/a_value_modules_nested_class_is_a_value` and
+`kernel/a_values_slot_refuses_a_class_that_is_no_value`.
+
+**Measured** against `3defb78`, the `master` it started from
+([execution.md](design/execution.md), "What `Behavior`, `Class` and
+`Metaclass` cost"), three layouts of each tree, four sittings pooled, at
+`1c1f624`: **the fixtures are level.** `bench_send.ns` is within 0.5% (8.59
+→ 8.64 ms), `bench_loop.ns` 1.4% faster (7.35 → 7.24) and
+`bench_megamorphic.ns` 2.1% faster (11.70 → 11.45), each in every sitting;
+`bench_block.ns` is the known bimodal source, and fast layout against fast
+layout it is within 0.4% (16.00 → 16.07). The throwaway `bench_metaclass.ns`,
+100,000 × `Outer new Inner make`, is **14.5% slower** (38.68 → 44.29 ms),
+about 56 ns an iteration for the eager metaclass of each nested class object.
+Before `1c1f624` the fixtures were not level: `bench_send.ns` 6.0% slower,
+`bench_loop.ns` and `bench_megamorphic.ns` 3.4% of the pooled medians before
+rounding, and `bench_metaclass.ns` 17.3% slower (against the 14.5% above),
+the step of the two send sources all on `baf6f65`. **Its cause** was code
+generation: with `chain_start`'s class-side arm gone, LLVM's SROA split the
+`SendKey`'s copy of the receiver into five pieces and stored them back one
+by one wherever a whole `Value` was needed, so the next 16-byte load of
+it -- building `Step::Method` on a hit, the key a megamorphic send hands
+`miss` -- failed
+store-to-load forwarding (a sampling profile put 3,000 of 75,000 samples of
+`bench_send.ns` on that one load). `1c1f624` holds the key's receiver by
+reference to the send's own local, which keeps it one object in memory.
+`vm::run` is still one function, with no `vm::run::closure`, and shrank from
+7,055 instructions at the base to 6,741. The same profile shows the same
+kind of stall on every tree costing far more -- a quarter of `bench_send.ns`'s
+samples on `Value`s a callee writes through its out-parameter in pieces that
+do not line up with the load that reads them -- an open performance item
+recorded there.
+
+**Small follow-ups the reviews deferred**, none affecting an outcome:
+`HASHED_METACLASS` has no crafted-input test of its own (its readers,
+`read_prebuilt_class` and `read_root_level`, are shared with
+`CLASS_METACLASS` and tested there); the encoder's refusal of a class record
+without a metaclass has no test, since no class object without one is
+reachable after the bootstrap -- a unit test inside `ns-runtime` could build
+one; `builtins::value`'s `derived_equality` pushes a class pair again when it
+is already assumed, and charges a metaclass pair several budget units, which
+is bounded and correct but wasted work; the hash of a value class object,
+from its mixin's name alone, collides for every same-named nested class
+under different enclosing values, which is valid and coarse; and every level
+a `<:` clause adds gets a metaclass no program can send to, part of the
+measured eager cost.
 
 ## Notes
 

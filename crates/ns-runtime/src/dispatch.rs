@@ -32,11 +32,13 @@ pub enum Lookup<'gc> {
     /// A row never passes its level over: its failure path is the failure
     /// block its send carries.
     Primitive(Primitive, ClassReference<'gc>),
-    /// §6.3's primary factory, found on the receiver's metaclass. It carries
-    /// no level: §6.3 instantiates the *receiver* of the factory message,
-    /// whichever level of the metaclass mixin's chain the entry was found at
-    /// -- and with a flat metaclass (§3.2) there is only ever the one.
-    Factory,
+    /// §6.3's primary factory, with the class object of the level whose
+    /// method table holds it, as `Primitive` carries its level. §6.3
+    /// instantiates the *receiver* of the factory message, not the level;
+    /// the level is what lets the resolution honour the entry only when it
+    /// was found on the receiver's own class, its metaclass
+    /// (`interpreter::resolve`'s `resolved_for`).
+    Factory(ClassReference<'gc>),
     NotFound,
 }
 
@@ -322,8 +324,8 @@ fn walk<'gc>(
 /// with its field resolved against that level's application -- the level
 /// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
 /// `InitializeSlot` places a slot's initial value) -- a primitive with
-/// that level, which an inline cache counts from, or the primary factory, which
-/// needs no level at all because §6.3 instantiates the receiver.
+/// that level, which an inline cache counts from, or the primary factory with
+/// that level, which the resolution checks is the receiver's own metaclass.
 fn found_entry<'gc>(
     entry: &MethodEntry,
     application: &MixinApplication,
@@ -336,7 +338,7 @@ fn found_entry<'gc>(
             application.own_slot_base + accessor.own_index as usize,
         ),
         MethodEntry::Primitive(method) => Lookup::Primitive(method.primitive, level_class),
-        MethodEntry::Factory(_) => Lookup::Factory,
+        MethodEntry::Factory(_) => Lookup::Factory(level_class),
     }
 }
 
@@ -360,20 +362,11 @@ fn level_of<'gc>(
 /// reporting a `Lookup::Method` whose class object comes from a different
 /// level than its code.
 ///
-/// A metaclass is the one deliberate exception, built by
-/// `Mutator::metaclass_of`: its class-object `superclass` is `Object` (so a
-/// `super` send inside a class-side method finds `Object`'s behaviour,
-/// `newspeak-spec.pdf` §5.10), but its application's own `superclass` is
-/// `None` -- no metaclass application has a superclass application, because
-/// §3.2 makes a class side flat, not inherited, so there is nothing above
-/// it to apply against. The mismatch is exactly what this function needs to
-/// get right rather than assume away: requiring *both* halves before
-/// stepping means an ordinary lookup that misses on a metaclass stops right
-/// there, instead of reading the class-object half alone and continuing
-/// onto `Object`'s own methods -- which would silently un-flatten the
-/// metaclass this function's caller (`walk`) is searching. A `debug_assert!`
-/// written against "the two chains always agree" would be wrong to add
-/// here; this asymmetry is the metaclass's, not a bug in either chain.
+/// A metaclass keeps the invariant too (`Mutator::attach_metaclass`): its
+/// class-object `superclass` is `Class` and its application is applied over
+/// `Class`'s (`newspeak-spec.pdf` §6), so a lookup that misses on a
+/// metaclass continues onto `Class`, `Behavior` and `Object` -- never onto
+/// an ancestor's class side, which §3.2 keeps flat.
 fn next_level<'gc>(
     superclass: Option<ClassReference<'gc>>,
     application: &Rc<MixinApplication>,

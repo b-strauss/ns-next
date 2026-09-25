@@ -1,0 +1,9 @@
+stdout = '''
+Foo
+Foo class
+Metaclass
+Metaclass class
+Integer
+Integer class
+an Object
+'''

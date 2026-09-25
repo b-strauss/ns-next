@@ -558,22 +558,34 @@ fn a_value_class_that_declares_a_mutable_slot_cannot_be_instantiated() {
 }
 
 /// §3.1.1's other half: *deeply* immutable, so a slot of a value may hold
-/// only another value. A class object is not one -- its own class is
-/// `Object` -- so storing one is refused as the slot is initialized, under
-/// the factory's selector.
+/// only another value. A class object is one exactly when its enclosing
+/// object is (`instantiate::class_object_is_a_value`), so `Plain`, nested
+/// in an ordinary `Wrapper`, is none, and storing it is refused as the slot
+/// is initialized, under the factory's selector.
 #[test]
 fn a_value_class_refuses_a_slot_that_is_not_a_value() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class Holder on: contents = Value new (
-            | public contents = contents. |
-        ) () : ()
+        class Values = Object <: Value () (
+            public class Holder on: contents = Value new (
+                | public contents = contents. |
+            ) ()
+            public class Wrapper = Object new () (
+                public class Plain = Object new () ()
+            )
+        ) : ()
     "};
-    let (mut interpreter, class) = load(source);
+    let (mut interpreter, module_class) = load(source);
+    let module = expect_ok(interpreter.instantiate(&module_class, &[]), "Values new");
+    let holder = expect_ok(
+        interpreter.send(&module, Symbol::intern("Holder"), &[]),
+        "Holder",
+    );
+    let plain = a_class_that_is_no_value(&mut interpreter, &module);
     let error = expect_error(
-        interpreter.instantiate(&class, std::slice::from_ref(&class)),
-        "Holder on: Holder",
+        interpreter.instantiate(&holder, std::slice::from_ref(&plain)),
+        "Holder on: Plain",
     );
     assert_eq!(error.selector, Symbol::intern("on:"));
     assert!(
@@ -581,6 +593,26 @@ fn a_value_class_refuses_a_slot_that_is_not_a_value() {
         "the refusal names the class and the slot: {}",
         error.message
     );
+    // A module definition has no enclosing object and is a value (§6.4:
+    // "Module definitions are value objects"), so the same slot takes one.
+    expect_ok(
+        interpreter.instantiate(&holder, std::slice::from_ref(&module_class)),
+        "Holder on: Values",
+    );
+}
+
+/// `module Wrapper new Plain`: a class nested in an ordinary object, and so
+/// no value.
+fn a_class_that_is_no_value(interpreter: &mut Interpreter, module: &Root) -> Root {
+    let wrapper_class = expect_ok(
+        interpreter.send(module, Symbol::intern("Wrapper"), &[]),
+        "Wrapper",
+    );
+    let wrapper = expect_ok(interpreter.instantiate(&wrapper_class, &[]), "Wrapper new");
+    expect_ok(
+        interpreter.send(&wrapper, Symbol::intern("Plain"), &[]),
+        "Plain",
+    )
 }
 
 /// Both value refusals name the selector the program sent: the primary
@@ -602,6 +634,9 @@ fn a_refused_slot_names_the_factory_the_program_sent() {
             public class Derived take: contents = Base held: contents (
                 | public own = 1. |
             ) ()
+            public class Wrapper = Object new () (
+                public class Plain = Object new () ()
+            )
         ) : ()
     "};
     let (mut interpreter, module_class) = load(source);
@@ -610,10 +645,12 @@ fn a_refused_slot_names_the_factory_the_program_sent() {
         interpreter.send(&module, Symbol::intern("Derived"), &[]),
         "Derived",
     );
-    // A class object is no value, so `Base`'s initializer refuses it.
+    // `Plain` is nested in an ordinary object and so is no value, so
+    // `Base`'s initializer refuses it.
+    let plain = a_class_that_is_no_value(&mut interpreter, &module);
     let error = expect_error(
-        interpreter.instantiate(&derived, std::slice::from_ref(&module_class)),
-        "Derived take: Holders",
+        interpreter.instantiate(&derived, std::slice::from_ref(&plain)),
+        "Derived take: Plain",
     );
     assert_eq!(error.selector, Symbol::intern("take:"));
     assert!(

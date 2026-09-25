@@ -210,7 +210,7 @@ impl<'gc> Mutator<'gc> {
     /// superclass is resolved, no slot layout computed, no class object built)
     /// -- a nested mixin has no class object of its own until something
     /// materializes it (the accessor), and a class side until
-    /// `Mutator::metaclass_of` builds the metaclass that applies it.
+    /// `Mutator::attach_metaclass` builds the metaclass that applies it.
     ///
     /// `kernel` is the module's `ResolvedModule.kernel`, carried down to
     /// every method so that only a kernel method can carry a fast path
@@ -357,11 +357,12 @@ impl<'gc> Mutator<'gc> {
     /// class").
     ///
     /// No re-check of what the lookup decided: the entry was found on the
-    /// receiver's own metaclass, whose dispatch id is the class-side guard a
-    /// cache entry is keyed by, so a hit and a miss reach the same class
-    /// (§3.2 makes a metaclass flat, so there is no inherited class side an
-    /// entry could have come from). `class` is the receiver itself, read per
-    /// send rather than carried in an entry.
+    /// receiver's own metaclass (`resolve::resolved_for` refuses one found
+    /// anywhere else), whose instances id is the guard a cache entry is
+    /// keyed by, so a hit and a miss reach the same class (§3.2 makes a
+    /// metaclass flat, so there is no inherited class side an entry could
+    /// have come from). `class` is the receiver itself, read per send
+    /// rather than carried in an entry.
     ///
     /// No double-dispatch risk against the superclass clause's own factory
     /// message (`Object new` in `class Foo = Object new (...)`). That message
@@ -429,8 +430,10 @@ impl<'gc> Mutator<'gc> {
         // (`Mutator::apply_mixin`).
         if let Some(application) = application.as_ref() {
             if let Some(refusal) = &application.instantiation_refusal {
+                let display_name = self.heap.class_display_name(class);
                 return Err(Signal::Error(instantiation_refusal_error(
                     class,
+                    &display_name,
                     application,
                     refusal,
                 )));
@@ -1208,10 +1211,13 @@ fn clause_as_written(clause: &ast::SuperclassClause) -> String {
 }
 
 /// The refusal `decide_instantiation` raises, named under the class's own
-/// primary factory as both value refusals are.
+/// primary factory as both value refusals are. `display_name` is
+/// `Heap::class_display_name`'s, which this function has no heap to ask:
+/// `Foo class` names a metaclass where its mixin's name would not.
 #[cold]
 fn instantiation_refusal_error<'gc>(
     class: ClassReference<'gc>,
+    display_name: &str,
     application: &crate::mixin::MixinApplication,
     refusal: &crate::mixin::InstantiationRefusal,
 ) -> NewspeakError<'gc> {
@@ -1231,6 +1237,13 @@ fn instantiation_refusal_error<'gc>(
         crate::mixin::InstantiationRefusal::IdentityMethod { declaring } => {
             identity_method_error(class, application, *declaring)
         }
+        crate::mixin::InstantiationRefusal::ClassObject => NewspeakError {
+            selector: factory_selector(application),
+            receiver: Value::Object(class),
+            message: format!(
+                "cannot instantiate {display_name}: a class object is made only by evaluating its declaration"
+            ),
+        },
     }
 }
 
@@ -1376,8 +1389,9 @@ pub(crate) fn check_value_slot<'gc>(
 /// class `Value`", which covers a `String`, a `Symbol`, an
 /// instance of a user class below `Value` and a `Value new` alike -- §3.2's
 /// "subclass of" is inclusive, so `Value`'s own application carries the
-/// flag (`Mutator::apply_mixin`). A class object is not one -- its own
-/// class is `Object`.
+/// flag (`Mutator::apply_mixin`). A class object is one when its enclosing
+/// object is (`class_object_is_a_value`), whatever its own class (its
+/// metaclass) inherits: `Behavior` does not inherit `Value`.
 ///
 /// **The other predicate about "is a value" is
 /// `builtins::value::state_is_a_value`**, which asks the narrower question
@@ -1385,10 +1399,42 @@ pub(crate) fn check_value_slot<'gc>(
 /// about everything this one accepts and that one unfolds, and they
 /// disagreed about `Value new` until 2026-09-23.
 pub(crate) fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
-    !mutator.heap().is_class(object)
-        && mutator
-            .heap()
-            .class_inherits_value(mutator.heap().class_of_object(object))
+    if mutator.heap().is_class(object) {
+        return class_object_is_a_value(mutator, object);
+    }
+    mutator
+        .heap()
+        .class_inherits_value(mutator.heap().class_of_object(object))
+}
+
+/// Whether the class object `class` is a value: exactly when its enclosing
+/// object is (`docs/design/object-model.md`, "Class sides and metaclasses",
+/// after SOMns's `SClass.isValue`). A module definition has none and is one
+/// (§6.4: "Module definitions are value objects"); a nested class's only
+/// state is its enclosing object (§6.1), so §3.1.1's condition on enclosing
+/// objects decides it. A metaclass shares its class's enclosing object
+/// (`Mutator::attach_metaclass`) and so its verdict.
+///
+/// The equality walk (`builtins::value`) asks this of every pair of
+/// distinct classes it meets, and a slot of a value asks it of a class it
+/// is handed, so the answer must not depend on anything but the class
+/// object itself.
+pub(crate) fn class_object_is_a_value<'gc>(
+    mutator: &Mutator<'gc>,
+    class: ClassReference<'gc>,
+) -> bool {
+    match mutator.heap().class_enclosing(class) {
+        None => true,
+        // An enclosing object is always an instance, never a class object,
+        // so this does not recurse -- and an image that claims otherwise
+        // gets `false`, the answer that refuses rather than accepts.
+        Some(enclosing) => {
+            !mutator.heap().is_class(enclosing)
+                && mutator
+                    .heap()
+                    .class_inherits_value(mutator.heap().class_of_object(enclosing))
+        }
+    }
 }
 
 /// The refusal itself, off the checking path so that the check stays a

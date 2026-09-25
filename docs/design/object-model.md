@@ -161,7 +161,7 @@ struct ClassData {                // one per enclosing instance, per level
     declaring_class: Option<ClassReference>,    // the declaration chain `outer` walks
     superclass: Option<ClassReference>,         // parallel to the application chain
     builtin: Option<BuiltinClass>,
-    metaclass: Option<ClassReference>,          // built on first class-side send
+    this_class: Option<ClassReference>,         // a metaclass's class; its own metaclass is its header class
     applied_clause: Option<Box<AppliedClause>>, // the `<:` clause that added this level
 }
 ```
@@ -303,12 +303,14 @@ kernel's.
   2026-09-22, as both references declare them; the conditionals and logic
   are `True`'s and `False`'s own methods, [core-library.md](core-library.md),
   "`True` and `False` are quick methods"), `Number` with `Integer` and
-  `Float`, and `String`, `Symbol` and `UndefinedObject` (§5.1.3 names
-  `nil`'s class so). `Number` is empty; it is the
+  `Float`, `String`, `Symbol` and `UndefinedObject` (§5.1.3 names
+  `nil`'s class so), and `Platform`, `Transcript` and `Collections`
+  ([core-library.md](core-library.md), "The platform"). `Number` is empty; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
-  `Array`, `OrderedCollection`, `Block` and `Platform` stay directly under
-  `Object`, since their instances are not values. The VM mirror's class,
+  `Array`, `OrderedCollection` and `Block` stay directly under `Object`,
+  since their instances are not values, and so does `Behavior`, with `Class`
+  and `Metaclass` below it ("Class sides and metaclasses" below). The VM mirror's class,
   which `Kernel.ns` does not declare, sits below `Value`, so the mirror is a
   value ("A value object's four conditions" below). The clause is read by name
   at bootstrap, never run, and the class object's `superclass` link is set to
@@ -427,17 +429,20 @@ same errors.
 - **Step 4 refuses a declared slot that is not a value.** *Deeply* immutable
   means "all objects reachable from it are also deeply immutable", so
   `InitializeSlot` refuses to store anything but a value in an instance of a
-  value class: an immediate, a `String`, a `Symbol`, or an
-  instance whose class inherits `Value`. An `Array` stored there would make the
+  value class: an immediate, a `String`, a `Symbol`, an
+  instance whose class inherits `Value`, or a class object that is a value —
+  one whose enclosing object is ("Class sides and metaclasses" below;
+  `instantiate::is_a_value`). An `Array` stored there would make the
   whole value mutable through it, and two copies of the value would stop being
   equal the moment one array was written. The decision and its text live in
   `interpreter/instantiate.rs`; `vm.rs` only calls it.
 
   The rule is about the slots a class **declares**. The hidden nested-class
   cache slot ("The nested-class accessor" above) is written by the accessor,
-  not by `InitializeSlot`, so it never meets the check — and should not: it
-  holds a class object, which is no value, but it is the implementation of a
-  member §6 defines rather than state of the value. A value class may declare a
+  not by `InitializeSlot`, so it never meets the check — and need not: the
+  class object it holds has the value as its enclosing object and so is a
+  value itself, and it is the implementation of a member §6 defines rather
+  than state of the value. A value class may declare a
   nested class without ceasing to be one.
 
 **Both of the class-level conditions are decided cold and refused only where
@@ -463,8 +468,9 @@ for a level above `C`).
   decided, and folded into the same field, `instantiation_refusal`
   (`InstantiationRefusal::IdentityMethod`), right after it: root clause
   defect, then the superclass's own refusal (inherited unchanged, exactly as
-  the mutable-slot refusal is), then the mutable slot when the chain inherits
-  `Value`, then the identity method. `apply_mixin` looks for the first level
+  the mutable-slot refusal is), then `Behavior`'s refusal of every class
+  object ("Class sides and metaclasses" below), then the mutable slot when
+  the chain inherits `Value`, then the identity method. `apply_mixin` looks for the first level
   below `Value` that declares an instance-side `==` while the chain inherits
   `Value`, excluding `Value`'s own mixin. Only levels **below** `Value`
   count: an `==` above it, `Object`'s included, is overridden by `Value>>==`,
@@ -729,102 +735,301 @@ cannot bring the rule back. `goldens/errors/root_*` pin one defect each.
 
 ## Class sides and metaclasses
 
-The metaclass mixin is the class side *together with the primary factory
-method* (§6.3: "The class side, together with the primary factory method,
-defines the mixin for the metaclass"). The metaclass is created lazily, on
-the first class-side send or reflective access — `X new` is one, since the
-factory is one of its members. Class-side declarations are kept and dispatched
-as metaclass behaviour rather than parsed and dropped.
+§3.2 reifies the class hierarchy: "Each class is an instance of a unique
+metaclass. All metaclasses are instances of class Metaclass, and are direct
+subclasses of Class. Metaclasses may not be subclassed. […] The metaclass
+hierarchy in Newspeak is deliberately kept very flat", and §6 gives the
+construction — a class is an instance of "a metaclass that is the application
+of the metaclass mixin defined by the class' class side to the class Class".
+ns-next builds it literally (designed with the user on 2026-09-25, "Decisions"
+below): every class object's class is its own metaclass, every metaclass's
+class is `Metaclass`, and `Behavior`, `Class` and `Metaclass` are declared
+classes of `Kernel.ns`.
 
-**The primary factory is an entry of that method table**, under the declared
-factory's selector (`new` for a declaration that writes none, §6's
-unnumbered introduction, before §6.1 begins), found by
-the ordinary lookups like any other member — as both references build it
+**The hierarchy** is Primordial Soup's:
+
+```
+Object
+  Behavior      what a class and a metaclass share: =, ==, hash
+    Class       the superclass of every metaclass: name, printString
+    Metaclass   the class of every metaclass: name, printString, =, ==
+```
+
+The specification names neither `Behavior` nor `Metaclass`'s superclass.
+`Behavior` is there so that what only a real class has — a name of its own —
+sits on `Class` and a metaclass does not inherit it: §3.2's "Metaclasses may
+not be subclassed". SOMns's `Metaclass = Class` would make every metaclass
+carry `Class`'s protocol and override it away again. None of the three
+inherits `Value`: whether a class object is a value is decided per object
+(below), and under the strict enforcement of §3.1.1 a subclass of `Value`
+refuses every instance that is not one. They carry builtin class tags 20, 21
+and 22 (`BuiltinClass::Behavior`, `Class`, `Metaclass`), the next free
+numbers ([image-format.md](image-format.md)).
+
+**Where a class object's state lives.** In `ClassData`: its application,
+enclosing object, declaring class and superclass, and for a metaclass
+`this_class`, the link back to its class. The three kernel classes carry
+behaviour only, as SOMns's do (`Class = Object ()`, `Metaclass = Class ()()`
+in `prior-art/somns/core-lib/Kernel.ns`, the state in the Java `SClass`) and
+as `KernelForJS.ns`'s do. Primordial Soup instead makes a class object an
+ordinary instance whose first six slots the VM knows by position (`Behavior`
+in `KernelForPrimordialSoup.ns`); taking that shape would move lookup, the
+caches, the collector and the image format onto slot indices and read every
+lookup step out of a `Value` slot, for no conformance gain: §3.2 fixes the
+relations — instance-of, subclass-of, flatness — and says nothing about how a
+class object is stored.
+
+**The metaclass mixin is the class side *together with the primary factory
+method*** (§6.3: "The class side, together with the primary factory method,
+defines the mixin for the metaclass"). Class-side declarations are kept and
+dispatched as metaclass behaviour rather than parsed and dropped. A class
+`Foo`'s metaclass is the application of that mixin **to `Class`**
+(`Mutator::attach_metaclass`, `interpreter/metaclass.rs`): an ordinary
+application whose superclass application is `Class`'s, a class object whose
+superclass link is `Class` and whose enclosing object and declaring class are
+`Foo`'s, since §6.3 writes a class side inside the same declaration as its
+instance side. Its application is the memoized one for (class side, `Class`),
+so every class object of one declaration — one per enclosing instance — gets
+a metaclass of one application, for the reason the application cache is
+keyed by the superclass's application (§6.2): a metaclass per application of
+its own would send every `X new` site megamorphic.
+
+**A metaclass is flat: a class side is not inherited.** A metaclass's
+superclass is always `Class`, never the metaclass of `Foo`'s superclass, so
+the ordinary lookup from a class object walks its own class side, then
+`Class`, `Behavior` and `Object`, and a subclass answers a class-side message
+only if its own class side declares it
+(`goldens/class-side/class_side_is_not_inherited_by_a_subclass_with_none_of_its_own.ns`).
+§5.10 makes a `super` send's S the superclass of the activation's current
+class, which for a class-side method is `Class`: a class-side
+`super printString` answers `Class>>printString`, the class's name
+(`goldens/class-side/class_side_super_reaches_class.ns`), and a class-side
+`super new` does not instantiate, because nothing above the metaclass
+declares a factory.
+
+**Every class object's class is its metaclass, and every metaclass's class is
+`Metaclass`.** `attach_metaclass` sets both headers: the class object becomes
+an instance of its metaclass, and the metaclass an instance of `Metaclass`.
+`Metaclass` is a kernel class with a metaclass of its own, whose class is
+`Metaclass` again, which closes the loop without a regress
+(`goldens/class-side/the_class_of_a_class_is_its_metaclass.ns`:
+`Foo class class == Foo class class class class`). There is no separate
+metaclass field: `Heap::class_metaclass` and `Mutator::metaclass_of` read the
+header, and answer `None` for a metaclass, whose class is `Metaclass`. A
+metaclass never gets a metaclass of its own, which `attach_metaclass`
+debug-asserts.
+
+**Eager, not lazy.** `new_class_object` builds the metaclass together with
+the class object, so the header is right from the start. The alternative — a
+header that points somewhere provisional until something asks for the
+metaclass — would make every direct reader of an object's class a source of
+silent wrong answers for class objects. SOMns builds the two together, as
+Squeak's Newspeak does. The cost is one more class object per class object —
+for a nested class, once per enclosing instance, on the first access.
+
+**The bootstrap** creates class objects — every builtin, the kernel's `Value`
+level and the `Kernel` module's own class — before `Class` and `Metaclass`
+are filled. They carry the builtin `Object` as a provisional header `class`
+until the end of the kernel's fill, where
+`Mutator::give_existing_class_objects_metaclasses` gives each its metaclass,
+`Object`'s and `Metaclass`'s included, and sets `metaclasses_ready`, from
+which point `new_class_object` builds one with every class object. When
+`wire_kernel_in` gives a builtin its lexical context, its metaclass gets the
+same ([core-library.md](core-library.md), "The bootstrap: placeholders first,
+kernel second"). After the bootstrap the invariant holds without exception;
+`interpreter/metaclass.rs`'s `every_builtin_has_a_metaclass_in_its_declaration_context`
+pins that every builtin has a metaclass linked back to it and sharing its
+enclosing object.
+
+`Object::class` is not an `Option<ClassReference>`, because the builtin
+`Object` class exists from the first moment of the bootstrap and serves as
+every provisional header. The image decoder relies on that the same way: it
+allocates every record as a placeholder pointing at the builtin `Object`
+before it reads the record that says what the class really is, and decoding
+a class record overwrites that with the record's metaclass, as it overwrites
+every other placeholder field.
+
+**The primary factory is an entry of the metaclass mixin's method table**,
+under the declared factory's selector (`new` for a declaration that writes
+none, §6's unnumbered introduction, before §6.1 begins), found by the
+ordinary lookups like any other member — as both references build it
 (Primordial Soup's `astForPrimaryFactory:`, SOMns's
 `MixinBuilder.assemblePrimaryFactoryMethod`). It carries no body: what it
 does is instantiate the class object the message was sent to, which
-`interpreter::resolve::act` runs through `instantiate::decide_factory`. The
-three special cases that existed while it was not an entry are gone with
-nothing in their place — the factory check ahead of the lookup, the `Factory`
-target's re-check, and the re-check ahead of a `super` send's
-`doesNotUnderstand:` target — because a flat metaclass puts a factory entry
-on the receiver's own metaclass and nowhere else, which the class-side
-dispatch id determines. `primary_factory_selector` survives only where §6.1
-still needs it, in the superclass clause's check.
+`interpreter::resolve::act` runs through `instantiate::decide_factory`. A
+flat metaclass puts a factory entry on the receiver's own metaclass and
+nowhere else, and `resolve::resolved_for` honours a factory only when the
+lookup found it on the receiver's own class, so no special case sits ahead of
+or behind the lookup ([dispatch.md](dispatch.md), "Resolve, then act").
+`primary_factory_selector` survives only where §6.1 still needs it, in the
+superclass clause's check.
 
 The entry is derived, never stored twice: `instantiate::build_class_side`
 inserts it as a class side is built from source, `image::mixins::decode`
 derives it for a row another row names as its class side, and
-`Mutator::metaclass_of` puts it in the otherwise empty mixin a class that
-declares no class side gets. One definition of what it is
-(`mixin::factory_entry`), so the three cannot disagree about which selector
-instantiates a class. Nothing about it reaches the image: like a slot's
-accessors (§6.3.2), it is rebuilt on the way out from the factory the mixin
-table already carries.
+`Mutator::metaclass_mixin` puts it in the otherwise empty mixin a class that
+declares no class side gets — memoized per class mixin
+(`Mutator.metaclass_mixins`), so every class object of one declaration shares
+it. One definition of what it is (`mixin::factory_entry`), so the three
+cannot disagree about which selector instantiates a class. Nothing about it
+reaches the image: like a slot's accessors (§6.3.2), it is rebuilt on the way
+out from the factory the mixin table already carries.
 
-**A metaclass is flat: a class side is not inherited.** §3.2 states it and says
-what it is not — "All metaclasses are instances of class Metaclass, and are
-direct subclasses of Class. Metaclasses may not be subclassed. […] This differs
-from Smalltalk, where the metaclass would be a subclass of the metaclass of the
-class' superclass. The metaclass hierarchy in Newspeak is deliberately kept very
-flat" — and §6 gives the construction: a class is an instance of "a metaclass
-that is the application of the metaclass mixin defined by the class' class side
-to the class Class". So a subclass answers a class-side message only if its own
-class side declares it, and a class-side `super` send looks in `Class`. Since
-ns-next reifies no `Class` (below), a metaclass's superclass is `Object`'s
-behaviour, which is where the class-side chain already falls through.
+**Dispatch is uniform.** A class object's dispatch id is its class's
+instances id — its metaclass's — the same rule as for every other object;
+there is no class-side id and no class-side lookup chain, and the inline
+caches guard on the header id as they do for an instance
+([dispatch.md](dispatch.md), "The dispatch id"). A class side's own
+`doesNotUnderstand:` handles every send its class object does not understand,
+since §5.5's handler is "defined for the class of the receiver" and that
+class is the metaclass
+(`goldens/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
 
-`Mutator::metaclass_of` builds exactly this: one application, for the
-class's own metaclass mixin, with no superclass application — so an ordinary
-class-side send that misses on the metaclass never continues onto an
-ancestor's, which is what "not inherited" means for the lookup that finds
-members. A miss falls through to the class object's own behaviour, the same
-answer §5's ordinary lookup already gives. The metaclass's own *class-object*
-superclass link, read only by a `super` send, still points at `Object`'s
-behaviour: §5.10 makes S the superclass of the activation's current class,
-which §3.2 makes `Class` for a metaclass, and `Object`'s behaviour is what
-stands in for `Class` here — so a class-side `super new` no longer
-instantiates, because `Object` declares no factory for it to find.
+**The protocol is minimal, as Primordial Soup's is.** Reflection is a
+mirror's job, which the reflection step builds; a class does not answer
+`superclass`, `selectors` or its methods at the base level, so holding a class
+grants no reflective capability. `Class>>name` answers the mixin's name
+through the leaf `className:ifFail:` and `Class>>printString` answers `name`;
+`Metaclass>>name` answers `thisClass name, ' class'`, reading `this_class`
+through the leaf `metaclassThisClass:ifFail:`, and `Metaclass>>printString`
+answers `name` (`builtins/behavior.rs`;
+`goldens/class-side/a_class_and_its_metaclass_print_their_names.ns`:
+`Foo`, `Foo class`, `Metaclass`, `Metaclass class`). `Object` has **no
+accessor** for `Behavior`, `Class` or `Metaclass`: none of the three
+references declares one, §3.2's accessors are for the classes of the built-in
+literals and the array factories, and the mirror code that will need the
+names lives in the kernel or the platform, where it names them directly.
+`interpreter/kernel.rs`'s accessor-set test pins the set.
 
-A metaclass that reaches an image — as a class-side activation's
-`current_class`, captured in a frame — is rebuilt with the same asymmetry:
-its record names the superclass `Object`'s class object like any other, and
-`image::decode::rebuild_applications` recognizes a record whose mixin is some
-declaration's class side and applies it with no superclass application
-([image-format.md](image-format.md), "What is *not* serialized").
+**Instantiation is refused.** The three are reachable anyway —
+`3 class class` is a metaclass and its `class` is `Metaclass` — so refusing to
+instantiate them is needed whatever is nameable. `Mutator::apply_mixin` folds
+`InstantiationRefusal::ClassObject` into the `instantiation_refusal` of
+`Behavior`'s application — recognized by the mixin the kernel phase records
+as `Mutator.behavior_mixin` before `Behavior` is filled — and every
+application below it inherits the refusal from its superclass, so
+`decide_instantiation` refuses `Class`, `Metaclass`, every metaclass and any
+subclass of them a program manages to declare with an ordinary Newspeak error
+under its factory selector: "cannot instantiate `C`: a class object is made
+only by evaluating its declaration" (`interpreter/instantiate.rs`;
+`goldens/class-side/a_class_object_cannot_be_made_by_instantiation.ns`, which
+sends `3 class class class new`). A metaclass itself declares no factory, so
+`Foo class new` is not understood
+(`goldens/class-side/a_metaclass_does_not_understand_new.ns`).
 
-Every class object has a metaclass, a class that declares no class side
-included: the factory lives on it. The synthesized mixin such a class gets is
-memoized per class mixin, for the reason the application cache is keyed by the
-superclass's application (§6.2) — a fresh mixin per class object would give
-every enclosing instance its own behaviour and send every `X new` site
-megamorphic.
+**A class object is a value exactly when its enclosing object is**, as SOMns
+decides it (`SClass.isValue`; `instantiate::class_object_is_a_value`). A
+module definition has no enclosing object and is always one, which is what
+§6.4 requires ("Module definitions are value objects"). A nested class of a
+value is one too: its only state is its enclosing object (§6.1) and, where
+its superclass clause depends on the enclosing instance, its superclass, so
+§3.1.1's condition on enclosing objects is what decides it. A builtin class is
+one, since its enclosing object is the `Kernel` instance, a value. A
+metaclass shares its class's enclosing object and so its verdict. Two
+consequences:
 
-**Deviation from §3.2, scheduled for step 6's third plan.** The specification also makes
-every class formally an instance of its metaclass, which is in turn an instance
-of `Metaclass` and a subclass of `Class`. That reified hierarchy is not built:
-what exists is the lazily created metaclass above, which carries class-side
-behaviour and nothing more, and a class object's own class is the builtin
-`Object` class. It lands with step 6's third plan, the next part of the
-core library in Newspeak ([core-library.md](core-library.md)), which is
-where `Class`, `Behavior` and `Metaclass` become declared kernel classes
-rather than objects hand-built in Rust — both references declare them exactly there
-(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
-`prior-art/newspeak/KernelForJS.ns`) — and which sits immediately before the
-reflection work that cannot be done without them: a mirror's test for a
-metaclass is `Metaclass = classOf: reflectee`, which needs the instance-of
-relation reified. Pulling it earlier would cost a metaclass per class object,
-built eagerly where it is lazy today, and a change to the decoder's placeholder
-scheme (below); nothing built so far depends on it. See
-[liveness-and-reflection.md](liveness-and-reflection.md).
+- **Step 4 of the value conditions** ("A value object's four conditions",
+  above) accepts a class object that is a value in a slot of a value's
+  instance, and still refuses one that is not
+  (`goldens/kernel/a_value_modules_nested_class_is_a_value.ns`,
+  `goldens/kernel/a_values_slot_refuses_a_class_that_is_no_value.ns`).
+- **A value class object has no identity.** Its `=` and `hash` are derived
+  from its state: two class objects are equal when they share their mixin
+  application, their enclosing objects are `=` and their superclass class
+  objects are `=`. The application alone is not enough, because it is keyed
+  by the superclass's *application*, so two classes can share one while their
+  superclass class objects differ (§6.1: "the superclass of a nested class
+  might be distinct in different instances, as it might be a parameter to a
+  module"). This is an inference, not a sentence of the specification: §2.3's
+  `Outer new Inner = Outer new Inner` is false for an ordinary `Outer`,
+  because the class's only state is its enclosing object (§6.1) and two
+  ordinary instances are not equal; §3.1.1 makes two equal values the same
+  value ("no other object is equal to it"), and §6.1 has the same receiver
+  answer the same class. So the equality of a nested class follows the
+  equality of its enclosing object: false for two `Outer new` of an ordinary
+  `Outer`, true for two of a value `Outer` whose slots are equal, false again
+  for `(Outer x: 1) Inner = (Outer x: 2) Inner`. Without it two values equal
+  by §3.1.1 could be told apart through their nested class. SOMns compares
+  values by identity (`EqualsPrim.doValues`), and so would answer false; it
+  does not derive a value's equality from its state at all, which ns-next
+  does, so it is no guide here.
 
-One consequence is load-bearing elsewhere: `Object::class` is not an
-`Option<ClassReference>`, because every class object's own class is the
-builtin `Object` class, which exists from the first moment of the bootstrap.
-The image decoder relies on that: it allocates every record as a placeholder
-pointing at the builtin `Object` before it reads the record that says what
-the class really is. Building §3.2's hierarchy would make
-a class object's class a real, distinct object and would invalidate it.
+  The comparison is `builtins::value`'s walk, extended by class objects as a
+  node kind rather than a second walk beside it. The classes of every pair of
+  nodes are compared as a pushed pair of their own rather than by identity,
+  since `a Nested new = b Nested new` must hold for `a = b` although the two
+  classes are distinct objects. Two identical class objects are equal at
+  once; two value class objects of one application push the pair of their
+  enclosing objects and the pair of their superclass class objects; two
+  metaclasses push the pair of their `this_class`, since a metaclass's
+  enclosing object is its class's and its superclass always `Class`;
+  anything else is unequal. The walk's node budget and its handling of
+  cycles cover class objects with that. Where the walk declines — an
+  enclosing value whose class brings its own `=` — Newspeak compares, as
+  `Value>>=`'s fallback does, since a leaf may not send: `Behavior`'s
+  fallback asks whether the two share an application and reads their
+  enclosing objects and superclasses, through three mirror rows, and
+  `Metaclass`'s compares the two classes.
+
+  `Behavior` declares `=` and `==` and `hash`; `Metaclass` declares `=` and
+  `==` again, with its own fallback. **`==` is the same forwarder as `=`**,
+  to the same leaf (`value:sameAs:ifFail:`), rather than a method that sends
+  `=`: it answers what `=` answers, as §3.1.1 asks of a value's identity
+  method, and costs no activation, so the common `self class == other class`
+  stays one leaf. For a class object that is no value the leaf answers
+  identity.
+
+  **The hash of a class object that is a value is derived from its mixin's
+  name alone** — a metaclass's from its display name, its class's name
+  followed by ` class`. Equal class objects share an application, hence a
+  mixin, hence a name, so it is a valid hash, and unlike one that folds in
+  the enclosing object's hash it never unfolds a builtin class's enclosing
+  `Kernel` instance, whose `vmMirror` slot the walk declines. The name, not
+  the application's dispatch id, because a name survives a copy and an image
+  round trip and a dispatch id is minted afresh on load. Classes of one mixin
+  under different enclosing objects collide, which is coarse, not wrong.
+  Every other class object keeps its identity hash (`Behavior>>hash`'s
+  fallback). None of the references decides either question: SOMns compares
+  values by identity (`EqualsPrim.doValues`) and hashes a class by identity,
+  Newspeak on Squeak's `Value` overrides neither `=` nor `hash`, and
+  Primordial Soup has no `Value` — each shares values between actors in one
+  address space rather than copying them, which §3.1.1 allows ("copied freely
+  … or shared") and which makes identity unobservable as a difference.
+
+**The image format.** A metaclass stores nothing twice: everything about it
+— its mixin, its application, its enclosing object and declaring class — is
+derived from its class, as the factory entry is. A reference to one can sit
+anywhere in the graph — a class-side activation's `current_class`, any slot
+holding `Foo class` — and every class record's own header names one. How it
+is written depends on its class:
+
+- **The metaclass of a class record is a record of its own**, object body
+  `OBJECT_METACLASS`, whose body is only the class reference back to its
+  class record. It gets a placeholder in the decoder's first pass like any
+  record and is referred to by an ordinary id, so a slot can name it before
+  its class record is decoded, its identity hash travels in its record, and
+  the amplification bound ([memory.md](memory.md)) does not move: it is a
+  record of at least the minimum size, one placeholder like any other. The
+  alternative — a "metaclass of record N" reference with no record — would
+  have had to patch every place such a reference can sit once the class
+  records are decoded, a mechanism across the whole decoder to keep safe
+  against a crafted image.
+- **The metaclass of a prebuilt class** — a builtin, the module's root class
+  or one of the root's levels, none of which is a record — is named by tag,
+  `CLASS_METACLASS` followed by that class's own tag, and its identity hash
+  travels in the closing hash table (`HASHED_METACLASS`, followed by the
+  class tag), as the builtin classes' own do.
+
+The decoder applies each metaclass record over `Class` as `attach_metaclass`
+does (`rebuild_metaclasses`) and holds each class record and its metaclass
+record to each other both ways (`pair_metaclasses`, `MetaclassPairing`), which
+keeps a metaclass's identity across a round trip: the metaclass a slot holds
+is the one its class answers. The three new builtin tags are refused wherever
+a program *names* a class — a superclass, a `<:` clause's mixin — as `Top`'s
+is, since no source module can name them; as values in the graph they are
+accepted, since `3 class class class` reaches `Metaclass`
+([image-format.md](image-format.md), "What is *not* serialized",
+"Verification").
 
 ## Source retention and provenance
 
@@ -906,6 +1111,31 @@ stays blocked on that, not on the collector.
   instantiation** (decided with the user on 2026-09-23), so a module with a
   wrong root still loads and can be fixed live ("Mixin application", "The
   root rule").
+- **§3.2's class hierarchy is reified as `Behavior`, `Class` and
+  `Metaclass` in `Kernel.ns`** (nine decisions taken with the user on
+  2026-09-25, built by
+  [its plan](../superpowers/plans/2026-09-25-1331-ns-next-class-behavior-metaclass.md);
+  "Class sides and metaclasses" above). A class object is a value exactly
+  when its enclosing object is, a metaclass when its class is. A class
+  object's state stays in `ClassData`; the kernel classes carry behaviour
+  only. Metaclasses are built eagerly with their class, and `ClassData`
+  links a metaclass back to its class (`this_class`). The hierarchy is
+  `Object` → `Behavior` → {`Class`, `Metaclass`}, none of them below
+  `Value`. The protocol is minimal — `name` and `printString` on `Class`
+  and `Metaclass` — `Object` declares no accessor for any of the three, and
+  instantiating anything below `Behavior` is refused. A value class
+  object's equality is derived from its state — its application, its
+  enclosing object, its superclass; a metaclass's from its class — by
+  extending `builtins::value`'s walk with class objects as a node kind, and
+  `Behavior` declares `=`, `==` and `hash`. Its hash is derived from its
+  mixin's name alone. In the image, a class record's metaclass is a record
+  of its own (`OBJECT_METACLASS`), a prebuilt class's is named by tag
+  (`CLASS_METACLASS`, `HASHED_METACLASS`), and the amplification bound does
+  not move. Two further decisions came up while building it: `==` on
+  `Behavior` and `Metaclass` is the same forwarder as `=`, to the same leaf,
+  so it costs no activation; and the hash of a value class object is taken
+  from its mixin's name, not from a dispatch id, which is minted afresh on
+  load.
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.

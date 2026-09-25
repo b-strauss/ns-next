@@ -114,13 +114,17 @@ surface is.
   rebuilt as class objects decode. This removes a section, a verification pass,
   and the possibility of loading an image whose stored layout disagrees with its
   mixins. It is also what proves two instances that shared an application before
-  a snapshot still share one after it. A **metaclass** is the one record the
-  rebuild does not read a superclass for: it is written as an ordinary class
-  record whose superclass is `Object`'s class object, and rebuilding it from
-  that link would chain its application and un-flatten it (§3.2). The decoder
-  recognizes a record whose mixin is some declaration's class side and applies
-  it with no superclass application, the shape `Mutator::metaclass_of` mints
-  ([object-model.md](object-model.md), "Class sides and metaclasses").
+  a snapshot still share one after it. A **metaclass** stores nothing twice:
+  its mixin, application, enclosing object and declaring class all follow from
+  its class. The metaclass of a class *record* is a record of its own
+  (`OBJECT_METACLASS`, header `Metaclass`) whose body is only the class
+  reference back to its class, and the decoder applies its class's metaclass
+  mixin over `Class`, as `Mutator::attach_metaclass` does (§6); a class
+  record's header names its metaclass record. The metaclass of a builtin, the
+  root class or a root level is named by tag, `CLASS_METACLASS` followed by
+  that class's own reference, one level deep. A class record applying some
+  row's class side is refused (`ClassRecordAppliesAClassSide`)
+  ([object-model.md](object-model.md), "The image format").
 - **Inline-cache state and dispatch ids.** No cache entry, polymorphic block,
   global-cache entry or code family's range is written, and no activation's or
   closure's `feedback_base`: a decoded closure carries "not assigned" and is
@@ -348,6 +352,25 @@ level from source does. The record changed shape when its mixin became a tagged
 reference, so the old class-record tag 5 is retired
 (`opcodes::RETIRED_OBJECT_BODIES`).
 
+**A class record's header names its metaclass record** (object body tag 8,
+`OBJECT_METACLASS`): every class object's class is its metaclass (§3.2), so a
+class record's class tag is `CLASS_RECORD` with the id of a record whose own
+header is the builtin `Metaclass` and whose body is one class reference, back
+to its class record. Nothing else about a metaclass is written — its mixin,
+application, enclosing object and declaring class follow from its class
+([object-model.md](object-model.md), "The image format") — and the decoder
+applies it over `Class` from its class's row (`rebuild_metaclasses`). The
+metaclass of a class that is no record — a builtin, the root class or a root
+level — is named by class tag 4, `CLASS_METACLASS`, followed by that class's
+own class tag, which may be `CLASS_BUILTIN`, `CLASS_USER_ROOT` or
+`CLASS_ROOT_LEVEL` and nothing else (`read_prebuilt_class`), so the nesting is
+one level deep. The encoder refuses a class record whose class object has no
+metaclass rather than write a header the decoder could not pair. A metaclass
+record is a record like any other — no shorter than the minimum record, one
+placeholder in the first pass — so the decode amplification is unchanged,
+about 16.9x in a release build ([memory.md](memory.md)); a tag-named
+metaclass is no record at all and allocates nothing.
+
 **Root class.** The class the root inherits from, as a builtin tag behind a
 presence flag that is always set, then the root's own `<:` levels, lowest first, each as its clause's position in
 row 0 and the builtin that clause named. The root rule lets a root inherit
@@ -391,12 +414,15 @@ loaded one. A record's 0 means "not yet assigned" and is preserved the same way
 ([object-model.md](object-model.md)).
 
 **The exception is an object the image names by tag rather than by record**: a
-builtin class, the module's root class and the `platform` singleton
+builtin class, the module's root class, the `platform` singleton and the
+metaclass of a builtin, of the root class or of a root level
 (`encode::is_class_tag`, and the platform check beside it in
 `GraphTable::visit_value`). None of them is a record, so nothing about a record
 could carry its hash. Instead the graph section closes, after its roots, with a
 table of exactly the tag-named objects whose stored hash is not 0 — the builtin
-classes in wire-tag order, then the root class, then `platform` — each entry a
+classes in wire-tag order, then the root class, then `platform`, then the
+metaclasses (`HASHED_METACLASS` followed by the class's reference) of the
+builtins in wire-tag order, of the root class and of its levels — each entry a
 tag from the `HASHED_*` family in `opcodes.rs` naming the object, and its hash
 (`encode::encode_tag_named_hashes`). `load` restores each hash onto the object
 the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
@@ -539,6 +565,23 @@ row; the instantiation walk re-checks a clause body's arity against the
 arguments it is given and raises a Newspeak error rather than indexing past
 them.
 
+**A class record and its metaclass record are held to each other both ways.**
+A class record's header must name a metaclass record whose reference back is
+that class record, a metaclass record's reference back must name a class
+record, every metaclass record must be named by exactly one class record's
+header, and a metaclass record's own header must be `Metaclass` — anything
+else is `MetaclassPairing` (`rebuild_metaclasses` and `pair_metaclasses` in
+`decode.rs`). A live class has exactly one metaclass (§3.2, "unique"), so this
+refuses nothing a snapshot writes, and it is what keeps a metaclass's identity
+across a round trip: the metaclass a slot holds is the one its class answers.
+Metaclass records are applied before the class records, since each needs only
+its class's mixin and `Class`'s application, so a crafted class record whose
+superclass is a metaclass record is applied over the metaclass's real
+application. An object record that is not a class object but whose class's
+application refuses instantiation as a class object — an instance of `Class`,
+`Metaclass` or a metaclass, which no source can make — is
+`InstanceOfAClassClass`.
+
 **A root the root rule forbids is refused on both sides.** The encoder refuses
 a module whose root mixin carries a root defect, at `build` and `snapshot`
 alike, with "image encoding cannot serialize `M`: a module's root class may
@@ -642,10 +685,12 @@ capability: whoever holds it can run any leaf, and the bootstrap hands it to
 whole Rust boundary"). Its class has builtin class tag **14**
 (`BuiltinClass::VmMirror`, appended to `BuiltinClass::ALL` after `Platform`'s
 13), which `builtin_class_from_tag` knows so that the closing table of
-tag-named hashes can name it as it names every builtin. **Everywhere a
-program names a class — a class reference in the graph, a root class's
-superclass, the builtin a `<:` clause named — the decoder reads the tag through
-`read_program_builtin_class`, which refuses 14** as an invalid tag: an
+tag-named hashes can name it as it names every builtin. **Everywhere the
+graph names a class — a class reference, the class behind a
+`CLASS_METACLASS`, a root class's superclass, the builtin a `<:` clause
+named — the decoder reads the tag through `read_referenced_builtin_class`,
+which refuses 14** as an invalid tag (`read_program_builtin_class`, which
+reads a superclass or a `<:` clause's builtin, calls it first): an
 artifact that could name the mirror's class could instantiate a second mirror
 or reach the one there is, and so claim every primitive, which no source
 module can (`a_level_applying_the_mirrors_or_tops_mixin_is_refused` and
@@ -653,7 +698,10 @@ module can (`a_level_applying_the_mirrors_or_tops_mixin_is_refused` and
 root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder refuses the other direction:
 an image whose graph reaches the mirror object is not written at all, since
 it would hand the capability to whatever loaded it
-(`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`).
+(`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
+and neither is one whose graph reaches the mirror's class, `Top` or the
+metaclass of either (`encode::unnameable_class`), which the decoder would
+refuse.
 Neither can happen to a program built from source, which cannot obtain the
 mirror; both are there for the day something could.
 
@@ -667,12 +715,26 @@ a program may write `Value` or `Number` in a superclass clause, so an image
 may carry their tags. `Top` may not. §3.2 lets only `Object` have `Top` as
 its superclass, and `Kernel.ns` enforces that by making `Top` the one
 private class it declares, so no source module can name it —
-`read_program_builtin_class` refuses tag 15 exactly as it refuses 14, so no
+`read_referenced_builtin_class` refuses tag 15 exactly as it refuses 14, so no
 artifact can name what no source can
 (`a_load_builtin_class_naming_top_is_refused`,
 `crates/ns-runtime/tests/image.rs`). An artifact naming `Top` would
 otherwise build a class outside §3.2's hierarchy that inherits nothing at
 all, not even `doesNotUnderstand:`.
+
+**`Behavior`, `Class` and `Metaclass` carry tags 20, 21 and 22**, after
+`Transcript`'s 18 and `Collections`' 19. `read_program_builtin_class` refuses them as the
+builtin a `<:` level applies (`MIXIN_BUILTIN`) and as a root's superclass or
+level, since `Object` declares no accessor for any of them and no source
+module can name them — and a class over one of them could never be
+instantiated. As a class reference in the graph they are accepted, since a
+program reaches `Metaclass` as `3 class class class` and may keep it in a
+slot; a class record's superclass is such a reference, so a crafted class
+record over `Class` decodes, and its application carries the refusal to
+instantiate a class object like any class below `Behavior`. An object record that is no class object but whose class refuses
+instantiation as a class object — an instance of `Class`, `Metaclass` or a
+metaclass — is `InstanceOfAClassClass`, and a class record whose row is some
+row's class side is `ClassRecordAppliesAClassSide`: no source makes either.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns

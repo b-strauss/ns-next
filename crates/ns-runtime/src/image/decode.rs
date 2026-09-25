@@ -92,13 +92,29 @@ pub enum DecodeError {
     NotAClassReference,
     /// A closure frame's kind names an object that is not a closure.
     NotAClosureReference,
-    /// A class object's own `class` is another record in the image's object
-    /// table. `Mutator::new_class_object` always gives a class object
-    /// the shared bootstrap `Object` placeholder, so no real world contains
-    /// one -- and `Object`'s iterative `Drop` cannot hand the `class` field
-    /// to its worklist, so a chain of them is the one link left that would
-    /// still release recursively. Refusing keeps it one link long.
-    ClassOfAClassIsARecord,
+    /// A class record and a metaclass record do not pair up one to one: a
+    /// class record's header -- its class -- names something other than a
+    /// metaclass record whose reference back is that class record; a
+    /// metaclass record's reference back names something other than a class
+    /// record, or a class record whose header names another metaclass; or a
+    /// metaclass record's own header is not `Metaclass`. A live class has exactly one
+    /// metaclass and that metaclass exactly one class (§3.2, "unique"), so
+    /// no real world encodes anything else, and a class that answered one
+    /// metaclass while another claimed it would give metaclass identity two
+    /// answers.
+    MetaclassPairing,
+    /// A class record applies some row's class side. A metaclass is written
+    /// as a record of its own (`OBJECT_METACLASS`) whose application follows
+    /// from its class, so a class record applying a class side describes a
+    /// second, unpaired metaclass no live world has.
+    ClassRecordAppliesAClassSide,
+    /// An object record that is not a class object is an instance of a class
+    /// whose chain reaches `Behavior` -- `Class`, `Metaclass` or a
+    /// metaclass. A class object is made only by evaluating a declaration
+    /// (§3.2; `InstantiationRefusal::ClassObject`), so no source can make
+    /// such an instance, and one decoded would be an object every method of
+    /// those classes assumes is a class.
+    InstanceOfAClassClass,
     /// A class object's enclosing object decoded to a scalar. §6 makes the
     /// enclosing object the nested class's only state, and it is always the
     /// receiver the accessor ran on -- an object; a scalar would leave
@@ -375,10 +391,18 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a closure frame in the image names an object that is not a closure"
             ),
-            DecodeError::ClassOfAClassIsARecord => write!(
+            DecodeError::MetaclassPairing => write!(
                 f,
-                "a class object in the image is itself an instance of another class object in the \
-                 image; every class object's own class is the bootstrap `Object` placeholder"
+                "a class in the image and the metaclass it names do not belong to each other"
+            ),
+            DecodeError::ClassRecordAppliesAClassSide => write!(
+                f,
+                "a class object in the image applies a class side, which only its metaclass may"
+            ),
+            DecodeError::InstanceOfAClassClass => write!(
+                f,
+                "an object in the image is an instance of Class, Metaclass or a metaclass, \
+                 which only a class object may be"
             ),
             DecodeError::EnclosingNotAnObject => write!(
                 f,
@@ -732,6 +756,9 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         17 => BuiltinClass::Number,
         18 => BuiltinClass::Transcript,
         19 => BuiltinClass::Collections,
+        20 => BuiltinClass::Behavior,
+        21 => BuiltinClass::Class,
+        22 => BuiltinClass::Metaclass,
         _ => return None,
     })
 }
@@ -744,9 +771,9 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
     })
 }
 
-/// A builtin class a *program* names: a class reference in the graph, a root
-/// class's superclass, the builtin a `<:` clause named (a class record's
-/// `MIXIN_BUILTIN`, a root level). Two tags are refused here, because no
+/// A builtin class referenced in the graph: a class reference recorded as a
+/// value (`CLASS_BUILTIN`), which from Task 4 on can hold `Metaclass` -- `3
+/// class class class` reaches it. Two tags are refused here, because no
 /// source module can produce them and an artifact that carried one would
 /// decode into a program the language does not admit. The VM mirror's class:
 /// there is exactly one mirror, and an artifact that could name its class
@@ -756,7 +783,7 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// methods. `Object` declares an accessor for neither, for the same reasons,
 /// which is what keeps source and artifact agreed on the names a program has.
 /// Only the closing hash table names them, by tag, as it names every builtin.
-pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     match read_builtin_class(reader)? {
         BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
@@ -766,6 +793,24 @@ pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, D
             what: "builtin class a program may name",
             tag: 15,
         }),
+        kind => Ok(kind),
+    }
+}
+
+/// A builtin class a *program* names as a superclass or as the mixin of a
+/// `<:` clause. `read_referenced_builtin_class`'s two refusals, and three
+/// more: `Behavior`, `Class` and `Metaclass`, which `Object` declares no
+/// accessor for, so no source module can name them either; a class over
+/// one of them could never be instantiated (`InstantiationRefusal::ClassObject`).
+pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+    let kind = read_referenced_builtin_class(reader)?;
+    match kind {
+        BuiltinClass::Behavior | BuiltinClass::Class | BuiltinClass::Metaclass => {
+            Err(DecodeError::InvalidTag {
+                what: "builtin class a program may name",
+                tag: crate::image::encode::builtin_class_tag(kind),
+            })
+        }
         kind => Ok(kind),
     }
 }
@@ -1938,7 +1983,11 @@ pub struct Tables<'a, 'gc> {
 /// placeholder when this runs -- a class object can be named before its own
 /// record is read -- so this resolves identity only; that the record really
 /// was a class record is `check_class_references`'s job, once every record
-/// has been read.
+/// has been read. Tag 4 names the metaclass of a class the loading world
+/// already has, which exists by then: `build_root_class` builds the root
+/// and its levels through `Mutator::new_class_object` and
+/// `new_applied_level`, which attach one, after the bootstrap attached the
+/// builtins'.
 pub fn decode_class_tag<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
@@ -1947,19 +1996,61 @@ pub fn decode_class_tag<'gc>(
     match reader.read_u8()? {
         CLASS_BUILTIN => Ok(context
             .mutator
-            .builtin_class(read_program_builtin_class(reader)?)),
+            .builtin_class(read_referenced_builtin_class(reader)?)),
         CLASS_USER_ROOT => Ok(*context.root_class),
         CLASS_RECORD => decode_object_id(reader, tables),
-        CLASS_ROOT_LEVEL => {
-            let position = reader.read_u32()?;
+        CLASS_ROOT_LEVEL => read_root_level(reader, context.root_levels),
+        CLASS_METACLASS => {
+            let class = read_prebuilt_class(
+                reader,
+                context.mutator,
+                *context.root_class,
+                context.root_levels,
+            )?;
             context
-                .root_levels
-                .get(position as usize)
-                .copied()
-                .ok_or(DecodeError::BadRootLevel(position))
+                .mutator
+                .heap
+                .class_metaclass(class)
+                .ok_or(DecodeError::NotAClassReference)
         }
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
     }
+}
+
+/// The class a `CLASS_METACLASS` reference or a `HASHED_METACLASS` entry
+/// names the metaclass of: a builtin, the root class or a root level -- a
+/// class the loading world has before the graph. A second
+/// `CLASS_METACLASS` or a `CLASS_RECORD` here is refused, which bounds the
+/// nesting at one: a class record's metaclass is a record of its own and is
+/// named by its id.
+fn read_prebuilt_class<'gc>(
+    reader: &mut Reader,
+    mutator: &Mutator<'gc>,
+    root_class: ClassReference<'gc>,
+    root_levels: &[ClassReference<'gc>],
+) -> Result<ClassReference<'gc>, DecodeError> {
+    match reader.read_u8()? {
+        CLASS_BUILTIN => Ok(mutator.builtin_class(read_referenced_builtin_class(reader)?)),
+        CLASS_USER_ROOT => Ok(root_class),
+        CLASS_ROOT_LEVEL => read_root_level(reader, root_levels),
+        tag => Err(DecodeError::InvalidTag {
+            what: "prebuilt class",
+            tag,
+        }),
+    }
+}
+
+/// A `CLASS_ROOT_LEVEL`'s position, after its tag, resolved against the
+/// levels `build_root_class` built.
+fn read_root_level<'gc>(
+    reader: &mut Reader,
+    root_levels: &[ClassReference<'gc>],
+) -> Result<ClassReference<'gc>, DecodeError> {
+    let position = reader.read_u32()?;
+    root_levels
+        .get(position as usize)
+        .copied()
+        .ok_or(DecodeError::BadRootLevel(position))
 }
 
 fn decode_optional_class<'gc>(
@@ -2357,19 +2448,17 @@ struct PendingClass {
 /// here and get the same `Rc` back, which is what keeps a call site
 /// monomorphic across a save/load.
 ///
-/// A metaclass is the exception, and is applied flat: `newspeak-spec.pdf`
-/// §3.2 makes a metaclass a direct subclass of `Class`, so the live
-/// `Mutator::metaclass_of` gives it no superclass *application* even though
-/// its class object's superclass link names `Object`'s
-/// (`dispatch::next_level` rests on exactly that asymmetry). A metaclass
-/// reaches the graph as an ordinary class record -- as a class-side
-/// activation's `current_class` -- naming the class side's own mixin row and
-/// the superclass `Object`, so applying the record's superclass here the way
-/// every other record's is applied would rebuild it chained and silently
-/// un-flatten it: an ordinary lookup that missed on the decoded metaclass
-/// would step into `Object`'s own methods. `metaclass_rows` below names
-/// exactly the rows a metaclass applies, the same way
-/// `mixins::metaclass_factory_entries` does.
+/// A metaclass record is applied first, over `Class`: `newspeak-spec.pdf`
+/// §6 makes a class's metaclass "the application of the metaclass mixin
+/// defined by the class' class side to the class Class", which is what the
+/// live `Mutator::attach_metaclass` builds, and both halves are known once
+/// every record is read -- the class record's mixin and `Class`'s
+/// application -- so nothing orders it after the class records. Applying it
+/// first means a class record whose superclass is a metaclass record (which
+/// no real world has, but nothing in the stream forbids) is applied over the
+/// metaclass's real application rather than over the placeholder. The
+/// pairing of every class record with its metaclass record is checked after
+/// the class records are applied (`pair_metaclasses`).
 ///
 /// The order is the catch: a class object's record may name a superclass
 /// whose own record appears later in the table. Each class has at most one
@@ -2382,6 +2471,7 @@ fn rebuild_applications<'gc>(
     context: &mut DecodeContext<'_, 'gc>,
     objects: &[ObjectReference<'gc>],
     pending: Vec<PendingClass>,
+    pending_metaclasses: &[usize],
 ) -> Result<(), DecodeError> {
     // Class-object arena index -> position in `pending`, for the "is my
     // superclass still waiting for its own application?" question each step
@@ -2397,7 +2487,7 @@ fn rebuild_applications<'gc>(
             index,
         );
     }
-    let metaclass_rows = metaclass_rows(context.mixins);
+    rebuild_metaclasses(context, objects, &pending, &position, pending_metaclasses)?;
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
     let mut chain: Vec<usize> = Vec::new();
@@ -2446,21 +2536,15 @@ fn rebuild_applications<'gc>(
         // application in hand.
         for &pending_index in chain.iter().rev() {
             let object = &objects[pending[pending_index].object];
-            let mixin = &pending[pending_index].mixin;
-            let is_metaclass = metaclass_rows.contains(&crate::mixin::mixin_key(mixin));
-            let super_application = if is_metaclass {
-                None
-            } else {
-                match context.mutator.heap.class_superclass(*object) {
-                    Some(superclass) => Some(
-                        context
-                            .mutator
-                            .heap
-                            .class_application(superclass)
-                            .ok_or(DecodeError::NotAClassReference)?,
-                    ),
-                    None => None,
-                }
+            let super_application = match context.mutator.heap.class_superclass(*object) {
+                Some(superclass) => Some(
+                    context
+                        .mutator
+                        .heap
+                        .class_application(superclass)
+                        .ok_or(DecodeError::NotAClassReference)?,
+                ),
+                None => None,
             };
             let application = context
                 .mutator
@@ -2479,6 +2563,12 @@ fn rebuild_applications<'gc>(
         }
         chain.clear();
     }
+    pair_metaclasses(
+        &context.mutator.heap,
+        objects,
+        &pending,
+        pending_metaclasses,
+    )?;
     // §3.1.1's enclosing-object condition is decided when the class object
     // is created (`interpreter::value_class`), never reconstructed from the
     // wire -- a decoded record starts with no verdict (`ClassData::new`
@@ -2501,9 +2591,6 @@ fn rebuild_applications<'gc>(
     // was recorded in.
     for pending_index in installed_order {
         let object = objects[pending[pending_index].object];
-        if metaclass_rows.contains(&crate::mixin::mixin_key(&pending[pending_index].mixin)) {
-            continue;
-        }
         let application = context
             .mutator
             .heap
@@ -2532,15 +2619,108 @@ fn rebuild_applications<'gc>(
     Ok(())
 }
 
-/// The mixin keys of the rows that are some other row's class side -- the
-/// rows a decoded class object applies as a metaclass, and the only ones
-/// `rebuild_applications` applies with no superclass application.
+/// Applies every metaclass record over `Class`, as `Mutator::attach_metaclass`
+/// applies a live one: the metaclass mixin of its class's row
+/// (`Mutator::metaclass_mixin`, the row's class side or the memoized mixin
+/// holding only the factory) over `Class`'s application, with its class's
+/// enclosing object and declaring class, since §6.3 writes a class side
+/// inside the same declaration as its instance side.
+///
+/// A metaclass record's class must be a class record: `position` holds
+/// exactly those. A metaclass of a builtin, the root class or a root level
+/// is named by tag (`CLASS_METACLASS`) and already exists, and one of a
+/// metaclass or of an ordinary object does not exist at all.
+fn rebuild_metaclasses<'gc>(
+    context: &mut DecodeContext<'_, 'gc>,
+    objects: &[ObjectReference<'gc>],
+    pending: &[PendingClass],
+    position: &HashMap<usize, usize>,
+    pending_metaclasses: &[usize],
+) -> Result<(), DecodeError> {
+    let class_class = context.mutator.builtin_class(BuiltinClass::Class);
+    let class_application = context.mutator.heap.class_application(class_class);
+    for &index in pending_metaclasses {
+        let metaclass = objects[index];
+        let this_class = context
+            .mutator
+            .heap
+            .class_this_class(metaclass)
+            .ok_or(DecodeError::MetaclassPairing)?;
+        let key = context.mutator.heap.object_identity_key(this_class);
+        let Some(&this_position) = position.get(&key) else {
+            return Err(DecodeError::MetaclassPairing);
+        };
+        // `position` is keyed from `pending`, which holds only `OBJECT_CLASS`
+        // records (`decode_class_record` never sets `this_class`), so this
+        // can never fire through the lookup above -- an untrusted image is
+        // decoded input, so the check stays as a second, independent guard
+        // of the same invariant rather than relying only on `position`'s
+        // construction elsewhere in this file.
+        if context.mutator.heap.class_this_class(this_class).is_some() {
+            return Err(DecodeError::MetaclassPairing);
+        }
+        let class_side_mixin = context
+            .mutator
+            .metaclass_mixin(&pending[this_position].mixin);
+        let application = context
+            .mutator
+            .apply_mixin(&class_side_mixin, class_application.as_ref());
+        let heap = &mut context.mutator.heap;
+        let enclosing = heap.class_enclosing(this_class);
+        let declaring_class = heap.class_declaring(this_class);
+        if !heap.install_class_application(metaclass, application)
+            || !heap.set_class_lexical_context(metaclass, enclosing, declaring_class)
+        {
+            unreachable!("this object was filled in as a metaclass record");
+        }
+    }
+    Ok(())
+}
+
+/// Holds every class record and its metaclass record to each other, both
+/// ways: a class record's header -- its class, where `Heap::class_metaclass`
+/// reads it -- names a metaclass whose reference back is that class record,
+/// and every metaclass record is named by exactly one class record's header.
+///
+/// Anything else is `MetaclassPairing`. A metaclass named by no class record
+/// would be a second metaclass beside the one its class answers -- the
+/// identity a round trip exists to keep -- and a class record naming another
+/// class's metaclass would answer that class's class side.
+fn pair_metaclasses<'gc>(
+    heap: &Heap<'gc>,
+    objects: &[ObjectReference<'gc>],
+    pending: &[PendingClass],
+    pending_metaclasses: &[usize],
+) -> Result<(), DecodeError> {
+    let mut named: HashMap<usize, usize> = HashMap::with_capacity(pending_metaclasses.len());
+    for pending_class in pending {
+        let class = objects[pending_class.object];
+        if heap.class_metaclass(class).is_none() {
+            return Err(DecodeError::MetaclassPairing);
+        }
+        let metaclass = heap.class_of_object(class);
+        *named
+            .entry(heap.object_identity_key(metaclass))
+            .or_insert(0) += 1;
+    }
+    for &index in pending_metaclasses {
+        if named.get(&heap.object_identity_key(objects[index])) != Some(&1) {
+            return Err(DecodeError::MetaclassPairing);
+        }
+    }
+    Ok(())
+}
+
+/// The mixin keys of the rows that are some other row's class side -- what
+/// a class record may *not* apply: a class side is applied only by a
+/// metaclass, which is a record of its own (`OBJECT_METACLASS`) whose
+/// application follows from its class (`rebuild_metaclasses`).
 ///
 /// Derived from the decoded table rather than from anything the graph
-/// section writes, so a crafted class record cannot claim to be a metaclass
-/// (or deny being one) to obtain a layout the mixin tree does not describe.
-/// `mixins::check_preorder` has already established that every row is
-/// reached exactly once, so no row is the class side of two declarations.
+/// section writes, so a crafted class record cannot slip a class side past
+/// the check by claiming to be something else. `mixins::check_preorder` has
+/// already established that every row is reached exactly once, so no row is
+/// the class side of two declarations.
 fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
     mixins
         .iter()
@@ -2549,29 +2729,9 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
         .collect()
 }
 
-/// Whether `class` is one of the class objects a graph never creates: a
-/// builtin, the module's root class, or one of the root's levels. The mirror of
-/// `encode::is_class_tag`. The explicit `is_class` guard is redundant with
-/// `class.same(root_class)` today -- that can only be true when `class` is
-/// literally `root_class`, which is a class by construction -- but it keeps
-/// this answering `false` for a non-class object on its own terms rather
-/// than through that indirect argument, so it stays honest if either
-/// check's meaning shifts later.
-fn is_prebuilt_class<'gc>(
-    heap: &Heap<'gc>,
-    class: ClassReference<'gc>,
-    root_class: ClassReference<'gc>,
-    root_levels: &[ClassReference<'gc>],
-) -> bool {
-    heap.is_class(class)
-        && (heap.class_builtin(class).is_some()
-            || class.same(root_class)
-            || root_levels.iter().any(|level| level.same(class)))
-}
-
 /// Every field the format types as a class reference really names a class
-/// object, and a class object's own `class` is one the graph did not
-/// create.
+/// object, and a class object's own `class` is its metaclass or, for a
+/// metaclass, `Metaclass`.
 ///
 /// A tag-2 class tag names an object-table id, and nothing in the byte
 /// stream forces that record to have been a class record -- which is only
@@ -2582,14 +2742,21 @@ fn is_prebuilt_class<'gc>(
 /// cached nested class in a slot *is*).
 ///
 /// The extra rule for a class object's *own* `class` is the runtime's
-/// invariant, not a limit invented here: `Mutator::new_class_object` is
-/// the only thing that mints a class object and always gives it the shared
-/// bootstrap `Object` placeholder -- §3.2's reified metaclass model stays
-/// deliberately unbuilt -- so this refuses nothing a real world contains.
-/// It is load-bearing because `class` is the one reference `Object`'s
-/// iterative `Drop` cannot hand to its worklist (it is not an `Option`, and
-/// the field's glue runs after `drop` returns): bounding the chain at one
-/// link is what keeps a crafted image from cascading through it.
+/// invariant (§3.2), not a limit invented here: a class record's header is
+/// its metaclass record, whose reference back is it, and a metaclass
+/// record's header is the builtin `Metaclass` (`MetaclassPairing`
+/// otherwise), as `Mutator::attach_metaclass` gives every live class
+/// object. So the chain from a class record to a class the graph did not
+/// create is at most two links -- class record, its metaclass record,
+/// `Metaclass` -- and that is what bounds it: no crafted image can build a
+/// chain of class records each the class of the next.
+///
+/// An object that is not a class object may not be an instance of a class
+/// whose chain reaches `Behavior` (`InstanceOfAClassClass`): `Class`,
+/// `Metaclass` and every metaclass refuse instantiation, so only a crafted
+/// image has one. A metaclass record's reference back to its class is a
+/// class object's by the time this runs -- `rebuild_metaclasses` refused
+/// anything else.
 ///
 /// It also holds every closure frame to naming a closure object. A closure
 /// frame's kind names an object-table id, and, like a tag-2 class
@@ -2600,16 +2767,34 @@ fn check_class_references<'gc>(
     heap: &Heap<'gc>,
     objects: &[ObjectReference<'gc>],
     frames: &[FrameReference<'gc>],
-    (root_class, root_levels): (ClassReference<'gc>, &[ClassReference<'gc>]),
 ) -> Result<(), DecodeError> {
     for object in objects {
         let class = heap.class_of_object(*object);
         if !heap.is_class(class) {
             return Err(DecodeError::NotAClassReference);
         }
+        if !heap.is_class(*object) {
+            let class_object_class = heap.class_application(class).is_some_and(|application| {
+                matches!(
+                    application.instantiation_refusal,
+                    Some(crate::mixin::InstantiationRefusal::ClassObject)
+                )
+            });
+            if class_object_class {
+                return Err(DecodeError::InstanceOfAClassClass);
+            }
+        }
         if heap.is_class(*object) {
-            if !is_prebuilt_class(heap, class, root_class, root_levels) {
-                return Err(DecodeError::ClassOfAClassIsARecord);
+            // The decoding loop and `pair_metaclasses` have refused every
+            // header this could refuse; it is restated here, beside the
+            // other invariants of a class object's references, because it
+            // is what bounds the header chain at two links.
+            let paired = match heap.class_this_class(*object) {
+                Some(_) => heap.class_builtin(class) == Some(BuiltinClass::Metaclass),
+                None => heap.class_metaclass(*object).is_some(),
+            };
+            if !paired {
+                return Err(DecodeError::MetaclassPairing);
             }
             let superclass = heap.class_superclass(*object);
             let declaring_class = heap.class_declaring(*object);
@@ -2696,6 +2881,9 @@ pub fn decode_graph_section<'gc>(
     };
     let mut max_identity_hash = 0;
     let mut pending_classes: Vec<PendingClass> = Vec::new();
+    let mut pending_metaclasses: Vec<usize> = Vec::new();
+    let metaclass_rows = metaclass_rows(context.mixins);
+    let metaclass_class = context.mutator.builtin_class(BuiltinClass::Metaclass);
     for (index, object) in objects.iter().enumerate() {
         let class = decode_class_tag(reader, context, &tables)?;
         let identity_hash = reader.read_u32()?;
@@ -2715,10 +2903,34 @@ pub fn decode_graph_section<'gc>(
             OBJECT_CLASS => {
                 let (data, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
+                if metaclass_rows.contains(&crate::mixin::mixin_key(&mixin)) {
+                    return Err(DecodeError::ClassRecordAppliesAClassSide);
+                }
                 pending_classes.push(PendingClass {
                     object: index,
                     mixin,
                 });
+                // The header is stored as read: it names the record's
+                // metaclass record, which `pair_metaclasses` holds to it
+                // once every record is read.
+                ObjectData::Class(Box::new(data))
+            }
+            OBJECT_METACLASS => {
+                // §3.2: every metaclass is an instance of `Metaclass`.
+                if !class.same(metaclass_class) {
+                    return Err(DecodeError::MetaclassPairing);
+                }
+                let this_class = decode_class_tag(reader, context, &tables)?;
+                let class_class = context.mutator.builtin_class(BuiltinClass::Class);
+                let mut data = crate::types::ClassData::new(
+                    placeholder_application.clone(),
+                    None,
+                    None,
+                    Some(class_class),
+                    None,
+                );
+                data.this_class = Some(this_class);
+                pending_metaclasses.push(index);
                 ObjectData::Class(Box::new(data))
             }
             tag => {
@@ -2771,18 +2983,13 @@ pub fn decode_graph_section<'gc>(
                 .record_canonical_symbol(symbol, *object);
         }
     }
-    rebuild_applications(context, &objects, pending_classes)?;
+    rebuild_applications(context, &objects, pending_classes, &pending_metaclasses)?;
     context.mutator.heap.stamp_dispatch_ids(&objects);
     for frame in &frames {
         let decoded = decode_frame(reader, context, &tables, symbols)?;
         context.mutator.heap.replace_frame(*frame, decoded);
     }
-    check_class_references(
-        &context.mutator.heap,
-        &objects,
-        &frames,
-        (*context.root_class, context.root_levels),
-    )?;
+    check_class_references(&context.mutator.heap, &objects, &frames)?;
     let roots = decode_values(reader, context, &tables)?;
     Ok(DecodedGraph {
         roots,
@@ -2807,6 +3014,7 @@ pub fn decode_tag_named_hashes<'gc>(
         MIN_TAG_NAMED_HASH_BYTES,
         reader,
     )?;
+    let root_levels = super::encode::root_levels(&mutator.heap, root_class);
     let mut restored: Vec<ObjectReference> = Vec::new();
     let mut max = 0;
     for _ in 0..count {
@@ -2817,6 +3025,13 @@ pub fn decode_tag_named_hashes<'gc>(
                 Value::Object(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },
+            HASHED_METACLASS => {
+                let class = read_prebuilt_class(reader, mutator, root_class, &root_levels)?;
+                mutator
+                    .heap
+                    .class_metaclass(class)
+                    .ok_or(DecodeError::NotAClassReference)?
+            }
             tag => {
                 return Err(DecodeError::InvalidTag {
                     what: "tag-named hash",
@@ -2901,25 +3116,9 @@ fn decode_class_record<'gc>(
         None
     };
     // A record only ever describes a user class: a builtin is a class *tag*,
-    // resolved through the bootstrap, and never an object-table entry.
-    //
-    // `ClassData::new` also sets `metaclass: None`, rebuilt by
-    // `Mutator::metaclass_of` on the first class-side send, exactly as it is
-    // for a class object the accessor just created.
-    //
-    // Not the *same* metaclass, though, in one case: a metaclass that was
-    // itself in the graph -- as a class-side activation's `current_class` --
-    // decodes as a class record of its own and is never linked back into the
-    // class it belongs to, so `metaclass_of` mints a second one beside it.
-    // The two share one `MixinApplication`, so they share behaviour, layout
-    // and dispatch ids: both are the class side's own row applied flat, and
-    // `apply_mixin`'s cache is keyed by exactly that pair
-    // (`rebuild_applications` is what applies the decoded one flat).
-    // Nothing observes the difference today: `metaclass_of` is reached only
-    // from `Interpreter::send`'s dispatch, so no Newspeak value names a
-    // metaclass and no two of them can be compared. Recording it rather than
-    // claiming stability, because the claim would stop being true the moment
-    // §3.2's reified model is built.
+    // resolved through the bootstrap, and never an object-table entry. Its
+    // metaclass is its header, which `pair_metaclasses` holds to it once
+    // every record is read.
     let mut data = crate::types::ClassData::new(
         placeholder_application.clone(),
         enclosing,

@@ -446,8 +446,8 @@ fn a_superclasss_factory_selector_is_not_understood() {
 
 /// A class-side `super new` is not an instantiation. §5.10 starts the lookup
 /// at S, the superclass of the running activation's `current_class`, which
-/// for a class-side method is the metaclass; §3.2's flat metaclass makes
-/// that `Object`'s behaviour, and `Object` declares no factory, so the send
+/// for a class-side method is the metaclass; §6 makes that `Class`, and
+/// neither `Class` nor anything above it declares a factory, so the send
 /// reaches `doesNotUnderstand:`.
 ///
 /// It did instantiate until §6.3's factory became an entry of the metaclass

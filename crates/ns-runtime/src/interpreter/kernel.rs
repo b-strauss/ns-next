@@ -85,6 +85,9 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Top => "Top",
         BuiltinClass::Value => "Value",
         BuiltinClass::Number => "Number",
+        BuiltinClass::Behavior => "Behavior",
+        BuiltinClass::Class => "Class",
+        BuiltinClass::Metaclass => "Metaclass",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -128,11 +131,12 @@ impl<'gc> Mutator<'gc> {
     /// subclasses, so that one is filled already -- and the mirror's class,
     /// which `Kernel.ns` does not declare, keeps its mixin over the filled
     /// `Object`. Then the kernel's own class is built over the filled
-    /// `Object`, and answered for the host to instantiate.
+    /// `Object`, every class object built so far is given its metaclass over
+    /// the filled `Class`, and the kernel's class is answered for the host
+    /// to instantiate.
     ///
-    /// Nothing has run yet, so no inline cache, metaclass or instance built
-    /// before this phase can still hold a placeholder application:
-    /// `wire_kernel_in` checks the metaclasses.
+    /// Nothing has run yet, so no inline cache or instance built before
+    /// this phase can still hold a placeholder application.
     fn fill_builtin_classes(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
         let root_mixin = self.build_root_mixin(declaration, &resolved.bindings, resolved.kernel);
@@ -161,6 +165,14 @@ impl<'gc> Mutator<'gc> {
             // `Value`.
             if kind == BuiltinClass::Value {
                 self.value_mixin = Some(mixin.clone());
+            }
+            // Recorded before `Behavior`'s own application is built, for the
+            // reason `value_mixin` is: `apply_mixin` refuses to instantiate
+            // `Behavior` and everything below it
+            // (`InstantiationRefusal::ClassObject`) by asking whether the
+            // mixin it is applying is this one.
+            if kind == BuiltinClass::Behavior {
+                self.behavior_mixin = Some(mixin.clone());
             }
             let application = self.apply_mixin(&mixin, super_application.as_ref());
             if !self.heap.set_class_application(class, application) {
@@ -212,7 +224,13 @@ impl<'gc> Mutator<'gc> {
         };
         let level_application = self.heap.class_application(level);
         let application = self.apply_mixin(&root_mixin, level_application.as_ref());
-        self.new_class_object(application, None, None, Some(level))
+        let kernel_class = self.new_class_object(application, None, None, Some(level));
+        // `Class` is filled, so every class object built so far -- each
+        // builtin, the `Value` level and the kernel's own class -- can get
+        // its metaclass now, and every one built from here on gets it with
+        // the class object.
+        self.give_existing_class_objects_metaclasses(&[level, kernel_class]);
+        kernel_class
     }
 
     /// The kernel instance becomes every kernel class's enclosing object,
@@ -258,13 +276,11 @@ impl<'gc> Mutator<'gc> {
             {
                 unreachable!("internal: a builtin class is a class object");
             }
-            // A metaclass copies its class's lexical context when it is
-            // built, so one built before this point would keep the
-            // placeholder's.
-            debug_assert!(
-                self.heap.class_metaclass(class).is_none(),
-                "internal: a metaclass built before the kernel was wired in borrowed the placeholder's context"
-            );
+            // The metaclass was built at the end of the fill, when the
+            // builtin's lexical context was still the placeholder's; §6.3
+            // puts a class side in its class's declaration, so it takes the
+            // same context.
+            self.set_metaclass_lexical_context(class, kernel, kernel_class);
         }
         // The kernel's own `Value` level was built before the kernel
         // instance existed, over `Value`'s then-empty context.
@@ -279,9 +295,28 @@ impl<'gc> Mutator<'gc> {
             {
                 unreachable!("internal: an applied level is a class object");
             }
+            self.set_metaclass_lexical_context(class, kernel, kernel_class);
             level = self.heap.class_superclass(class);
         }
         self.kernel = Some(Value::Object(kernel));
+    }
+
+    /// Gives `class`'s metaclass the lexical context `wire_kernel_in` just
+    /// gave `class`: the kernel instance and the kernel's class.
+    fn set_metaclass_lexical_context(
+        &mut self,
+        class: ClassReference<'gc>,
+        kernel: ObjectReference<'gc>,
+        kernel_class: ClassReference<'gc>,
+    ) {
+        if let Some(metaclass) = self.heap.class_metaclass(class) {
+            if !self
+                .heap
+                .set_class_lexical_context(metaclass, Some(kernel), Some(kernel_class))
+            {
+                unreachable!("internal: a metaclass is a class object");
+            }
+        }
     }
 }
 
@@ -688,6 +723,33 @@ mod tests {
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
         (BuiltinClass::Block, "cull:"),
+        // A send to `self` is no leaf: `printString` reads the class's own
+        // `name`, and a metaclass's `name` reads its own `thisClass` first.
+        (BuiltinClass::Class, "printString"),
+        (BuiltinClass::Metaclass, "name"),
+        (BuiltinClass::Metaclass, "printString"),
+        // The Newspeak side of a value class object's equality, which runs
+        // when the leaf declines: it sends `=` to an enclosing object and a
+        // superclass, which a leaf may not.
+        (BuiltinClass::Behavior, "behaviorEquals:"),
+        // Forwarders in shape, but of their subject rather than of `self`,
+        // for the reason `Value`'s slot readers above are.
+        (BuiltinClass::Behavior, "enclosingOf:"),
+        (BuiltinClass::Behavior, "superclassOf:"),
+        (BuiltinClass::Metaclass, "thisClassOf:"),
+    ];
+
+    /// The kernel forwarders whose row is reported under a selector other
+    /// than their own, each with that row's reported selector. `Behavior>>==`
+    /// and `Metaclass>>==` forward to `value:sameAs:ifFail:`, reported `=`,
+    /// so that `self class == other class` stays one leaf and no activation;
+    /// §3.1.1 asks a value's identity method to answer what its `=` answers,
+    /// and the one leaf is what makes them agree. The reported selector only
+    /// ever names an error text, and that row raises none -- it answers or
+    /// declines.
+    const REPORTED_UNDER_ANOTHER_SELECTOR: &[(BuiltinClass, &str, &str)] = &[
+        (BuiltinClass::Behavior, "==", "="),
+        (BuiltinClass::Metaclass, "==", "="),
     ];
 
     /// The kernel's quick methods: `True`'s and `False`'s, the nil
@@ -849,7 +911,8 @@ mod tests {
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
-    /// mirror's class and `Platform`.
+    /// mirror's class, `Platform`, `Transcript`, `Collections`, `Behavior`,
+    /// `Class` and `Metaclass`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -938,9 +1001,13 @@ mod tests {
                     let Some(crate::mixin::MethodFastPath::Mirror(row)) = method.fast_path else {
                         panic!("{kind:?}>>{selector} is not recognized as a primitive method");
                     };
+                    let reported = REPORTED_UNDER_ANOTHER_SELECTOR
+                        .iter()
+                        .find(|(owner, name, _)| *owner == kind && *name == selector)
+                        .map_or(selector, |(_, _, reported)| *reported);
                     assert_eq!(
                         mirror_entry(row).reported,
-                        selector,
+                        reported,
                         "{kind:?}>>{selector} forwards to a row reported under another selector"
                     );
                 }

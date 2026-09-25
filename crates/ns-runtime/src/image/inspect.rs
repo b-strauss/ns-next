@@ -208,9 +208,27 @@ fn read_class_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeE
         opcodes::CLASS_USER_ROOT => "<root class>".to_string(),
         opcodes::CLASS_RECORD => format!("object {}", reader.read_u32()?),
         opcodes::CLASS_ROOT_LEVEL => format!("<root class level {}>", reader.read_u32()?),
+        opcodes::CLASS_METACLASS => format!("metaclass of {}", read_prebuilt_class_tag(reader)?),
         tag => {
             return Err(decode::DecodeError::InvalidTag {
                 what: "class tag",
+                tag,
+            })
+        }
+    })
+}
+
+/// The class a metaclass reference names the metaclass of: one of the three
+/// prebuilt kinds, never a record or a second metaclass, as the loader reads
+/// it -- which is also what keeps this walk's recursion one level deep.
+fn read_prebuilt_class_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(match reader.read_u8()? {
+        opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
+        opcodes::CLASS_USER_ROOT => "<root class>".to_string(),
+        opcodes::CLASS_ROOT_LEVEL => format!("<root class level {}>", reader.read_u32()?),
+        tag => {
+            return Err(decode::DecodeError::InvalidTag {
+                what: "prebuilt class",
                 tag,
             })
         }
@@ -330,6 +348,7 @@ fn walk_graph(
             opcodes::OBJECT_ARRAY => format!("array [{}]", read_values(reader)?.join(", ")),
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader)?),
             opcodes::OBJECT_CLASS => read_class_record(reader)?,
+            opcodes::OBJECT_METACLASS => format!("metaclass of {}", read_class_tag(reader)?),
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "object body",
@@ -389,6 +408,9 @@ fn walk_graph(
             opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(reader)?),
             opcodes::HASHED_ROOT_CLASS => "<root class>".to_string(),
             opcodes::HASHED_PLATFORM => "<platform>".to_string(),
+            opcodes::HASHED_METACLASS => {
+                format!("metaclass of {}", read_prebuilt_class_tag(reader)?)
+            }
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "tag-named hash",

@@ -1,0 +1,30 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 3.1.1: a slot of a value may hold only another value,
+   and a class object is one exactly when its enclosing object is -- its
+   only state (6.1); a metaclass shares its class's enclosing object and so
+   its verdict (`interpreter/instantiate.rs`'s `class_object_is_a_value`).
+   `Plain` is nested in a `Wrapper`, an ordinary object, so `Wrapper new
+   Plain class` -- Plain's metaclass -- is no value either, and `Holder`
+   refuses it, naming the metaclass as `Heap::describe`'s `class_display_name`
+   does: "the class Plain class", not "the class class side", which every
+   metaclass's mixin is literally named (`heap.rs`'s `describe`,
+   `ObjectData::Class` arm). A class nested in the value module itself is
+   accepted, which the line before the refusal records.
+
+   The module is a value (`Object <: Value`) because §3.1.1 asks a value
+   class's enclosing object to be one; the transcript is therefore read
+   from `platform` where it is used, never held in a slot. *)
+class ValueSlotNamesARefusedMetaclass usingPlatform: platformAtCreation = Object <: Value () (
+    public class Wrapper = Object new () (
+        public class Plain = Object new () ()
+    )
+    public class Accepted = Value new () ()
+    public class Holder of: aClass = Value new (
+        | public held = aClass. |
+    ) ()
+    public main: platform args: arguments = (
+        platform transcript show: (Holder of: Accepted) held printString; newLine.
+        platform transcript show: (Holder of: Wrapper new Plain class) printString; newLine.
+    )
+) : ()

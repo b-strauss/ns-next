@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+Accepted
+'''
+stderr = '''
+Uncaught Newspeak error: cannot store the class Plain class in Holder's slot held: a value object is deeply immutable, so every slot it declares holds a value
+'''

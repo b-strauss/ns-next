@@ -830,7 +830,7 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         data: ObjectData<'gc>,
     ) -> ObjectReference<'gc> {
-        let dispatch_id = self.header_dispatch_id(class, &data);
+        let dispatch_id = self.header_dispatch_id(class);
         self.push_object(Object {
             class,
             identity_hash: 0,
@@ -855,12 +855,12 @@ impl<'gc> Heap<'gc> {
         let index = self.next_object_index();
         let handle = self.object_handle(index);
         // Its own class is itself, not yet in the arena to read, so the id
-        // comes from `data` alone: its own class-side id when `data` is a
-        // class, `NONE` otherwise -- the object is not a class object and,
-        // being its own class, has no class that could supply an instances
-        // id.
+        // comes from `data` alone: its own instances id when `data` is a
+        // class -- it is an instance of itself -- and `NONE` otherwise: the
+        // object is not a class object and, being its own class, has no
+        // class that could supply an instances id.
         let dispatch_id = match &data {
-            ObjectData::Class(own) => own.dispatch_id.class_side(),
+            ObjectData::Class(own) => own.dispatch_id,
             _ => DispatchId::NONE,
         };
         self.objects.push(Object {
@@ -1513,8 +1513,8 @@ impl<'gc> Heap<'gc> {
                     ObjectData::Symbol(symbol) => format!("the Symbol #{symbol}"),
                     ObjectData::Array(items) => format!("an Array of {}", items.len()),
                     ObjectData::Closure(_) => "a Block".to_string(),
-                    ObjectData::Class(data) => {
-                        format!("the class {}", data.application.mixin.name)
+                    ObjectData::Class(_) => {
+                        format!("the class {}", self.class_display_name(*object))
                     }
                     ObjectData::Instance(_) => {
                         let class = &self.objects[object.index as usize].class;
@@ -1754,26 +1754,54 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// `class`'s metaclass: its header class, when that class's
+    /// `this_class` is `class` (`newspeak-spec.pdf` §3.2, "Each class is an
+    /// instance of a unique metaclass"). `None` for a handle that is no
+    /// class object, for a metaclass -- whose class is `Metaclass` -- and
+    /// for a class object of the kernel phase before the bootstrap gave it
+    /// its metaclass (`Mutator::give_existing_class_objects_metaclasses`).
     pub fn class_metaclass(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
         self.check_object_origin(class);
+        let entry = &self.objects[class.index as usize];
+        if !matches!(entry.data, ObjectData::Class(_)) {
+            return None;
+        }
+        let header = entry.class;
+        self.class_this_class(header)
+            .filter(|this_class| this_class.same(class))
+            .map(|_| header)
+    }
+
+    /// A metaclass's class (`ClassData::this_class`); `None` for a class
+    /// object that is no metaclass and for a handle that is no class object.
+    pub fn class_this_class(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.metaclass,
+            ObjectData::Class(data) => data.this_class,
             _ => None,
         }
     }
 
-    /// The id `dispatch_id` answers for an object of `class` holding `data`:
-    /// a class object's own class-side id, an instance's class's instances
-    /// id, `NONE` when the class is not a class object -- only a crafted
-    /// image makes an instance of one.
-    fn header_dispatch_id(&self, class: ClassReference<'gc>, data: &ObjectData<'gc>) -> DispatchId {
-        if let ObjectData::Class(own) = data {
-            // Goes once a class object's own class is its metaclass
-            // (`docs/design/object-model.md`, "Class sides and metaclasses";
-            // step 6, `docs/PROGRESS.md`) -- then its id is its class's
-            // instances id like any other object's.
-            return own.dispatch_id.class_side();
+    /// The name a class object is shown by: its mixin's for a class, and
+    /// its class's followed by ` class` for a metaclass, as
+    /// `Metaclass>>name` answers it (`Kernel.ns`). For the refusal texts
+    /// that name what could not be instantiated.
+    pub fn class_display_name(&self, class: ClassReference<'gc>) -> String {
+        match self.class_this_class(class) {
+            Some(this_class) => format!("{} class", self.class_display_name(this_class)),
+            None => self.class_application(class).map_or_else(
+                || "a class".to_string(),
+                |application| application.mixin.name.to_string(),
+            ),
         }
+    }
+
+    /// The id `dispatch_id` answers for an object of `class`: its class's
+    /// instances id, a class object's included -- its class is its
+    /// metaclass, so its id is that metaclass's instances id -- and `NONE`
+    /// when the class is not a class object, which only a crafted image
+    /// makes.
+    fn header_dispatch_id(&self, class: ClassReference<'gc>) -> DispatchId {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(class_data) => class_data.dispatch_id,
@@ -1794,7 +1822,7 @@ impl<'gc> Heap<'gc> {
         let entry = &self.objects[object.index as usize];
         debug_assert_eq!(
             entry.dispatch_id,
-            self.header_dispatch_id(entry.class, &entry.data),
+            self.header_dispatch_id(entry.class),
             "an object's dispatch id went stale: something changed its class's \
              application without restamping it"
         );
@@ -1802,15 +1830,12 @@ impl<'gc> Heap<'gc> {
     }
 
     /// `class`'s ids, or `NONE` when it is not a class object: the key of a
-    /// `super` send and of a private lexical send. `ClassData` stores only
-    /// the instances id (`ClassData::dispatch_id`'s doc comment); this
-    /// rebuilds the pair from it.
+    /// `super` send and of a private lexical send.
     pub fn class_dispatch_ids(&self, class: ClassReference<'gc>) -> DispatchIds {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => DispatchIds {
                 instances: data.dispatch_id,
-                class_side: data.dispatch_id.class_side(),
             },
             _ => DispatchIds::NONE,
         }
@@ -1820,23 +1845,46 @@ impl<'gc> Heap<'gc> {
         self.immediate_dispatch_ids = ids;
     }
 
-    /// Answers whether the write happened, mirroring `array_set`,
-    /// `set_instance_field` and `set_class_superclass`/`set_class_application`
-    /// below. `Mutator::metaclass_of` is the only caller, and it only
-    /// ever calls this on a level it just confirmed is a class object a few
-    /// lines above -- a wrong-shape `class` here would mean an uncached
-    /// metaclass, which is silent: every later class-side send would rebuild
-    /// instead of hitting the cache, and metaclass identity would stop being
-    /// stable, which is what inline caches are meant to key on. The caller
-    /// turns a `false` into an `unreachable!` rather than swallowing it.
-    pub fn set_class_metaclass(
+    /// Makes `class` `object`'s class and restamps `object`'s dispatch id
+    /// from it, so a cache guard never reads an id its header no longer
+    /// answers. Answers whether the write happened -- `false` when `class`
+    /// is no class object -- mirroring `set_class_superclass` and
+    /// `set_class_application`. `Mutator::attach_metaclass` is the one
+    /// caller: a class object's header becomes its metaclass, and the
+    /// metaclass's `Metaclass` (`newspeak-spec.pdf` §3.2); the caller turns
+    /// a `false` into an `unreachable!` rather than swallowing it.
+    pub(crate) fn set_object_class(
         &mut self,
+        object: ObjectReference<'gc>,
         class: ClassReference<'gc>,
-        metaclass: ClassReference<'gc>,
     ) -> bool {
+        self.check_object_origin(object);
         self.check_object_origin(class);
-        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
-            data.metaclass = Some(metaclass);
+        if !matches!(
+            self.objects[class.index as usize].data,
+            ObjectData::Class(_)
+        ) {
+            return false;
+        }
+        let dispatch_id = self.header_dispatch_id(class);
+        let entry = &mut self.objects[object.index as usize];
+        entry.class = class;
+        entry.dispatch_id = dispatch_id;
+        true
+    }
+
+    /// Links a metaclass to its class (`ClassData::this_class`). Answers
+    /// whether the write happened, like the other class setters;
+    /// `Mutator::attach_metaclass` is the one caller, on a metaclass it has
+    /// just built.
+    pub(crate) fn set_class_this_class(
+        &mut self,
+        metaclass: ClassReference<'gc>,
+        class: ClassReference<'gc>,
+    ) -> bool {
+        self.check_object_origin(metaclass);
+        if let ObjectData::Class(data) = &mut self.objects[metaclass.index as usize].data {
+            data.this_class = Some(class);
             return true;
         }
         false
@@ -1940,7 +1988,7 @@ impl<'gc> Heap<'gc> {
         for index in 0..self.objects.len() {
             let entry_class = self.objects[index].class;
             if entry_class.index == class.index {
-                let dispatch_id = self.header_dispatch_id(entry_class, &self.objects[index].data);
+                let dispatch_id = self.header_dispatch_id(entry_class);
                 self.objects[index].dispatch_id = dispatch_id;
             }
         }
@@ -1948,7 +1996,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// `set_class_application` without the walk: `class`'s own header is
-    /// restamped, its instances' are not. The decoder's
+    /// restamped from its header class, its instances' are not. The decoder's
     /// `rebuild_applications` uses this to install one application per
     /// decoded class record -- walking the arena on every one of those would
     /// be quadratic in a count the image controls -- and stamps every
@@ -1960,13 +2008,21 @@ impl<'gc> Heap<'gc> {
     ) -> bool {
         self.check_object_origin(class);
         let entry = &mut self.objects[class.index as usize];
-        if let ObjectData::Class(data) = &mut entry.data {
-            data.dispatch_id = application.dispatch_ids.instances;
-            data.application = application;
-            entry.dispatch_id = data.dispatch_id.class_side();
-            return true;
-        }
-        false
+        let ObjectData::Class(data) = &mut entry.data else {
+            return false;
+        };
+        data.dispatch_id = application.dispatch_ids.instances;
+        data.application = application;
+        // Its own id is its header class's, which a new application of its
+        // own changes only when it is its own class -- the self-referential
+        // builtin `Object` of the kernel phase. A decoded class record's
+        // header is its metaclass record, whose application may not be
+        // installed yet; `stamp_dispatch_ids` restamps every decoded object
+        // once all of them are.
+        let header = entry.class;
+        let dispatch_id = self.header_dispatch_id(header);
+        self.objects[class.index as usize].dispatch_id = dispatch_id;
+        true
     }
 
     /// Stamps each of `objects` with the id its class now answers. The
@@ -1976,7 +2032,7 @@ impl<'gc> Heap<'gc> {
         for object in objects {
             self.check_object_origin(*object);
             let entry = &self.objects[object.index as usize];
-            let dispatch_id = self.header_dispatch_id(entry.class, &entry.data);
+            let dispatch_id = self.header_dispatch_id(entry.class);
             self.objects[object.index as usize].dispatch_id = dispatch_id;
         }
     }

@@ -12,7 +12,10 @@ Rust 1.98.0, edition 2021, three crates:
   `interpreter/resolve.rs`), the core library -- `core-library/Kernel.ns`,
   Newspeak source the bootstrap compiles into the builtin classes
   (`interpreter/kernel.rs`), in §3.2's and §3.1.1's hierarchy (`Top`, then
-  `Object`, then `Value` over the value classes), whose methods reach Rust
+  `Object`, then `Value` over the value classes and `Behavior` over `Class`
+  and `Metaclass`; every class object's class is its own metaclass, its class
+  side applied to `Class`, and every metaclass's class is `Metaclass`,
+  `interpreter/metaclass.rs`), whose methods reach Rust
   only through the one VM
   mirror object and its leaves (`builtins/`, `interpreter/mirror.rs`) -- and
   the image format (`image/`). Objects live in an arena owned by one
@@ -261,10 +264,11 @@ checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
 (`interpreter::kernel`); no program can name the mirror's class -- `Object` declares no
 accessor for it or for `Top` (`interpreter/kernel.rs`'s test pins the accessor set, and the
 recognizer in `compiler::primitive_method` refuses both), and the image decoder refuses builtin
-class tag 14 wherever a program names a class (`read_program_builtin_class`, which refuses
+class tag 14 wherever the graph names a class (`read_referenced_builtin_class`, which refuses
 `Top`'s tag 15 the same way and for the same kind of reason -- §3.2 lets only `Object` name
 it, so no source module can and no artifact may either); the encoder
-refuses an image whose graph reaches the mirror; `decide_factory` refuses to instantiate the
+refuses an image whose graph reaches the mirror, its class, `Top` or the metaclass of either
+class; `decide_factory` refuses to instantiate the
 mirror's class; and `SendMirror`, which runs a leaf with no lookup, is emitted only for a
 `MirrorSend` and has no wire tag, so no artifact can carry one. Never add a way for a
 program to obtain the mirror, its class or a `MirrorSend` binding.
@@ -278,9 +282,9 @@ it survives a move and cannot reach another heap. Anything the key does not cove
 read afresh in `act` on every send, never trusted from the entry; today that is
 `ClassData.builtin`, which `instantiate::decide_factory` reads off the receiver to
 tell `Array` and `OrderedCollection` from an ordinary instance, a primitive's
-payload check, which `builtins::execute` re-runs, and a class object's own
-`class` field, which `resolve_public` re-reads to fall through to `Object`'s
-methods after a metaclass miss. A kernel method's fast path is decided the same way:
+payload check, which `builtins::execute` re-runs. A class object's own `class`
+field is no such read: it is its metaclass, whose instances id is the guard, so
+the key covers it. A kernel method's fast path is decided the same way:
 the entry records a `Method`, and `act` reads the fast path off that method
 (`MixinMethod.fast_path` -- a mirror row, `MethodFastPath::Mirror`, a builtin class
 for one of `Object`'s accessors, `MethodFastPath::BuiltinClass`, or a quick method's

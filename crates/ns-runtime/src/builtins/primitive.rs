@@ -15,6 +15,7 @@ use crate::Symbol;
 pub enum Primitive {
     Object(ObjectPrimitive),
     Value(ValuePrimitive),
+    Behavior(BehaviorPrimitive),
     Integer(IntegerPrimitive),
     Float(FloatPrimitive),
     String(StringPrimitive),
@@ -44,6 +45,24 @@ pub enum ValuePrimitive {
     Hash,
     SlotCount,
     SlotAt,
+}
+
+/// §3.2's `Class` and `Metaclass` forward to these; nothing else about a
+/// class object is answered at the base level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviorPrimitive {
+    /// A class's name, its mixin's, as a `String`; declines for a metaclass.
+    Name,
+    /// A metaclass's class; declines for anything else.
+    ThisClass,
+    /// Whether two class objects apply one mixin application; declines
+    /// when either is no class object. The first of the three leaves the
+    /// Newspeak side of a value class object's `=` reads its state through.
+    SharesApplication,
+    /// A class object's enclosing object, `nil` for a module definition.
+    Enclosing,
+    /// A class object's superclass class object, `nil` for `Top`.
+    Superclass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,6 +498,33 @@ pub const MIRROR: &[MirrorEntry] = &[
         "transcriptNewLine:ifFail:",
         "newLine",
         Primitive::Platform(PlatformPrimitive::NewLine),
+    ),
+    // Appended, so no row above moves ("A wire tag is assigned once",
+    // `CLAUDE.md`).
+    mirror(
+        "className:ifFail:",
+        "name",
+        Primitive::Behavior(BehaviorPrimitive::Name),
+    ),
+    mirror(
+        "metaclassThisClass:ifFail:",
+        "thisClass",
+        Primitive::Behavior(BehaviorPrimitive::ThisClass),
+    ),
+    mirror(
+        "behavior:sharesApplicationWith:ifFail:",
+        "sharesApplicationWith:",
+        Primitive::Behavior(BehaviorPrimitive::SharesApplication),
+    ),
+    mirror(
+        "behaviorEnclosing:ifFail:",
+        "enclosingObject",
+        Primitive::Behavior(BehaviorPrimitive::Enclosing),
+    ),
+    mirror(
+        "behaviorSuperclass:ifFail:",
+        "superclass",
+        Primitive::Behavior(BehaviorPrimitive::Superclass),
     ),
 ];
 

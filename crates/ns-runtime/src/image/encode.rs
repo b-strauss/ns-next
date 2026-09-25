@@ -203,6 +203,9 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Number => 17,
         BuiltinClass::Transcript => 18,
         BuiltinClass::Collections => 19,
+        BuiltinClass::Behavior => 20,
+        BuiltinClass::Class => 21,
+        BuiltinClass::Metaclass => 22,
     }
 }
 
@@ -800,10 +803,51 @@ fn names_a_builtin(data: &ClassData<'_>) -> bool {
 /// supplies, or the module's root class or one of its levels, which `load`
 /// rebuilds from the mixin table and the root-class section before the graph
 /// is decoded. None of them exists because the graph says so, so none is a
-/// record. Every other class object is. The mirror of
-/// `decode::is_prebuilt_class`, including its explicit, today-redundant
-/// `is_class` guard -- see that function's doc comment.
+/// record. The metaclass of one of them is named by tag too
+/// (`CLASS_METACLASS`), for the same reason: it exists because its class
+/// does, before the graph is decoded. Every other class object is a record,
+/// a metaclass of a class record included (`OBJECT_METACLASS`).
 fn is_class_tag<'gc>(
+    heap: &Heap<'gc>,
+    object: ObjectReference<'gc>,
+    root_class: ClassReference<'gc>,
+    root_levels: &[ClassReference<'gc>],
+) -> bool {
+    is_prebuilt_class(heap, object, root_class, root_levels)
+        || heap
+            .class_this_class(object)
+            .is_some_and(|this_class| is_prebuilt_class(heap, this_class, root_class, root_levels))
+}
+
+/// `object` described, when it is a class object an image may not name:
+/// `Top` or the VM mirror's class, which the decoder refuses wherever the
+/// graph names a class (`decode::read_program_builtin_class`), or the
+/// metaclass of either, which it refuses behind a `CLASS_METACLASS`
+/// reference the same way. No source module can name any of the four --
+/// `Object` declares no accessor for `Top` or the mirror's class -- so only
+/// a graph reaching into the kernel can; writing one would produce an
+/// image nothing loads, so the encoder refuses it instead.
+fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
+    let (class, suffix) = match heap.class_this_class(object) {
+        Some(this_class) => (this_class, " class"),
+        None => (object, ""),
+    };
+    match heap.class_builtin(class) {
+        Some(BuiltinClass::Top) => Some(format!("Top{suffix}")),
+        Some(BuiltinClass::VmMirror) => Some(format!("the VM mirror's class{suffix}")),
+        _ => None,
+    }
+}
+
+/// Whether `object` is a builtin, the module's root class or one of its
+/// levels -- the class objects the loading world has before the graph, and
+/// what `decode::read_prebuilt_class` reads behind a `CLASS_METACLASS`
+/// reference. The explicit `is_class` guard is redundant with
+/// `object.same(root_class)` today -- that can only be true when `object` is
+/// literally `root_class`, a class by construction -- but it keeps this
+/// answering `false` for a non-class object on its own terms, so it stays
+/// honest if either check's meaning shifts later.
+fn is_prebuilt_class<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
     root_class: ClassReference<'gc>,
@@ -825,6 +869,10 @@ pub struct GraphTable<'gc> {
     object_ids: HashMap<usize, u32>,
     frames: Vec<FrameReference<'gc>>,
     frame_ids: HashMap<usize, u32>,
+    /// The first class the traversal reached that no program may name --
+    /// `Top`, the VM mirror's class, or the metaclass of either -- which
+    /// `encode_graph_section` refuses (`unnameable_class`).
+    unnameable: Option<String>,
 }
 
 impl<'gc> GraphTable<'gc> {
@@ -848,6 +896,7 @@ impl<'gc> GraphTable<'gc> {
             object_ids: HashMap::new(),
             frames: Vec::new(),
             frame_ids: HashMap::new(),
+            unnameable: None,
         };
         let mut stack: Vec<Pending> = roots
             .iter()
@@ -878,7 +927,13 @@ impl<'gc> GraphTable<'gc> {
         stack: &mut Vec<Pending<'gc>>,
     ) {
         let Value::Object(object) = value else { return };
-        if is_same_object(value, platform) || is_class_tag(heap, *object, root_class, root_levels) {
+        if is_same_object(value, platform) {
+            return;
+        }
+        if is_class_tag(heap, *object, root_class, root_levels) {
+            if self.unnameable.is_none() {
+                self.unnameable = unnameable_class(heap, *object);
+            }
             return;
         }
         let key = heap.object_identity_key(*object);
@@ -908,10 +963,17 @@ impl<'gc> GraphTable<'gc> {
                     // its own.
                     stack.extend(closure.copied.iter().copied().map(Pending::Value));
                 }
-                // A class object's three references. `metaclass` is not one
-                // of them: it is a lazy cache `Mutator::metaclass_of`
-                // rebuilds on demand, and nothing hands a metaclass to
-                // Newspeak code, so no value in the graph can point at one.
+                // A metaclass record writes one reference, its class:
+                // everything else about it is derived from that class.
+                ObjectData::Class(data) if data.this_class.is_some() => {
+                    stack.extend(
+                        data.this_class
+                            .iter()
+                            .map(|class| Pending::Value(Value::Object(*class))),
+                    );
+                }
+                // A class object's three references; its metaclass is its
+                // header, pushed above like every object's class.
                 ObjectData::Class(data) => {
                     stack.extend(
                         class_references(data).map(|class| Pending::Value(Value::Object(class))),
@@ -991,6 +1053,12 @@ impl<'gc> GraphTable<'gc> {
             .expect("frame was visited by build()")
     }
 
+    /// The class no program may name that the traversal reached, described
+    /// for the refusal; `None` when it reached none.
+    pub fn unnameable_class(&self) -> Option<&str> {
+        self.unnameable.as_deref()
+    }
+
     pub fn objects(&self) -> &[ObjectReference<'gc>] {
         &self.objects
     }
@@ -1019,8 +1087,10 @@ pub struct EncodeContext<'a, 'gc> {
 }
 
 /// `Builtin(kind)` (0 + kind tag), `UserRoot` (1), `Record` (2 + object
-/// id) or `RootLevel` (3 + position) -- the four ways a class object can
-/// exist in a loaded world.
+/// id), `RootLevel` (3 + position) or `Metaclass` (4 + the reference of a
+/// class named by one of 0, 1 and 3) -- the ways a class object can exist
+/// in a loaded world. A metaclass of a class record is a record itself, so
+/// the recursion below is one level deep at most.
 ///
 /// All but `Record` are rebuilt before the graph is: a builtin comes from the
 /// bootstrap, the root class and its levels from mixin-table row 0 plus the
@@ -1038,6 +1108,21 @@ fn encode_class_tag<'gc>(
 ) {
     if !context.heap.is_class(class) {
         panic!("internal: a class reference does not point at a class object");
+    }
+    if let Some(this_class) = context.heap.class_this_class(class) {
+        if is_prebuilt_class(
+            context.heap,
+            this_class,
+            *context.root_class,
+            context.root_levels,
+        ) {
+            writer.write_u8(CLASS_METACLASS);
+            encode_class_tag(writer, this_class, context);
+        } else {
+            writer.write_u8(CLASS_RECORD);
+            writer.write_u32(context.table.object_id(context.heap, class));
+        }
+        return;
     }
     let builtin = context.heap.class_builtin(class);
     match builtin {
@@ -1170,30 +1255,16 @@ fn encode_closure_record<'gc>(
 /// megamorphic.
 ///
 /// `builtin` is not written either -- a record only ever describes a user
-/// class, since a builtin is a class *tag* -- and neither is `metaclass`, a
-/// lazy cache `Mutator::metaclass_of` rebuilds on the first class-side send.
+/// class, since a builtin is a class *tag* -- and neither is its metaclass:
+/// the record's header names it, as every record's header names its class
+/// (`encode_object`).
 ///
-/// A metaclass can still reach here as a record of its own, through the one
-/// reference that names one: a class-side activation's `current_class`,
-/// captured in a frame. Such a metaclass applies the declaring class's own
-/// class side (`newspeak-spec.pdf` §3.2; ns-next's own representation is
-/// `docs/design/object-model.md`, "Class sides and metaclasses"), which is
-/// part of the module's declaration tree like any other mixin, so the id
-/// lookup below finds it. The superclass written for it is `Object`'s class
-/// object, the link `metaclass_of` gives a metaclass; the *application* it
-/// is rebuilt with is flat all the same, because
-/// `decode::rebuild_applications` recognizes a record whose mixin is some
-/// row's class side and applies it with no superclass application. The other
-/// kind of metaclass mixin --
-/// the otherwise empty one `metaclass_of` synthesizes for a class that
-/// declares no class side, so that §6.3's factory entry has somewhere to
-/// live -- is in no `mixin::preorder` walk and has no id. It cannot reach
-/// here: its method table holds the factory and nothing else, a factory
-/// entry pushes no activation, and so no frame can ever name it as a
-/// `current_class`. Should some later reference to a metaclass make one
-/// reachable, this answers the ordinary "not part of the declaration tree"
-/// error rather than writing a wrong id -- a refusal to snapshot, not a
-/// corrupt image.
+/// A metaclass never reaches here. It is written as a record of its own
+/// shape, `OBJECT_METACLASS`, holding only the reference back to its class,
+/// since its mixin, application, enclosing object and declaring class all
+/// follow from that class (`docs/design/object-model.md`, "The image
+/// format"); `decode::rebuild_applications` refuses a class record that
+/// applies some row's class side.
 ///
 /// A level a `<:` clause added (`newspeak-spec.pdf` §6.2) is a record like
 /// any other, except that it ends with the clause that added it, as the
@@ -1280,6 +1351,23 @@ fn encode_object<'gc>(
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let record = context.heap.object_snapshot(object);
+    // A class object -- never a metaclass, which always has one -- whose
+    // header is not its metaclass has none: either it never got one
+    // (`Mutator::new_class_object`, before the kernel phase's
+    // `metaclasses_ready`) or something else is wrong with its pairing.
+    // Writing the placeholder header anyway would silently claim it as the
+    // metaclass every class record's header names (`encode_object`'s next
+    // line), so this is refused up front rather than left for the loader
+    // to reject an image the encoder should never have written.
+    if let ObjectData::Class(data) = &record.data {
+        if data.this_class.is_none() && context.heap.class_metaclass(object).is_none() {
+            return Err(
+                "image encoding cannot serialize a class object without a metaclass".to_string(),
+            );
+        }
+    }
+    // Every header is the object's class: a class record's names its
+    // metaclass, and a metaclass record's names `Metaclass` (§3.2).
     encode_class_tag(writer, record.class, context);
     writer.write_u32(record.identity_hash);
     match &record.data {
@@ -1302,6 +1390,11 @@ fn encode_object<'gc>(
         ObjectData::Closure(closure) => {
             writer.write_u8(OBJECT_CLOSURE);
             encode_closure_record(writer, closure, context);
+        }
+        ObjectData::Class(data) if data.this_class.is_some() => {
+            writer.write_u8(OBJECT_METACLASS);
+            let this_class = data.this_class.expect("checked by the guard");
+            encode_class_tag(writer, this_class, context);
         }
         ObjectData::Class(data) => {
             writer.write_u8(OBJECT_CLASS);
@@ -1379,6 +1472,28 @@ pub fn encode_graph_section<'gc>(
 ) -> Result<(), String> {
     let root_levels = root_levels(heap, root_class);
     let table = GraphTable::build(heap, roots, platform, root_class, &root_levels);
+    // The VM mirror is a capability the bootstrap hands to the core library
+    // alone (`docs/design/core-library.md`, "The VM mirror is the whole Rust
+    // boundary"); an artifact that carried it would hand it to whatever
+    // loaded it. Checked ahead of the unnameable classes below, which a
+    // graph reaching the mirror reaches too (its class), so that the
+    // refusal names the capability rather than its class.
+    for object in table.objects() {
+        if heap.class_builtin(heap.class_of_object(*object)) == Some(BuiltinClass::VmMirror) {
+            return Err(
+                "image encoding refuses the VM mirror: it is a capability the \
+                 bootstrap hands to the core library alone, and an artifact that \
+                 carried it would hand it to whatever loaded it"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(unnameable) = table.unnameable_class() {
+        return Err(format!(
+            "image encoding refuses {unnameable}: no program may name it, and the \
+             loader refuses an image that does"
+        ));
+    }
     let context = EncodeContext {
         table: &table,
         code_ids,
@@ -1391,18 +1506,6 @@ pub fn encode_graph_section<'gc>(
     writer.write_u32(u32_field("object table entry count", table.objects().len()));
     writer.write_u32(u32_field("frame table entry count", table.frames().len()));
     for object in table.objects() {
-        // The VM mirror is a capability the bootstrap hands to the core
-        // library alone (`docs/design/core-library.md`, "The VM mirror is
-        // the whole Rust boundary"); an artifact that carried it would hand
-        // it to whatever loaded it.
-        if heap.class_builtin(heap.class_of_object(*object)) == Some(BuiltinClass::VmMirror) {
-            return Err(
-                "image encoding refuses the VM mirror: it is a capability the \
-                 bootstrap hands to the core library alone, and an artifact that \
-                 carried it would hand it to whatever loaded it"
-                    .to_string(),
-            );
-        }
         encode_object(writer, *object, &context, symbols)?;
     }
     for frame in table.frames() {
@@ -1414,15 +1517,21 @@ pub fn encode_graph_section<'gc>(
 
 /// The graph section's closing table: the identity hash of every object the
 /// image names by tag rather than carries as a record -- each builtin class,
-/// the module's root class, the `platform` singleton -- so that a hash the
-/// program was given survives the load. Only an assigned hash (not 0) is
-/// written, in a fixed order -- the builtin classes in wire-tag order, then
-/// the root class, then `platform` -- so one world encodes to one byte
-/// sequence. See `docs/design/image-format.md`, "Identity hashes are
+/// the module's root class, the `platform` singleton, and the metaclasses of
+/// the builtins, the root class and its levels -- so that a hash the program
+/// was given survives the load. Only an assigned hash (not 0) is written, in
+/// a fixed order -- the builtin classes in wire-tag order, then the root
+/// class, then `platform`, then the builtins' metaclasses in wire-tag order,
+/// the root class's and its levels', lowest first -- so one world encodes to
+/// one byte sequence. See `docs/design/image-format.md`, "Identity hashes are
 /// preserved verbatim".
 ///
 /// Every builtin is considered, not only those the graph reaches: a program
-/// can keep `Integer hash` in a slot without keeping `Integer`.
+/// can keep `Integer hash` in a slot without keeping `Integer`. The
+/// metaclasses of `Top` and of the VM mirror's class are not: the decoder
+/// refuses both tags behind a metaclass reference, as it does wherever the
+/// graph names a class, and no program can reach either metaclass to give it
+/// a hash.
 pub fn encode_tag_named_hashes<'gc>(
     writer: &mut Writer,
     mutator: &Mutator<'gc>,
@@ -1430,29 +1539,53 @@ pub fn encode_tag_named_hashes<'gc>(
     platform: &Value<'gc>,
 ) {
     let heap = &mutator.heap;
-    let mut entries: Vec<(u8, Option<u8>, u32)> = Vec::new();
+    let mut entries: Vec<(u8, Vec<u8>, u32)> = Vec::new();
     for kind in BuiltinClass::ALL {
         let hash = heap.identity_hash(mutator.builtin_class(kind));
         if hash != 0 {
-            entries.push((HASHED_BUILTIN_CLASS, Some(builtin_class_tag(kind)), hash));
+            entries.push((HASHED_BUILTIN_CLASS, vec![builtin_class_tag(kind)], hash));
         }
     }
     let hash = heap.identity_hash(root_class);
     if hash != 0 {
-        entries.push((HASHED_ROOT_CLASS, None, hash));
+        entries.push((HASHED_ROOT_CLASS, Vec::new(), hash));
     }
     if let Value::Object(platform) = platform {
         let hash = heap.identity_hash(*platform);
         if hash != 0 {
-            entries.push((HASHED_PLATFORM, None, hash));
+            entries.push((HASHED_PLATFORM, Vec::new(), hash));
+        }
+    }
+    let mut prebuilt: Vec<(ClassReference<'gc>, Vec<u8>)> = BuiltinClass::ALL
+        .into_iter()
+        .filter(|kind| !matches!(kind, BuiltinClass::Top | BuiltinClass::VmMirror))
+        .map(|kind| {
+            (
+                mutator.builtin_class(kind),
+                vec![CLASS_BUILTIN, builtin_class_tag(kind)],
+            )
+        })
+        .collect();
+    prebuilt.push((root_class, vec![CLASS_USER_ROOT]));
+    for (position, level) in root_levels(heap, root_class).into_iter().enumerate() {
+        let mut reference = Writer::new();
+        reference.write_u8(CLASS_ROOT_LEVEL);
+        reference.write_u32(u32_field("root class level position", position));
+        prebuilt.push((level, reference.into_bytes()));
+    }
+    for (class, reference) in prebuilt {
+        let Some(metaclass) = heap.class_metaclass(class) else {
+            continue;
+        };
+        let hash = heap.identity_hash(metaclass);
+        if hash != 0 {
+            entries.push((HASHED_METACLASS, reference, hash));
         }
     }
     writer.write_u32(u32_field("tag-named hash count", entries.len()));
-    for (tag, builtin, hash) in entries {
+    for (tag, reference, hash) in entries {
         writer.write_u8(tag);
-        if let Some(builtin) = builtin {
-            writer.write_u8(builtin);
-        }
+        writer.write_raw(&reference);
         writer.write_u32(hash);
     }
 }
