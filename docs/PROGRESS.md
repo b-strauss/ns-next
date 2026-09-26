@@ -4284,27 +4284,35 @@ markers.
 
 **Measured** against `3cbfd31`, the `master` it started from
 ([execution.md](design/execution.md), "What exceptions cost"), three
-layouts of each tree, four sittings pooled, at `3d5f69c`:
-`bench_loop.ns` 1.6% faster (7.32 → 7.21 ms) and `bench_megamorphic.ns`
-1.3% faster (11.64 → 11.48), each in every sitting; `bench_send.ns` 1.6%
-slower (8.76 → 8.90), the rounds of the two trees overlapping.
-**Block activation and deep returns are slower beyond noise**, and the
-cause is not yet located: `bench_block.ns`, the bimodal source, is 5.0%
-slower slow layout against slow layout (19.25 → 20.21 ms; the base drew
-one fast layout, the head none), the throwaway `bench_value.ns` (three
-block `value`s an iteration, no exception) 4.6% (43.99 → 46.01) and
-`bench_deep.ns` (twenty sends deep and back) 6.4% (16.26 → 17.29), all
-four sittings agreeing; a profile of `bench_value.ns` puts the extra
-samples in `vm::run` and in `Heap::reify`, which the head calls out of
-line from `vm::run` where the base inlined it. With nothing signalled,
+layouts of each tree, four sittings pooled. At `3d5f69c` the branch was
+slower on paths that use no exception -- `bench_block.ns` 5.0% slow layout
+against slow layout, a throwaway `bench_value.ns` (three block `value`s an
+iteration) 4.6%, `bench_deep.ns` (twenty sends deep and back) 6.4% -- and
+bisecting located two causes, each fixed: `Signal` had grown from 48 to 56
+bytes, and every `Result<Step, Signal>` a send decides from 56 to 64, once
+`Terminate` held a second `NewspeakError` in place (boxed, `f518988`); and
+compaction shrank an arena to twice its live set while the next collection
+waits for `max(floor, 2 x live)`, so under the floor every collection cut
+the object arena to 144 slots and the next cycle grew it back through five
+reallocations -- older than the branch, exposed when the exception classes
+moved the live set from 57 objects to 72 (`c5b1f2b`, which now shrinks
+against the limit). Profiling what was left found a third,
+`decide_slot_accessor` formatting its error in place and so spilling every
+slot read through a stack frame (`1d7587f`, the error out of line). **At
+`1d7587f` every source is faster than the base in every sitting**:
+`bench_loop.ns` 24.3% (7.27 → 5.50 ms), `bench_send.ns` 18.6% (8.70 → 7.08),
+`bench_block.ns` 18.7% against the three base layouts' mean (18.21 → 14.80;
+no head layout draws the slow mode), `bench_megamorphic.ns` 12.0%
+(11.61 → 10.22), `bench_value.ns` 13.1% (43.82 → 38.09), `bench_deep.ns`
+2.5% (16.27 → 15.86). With nothing signalled, measured at `3d5f69c`,
 `bench_ensure.ns` (one `ensure:` and one `on:do:` an iteration) costs
 about 145 ns an iteration over the same blocks sent `value`
 (60.47 against 46.01 ms); `bench_signal.ns`, an `Error` signalled twenty
 activations down and caught, about 6.4 µs a signal (81.38 against 17.29
 ms for the same recursion answering). `vm::run` is still one function,
-with no `vm::run::closure`, and shrank from 6,741 instructions to 6,603;
-`push` is inlined into `push_step` and `push_initializer` as before, with
-`push_past_the_limit` out of line.
+with no `vm::run::closure`: 6,741 instructions on the base, 6,486 at
+`f518988`; `push` is inlined into `push_step` and `push_initializer` as
+before, with `push_past_the_limit` out of line.
 
 **Small follow-ups the reviews deferred**, none affecting an outcome:
 the image encoder's `GraphTable::visit_value` skips an activation object's

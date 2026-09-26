@@ -1078,6 +1078,15 @@ small program out of the collector altogether: `bench_loop.ns` and
 `bench_send.ns` run in 4.6 MB today and should never collect. Soup's
 `GrowthPolicy` and HotSpot's free-ratio control have the same shape.
 
+Compaction gives memory back against the same limit (`collection_limit`, which
+`compact_arena` and `reset_collection_limits` share): an arena whose buffer is
+more than twice its next limit is cut back to the limit, and one within twice
+it is kept. Measured against the live set instead, the two part under the
+floor -- a live set of 72 objects cut the buffer to 144 slots, and the next
+cycle, allowed to reach 4,096, grew it back through five reallocations, each
+a copy and fresh pages, at every collection; that was about 5% of
+`bench_value.ns` ([execution.md](execution.md), "What exceptions cost").
+
 The image decoder never collects, because it never polls — it does not run in
 the run loop. The transient peak described under the decode amplification above
 therefore stands unchanged: a rejected image's placeholders are reachable until

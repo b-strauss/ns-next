@@ -3841,25 +3841,100 @@ medians, and the range of every round median of each tree:
 `bench_send.ns` is 1.6% slower in every sitting, though the ranges of the
 two trees' rounds overlap.
 
-**Block activation and deep returns are slower, beyond noise.**
-`bench_block.ns` is the bimodal source: the base drew one fast layout
-(16.45) and two slow ones (19.25, 19.24), and the head three slow ones
-(20.19–20.23), so the pooled +10.4% counts layouts; slow layout against
-slow layout the head is **5.0% slower**, every round of the head above
-every round of `base-p` and `base-q`. `bench_value.ns`, which sends `value`
-to three blocks an iteration and uses no exception, is 4.6% slower
-(about 20 ns an iteration), and `bench_deep.ns`, twenty sends deep and
-back, 6.4% (about 100 ns an iteration, some 5 ns an activation); every
-round of the head is above every round of the base on `bench_deep.ns`, and
-all four sittings agree on both. Nothing of the exception protocol runs in
-either source. What moved is not yet located: a sampling profile of
-`bench_value.ns` (`samply` at 8 kHz, 100 iterations, release builds with
-debug information of both trees) puts the head's extra samples in
-`vm::run` (+470 of about 36,000) and in `Heap::reify` (132), which the head
-calls out of line from `vm::run` at two sites and the base inlined; a
-profile that locates it is an open performance item.
+**Block activation and deep returns were slower, beyond noise, and the
+cause was two defects, one of them older than the branch.** At `3d5f69c`
+`bench_block.ns`, the bimodal source, was 5.0% slower slow layout against
+slow layout (the base drew one fast layout, 16.45, the head none),
+`bench_value.ns` 4.6% and `bench_deep.ns` 6.4%, with nothing of the
+exception protocol running in either control. Bisected over the branch's
+commits, two builds of each, the two controls moved at different commits,
+and each has its own cause:
 
-**What the protocol costs when nothing is signalled.** `bench_ensure.ns`
+- **`bench_deep.ns`: `Signal` grew.** It moved at `8aa49e8`, which gave
+  `Signal` a `Terminate(NewspeakError)` beside `Error(NewspeakError)`. With
+  two variants holding a `NewspeakError` in place the others no longer fit
+  in its niche: `Signal` went from 48 bytes to 56, `EvaluationResult` from
+  48 to 56 and every `Result<Step, Signal>` a send decides from 56 to 64
+  (`size_of` in release builds of both trees; `Step`, `Flow`,
+  `Continuation` and `Popped` did not move). Boxing `Terminate` alone gave
+  back all of it (`f518988`), and a release-only test pins the three sizes.
+- **`bench_value.ns` and `bench_block.ns`: an arena reallocated at every
+  collection.** `bench_value.ns` moved at `85d629d`, which changes no code
+  on the path at all -- `vm::run` and `decide_slot_accessor` are the same
+  instructions in both builds -- but declares the exception classes, so the
+  live set a collection leaves grew from 57 objects to 72. A profile put
+  the difference in page faults: kernel-mode samples under
+  `Heap::allocate_object` went from 14 to 349, with `Vec<Object>`'s
+  `grow_one` and the collector's `memset` beside them. Compaction shrank an
+  arena to twice its live set once three quarters of it was idle, while
+  the next collection is requested only when the arena reaches
+  `max(floor, 2 x live)`; under the 4,096-slot floor the two part, and every
+  collection cut the object arena to 144 slots, which the next cycle grew
+  back to the floor through five reallocations, each a copy and fresh
+  pages. The base did the same with 114 slots and six reallocations, which
+  happened to fault less. `compact_arena` now measures against the limit
+  (`collection_limit`, which `reset_collection_limits` shares): a buffer
+  within twice the limit is kept, one past it is cut back to the limit
+  (`c5b1f2b`) -- the old rule wherever the live set is above half the
+  floor. That gave back all of `bench_value.ns` and more of
+  `bench_block.ns` than the branch had cost it.
+
+What was ruled out on the way: the lead from the first profile, `Heap::reify`
+out of line from `vm::run`, is real but small -- splitting it into an inline
+check of `reified` and an out-of-line creation measured about 1% on
+`bench_value.ns`, within the rounds' spread, and was not kept; the process
+environment's size, which moves the native stack, left the `bench_value.ns`
+gap where it was at five paddings from 0 to 3,000 bytes; and forty unused
+methods added to `Kernel.ns` on the base, a data change with no new class,
+moved nothing.
+
+**A third defect, found while profiling what was left.** After those two,
+`bench_loop.ns` measured 1.9% slower than the base and `bench_megamorphic.ns`
+0.9%. A profile of `bench_loop.ns` put a third of its samples in
+`Mutator::decide_slot_accessor` -- every slot read and write -- most of them
+on reloading the field from a stack slot it had just been spilled to and
+storing it into the step; the function is the same instructions in both
+trees, so its cost moves with its surroundings rather than with anything the
+branch changed in it. It built its answer through `Option` combinators ending
+in an `ok_or_else` whose closure formats the error, and compiled in place that
+closure gave the accessor a frame. Written as early returns with the error in
+a `#[cold]`, `#[inline(never)]` function (`1d7587f`), the accessor is a leaf
+that moves the field straight into the step.
+
+**Measured 2026-09-26, `1d7587f` against `3cbfd31`**, by the same protocol:
+the same three base binaries, the head built plain and with
+`-C metadata=layoutprobe` and `=secondprobe`, pinned flags, four sittings of
+five rounds, rotating. Medians in ms per layout, the sittings pooled:
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.28 | 7.28 | 7.26 | 5.51 | 5.50 | 5.50 |
+| `bench_send.ns` | 8.71 | 8.71 | 8.68 | 7.09 | 7.07 | 7.09 |
+| `bench_block.ns` | 16.36 | 19.08 | 19.19 | 14.82 | 14.78 | 14.79 |
+| `bench_megamorphic.ns` | 11.58 | 11.60 | 11.65 | 10.22 | 10.20 | 10.24 |
+| `bench_value.ns` | 43.71 | 43.81 | 43.96 | 38.30 | 37.83 | 38.15 |
+| `bench_deep.ns` | 16.53 | 16.12 | 16.17 | 15.88 | 15.87 | 15.83 |
+
+| Source | `3cbfd31` | `1d7587f` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.27 | 5.50 | −24.3% | −25.0% / −24.0% / −25.7% / −25.1% | 7.16–8.40 / 5.40–6.65 |
+| `bench_send.ns` | 8.70 | 7.08 | −18.6% | −18.3% / −19.1% / −18.8% / −19.0% | 8.55–9.02 / 6.91–7.40 |
+| `bench_block.ns` | 18.21 | 14.80 | −18.7% | −18.5% / −18.8% / −17.9% / −19.0% | 16.10–19.48 / 14.45–15.03 |
+| `bench_megamorphic.ns` | 11.61 | 10.22 | −12.0% | −11.6% / −11.8% / −12.0% / −11.3% | 11.34–12.00 / 9.93–10.46 |
+| `bench_value.ns` | 43.82 | 38.09 | −13.1% | −12.9% / −13.5% / −12.5% / −12.7% | 42.60–44.88 / 37.27–40.09 |
+| `bench_deep.ns` | 16.27 | 15.86 | −2.5% | −3.0% / −2.6% / −2.7% / −2.4% | 15.82–17.15 / 15.59–16.79 |
+
+Every source is faster than the base in every sitting, and the head's layouts
+agree to within 1.3% on each; `bench_block.ns` no longer draws a slow layout
+in any of the three builds. Attributed by builds of each commit on its own,
+two layouts each, five rounds: the arena accounts for `bench_block.ns`
+(20.2 → 16.7 ms) and `bench_value.ns` (46.0 → 43.4), `Signal` for
+`bench_deep.ns` (17.4 → 16.4), and the slot accessor for most of the rest,
+`bench_loop.ns` 7.3 → 5.5, `bench_send.ns` 8.8 → 7.1–7.4 and
+`bench_megamorphic.ns` 11.7 → 10.2.
+
+**What the protocol costs when nothing is signalled**, measured at
+`3d5f69c`, before the three fixes above. `bench_ensure.ns`
 runs the same three block bodies as `bench_value.ns`, one as an `ensure:`
 receiver, one as its argument, one as an `on:do:` receiver: 60.47 ms
 against 46.01, about **145 ns an iteration for one `ensure:` and one
@@ -3875,8 +3950,8 @@ three layouts; 78.44 to 82.89 between them), against 17.29 for
 activation, and the unwind of the twenty activations and the handler's
 own to the `on:do:`.
 
-**`vm::run`'s step is still one function, and `push` still inlines.** A
-release build with debug information of each tree, pinned flags,
+**`vm::run`'s step is still one function, and `push` still inlines.** At
+`3d5f69c`, a release build with debug information of each tree, pinned flags,
 `dumpbin -disasm`: one function label `ns_runtime::vm::run` in each and no
 `vm::run::closure`. The base has **6,741 instructions** and the head
 **6,603**. `Mutator::push` has no label in either build: it is inlined into
@@ -3887,7 +3962,8 @@ five sites, so the path below the limit is the one compare it was. Other
 sizes that moved: `push_step` from 1,361 to 1,214 instructions, `vm::finish`
 from 606 to 716, `vm::unwind` from 177 to 1,942 (the unwinder's outcome
 handling, with `interpreter::unwind::unwind`, 439, out of line), and
-`Heap::reify` (258) now has a label of its own.
+`Heap::reify` (258) now has a label of its own. Boxing `Terminate` took
+`vm::run` to 6,486 instructions and `vm::finish` to 664 (`f518988`).
 
 ## The trampoline
 

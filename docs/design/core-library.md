@@ -1312,15 +1312,16 @@ changed; two golden sources that read the old two-element message with
 
 **Measured** 2026-09-26 against `3cbfd31`, the `master` it started from
 ([execution.md](execution.md), "What exceptions cost"). None of the
-`bench` fixtures uses exceptions: `bench_loop.ns` and
-`bench_megamorphic.ns` are 1.6% and 1.3% faster, `bench_send.ns` 1.6%
-slower; `bench_block.ns`, slow layout against slow layout, is 5.0% slower,
-and two throwaway controls that use no
-exception are slower beyond noise too -- three block `value`s an iteration
-4.6%, twenty sends deep and back 6.4% -- a cost of the branch not yet
-located. With nothing signalled, one `ensure:` and one `on:do:` cost about
-145 ns an iteration over sending `value` to the same blocks; an `Error`
-signalled and caught twenty activations up costs about 6.4 µs.
+`bench` fixtures uses exceptions. The branch first measured slower on
+block activation and deep returns -- 4.6% to 6.4% -- from two causes it
+located and fixed: a `Signal` grown by 8 bytes once `Terminate` held a
+second `NewspeakError` in place, and an arena the collector shrank below
+its next limit at every collection. With those and an out-of-line error
+in the slot accessor, every fixture and both controls are faster than the
+base, by 2.5% (twenty sends deep) to 24.3% (`bench_loop.ns`). With
+nothing signalled, one `ensure:` and one `on:do:` cost about 145 ns an
+iteration over sending `value` to the same blocks; an `Error` signalled
+and caught twenty activations up costs about 6.4 µs.
 
 ### Planned: the platform and collections as core-library modules
 
