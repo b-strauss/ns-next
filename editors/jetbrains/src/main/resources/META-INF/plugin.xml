@@ -31,5 +31,19 @@
                   fieldName="INSTANCE"
                   language="Newspeak"
                   extensions="ns"/>
+        <lang.parserDefinition language="Newspeak"
+                               implementationClass="io.github.bstrauss.newspeak.parser.NewspeakParserDefinition"/>
+        <lang.syntaxHighlighterFactory language="Newspeak"
+                                       implementationClass="io.github.bstrauss.newspeak.highlighting.NewspeakSyntaxHighlighterFactory"/>
+        <colorSettingsPage implementation="io.github.bstrauss.newspeak.highlighting.NewspeakColorSettingsPage"/>
+        <lang.braceMatcher language="Newspeak"
+                           implementationClass="io.github.bstrauss.newspeak.editor.NewspeakBraceMatcher"/>
+        <lang.commenter language="Newspeak"
+                        implementationClass="io.github.bstrauss.newspeak.editor.NewspeakCommenter"/>
+        <lang.quoteHandler language="Newspeak"
+                           implementationClass="io.github.bstrauss.newspeak.editor.NewspeakQuoteHandler"/>
+        <indexPatternBuilder implementation="io.github.bstrauss.newspeak.editor.NewspeakIndexPatternBuilder"/>
+        <spellchecker.support language="Newspeak"
+                              implementationClass="io.github.bstrauss.newspeak.editor.NewspeakSpellcheckingStrategy"/>
     </extensions>
 </idea-plugin>

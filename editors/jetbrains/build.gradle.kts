@@ -24,6 +24,12 @@ dependencies {
     intellijPlatform {
         intellijIdea(providers.gradleProperty("platformVersion"))
         testFramework(TestFrameworkType.Platform)
+        // The spellchecker is a content module of the platform itself, not a
+        // separate bundled plugin (no plugins/*/plugin.xml of its own -- its
+        // descriptor lives inside lib/intellij.spellchecker.jar, and its
+        // module id is a `pluginAlias` in product-info.json). Depending on it
+        // needs no `<depends>` in plugin.xml, only the compile classpath.
+        bundledModule("intellij.spellchecker")
     }
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.opentest4j:opentest4j:1.3.0")
