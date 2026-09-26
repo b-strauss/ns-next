@@ -4,7 +4,7 @@ Newspeak3
    reach it, so it is handed that scope's indirection vector exactly as a
    reading block would be -- and every block between it and the declaring
    scope has to carry that vector to it, even one that neither reads nor
-   writes the variable itself (docs/design/execution.md, "Planned: closure
+   writes the variable itself (docs/design/execution.md, "Closure
    conversion").
 
    writeThroughTwoBlocks: the innermost block only writes count, the middle

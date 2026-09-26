@@ -1168,7 +1168,9 @@ with an argument that is no `Message` fails inside the handler, on
   (`builtins/activation.rs`, rows appended to the end of `MIRROR`): `currentActivation` — the activation of the kernel method
   making the mirror send, reified, answered as a fresh `Activation` object
   each time, so the kernel compares two only when both came from one call
-  (`handlerActivation` still the `signalActivation` it was set to); an
+  (`handlerActivation` still the `signalActivation` it was set to) -- two
+  calls answer two objects for one frame, so the coming `ActivationMirror`
+  needs an identity by frame instead; an
   activation's `sender` — the stack entry below it, or nil
   at the bottom or once it has returned; the three the `on:do:` marker's
   registers answer, `isActiveHandler` (false for a returned activation or
