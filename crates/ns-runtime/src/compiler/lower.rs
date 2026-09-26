@@ -474,6 +474,25 @@ impl<'a> Lowerer<'a> {
         self.statement_index += 1;
     }
 
+    /// A lazy slot's getter (§6.3.3): the initializer, then `InitializeSlot`
+    /// -- "the slot's value is set to o (but not by means of a setter
+    /// method)" -- then `Return` of the same register, "and o is returned as
+    /// the result of the send". Nothing runs between the two reads of the
+    /// register, so it needs no protective copy. The activation's
+    /// `slot_base` is the defining application's, which `push_step` gives a
+    /// method whose fast path is `LazySlot`.
+    pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
+        self.next_scratch = self.base;
+        let start = self.instructions.len();
+        let source = self.lower_expression_for(initializer, ValueUse::Read);
+        self.emit(Instruction::InitializeSlot { source, own_index });
+        self.emit(Instruction::Return { register: source });
+        let end = self.instructions.len();
+        self.statement_program_counter
+            .push((self.statement_index, start..end));
+        self.statement_index += 1;
+    }
+
     /// Each local slot with an initializer, in declaration order, as one
     /// statement: its expression, then a `StoreLocal` into the slot's own
     /// register, which follows the parameters (§3.6). These are the body's

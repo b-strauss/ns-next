@@ -441,6 +441,17 @@ Initialization never goes through an accessor ("The initialization itself is not
 accomplished by the setter method"): the instance initializer writes the field
 with `InitializeSlot`.
 
+**A lazy slot's getter is a compiled method, not an accessor** (§6.3.3). Its
+getter has to evaluate the initializer while the slot holds `nil`, so
+`mixin::slot_accessors` gives a lazy slot no getter entry, and
+`interpreter::instantiate::build_methods` compiles one
+(`compiler::compile_lazy_slot_getter`, `MixinMethod::lazy_slot_getter`) whose
+body evaluates the initializer, stores it with `InitializeSlot` and returns
+it. Its `fast_path` is `MethodFastPath::LazySlot { own_index }` ("Primitive
+methods" below): a send answers a filled slot without an activation, as an
+accessor would, and activates the getter only while the slot is empty. A
+mutable lazy slot's setter is an ordinary accessor entry.
+
 ## Primitives
 
 A primitive is an entry of a method table (`MethodEntry::Primitive`,
@@ -564,7 +575,7 @@ does not absorb would cost an activation, a lexical send of `vmMirror` and a
 ([execution.md](execution.md), "What the core library's move cost").
 
 **What a method does without an activation is one field,
-`MixinMethod.fast_path: Option<MethodFastPath>`** (`mixin.rs`), with seven
+`MixinMethod.fast_path: Option<MethodFastPath>`** (`mixin.rs`), with eight
 variants:
 
 - `Mirror(row)` — the method forwards to one mirror row: a send runs the
@@ -584,9 +595,16 @@ variants:
   method except when that argument is no closure
   ([core-library.md](core-library.md), "`True` and `False` are quick
   methods", "The nil protocol").
+- `LazySlot { own_index }` — the method is a lazy slot's getter ("Slot
+  accessors" above): a send reads the field at the defining application's
+  `own_slot_base` plus `own_index` and answers it unless it is `nil`, and
+  activates the getter, which computes and stores it, when it is.
 
-Only a `Kernel.ns` method carries one. Every other method, and every method
-decoded from an image, has `None`.
+Only a `Kernel.ns` method carries one of the first seven, and every lazy
+slot's getter carries `LazySlot` -- one decoded from an image too, which the
+decoder restores from the slot record ([image-format.md](image-format.md),
+"Mixin table"). Every other method, and every other method decoded from an
+image, has `None`.
 
 **Recognition** (`compiler/primitive_method.rs`, `recognize`) runs as a
 method is built onto its mixin, and stores the variant on the method. For
@@ -609,7 +627,7 @@ ordinary method. Only `resolve_kernel` records `MirrorSend`, so only a
 `Kernel.ns` method can be one; the same text in a user module is an ordinary
 method sending to whatever its `vmMirror` holds. What the failure block
 contains is not examined: it runs only when the method is activated. A method
-decoded from an image never carries a fast path, since no image carries a
+decoded from an image never carries a kernel fast path, since no image carries a
 kernel method.
 
 For `BuiltinClass`, `recognize_builtin_class_accessor` accepts a unary method
@@ -632,7 +650,11 @@ is not switched off either: a quick method runs no leaf.
 `Resolved::Method` of any chain but the two handler chains. A
 `BuiltinClass(kind)` method answers `kind`'s class object at once, a
 `Constant` its constant, a `Receiver` the receiver and a `Parameter` its
-argument. A `ValueOfParameter` method answers a closure argument as a
+argument. A `LazySlot` method answers its field when the field holds
+anything but `nil`, and otherwise falls through to the ordinary
+`Step::Method`, which `push_step` gives the defining application's
+`own_slot_base` as its `slot_base` -- the one method activation whose
+`InitializeSlot` needs one. A `ValueOfParameter` method answers a closure argument as a
 `Step::Block` -- with `StepArguments::ControlFlow`, the step a control-flow
 leaf answers, for a Boolean receiver, the one the optimized lowering
 inlines, and with no arguments otherwise -- and a `CullParameter` method

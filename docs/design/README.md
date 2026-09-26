@@ -219,11 +219,11 @@ Places where the implementation differs from
 rather than an oversight -- and, where a row says so, to keep a defect nobody
 has had time to fix from being a surprise.
 
-Most rows only under-reject or narrow what can be expressed. Four do worse:
-the sequential simultaneous slot clauses, the eager lazy slot, the binary
-float behind a non-integral literal and the synchronous asynchronous send
-each answer a **correct** program **wrongly, at exit status 0**. Read all
-four before trusting a program's output.
+Most rows only under-reject or narrow what can be expressed. Three do worse:
+the sequential simultaneous slot clauses, the binary float behind a
+non-integral literal and the synchronous asynchronous send each answer a
+**correct** program **wrongly, at exit status 0**. Read all three before
+trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
@@ -231,17 +231,16 @@ four before trusting a program's output.
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | There are no character literals and no `Character` class: `"c"` is a one-character string, as the section itself announces and §5.1.5's `"σ"` form states; a double-quoted string has no escape, and a quote in one is written `"""`, not the section's `""""` | §5.1.4 | [frontend.md](frontend.md) |
-| Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 
-Two of these have a golden under `goldens/spec/`, recorded as `skipped`:
-the sequential simultaneous slot clauses and the eager lazy slot. Each
-states what the specification requires the program
-to answer, so closing the gap is deleting the `skipped` line, and the
-expectation written the day the gap was found is what then has to hold. The
+One of these has a golden under `goldens/spec/`, recorded as `skipped`:
+the sequential simultaneous slot clauses. It states what the specification
+requires the program to answer, so closing the gap is deleting the
+`skipped` line, and the expectation written the day the gap was found is
+what then has to hold. The
 asynchronous send has none: §5.6 says the result is "a promise that is
 immediately returned to the sender", and with no promise to observe there
 is no answer to record that would not be invented.

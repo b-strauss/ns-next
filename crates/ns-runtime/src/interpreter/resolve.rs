@@ -371,6 +371,24 @@ impl<'gc> Mutator<'gc> {
                             return Ok(Step::Value(constant.value()));
                         }
                         Some(MethodFastPath::Receiver) => return Ok(Step::Value(receiver)),
+                        // A filled lazy slot answers its field without an
+                        // activation; an empty one -- `nil`, which §6.3.3
+                        // reads as "not yet computed" -- activates the
+                        // getter, which computes and stores it.
+                        Some(MethodFastPath::LazySlot { own_index }) => {
+                            if let (Value::Object(object), Some(base)) =
+                                (receiver, self.heap().class_own_slot_base(defining_class))
+                            {
+                                if let Some(value) = self
+                                    .heap()
+                                    .instance_field(object, base + own_index as usize)
+                                {
+                                    if !matches!(value, Value::Nil) {
+                                        return Ok(Step::Value(value));
+                                    }
+                                }
+                            }
+                        }
                         // Read with `get` rather than indexed: a send the
                         // compiler emitted matches its selector's count,
                         // but `Message>>sentTo:` delivers whatever

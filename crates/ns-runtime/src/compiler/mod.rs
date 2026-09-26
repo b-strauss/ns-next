@@ -153,10 +153,13 @@ pub(super) fn fill_mixin_application_messages(
 /// absolute index the instance array actually needs.
 fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>>) -> CompiledCode {
     let argument_count = factory_argument_count(mixin);
-    // The same expressions, in the same order, this function lowers below.
+    // The same expressions, in the same order, this function lowers below:
+    // a lazy slot's initializer is its getter's (`compile_lazy_slot_getter`),
+    // never this body's.
     let slot_initializers: Vec<&Expression> = mixin
         .slots
         .iter()
+        .filter(|slot| !slot.lazy)
         .filter_map(|slot| slot.declaration.as_ref()?.initializer.as_ref())
         .collect();
     let captures = Rc::new(capture::analyze(
@@ -181,6 +184,9 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
     );
     let mut source: Option<Span> = None;
     for (own_index, slot) in mixin.slots.iter().enumerate() {
+        if slot.lazy {
+            continue;
+        }
         let Some(declaration) = &slot.declaration else {
             continue;
         };
@@ -194,6 +200,46 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
     }
     lowerer.lower_body(&mixin.initializer_expressions);
     lowerer.finish(source.unwrap_or(Span::new(0, 0)))
+}
+
+/// A lazy slot's getter (§6.3.3), a zero-argument method whose body is the
+/// slot's initializer, stored with `InitializeSlot` at `own_index` and
+/// answered. The resolver scoped `initializer` as a unary method's body --
+/// no factory parameter is in scope (§6: they are "in scope in the instance
+/// initializer but not in the rest of the class body") -- so it lowers as
+/// one. `span` is the slot declaration's.
+pub(crate) fn compile_lazy_slot_getter(
+    initializer: &ast::Expression,
+    own_index: u32,
+    span: Span,
+    bindings: &Rc<HashMap<Span, Binding>>,
+    lowering: Lowering,
+) -> CompiledCode {
+    if lowering == Lowering::Reference {
+        return reference::compile_lazy_slot_getter(initializer, own_index, span, bindings);
+    }
+    let captures = Rc::new(capture::analyze(
+        RootBody {
+            argument_count: 0,
+            temporaries: &[],
+            slot_initializers: vec![initializer],
+            statements: &[],
+        },
+        bindings,
+    ));
+    let mut lowerer = Lowerer::new(
+        CodeKind::Method,
+        BodyKey::Root,
+        0,
+        &[],
+        bindings,
+        captures,
+        false,
+        Enclosing::default(),
+        0,
+    );
+    lowerer.lower_lazy_slot_getter(initializer, own_index);
+    lowerer.finish(span)
 }
 
 /// A mixin's superclass clause as executable code: the expression

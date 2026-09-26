@@ -26,8 +26,9 @@ use super::{HostError, HostResult, HostSignal, HostStart, Interpreter, Mutator, 
 const SPARE_WALKS: usize = 16;
 const SPARE_LEVELS: usize = 64;
 
-/// A class body's method table: its methods and the accessors its `slots`
-/// define (`newspeak-spec.pdf` §6.3.2). Everything a lookup or
+/// A class body's method table: its methods, the accessors its `slots`
+/// define (`newspeak-spec.pdf` §6.3.2) and each lazy slot's getter
+/// (§6.3.3, compiled like a method). Everything a lookup or
 /// `Mutator::push_step` reads is lifted out of the declaration here, so that
 /// a mixin decoded from an image -- which has no declaration at all --
 /// answers the same questions from the same fields. No selector is declared
@@ -60,6 +61,34 @@ fn build_methods(
             }
         }
         let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));
+        debug_assert!(
+            previous.is_none(),
+            "the resolver refuses a duplicate member"
+        );
+    }
+    // §6.3.3: a lazy slot's getter runs its initializer while the slot is
+    // empty, so it is a compiled method rather than an accessor entry
+    // (`slot_accessors` leaves it out).
+    for (position, slot) in slots.iter().enumerate() {
+        if !slot.lazy {
+            continue;
+        }
+        let Some(declaration) = &slot.declaration else {
+            continue;
+        };
+        let Some(initializer) = &declaration.initializer else {
+            unreachable!("internal: the grammar gives every lazy slot an initializer");
+        };
+        let own_index = u32::try_from(position).expect("a mixin's slot count fits a u32");
+        let code = crate::compiler::compile_lazy_slot_getter(
+            initializer,
+            own_index,
+            declaration.span,
+            bindings,
+            lowering,
+        );
+        let getter = MixinMethod::lazy_slot_getter(slot, own_index, Rc::new(code));
+        let previous = methods.insert(getter.selector, MethodEntry::Compiled(Rc::new(getter)));
         debug_assert!(
             previous.is_none(),
             "the resolver refuses a duplicate member"
@@ -1457,9 +1486,11 @@ pub(crate) fn class_object_is_a_value<'gc>(
 }
 
 /// The refusal itself, off the checking path so that the check stays a
-/// handful of loads. The slot is named from the level whose initializer is
-/// running -- `own_index` is mixin-relative (`bytecode.rs`), so it indexes
-/// that level's own slots and no other's.
+/// handful of loads. The slot is named from the level whose initializer or
+/// lazy slot getter is running -- the activation's `current_class`, which
+/// for a getter is its defining class -- because `own_index` is
+/// mixin-relative (`bytecode.rs`), so it indexes that level's own slots and
+/// no other's.
 ///
 /// **The rule both value refusals follow: the selector is the primary
 /// factory of the class being *instantiated*, defaulted to `new`** -- the
@@ -1470,7 +1501,9 @@ pub(crate) fn class_object_is_a_value<'gc>(
 /// a selector the program never sent -- the superclass clause did.
 /// `mutable_value_slot_error` names the instantiated class's factory for
 /// the same reason, and it had no other candidate, which is how the two
-/// came to disagree.
+/// came to disagree. A lazy slot's getter follows the same rule to a
+/// different answer: the store happens on the getter's send, long after
+/// the instantiation, so the selector the program sent is the getter's.
 #[cold]
 fn non_value_slot_error<'gc>(
     mutator: &Mutator<'gc>,
@@ -1492,12 +1525,18 @@ fn non_value_slot_error<'gc>(
         .as_ref()
         .and_then(|level| level.mixin.slots.get(own_index))
         .map_or_else(|| "a slot".to_string(), |slot| slot.name.to_string());
-    NewspeakError {
-        selector: mutator
+    // A lazy slot's getter (§6.3.3) stores from a method activation, and
+    // the send the program wrote there is the getter's, not a factory.
+    let selector = match mutator.heap().activation_kind(activation) {
+        FrameKind::Method(method) => method.selector,
+        _ => mutator
             .heap()
             .class_application(instantiated)
             .as_ref()
             .map_or(Symbol::NEW, |application| factory_selector(application)),
+    };
+    NewspeakError {
+        selector,
         receiver,
         message: format!(
             "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, \

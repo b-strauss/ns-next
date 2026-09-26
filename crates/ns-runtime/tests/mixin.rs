@@ -11,6 +11,7 @@ fn slot_declaration(name: &str) -> ns_runtime::mixin::MixinSlot {
         name: Symbol::intern(name),
         mutable: false,
         access: ast::AccessModifier::Protected,
+        lazy: false,
         declaration: Some(raw_slot_declaration(name)),
     }
 }

@@ -29,14 +29,15 @@ use ns_syntax::Span;
 use crate::bytecode::CompiledCode;
 use crate::heap::Heap;
 use crate::mixin::{
-    mixin_key, slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod,
-    MixinSlot, SuperclassClause,
+    mixin_key, slot_accessors, Factory, MethodEntry, MethodFastPath, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot, SuperclassClause,
 };
 use crate::types::ClassReference;
 use crate::Symbol;
 
 use super::decode::{reserve_for, DecodeError, Reader};
 use super::encode::{u32_field, CodeIds, Writer};
+use super::opcodes::{SLOT_IMMUTABLE, SLOT_LAZY_IMMUTABLE, SLOT_LAZY_MUTABLE, SLOT_MUTABLE};
 use super::symbols;
 
 /// `ns-syntax`'s own nesting ceiling: the parser refuses a module whose
@@ -191,21 +192,27 @@ pub fn access_tag(access: AccessModifier) -> u8 {
     }
 }
 
-/// Explicit wire tags for a slot's mutability (§6.3.2: only a mutable slot
-/// has a setter).
-pub fn mutability_tag(mutable: bool) -> u8 {
-    match mutable {
-        false => 0,
-        true => 1,
+/// A slot record's kind tag (`opcodes::SLOT_*`): the accessor shape the
+/// slot declares -- whether it has a setter (§6.3.2: only a mutable slot
+/// does) and whether its getter is a lazy slot's compiled method (§6.3.3).
+pub fn slot_kind_tag(mutable: bool, lazy: bool) -> u8 {
+    match (mutable, lazy) {
+        (false, false) => SLOT_IMMUTABLE,
+        (true, false) => SLOT_MUTABLE,
+        (false, true) => SLOT_LAZY_IMMUTABLE,
+        (true, true) => SLOT_LAZY_MUTABLE,
     }
 }
 
-fn mutability_from_tag(tag: u8) -> Result<bool, DecodeError> {
+/// `slot_kind_tag` read back, as `(mutable, lazy)`.
+fn slot_kind_from_tag(tag: u8) -> Result<(bool, bool), DecodeError> {
     match tag {
-        0 => Ok(false),
-        1 => Ok(true),
+        SLOT_IMMUTABLE => Ok((false, false)),
+        SLOT_MUTABLE => Ok((true, false)),
+        SLOT_LAZY_IMMUTABLE => Ok((false, true)),
+        SLOT_LAZY_MUTABLE => Ok((true, true)),
         tag => Err(DecodeError::InvalidTag {
-            what: "slot mutability",
+            what: "slot kind",
             tag,
         }),
     }
@@ -246,11 +253,12 @@ pub fn encode<'gc>(
         writer.write_u32(mixin.span.start);
         writer.write_u32(mixin.span.end);
         writer.write_u32(u32_field("mixin's slot count", mixin.slots.len()));
-        // A slot's name, mutability and accessibility decide the accessors
-        // it defines (§6.3.2), which the decoder derives from them.
+        // A slot's name, kind and accessibility decide the accessors it
+        // defines (§6.3.2), which the decoder derives from them -- all but a
+        // lazy slot's getter, which is one of the row's methods (§6.3.3).
         for slot in &mixin.slots {
             writer.write_u32(symbols.intern(slot.name.as_str()));
-            writer.write_u8(mutability_tag(slot.mutable));
+            writer.write_u8(slot_kind_tag(slot.mutable, slot.lazy));
             writer.write_u8(access_tag(slot.access));
         }
         match &mixin.factory {
@@ -424,10 +432,11 @@ struct RawClause {
     message: Option<u32>,
 }
 
-/// A slot as read: its name, mutability and accessibility.
+/// A slot as read: its name, kind and accessibility.
 struct RawSlot {
     name: Symbol,
     mutable: bool,
+    lazy: bool,
     access: AccessModifier,
 }
 
@@ -465,6 +474,7 @@ pub fn decode(
     check_ids(&raw)?;
     check_preorder(&raw)?;
     check_member_names(&raw)?;
+    check_lazy_slot_getters(&raw)?;
     Ok(build(raw, codes))
 }
 
@@ -479,9 +489,12 @@ fn read_row(
     let slot_count = reader.read_u32()? as usize;
     let mut slots: Vec<RawSlot> = reserve_for(slot_count, reader);
     for _ in 0..slot_count {
+        let name = read_symbol(reader, symbols)?;
+        let (mutable, lazy) = slot_kind_from_tag(reader.read_u8()?)?;
         slots.push(RawSlot {
-            name: read_symbol(reader, symbols)?,
-            mutable: mutability_from_tag(reader.read_u8()?)?,
+            name,
+            mutable,
+            lazy,
             access: access_from_tag(reader.read_u8()?)?,
         });
     }
@@ -618,9 +631,12 @@ fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
             .iter()
             .filter(|slot| slot.mutable)
             .map(|slot| Symbol::intern(&format!("{}:", slot.name)));
+        // A lazy slot's getter is one of the row's methods, so its name is
+        // counted there, not here.
         let members = row
             .slots
             .iter()
+            .filter(|slot| !slot.lazy)
             .map(|slot| slot.name)
             .chain(setters)
             .chain(row.methods.iter().map(|&(selector, ..)| selector))
@@ -630,6 +646,38 @@ fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
         for member in members {
             if !seen.insert(member) {
                 return Err(DecodeError::DuplicateSelector(member.as_str().to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every lazy slot a row declares (§6.3.3) has its getter among the row's
+/// methods: a method of the slot's name that takes no argument and has the
+/// slot's accessibility, as `MixinMethod::lazy_slot_getter` built it. The
+/// getter is not derived from the slot record the way an accessor is -- it
+/// carries the initializer's compiled body -- so a row without one would
+/// decode into a slot no send can read, and a row whose method of that name
+/// takes an argument would give `build` a `LazySlot` fast path for a method
+/// that is not a getter. Runs after `check_member_names`, so the method is
+/// the only member of that name.
+///
+/// Through a map rather than a scan of the methods per slot, because both
+/// counts are the image's to choose: a scan would make the check quadratic
+/// in the input.
+fn check_lazy_slot_getters(raw: &[RawRow]) -> Result<(), DecodeError> {
+    for row in raw {
+        if !row.slots.iter().any(|slot| slot.lazy) {
+            continue;
+        }
+        let methods: HashMap<Symbol, (AccessModifier, usize)> = row
+            .methods
+            .iter()
+            .map(|&(selector, access, argument_count, _)| (selector, (access, argument_count)))
+            .collect();
+        for slot in row.slots.iter().filter(|slot| slot.lazy) {
+            if methods.get(&slot.name) != Some(&(slot.access, 0)) {
+                return Err(DecodeError::LazySlotWithoutGetter(slot.name.to_string()));
             }
         }
     }
@@ -726,12 +774,26 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
                 name: slot.name,
                 mutable: slot.mutable,
                 access: slot.access,
+                lazy: slot.lazy,
                 declaration: None,
             })
             .collect();
         // `check_member_names` proved no compiled method shares a selector
         // with an accessor, so neither overwrites the other.
         let accessors = slot_accessors(&slots);
+        // Each lazy slot's name and its position among the row's own slots,
+        // the `own_index` its getter's fast path reads the field at.
+        let lazy_slot_positions: HashMap<Symbol, u32> = slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.lazy)
+            .map(|(position, slot)| {
+                (
+                    slot.name,
+                    u32::try_from(position).expect("a slot count read as a u32 fits a u32"),
+                )
+            })
+            .collect();
         // §6.3: a row another row names as its class side is a metaclass
         // mixin, and carries that declaration's primary factory as an entry
         // of its method table. `check_member_names` proved the row declares
@@ -755,7 +817,13 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
                         code: code_at(id),
                         // An image never carries a kernel method: the
                         // kernel is compiled from `Kernel.ns` at bootstrap.
-                        fast_path: None,
+                        // The one fast path a decoded method takes is a
+                        // lazy slot's getter's, restored from the slot
+                        // record -- `check_lazy_slot_getters` proved the
+                        // method of the slot's name is its getter.
+                        fast_path: lazy_slot_positions
+                            .get(&selector)
+                            .map(|&own_index| MethodFastPath::LazySlot { own_index }),
                     })),
                 )
             });

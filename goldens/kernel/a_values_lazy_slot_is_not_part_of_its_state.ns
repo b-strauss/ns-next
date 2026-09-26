@@ -1,0 +1,26 @@
+Newspeak3
+'Test'
+(* Decided with the user on 2026-09-26 (docs/design/core-library.md, "Lazy
+   slots first"): a value's state-derived = and hash skip lazy slots, which
+   are state derived from the rest -- Bracha's transient fields, purged on
+   synchronization. Two values of one class, one of which has filled its
+   lazy slot, are equal and hash alike. *)
+class LazyValueState usingPlatform: p = Object <: Value () (
+    class Point x: anX = Value new (| public x = anX. |) (
+        lazy public doubled = x + x.
+    ) : ()
+    class Script on: aTranscript = Object new (| t = aTranscript. |) (
+        public run = (
+            | first second |
+            first:: Point x: 3.
+            second:: Point x: 3.
+            first doubled.
+            t show: (first = second) printString; newLine.
+            t show: (first hash = second hash) printString; newLine.
+            t show: (first = (Point x: 4)) printString; newLine.
+        )
+    ) : ()
+    public main: platform args: arguments = (
+        (Script on: platform transcript) run
+    )
+) : ()

@@ -784,7 +784,13 @@ mod tests {
                 ) (
                     public class Inner = Value new () ()
                 )
+                class Lazy x: xValue = Value new (
+                    | public x = xValue. |
+                ) (
+                    lazy public doubled = x + x.
+                )
                 public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
+                public lazy: xValue = ( ^Lazy x: xValue )
                 public tag = ( ^Tag new )
                 public boxed: contents = ( ^Boxed on: contents )
                 public outer: xValue = ( ^Outer x: xValue )
@@ -1758,6 +1764,59 @@ mod tests {
                 "{touches} run: only the declared slots count"
             );
         }
+    }
+
+    /// A lazy slot (§6.3.3) is state derived from the rest, and decided
+    /// with the user on 2026-09-26 (`docs/design/core-library.md`, "Lazy
+    /// slots first") to stay out of a value's state: two values one of
+    /// which has filled it are equal, and the fallback's count skips it.
+    /// Counting it would answer `false` for the one-sided pair, at exit
+    /// status 0.
+    #[test]
+    fn a_lazy_slot_is_not_part_of_a_values_state() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let three = interpreter.stash(Value::SmallInteger(3));
+        let first = send(
+            &mut interpreter,
+            &fixture,
+            "lazy:",
+            std::slice::from_ref(&three),
+        );
+        let second = send(
+            &mut interpreter,
+            &fixture,
+            "lazy:",
+            std::slice::from_ref(&three),
+        );
+        let doubled = send(&mut interpreter, &first, "doubled", &[]);
+        assert_eq!(
+            answered_number(&mut interpreter, &doubled, "doubled"),
+            6,
+            "the lazy slot is filled on the first instance"
+        );
+        for (subject, what) in [(&first, "filled"), (&second, "empty")] {
+            let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", subject, &[]);
+            assert_eq!(
+                answered_integer(&mut interpreter, count, "the declared slot count"),
+                1,
+                "the {what} instance counts its one eager slot only"
+            );
+        }
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &first,
+            std::slice::from_ref(&second),
+        );
+        assert_eq!(
+            answered_boolean(
+                &mut interpreter,
+                compared,
+                "a filled and an empty lazy value"
+            ),
+            Some(true),
+            "a filled lazy slot does not make two values unequal"
+        );
     }
 
     /// The declared slots of a chain are not a prefix of the fields: each

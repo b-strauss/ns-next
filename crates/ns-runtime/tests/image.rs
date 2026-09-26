@@ -306,7 +306,7 @@ fn write_mixin_row(
     write_mixin_row_with_slots(writer, name_id, &[], methods, nested);
 }
 
-/// `write_mixin_row` with `slots` as `(name symbol id, mutability tag,
+/// `write_mixin_row` with `slots` as `(name symbol id, slot kind tag,
 /// access tag)` records.
 fn write_mixin_row_with_slots(
     writer: &mut encode::Writer,
@@ -320,9 +320,9 @@ fn write_mixin_row_with_slots(
     writer.write_u32(0); // span.start
     writer.write_u32(0); // span.end
     writer.write_u32(slots.len() as u32);
-    for (name, mutability, access) in slots {
+    for (name, kind, access) in slots {
         writer.write_u32(*name);
-        writer.write_u8(*mutability);
+        writer.write_u8(*kind);
         writer.write_u8(*access);
     }
     writer.write_boolean(false); // no factory
@@ -3403,6 +3403,164 @@ fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
     });
 }
 
+/// The text a `Holder`'s `trace` slot holds, read through its getter.
+fn trace_of(interpreter: &mut Interpreter, holder: &Root) -> String {
+    let trace = expect_ok(
+        interpreter.send(holder, Symbol::intern("trace"), &[]),
+        "trace",
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&trace) {
+        Value::Object(string) => mutator
+            .heap()
+            .str_value(string)
+            .expect("trace holds a String"),
+        other => panic!("trace answered {}", mutator.heap().describe(&other)),
+    })
+}
+
+/// A lazy slot (§6.3.3) survives an image both filled and empty: the
+/// decoded class keeps the slot lazy, so the empty one still evaluates its
+/// initializer on its first read after the load, and the filled one answers
+/// its value without evaluating it again. A slot decoded as eager would
+/// answer `nil` for the empty one; a getter decoded without its fast path
+/// would still work, but one decoded without its slot base would write the
+/// wrong field.
+#[test]
+fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Root = Object new (
+          | public first = Holder new. public second = Holder new. |
+        ) (
+          class Holder = Object new (| public trace ::= ''. |) (
+            lazy public computed = mark.
+            mark = ( trace:: trace, '!'. ^42 )
+          ) : ()
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let root = expect_ok(interpreter.instantiate(&class, &[]), "Root new");
+    let first = expect_ok(
+        interpreter.send(&root, Symbol::intern("first"), &[]),
+        "first",
+    );
+    expect_ok(
+        interpreter.send(&first, Symbol::intern("computed"), &[]),
+        "computed before the snapshot",
+    );
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let root = mutator.fetch(&root);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[root],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let root = loaded.roots[0].clone();
+    for (name, marks_before, marks_after) in [("first", "!", "!"), ("second", "", "!")] {
+        let holder = expect_ok(
+            loaded.interpreter.send(&root, Symbol::intern(name), &[]),
+            name,
+        );
+        assert_eq!(
+            trace_of(&mut loaded.interpreter, &holder),
+            marks_before,
+            "{name}'s trace as the image recorded it"
+        );
+        for _ in 0..2 {
+            let computed = expect_ok(
+                loaded
+                    .interpreter
+                    .send(&holder, Symbol::intern("computed"), &[]),
+                "computed after the load",
+            );
+            loaded.interpreter.enter(|mutator| {
+                assert!(
+                    matches!(mutator.fetch(&computed), Value::SmallInteger(42)),
+                    "{name}'s lazy slot answers its value"
+                );
+            });
+        }
+        assert_eq!(
+            trace_of(&mut loaded.interpreter, &holder),
+            marks_after,
+            "{name}'s initializer ran at most once, before or after the load"
+        );
+    }
+}
+
+/// A lazy slot's getter is one of its row's compiled methods; the slot
+/// record only says the slot is lazy. A row that declares a lazy slot and
+/// no unary method of its name would leave the slot with no getter at all
+/// -- no send could ever read it -- so the decoder refuses it. Patched into
+/// a real binary: the root row's one eager slot is turned lazy, and nothing
+/// else changes.
+#[test]
+fn a_lazy_slot_without_its_getter_is_refused() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder = Object new (| trace = 0. |) (
+          main: p args: q = ( ^trace )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let mut binary = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build")
+    });
+    assert!(image::load(&binary).is_ok(), "the fixture itself must load");
+
+    let (mixin_table_at, symbols, codes) = {
+        let mut reader = decode::Reader::new(&binary);
+        let header = decode::read_header(&mut reader).expect("valid header");
+        if header.has_source {
+            reader.read_str().expect("source");
+        }
+        decode::decode_source_origin(&mut reader).expect("origin");
+        let symbols = symbols::decode(&mut reader).expect("symbols");
+        let mut table = decode::decode_code_table(&mut reader, &symbols).expect("code table");
+        decode::verify_code_table(&table).expect("verify code table");
+        decode::number_call_site_families(&mut table).expect("number call site families");
+        (reader.position(), symbols, table.codes)
+    };
+    // The table's row count, then the root row's name, access and span, then
+    // its slot count and its first slot's name: its kind byte follows.
+    let kind_at = mixin_table_at + 4 + 4 + 1 + 4 + 4 + 4 + 4;
+    assert_eq!(binary[kind_at], SLOT_IMMUTABLE, "the eager slot's kind");
+    binary[kind_at] = SLOT_LAZY_IMMUTABLE;
+
+    let mut reader = decode::Reader::new(&binary[mixin_table_at..]);
+    match mixins::decode(&mut reader, &symbols, &codes) {
+        Err(decode::DecodeError::LazySlotWithoutGetter(name)) => assert_eq!(name, "trace"),
+        Err(error) => panic!("expected LazySlotWithoutGetter, got a different error: {error}"),
+        Ok(_) => panic!("expected LazySlotWithoutGetter, got Ok"),
+    }
+    let error = load_error(&binary);
+    assert!(
+        error.contains("lazy slot `trace`"),
+        "unexpected error: {error}"
+    );
+}
+
 #[test]
 fn bytes_after_the_last_section_are_refused_not_ignored() {
     let source = indoc! {"
@@ -5995,7 +6153,7 @@ fn a_root_lists_selector_id_out_of_range_is_a_decode_error_not_a_panic() {
 fn slot_record(name: u32, mutable: bool, access: AccessModifier) -> (u32, u8, u8) {
     (
         name,
-        mixins::mutability_tag(mutable),
+        mixins::slot_kind_tag(mutable, false),
         mixins::access_tag(access),
     )
 }
@@ -6017,17 +6175,17 @@ fn decode_one_row_with_slots(
 }
 
 #[test]
-fn an_invalid_slot_mutability_tag_is_a_decode_error_not_a_panic() {
+fn an_invalid_slot_kind_tag_is_a_decode_error_not_a_panic() {
     assert_eq!(
         decode_one_row_with_slots(
             &["X", "x"],
-            &[(1, 2, mixins::access_tag(AccessModifier::Protected))],
+            &[(1, 4, mixins::access_tag(AccessModifier::Protected))],
             &[]
         )
         .err(),
         Some(decode::DecodeError::InvalidTag {
-            what: "slot mutability",
-            tag: 2
+            what: "slot kind",
+            tag: 4
         })
     );
 }

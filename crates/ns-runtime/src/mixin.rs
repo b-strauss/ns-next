@@ -99,16 +99,18 @@ pub struct MixinMethod {
     /// new `MixinMethod`.
     pub code: Rc<CompiledCode>,
     /// What a send of this method does without an activation, when it is a
-    /// kernel method `compiler::primitive_method` recognized: `act` reads it
-    /// on every send. `None` for every method outside the kernel, and for
-    /// every method decoded from an image, which never carries a kernel
-    /// method.
+    /// kernel method `compiler::primitive_method` recognized or a lazy
+    /// slot's getter (`MethodFastPath::LazySlot`): `act` reads it on every
+    /// send. `None` for every other method. A method decoded from an image
+    /// never carries a kernel method's; a lazy slot's getter gets its
+    /// `LazySlot` back from the slot record (`image::mixins`).
     pub fast_path: Option<MethodFastPath>,
 }
 
-/// What a kernel method's send does without an activation, read off the
-/// method by `act` on every send (`docs/design/dispatch.md`,
-/// "Primitive methods"). Only `Kernel.ns`'s methods carry one.
+/// What a method's send does without an activation, read off the method by
+/// `act` on every send (`docs/design/dispatch.md`, "Primitive methods").
+/// Only `Kernel.ns`'s methods carry one, but for `LazySlot`, which every
+/// lazy slot's getter carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MethodFastPath {
     /// The method forwards to one mirror row: run the leaf, and activate
@@ -137,6 +139,11 @@ pub enum MethodFastPath {
     /// takes none; anything else activates the method, whose body sends
     /// `cull:` for real.
     CullParameter(u8),
+    /// A lazy slot's getter (§6.3.3): answer the slot's field -- the
+    /// defining application's `own_slot_base` plus `own_index` -- without an
+    /// activation when it holds anything but `nil`; activate the method,
+    /// which evaluates the initializer and stores it, when it holds `nil`.
+    LazySlot { own_index: u32 },
 }
 
 /// The constant a quick method answers (`MethodFastPath::Constant`).
@@ -186,6 +193,25 @@ impl MixinMethod {
             declaration: Some(declaration),
         }
     }
+
+    /// The getter a lazy slot declares (§6.3.3): a method of the slot's name
+    /// and accessibility whose `code` evaluates the initializer, stores it
+    /// with `InitializeSlot` and answers it
+    /// (`compiler::compile_lazy_slot_getter`).
+    pub fn lazy_slot_getter(
+        slot: &MixinSlot,
+        own_index: u32,
+        code: Rc<CompiledCode>,
+    ) -> MixinMethod {
+        MixinMethod {
+            selector: slot.name,
+            access: slot.access,
+            argument_count: 0,
+            declaration: None,
+            code,
+            fast_path: Some(MethodFastPath::LazySlot { own_index }),
+        }
+    }
 }
 
 /// One of a mixin's own instance slots: what decides the accessors it
@@ -200,6 +226,11 @@ pub struct MixinSlot {
     /// §6.3.2: the accessors' accessibility "is the same as the slot's",
     /// already defaulted through `dispatch::effective_access` (§6.3.1).
     pub access: ast::AccessModifier,
+    /// §6.3.3: initialized by its getter on first read rather than by the
+    /// instance initializer. Its getter is a compiled method
+    /// (`MixinMethod::lazy_slot_getter`), not an accessor entry, and a
+    /// value's state skips it (`declared_slots_of`).
+    pub lazy: bool,
     /// `None` for a slot of a mixin decoded from an image: its initializer
     /// is already compiled into that mixin's initializer body.
     pub declaration: Option<Rc<ast::SlotDeclaration>>,
@@ -211,6 +242,7 @@ impl MixinSlot {
             name: Symbol::intern(&declaration.name.name),
             mutable: declaration.mutability != ast::SlotMutability::Immutable,
             access: crate::dispatch::effective_access(declaration.access),
+            lazy: declaration.lazy,
             declaration: Some(declaration),
         }
     }
@@ -333,19 +365,26 @@ pub fn factory_entry(factory: Option<Factory>) -> (Symbol, MethodEntry) {
 /// slot's getter under its name and, for a mutable slot, its setter under
 /// the name with `:` appended -- "a single argument keyword message
 /// consisting of the slot name with : appended to it".
+///
+/// A lazy slot (§6.3.3) contributes its setter only: its getter has to run
+/// the initializer while the slot is empty, so it is a compiled method
+/// (`MixinMethod::lazy_slot_getter`), which whoever builds the method table
+/// adds beside these entries.
 pub fn slot_accessors(slots: &[MixinSlot]) -> Vec<(Symbol, MethodEntry)> {
     let mut accessors = Vec::with_capacity(slots.len() * 2);
     for (index, slot) in slots.iter().enumerate() {
         let own_index = u32::try_from(index).expect("a mixin's slot count fits a u32");
-        accessors.push((
-            slot.name,
-            MethodEntry::SlotAccessor(SlotAccessor {
-                selector: slot.name,
-                access: slot.access,
-                own_index,
-                kind: AccessorKind::Getter,
-            }),
-        ));
+        if !slot.lazy {
+            accessors.push((
+                slot.name,
+                MethodEntry::SlotAccessor(SlotAccessor {
+                    selector: slot.name,
+                    access: slot.access,
+                    own_index,
+                    kind: AccessorKind::Getter,
+                }),
+            ));
+        }
         if slot.mutable {
             let setter = Symbol::intern(&format!("{}:", slot.name));
             accessors.push((
@@ -701,7 +740,9 @@ pub struct MixinApplication {
     /// values answer `false` once the accessor had run on both, because each
     /// side cached *its own* class object there
     /// (`docs/design/core-library.md`, "A value's state is the slots its
-    /// classes *declare*, and nothing else").
+    /// classes *declare*, and nothing else"). A lazy slot (§6.3.3) is left
+    /// out too, by the 2026-09-26 decision `declared_slots_of` records: it
+    /// is state derived from the rest, filled on one side and not the other.
     ///
     /// Computed once here, like `nested_slot` and `inherits_value`, because
     /// nothing about an application changes after it is built and the
@@ -730,17 +771,30 @@ pub struct MixinApplication {
 
 /// `MixinApplication::declared_slots` for a level being built: the
 /// superclass's list, which is already in this order, and then this level's
-/// own declared slots. Extending the inherited list is what keeps this
-/// linear over a chain -- each level pays for its own slots once, when the
-/// application is built, rather than re-walking its ancestors.
+/// own declared slots but the lazy ones. Extending the inherited list is
+/// what keeps this linear over a chain -- each level pays for its own slots
+/// once, when the application is built, rather than re-walking its
+/// ancestors.
+///
+/// A lazy slot (§6.3.3) is left out, as decided with the user on 2026-09-26
+/// (`docs/design/core-library.md`, "Lazy slots first"): its value is state
+/// derived from the rest -- Bracha's transient fields, purged on
+/// synchronization -- so two values of which one has filled it are still
+/// equal and hash alike.
 pub fn declared_slots_of(
     superclass: Option<&Rc<MixinApplication>>,
     own_slot_base: usize,
-    own_slot_count: usize,
+    own_slots: &[MixinSlot],
 ) -> Vec<usize> {
     let mut declared =
         superclass.map_or_else(Vec::new, |superclass| superclass.declared_slots.clone());
-    declared.extend(own_slot_base..own_slot_base + own_slot_count);
+    declared.extend(
+        own_slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| !slot.lazy)
+            .map(|(position, _)| own_slot_base + position),
+    );
     declared
 }
 

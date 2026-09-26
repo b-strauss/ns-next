@@ -342,3 +342,15 @@ fn builtin_class_tags_are_fixed() {
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);
 }
+
+/// A mixin-table slot record's kind byte: the accessor shape a slot
+/// declares. The two eager kinds are the mutability tags the record carried
+/// before lazy slots, unchanged, so an older image's slots still read as
+/// what they were.
+#[test]
+fn slot_kind_tags_are_fixed() {
+    assert_eq!(SLOT_IMMUTABLE, 0);
+    assert_eq!(SLOT_MUTABLE, 1);
+    assert_eq!(SLOT_LAZY_IMMUTABLE, 2);
+    assert_eq!(SLOT_LAZY_MUTABLE, 3);
+}

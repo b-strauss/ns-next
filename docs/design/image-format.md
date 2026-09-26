@@ -323,13 +323,21 @@ of its nested declarations with their accessor names and accessibility, the
 class-side mixin id, the initializer code id, and the provenance span. This is
 what replaced the embedded source text and the re-parse on load.
 
-A slot is its name, its mutability (0 immutable, 1 mutable) and its
-accessibility (the access tags a method uses), because those three decide which
-accessors it defines (§6.3.2). The accessors themselves are not written: the
-decoder derives them from the slots, as building a mixin from source does. A row
-in which two members would share a name — a compiled method, a slot's getter, a
-mutable slot's setter, a nested declaration — is refused before any mixin is
-built, so a crafted row cannot make one member silently hide another.
+A slot is its name, its kind and its accessibility (the access tags a method
+uses), because those three decide which accessors it defines (§6.3.2). The kind
+is one of `opcodes.rs`'s `SLOT_*` tags: 0 immutable, 1 mutable, 2 lazy and
+immutable, 3 lazy and mutable (§6.3.3); the two eager kinds are the mutability
+tags the record carried before lazy slots. The accessors themselves are not
+written: the decoder derives them from the slots, as building a mixin from
+source does. A lazy slot's getter is the exception: it carries the
+initializer's compiled body, so it is written as one of the row's compiled
+methods, and the decoder restores its `MethodFastPath::LazySlot` from the slot
+record -- a row whose lazy slot has no unary method of its name and
+accessibility among its methods is refused (`LazySlotWithoutGetter`). A mutable
+lazy slot's setter is derived like any other. A row in which two members would
+share a name — a compiled method, an eager slot's getter, a mutable slot's
+setter, a nested declaration — is refused before any mixin is built, so a
+crafted row cannot make one member silently hide another.
 
 A row also carries its `<:` clauses (`newspeak-spec.pdf` §6.2), in declaration
 order: each one's selector, whether its message takes arguments, and the code id

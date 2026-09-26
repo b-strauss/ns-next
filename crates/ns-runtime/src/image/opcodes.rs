@@ -260,3 +260,13 @@ pub const HASHED_BUILTIN_CLASS: u8 = 0;
 pub const HASHED_ROOT_CLASS: u8 = 1;
 pub const HASHED_PLATFORM: u8 = 2;
 pub const HASHED_METACLASS: u8 = 3;
+
+/// A mixin-table slot record's kind: the accessor shape its slot declares
+/// (§6.3.2, §6.3.3). The two eager kinds are the mutability tags the record
+/// carried before lazy slots, unchanged. A lazy slot's getter is one of its
+/// row's methods, whose fast path the decoder restores from the slot; a
+/// mutable one's setter is derived like an eager slot's. Next free number: 4.
+pub const SLOT_IMMUTABLE: u8 = 0;
+pub const SLOT_MUTABLE: u8 = 1;
+pub const SLOT_LAZY_IMMUTABLE: u8 = 2;
+pub const SLOT_LAZY_MUTABLE: u8 = 3;

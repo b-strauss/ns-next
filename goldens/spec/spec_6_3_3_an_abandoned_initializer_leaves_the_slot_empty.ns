@@ -1,0 +1,30 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.3 sets the slot to the object e evaluated to. An
+   initializer that signals, and whose exception a handler returns from,
+   evaluated to nothing: the slot stays nil and the next read evaluates it
+   again. The second read's attempt succeeds and is kept. *)
+class Spec633LazyAbandoned usingPlatform: p = Object new (|
+    t = p transcript.
+    Error = p kernel Error.
+|) (
+    class Holder failing: errorClass = Object new (|
+        public attempts ::= 0.
+        ErrorClass = errorClass.
+    |) (
+        lazy public computed = attempt.
+        attempt = (
+            attempts:: attempts + 1.
+            attempts = 1 ifTrue: [ErrorClass new signal: 'first attempt fails'].
+            ^attempts
+        )
+    ) : ()
+    public main: platform args: arguments = (
+        | holder |
+        holder:: Holder failing: Error.
+        t show: ([holder computed] on: Error do: [:error | error return: 0]) printString; newLine.
+        t show: holder computed printString; newLine.
+        t show: holder computed printString; newLine.
+        t show: holder attempts printString; newLine.
+    )
+) : ()

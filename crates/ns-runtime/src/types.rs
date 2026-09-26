@@ -700,8 +700,11 @@ pub struct Frame<'gc> {
     /// frame carries a copy only if that activation was reified. The image
     /// does not record it -- a decoded frame has 0, since nothing re-activates
     /// one. Set once, where the activation is pushed, and never changed.
-    /// Irrelevant (left at 0) for every other kind: a method, block, clause,
-    /// or top-level body never contains `InitializeSlot`.
+    /// A lazy slot's getter (§6.3.3) is the one method activation that has
+    /// one: its defining application's `own_slot_base`, set by
+    /// `Mutator::push_step`. Irrelevant (left at 0) for every other kind: any
+    /// other method, a block, a clause or a top-level body never contains
+    /// `InitializeSlot`.
     pub slot_base: usize,
 }
 

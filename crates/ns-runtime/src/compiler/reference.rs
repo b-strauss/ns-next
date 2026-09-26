@@ -57,6 +57,10 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
     );
     let mut source_span: Option<Span> = None;
     for (own_index, slot) in mixin.slots.iter().enumerate() {
+        // A lazy slot's initializer is its getter's (`compile_lazy_slot_getter`).
+        if slot.lazy {
+            continue;
+        }
         let Some(declaration) = &slot.declaration else {
             continue;
         };
@@ -80,6 +84,25 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
     }
     body.statements_and_end(&mixin.initializer_expressions);
     body.finish(source_span.unwrap_or(Span::new(0, 0)))
+}
+
+/// A lazy slot's getter (§6.3.3): `initializer`'s value, stored with
+/// `InitializeSlot` as `initializer`'s per-slot step stores it, then
+/// returned. A zero-argument method body with no temporaries.
+pub(crate) fn compile_lazy_slot_getter(
+    initializer: &Expression,
+    own_index: u32,
+    span: Span,
+    bindings: &Bindings,
+) -> CompiledCode {
+    let mut body = Body::new(CodeKind::Method, 0, 0, bindings);
+    let start = body.instructions.len();
+    let source = body.value(initializer);
+    body.emit(Instruction::InitializeSlot { source, own_index });
+    // One statement, its `Return` included, as a `^e` statement's is.
+    body.emit(Instruction::Return { register: source });
+    body.record_statement(start);
+    body.finish(span)
 }
 
 /// The superclass clause as a single `^ec`. The expression is

@@ -1,0 +1,39 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.3 and 6.2: one mixin's lazy slot, applied once
+   directly and once over a superclass with slots of its own, so the slot
+   sits at a different field under each application. Its getter is
+   compiled once, onto the mixin, and must store into and read from the
+   slot's own field under both: each counter below is filled by its own
+   getter, and the neighbouring slots keep their values. The loop sends the
+   getter through one call site to instances of both applications, so a
+   cached send answers the field of the application it is sent to.
+
+   A mutable lazy slot keeps its setter (6.3.2): writing a value makes the
+   getter answer it without evaluating the initializer, and writing nil
+   empties the slot again, so the next read evaluates it once more. *)
+class Spec633LazyApplications usingPlatform: p = Object new (| t = p transcript. |) (
+    class Counting = Object new (| public evaluations ::= 0. |) (
+        lazy public counter ::= count.
+        count = ( evaluations:: evaluations + 1. ^evaluations * 10 )
+    ) : ()
+    class Wide = Object new (| public left = 'left'. public right = 'right'. |) () : ()
+    class Direct = Object new <: Counting.
+    class Shifted = Wide new <: Counting.
+    public main: platform args: arguments = (
+        | direct shifted round |
+        direct:: Direct new.
+        shifted:: Shifted new.
+        round:: 1.
+        [round <= 3] whileTrue: [
+            {direct. shifted} do: [:each |
+                t show: each counter printString; show: ' '].
+            t newLine.
+            round:: round + 1].
+        t show: shifted left, ' ', shifted right, ' ', shifted evaluations printString; newLine.
+        direct counter: 7.
+        t show: direct counter printString, ' ', direct evaluations printString; newLine.
+        direct counter: nil.
+        t show: direct counter printString, ' ', direct evaluations printString; newLine.
+    )
+) : ()

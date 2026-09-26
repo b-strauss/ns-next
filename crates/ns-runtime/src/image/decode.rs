@@ -149,6 +149,11 @@ pub enum DecodeError {
     /// Its rebuilt method table would silently keep only one of the two, and
     /// the resolver refuses such a declaration from source.
     DuplicateSelector(String),
+    /// A mixin-table row declares a lazy slot (§6.3.3) but no method that
+    /// can be its getter: a unary method of the slot's name with the slot's
+    /// accessibility. The getter is one of the row's methods, not something
+    /// the decoder derives, so without it no send could ever read the slot.
+    LazySlotWithoutGetter(String),
     /// A selector or name reference (a send's selector, a method-dictionary
     /// key, a closure's parameter name, a `Symbol` object's text, ...) that
     /// indexes past the end of the image's symbol table. Every such
@@ -434,6 +439,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::DuplicateSelector(selector) => write!(
                 f,
                 "a mixin-table row declares member `{selector}` more than once"
+            ),
+            DecodeError::LazySlotWithoutGetter(slot) => write!(
+                f,
+                "a mixin-table row declares the lazy slot `{slot}` without its getter method"
             ),
             DecodeError::ClosureArityMismatch { parameters, argument_count } => write!(
                 f,

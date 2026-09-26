@@ -203,6 +203,16 @@ position — the same mixin-relative addressing `InitializeSlot` uses, and for t
 same reason. Nothing maps a slot name to a field; nothing but an accessor needs
 to.
 
+**A lazy slot (§6.3.3) is an own slot like any other**, laid out at its
+position and starting `nil`, with two differences. The instance initializer
+skips it; its getter is a compiled method in the mixin's `methods` with
+`MethodFastPath::LazySlot`, which evaluates the initializer while the slot
+holds `nil` and stores it with `InitializeSlot` ([dispatch.md](dispatch.md),
+"Slot accessors"), and a mutable one's setter is an ordinary accessor entry.
+And it is outside a value's state: `mixin::declared_slots_of` leaves it out of
+`MixinApplication::declared_slots`, so the state-derived `=` and `hash` skip it
+([core-library.md](core-library.md), "Lazy slots first").
+
 ## The nested-class accessor
 
 A nested declaration implicitly defines a method with the same name and

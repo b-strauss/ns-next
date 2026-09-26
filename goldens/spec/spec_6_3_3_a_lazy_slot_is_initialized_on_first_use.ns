@@ -10,12 +10,7 @@ Newspeak3
    slot contains."
 
    So trace is still empty after the instance is created, and carries
-   exactly one mark after the getter has been sent twice.
-
-   The parser drops `lazy` and adds the slot to the ordinary slots
-   (docs/design/frontend.md, "Grammar"), so mark runs during instantiation
-   and the first line reads `before: !`. Silent wrong output at exit status
-   0. Skipped until the slot is initialized on first use. *)
+   exactly one mark after the getter has been sent twice. *)
 class Spec633LazySlot usingPlatform: p = Object new (| t = p transcript. |) (
     class Holder = Object new (| public trace ::= ''. |) (
         lazy public computed = mark.

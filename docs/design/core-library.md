@@ -1370,15 +1370,20 @@ are also what the image's platform paths below rest on, and §6.3.3 states
 the intent directly: "Lazy slots themselves need never be persisted or
 synchronized".
 
-Lazy slots are eager today — the parser drops `lazy` ([README.md](README.md),
-deviations; [frontend.md](frontend.md)), and
-`goldens/spec/spec_6_3_3_a_lazy_slot_is_initialized_on_first_use` is
-`skipped`. Plan 1 closes that deviation: the parser keeps the modifier, the
-slot starts `nil` and its getter evaluates the initializer on first read,
-storing the result without a setter, as §6.3.3 says. The skipped golden's
-recorded expectation is what then has to hold. This touches
-`crates/ns-syntax`'s parser (not its lexer), so the `ns-lsp` and JetBrains
-gates apply to that commit.
+**Built.** The parser keeps the modifier (`SlotDeclaration.lazy`,
+[frontend.md](frontend.md)), the slot starts `nil`, and its getter
+evaluates the initializer while the slot holds `nil`, storing the result
+without a setter and answering it, as §6.3.3 says. An initializer that
+answers `nil`, or that does not complete — it signals and a handler
+returns, or it returns non-locally — leaves the slot `nil`, so the next
+read evaluates it again. `goldens/spec/spec_6_3_3_*` pin first use, the
+`nil` answer, the abandoned initializer and one mixin's lazy slot under
+two applications at different field offsets;
+`goldens/spec/spec_6_a_lazy_slot_cannot_name_a_factory_parameter` pins the
+scope rule below, and `goldens/kernel/a_values_lazy_slot_*` the two value
+rules. An image carries a lazy slot, filled or empty: the mixin table's
+slot record says the slot is lazy, and its getter is one of the row's
+compiled methods ([image-format.md](image-format.md), "Mixin table").
 
 **A value's state-derived `=` and `hash` skip lazy slots** (decided with
 the user on 2026-09-26): two values whose ordinary slots are equal are
@@ -1389,14 +1394,21 @@ recomputed on demand (*Objects as Software Services*, §2.3, the [Bra] of
 §6.3.3) — and Primordial Soup's `Serialization.ns` skips its transient
 slots for the same reason. No prior art defines a value's equality over
 one: canonical Newspeak derives no equality for values, and SOMns, which
-does, has no lazy slots.
+does, has no lazy slots. `mixin::declared_slots_of` leaves a lazy slot
+out of `MixinApplication::declared_slots`, which both equality walks and
+the fallback's `slotCount`/`slotAt:` leaves read. A lazy slot of a value
+is still one of its slots for §3.1.1's deep immutability: its getter's
+`InitializeSlot` refuses a non-value exactly as an initializer's does,
+naming the slot, under the getter's selector.
 
 **A lazy slot's initializer does not see the factory's parameters.** §6:
 the primary factory's formal parameters "are in scope in the instance
 initializer but not in the rest of the class body", and a lazy slot is
 declared in the class body. A class that needs one in a lazy slot copies
 it into an ordinary slot first, as `Kernel.ns` already does with
-`theMirror`.
+`theMirror`. The resolver resolves a lazy initializer in a fresh
+zero-local scope over the class chain, as a unary method's body, so a
+parameter's name there is an implicit-receiver send.
 
 **The mechanism** is canonical Newspeak's and Primordial Soup's —
 both desugar `lazy n = e` into a hidden cache slot and a getter that
@@ -1406,6 +1418,14 @@ evaluates `e` when the cache holds `nil` (`NewspeakCompilation.ns`,
 cache: the getter is a compiled method that evaluates `e`, stores it with
 the existing `InitializeSlot` and answers it, and a
 `MethodFastPath::LazySlot` answers a filled slot without an activation.
+`interpreter::instantiate::build_methods` compiles one getter per lazy
+slot (`compiler::compile_lazy_slot_getter`, under both lowerings) into the
+mixin's method table, where `mixin::slot_accessors` puts no accessor
+getter for it; a mutable lazy slot keeps its ordinary setter. The
+instance initializer skips lazy slots. `resolve::act_with_base` reads the
+field at the defining application's `own_slot_base` plus the slot's
+`own_index` and answers it unless it is `nil`; an empty slot activates the
+getter, which `push_step` gives the same `slot_base`.
 
 #### The module table and the boot (plan 1)
 

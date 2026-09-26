@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+3
+'''
+stderr = '''
+Uncaught Newspeak error: cannot store an Array of 2 in Point's slot both: a value object is deeply immutable, so every slot it declares holds a value
+'''

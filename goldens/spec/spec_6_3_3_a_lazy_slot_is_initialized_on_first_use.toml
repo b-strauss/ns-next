@@ -1,4 +1,3 @@
-skipped = "not implemented yet: the parser drops `lazy`, so the slot's initializer runs eagerly with the other slot clauses"
 stdout = '''
 before: 
 42

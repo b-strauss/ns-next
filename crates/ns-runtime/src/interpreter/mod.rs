@@ -1079,12 +1079,21 @@ impl<'gc> Mutator<'gc> {
                     feedback_base
                 };
                 let temporaries = (code.register_count - code.argument_count) as usize;
+                // Only a lazy slot's getter contains `InitializeSlot`, and it
+                // writes its defining application's field.
+                let slot_base = match method.fast_path {
+                    Some(crate::mixin::MethodFastPath::LazySlot { .. }) => self
+                        .heap
+                        .class_own_slot_base(defining_class)
+                        .expect("internal: a method's defining class is a class object"),
+                    _ => 0,
+                };
                 self.push(
                     ActivationHeader {
                         receiver,
                         current_class: Some(defining_class),
                         kind: FrameKind::Method(method),
-                        slot_base: 0, // a method body never contains InitializeSlot
+                        slot_base,
                         code,
                         then: Continuation::Deliver,
                         counted: true,
@@ -1761,8 +1770,7 @@ impl<'gc> Mutator<'gc> {
         // the declining path. Declared and hidden slots interleave -- this
         // level's own slots sit at `inherited`, its cache slots after them
         // -- so a value's state is not a prefix of its fields.
-        let declared_slots =
-            crate::mixin::declared_slots_of(superclass, inherited, mixin.slots.len());
+        let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
         let application = Rc::new(crate::mixin::MixinApplication {
             mixin: mixin.clone(),

@@ -1,0 +1,17 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.3: "if the slot contains nil, e is evaluated". An
+   initializer that answers nil leaves the slot containing nil, so every
+   read evaluates it again: three reads, three marks. *)
+class Spec633LazyNil usingPlatform: p = Object new (| t = p transcript. |) (
+    class Holder = Object new (| public trace ::= ''. |) (
+        lazy public computed = mark.
+        mark = ( trace:: trace, '!'. ^nil )
+    ) : ()
+    public main: platform args: arguments = (
+        | holder |
+        holder:: Holder new.
+        holder computed. holder computed. holder computed.
+        t show: holder trace; newLine.
+    )
+) : ()

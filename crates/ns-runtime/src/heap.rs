@@ -1635,6 +1635,19 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Where `class`'s own slots start in an instance's fields
+    /// (`MixinApplication::own_slot_base`), copied out; `None` for an
+    /// object that is not a class object. Read without cloning the
+    /// application's `Rc`, because a lazy slot's getter asks it on every
+    /// send (`interpreter::resolve`'s `LazySlot` arm).
+    pub fn class_own_slot_base(&self, class: ClassReference<'gc>) -> Option<usize> {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => Some(data.application.own_slot_base),
+            _ => None,
+        }
+    }
+
     /// §3.1.1's "its class inherits from class `Value`", read off the
     /// application without cloning the `Rc` that holds it: this is asked of
     /// every slot an initializer writes, and going through
