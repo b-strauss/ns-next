@@ -1086,6 +1086,10 @@ floor -- a live set of 72 objects cut the buffer to 144 slots, and the next
 cycle, allowed to reach 4,096, grew it back through five reallocations, each
 a copy and fresh pages, at every collection; that was about 5% of
 `bench_value.ns` ([execution.md](execution.md), "What exceptions cost").
+The price is retention: under the floor each arena keeps up to twice the
+floor after a collection, 8,192 slots in both -- about 458 KB of the object
+arena (56 bytes a slot) and about 1.1 MB of the frame arena (136 bytes an
+entry), some 1.6 MB in all in a release build.
 
 The image decoder never collects, because it never polls — it does not run in
 the run loop. The transient peak described under the decode amplification above

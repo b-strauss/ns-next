@@ -1318,7 +1318,7 @@ located and fixed: a `Signal` grown by 8 bytes once `Terminate` held a
 second `NewspeakError` in place, and an arena the collector shrank below
 its next limit at every collection. With those and an out-of-line error
 in the slot accessor, every fixture and both controls are faster than the
-base, by 2.5% (twenty sends deep) to 24.3% (`bench_loop.ns`). With
+base, by 2.5% (twenty sends deep) to 24.3% (`bench_loop.ns`). Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero. With
 nothing signalled, one `ensure:` and one `on:do:` cost about 145 ns an
 iteration over sending `value` to the same blocks; an `Error` signalled
 and caught twenty activations up costs about 6.4 µs.

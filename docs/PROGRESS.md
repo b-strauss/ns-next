@@ -4304,14 +4304,14 @@ slot read through a stack frame (`1d7587f`, the error out of line). **At
 `bench_block.ns` 18.7% against the three base layouts' mean (18.21 → 14.80;
 no head layout draws the slow mode), `bench_megamorphic.ns` 12.0%
 (11.61 → 10.22), `bench_value.ns` 13.1% (43.82 → 38.09), `bench_deep.ns`
-2.5% (16.27 → 15.86). With nothing signalled, measured at `3d5f69c`,
+2.5% (16.27 → 15.86). Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero. With nothing signalled, measured at `3d5f69c`,
 `bench_ensure.ns` (one `ensure:` and one `on:do:` an iteration) costs
 about 145 ns an iteration over the same blocks sent `value`
 (60.47 against 46.01 ms); `bench_signal.ns`, an `Error` signalled twenty
 activations down and caught, about 6.4 µs a signal (81.38 against 17.29
 ms for the same recursion answering). `vm::run` is still one function,
 with no `vm::run::closure`: 6,741 instructions on the base, 6,486 at
-`f518988`; `push` is inlined into `push_step` and `push_initializer` as
+`d7a6680`; `push` is inlined into `push_step` and `push_initializer` as
 before, with `push_past_the_limit` out of line.
 
 **Small follow-ups the reviews deferred**, none affecting an outcome:

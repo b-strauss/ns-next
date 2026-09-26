@@ -3931,7 +3931,7 @@ two layouts each, five rounds: the arena accounts for `bench_block.ns`
 (20.2 → 16.7 ms) and `bench_value.ns` (46.0 → 43.4), `Signal` for
 `bench_deep.ns` (17.4 → 16.4), and the slot accessor for most of the rest,
 `bench_loop.ns` 7.3 → 5.5, `bench_send.ns` 8.8 → 7.1–7.4 and
-`bench_megamorphic.ns` 11.7 → 10.2.
+`bench_megamorphic.ns` 11.7 → 10.2. Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero.
 
 **What the protocol costs when nothing is signalled**, measured at
 `3d5f69c`, before the three fixes above. `bench_ensure.ns`
@@ -3962,8 +3962,11 @@ five sites, so the path below the limit is the one compare it was. Other
 sizes that moved: `push_step` from 1,361 to 1,214 instructions, `vm::finish`
 from 606 to 716, `vm::unwind` from 177 to 1,942 (the unwinder's outcome
 handling, with `interpreter::unwind::unwind`, 439, out of line), and
-`Heap::reify` (258) now has a label of its own. Boxing `Terminate` took
-`vm::run` to 6,486 instructions and `vm::finish` to 664 (`f518988`).
+`Heap::reify` (258) now has a label of its own. At `d7a6680`, after the
+three fixes above, the same check finds one `ns_runtime::vm::run` label and no
+`vm::run::closure`, `vm::run` at 6,486 instructions, `vm::finish` at 664, and
+`decide_slot_accessor` at 80 with its error, `no_field_for_slot_accessor`
+(84), a function of its own.
 
 ## The trampoline
 
