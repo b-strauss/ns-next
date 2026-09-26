@@ -950,7 +950,9 @@ Nothing would touch the file system at run time, which is what linking
 statically means here. Later the same primitive falls back to the file system
 on a miss, so dynamic loading extends one primitive and changes neither
 `Kernel.ns` nor anything else on the Newspeak side. Nothing loads a second
-module yet, so the primitive belongs with the step that does.
+module yet, so the primitive belongs with the step that does. That step is
+the platform module's, designed on 2026-09-26 ("Planned: the platform and
+collections as core-library modules" below), where it is `moduleNamed:`.
 
 **Start-up was measured, not assumed: the kernel costs about 0.5 ms** —
 `ns-next run` of a module that answers at once, 4.07 ms against 3.56 ms
@@ -1334,66 +1336,229 @@ and caught twenty activations up costs about 6.4 µs.
 
 ### Planned: the platform and collections as core-library modules
 
-**Status: decided with the user on 2026-09-25, not designed in detail and
-not built; it is the next piece of work, now that the exceptions `List`
-needs to report its errors exist ("Exceptions" above).** `Kernel.ns` is to hold only what the VM must know — the classes
-whose instances the VM creates or on which dispatch depends — and the rest
-of the library moves into modules the runtime ships and loads at every
-start. Primordial Soup splits it this way (`KernelForPrimordialSoup.ns`
-beside `Runtime.ns`, whose `Platform` is built from modules such as
+**Status: decided with the user on 2026-09-25, designed with the user on
+2026-09-26, not built; it is the next piece of work, in two plans, each
+ending with every gate green.** `Kernel.ns` is to hold only what the VM
+must know — the classes whose instances the VM creates or on which dispatch
+depends — and the rest of the library moves into modules the runtime ships.
+Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
+`Runtime.ns`, whose `Platform` is built from modules such as
 `Collections.ns`), and so does SOMns (`core-lib/Platform.ns` loading
 `Collections.ns`, `System.ns` and the rest); §8.3 describes the platform as
-an object that "provides accessors to various modules". What was decided:
+an object that "provides accessors to various modules".
 
-- **Scope.** `Platform`, `Transcript` and `Collections` leave `Kernel.ns`
-  for a platform module, and `OrderedCollection` is replaced by a `List`
-  written in Newspeak over a fixed `Array` in a `Collections.ns` module, as
-  Primordial Soup's `List` is. That removes the one payload that grows in
-  place (`Heap::array_push`) and its leaf, which answers the question step 7
-  has to settle first. **The kernel itself uses `OrderedCollection`:**
-  `Exception`'s handler search collects the `on:do:` activations it passes
-  in one ("Exceptions" above), so this step has to give the kernel another
-  way — an `Array`, or walking the passed range again instead of keeping
-  it — since a `List` in a module the kernel does not know cannot serve it. `KernelNamespace` moves with the platform.
-- **The mirror is a capability handed over, and shipped source is resolved
-  as the kernel is.** The host boots the platform module with
-  `usingVmMirror:`, as SOMns's `Platform usingVmMirror:` is booted, and the
-  platform module hands the mirror only to the modules that need leaves —
-  `Collections.ns` needs none, using only `Array`'s public protocol. Core
-  library modules shipped with the runtime are resolved with
-  `resolve_kernel`, so their sends to the mirror are `SendMirror` with the
-  inlined fast path. The rule in `CLAUDE.md` becomes: only shipped
-  core-library source is resolved with `MirrorSend`, and only what the
-  bootstrap or another core-library module hands it holds the mirror; a
-  user module never does.
-- **One module namespace, on the mirror** (the decision of 2026-09-21 in
-  "Where the library source lives, and how modules are found", now needed):
-  a mirror primitive such as `moduleNamed:` looks a module up in a table the
-  host fills in advance, and the platform module fetches the others through
-  it, as SOMns's `vmMirror load: 'Collections.ns' nextTo: self` does. The
-  same table later holds user modules and falls back to the file system for
-  loading at run time. **Loading is unified; trust and visibility are not.**
-  Every entry carries whether it is shipped core-library source, set by the
-  host and never by the module; only such an entry is resolved with
-  `resolve_kernel`. The loader a program is later handed through the
-  platform sees user modules only: a program reaches the standard modules
-  as the instances the platform built (`platform collections`), never as
-  module definitions, whose code was compiled for a trusted context.
-- **No `OrderedCollection` accessor on `Object`.** §3.2's accessors are for
-  the classes of the literals and the array factories; the goldens that
-  write `OrderedCollection new` move to `platform collections List`, with
-  their recorded outcomes unchanged.
-- **Core-library objects in an image are named by reference**, as builtin
-  classes are today: a class of a shipped module is written as that
-  module's name and the class's path in it, and resolved on load against
-  the loading interpreter's own core library; the module instances are
-  prebuilt and named by tag, as the platform is. Since the code and the
-  layout come from the loading binary, the decoder checks every such
-  record's field count against its class's layout and refuses a mismatch.
-  Serializing the modules' mixins instead would put code compiled with
-  `SendMirror`, which has no wire tag on purpose, into an artifact. The
-  builtin class tags of `Platform`, `Transcript`, `Collections` and
-  `OrderedCollection` retire.
+The two plans:
+
+1. **The platform module**: §6.3.3's lazy slots, the module table on the
+   mirror, `Platform.ns` with `Platform`, `Transcript` and
+   `KernelNamespace`, booted with `usingVmMirror:kernel:`, and platform
+   paths in the image. `Collections` moves too, still answering the
+   kernel's `OrderedCollection` for `List`.
+2. **The collections module**: `Array new:`, `Collections.ns` with a
+   Newspeak `List`, a handler search that keeps no `OrderedCollection`, and
+   `OrderedCollection` removed with its leaf and `Heap::array_push`.
+
+#### Lazy slots first (plan 1)
+
+The platform's members become lazy slots (§6.3.3), so that a module is
+built on the first `platform collections`, not at every start: once the
+platform grows modules for I/O, networking, time and rendering, building
+all of them eagerly would make every program pay for all of them. SOMns
+builds every member eagerly; this runtime deliberately does not. Lazy slots
+are also what the image's platform paths below rest on, and §6.3.3 states
+the intent directly: "Lazy slots themselves need never be persisted or
+synchronized".
+
+Lazy slots are eager today — the parser drops `lazy` ([README.md](README.md),
+deviations; [frontend.md](frontend.md)), and
+`goldens/spec/spec_6_3_3_a_lazy_slot_is_initialized_on_first_use` is
+`skipped`. Plan 1 closes that deviation: the parser keeps the modifier, the
+slot starts `nil` and its getter evaluates the initializer on first read,
+storing the result without a setter, as §6.3.3 says. The skipped golden's
+recorded expectation is what then has to hold. This touches
+`crates/ns-syntax`'s parser (not its lexer), so the `ns-lsp` and JetBrains
+gates apply to that commit.
+
+**Open, to be settled in plan 1:** how a value's state-derived `=` and
+`hash` (`Value`, "What exists" above) treat a lazy slot that is still
+`nil` in one of two otherwise equal values. The proposal is that they skip
+lazy slots, since a lazy slot is state derived from the rest and §6.3.3
+excludes it from persistence and synchronization alike.
+
+#### The module table and the boot (plan 1)
+
+- **One module table, on the mirror** (the decision of 2026-09-21 in
+  "Where the library source lives, and how modules are found"). The host
+  fills a table of name to source at bootstrap; the shipped modules —
+  `Platform.ns`, and `Collections.ns` from plan 2 — sit beside `Kernel.ns`
+  in `crates/ns-runtime/core-library/` and are embedded the same way.
+  **Loading is unified; trust and visibility are not:** every entry carries
+  whether it is shipped core-library source, set by the host and never by
+  the module, and only such an entry is resolved with `resolve_kernel`.
+  A mirror leaf `moduleNamed:` answers an entry's module class, built on
+  its first request and kept; compiling is total, so the leaf runs no
+  Newspeak. The same table later holds user modules and falls back to the
+  file system. The loader a program is later handed through the platform
+  sees user modules only: a program reaches the standard modules as the
+  instances the platform built (`platform collections`), never as module
+  definitions, whose code was compiled for a trusted context.
+- **The boot.** After `install_kernel` the host takes `Platform` from the
+  table and instantiates it with `usingVmMirror: mirror kernel: kernel` — an
+  ordinary run, as the kernel's instantiation is, so the stress modes see
+  it — and keeps the result as a root. `Mutator::platform_value` reads that
+  root instead of building the platform in Rust. The second parameter is
+  Primordial Soup's (`Platform internalKernel: ik`), chosen over a mirror
+  leaf answering the kernel (SOMns's `vmMirror kernelObject: nil`): handing
+  over an object needs no Rust, and the dependency stands in the factory's
+  signature. `public` gives no module a way to name the kernel's classes
+  (§8.3: a module sees only what is lexically around it, what it inherits
+  and what its factory is handed), which is why the platform module needs
+  the kernel instance handed to it at all.
+- **`Platform.ns`** in plan 1:
+
+  ```newspeak
+  class Platform usingVmMirror: vmMirror kernel: kernelModule = Object <: Value (
+  ) (
+      public class Transcript = Value new () ( show: and newLine, through vmMirror )
+      public class Collections = Value new () ( public List = ( ^OrderedCollection ) )
+      public class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
+      lazy public transcript = Transcript new.
+      lazy public collections = Collections new.
+      lazy public kernel = KernelNamespace new.
+  )
+  ```
+
+  The three nested classes reach the mirror and the kernel through the
+  enclosing platform's factory parameters, so they keep `new` and declare
+  no slots: `t class new` still makes a transcript equal to `t`. In plan 1
+  `Collections>>List` answers the kernel's `OrderedCollection` through
+  `Object`'s accessor.
+- **The transcript leaf takes no receiver.** It checked
+  `BuiltinClass::Transcript` so that a user subclass of a builtin declines;
+  it reads nothing off the receiver, only the string argument, and once
+  `Transcript` is no builtin the VM cannot recognize its class at all. The
+  capability is the mirror: `vmMirror transcriptShow: text`, which checks
+  only that `text` is a string. A user subclass of `Transcript` inherits a
+  working `show:`, which no golden pinned the other way.
+- **Retired:** `BuiltinClass::Platform`, `Transcript`, `Collections` and
+  `KernelNamespace`, with builtin class tags 13, 18, 19 and 29.
+- **One golden changes:** `goldens/kernel/the_platform_and_its_parts_are_values`
+  asks `platform = platform class new`, which `Platform`'s
+  `usingVmMirror:kernel:` factory no longer answers; that line is replaced,
+  and the other checks keep their recorded output.
+
+#### Platform paths in the image (plan 1)
+
+An artifact names a shipped object by its **path of public members from
+the platform**: the empty path is the platform, `collections` its
+collections module, `collections List` that module's `List`, `transcript`
+the transcript, `Transcript` its class. This replaces the decision of
+2026-09-25 to name a class by its module's name and its path in the module,
+because two things stand in the way of that on load: nothing in Rust knows
+the module instances, which the platform's Newspeak builds; and a nested
+class object exists only once its accessor has run, which evaluates its
+superclass clause — Newspeak the decoder must never run.
+
+- **The encoder** writes, in a section of its own, the platform paths the
+  graph uses, and a record tag (the next free number) that names one of
+  them. It writes an object or class it reached by a path as that record,
+  and refuses any other object whose class was compiled from shipped
+  source: a module instance holds the kernel, as the platform holds the
+  mirror, so neither is ever written field by field. `HASHED_PLATFORM`
+  stays, for the empty path.
+- **On load, before the graph is decoded**, the host sends each listed
+  path's members to the loading interpreter's platform, as ordinary public
+  unary sends: exactly what the program's own `platform collections List`
+  may do, and loading a stateless binary runs its code anyway. Each member
+  must be a symbol, the path length and the number of paths are bounded,
+  and a send that fails or answers something that is not a shipped object
+  refuses the image. The decoder then only looks paths up, so it still
+  runs no code.
+- **A stored platform is a reference, never its state.** A program that
+  keeps `platform` in a slot and sends `platform collections` only after a
+  load gets the loading platform, whose lazy slot builds the module then;
+  a program that kept `platform collections List` gets the same class
+  through its path, since the path's sends reach the same lazy slot and the
+  same per-instance accessor. Both routes answer identical objects.
+- An instance of a shipped class — a `List` with its `data` array — is an
+  ordinary record. Its code and layout come from the loading binary, so
+  the decoder checks its field count against the class's layout and
+  refuses a mismatch.
+- **A module added later needs no tag and no table:** it is nameable by its
+  path as soon as the platform declares it. A path the loading binary does
+  not have refuses the image, which suits disposable images.
+- **Serializing the modules instead** (Primordial Soup's `Serialization.ns`
+  writes a fresh runtime into the snapshot) would put code compiled with
+  `SendMirror`, which has no wire tag on purpose, into an artifact.
+  **Letting the decoder build shipped classes itself**, by restricting
+  shipped modules' superclass clauses to bare names as `Kernel.ns`'s are,
+  would constrain the library and teach the decoder class construction.
+  **Patching placeholders after decoding** would rewrite slots of decoded
+  values afterwards. All three were weighed and rejected.
+
+**Open for later:** an object holding external state — an open file or
+socket, once I/O exists — cannot be written as data at all, whatever names
+its class. That needs its own decision when the first such module arrives.
+
+#### The collections module (plan 2)
+
+- **`Array new: size`**, a new leaf answering an array of `size` `nil`s;
+  `Array new` stays, meaning `new: 0`. Nothing makes a sized array today,
+  and a `List` over a fixed array needs one.
+- **`Collections.ns`**: `class Collections usingKernel: kernelModule =
+  Object <: Value`, as SOMns's and Primordial Soup's are; it needs no mirror. `List`
+  is Primordial Soup's `List` in this runtime's Newspeak: `protected size_`,
+  `protected data`, grown by copying into a larger `Array`. Its protocol
+  follows the on-demand rule: `new`, `add:`, `at:`, `at:put:`, `do:` and
+  `size`, what the corpus and the goldens ask of `OrderedCollection` today,
+  plus `at:put:`, which `Array` has. It reports its errors — an index out
+  of range — as `kernelModule Error`. The platform's slot becomes
+  `lazy public collections = (vmMirror moduleNamed: #Collections)
+  usingKernel: kernelModule`, and plan 1's `Collections` class leaves
+  `Platform.ns`.
+- **The handler search keeps no `OrderedCollection`.** `invokeNextHandler`
+  counts the enabled `on:do:` activations it passes, and
+  `invokeHandlerAt:` fills an `Array new: count` by walking the same range
+  again, then disables and re-enables them as it does today. A walk that
+  kept nothing cannot replace it: once disabled, the handlers this search
+  passed look like the ones that were disabled before it. Marking each
+  with the exception that disabled it was weighed and rejected: it
+  allocates nothing, but an exception signalled again inside its own
+  handler makes the marks ambiguous. One small array per handler
+  invocation, on the exception path, is the cost. Primordial Soup disables
+  only the handler it found; this runtime keeps ANSI's handler environment.
+- **Removed:** `OrderedCollection` in `Kernel.ns` and its `Object` accessor
+  (§3.2's accessors are for the classes of the literals and the array
+  factories), `BuiltinClass::OrderedCollection` with builtin class tag 10,
+  the `add:` leaf and `Heap::array_push`, the one payload that grew in
+  place — which answers the question step 7 has to settle first.
+- **Goldens:** those that write `OrderedCollection new` move to
+  `platform collections List new` with their recorded outcomes unchanged;
+  `goldens/nesting/nested_override` starts its slot at the module's `List`,
+  unchanged in output since every ordinary object prints `an Object`;
+  `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods` loses
+  `MyOrderedCollection`, and one `true an Object` line with it, because
+  `List` is no builtin; `the_platform_and_its_parts_are_values`'s
+  `c List == OrderedCollection` is replaced. New goldens pin `Array new:`,
+  a `List` error caught as an `Error`, and a user subclass of `List`.
+
+#### What changes in the invariants
+
+`CLAUDE.md`'s "The VM mirror is a capability" changes in two places: only
+an entry of the module table marked as shipped source is resolved with
+`resolve_kernel` (today: only `Kernel.ns`), and the platform, which holds
+the mirror as a private factory parameter and is handed to every program,
+is never written field by field — the encoder names it by its path. The
+on-demand rule (above) moves from `platform.rs` to `Platform.ns`.
+
+#### What is measured
+
+Every start now compiles one more module, and `List>>add:` is Newspeak
+where `OrderedCollection>>add:` was a leaf. Each plan measures, release
+build and pinned protocol ([execution.md](execution.md)), the start-up of a
+module that answers at once against the 4.07 ms recorded in "Where the
+library source lives, and how modules are found" above, and plan 2 the
+bench sources as well.
 
 ### What this step did not break
 

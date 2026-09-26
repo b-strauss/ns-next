@@ -34,15 +34,18 @@ signalling it — see "Exceptions" below. It followed step 6's third plan,
 `Behavior`, `Class` and `Metaclass` (2026-09-25; "`Behavior`, `Class` and
 `Metaclass`" below). **The next piece of work is the platform and
 collections as core-library modules** (decided with the user on
-2026-09-25, [core-library.md](design/core-library.md), "Planned: the
-platform and collections as core-library modules"): `Kernel.ns` keeps only
-what the VM must know, `Platform`, `Transcript`, `Collections` and
-`KernelNamespace` move into a shipped platform module booted with the
-mirror, and a Newspeak `List` over a fixed `Array` in a `Collections.ns`
-module replaces `OrderedCollection`, reporting its errors as exceptions —
-which answers the question step 7 has to settle first. That step must also
-give the kernel's handler search another way to keep the `on:do:`
-activations it passes, which it keeps in an `OrderedCollection` today.
+2026-09-25, designed with the user on 2026-09-26,
+[core-library.md](design/core-library.md), "Planned: the platform and
+collections as core-library modules"), in two plans not yet written. The
+first closes §6.3.3's lazy-slot deviation, adds the module table on the
+mirror and moves `Platform`, `Transcript`, `Collections` and
+`KernelNamespace` into a shipped `Platform.ns` booted with
+`usingVmMirror:kernel:`, whose members are lazy slots and which an image
+names by platform paths. The second adds `Array new:` and a Newspeak `List`
+in `Collections.ns`, gives the handler search an `Array` instead of an
+`OrderedCollection`, and removes `OrderedCollection` and
+`Heap::array_push` — which answers the question step 7 has to settle
+first.
 **Then step 7, the payload space**
 (item 4 of the list under "What came next was the third plan, now done, and
 then step 7" below), whose open question is that one: the space was ordered

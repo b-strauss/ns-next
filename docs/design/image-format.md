@@ -109,6 +109,11 @@ surface is.
 - **The `platform` singleton** gets its own tag, resolved to the loading
   interpreter's own singleton. Essentially every module stores it in a slot, so
   without this the whole platform graph would come along.
+  **Planned:** once the platform is a shipped module, every shipped object
+  a program can reach is named by its path of public members from the
+  platform, listed in a section of its own and resolved by the loading host
+  before the graph is decoded; the platform's tag is the empty path
+  ([core-library.md](core-library.md), "Platform paths in the image").
 - **Mixin applications** are not serialized. Layout and lookup follow
   deterministically from a mixin and its superclass application, so they are
   rebuilt as class objects decode. This removes a section, a verification pass,
