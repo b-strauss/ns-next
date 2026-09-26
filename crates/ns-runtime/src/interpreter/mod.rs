@@ -16,6 +16,7 @@ pub(crate) mod resolve;
 mod safepoint;
 pub(crate) mod sends;
 mod slots;
+pub(crate) mod unwind;
 pub(crate) mod value_class;
 
 use std::rc::Rc;
@@ -39,8 +40,27 @@ pub use inline_cache::{
 };
 
 pub(crate) enum Signal<'gc> {
-    Return(ActivationReference, Value<'gc>),
+    /// A non-local return: its home's frame, never its activation, since the
+    /// unwind that carries it runs `ensure:` blocks on its way, and an
+    /// activation they push can reuse a popped activation's stack index
+    /// (`docs/design/execution.md`, "Unwinding").
+    Return(FrameReference<'gc>, Value<'gc>),
     Error(NewspeakError<'gc>),
+    /// `Exception>>retry`: unwind to this `on:do:` activation's frame,
+    /// running the `ensure:` blocks on the way, and run it again from its
+    /// start (`interpreter::unwind`).
+    Restart(FrameReference<'gc>),
+    /// An unhandled exception's `defaultAction`: unwind to the run's floor,
+    /// running every pending `ensure:` block, and leave the run with this
+    /// error, which the host receives as it received every error before
+    /// there were exceptions. Boxed, as the rarest of the four, so that
+    /// `Error` is the one variant holding a `NewspeakError` in place and the
+    /// others fit in its niche: two in place made `Signal` 56 bytes rather
+    /// than 48, and every `Result<Step, Signal>` a send decides 64 rather
+    /// than 56, which cost about 6% on a benchmark of deep sends and returns
+    /// that never signals (`docs/design/execution.md`, "What exceptions
+    /// cost").
+    Terminate(Box<NewspeakError<'gc>>),
 }
 
 pub(crate) type EvaluationResult<'gc> = Result<Value<'gc>, Signal<'gc>>;
@@ -58,7 +78,7 @@ pub enum HostSignal {
     Error(HostError),
     /// A `^` that reached the host: its home had returned, or it aimed at a
     /// running initializer, which catches none (`docs/design/execution.md`,
-    /// "Non-local return").
+    /// "Unwinding").
     Return,
 }
 
@@ -79,13 +99,30 @@ pub struct HostError {
 }
 
 /// L: the most activations that may be live at once, counted by the rule in
-/// `docs/design/compiler.md`, "How the limit counts". It bounds memory, not
-/// the native stack, which the trampoline no longer recurses on: with the
-/// exempt block activations, at most one per level of block nesting above
-/// each counted one, the stack holds at most 129 x L entries -- 128 being
-/// the parser's nesting ceiling, which `image::decode` holds an artifact to
-/// as well (`docs/design/execution.md`, "The depth limit").
+/// `docs/design/compiler.md`, "How the limit counts", but for the reserve
+/// above it (`DEPTH_RESERVE`). It bounds memory, not the native stack, which
+/// the trampoline no longer recurses on: with the exempt block activations,
+/// at most one per level of block nesting above each counted one, the stack
+/// holds at most 129 x (L + `DEPTH_RESERVE`) entries -- 128 being the
+/// parser's nesting ceiling, which `image::decode` holds an artifact to as
+/// well (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
+
+/// How far past L the stack may grow while a VM error raised near L is
+/// being signalled: `signal`, the handler search and the handler itself are
+/// activations too, and without room for them an error raised a few
+/// activations below L -- L's own error included -- could only end the run
+/// as L, uncatchable and under the wrong name. CPython does the same with
+/// its `RecursionError`, allowing a little headroom above the recursion
+/// limit until the depth falls back below it, and HotSpot with its stack's
+/// yellow zone, unprotected for the `StackOverflowError`'s handler and
+/// protected again once the stack has unwound past it. Here the reserve is
+/// taken when a VM error is signalled within this many activations of L,
+/// and given back once that `signal` activation is gone
+/// (`Mutator::depth_reserve_held`); a push past it ends the run
+/// unsignalled, since signalling needs the room that has just run out
+/// (`Mutator::overrun_of_the_reserve`).
+pub const DEPTH_RESERVE: usize = 1_000;
 
 /// What a send decided, before anything runs (`docs/design/execution.md`,
 /// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
@@ -310,6 +347,25 @@ pub struct Mutator<'gc> {
     /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
     /// means nothing in another heap.
     pub(crate) caches: inline_cache::InlineCaches,
+    /// How many more unhandled exceptions `defaultAction` resumes with
+    /// `nil` instead of ending the run: the test hook
+    /// `Interpreter::resume_unhandled_exceptions`, standing in for the
+    /// debugger. Zero outside a test that asks.
+    pub(crate) unhandled_exceptions_to_resume: usize,
+    /// The depth limit's reserve (`DEPTH_RESERVE`), while it is held: the
+    /// frame of the activation a VM error arose in, whose `signal` -- or,
+    /// for a message nothing understood, whose `Object>>doesNotUnderstand:`
+    /// -- sits directly above it (`Mutator::depth_reserve_held`). A frame
+    /// and not a stack index, because a frame is divorced when its
+    /// activation is popped and married to nothing again, where an index is
+    /// reused -- by another error's `signal`, possibly far from the limit,
+    /// which must not inherit the reserve. Released when a host's run ends,
+    /// and forgotten whenever it is found no longer held.
+    pub(crate) depth_reserve: Option<FrameReference<'gc>>,
+    /// Whether `unwind::start_signalling` is pushing the `signal` that
+    /// takes the reserve: the one moment the reserve is held with nothing
+    /// above its activation yet.
+    pub(crate) taking_depth_reserve: bool,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -534,6 +590,10 @@ impl Interpreter {
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
+                // Every activation of the run has been popped, so whatever
+                // held the reserve is gone: released here rather than left
+                // to the next check to find so.
+                self.enter(|mutator| mutator.depth_reserve = None);
                 result
             }
         };
@@ -628,6 +688,24 @@ impl Interpreter {
     /// this wrong panics rather than the cache rounding it silently.
     pub fn set_global_cache_size(&mut self, entries: usize) {
         self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
+    }
+
+    /// A test hook standing in for the debugger, not an input path a
+    /// program can reach: the next `count` unhandled exceptions are resumed
+    /// with `nil` by `defaultAction`'s leaf instead of ending the run --
+    /// what the debugger will do once it has let the user fix the cause
+    /// (`docs/design/core-library.md`, "Exceptions"). A
+    /// `MessageNotUnderstood` resumed this way sends its message again.
+    #[doc(hidden)]
+    pub fn resume_unhandled_exceptions(&mut self, count: usize) {
+        self.enter(|mutator| mutator.unhandled_exceptions_to_resume = count);
+    }
+
+    /// How many of the exceptions `resume_unhandled_exceptions` asked for
+    /// are still to be resumed. A test hook, as that one is.
+    #[doc(hidden)]
+    pub fn unhandled_exceptions_left_to_resume(&mut self) -> usize {
+        self.enter(|mutator| mutator.unhandled_exceptions_to_resume)
     }
 }
 
@@ -776,15 +854,25 @@ impl<'gc> Mutator<'gc> {
 
     /// A run's outcome as the host receives it. Nothing runs between the
     /// run's last safepoint and here, so every value in `result` is current.
+    fn host_error(&self, error: NewspeakError<'gc>) -> HostSignal {
+        HostSignal::Error(HostError {
+            selector: error.selector,
+            receiver: self.stash(error.receiver),
+            message: error.message,
+        })
+    }
+
     pub(crate) fn to_host(&self, result: EvaluationResult<'gc>) -> HostResult {
         match result {
             Ok(value) => Ok(self.stash(value)),
-            Err(Signal::Error(error)) => Err(HostSignal::Error(HostError {
-                selector: error.selector,
-                receiver: self.stash(error.receiver),
-                message: error.message,
-            })),
-            Err(Signal::Return(..)) => Err(HostSignal::Return),
+            Err(Signal::Error(error)) => Err(self.host_error(error)),
+            Err(Signal::Terminate(error)) => Err(self.host_error(*error)),
+            // A run's unwinder leaves with neither a restart nor a
+            // termination (`unwind::exit_signal`); only a leaf a host's own
+            // send to the mirror decided, before any run, comes here with
+            // one. A restart then aimed, like such a `^`, at no activation
+            // of the host's.
+            Err(Signal::Return(..) | Signal::Restart(_)) => Err(HostSignal::Return),
         }
     }
 
@@ -822,6 +910,10 @@ impl<'gc> Mutator<'gc> {
     /// Pushes an activation, refusing one that would take the counted depth
     /// past `MAX_ACTIVATION_DEPTH`. Every activation in the runtime is pushed
     /// here, so the count and the check cannot be skipped by a new site.
+    ///
+    /// The check is the one compare it always was: the reserve is looked at
+    /// only once the depth has reached L (`push_past_the_limit`), so an
+    /// error far from L, and every push below it, pays nothing for it.
     pub(crate) fn push(
         &mut self,
         header: ActivationHeader<'gc>,
@@ -829,9 +921,128 @@ impl<'gc> Mutator<'gc> {
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
-            return Err(recursion_too_deep(&header));
+            return self.push_past_the_limit(header, arguments, temporaries);
         }
         Ok(self.heap.push_activation(header, arguments, temporaries))
+    }
+
+    /// A counted push at or past L. While a VM error's `signal` holds the
+    /// reserve, the push is allowed up to `DEPTH_RESERVE` further; past it,
+    /// the run ends (`overrun_of_the_reserve`). Otherwise it is refused
+    /// with L's error, which the unwinder signals -- taking the reserve --
+    /// unless it is the push of the `doesNotUnderstand:` that has just
+    /// taken it (`take_depth_reserve_for_does_not_understand`).
+    #[cold]
+    #[inline(never)]
+    fn push_past_the_limit(
+        &mut self,
+        header: ActivationHeader<'gc>,
+        arguments: &[Value<'gc>],
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        // The push that makes a freshly taken reserve held is asked about
+        // first: `depth_reserve_held` would find nothing above its activation
+        // yet, and forget it.
+        if !self.pushes_the_reserves_does_not_understand(&header) && !self.depth_reserve_held() {
+            return Err(recursion_too_deep(&header));
+        }
+        if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
+            return Ok(self.heap.push_activation(header, arguments, temporaries));
+        }
+        Err(Signal::Terminate(Box::new(
+            self.overrun_of_the_reserve(&header),
+        )))
+    }
+
+    /// Whether the depth limit's reserve is held: its activation is still
+    /// running, and directly above it is the `signal` of the VM error that
+    /// arose there -- or its `Object>>doesNotUnderstand:` -- or that
+    /// `signal` is being pushed. Forgets a reserve found no longer held, so
+    /// that the pop that ended it pays nothing to give it back.
+    pub(crate) fn depth_reserve_held(&mut self) -> bool {
+        let Some(frame) = self.depth_reserve else {
+            return false;
+        };
+        let held = self.heap.frame_activation(frame).is_some_and(|activation| {
+            self.taking_depth_reserve
+                || self
+                    .heap
+                    .activation_above(activation)
+                    .is_some_and(|above| self.holds_the_depth_reserve(above))
+        });
+        if !held {
+            self.depth_reserve = None;
+        }
+        held
+    }
+
+    /// Whether `activation` is one the reserve is taken for: the `signal`
+    /// the unwinder pushed for a VM error (`Continuation::VmErrorSignalled`),
+    /// or the kernel's own `Object>>doesNotUnderstand:` -- §5.5's error, the
+    /// VM's as much as any other, though `Kernel.ns` signals it.
+    pub(crate) fn holds_the_depth_reserve(&self, activation: ActivationReference) -> bool {
+        self.heap.activation_signals_a_vm_error(activation)
+            || self.is_kernel_does_not_understand(activation)
+    }
+
+    /// Whether `activation` runs the kernel's `Object>>doesNotUnderstand:`,
+    /// not an override of it: the one method of that selector whose current
+    /// class is `Object` itself.
+    pub(crate) fn is_kernel_does_not_understand(&self, activation: ActivationReference) -> bool {
+        let object = self.builtin_class(BuiltinClass::Object);
+        match self.heap.activation_kind(activation) {
+            FrameKind::Method(method) => {
+                method.selector == Symbol::DOES_NOT_UNDERSTAND
+                    && self
+                        .heap
+                        .activation_current_class(activation)
+                        .is_some_and(|class| class.same(object))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `header` is the kernel's `Object>>doesNotUnderstand:`, about
+    /// to be pushed directly above the activation that has just taken the
+    /// reserve for it: the decision took the reserve, and this is the push
+    /// that makes it held.
+    fn pushes_the_reserves_does_not_understand(&self, header: &ActivationHeader<'gc>) -> bool {
+        let Some(frame) = self.depth_reserve else {
+            return false;
+        };
+        let Some(sender) = self.heap.frame_activation(frame) else {
+            return false;
+        };
+        let object = self.builtin_class(BuiltinClass::Object);
+        let is_kernel_handler = matches!(&header.kind,
+            FrameKind::Method(method) if method.selector == Symbol::DOES_NOT_UNDERSTAND)
+            && header.current_class.is_some_and(|class| class.same(object));
+        is_kernel_handler
+            && self
+                .heap
+                .top_activation()
+                .is_some_and(|top| top.same(sender))
+    }
+
+    /// Takes the depth limit's reserve for a `doesNotUnderstand:` about to
+    /// be pushed above the top activation, as `unwind::start_signalling`
+    /// takes it for a VM error's `signal`: when the kernel's handler runs,
+    /// the reserve is not held, and the counted depth is within
+    /// `DEPTH_RESERVE` of the limit. Called by the decision, which pushes
+    /// nothing; the push follows it at once.
+    pub(crate) fn take_depth_reserve_for_does_not_understand(
+        &mut self,
+        defining_class: ClassReference<'gc>,
+    ) {
+        if !defining_class.same(self.builtin_class(BuiltinClass::Object))
+            || self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || self.depth_reserve_held()
+        {
+            return;
+        }
+        if let Some(top) = self.heap.top_activation() {
+            self.depth_reserve = Some(self.heap.reify(top));
+        }
     }
 
     /// Pushes the activation `step` describes. `send_arguments` are the
@@ -1074,14 +1285,21 @@ impl<'gc> Mutator<'gc> {
                 nested::after_clause(self, *creation, value)
             }
             Continuation::Instantiate(state) => self.advance_instantiation(state, value),
+            // The block's value is dropped: the unwind it ran for goes on,
+            // raised again as the signal it was, from the activation it had
+            // stopped at -- now the top of the stack again.
+            Continuation::Unwind(pending) => Err(unwind::signal_of(*pending)),
+            Continuation::VmErrorSignalled(error) => Err(Signal::Terminate(error)),
         }
     }
 
     /// What a continuation undoes when its activation is thrown away rather
-    /// than returned from: the counterpart of `resume`, which `vm::unwind`
+    /// than returned from: the counterpart of `resume`, which `unwind::unwind`
     /// calls for every activation it pops. Only a nested class's creation has
     /// begun anything -- its cache slot is marked as in progress -- so only it
-    /// has anything to undo; every other continuation is simply dropped.
+    /// has anything to undo; every other continuation is simply dropped, a
+    /// `Continuation::Unwind` included: a newer unwind, or an error, has
+    /// replaced the one it would have carried on.
     pub(crate) fn abandon(&mut self, then: Continuation<'gc>) {
         if let Continuation::NestedClass(creation) = then {
             nested::end_creation(self, &creation);
@@ -1120,7 +1338,7 @@ impl<'gc> Mutator<'gc> {
     /// does, and a superclass clause's or its message's, a `<:` clause's
     /// message included. An initializer catches
     /// none -- a `^` into a running one escapes, the known gap in
-    /// `docs/design/execution.md`, "Non-local return" -- and a block's `^`
+    /// `docs/design/execution.md`, "Unwinding" -- and a block's `^`
     /// always targets its home, never the block.
     pub(crate) fn catches_return(&self, activation: ActivationReference) -> bool {
         matches!(
@@ -1137,16 +1355,18 @@ impl<'gc> Mutator<'gc> {
     /// while that activation is still running: its reified frame is married
     /// to a live stack entry exactly until the activation returns, and a
     /// frame the image decoder built never is. A dead home is §7.2's
-    /// `cannotReturn`. Every other activation's `^` returns from itself.
+    /// `cannotReturn`. Every other activation's `^` -- an initializer's from
+    /// an inlined block -- returns from itself, reified here so that the
+    /// signal can name it by frame.
     pub(crate) fn raise_return(
         &mut self,
         activation: ActivationReference,
         value: Value<'gc>,
     ) -> Signal<'gc> {
         let target = match self.heap.activation_home(activation) {
-            None => activation,
+            None => self.heap.reify(activation),
             Some(home) => match self.heap.frame_activation(home) {
-                Some(live) => live,
+                Some(_) => home,
                 None => {
                     return Signal::Error(NewspeakError {
                         selector: Symbol::CARET,
@@ -1218,15 +1438,25 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
 
+    /// An instance of the kernel-private `Activation` class over `frame`,
+    /// which the caller has already reified (`Heap::reify`): an object keeps
+    /// a `FrameReference`, never an `ActivationReference`, since only a
+    /// reified frame survives its activation's pop.
+    pub fn new_activation_object(&mut self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Activation);
+        self.new_instance_object(class, ObjectData::Activation(frame))
+    }
+
     /// The `platform` object (`docs/design/core-library.md`), memoized on
     /// first call so every reference within one interpreter sees the same
     /// one. It is the state `Platform new` would produce -- a fresh
-    /// `Transcript` and `Collections` in the slots `Kernel.ns` declares --
-    /// built here rather than by running the factory, so that asking for the
-    /// platform, at bootstrap or in `image::load`, runs no Newspeak and fills
-    /// no cache. The three are values, so `platform = platform class new`
-    /// holds, and `goldens/kernel/the_platform_and_its_parts_are_values` pins
-    /// that the two agree.
+    /// `Transcript`, `Collections` and `KernelNamespace` in the slots
+    /// `Kernel.ns` declares -- built here rather than by running the
+    /// factory, so that asking for the platform, at bootstrap or in
+    /// `image::load`, runs no Newspeak and fills no cache. The four are
+    /// values, so `platform = platform class new` holds, and
+    /// `goldens/kernel/the_platform_and_its_parts_are_values` pins that the
+    /// two agree.
     pub(crate) fn platform_value(&mut self) -> Value<'gc> {
         if let Some(platform) = self.platform_singleton {
             return platform;
@@ -1235,6 +1465,9 @@ impl<'gc> Mutator<'gc> {
         let transcript = self.new_instance_object(transcript_class, ObjectData::Instance(vec![]));
         let collections_class = self.builtin_class(BuiltinClass::Collections);
         let collections = self.new_instance_object(collections_class, ObjectData::Instance(vec![]));
+        let kernel_namespace_class = self.builtin_class(BuiltinClass::KernelNamespace);
+        let kernel_namespace =
+            self.new_instance_object(kernel_namespace_class, ObjectData::Instance(vec![]));
         let class = self.builtin_class(BuiltinClass::Platform);
         let application = self
             .heap
@@ -1245,6 +1478,7 @@ impl<'gc> Mutator<'gc> {
             fields[application.own_slot_base + position] = match slot.name.as_str() {
                 "transcript" => Value::Object(transcript),
                 "collections" => Value::Object(collections),
+                "kernel" => Value::Object(kernel_namespace),
                 other => panic!(
                     "internal: Kernel.ns's Platform declares a slot {other} the host does not fill"
                 ),
@@ -1254,6 +1488,70 @@ impl<'gc> Mutator<'gc> {
         let value = Value::Object(object);
         self.platform_singleton = Some(value);
         value
+    }
+
+    /// An instance of the kernel class `kind`, every slot its chain declares
+    /// filled by name with what `slot_value` answers for it, built as
+    /// `platform_value` builds the platform: without running the factory,
+    /// so that the run loop can make one -- a `Message` for a
+    /// `doesNotUnderstand:` handler, an `Error` for a VM error -- in the
+    /// middle of deciding a step, where no Newspeak can run.
+    /// `slot_value` panics for a name it does not know, so that a slot
+    /// `Kernel.ns` adds cannot go unfilled unnoticed.
+    pub(crate) fn new_kernel_instance(
+        &mut self,
+        kind: BuiltinClass,
+        mut slot_value: impl FnMut(&str) -> Value<'gc>,
+    ) -> ObjectReference<'gc> {
+        let class = self.builtin_class(kind);
+        let application = self
+            .heap
+            .class_application(class)
+            .expect("internal: a kernel class has an application");
+        let mut fields = vec![Value::Nil; application.slot_count];
+        let mut level = Some(application);
+        while let Some(current) = level {
+            for (position, slot) in current.mixin.slots.iter().enumerate() {
+                fields[current.own_slot_base + position] = slot_value(slot.name.as_str());
+            }
+            level = current.superclass.clone();
+        }
+        self.new_instance_object(class, ObjectData::Instance(fields))
+    }
+
+    /// The slot `name` that the kernel class `kind` declares, read from
+    /// `object` -- an instance of it or of a subclass, whose own slots of
+    /// the same name are other slots. The level is found by its mixin, so
+    /// the read does not depend on the slots a subclass adds. `None` for an
+    /// object that is not such an instance.
+    pub(crate) fn kernel_slot(
+        &self,
+        object: ObjectReference<'gc>,
+        kind: BuiltinClass,
+        name: &str,
+    ) -> Option<Value<'gc>> {
+        let kernel_mixin = self
+            .heap
+            .class_application(self.builtin_class(kind))?
+            .mixin
+            .clone();
+        let mut level = Some(self.class_of(&Value::Object(object)));
+        while let Some(current) = level {
+            if let Some(application) = self.heap.class_application(current) {
+                if Rc::ptr_eq(&application.mixin, &kernel_mixin) {
+                    let position = application
+                        .mixin
+                        .slots
+                        .iter()
+                        .position(|slot| slot.name.as_str() == name)?;
+                    return self
+                        .heap
+                        .instance_field(object, application.own_slot_base + position);
+                }
+            }
+            level = self.heap.class_superclass(current);
+        }
+        None
     }
 
     /// The VM mirror. Built by `bootstrap_builtin_classes`, before anything
@@ -1542,22 +1840,26 @@ fn check_block_arity<'gc>(
 }
 
 /// L's error, for the activation `header` describes. The error does not name
-/// its limit, so that changing it changes no recorded answer. It is kept out
-/// of line, so that the check on every push is a compare and a branch and
-/// nothing more.
-#[cold]
-#[inline(never)]
+/// its limit, so that changing it changes no recorded answer. It is reached
+/// only out of line (`Mutator::push_past_the_limit`), so that the check on
+/// every push is a compare and a branch and nothing more.
 fn recursion_too_deep<'gc>(header: &ActivationHeader<'gc>) -> Signal<'gc> {
+    Signal::Error(recursion_too_deep_error(header))
+}
+
+/// The error inside `recursion_too_deep`'s signal: what an overrun of the
+/// reserve ends the run with too.
+pub(crate) fn recursion_too_deep_error<'gc>(header: &ActivationHeader<'gc>) -> NewspeakError<'gc> {
     let selector = match &header.kind {
         FrameKind::Method(method) => method.selector,
         FrameKind::Closure(_) => Symbol::VALUE,
         _ => Symbol::NEW,
     };
-    Signal::Error(NewspeakError {
+    NewspeakError {
         selector,
         receiver: header.receiver,
         message: "stack overflow: recursion too deep".to_string(),
-    })
+    }
 }
 
 /// Every `BuiltinClass` -- including `Object` itself -- gets the same shared
@@ -2114,5 +2416,20 @@ mod tests {
             }
             assert_eq!(mutator.next_dispatch_id, start + 5);
         });
+    }
+
+    /// Every send decides a `Result<Step, Signal>` and every step answers
+    /// an `EvaluationResult`, so a `Signal` that grows grows both on the
+    /// hottest path there is: 8 bytes more measured about 6% on deep sends
+    /// and returns (`Signal::Terminate` says why it is boxed). Pinned in a
+    /// release build, where a handle carries no origin or epoch -- so it runs
+    /// only there, under `cargo test --release`, which the measurement
+    /// protocol's builds are, and under no gate that runs a debug build.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn a_signal_fits_in_the_niche_of_its_one_unboxed_error() {
+        assert_eq!(std::mem::size_of::<Signal>(), 48);
+        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
+        assert_eq!(std::mem::size_of::<EvaluationResult>(), 48);
     }
 }

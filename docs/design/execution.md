@@ -4,7 +4,9 @@
 > from Rust, the loop polls a safepoint, each instruction it executes is
 > one entry of the step state, the sends it executes go through inline
 > caches, except the reference lowering's, and the optimized lowering converts
-> closures, so only by-reference code keeps a returning frame's registers.
+> closures, so only by-reference code keeps a returning frame's registers;
+> one unwinder carries every non-local return, exception unwind and
+> termination, running `ensure:` blocks as trampoline steps.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -12,8 +14,9 @@
 > `types.rs` (`Frame`, `ClosureData`, `Continuation` and the state its variants
 > carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
-> safepoint's slow path, and the indirection vector's reads and writes in
-> `interpreter/locals.rs`), `compiler/capture.rs` (the capture analysis) and
+> safepoint's slow path, the indirection vector's reads and writes in
+> `interpreter/locals.rs`, and the unwinder and the depth limit's reserve in
+> `interpreter/unwind.rs`), `compiler/capture.rs` (the capture analysis) and
 > `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
@@ -353,10 +356,13 @@ activations from its callers'.
   an instantiation's next body, or the method a non-Boolean condition's
   `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
   in the popped activation's place ("The trampoline" below).
-- **A signal** — a Newspeak error, or a non-local return — goes to
-  `vm::unwind`, which pops what it has to and either returns from the
-  non-local return's target or leaves `run` with the signal ("Non-local
-  return" below). Every activation it pops hands its continuation to
+- **A signal** — a Newspeak error, a non-local return, or an exception's
+  `return:`, `retry` or termination — goes to `vm::unwind`, which hands it
+  to the one unwinder, `interpreter::unwind`, and carries out what it
+  answers: the target returns or restarts, an `ensure:` or `ifCurtailed:`
+  block the unwind runs on its way is pushed, an error's `signal` is
+  pushed, or `run` ends with the signal ("Unwinding" below). Every
+  activation the unwinder pops hands its continuation to
   `Mutator::abandon`, which undoes what that continuation had begun.
 
 Four kinds of body run, and each reaches the loop one way:
@@ -464,42 +470,86 @@ there.
 Whether a debugger will force `program_counter` at every instruction is an open question for
 the milestone that builds one; it is a deliberate trade, not an oversight.
 
-## Non-local return
+## Unwinding
 
 A closure's `home` is the reified frame of the method, initializer,
 superclass-clause or superclass-message activation that lexically encloses it.
 It is not a field: `Heap::closure_home` derives it from the closure's
 `captured_frame` ("The closure keeps its defining activation").
-`Signal::Return` carries an `ActivationReference`, its target, and `raise_return` picks
-it: for a closure activation, its closure's `home` — the stack entry that frame is
-married to (`Heap::frame_activation`) while its activation is still running, and
+`Signal::Return` carries a `FrameReference`, its target, and `raise_return` picks
+it: for a closure activation, its closure's `home`, while the stack entry that
+frame is married to (`Heap::frame_activation`) is still running, and
 `cannotReturn` if it is dead, either divorced because the activation returned or
 built by the image decoder, which never marries a frame. For any other activation
-the target is the activation itself.
+— an initializer's `^` from an inlined block — the target is the activation
+itself, reified for the purpose.
 
-The loop unwinds the activation stack to it (`vm::unwind`). A target that is
-still live (`Heap::activation_is_live`), sits at or above the run's floor and
-catches a return (`Mutator::catches_return`: a method, a superclass
-clause or its message) ends the unwind: every activation above it is popped,
-and the target returns the value through the ordinary return path, so a
-reified frame is divorced exactly as on any return. The popped activations'
-continuations are not applied, so a `^` out of an `and:` block, a native
-loop's body or a `do:` block abandons the coercion or the loop; they go to
-`Mutator::abandon` instead, which unmarks a nested class's creation in its
-cache slot and drops every other. Any other signal — an error, or a
-return whose target catches none — pops every activation of the run, `base`
-included, through `abandon` in the same way, and leaves `vm::run` with it, for
-the host that started the run.
+The one unwinder, `interpreter::unwind`, carries it down the stack; `vm::unwind`
+only does what it answers. A target whose frame is still married to a running
+activation, which sits at or above the run's floor and catches a return
+(`Mutator::catches_return`: a method, a superclass clause or its message), ends
+the unwind: every activation above it is popped, and the target returns the
+value through the ordinary return path, so a reified frame is divorced exactly
+as on any return. The popped activations' continuations are not applied, so a
+`^` out of an `and:` block, a native loop's body or a `do:` block abandons the
+coercion or the loop; they go to `Mutator::abandon` instead, which unmarks a
+nested class's creation in its cache slot and drops every other. A return
+whose target catches none, or has returned meanwhile, pops every activation of
+the run, `base` included, in the same way — running the pending blocks on
+its way — and leaves `vm::run` with the signal, for the host that started the
+run.
 
-Because there is one stack, a live target is always below the activation
-raising the return, and nothing is pushed while the signal propagates, so the
-target's index cannot have been reused by the time the unwind compares it
-(`ActivationReference::same`). In a release build that is also all
-`Heap::activation_is_live` rests on — it compares the index with the stack's
-depth, where a debug build also checks a generation — so anything that runs
-code while a signal propagates, an `ensure:` or an `on:do:` handler, would
-have to carry the generation into every build first, or a release build would
-land the return in whichever activation reused the target's index.
+**The exceptions' unwinds are the same unwind.** `Exception>>return:` and
+`resume:` answer `Signal::Return` aimed at the `on:do:` or the `signal`
+activation's frame, and `retry` answers `Signal::Restart`, aimed at the
+`on:do:` activation's, which the unwinder carries down exactly as a `^`; at
+a restart's target it sets the program counter to 0 and the loop switches
+to it, its registers as they are. A restart whose target has returned
+meanwhile ends the run with §7.2's `cannotReturn`. An unhandled exception's
+`defaultAction` answers `Signal::Terminate`, an unwind with no target: it
+runs every pending block down to the floor and leaves the run with the
+error, which the host receives as it received every error before there were
+exceptions. A pending unwind is a `PendingUnwind` — its target frame, if
+it has one, and whether it returns a value, restarts or terminates — and it
+is carried across a block it runs as what it was
+([core-library.md](core-library.md), "Exceptions").
+
+**An error is not unwound at all.** Once the kernel is installed, a
+`Signal::Error` a step raised becomes an `Error`, and the unwinder pushes
+`signal` on it above the activation where it arose, with the continuation
+`Continuation::VmErrorSignalled`, and pops nothing: the handler runs on top
+of the stack, and what is popped is decided by the handler or the default
+action, through the unwinds above. Before the kernel is installed there is
+no `Error` class, and an error pops every activation of the run, running no
+block, and leaves with the error.
+
+**`ensure:` and `ifCurtailed:` blocks run on the way.** `Block>>ensure:` and
+`ifCurtailed:` are kernel methods whose code carries an unwind marker
+(`bytecode::UnwindMarker`, recognized when the kernel is compiled,
+`compiler::unwind_marker`) naming the registers of their block and of their
+`complete` local. Before the unwinder pops an activation whose marker is one of
+the two and whose `complete` is still nil, it sets `complete` and answers the
+block; the loop pushes it above the marked activation, which stays on the stack,
+with `Continuation::Unwind` holding the unwind in progress, and when the block
+returns `Mutator::resume` raises the signal again, which carries on from the
+marked activation. A newer unwind or an error that pops the block first drops
+the old one. `ensure:`'s own normal path sets `complete` before it runs the
+block, so the block runs exactly once whichever path gets there first. An
+argument that is no closure is sent `value` through the kernel's
+`Block>>valueOnUnwind:`, whose own return carries the unwind on. An activation
+without a marker costs the unwinder one test.
+
+Because those blocks run code while an unwind is in progress, an activation
+they push can reuse the stack index a popped target used. That is why the
+target is a frame, never an `ActivationReference`: a release build has no
+generation to tell two activations at one index apart, while a frame is
+divorced on its activation's pop and married to nothing afterwards, so a
+target popped meanwhile is found dead rather than mistaken for its successor
+(`interpreter::unwind`'s `a_target_survives_its_index_being_reused`). The
+unwinder asks the frame for its activation afresh each time it carries on,
+and compares only that handle (`ActivationReference::same`). The depth
+limit's reserve is held by a frame for the same reason ("The depth limit"
+below).
 
 **An initializer home follows the same rule.** A block created during
 initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization has
@@ -507,8 +557,9 @@ finished raises `cannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because
 the initializer's frame was divorced when its activation returned. A `^` into an
 initializer that is still running escapes: an initializer activation catches
 no return, so the unwind pops it with everything else down to the floor of the
-host's run and leaves with the signal, and it reaches the top of the entry
-send as "internal: non-local return escaped the entry send", a known gap
+host's run, running every pending `ensure:` block on its way, and leaves
+with the signal, and it reaches the top of the entry send as "internal:
+non-local return escaped the entry send", a known gap
 (`crates/ns-runtime/tests/trampoline.rs` pins it under both lowerings).
 
 A method body's own `^` is an ordinary `Return` and raises no signal. The
@@ -3708,7 +3759,10 @@ two instructions), and so does `push_activation` on the activation
 description `push_step` writes as a doubleword and a quadword and reads as
 one 16-byte field. None of them moved with this branch. Handing a `Value`
 back in a form that is written the way it is read is an open performance
-item, not part of this measurement.
+item, not part of this measurement. This profile predates `1d7587f` (below,
+"What exceptions cost"), which moved `decide_slot_accessor`'s error out of
+line and with it the spill inside the accessor; the shares above have not
+been profiled again since.
 
 **`vm::run`'s step is still one function.** A release build with debug
 information of each tree, `dumpbin -disasm`: one function label
@@ -3720,6 +3774,202 @@ has no label of its own and so is inlined into each,
 `inline_cache::global_hit` shrank from 1,040 to 1,004, and each of the three
 `inline_cache::miss` instances grew by 135 to 144; `resolve_class_side` is
 gone.
+
+### What exceptions cost
+
+Exceptions ([core-library.md](core-library.md), "Exceptions") changed four
+things a release build runs whether or not a program uses them. A signal
+leaving an activation goes to the one unwinder (`interpreter::unwind`, "Unwinding"
+above), which reads each popped activation's unwind marker; a counted push
+checks its depth with the one compare it had, the reserve's logic moved to a
+cold `push_past_the_limit`; `Continuation` gained the variants an unwind and
+a signalled VM error resume with; and a `doesNotUnderstand:` now runs
+`Object>>doesNotUnderstand:`, which builds a `MessageNotUnderstood` and a
+`Message`, where a mirror row answered it in Rust.
+
+**The sources.** The four fixtures under `goldens/bench/` use no exception.
+Four throwaway sources, not fixtures, each printing what it accumulates:
+
+- `bench_ensure.ns`: 100,000 iterations of
+  `[count:: count + 1] ensure: [total:: total + 1]` and
+  `[count:: count + 1] on: Error do: [:e | 0]`, nothing signalled.
+- `bench_value.ns`: its control, the same three block bodies each sent
+  `value`, runnable on both trees.
+- `bench_signal.ns`: 10,000 iterations of
+  `[self down: 19] on: Error do: [:e | 1]`, where `down:` recurses twenty
+  activations and the last signals `Error signal: 'deep'`.
+- `bench_deep.ns`: its control, the same recursion answering `1` instead of
+  signalling, sent `value` in a block, runnable on both trees.
+
+`bench_ensure.ns` and `bench_signal.ns` cannot run on the base, which has no
+`platform kernel`, so they are measured on the head alone against their
+controls.
+
+**Measured 2026-09-26, `3d5f69c` against `3cbfd31`**, the `master` it
+started from, by the protocol of "What `Behavior`, `Class` and `Metaclass`
+cost" above: each tree built plain and with `-C metadata=layoutprobe` and
+`=secondprobe`, every build with the pinned flags, the six binaries
+differing byte for byte, none importing `VCRUNTIME140.dll`, each printing
+the expected answer for every source it can run first;
+`ns-next bench <source> --iterations 30`, five rounds a sitting, the six
+binaries rotating by one position from round to round, four sittings.
+Medians in ms per layout, the four sittings pooled (the median of the 20
+round medians):
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.32 | 7.35 | 7.30 | 7.19 | 7.20 | 7.22 |
+| `bench_send.ns` | 8.79 | 8.75 | 8.74 | 8.92 | 8.88 | 8.90 |
+| `bench_block.ns` | 16.45 | 19.25 | 19.24 | 20.20 | 20.23 | 20.19 |
+| `bench_megamorphic.ns` | 11.62 | 11.64 | 11.66 | 11.50 | 11.50 | 11.45 |
+| `bench_value.ns` | 43.90 | 44.07 | 44.00 | 45.88 | 46.09 | 46.07 |
+| `bench_deep.ns` | 16.34 | 16.18 | 16.24 | 17.31 | 17.35 | 17.21 |
+| `bench_ensure.ns` | -- | -- | -- | 60.66 | 60.36 | 60.40 |
+| `bench_signal.ns` | -- | -- | -- | 78.44 | 82.89 | 82.82 |
+
+The base's three layouts against the head's three, means of the layout
+medians, and the range of every round median of each tree:
+
+| Source | `3cbfd31` | `3d5f69c` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.32 | 7.21 | −1.6% | −1.0% / −1.1% / −1.2% / −1.5% | 7.15–8.48 / 7.04–8.30 |
+| `bench_send.ns` | 8.76 | 8.90 | +1.6% | +1.8% / +2.4% / +0.7% / +1.3% | 8.59–9.66 / 8.65–9.54 |
+| `bench_block.ns` | 18.31 | 20.21 | see below | +10.4% / +10.4% / +10.1% / +10.5% | 16.22–19.70 / 19.76–20.65 |
+| `bench_megamorphic.ns` | 11.64 | 11.48 | −1.3% | −1.3% / −1.9% / −1.3% / −1.0% | 11.42–12.05 / 11.34–11.95 |
+| `bench_value.ns` | 43.99 | 46.01 | **+4.6%** | +5.0% / +3.7% / +4.3% / +3.7% | 43.05–45.71 / 45.17–47.87 |
+| `bench_deep.ns` | 16.26 | 17.29 | **+6.4%** | +6.5% / +6.3% / +6.4% / +6.0% | 16.04–16.93 / 17.08–17.75 |
+
+**Two fixtures are level, one is 1.6% slower.** `bench_loop.ns` and
+`bench_megamorphic.ns` are 1.6% and 1.3% faster in every sitting.
+`bench_send.ns` is 1.6% slower in every sitting, though the ranges of the
+two trees' rounds overlap.
+
+**Block activation and deep returns were slower, beyond noise, and the
+cause was two defects, one of them older than the branch.** At `3d5f69c`
+`bench_block.ns`, the bimodal source, was 5.0% slower slow layout against
+slow layout (the base drew one fast layout, 16.45, the head none),
+`bench_value.ns` 4.6% and `bench_deep.ns` 6.4%, with nothing of the
+exception protocol running in either control. Bisected over the branch's
+commits, two builds of each, the two controls moved at different commits,
+and each has its own cause:
+
+- **`bench_deep.ns`: `Signal` grew.** It moved at `8aa49e8`, which gave
+  `Signal` a `Terminate(NewspeakError)` beside `Error(NewspeakError)`. With
+  two variants holding a `NewspeakError` in place the others no longer fit
+  in its niche: `Signal` went from 48 bytes to 56, `EvaluationResult` from
+  48 to 56 and every `Result<Step, Signal>` a send decides from 56 to 64
+  (`size_of` in release builds of both trees; `Step`, `Flow`,
+  `Continuation` and `Popped` did not move). Boxing `Terminate` alone gave
+  back all of it (`f518988`), and a release-only test pins the three sizes.
+- **`bench_value.ns` and `bench_block.ns`: an arena reallocated at every
+  collection.** `bench_value.ns` moved at `85d629d`, which changes no code
+  on the path at all -- `vm::run` and `decide_slot_accessor` are the same
+  instructions in both builds -- but declares the exception classes, so the
+  live set a collection leaves grew from 57 objects to 72. A profile put
+  the difference in page faults: kernel-mode samples under
+  `Heap::allocate_object` went from 14 to 349, with `Vec<Object>`'s
+  `grow_one` and the collector's `memset` beside them. Compaction shrank an
+  arena to twice its live set once three quarters of it was idle, while
+  the next collection is requested only when the arena reaches
+  `max(floor, 2 x live)`; under the 4,096-slot floor the two part, and every
+  collection cut the object arena to 144 slots, which the next cycle grew
+  back to the floor through five reallocations, each a copy and fresh
+  pages. The base did the same with 114 slots and six reallocations, which
+  happened to fault less. `compact_arena` now measures against the limit
+  (`collection_limit`, which `reset_collection_limits` shares): a buffer
+  within twice the limit is kept, one past it is cut back to the limit
+  (`c5b1f2b`) -- the old rule wherever the live set is above half the
+  floor. That gave back all of `bench_value.ns` and more of
+  `bench_block.ns` than the branch had cost it.
+
+What was ruled out on the way: the lead from the first profile, `Heap::reify`
+out of line from `vm::run`, is real but small -- splitting it into an inline
+check of `reified` and an out-of-line creation measured about 1% on
+`bench_value.ns`, within the rounds' spread, and was not kept; the process
+environment's size, which moves the native stack, left the `bench_value.ns`
+gap where it was at five paddings from 0 to 3,000 bytes; and forty unused
+methods added to `Kernel.ns` on the base, a data change with no new class,
+moved nothing.
+
+**A third defect, found while profiling what was left.** After those two,
+`bench_loop.ns` measured 1.9% slower than the base and `bench_megamorphic.ns`
+0.9%. A profile of `bench_loop.ns` put a third of its samples in
+`Mutator::decide_slot_accessor` -- every slot read and write -- most of them
+on reloading the field from a stack slot it had just been spilled to and
+storing it into the step; the function is the same instructions in both
+trees, so its cost moves with its surroundings rather than with anything the
+branch changed in it. It built its answer through `Option` combinators ending
+in an `ok_or_else` whose closure formats the error, and compiled in place that
+closure gave the accessor a frame. Written as early returns with the error in
+a `#[cold]`, `#[inline(never)]` function (`1d7587f`), the accessor is a leaf
+that moves the field straight into the step.
+
+**Measured 2026-09-26, `1d7587f` against `3cbfd31`**, by the same protocol:
+the same three base binaries, the head built plain and with
+`-C metadata=layoutprobe` and `=secondprobe`, pinned flags, four sittings of
+five rounds, rotating. Medians in ms per layout, the sittings pooled:
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.28 | 7.28 | 7.26 | 5.51 | 5.50 | 5.50 |
+| `bench_send.ns` | 8.71 | 8.71 | 8.68 | 7.09 | 7.07 | 7.09 |
+| `bench_block.ns` | 16.36 | 19.08 | 19.19 | 14.82 | 14.78 | 14.79 |
+| `bench_megamorphic.ns` | 11.58 | 11.60 | 11.65 | 10.22 | 10.20 | 10.24 |
+| `bench_value.ns` | 43.71 | 43.81 | 43.96 | 38.30 | 37.83 | 38.15 |
+| `bench_deep.ns` | 16.53 | 16.12 | 16.17 | 15.88 | 15.87 | 15.83 |
+
+| Source | `3cbfd31` | `1d7587f` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.27 | 5.50 | −24.3% | −25.0% / −24.0% / −25.7% / −25.1% | 7.16–8.40 / 5.40–6.65 |
+| `bench_send.ns` | 8.70 | 7.08 | −18.6% | −18.3% / −19.1% / −18.8% / −19.0% | 8.55–9.02 / 6.91–7.40 |
+| `bench_block.ns` | 18.21 | 14.80 | −18.7% | −18.5% / −18.8% / −17.9% / −19.0% | 16.10–19.48 / 14.45–15.03 |
+| `bench_megamorphic.ns` | 11.61 | 10.22 | −12.0% | −11.6% / −11.8% / −12.0% / −11.3% | 11.34–12.00 / 9.93–10.46 |
+| `bench_value.ns` | 43.82 | 38.09 | −13.1% | −12.9% / −13.5% / −12.5% / −12.7% | 42.60–44.88 / 37.27–40.09 |
+| `bench_deep.ns` | 16.27 | 15.86 | −2.5% | −3.0% / −2.6% / −2.7% / −2.4% | 15.82–17.15 / 15.59–16.79 |
+
+Every source is faster than the base in every sitting, and the head's layouts
+agree to within 1.3% on each; `bench_block.ns` no longer draws a slow layout
+in any of the three builds. Attributed by builds of each commit on its own,
+two layouts each, five rounds: the arena accounts for `bench_block.ns`
+(20.2 → 16.7 ms) and `bench_value.ns` (46.0 → 43.4), `Signal` for
+`bench_deep.ns` (17.4 → 16.4), and the slot accessor for most of the rest,
+`bench_loop.ns` 7.3 → 5.5, `bench_send.ns` 8.8 → 7.1–7.4 and
+`bench_megamorphic.ns` 11.7 → 10.2. Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero.
+
+**What the protocol costs when nothing is signalled**, measured at
+`3d5f69c`, before the three fixes above. `bench_ensure.ns`
+runs the same three block bodies as `bench_value.ns`, one as an `ensure:`
+receiver, one as its argument, one as an `on:do:` receiver: 60.47 ms
+against 46.01, about **145 ns an iteration for one `ensure:` and one
+`on:do:`** that signal nothing -- each is a Newspeak method that marks its
+activation and sends `value`, and `ensure:` then sends `value` to its
+argument itself.
+
+**What a signal costs.** `bench_signal.ns` takes 81.38 ms (the mean of the
+three layouts; 78.44 to 82.89 between them), against 17.29 for
+`bench_deep.ns`, the same recursion answering instead of signalling: about
+**6.4 µs for each `Error signal:` caught twenty activations up**, which is
+`signal`'s search in Newspeak over the activation leaves, the handler's
+activation, and the unwind of the twenty activations and the handler's
+own to the `on:do:`.
+
+**`vm::run`'s step is still one function, and `push` still inlines.** At
+`3d5f69c`, a release build with debug information of each tree, pinned flags,
+`dumpbin -disasm`: one function label `ns_runtime::vm::run` in each and no
+`vm::run::closure`. The base has **6,741 instructions** and the head
+**6,603**. `Mutator::push` has no label in either build: it is inlined into
+`push_step` and `push_initializer`, which call `Heap::push_activation` from
+the same five sites as the base (four and one); `push_past_the_limit` is a
+function of its own (`#[cold]`, `#[inline(never)]`) called from those same
+five sites, so the path below the limit is the one compare it was. Other
+sizes that moved: `push_step` from 1,361 to 1,214 instructions, `vm::finish`
+from 606 to 716, `vm::unwind` from 177 to 1,942 (the unwinder's outcome
+handling, with `interpreter::unwind::unwind`, 439, out of line), and
+`Heap::reify` (258) now has a label of its own. At `d7a6680`, after the
+three fixes above, the same check finds one `ns_runtime::vm::run` label and no
+`vm::run::closure`, `vm::run` at 6,486 instructions, `vm::finish` at 664, and
+`decide_slot_accessor` at 80 with its error, `no_field_for_slot_accessor`
+(84), a function of its own.
 
 ## The trampoline
 
@@ -3813,8 +4063,9 @@ exempt ones as blocks nest — each exempt block was created by the activation
 below it, so a chain of them descends the lexical nesting — and blocks nest at
 most 128 deep, the parser's ceiling in source and the decoder's, derived from
 it, in an artifact ([image-format.md](image-format.md), "Verification"). So the
-stack holds at most 129 × L entries, 12.9 million, whose entries alone take
-about 1.3 GB in a release build (104 bytes each, before their registers). Only
+stack holds at most 129 × (L + `DEPTH_RESERVE`) entries, the reserve below
+included, 13.0 million, whose entries alone take about 1.35 GB in a release
+build (104 bytes each, before their registers). Only
 code that carries `SendInlinable` gets there — the reference lowering's, or an
 artifact's — recursing through 128 nested control-flow blocks at every level;
 the optimized lowering never emits it, so under it the stack holds at most L
@@ -3822,15 +4073,73 @@ entries. The limit agrees under both lowerings, because the control-flow
 natives, `do:`, instantiation and the nested-class accessor are all trampoline
 steps: no recursion costs native stack under one lowering and not the other.
 The error text does not name its number, as Lua's, CPython's, V8's and Nova's
-do not, so that changing the value later changes no recorded answer. It
-unwinds to the entry send like every other Newspeak error; nothing catches it
-yet.
+do not, so that changing the value later changes no recorded answer. It is
+signalled as an `Error` like every other Newspeak error, so `on: Error do:`
+catches it, and an uncaught one ends the run as before.
+
+**The limit keeps a reserve for signalling it** (decided with the user on
+2026-09-25): `DEPTH_RESERVE`, 1,000 activations, as CPython allows a little
+headroom above its recursion limit for the `RecursionError`'s handler and
+HotSpot unprotects its stack's yellow zone for the `StackOverflowError`'s.
+`signal`, the handler search and the handler are activations too, so
+without it an error raised a few activations below L — L's own included —
+could only end the run as L, uncatchable and under the wrong name.
+
+- **Who takes it.** `unwind::start_signalling`, signalling any VM error
+  within `DEPTH_RESERVE` counted activations of L, and `act_handler_method`,
+  activating the kernel's own `Object>>doesNotUnderstand:` there
+  (`Mutator::take_depth_reserve_for_does_not_understand`) — §5.5 makes a
+  message nothing understood the VM's error as much as any other. A
+  program's own `signal` takes none: one signalled at L is refused as any
+  push is, and the refusal is L's error, signalled and catchable. An error
+  far from L takes nothing, so its handler meets L where any code does.
+- **What holds it.** `Mutator.depth_reserve`, the `FrameReference` of the
+  activation the error arose in, counts as held while that frame is married
+  to a running activation and the activation directly above it
+  (`Heap::activation_above`) is the error's `signal`, marked by
+  `Continuation::VmErrorSignalled`, or the kernel's `doesNotUnderstand:`
+  (`Mutator::holds_the_depth_reserve`). A frame and not a stack index: a
+  frame is divorced on its activation's pop and married to nothing again,
+  where an index is reused, and a later signal at the same index — possibly
+  far from L — must not inherit the reserve
+  (`interpreter::unwind`'s `a_later_signal_at_the_same_index_does_not_inherit_the_reserve`).
+  `depth_reserve_held` forgets a reserve it finds no longer held, so the pop
+  that ended it pays nothing, and `Interpreter::run_from_host` releases it
+  when a host's run ends.
+- **What it allows.** `Mutator::push`'s check is the one compare it always
+  was; only a counted push at L reaches the cold `push_past_the_limit`,
+  which refuses it with L's error unless the reserve is held, and allows it
+  up to L + `DEPTH_RESERVE` if it is.
+- **What an overrun ends with.** A push past the reserve answers
+  `Signal::Terminate`, so the run ends at once and uncatchably, running the
+  pending `ensure:` blocks on the way, with the error
+  `Mutator::overrun_of_the_reserve` picks by walking down from the top of
+  the stack, once per run. If the holder nearest the top is still in the
+  signalling machinery's hands — its exception still searching for a
+  handler, after `signal` or a `pass` (`Exception`'s `searching` slot), or
+  running its default action (`reachedDefault`), or the kernel's
+  `doesNotUnderstand:` still building its exception — the run ends with
+  that error, as it would have had there been room to signal it; an error
+  the search itself raised, a `handles:` nothing understands, belongs to
+  the search it arose in, so the walk reports the outermost of a run of
+  such holders. If a handler, or anything run once one was found, overran
+  it, the run ends with L's own error, "stack overflow: recursion too deep".
+  A `signal` push that the used-up reserve refuses ends the run with the
+  error being signalled, the same way.
+
+`goldens/exceptions/the_depth_limit_is_caught`,
+`an_error_just_below_the_depth_limit_is_caught`,
+`a_message_not_understood_just_below_the_depth_limit_is_caught`,
+`recursion_through_on_do_counts_alike` and
+`a_handler_overrunning_the_reserve_ends_the_run` pin it from source, and
+`crates/ns-runtime/tests/exceptions.rs` the uncaught cases at L − 3, L − 1,
+L and L + 1 and the overruns of the machinery, a `pass`'s included.
 
 - **L is checked on every push.** `Mutator::push`, the one function every
   activation the runtime pushes goes through, refuses a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
-  `vm::unwind` like any other — leaves it exact. Whether an activation counts
+  `interpreter::unwind` like any other — leaves it exact. Whether an activation counts
   is recorded on its stack entry. Only the block arm of
   `Mutator::push_step` ever records an exemption; a method, and every body
   an instantiation or a nested-class accessor runs — an initializer level, a
@@ -3893,7 +4202,7 @@ for.
 ### What the golden outcomes are trusted on
 
 `Signal::Return` is an unwind of the activation stack to its target entry
-("Non-local return" above), with the semantics it had when it propagated
+("Unwinding" above), with the semantics it had when it propagated
 through Rust `?`. This is the part of the trampoline the golden outcomes are
 trusted hardest on: the reference lowering runs on the same VM, so it cannot
 cross-check the unwind — both ways of running a program unwind through the
@@ -3997,7 +4306,7 @@ when these paths ran in nested runs of the loop.
   index, so an image's clause body can overwrite the slot, and a debug build
   counts the marks rather than asserting on the slot's contents, which such an
   image could turn into a panic. `abandon` is `resume`'s counterpart for a
-  continuation whose activation `vm::unwind` throws away rather than returns
+  continuation whose activation the unwinder throws away rather than returns
   from: the loop forwards every popped entry's continuation to it and decides
   nothing, as `vm::finish` forwards to `resume`.
 - **Instantiation** (`interpreter/instantiate.rs`) is a state machine.
@@ -4578,6 +4887,38 @@ second did not. "What closure conversion moved", in the measurements section
 above, is the measurement, with the reasoning for why the memory moved the way
 it did and how far that reasoning is evidence.
 
+## Planned: tail calls, skipped but kept
+
+**Status: a direction the user set on 2026-09-25, not designed and not
+built.** Today every send pushes an activation and nothing is eliminated.
+§3.6 specifies tail-call elimination through the continuation object —
+when the sender has nothing left to do, the invoked activation's
+continuation is the sender's own — "to the extent that it is observable",
+marks it "Unimplemented", and in the same section requires that
+"programming environments must always allow developers to retain
+activations during debugging", noting that elimination "runs counter to
+Newspeak philosophy" when it throws history away.
+
+**The direction is the middle way, not a debug switch.** Making elimination
+depend on a debug mode was considered and rejected for two reasons:
+elimination is observable through stack depth, so a program that runs with
+it would hit the depth limit without it, and the recorded outcomes would
+depend on the mode; and a live system has no mode decided in advance — the
+debugger opens on an uncaught error, a `halt` or an interrupt, by which time
+eliminated activations would be gone. Instead, when it is built, a tail send
+**skips** the sender in the continuation — the return goes straight to the
+sender's continuation, which is what makes the stack not grow — while the
+skipped activations stay reachable for the debugger, as the specification's
+split between continuation and activation allows; MIT Scheme's bounded
+history of eliminated frames is the prior art for keeping the recent ones
+visible without keeping all of them. How much is kept is for the design to
+settle.
+
+**One constraint is fixed already:** an activation the exception machinery
+marks — `on:do:`, whose `^self value` is a tail send — is never skipped, or
+`signal` would no longer find its handler. `ensure:` is never in tail
+position, since `onUnwind value` follows `self value`.
+
 ## Planned: JIT tiers
 
 Beyond inline caches nothing is designed. The tiering model is sketched in
@@ -4625,7 +4966,16 @@ binds it is that no native code may ever enter an image.
   L = 100,000 activations, counted alike under both lowerings, because a
   callback native would make the reference lowering's native stack grow with
   source nesting; with no re-entry from Rust left, nothing else can run out
-  first ("The depth limit").
+  first ("The depth limit"). It keeps a reserve of 1,000 above it for
+  signalling the errors raised near it (decided with the user on
+  2026-09-25), held by a frame, not a stack index.
+- **One unwinder, aimed at a frame** (decided with the user on 2026-09-25,
+  "Unwinding"): non-local return, the exceptions' `return:`, `retry` and
+  `resume:`, and termination all go through `interpreter::unwind`, which
+  runs `ensure:` and `ifCurtailed:` blocks as trampoline steps rather than
+  calling back into Newspeak, and whose target is a `FrameReference`,
+  because code runs while an unwind is in progress and a release build
+  does not check an activation's generation.
 - **Rust does not re-enter the run loop** (decided 2026-09-13, "No re-entry
   from Rust"): `do:`, instantiation and the nested-class accessor are
   trampoline steps, so that no Rust frame is live below a safepoint and the

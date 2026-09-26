@@ -1271,6 +1271,7 @@ mod tests {
             family_size,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: Span::new(0, 0),
         })
     }

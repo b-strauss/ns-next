@@ -60,6 +60,11 @@ pub enum ObjectData<'gc> {
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
     /// "The dispatch id").
     Class(Box<ClassData<'gc>>),
+    /// An instance of the kernel-private `Activation` class: a reified
+    /// activation, reachable only from `Kernel.ns`, which the exception
+    /// machinery walks and unwinds to. It stores the `FrameReference`, never
+    /// an `ActivationReference`, since only a reified frame outlives its pop.
+    Activation(FrameReference<'gc>),
 }
 
 /// §3.1.1's enclosing-object condition on a value class -- every enclosing
@@ -263,6 +268,26 @@ pub enum BuiltinClass {
     Class,
     /// §3.2: every metaclass is an instance of `Metaclass`.
     Metaclass,
+    /// A running activation as an object (`docs/design/core-library.md`,
+    /// "Exceptions"): the frame it wraps, and nothing a program can
+    /// reach -- it reads other frames and unwinds stacks, a capability
+    /// Newspeak hands out only through mirrors. No program can name it:
+    /// `Object` declares no accessor for it, and the image decoder refuses
+    /// its tag wherever the graph names a class, as it refuses `Top`'s.
+    Activation,
+    /// §8.6: exception handling, built here over the activation. The root
+    /// of the exception hierarchy; its slots are the exception's own state.
+    Exception,
+    Error,
+    MessageNotUnderstood,
+    /// A reified message send: the selector and arguments a
+    /// `doesNotUnderstand:` was sent, or a `MessageNotUnderstood`'s own
+    /// `message`.
+    Message,
+    Halt,
+    /// `platform kernel`: the kernel classes a program may name, as
+    /// Primordial Soup's `Kernel wrapping:` facet answers them.
+    KernelNamespace,
 }
 
 impl BuiltinClass {
@@ -274,7 +299,7 @@ impl BuiltinClass {
     /// siblings. So this is *not* a superclass-first order: the kernel phase
     /// sorts the kinds by their depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 22] = [
+    pub const ALL: [BuiltinClass; 29] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -297,6 +322,13 @@ impl BuiltinClass {
         BuiltinClass::Behavior,
         BuiltinClass::Class,
         BuiltinClass::Metaclass,
+        BuiltinClass::Activation,
+        BuiltinClass::Exception,
+        BuiltinClass::Error,
+        BuiltinClass::MessageNotUnderstood,
+        BuiltinClass::Message,
+        BuiltinClass::Halt,
+        BuiltinClass::KernelNamespace,
     ];
 }
 
@@ -464,6 +496,46 @@ pub enum Continuation<'gc> {
     /// carry the walk on (`Mutator::advance_instantiation`). The last
     /// initializer's activation delivers instead (`descend_levels` says why).
     Instantiate(Box<Instantiation<'gc>>),
+    /// An `ensure:` or `ifCurtailed:` block the unwinder started returned:
+    /// carry the unwind on (`interpreter::unwind`). Abandoned with its
+    /// activation when a newer unwind or an error pops it first.
+    Unwind(Box<PendingUnwind<'gc>>),
+    /// The `signal` the run loop sent to the `Error` a VM error became
+    /// (`Mutator::signal_vm_error`) returned: an `Error` is not resumable,
+    /// so returning here means nothing ended the signal as it should have,
+    /// and the run ends with the error as it would have before there were
+    /// exceptions. Boxed so that every other continuation stays as small as
+    /// it was.
+    VmErrorSignalled(Box<NewspeakError<'gc>>),
+}
+
+/// An unwind in progress (`interpreter::unwind`): where it is going and what
+/// happens there. Boxed in a `Continuation::Unwind` while one of the blocks
+/// it runs on its way is running, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct PendingUnwind<'gc> {
+    /// The frame the unwind ends at, never the activation: code runs while
+    /// the unwind is in progress, and an activation pushed meanwhile can
+    /// reuse a popped activation's stack index, where a reified frame keeps
+    /// its identity and says whether it still runs
+    /// (`Heap::frame_activation`). `None` is the floor of the run.
+    pub(crate) target: Option<FrameReference<'gc>>,
+    pub(crate) action: UnwindAction<'gc>,
+}
+
+/// What an unwind does once it arrives.
+#[derive(Debug, Clone)]
+pub enum UnwindAction<'gc> {
+    /// A non-local return, or `Exception>>return:` and `resume:`: the
+    /// target returns this value.
+    Return(Value<'gc>),
+    /// `Exception>>retry`: the target, an `on:do:` activation, runs again
+    /// from its first instruction, its registers kept.
+    Restart,
+    /// An unhandled exception's `defaultAction`: the unwind has no target,
+    /// runs every pending `ensure:` and `ifCurtailed:` block down to the
+    /// run's floor, and the run then leaves with this error.
+    Terminate(NewspeakError<'gc>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its

@@ -24,6 +24,7 @@ use crate::interpreter::locals::{
     load_vector, read_local, read_outer_local, store_instance_field, store_vector, write_local,
     write_outer_local,
 };
+use crate::interpreter::unwind::UnwindOutcome;
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
 };
@@ -700,47 +701,50 @@ fn resume_caller<'gc>(
     }
 }
 
-/// A signal leaving the running activation. A non-local return whose target
-/// is one of this run's activations and catches a return (a method, or a
-/// superclass clause or its message -- `Mutator::catches_return`) ends
-/// there: everything above the target is popped and the target returns the
-/// value. Anything else pops every activation of the run, `base` included,
-/// and leaves `run` with the signal, for the host that started the run
-/// (`Interpreter::run_from_host`).
+/// A signal leaving the running activation, handed to the one unwinder
+/// (`interpreter::unwind`), whose outcome the loop only carries out: the
+/// target returns its value, a block the unwind runs on its way -- or the
+/// `signal` an error became -- is pushed and switched to, or the run ends.
+/// Deciding which is `interpreter/`'s, so a JIT reaches the same unwinding
+/// (`docs/design/execution.md`, "Unwinding").
 ///
-/// A target that catches no return -- a running initializer -- is popped
-/// with the rest, and the signal goes on naming it, out to the host: the
-/// known gap in `docs/design/execution.md`, "Non-local return". Liveness is
-/// asked first, because it is the one question a handle whose entry may
-/// have been popped can be asked (`Heap::activation_is_live`). Every
-/// activation it pops hands its continuation to `Mutator::abandon`, which
-/// undoes what a continuation that will now never run had begun.
-fn unwind<'gc>(mutator: &mut Mutator<'gc>, signal: Signal<'gc>, floor: usize) -> Flow {
-    if let Signal::Return(target, value) = &signal {
-        let (target, value) = (*target, *value);
-        if mutator.heap.activation_is_live(target)
-            && mutator.heap.activation_position(target) >= floor
-            && mutator.catches_return(target)
-        {
-            while let Some(top) = mutator.heap.top_activation() {
-                if top.same(target) {
-                    break;
-                }
-                let popped = mutator.heap.pop_activation(top);
-                mutator.abandon(popped.then);
+/// A block's push the depth limit refuses raises a signal that is unwound in
+/// turn, hence the loop rather than a recursion. It ends: the unwinder marks
+/// each block run before answering it, so no block is answered twice and
+/// every refusal leaves one pending block fewer on the stack.
+fn unwind<'gc>(mutator: &mut Mutator<'gc>, mut signal: Signal<'gc>, floor: usize) -> Flow {
+    loop {
+        let next = match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
+            UnwindOutcome::Returned { target, value } => {
+                return finish(mutator, target, value, floor)
             }
-            return finish(mutator, target, value, floor);
-        }
+            UnwindOutcome::Restarted { target } => {
+                return Flow::Switch {
+                    activation: target,
+                    code: mutator.heap.activation_code(target),
+                    program_counter: 0,
+                    feedback_base: mutator.heap.activation_feedback_base(target),
+                }
+            }
+            UnwindOutcome::Signalling(next) => next,
+            UnwindOutcome::RunBlock { block, then } => {
+                match mutator.start_unwind_block(block, then) {
+                    Ok(next) => next,
+                    Err(refused) => {
+                        signal = refused;
+                        continue;
+                    }
+                }
+            }
+            UnwindOutcome::Exit(result) => return Flow::Exit(mutator.to_host(result)),
+        };
+        return Flow::Switch {
+            activation: next,
+            code: mutator.heap.activation_code(next),
+            program_counter: 0,
+            feedback_base: mutator.heap.activation_feedback_base(next),
+        };
     }
-    while mutator.heap.activation_depth() > floor {
-        let top = mutator
-            .heap
-            .top_activation()
-            .expect("internal: a stack deeper than the floor has a top");
-        let popped = mutator.heap.pop_activation(top);
-        mutator.abandon(popped.then);
-    }
-    Flow::Exit(mutator.to_host(Err(signal)))
 }
 
 /// The register a send writes its value to: where a callee's value goes when

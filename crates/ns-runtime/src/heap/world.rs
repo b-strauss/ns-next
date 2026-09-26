@@ -42,6 +42,9 @@ impl World {
                 argument_buffer: Vec::new(),
                 next_dispatch_id: 0,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
+                unhandled_exceptions_to_resume: 0,
+                depth_reserve: None,
+                taking_depth_reserve: false,
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());
@@ -140,7 +143,7 @@ impl World {
 
     /// Marks everything reachable: the heap's own roots, then the step state's
     /// -- the bootstrap's builtin classes, the `platform` singleton, the VM
-    /// mirror and the kernel -- then the traversal.
+    /// mirror, the kernel and the depth limit's reserve -- then the traversal.
     pub(crate) fn mark_everything_reachable(&mut self) -> crate::heap::mark::Marker {
         use crate::trace::Tracer;
         let mutator = &mut self.mutator;
@@ -156,6 +159,9 @@ impl World {
         }
         if let Some(kernel) = &mut mutator.kernel {
             marker.value(kernel);
+        }
+        if let Some(frame) = &mut mutator.depth_reserve {
+            marker.frame(frame);
         }
         mutator.heap.drain_marking(&mut marker);
         marker
@@ -196,8 +202,8 @@ impl World {
     }
 
     /// Forwards what the step state holds beside the heap: the bootstrap's
-    /// builtin classes, the `platform` singleton, the VM mirror and the
-    /// kernel. Shared by `move_everything` and `collect`, which forward the
+    /// builtin classes, the `platform` singleton, the VM mirror, the
+    /// kernel and the depth limit's reserve. Shared by `move_everything` and `collect`, which forward the
     /// same roots after the heap has forwarded its own -- one copy so a root
     /// added here later cannot land in one caller's walk and not the other's.
     fn forward_step_state<M: crate::heap::Relocation>(
@@ -217,6 +223,9 @@ impl World {
         }
         if let Some(kernel) = &mut mutator.kernel {
             forwarder.value(kernel);
+        }
+        if let Some(frame) = &mut mutator.depth_reserve {
+            forwarder.frame(frame);
         }
     }
 

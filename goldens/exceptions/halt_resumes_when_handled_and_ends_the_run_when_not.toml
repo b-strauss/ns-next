@@ -1,0 +1,8 @@
+status = 1
+stdout = '''
+3
+7
+'''
+stderr = '''
+Uncaught Newspeak error: Halt
+'''

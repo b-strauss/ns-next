@@ -188,6 +188,8 @@ fn retired_object_body_tags_are_refused() {
         OBJECT_ARRAY,
         OBJECT_CLOSURE,
         OBJECT_CLASS,
+        OBJECT_METACLASS,
+        OBJECT_ACTIVATION,
     ];
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -217,6 +219,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_CLOSURE, 6);
     assert_eq!(OBJECT_CLASS, 7);
     assert_eq!(OBJECT_METACLASS, 8);
+    assert_eq!(OBJECT_ACTIVATION, 9);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_BUILTIN, 1);
@@ -264,6 +267,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_CLOSURE,
             OBJECT_CLASS,
             OBJECT_METACLASS,
+            OBJECT_ACTIVATION,
         ],
         &[MIXIN_ROW, MIXIN_BUILTIN],
         &[
@@ -327,6 +331,13 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Behavior), 20);
     assert_eq!(builtin_class_tag(BuiltinClass::Class), 21);
     assert_eq!(builtin_class_tag(BuiltinClass::Metaclass), 22);
+    assert_eq!(builtin_class_tag(BuiltinClass::Activation), 23);
+    assert_eq!(builtin_class_tag(BuiltinClass::Exception), 24);
+    assert_eq!(builtin_class_tag(BuiltinClass::Error), 25);
+    assert_eq!(builtin_class_tag(BuiltinClass::MessageNotUnderstood), 26);
+    assert_eq!(builtin_class_tag(BuiltinClass::Message), 27);
+    assert_eq!(builtin_class_tag(BuiltinClass::Halt), 28);
+    assert_eq!(builtin_class_tag(BuiltinClass::KernelNamespace), 29);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);

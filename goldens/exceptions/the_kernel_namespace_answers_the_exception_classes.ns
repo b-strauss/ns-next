@@ -1,0 +1,19 @@
+Newspeak3
+'Test'
+(* Programs reach the exception classes through `platform kernel`, as the
+   corpus does (`private Exception = platform kernel Exception.`) and as
+   Primordial Soup's `Kernel wrapping:` facet provides them; `Object`
+   declares no accessor for them. *)
+class TheKernelNamespace usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private kernel = thePlatform kernel. |
+) (
+    public main: platform args: arguments = (
+        transcript show: kernel Exception printString; newLine.
+        transcript show: kernel Error printString; newLine.
+        transcript show: kernel MessageNotUnderstood printString; newLine.
+        transcript show: kernel Halt printString; newLine.
+        transcript show: kernel Message printString; newLine.
+        transcript show: (kernel = platform kernel) printString; newLine.
+    )
+) : ()

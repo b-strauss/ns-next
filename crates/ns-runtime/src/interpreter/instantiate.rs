@@ -33,17 +33,32 @@ const SPARE_LEVELS: usize = 64;
 /// answers the same questions from the same fields. No selector is declared
 /// twice: the resolver has already refused a body that declares one member
 /// twice (`resolver::classes::duplicate_member_names`).
+///
+/// `kernel_block` says `body` is the instance side of the kernel's `Block`,
+/// the one body whose methods may carry an unwind marker
+/// (`compiler::unwind_marker`).
 fn build_methods(
     body: &ast::ClassBody,
     slots: &[MixinSlot],
     bindings: &Rc<HashMap<Span, Binding>>,
     kernel: bool,
+    kernel_block: bool,
     lowering: crate::compiler::Lowering,
 ) -> IdentityMap<Symbol, MethodEntry> {
     let mut methods: IdentityMap<Symbol, MethodEntry> = slot_accessors(slots).into_iter().collect();
     for declaration in &body.methods {
-        let method =
+        let mut method =
             MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, kernel, lowering);
+        if kernel_block {
+            if let Some(marker) =
+                crate::compiler::unwind_marker::recognize(declaration, &method.code)
+            {
+                method.code = Rc::new(crate::bytecode::CompiledCode {
+                    unwind_marker: Some(marker),
+                    ..(*method.code).clone()
+                });
+            }
+        }
         let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));
         debug_assert!(
             previous.is_none(),
@@ -245,11 +260,15 @@ impl<'gc> Mutator<'gc> {
         kernel: bool,
     ) -> Mixin {
         let slots = build_slots(&declaration.instance_side);
+        let kernel_block = kernel
+            && declaration.name.name
+                == super::kernel::kernel_class_name(crate::types::BuiltinClass::Block);
         let methods = build_methods(
             &declaration.instance_side,
             &slots,
             bindings,
             kernel,
+            kernel_block,
             self.lowering,
         );
         let nested = declaration
@@ -336,7 +355,7 @@ impl<'gc> Mutator<'gc> {
         kernel: bool,
     ) -> Rc<Mixin> {
         let slots = build_slots(side);
-        let mut methods = build_methods(side, &slots, bindings, kernel, self.lowering);
+        let mut methods = build_methods(side, &slots, bindings, kernel, false, self.lowering);
         let (selector, entry) = crate::mixin::factory_entry(Some(factory));
         methods.insert(selector, entry);
         let mut mixin = Mixin {

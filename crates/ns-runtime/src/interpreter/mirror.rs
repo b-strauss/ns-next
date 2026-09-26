@@ -108,8 +108,7 @@ pub(crate) fn run_leaf<'gc>(
 /// as any method is.
 ///
 /// `selector` is the send's, which is the method's own and so the row's
-/// reported selector for every send but a `doesNotUnderstand:` handler's,
-/// which passes `Symbol::DOES_NOT_UNDERSTAND`.
+/// reported selector.
 #[inline(always)]
 pub(crate) fn execute_method<'gc>(
     mutator: &mut Mutator<'gc>,

@@ -396,7 +396,7 @@ Compiles to whatever a `^` at the top of the *enclosing* code would: `Return` in
 method body, `NonLocalReturn` in a block body. In an instance initializer it
 compiles to `NonLocalReturn`, and nothing catches it — the same known gap as a
 `^` in a block that runs while its initializer is still running
-([execution.md](execution.md), "Non-local return").
+([execution.md](execution.md), "Unwinding").
 
 ### Testing the fallbacks
 

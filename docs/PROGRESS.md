@@ -18,33 +18,49 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 **Editor support — the language server and the JetBrains plugin — reached
 Built on 2026-09-26** ("Editor support: the language server and the
 JetBrains plugin" below); it runs beside the runtime milestones above rather
-than as one of them, and does not change what is next for the runtime.
+than as one of them. Trying it by hand surfaced a runtime deviation from
+§5.9 still to be scheduled: the resolver recognizes `outer N m` only for an
+uppercase `N` (described at the end of that entry).
 
-**Step 6's third plan, `Behavior`, `Class` and `Metaclass`, is done**
-(2026-09-25;
-[ns-next-class-behavior-metaclass](superpowers/plans/2026-09-25-1331-ns-next-class-behavior-metaclass.md);
-[object-model.md](design/object-model.md), "Class sides and metaclasses"),
-and with it step 6: the three are declared classes of `Kernel.ns`, every
-class object's class is its own metaclass, its class side applied to
-`Class`, every metaclass's class is `Metaclass`, and a class object is a
-value exactly when its enclosing object is, which settles the question left
-open on 2026-09-24 and honours §6.4's "Module definitions are value
-objects"; see "`Behavior`, `Class` and `Metaclass`" below. **The next piece
-of work is step 7, the payload space** (item 4 of the list under "What came
-next was the third plan, now done, and then step 7" below), and it has one question to
-settle before it is planned: the space was ordered after step 6 because a
-Newspeak `OrderedCollection` over a fixed `Array` removes the one payload
-that grows in place (`Heap::array_push`), but `OrderedCollection>>add:` is
-still a forwarder to that leaf, and no plan yet names the step that removes
-it. The reflection work, which needed the reified instance-of relation this
-plan built, can now start as well
+**Exceptions are done** (2026-09-25 to 2026-09-26;
+[ns-next-exceptions](superpowers/plans/2026-09-25-2244-ns-next-exceptions.md);
+[core-library.md](design/core-library.md), "Exceptions"): `Exception`,
+`Error`, `MessageNotUnderstood`, `Halt` and `Message` in `Kernel.ns`, reached
+through `platform kernel`, over kernel-private `Activation` objects; ANSI's
+`on:do:`, `ensure:`, `ifCurtailed:`, `return:`, `retry`, `resume:` and `pass`;
+one unwinder aimed at a `FrameReference`; every VM error and every message
+nothing understands signalled; and a reserve above the depth limit for
+signalling it — see "Exceptions" below. It followed step 6's third plan,
+`Behavior`, `Class` and `Metaclass` (2026-09-25; "`Behavior`, `Class` and
+`Metaclass`" below). **The next piece of work is the platform and
+collections as core-library modules** (decided with the user on
+2026-09-25, [core-library.md](design/core-library.md), "Planned: the
+platform and collections as core-library modules"): `Kernel.ns` keeps only
+what the VM must know, `Platform`, `Transcript`, `Collections` and
+`KernelNamespace` move into a shipped platform module booted with the
+mirror, and a Newspeak `List` over a fixed `Array` in a `Collections.ns`
+module replaces `OrderedCollection`, reporting its errors as exceptions —
+which answers the question step 7 has to settle first. That step must also
+give the kernel's handler search another way to keep the `on:do:`
+activations it passes, which it keeps in an `OrderedCollection` today.
+**Then step 7, the payload space**
+(item 4 of the list under "What came next was the third plan, now done, and
+then step 7" below), whose open question is that one: the space was ordered
+after step 6 because a Newspeak `OrderedCollection` over a fixed `Array`
+removes the one payload that grows in place (`Heap::array_push`), but
+`OrderedCollection>>add:` is still a forwarder to that leaf, and no plan yet
+names the step that removes it. The reflection work, which needed the
+reified instance-of relation step 6's third plan built and can build its
+`ActivationMirror` on the activation objects, can now start as well
 ([liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
-and MirrorBuilder"). An open performance item remains from this plan's
+and MirrorBuilder"). An open performance item remains from the third plan's
 measurement: [execution.md](design/execution.md), "What the profile shows
 beyond it" (after "What `Behavior`, `Class` and `Metaclass` cost") finds
 about a quarter of `bench_send.ns`'s samples sitting on 16-byte loads of
 `Value`s written piecewise, in `decide_slot_accessor`, `vm::make_value` and
-`push_activation`.
+`push_activation` — profiled before the exceptions branch's `1d7587f`
+removed the spill inside `decide_slot_accessor`, so it wants profiling
+again before it is worked on.
 
 Everything the user put ahead of the third plan is done, each described
 below under its own heading: the predefined classes are accessors on
@@ -1949,7 +1965,7 @@ test runs three recursions to 100,000 counted activations under each lowering.
   every other error. `Heap::activation_is_live`'s release-build answer rests on
   nothing being pushed while a signal propagates, so an `ensure:` or `on:do:`
   needs the activation generation in every build first
-  ([execution.md](design/execution.md), "Non-local return").
+  ([execution.md](design/execution.md), "Unwinding").
 - **Suspending a running computation**: a yield path out of the loop, and a way
   past its re-entries from Rust, which went in 2a
   ([image-format.md](design/image-format.md), "Planned: suspend and resume").
@@ -4199,6 +4215,132 @@ from its mixin's name alone, collides for every same-named nested class
 under different enclosing values, which is valid and coarse; and every level
 a `<:` clause adds gets a metaclass no program can send to, part of the
 measured eager cost.
+
+## Exceptions (2026-09-25)
+
+§8.6's exceptions as a library
+([ns-next-exceptions](superpowers/plans/2026-09-25-2244-ns-next-exceptions.md);
+[core-library.md](design/core-library.md), "Exceptions"; built 2026-09-25 to
+2026-09-26). `Kernel.ns` declares `Exception`, `Error`,
+`MessageNotUnderstood`, `Halt`, `Message`, the private `Activation` and
+`KernelNamespace` (builtin class tags 23 to 29), and the platform gains a
+`kernel` slot through which programs name the first five. `signal`, the
+handler search, `return:`, `retry`, `resume:`, `pass` and `defaultAction`
+are Newspeak over ten activation leaves (`builtins/activation.rs`);
+`on:do:`, `ensure:` and `ifCurtailed:` are `Block` methods whose compiled
+code carries an unwind marker (`bytecode::UnwindMarker`,
+`compiler::unwind_marker`). Activations are objects of their own kind,
+`ObjectData::Activation(FrameReference)`, written to an image as
+`OBJECT_ACTIVATION` (body tag 9). One unwinder, `interpreter::unwind`,
+carries every non-local return, `return:`, `resume:`, `retry` and
+termination, running `ensure:` and `ifCurtailed:` blocks as trampoline
+steps, and aims at a `FrameReference` (`Signal::Return` no longer carries an
+`ActivationReference`; `Heap::activation_is_live` is gone). Every VM error
+becomes a signalled `Error` pushed above the activation it arose in, and
+`Object>>doesNotUnderstand:` signals a `MessageNotUnderstood` with a real
+`Message` and re-sends it with the public `sentTo:` when the default
+handler resumed it; the mirror row that answered it in Rust retired, which
+removes the §3.4 deviation row. An uncaught exception ends the run with the
+`HostError` and the line the host received before, once the pending
+`ensure:` blocks have run. The depth limit keeps a reserve of 1,000
+(`DEPTH_RESERVE`) for signalling an error raised near it.
+
+**The nine decisions** (the user, 2026-09-25; the plan's "Decisions this
+plan implements"): Newspeak over activation leaves, as Primordial Soup, not
+native as SOMns; the scope — the five classes and `Activation`, ANSI's
+protocol, and `ExceptionSet`, `Notification`, `outer`, `retryUsing:`,
+`signalerContext`, `Object>>error:` and the finer `Error` subclasses left
+out; `doesNotUnderstand:` is Squeak's; every VM error is a signalled `Error`
+with today's text; the reserve of 1,000; one unwinder in `interpreter/`,
+aimed at a `FrameReference`; `Activation` reachable only through mirror
+leaves; `halt` terminates in the CLI; and `platform kernel`. **Settled while
+building it:** class sides are not inherited (§3.2's flat metaclasses), so
+the default `handles:` is on `Class` and `signal` and `signal:` are declared
+on each kernel exception class's class side — a program's own subclass is
+signalled as `MyError new signal: 'text'` unless its class side declares
+them; the handler environment is ANSI's and Squeak's rather than Primordial
+Soup's one flag — every `on:do:` the search passed is disabled while a
+handler runs and enabled again under an `ensure:`, at the cost of a second
+walk over the passed range and an `OrderedCollection` per handler
+invocation; an `Activation` record's header is the one place an image may
+name tag 23; a fresh `Activation` object per leaf call, compared only
+within one call's answers; `Exception`'s `hostSelector` and `hostReceiver`
+key on the recorded origin, so a VM error whose receiver is nil keeps it,
+and `MessageNotUnderstood`'s fall back to them when its `message` is nil;
+the `terminate…` leaf is total, rendering a description that is no String;
+and the reserve is taken by any VM error and by the kernel's
+`doesNotUnderstand:` near the limit, never by a program's own `signal`, is
+held by the frame of the activation the error arose in rather than by a
+stack index, is released when a host's run ends, and an overrun ends the
+run uncatchably — with the error still being searched for, the outermost
+one, when the signalling machinery overran, and with "stack overflow:
+recursion too deep" when a handler did. The stack's bound is 129 × (L +
+`DEPTH_RESERVE`) entries.
+
+**Goldens.** No recorded outcome changed. Twenty-nine new goldens in
+`goldens/exceptions/`. Two golden sources that read the old two-element
+`doesNotUnderstand:` argument with `at:` —
+`cache/does_not_understand_site_with_three_kinds_of_handler` and
+`class-side/a_class_side_does_not_understand_handles_its_class_objects_sends`
+— now send `selector` and `arguments`, with their `.toml`s untouched. New
+Rust tests: `crates/ns-runtime/tests/exceptions.rs` (the re-send after a
+resumed `MessageNotUnderstood`, a resumed VM error still ending the run,
+uncaught errors and `doesNotUnderstand:`s at L − 3, L − 1, L and L + 1, and
+overruns of the reserve by the search and by a `pass`), and
+`interpreter::unwind`'s, `tests/image.rs`'s and `interpreter::kernel`'s
+tests for the unwind target, the reserve, the activation record and the
+markers.
+
+**Measured** against `3cbfd31`, the `master` it started from
+([execution.md](design/execution.md), "What exceptions cost"), three
+layouts of each tree, four sittings pooled. At `3d5f69c` the branch was
+slower on paths that use no exception -- `bench_block.ns` 5.0% slow layout
+against slow layout, a throwaway `bench_value.ns` (three block `value`s an
+iteration) 4.6%, `bench_deep.ns` (twenty sends deep and back) 6.4% -- and
+bisecting located two causes, each fixed: `Signal` had grown from 48 to 56
+bytes, and every `Result<Step, Signal>` a send decides from 56 to 64, once
+`Terminate` held a second `NewspeakError` in place (boxed, `f518988`); and
+compaction shrank an arena to twice its live set while the next collection
+waits for `max(floor, 2 x live)`, so under the floor every collection cut
+the object arena to 144 slots and the next cycle grew it back through five
+reallocations -- older than the branch, exposed when the exception classes
+moved the live set from 57 objects to 72 (`c5b1f2b`, which now shrinks
+against the limit). Profiling what was left found a third,
+`decide_slot_accessor` formatting its error in place and so spilling every
+slot read through a stack frame (`1d7587f`, the error out of line). **At
+`1d7587f` every source is faster than the base in every sitting**:
+`bench_loop.ns` 24.3% (7.27 → 5.50 ms), `bench_send.ns` 18.6% (8.70 → 7.08),
+`bench_block.ns` 18.7% against the three base layouts' mean (18.21 → 14.80;
+no head layout draws the slow mode), `bench_megamorphic.ns` 12.0%
+(11.61 → 10.22), `bench_value.ns` 13.1% (43.82 → 38.09), `bench_deep.ns`
+2.5% (16.27 → 15.86). Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero. With nothing signalled, measured at `3d5f69c`,
+`bench_ensure.ns` (one `ensure:` and one `on:do:` an iteration) costs
+about 145 ns an iteration over the same blocks sent `value`
+(60.47 against 46.01 ms); `bench_signal.ns`, an `Error` signalled twenty
+activations down and caught, about 6.4 µs a signal (81.38 against 17.29
+ms for the same recursion answering). `vm::run` is still one function,
+with no `vm::run::closure`: 6,741 instructions on the base, 6,486 at
+`d7a6680`; `push` is inlined into `push_step` and `push_initializer` as
+before, with `push_past_the_limit` out of line.
+
+**Small follow-ups the reviews deferred**, none affecting an outcome: the
+test `a_level_applying_the_mirrors_or_tops_mixin_is_refused` covers
+`Activation` too and its name is stale; `activation_leaf`'s `unreachable!`
+arm holds only by `execute`'s routing; a restart sets its target's program
+counter to 0 twice (`arrive` and `vm.rs`); `defaultAction` keeps an
+`ifFail: [nil]` nothing can reach; `searching` and `reachedDefault` stay
+true after a resumed default action, visible only through the test hook; no
+test drives a `doesNotUnderstand:` whose own machinery overruns the
+reserve; `Transcript show:` with an argument that is no String prints
+nothing at status 0 (older than this plan); `tests/collector.rs`'s
+give-back test proves little under the new arena rule, which only
+`compaction_never_shrinks_an_arena_below_its_next_limit` pins; the
+release-only size test for `Signal` is run by no listed gate (`CLAUDE.md`'s
+measurement paragraph names it and `cargo test --workspace --release`); and
+the last fix
+wave turned `vm::unwind` into a loop — it stays a function of its own and
+`vm::run` grew from 6,486 to 6,561 instructions, which no timing has
+checked since.
 
 ## Notes
 

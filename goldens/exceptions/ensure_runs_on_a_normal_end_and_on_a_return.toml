@@ -1,0 +1,19 @@
+stdout = '''
+ensured
+1
+ensured
+2
+3 inner ensured
+outer ensured
+13
+4 inner
+outer
+4
+loop ensured
+20
+body
+ensure
+6
+ensure
+7
+'''

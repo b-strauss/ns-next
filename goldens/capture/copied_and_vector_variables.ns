@@ -1,7 +1,7 @@
 Newspeak3
 'Test'
-(* Closure conversion (docs/design/execution.md, "Planned: closure
-   conversion") decides per captured mutable local whether a block gets a
+(* Closure conversion (docs/design/execution.md, "Closure conversion")
+   decides per captured mutable local whether a block gets a
    copy of it or shares its scope's indirection vector. These are the shapes
    that decision is made on, recorded before the conversion exists, so that
    the conversion is held to them.

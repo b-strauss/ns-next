@@ -170,7 +170,7 @@ pub const VALUE_CLASS_TAG: u8 = 6;
 pub const VALUE_PLATFORM: u8 = 7;
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 9.
+/// Next free number: 10.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -187,6 +187,12 @@ pub const OBJECT_CLASS: u8 = 7;
 /// everything else about a metaclass is derived from that class
 /// (`docs/design/object-model.md`, "The image format").
 pub const OBJECT_METACLASS: u8 = 8;
+/// An instance of the kernel-private `Activation` class: one frame id, the
+/// reified activation it stands for. Its header class tag is `Activation`'s
+/// builtin tag, the one place an image may name that class
+/// (`decode::read_referenced_builtin_class`); any other header on this body,
+/// or that header on any other body, is refused.
+pub const OBJECT_ACTIVATION: u8 = 9;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home

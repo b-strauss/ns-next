@@ -1797,6 +1797,7 @@ impl<'a> Lowerer<'a> {
             family_size: crate::bytecode::family_size_of(&self.instructions),
             copied_count: self.layout.copied.len() as u16,
             outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
+            unwind_marker: None,
             instructions: self.instructions,
             argument_count: self.argument_count,
             register_count: self.max_register,

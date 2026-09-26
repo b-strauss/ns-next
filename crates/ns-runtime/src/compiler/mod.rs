@@ -10,6 +10,7 @@ pub(crate) mod control_flow;
 pub(crate) mod lower;
 pub(crate) mod primitive_method;
 pub(crate) mod reference;
+pub(crate) mod unwind_marker;
 
 /// Which lowering compiles a module: the optimized one every program runs
 /// under, or the deliberately naive reference lowering it is checked against

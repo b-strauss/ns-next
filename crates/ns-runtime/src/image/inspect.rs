@@ -349,6 +349,7 @@ fn walk_graph(
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader)?),
             opcodes::OBJECT_CLASS => read_class_record(reader)?,
             opcodes::OBJECT_METACLASS => format!("metaclass of {}", read_class_tag(reader)?),
+            opcodes::OBJECT_ACTIVATION => format!("activation of frame {}", reader.read_u32()?),
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "object body",

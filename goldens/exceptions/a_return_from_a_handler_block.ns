@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+(* A `^` in a handler block is a non-local return from the method that
+   wrote it, through `signal`, the handler's activation and the protected
+   block, by the same unwinder: the `ensure:` block on the way runs, and
+   the statement after the `on:do:` does not. *)
+class AReturnFromAHandlerBlock usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private Error = thePlatform kernel Error. |
+) (
+    tryIt = (
+        [[Error signal: 'r'] ensure: [transcript show: 'ensured'; newLine]] on: Error do: [:e | ^'returned'].
+        ^'not reached'
+    )
+    public main: platform args: arguments = (
+        transcript show: self tryIt; newLine.
+    )
+) : ()

@@ -1,0 +1,26 @@
+Newspeak3
+'Test'
+(* `ifCurtailed:` runs its block only when an unwind abandons the
+   protected block -- once, before the method's value is printed -- and
+   never when the block ends normally. *)
+class IfCurtailedRuns usingPlatform: thePlatform = Object new (
+    | private transcript = thePlatform transcript. |
+) (
+    endsNormally = (
+        ^[3] ifCurtailed: [transcript show: 'curtailed'; newLine]
+    )
+    isUnwound = (
+        [^4] ifCurtailed: [transcript show: 'curtailed'; newLine].
+        ^0
+    )
+    isUnwoundThroughAnEnsure = (
+        [[^5] ensure: [transcript show: 'ensured'; newLine]]
+            ifCurtailed: [transcript show: 'curtailed'; newLine].
+        ^0
+    )
+    public main: platform args: arguments = (
+        transcript show: self endsNormally printString; newLine.
+        transcript show: self isUnwound printString; newLine.
+        transcript show: self isUnwoundThroughAnEnsure printString; newLine.
+    )
+) : ()

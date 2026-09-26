@@ -632,8 +632,9 @@ mod tests {
 
     /// §5.5: `Object`'s `doesNotUnderstand:` is protected -- lookupPublic
     /// stops at it, lookupProtected and the "defined for" walk accept it. It
-    /// is a kernel primitive method now (`Kernel.ns`), found as a
-    /// `Lookup::Method` whose `MixinMethod.fast_path` names the mirror row.
+    /// is an ordinary kernel method (`Kernel.ns`), found as a
+    /// `Lookup::Method` with no fast path: it signals a
+    /// `MessageNotUnderstood`.
     #[test]
     fn objects_does_not_understand_is_protected() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -644,8 +645,7 @@ mod tests {
                 lookup_public(&mutator.heap, integer, selector),
                 Lookup::NotFound
             ));
-            let expected = mirror_primitive_named("object:doesNotUnderstand:ifFail:")
-                .map(MethodFastPath::Mirror);
+            let expected = None;
             match lookup_protected(&mutator.heap, integer, selector) {
                 Lookup::Method(method, _) => assert_eq!(method.fast_path, expected),
                 _ => panic!("lookupProtected must find Object's doesNotUnderstand:"),

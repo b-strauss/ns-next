@@ -459,13 +459,15 @@ what "verbatim" promises for every other object.
 
 ## How frames actually get into an image
 
-Only through a closure. A running activation lives on the activation stack and
-is not in the object graph at all; a frame exists for it only once a block
-captured it ([execution.md](execution.md), "Activations"). So a frame enters the
+Only through a closure or an activation object. A running activation lives on
+the activation stack and is not in the object graph at all; a frame exists for
+it only once a block captured it or an activation object reified it
+([execution.md](execution.md), "Activations"). So a frame enters the
 table only as a closure's `captured_frame` — a closure a value names, or the
-one a closure frame already in the table runs — or as the `home` of a frame
-already in it. (A closure has no `home` field of its own to bring one in:
-`Heap::closure_home` derives it from the captured frame.) A snapshot is taken
+one a closure frame already in the table runs — as the frame an activation
+object reifies, or as the `home` of a frame already in it. (A closure has no
+`home` field of its own to bring one in: `Heap::closure_home` derives it from
+the captured frame.) A snapshot is taken
 at a **quiesced** point —
 after instantiation, optionally after an entry send, with the Rust call stack
 already unwound and the activation stack empty; `image::snapshot` refuses to
@@ -699,9 +701,9 @@ root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder re
 an image whose graph reaches the mirror object is not written at all, since
 it would hand the capability to whatever loaded it
 (`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
-and neither is one whose graph reaches the mirror's class, `Top` or the
-metaclass of either (`encode::unnameable_class`), which the decoder would
-refuse.
+and neither is one whose graph reaches the mirror's class, `Top`,
+`Activation` or the metaclass of one of them (`encode::unnameable_class`),
+which the decoder would refuse.
 Neither can happen to a program built from source, which cannot obtain the
 mirror; both are there for the day something could.
 
@@ -735,6 +737,32 @@ instantiate a class object like any class below `Behavior`. An object record tha
 instantiation as a class object — an instance of `Class`, `Metaclass` or a
 metaclass — is `InstanceOfAClassClass`, and a class record whose row is some
 row's class side is `ClassRecordAppliesAClassSide`: no source makes either.
+
+**An activation object is a record of its own; its class is named nowhere
+else.** `ObjectData::Activation`, an instance of the kernel-private
+`Activation` class (builtin tag **23**), is written as object body tag 9,
+`OBJECT_ACTIVATION`, whose body is one frame id, resolved and range-checked
+like a closure's captured frame (`BadFrameId`). Its header is `CLASS_BUILTIN`
+followed by tag 23, and that header is the one place an image may name
+`Activation`: `decode_object_header` accepts it there, holds header and body
+to each other both ways — an activation record under any other class, or the
+`Activation` header on any other record, is `ActivationHeader` — and
+`read_referenced_builtin_class` refuses tag 23 everywhere else, as a value, a
+superclass, a `<:` clause's builtin and behind `CLASS_METACLASS`, exactly as
+it refuses `Top`'s 15. An activation reads other frames and unwinds stacks, a
+capability Newspeak hands out only through mirrors, so no program may name its
+class; the encoder never walks an activation object's header as a reference
+(`GraphTable::visit_value`), so writing activations never trips the refusal of
+a graph that reaches the class itself.
+
+**The other classes the exceptions added are ordinary nameable builtins.**
+`Exception`, `Error`, `MessageNotUnderstood`, `Message`, `Halt` and
+`KernelNamespace` carry tags **24** to **29**, in that order, after
+`Activation`'s 23 ([core-library.md](core-library.md), "Exceptions"). A
+program reaches the first five through `platform kernel` and may subclass
+them, so an image may name any of the six wherever it names a class: an
+exception a program made is an ordinary instance record, and so is a
+`KernelNamespace` a program kept in a slot, a value like a kept transcript.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
@@ -921,9 +949,15 @@ from Rust"). What is missing is a yield path out of `vm::run`, a re-entry
 point that would continue a decoded frame at its `program_counter`, and an encoding for
 what each stack entry's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
-instantiation's `Instantiation`. An image records none of them today, and a
-suspended activation without its continuation would resume without the rest
-of the loop, the class creation or the walk it belongs to.
+instantiation's `Instantiation`, the unwind an `ensure:` block's return
+carries on (`Unwind`, holding a `PendingUnwind`: its target frame and whether
+it returns a value, restarts or terminates) and the end of the run a VM
+error's `signal` returns into (`VmErrorSignalled`). An image records none of
+them today, and a suspended activation without its continuation would resume
+without the rest of the loop, the class creation, the walk or the unwind it
+belongs to. The depth limit's reserve (`Mutator.depth_reserve`), a frame
+held while an error near the limit is signalled, would have to travel with
+the stack as well ([execution.md](execution.md), "The depth limit").
 Suspending then means reifying and divorcing the whole stack, which is the same
 operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)

@@ -1,0 +1,27 @@
+Newspeak3
+'Test'
+(* ANSI's ways out of a handler: `return:` answers its value from
+   `on:do:`; `retry` runs the protected block again, here until a counter
+   lets it through; `resume:` makes its value the value of `signal` and
+   carries on after it; `pass` hands the exception to the next handler out.
+   `resume:` on an `Error`, which is not resumable, signals an `Error` of its
+   own, which nothing handles, so it ends the run -- last. *)
+class ReturnRetryResumePass usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private Exception = thePlatform kernel Exception.
+      private Error = thePlatform kernel Error.
+      attempts ::= 0. |
+) (
+    public main: platform args: arguments = (
+        transcript show: ([Error signal. 1] on: Error do: [:e | e return: 5]) printString; newLine.
+        transcript show: ([Error signal. 1] on: Error do: [:e | e return]) printString; newLine.
+        transcript show: ([attempts:: attempts + 1.
+                           attempts < 3 ifTrue: [Error signal].
+                           attempts] on: Error do: [:e | e retry]) printString; newLine.
+        transcript show: ([Exception signal] on: Exception do: [:e | e resume: 7]) printString; newLine.
+        transcript show: ([(Exception signal) + 1] on: Exception do: [:e | e resume: 7]) printString; newLine.
+        transcript show: ([[Error signal: 'p'] on: Error do: [:e | e pass]] on: Error do: [:e | e messageText , ' passed']); newLine.
+        transcript show: ([Error signal. 1] on: Error do: [:e | e resume: 7]) printString; newLine.
+        transcript show: 'not reached'; newLine.
+    )
+) : ()

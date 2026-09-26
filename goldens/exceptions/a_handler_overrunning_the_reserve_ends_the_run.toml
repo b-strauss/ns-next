@@ -1,0 +1,9 @@
+status = 1
+stdout = '''
+start
+stack overflow: recursion too deep
+ensured
+'''
+stderr = '''
+Uncaught Newspeak error: stack overflow: recursion too deep
+'''

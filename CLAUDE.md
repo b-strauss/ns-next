@@ -15,8 +15,12 @@ Rust 1.98.0, edition 2021, four crates:
   `Object`, then `Value` over the value classes and `Behavior` over `Class`
   and `Metaclass`; every class object's class is its own metaclass, its class
   side applied to `Class`, and every metaclass's class is `Metaclass`,
-  `interpreter/metaclass.rs`), whose methods reach Rust
-  only through the one VM
+  `interpreter/metaclass.rs`), with §8.6's exception classes (`Exception`,
+  `Error`, `MessageNotUnderstood`, `Halt` and `Message`, which programs reach
+  through `platform kernel`, over kernel-private `Activation` objects;
+  `on:do:`, `ensure:` and `ifCurtailed:` are marked `Block` methods, and the
+  one unwinder, `interpreter/unwind.rs`, carries out every unwind), whose
+  methods reach Rust only through the one VM
   mirror object and its leaves (`builtins/`, `interpreter/mirror.rs`) -- and
   the image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
@@ -129,8 +133,10 @@ bounded that way. `docs/design/memory.md` has the breakdown.
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
 with the same exposure as running the equivalent source. Recursion depth is bounded
-by a counted limit of 100,000 activations -- an ordinary Newspeak error, not a
-native stack overflow, since nothing re-enters the run loop from Rust (see
+by a counted limit of 100,000 activations -- an ordinary Newspeak error, signalled
+and catchable, not a native stack overflow, since nothing re-enters the run loop
+from Rust -- plus a reserve of 1,000 held only while an error raised near the
+limit is being signalled, past which the run ends (see
 `docs/design/execution.md`, "The depth limit"). A mutated binary that decodes
 cleanly can still abort while executing -- a native indexing `arguments` it was not
 given, for one -- and that is not a decoder defect.
@@ -215,6 +221,23 @@ instruction that reads or writes another frame's registers by reference must be
 named in `bytecode::outer_reach_of`**, or `MakeClosure` leaves the creating
 activation unmarked, its frame drops its registers on return, and every read
 through it answers `nil` at exit status 0.
+
+**An unwind target is a `FrameReference`.** A non-local return, an exception's
+`return:`, `resume:` and `retry` (`Signal::Return`, `Signal::Restart`) and the
+depth limit's reserve (`Mutator.depth_reserve`) name the frame of the activation
+they aim at, never its `ActivationReference`, and the unwinder asks
+`Heap::frame_activation` for the running activation afresh each time it carries
+on (`interpreter/unwind.rs`). The reason is that code runs while an unwind is in
+progress -- every `ensure:` and `ifCurtailed:` block it passes -- and an
+activation that code pushes can take the stack index a popped target used. **A
+release build does not check an activation's generation**, so an
+`ActivationReference` kept across those blocks would land the return in whichever
+activation reused the index, at exit status 0; a frame is divorced on its
+activation's pop and married to nothing afterwards, so a target popped meanwhile
+is found dead instead. `interpreter::unwind`'s
+`a_target_survives_its_index_being_reused` and
+`a_later_signal_at_the_same_index_does_not_inherit_the_reserve` pin it
+(`docs/design/execution.md`, "Unwinding").
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvaluationResult`.**
 `ObjectReference`, `FrameReference` and `ActivationReference` each carry a hand-written `Debug` that prints
@@ -363,7 +386,9 @@ to `crates/ns-syntax/src/lexer.rs` must be mirrored in
 in the same commit, or the comparison fails.
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
-one to measure. Every binary a measurement compares — the current tree included — is
+one to measure; a release build is also the only one that runs the size tests
+`a_signal_fits_in_the_niche_of_its_one_unboxed_error` and the `Object` size test
+(`cargo test --workspace --release`). Every binary a measurement compares — the current tree included — is
 built with the same explicit flags, which pin every function start to a 64-byte
 boundary: in PowerShell,
 `$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`

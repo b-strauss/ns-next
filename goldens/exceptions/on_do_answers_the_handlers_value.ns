@@ -1,0 +1,16 @@
+Newspeak3
+'Test'
+(* ANSI's `on:do:`: the handler block's value is the value of `on:do:`, an
+   implicit `return:`; a block that signals nothing answers its own value,
+   and the handler does not run. *)
+class OnDoAnswersTheHandlersValue usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private Error = thePlatform kernel Error. |
+) (
+    public main: platform args: arguments = (
+        transcript show: ([Error signal: 'x'] on: Error do: [:e | e messageText]); newLine.
+        transcript show: ([Error signal] on: Error do: [:e | e description]); newLine.
+        transcript show: ([3] on: Error do: [:e | 4]) printString; newLine.
+        transcript show: ([Error signal. 5] on: Error do: [6]) printString; newLine.
+    )
+) : ()

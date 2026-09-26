@@ -1,0 +1,6 @@
+stdout = '''
+stack overflow: recursion too deep
+stack overflow: recursion too deep
+0
+true
+'''

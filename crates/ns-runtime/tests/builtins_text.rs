@@ -112,7 +112,7 @@ fn does_not_understand_hands_the_literals_selector_object() {
         Newspeak3
         'Test'
         class Selectors usingPlatform: p = Object new () (
-            public doesNotUnderstand: message = ( ^(message at: 1) == #frobnicate )
+            public doesNotUnderstand: message = ( ^message selector == #frobnicate )
             public probe = ( ^self frobnicate )
         ) : ()
     "};

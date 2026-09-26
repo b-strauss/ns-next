@@ -88,6 +88,13 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Behavior => "Behavior",
         BuiltinClass::Class => "Class",
         BuiltinClass::Metaclass => "Metaclass",
+        BuiltinClass::Activation => "Activation",
+        BuiltinClass::Exception => "Exception",
+        BuiltinClass::Error => "Error",
+        BuiltinClass::MessageNotUnderstood => "MessageNotUnderstood",
+        BuiltinClass::Message => "Message",
+        BuiltinClass::Halt => "Halt",
+        BuiltinClass::KernelNamespace => "KernelNamespace",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -446,9 +453,23 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         // Rust builds a builtin's instances with a payload and no fields, so
         // a slot would have nowhere to live -- except on `Platform`, whose one
         // instance the host builds with exactly the slots `Kernel.ns`
-        // declares (`Mutator::platform_value`).
+        // declares (`Mutator::platform_value`), and on the exception classes,
+        // whose instances `decide_instantiation` gives an ordinary field
+        // vector like any other class's (`docs/design/core-library.md`,
+        // "Exceptions"). `Activation` and `KernelNamespace` declare
+        // no slots of their own: an activation's state lives in the running
+        // activation it wraps, and the namespace is stateless.
         assert!(
-            nested.slots.is_empty() || kind == BuiltinClass::Platform,
+            nested.slots.is_empty()
+                || matches!(
+                    kind,
+                    BuiltinClass::Platform
+                        | BuiltinClass::Exception
+                        | BuiltinClass::Error
+                        | BuiltinClass::MessageNotUnderstood
+                        | BuiltinClass::Message
+                        | BuiltinClass::Halt
+                ),
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
         );
         let declaration = nested
@@ -665,6 +686,7 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
 #[cfg(test)]
 mod tests {
     use crate::builtins::primitive::mirror_entry;
+    use crate::bytecode::UnwindMarker;
     use crate::mixin::{MethodFastPath, QuickConstant};
     use crate::{BuiltinClass, Interpreter, Value};
 
@@ -737,6 +759,55 @@ mod tests {
         (BuiltinClass::Behavior, "enclosingOf:"),
         (BuiltinClass::Behavior, "superclassOf:"),
         (BuiltinClass::Metaclass, "thisClassOf:"),
+        // The marked methods (`UNWIND_MARKERS`): each keeps a local the
+        // unwinder or `signal` reads, and sends `value` to `self`.
+        (BuiltinClass::Block, "on:do:"),
+        (BuiltinClass::Block, "ensure:"),
+        (BuiltinClass::Block, "ifCurtailed:"),
+        // A forwarder in shape, but of its argument rather than of `self`,
+        // for the reason `Value`'s slot readers above are: the leaf's
+        // subject is the exception, and the class is its argument.
+        (BuiltinClass::Class, "handles:"),
+        // `Object>>halt` signals a `Halt`: sends, no leaf.
+        (BuiltinClass::Object, "halt"),
+        // `Object>>doesNotUnderstand:` signals a `MessageNotUnderstood` and
+        // may send the message again: sends, no leaf.
+        (BuiltinClass::Object, "doesNotUnderstand:"),
+        // What a `MessageNotUnderstood` hands a host: its message's
+        // selector, a send, and its receiver, a slot.
+        (BuiltinClass::MessageNotUnderstood, "hostSelector"),
+        (BuiltinClass::MessageNotUnderstood, "hostReceiver"),
+        // The exception protocol (`docs/design/core-library.md`, "Exceptions")
+        // is Newspeak over the activation leaves: each method sends, keeps
+        // state in the exception's slots, or makes several mirror sends, none
+        // of them a forwarder of `self` alone.
+        (BuiltinClass::Exception, "description"),
+        (BuiltinClass::Exception, "printString"),
+        (BuiltinClass::Exception, "reachedDefaultHandler"),
+        (BuiltinClass::Exception, "signal"),
+        (BuiltinClass::Exception, "signal:"),
+        (BuiltinClass::Exception, "pass"),
+        (BuiltinClass::Exception, "return:"),
+        (BuiltinClass::Exception, "return"),
+        (BuiltinClass::Exception, "retry"),
+        (BuiltinClass::Exception, "resume:"),
+        (BuiltinClass::Exception, "resume"),
+        (BuiltinClass::Exception, "defaultAction"),
+        (BuiltinClass::Exception, "hostSelector"),
+        (BuiltinClass::Exception, "hostReceiver"),
+        (BuiltinClass::Exception, "invokeNextHandler"),
+        (BuiltinClass::Exception, "isHandledAt:"),
+        (BuiltinClass::Exception, "invokeHandlerAt:disabling:"),
+        (BuiltinClass::Exception, "notInAHandler:"),
+        // The class sides' `signal` and `signal:`, `^self new signal`: an
+        // instantiation and a send. §3.2's metaclasses are flat, so each
+        // kernel exception class declares its own.
+        (BuiltinClass::Error, "signal"),
+        (BuiltinClass::Error, "signal:"),
+        (BuiltinClass::MessageNotUnderstood, "signal"),
+        (BuiltinClass::MessageNotUnderstood, "signal:"),
+        (BuiltinClass::Halt, "signal"),
+        (BuiltinClass::Halt, "signal:"),
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
@@ -900,12 +971,63 @@ mod tests {
         ),
         (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
         (BuiltinClass::String, "asString", MethodFastPath::Receiver),
+        // Quick in shape, though only the unwinder activates it, pushing it
+        // as a method so that its return carries the unwind on
+        // (`Mutator::start_unwind_block`).
+        (
+            BuiltinClass::Block,
+            "valueOnUnwind:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        // Whether a handler may resume the exception.
+        (
+            BuiltinClass::Exception,
+            "isResumable",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Error,
+            "isResumable",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::MessageNotUnderstood,
+            "isResumable",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
         // Not a quick method but the accessor form, `^outer Kernel <Name>`,
         // on a class other than `Object`: the namespace's one member.
         (
             BuiltinClass::Collections,
             "List",
             MethodFastPath::BuiltinClass(BuiltinClass::OrderedCollection),
+        ),
+        // `platform kernel`'s accessors, the same form
+        // (`docs/design/core-library.md`, "Exceptions").
+        (
+            BuiltinClass::KernelNamespace,
+            "Exception",
+            MethodFastPath::BuiltinClass(BuiltinClass::Exception),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "Error",
+            MethodFastPath::BuiltinClass(BuiltinClass::Error),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "MessageNotUnderstood",
+            MethodFastPath::BuiltinClass(BuiltinClass::MessageNotUnderstood),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "Halt",
+            MethodFastPath::BuiltinClass(BuiltinClass::Halt),
+        ),
+        (
+            BuiltinClass::KernelNamespace,
+            "Message",
+            MethodFastPath::BuiltinClass(BuiltinClass::Message),
         ),
     ];
 
@@ -1040,6 +1162,88 @@ mod tests {
         });
     }
 
+    /// The kernel methods that carry an unwind marker, each with the
+    /// marker: its registers are its parameters from 0, then its named
+    /// temporaries in declaration order (`docs/design/compiler.md`,
+    /// "Registers").
+    const UNWIND_MARKERS: &[(&str, UnwindMarker)] = &[
+        (
+            "on:do:",
+            UnwindMarker::Handler {
+                class_register: 0,
+                block_register: 1,
+                active_register: 2,
+            },
+        ),
+        (
+            "ensure:",
+            UnwindMarker::Ensure {
+                block_register: 0,
+                complete_register: 1,
+            },
+        ),
+        (
+            "ifCurtailed:",
+            UnwindMarker::IfCurtailed {
+                block_register: 0,
+                complete_register: 1,
+            },
+        ),
+    ];
+
+    /// `Block>>on:do:`, `ensure:` and `ifCurtailed:` carry the markers
+    /// `UNWIND_MARKERS` says, under both lowerings, and no other kernel
+    /// method's code carries one: the unwinder would run a block for it.
+    #[test]
+    fn only_the_three_block_methods_carry_an_unwind_marker() {
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let mut interpreter = Interpreter::bootstrap_with(lowering);
+            interpreter.enter(|mutator| {
+                for kind in BuiltinClass::ALL {
+                    let class = mutator.builtin_class(kind);
+                    let application = mutator
+                        .heap()
+                        .class_application(class)
+                        .expect("a builtin class has an application");
+                    let mixin = &application.mixin;
+                    let class_side = mixin
+                        .class_side
+                        .iter()
+                        .flat_map(|side| side.compiled_methods());
+                    for method in mixin.compiled_methods().chain(class_side) {
+                        let selector = method.selector.as_str();
+                        let expected = if kind == BuiltinClass::Block {
+                            UNWIND_MARKERS
+                                .iter()
+                                .find(|(name, _)| *name == selector)
+                                .map(|(_, marker)| *marker)
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            method.code.unwind_marker, expected,
+                            "{lowering:?}: {kind:?}>>{selector}"
+                        );
+                    }
+                }
+                let block = mutator.builtin_class(BuiltinClass::Block);
+                let application = mutator
+                    .heap()
+                    .class_application(block)
+                    .expect("Block has an application");
+                for (selector, _) in UNWIND_MARKERS {
+                    assert!(
+                        application
+                            .mixin
+                            .compiled_method(crate::Symbol::intern(selector))
+                            .is_some(),
+                        "Block declares no {selector}"
+                    );
+                }
+            });
+        }
+    }
+
     /// Every row of `QUICK_METHODS` names a method the kernel declares.
     #[test]
     fn every_quick_method_the_table_names_exists() {
@@ -1065,7 +1269,9 @@ mod tests {
     /// The accessor set on `Object` is exactly §3.2's nameable builtins,
     /// each recognized as a fast path answering its own class; `Top`, the
     /// mirror's class and `Platform` have none, which is one of the locks
-    /// that keep the mirror a capability.
+    /// that keep the mirror a capability. Neither have the exception
+    /// classes and `KernelNamespace`, which a program reaches through
+    /// `platform kernel`, nor `Activation`, which it does not reach at all.
     #[test]
     fn objects_class_accessors_are_exactly_the_nameable_builtins() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1087,7 +1293,20 @@ mod tests {
                     "{kind:?}"
                 );
             }
-            for absent in ["Top", "Platform", "Transcript", "Collections", "VmMirror"] {
+            for absent in [
+                "Top",
+                "Platform",
+                "Transcript",
+                "Collections",
+                "VmMirror",
+                "Exception",
+                "Error",
+                "MessageNotUnderstood",
+                "Halt",
+                "Message",
+                "Activation",
+                "KernelNamespace",
+            ] {
                 assert!(
                     application
                         .mixin
@@ -1102,9 +1321,11 @@ mod tests {
     /// §6.3.1 defaults an undeclared member to protected, and a protected
     /// nested class is unreachable from outside the module that declares it,
     /// so every kernel class has to say `public` for a program to name it --
-    /// every one but `Top`, which §3.2 lets only `Object` name.
+    /// every one but `Top`, which §3.2 lets only `Object` name, and
+    /// `Activation`, which no program may reach at all
+    /// (`docs/design/core-library.md`, "Exceptions").
     #[test]
-    fn only_top_is_private() {
+    fn only_top_and_activation_are_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(Value::Object(kernel)) = mutator.kernel else {
@@ -1117,8 +1338,10 @@ mod tests {
                 "the kernel declares one class per builtin but the mirror's"
             );
             let top = super::kernel_class_name(BuiltinClass::Top);
+            let activation = super::kernel_class_name(BuiltinClass::Activation);
             for nested in &application.mixin.nested {
-                let expected = if nested.name.as_str() == top {
+                let name = nested.name.as_str();
+                let expected = if name == top || name == activation {
                     ns_syntax::ast::AccessModifier::Private
                 } else {
                     ns_syntax::ast::AccessModifier::Public
