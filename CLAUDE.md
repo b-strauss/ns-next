@@ -2,7 +2,7 @@
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
 resolver, bytecode compiler and register VM, and a versioned image format.
-Rust 1.98.0, edition 2021, three crates:
+Rust 1.98.0, edition 2021, four crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
@@ -28,6 +28,11 @@ Rust 1.98.0, edition 2021, three crates:
   only through `Interpreter::enter`.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
+- `crates/ns-lsp` — the `ns-next-lsp` binary: a language server for `.ns` files
+  (lexer, parser and resolver errors, and semantic tokens from the resolver's
+  bindings) and `dump-tokens`, which the JetBrains plugin's lexer is checked
+  against. It never starts the VM. Its dependencies (`lsp-server`, `lsp-types`,
+  `serde_json`) stay in this crate. See `docs/design/editor-support.md`.
 
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology
@@ -311,19 +316,24 @@ saw the second group is not finished work, it is work in progress.
 cargo fmt --all
 # must be warning-free
 cargo clippy --workspace --all-targets
-# the full suite, including every golden under both lowerings
-cargo test --workspace
+# the full suite, including every golden under both lowerings; the editor's
+# language server has its own group below
+cargo test --workspace --exclude ns-lsp
 # non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
+
+# --- before every commit that touches crates/ns-lsp or crates/ns-syntax ---
+cargo test -p ns-lsp
 
 # --- once at the end of a batch of work, before handing it on ---
 # the same suite with every object moved at the run loop's safepoints
 # (debug builds only; Git Bash syntax)
-NS_NEXT_STRESS_MOVES=1 cargo test --workspace
+NS_NEXT_STRESS_MOVES=1 cargo test --workspace --exclude ns-lsp
 # the same suite with every inline cache vacated at every safepoint
-NS_NEXT_STRESS_CACHES=1 cargo test --workspace
+NS_NEXT_STRESS_CACHES=1 cargo test --workspace --exclude ns-lsp
 # the same suite with a collection at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo test --workspace
+NS_NEXT_STRESS_COLLECT=1 cargo test --workspace --exclude ns-lsp
+cargo test -p ns-lsp
 # non-regression gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
 # the same report under each stress mode
@@ -334,6 +344,10 @@ NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
 # build every crate
 cargo build --workspace
 ```
+
+`cargo clippy --workspace --all-targets` still compiles `ns-lsp` on every commit,
+so a change to the resolver or to `ns-syntax` that breaks the API the server uses
+fails at the commit even when its tests only run at the end of the batch.
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
 one to measure. Every binary a measurement compares — the current tree included — is

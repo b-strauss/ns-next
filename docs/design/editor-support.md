@@ -1,10 +1,8 @@
 # Editor support — the language server and the JetBrains plugin
 
-> **Status:** planned. Nothing described here exists yet; every section below
-> is headed `Planned:` and describes the design agreed before implementation.
-> **Code (planned):** `crates/ns-lsp/` — the `ns-next-lsp` binary;
-> `editors/jetbrains/` — the JetBrains plugin; one new resolver entry in
-> `crates/ns-runtime/src/resolver/`.
+> **Status:** **Partial:** the language server is built (`crates/ns-lsp/`, and
+> `resolve_for_editor` in `crates/ns-runtime/src/resolver/mod.rs`); the
+> JetBrains plugin (`editors/jetbrains/`) is planned.
 
 Editing `.ns` files in a JetBrains IDE today means editing plain text. This
 document describes the editor support that replaces it: syntax highlighting as
@@ -79,9 +77,10 @@ alternatives weighed were worse:
   dependency and build step on an approach with no established precedent in
   plugins.
 
-What keeps the second lexer honest is the comparison gate (see "Testing"):
-Newspeak's lexical grammar is small and fixed by the specification, and every
-file the repository holds is lexed by both and compared token by token.
+What keeps the second lexer honest is the comparison gate (see "Planned:
+plugin testing and gates"): Newspeak's lexical grammar is small and fixed by
+the specification, and every file the repository holds is lexed by both and
+compared token by token.
 
 ### Why a language server over JetBrains' native LSP API
 
@@ -97,7 +96,7 @@ file the repository holds is lexed by both and compared token by token.
   the same bundled binary, but gives nothing to other editors and would have
   to be replaced by a server for navigation.
 
-## Planned: the language server, `crates/ns-lsp`
+## The language server, `crates/ns-lsp`
 
 A crate of its own with a binary of its own, `ns-next-lsp`, so that its
 dependencies never reach the `ns-next` binary: `lsp-server` (rust-analyzer's
@@ -109,10 +108,17 @@ Modules:
 
 - `main.rs` — with no argument it speaks LSP on stdin and stdout; with
   `dump-tokens <files…>` it prints each file's tokens as JSON, for the lexer
-  comparison.
+  comparison. `dump-tokens` prints UTF-16 offsets, the unit the plugin's
+  documents use.
 - `server.rs` — the message loop over `lsp-server`, synchronous on one thread.
   Lexing, parsing and resolving one file takes milliseconds, so neither a
-  debounce nor a worker pool would buy anything.
+  debounce nor a worker pool buys anything. Open documents are keyed by the
+  URI's string form, not by `lsp_types::Uri` itself: `Uri` wraps a
+  `fluent_uri::Uri<String>` that caches parsed components behind a `Cell`, so
+  clippy's `mutable_key_type` refuses it as a map key even though its
+  `Hash`/`Eq` only ever read the string. A `semanticTokens/full` request for a
+  URI the server never opened, or has since closed, answers an empty token
+  set rather than an error.
 - `documents.rs` — the open text per URI with its version, and a line index
   converting a `Span`'s byte offsets to LSP positions in UTF-16 code units,
   the one encoding every LSP client must accept.
@@ -129,17 +135,19 @@ and `exit`. Nothing else.
 
 `resolve` answers either every binding or `Err(errors)`, although it collects
 both. The server needs both at once, so that a file with one resolver error
-still gets semantic tokens everywhere else. The new entry answers the bindings
-and the errors together; `resolve` remains the entry everything that compiles
-uses. The new entry never records `Binding::MirrorSend` — it goes through the
-same path as `resolve`, never through `resolve_kernel` — so the VM mirror's
-capability invariant (`CLAUDE.md`, "The VM mirror is a capability") is not
-touched, and `Kernel.ns`, opened in the editor, shows its `vmMirror` sends as
-ordinary sends.
+still gets semantic tokens everywhere else. `ns_runtime::resolve_for_editor`
+answers both together as an `EditorResolution` (module, bindings, errors);
+`resolve` remains the entry everything that compiles uses. `resolve_for_editor`
+never records `Binding::MirrorSend` — it goes through the same walk as
+`resolve`, never through `resolve_kernel` — so the VM mirror's capability
+invariant (`CLAUDE.md`, "The VM mirror is a capability") is not touched, and
+`Kernel.ns`, opened in the editor, shows its `vmMirror` sends as ordinary
+sends.
 
 `Kernel.ns` resolves without errors this way: the `kernel` flag decides only
 whether a send to `vmMirror` is marked (`resolver/mod.rs`, `resolve_send`),
-never whether anything is an error. A test pins it.
+never whether anything is an error — pinned by
+`the_editor_entry_resolves_the_kernel_without_the_mirror_mark`.
 
 ### Classification
 
@@ -147,7 +155,7 @@ Legend: token types `parameter`, `variable` (a local), `property` (a slot),
 `class`, `method`; modifiers `declaration` and `readonly` (a slot or local
 declared with `=`). There is no `keyword` type: the reserved words (§4.1:
 `self`, `super`, `outer`, `true`, `false`, `nil`) are coloured by the plugin's
-lexer, which knows them from their text, so the server would add nothing.
+lexer, which knows them from their text, so the server adds nothing for them.
 A keyword message's span starts at its receiver, so the receiver's span is
 excluded when the selector's tokens are found.
 
@@ -163,6 +171,14 @@ excluded when the selector's tokens are found.
 - **Selector parts.** The AST's `Selector` carries no span, so the keyword
   parts of a send are found among the lexer's tokens inside the message's span,
   outside its arguments' spans. `ns-syntax` does not change.
+- **A nested class's superclass and `<:` clause receiver.** Every prefix form
+  is classified: `self X` and `outer Y X` resolve through the enclosing chain
+  and record a `LexicalSend` at the receiver's span, the same as a bare
+  receiver, so `X` is looked up and coloured exactly as one; `super X` records
+  a `SuperSend` and is coloured `method` directly, the same way a `super`
+  send's own selector is, since the clause is a message to the class the
+  applying declaration's own binding names, never a lookup through the
+  enclosing chain.
 
 While a file does not parse there is no AST and so no semantic tokens: the
 colours fall back to the lexer's until it parses again. A fault-tolerant parser
@@ -177,6 +193,31 @@ diagnostic at the start of the file, and keeps running. A panic there is an
 ns-next defect and must be visible, but must not take the editor's server down
 with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 `panic = "abort"`), which this relies on.
+
+### Testing
+
+`cargo test -p ns-lsp`:
+
+- positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
+  (surrogate pairs), at line ends and at the end of the file;
+- diagnostics — one `indoc!` module each with a lexer, a parser and a resolver
+  error, checking range and message;
+- semantic tokens — a small module per category (parameter, local, slot with
+  and without `readonly`, nested class, declared method, inherited send,
+  a receiver inside a keyword message's span), each expected category asserted
+  directly rather than through an `insta` snapshot, so every expectation is
+  stated and reviewed rather than accepted;
+- the resolver entry — for every module in `corpus/modules`, `goldens/` and
+  `Kernel.ns`, the same bindings and errors as `resolve`, so the two cannot
+  drift;
+- robustness — no analysis over that same set produces an "internal error",
+  nor over truncations of each file at token boundaries, which is what a file
+  looks like while it is being typed: every token boundary of every golden and
+  of the kernel, and 64 evenly spaced token boundaries of each corpus module,
+  since every prefix of every corpus module is quadratic in its size;
+- protocol — one end-to-end test over an in-memory `lsp-server` connection:
+  `initialize`, `didOpen`, the expected `publishDiagnostics`,
+  `semanticTokens/full`, `shutdown`.
 
 ## Planned: the plugin, `editors/jetbrains/`
 
@@ -271,30 +312,10 @@ the lowest supported and the current version. `signPlugin` and
 `publishPlugin` are configured but have no certificate or token; those come
 from environment variables when publishing, never from the repository.
 
-## Planned: testing and gates
+## Planned: plugin testing and gates
 
-**Rust, `cargo test -p ns-lsp`:**
-
-- positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
-  (surrogate pairs), at line ends and at the end of the file;
-- diagnostics — one `indoc!` module each with a lexer, a parser and a resolver
-  error, checking range and message;
-- semantic tokens — a small module per category (parameter, local, slot with
-  and without `readonly`, nested class, declared method, inherited send,
-  a receiver inside a keyword message's span), each expected category asserted
-  directly, so every expectation is stated and reviewed rather than accepted
-  from a snapshot;
-- the resolver entry — for every module in `corpus/modules`, `goldens/` and
-  `Kernel.ns`, the same bindings and errors as `resolve`, so the two cannot
-  drift;
-- robustness — no analysis over that same set produces an "internal error",
-  nor over truncations of each file at token boundaries, which is what a file
-  looks like while it is being typed: every boundary of every golden and of
-  the kernel, and 64 evenly spaced boundaries of each corpus module, since
-  every prefix of every corpus module is quadratic in its size;
-- protocol — one end-to-end test over an in-memory `lsp-server` connection:
-  `initialize`, `didOpen`, the expected `publishDiagnostics`,
-  `semanticTokens/full`, `shutdown`.
+The server's own tests are described under its section, above ("Testing").
+The plugin's are still planned.
 
 **Kotlin, `./gradlew -p editors/jetbrains check`:**
 
@@ -308,15 +329,17 @@ from environment variables when publishing, never from the repository.
   commenting, the colour settings page loading, and the order in which the
   binary is found.
 
-**Gates.** The runtime's per-commit suite becomes `cargo test --workspace
+**Gates.** The runtime's per-commit suite is `cargo test --workspace
 --exclude ns-lsp`, so runtime work does not pay for the editor's corpus-wide
-tests; `cargo clippy --workspace --all-targets` still compiles `ns-lsp`, so a
-resolver or `ns-syntax` change that breaks its API still fails at the commit.
-The stress-mode runs exclude `ns-lsp` too: it never starts the VM.
+tests, with `cargo test -p ns-lsp` its own per-commit gate for a change that
+touches `crates/ns-lsp/` or `crates/ns-syntax/`; `cargo clippy --workspace
+--all-targets` still compiles `ns-lsp` on every commit, so a resolver or
+`ns-syntax` change that breaks its API fails at the commit even when its tests
+only run at the end of the batch (`CLAUDE.md`, "Working in this repository").
+The stress-mode runs exclude `ns-lsp` too: it never starts the VM. Once the
+plugin exists, its own gate joins this:
 
-- **Before every commit** that touches `editors/jetbrains/`, `crates/ns-lsp/`
-  or `crates/ns-syntax/` — `ns-syntax` because a change to the Rust lexer can
-  break the comparison — `cargo test -p ns-lsp` and `./gradlew -p
+- **Before every commit** that touches `editors/jetbrains/` — `./gradlew -p
   editors/jetbrains check`, besides the usual `fmt` and `clippy`.
 - **Once at the end of a batch**, whether runtime or editor work, both test
   groups, and `./gradlew -p editors/jetbrains verifyPlugin buildPlugin` —
