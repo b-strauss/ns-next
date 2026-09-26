@@ -10361,7 +10361,10 @@ const PLATFORM_MEMBERS: &str = indoc! {"
         | public transcript = platform transcript.
           public collections = platform collections. |
     ) (
-        public unused = ( ^transcript show: transcript nonexistent printString )
+        public unused = (
+            transcript newLine.
+            ^transcript show: transcript nonexistent printString
+        )
     ) : ()
 "};
 
@@ -10469,6 +10472,7 @@ fn a_platform_path_the_loader_cannot_follow_is_refused() {
     let nonexistent = symbol_id(&report, "nonexistent");
     let show = symbol_id(&report, "show:");
     let print_string = symbol_id(&report, "printString");
+    let new_line = symbol_id(&report, "newLine");
     let no_symbol = u32::try_from(report.symbols.len()).expect("a count fits a u32") + 1000;
     let too_long = vec![transcript; image::platform_paths::MAX_PLATFORM_PATH_LENGTH + 1];
 
@@ -10508,6 +10512,18 @@ fn a_platform_path_the_loader_cannot_follow_is_refused() {
         &platform_path_section(&[vec![transcript, print_string]]),
     ));
     assert!(message.contains("transcript printString"), "{message}");
+
+    // A public method that is no slot's getter and no nested class's
+    // accessor is never sent: `newLine` would print while the image is read.
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[vec![transcript, new_line]]),
+    ));
+    assert_eq!(
+        message,
+        "the image names platform path `transcript newLine`, whose member `newLine` is no \
+         public slot or nested class of what the path has reached"
+    );
 }
 
 #[test]
@@ -10627,5 +10643,142 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
             };
             assert_eq!(message, expected);
         }
+    });
+}
+
+/// A graph section of no objects and no frames whose one root `root` writes.
+fn a_graph_of_one_root(root: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 0, 0);
+    writer.write_u32(1);
+    root(&mut writer);
+    writer.into_bytes()
+}
+
+/// A fixture whose platform path 0 answered the builtin `Transcript` class.
+fn fixture_naming_the_transcript_class_by_path() -> GraphFixture {
+    let mut fixture = GraphFixture::new();
+    let transcript_class = fixture.interpreter.enter(|mutator| {
+        mutator.stash(Value::Object(
+            mutator.builtin_class(BuiltinClass::Transcript),
+        ))
+    });
+    fixture.platform_paths = vec![transcript_class];
+    fixture
+}
+
+#[test]
+fn a_value_naming_a_path_named_class_decodes_to_that_class() {
+    let mut fixture = fixture_naming_the_transcript_class_by_path();
+    let expected = fixture.platform_paths[0].clone();
+    let bytes = a_graph_of_one_root(|writer| {
+        writer.write_u8(VALUE_PLATFORM_PATH);
+        writer.write_u32(0);
+    });
+    let same = fixture.decode(&bytes, |heap, decoded| {
+        let Ok(graph) = decoded else {
+            panic!("the graph decodes");
+        };
+        object(&graph.roots[0]).same(*object(&heap.fetch(&expected)))
+    });
+    assert!(same, "the root is the class the path answered");
+}
+
+#[test]
+fn a_metaclass_reference_through_a_platform_path_decodes() {
+    let mut fixture = fixture_naming_the_transcript_class_by_path();
+    let class = fixture.platform_paths[0].clone();
+    let bytes = a_graph_of_one_root(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_PLATFORM_PATH);
+        writer.write_u32(0);
+    });
+    let same = fixture.decode(&bytes, |heap, decoded| {
+        let Ok(graph) = decoded else {
+            panic!("the graph decodes");
+        };
+        let metaclass = heap
+            .class_metaclass(*object(&heap.fetch(&class)))
+            .expect("Transcript has a metaclass");
+        object(&graph.roots[0]).same(metaclass)
+    });
+    assert!(
+        same,
+        "the root is the metaclass of the class the path answered"
+    );
+}
+
+/// The closing hash table, decoded against a fresh world whose platform path
+/// 0 answered its transcript; answers the outcome and the transcript's hash.
+fn decode_tag_named_with_the_transcript(bytes: &[u8]) -> (Result<u32, decode::DecodeError>, u32) {
+    let (mut interpreter, class) = load(EMPTY);
+    let platform = interpreter.platform();
+    let transcript = expect_ok(
+        interpreter.send(&platform, Symbol::intern("transcript"), &[]),
+        "transcript",
+    );
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let transcript = mutator.fetch(&transcript);
+        let mut reader = decode::Reader::new(bytes);
+        let result = decode::decode_tag_named_hashes(&mut reader, mutator, class, &[transcript]);
+        (result, mutator.heap().identity_hash(*object(&transcript)))
+    })
+}
+
+#[test]
+fn a_hash_recorded_for_a_platform_path_is_restored() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(HASHED_PLATFORM_PATH);
+    writer.write_u32(0);
+    writer.write_u32(7);
+    let (result, hash) = decode_tag_named_with_the_transcript(&writer.into_bytes());
+    assert_eq!(result, Ok(7));
+    assert_eq!(
+        hash, 7,
+        "the loading platform's transcript carries the hash"
+    );
+}
+
+#[test]
+fn a_hash_recorded_for_a_platform_path_past_the_section_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(HASHED_PLATFORM_PATH);
+    writer.write_u32(1);
+    writer.write_u32(7);
+    let (result, _) = decode_tag_named_with_the_transcript(&writer.into_bytes());
+    assert_eq!(result, Err(decode::DecodeError::BadPlatformPath(1)));
+}
+
+/// A metaclass a path names that a prebuilt class's metaclass entry reaches
+/// as well -- here `Transcript class`, whose class is a builtin -- is listed
+/// once, or the loader would refuse the table as naming one object twice.
+#[test]
+fn a_path_named_metaclass_is_listed_once_in_the_hash_table() {
+    let (mut interpreter, class) = load(EMPTY);
+    let platform = interpreter.platform();
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let transcript_class = mutator.builtin_class(BuiltinClass::Transcript);
+        let metaclass = mutator
+            .heap()
+            .class_metaclass(transcript_class)
+            .expect("Transcript has a metaclass");
+        let hash = mutator.heap_mut().ensure_identity_hash(metaclass);
+        let mut writer = encode::Writer::new();
+        encode::encode_tag_named_hashes(&mut writer, mutator, class, &platform, &[metaclass]);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        let decoded = decode::decode_tag_named_hashes(
+            &mut reader,
+            mutator,
+            class,
+            &[Value::Object(metaclass)],
+        );
+        assert_eq!(decoded, Ok(hash));
     });
 }

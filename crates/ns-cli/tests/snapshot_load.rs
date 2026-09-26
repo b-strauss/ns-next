@@ -432,3 +432,56 @@ fn a_hash_given_to_a_tag_named_object_survives_a_snapshot() {
     assert!(ok, "{error}");
     assert_eq!(out, "true\ntrue\ntrue\n");
 }
+
+/// A platform path whose step is a public method rather than a slot's getter
+/// or a nested class's accessor is refused before it is sent: loading an
+/// image never runs `transcript newLine`, so nothing is printed.
+#[test]
+fn a_platform_path_through_a_method_is_refused_and_prints_nothing() {
+    let directory = ScratchDirectory::new("platform-path-method");
+    let source = directory.join("holder.ns");
+    std::fs::write(
+        &source,
+        indoc! {"
+            Newspeak3
+            'T'
+            class Holder usingPlatform: platform = Object new (
+                | public transcript = platform transcript. |
+            ) (
+                public unused = ( ^transcript newLine )
+            ) : ()
+        "},
+    )
+    .unwrap();
+    let image = directory.join("world.img");
+    let (ok, _out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    assert!(ok, "{error}");
+    let bytes = std::fs::read(&image).unwrap();
+    let report = ns_runtime::image::inspect::inspect(&bytes).expect("inspect");
+    let located = report
+        .sections
+        .iter()
+        .find(|section| section.name == "platform paths")
+        .expect("a stateful image carries a platform path section");
+    let id_of = |text: &str| {
+        let position = report
+            .symbols
+            .iter()
+            .position(|symbol| symbol == text)
+            .expect("the image interns the selector");
+        u32::try_from(position).unwrap()
+    };
+    let mut section = Vec::new();
+    section.extend_from_slice(&1u32.to_le_bytes());
+    section.extend_from_slice(&2u32.to_le_bytes());
+    section.extend_from_slice(&id_of("transcript").to_le_bytes());
+    section.extend_from_slice(&id_of("newLine").to_le_bytes());
+    let mut crafted = bytes[..located.start].to_vec();
+    crafted.extend_from_slice(&section);
+    crafted.extend_from_slice(&bytes[located.end..]);
+    std::fs::write(&image, crafted).unwrap();
+    let (ok, out, error) = ns_next(&["load".as_ref(), image.as_os_str()]);
+    assert!(!ok, "the image loaded: {out}");
+    assert_eq!(out, "", "nothing ran while the image was read");
+    assert!(error.contains("`transcript newLine`"), "{error}");
+}

@@ -1,7 +1,7 @@
 //! Canonical, little-endian, self-describing byte encoding for the image
 //! format -- see `docs/design/image-format.md`. Never a memory dump.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
@@ -883,17 +883,18 @@ fn is_prebuilt_class<'gc>(
 /// belong to the loading binary, and a module instance holds the kernel, as
 /// the platform holds the mirror, so neither is ever written field by field.
 ///
-/// A metaclass is judged by its class, whose class side it applies. A level a
-/// `<:` clause naming a builtin added applies that builtin's shipped mixin,
-/// but belongs to the user class that applied it: the image writes it as a
-/// `MIXIN_BUILTIN` record, so it is no refusal.
+/// Shipped is `platform_paths::is_shipped_object`, the one rule `discover`
+/// and the loader apply too. A level a `<:` clause naming a builtin added
+/// applies that builtin's shipped mixin, but belongs to the user class that
+/// applied it: the image writes it as a `MIXIN_BUILTIN` record, and its
+/// metaclass as a record beside it, so neither is a refusal.
 fn shipped_without_path<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
     if heap.is_class(object) {
         let class = heap.class_this_class(object).unwrap_or(object);
         let applies_a_named_builtin = heap
             .class_applied_origin(class)
             .is_some_and(|applied| applied.named_builtin.is_some());
-        if heap.class_is_shipped(class) && !applies_a_named_builtin {
+        if platform_paths::is_shipped_object(heap, object) && !applies_a_named_builtin {
             return Some(format!(
                 "image encoding refuses the class object {}: it is compiled from shipped \
                  source, and no platform path names it",
@@ -903,7 +904,7 @@ fn shipped_without_path<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> 
         return None;
     }
     let class = heap.class_of_object(object);
-    if heap.class_is_shipped(class) && heap.class_enclosing(class).is_none() {
+    if platform_paths::is_shipped_object(heap, object) && heap.class_enclosing(class).is_none() {
         return Some(format!(
             "image encoding refuses a module instance of {}: it holds the core library's \
              state, and no platform path names it",
@@ -1720,8 +1721,10 @@ pub fn encode_graph_section<'gc>(
 /// class, then `platform`, then the path-named objects in section order, then
 /// the builtins' metaclasses in wire-tag order, the root class's and its
 /// levels', lowest first, and the path-named classes' in section order -- so
-/// one world encodes to one byte sequence. A builtin class a path names is
-/// left to its builtin entry, since one object listed twice is refused. See
+/// one world encodes to one byte sequence. Each object has at most one entry,
+/// the first in that order -- a builtin class a path names keeps its builtin
+/// entry, a path-named metaclass its path entry -- since the loader refuses
+/// one object listed twice. See
 /// `docs/design/image-format.md`, "Identity hashes are preserved verbatim".
 ///
 /// Every builtin is considered, not only those the graph reaches: a program
@@ -1738,32 +1741,40 @@ pub fn encode_tag_named_hashes<'gc>(
     used_platform_objects: &[ObjectReference<'gc>],
 ) {
     let heap = &mutator.heap;
-    // The path-named objects the builtin entries do not already cover, with
-    // their position in the section.
     let path_named: Vec<(u32, ObjectReference<'gc>)> = used_platform_objects
         .iter()
         .enumerate()
-        .filter(|(_, object)| heap.class_builtin(**object).is_none())
         .map(|(index, object)| (u32_field("platform path index", index), *object))
         .collect();
+    // One entry per object: a builtin class a path names, or a metaclass a
+    // path names and a prebuilt class's reference reaches as well, is listed
+    // once, where the fixed order first reaches it.
+    let mut entered: HashSet<usize> = HashSet::new();
     let mut entries: Vec<(u8, Vec<u8>, u32)> = Vec::new();
     for kind in BuiltinClass::ALL {
-        let hash = heap.identity_hash(mutator.builtin_class(kind));
+        let class = mutator.builtin_class(kind);
+        entered.insert(heap.object_identity_key(class));
+        let hash = heap.identity_hash(class);
         if hash != 0 {
             entries.push((HASHED_BUILTIN_CLASS, vec![builtin_class_tag(kind)], hash));
         }
     }
+    entered.insert(heap.object_identity_key(root_class));
     let hash = heap.identity_hash(root_class);
     if hash != 0 {
         entries.push((HASHED_ROOT_CLASS, Vec::new(), hash));
     }
     if let Value::Object(platform) = platform {
+        entered.insert(heap.object_identity_key(*platform));
         let hash = heap.identity_hash(*platform);
         if hash != 0 {
             entries.push((HASHED_PLATFORM, Vec::new(), hash));
         }
     }
     for (index, object) in &path_named {
+        if !entered.insert(heap.object_identity_key(*object)) {
+            continue;
+        }
         let hash = heap.identity_hash(*object);
         if hash != 0 {
             entries.push((HASHED_PLATFORM_PATH, index.to_le_bytes().to_vec(), hash));
@@ -1803,6 +1814,9 @@ pub fn encode_tag_named_hashes<'gc>(
         let Some(metaclass) = heap.class_metaclass(class) else {
             continue;
         };
+        if !entered.insert(heap.object_identity_key(metaclass)) {
+            continue;
+        }
         let hash = heap.identity_hash(metaclass);
         if hash != 0 {
             entries.push((HASHED_METACLASS, reference, hash));

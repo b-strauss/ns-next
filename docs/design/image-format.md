@@ -406,10 +406,13 @@ platform, one unary send each. The encoder finds them with
 `platform_paths::discover`, which walks from the platform over, for every level
 of an object's class, each **public** slot's field — a lazy slot's included,
 skipped while `nil` — and each **public** nested class's cache slot, skipped
-while empty. It records every object it reaches that is a class object or a
-shipped instance — an instance with slots of a class compiled from shipped
-source (`Mixin.shipped`, `Heap::class_is_shipped`) — and descends into shipped
-instances only, never into a class object. Breadth-first, visiting each object
+while empty. It records every **shipped object** it reaches — a class object
+whose own mixin is compiled from shipped source (`Mixin.shipped`,
+`Heap::class_is_shipped`), or an instance with slots of such a class — and
+descends into shipped instances only, never into a class object. The one
+definition, `platform_paths::is_shipped_object`, is what the encoder's
+refusals and the loader apply too, so no path is written that a loader must
+refuse. Breadth-first, visiting each object
 once, so an object's path is its shortest, and among equals the first in
 declaration order, superclass level first: one world encodes to one byte
 sequence. A string or an array is no shipped instance even when its class is a
@@ -827,19 +830,22 @@ sent: more than `MAX_PLATFORM_PATHS` paths (`TooManyPlatformPaths`), a path of
 no members or more than `MAX_PLATFORM_PATH_LENGTH` (`PlatformPathLength`), a
 member that is no symbol id (`BadSymbolId`) and one that is no unary selector
 (`PlatformPathMemberNotUnary`). The second, outside any entry, sends each
-path's members to the loading interpreter's platform with `Interpreter::send`,
-one ordinary public unary send each — exactly what the program's own
-`platform collections` may do, and loading a stateless binary runs its code
-anyway — and refuses the image, naming the path, when a send fails or the
-final answer is neither a class object whose own mixin is shipped nor an
-instance with slots of a shipped class (`platform_paths::is_shipped_object`):
-`transcript printString` answers a fresh `String`, which the loading binary
-does not own. The third decodes the graph against the answers
+path's members to the loading interpreter's platform with `Interpreter::send`.
+Each step must be one `discover` could have taken — a public slot's getter, a
+lazy slot's included, or a public nested class's accessor of the shipped
+instance reached so far, found by the same enumeration of its class's levels
+(`platform_paths::is_path_step`) — and is checked before it is sent, then
+sent as an ordinary public send. So a crafted `transcript newLine` is refused
+before anything prints, rather than run 131,072 times while the image is
+read. The image is refused, naming the path, when a step is none of these,
+when a send fails, or when the final answer is no shipped object
+(`platform_paths::is_shipped_object`). The third decodes the graph against the answers
 (`DecodeContext::platform_paths`), so the decoder still runs no code; an index
 past the section is `BadPlatformPath`, and a `CLASS_PLATFORM_PATH` whose
 object is no class is `PlatformPathNotAClass`. A crafted image can make the
-second phase run public unary methods of shipped objects; it cannot make it
-run anything a program could not.
+second phase read public slots and nested classes of shipped objects, and so
+run their lazy initializers and superclass clauses; it can run no other
+method.
 
 **An instance of a path-named class carries exactly that class's layout.** The
 code and the layout of a shipped class come from the loading binary, not from

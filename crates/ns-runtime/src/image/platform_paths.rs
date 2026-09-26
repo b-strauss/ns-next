@@ -98,9 +98,10 @@ pub fn is_shipped_object<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) ->
 /// Walks from `platform` over, for every level of an object's class, each
 /// public slot's field -- a lazy slot's included, skipped while `nil` -- and
 /// each public nested class's cache slot, skipped while empty, and records
-/// every object it reaches that is a class object or a shipped instance
-/// (`is_shipped_object`). It descends into shipped instances only, never into
-/// a class object.
+/// every shipped object it reaches (`is_shipped_object`, the one rule the
+/// encoder and the loader apply too, so no path is written that a loader
+/// must refuse). It descends into shipped instances only, never into a class
+/// object.
 ///
 /// Breadth-first, visiting each object once, so an object's recorded path is
 /// its shortest, and among paths of one length the first in declaration
@@ -124,10 +125,10 @@ pub fn discover<'gc>(heap: &Heap<'gc>, platform: ObjectReference<'gc>) -> Platfo
             if visited.contains(&key) {
                 continue;
             }
-            let is_class = heap.is_class(target);
-            if !is_class && !is_shipped_object(heap, target) {
+            if !is_shipped_object(heap, target) {
                 continue;
             }
+            let is_class = heap.is_class(target);
             visited.insert(key);
             let mut extended = path.clone();
             extended.push(member);
@@ -138,6 +139,20 @@ pub fn discover<'gc>(heap: &Heap<'gc>, platform: ObjectReference<'gc>) -> Platfo
         }
     }
     found
+}
+
+/// Whether a path may take the step `member` from `object`: `object` is a
+/// shipped instance, which is all `discover` descends into, and `member` is
+/// one of its public members `discover` walks -- a public slot's getter, a
+/// lazy slot's included, or a public nested class's accessor. The loader
+/// asks this before every send, so a crafted path can run no other method:
+/// `transcript newLine` is refused rather than printed.
+pub fn is_path_step<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>, member: Symbol) -> bool {
+    !heap.is_class(object)
+        && is_shipped_object(heap, object)
+        && public_members(heap, object)
+            .iter()
+            .any(|(name, _)| *name == member)
 }
 
 /// `object`'s public members that hold state, with what each holds: every

@@ -291,9 +291,10 @@ pub struct LoadedImage {
 /// decodes everything up to and including the platform path section and
 /// roots the root class and its levels: a run may move them, and the mixins
 /// and the code hold no handle. The second, outside any entry, sends each
-/// path's members to the loading platform -- ordinary public unary sends,
-/// what the program's own `platform collections` may do -- and refuses a
-/// path that fails or answers no shipped object. The third decodes the graph
+/// path's members to the loading platform -- each step a public slot's or
+/// nested class's accessor, sent as an ordinary public send, what the
+/// program's own `platform collections` may do -- and refuses a path that
+/// takes any other step, fails or answers no shipped object. The third decodes the graph
 /// against what the paths answered, and runs nothing.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut reader = decode::Reader::new(bytes);
@@ -454,7 +455,10 @@ struct Described {
 
 /// Sends each path's members to the loading interpreter's platform, one
 /// unary send each, and answers what every path reached, rooted, in section
-/// order. A send that fails refuses the image, naming the path, and so does a
+/// order. Each step must be one `discover` could take
+/// (`platform_paths::is_path_step`), checked before it is sent. A step that
+/// is none, or a send that fails, refuses the image, naming the path, and so
+/// does a
 /// final answer that is no shipped object
 /// (`platform_paths::is_shipped_object`): what an image names by a path must
 /// be something the loading binary owns, never an object a send made on the
@@ -468,6 +472,24 @@ fn resolve_platform_paths(
         let described = platform_paths::describe(path);
         let mut current = interpreter.platform();
         for member in path {
+            // Only a step `discover` could have taken is sent: a public
+            // slot's getter or a public nested class's accessor of the
+            // shipped instance reached so far. Any other public method --
+            // `transcript newLine` -- would run arbitrary shipped code while
+            // the image is still being read.
+            let is_step = interpreter.enter(|mutator| match mutator.fetch(&current) {
+                Value::Object(object) => {
+                    platform_paths::is_path_step(&mutator.heap, object, *member)
+                }
+                _ => false,
+            });
+            if !is_step {
+                return Err(format!(
+                    "the image names platform path `{described}`, whose member `{}` is no \
+                     public slot or nested class of what the path has reached",
+                    member.as_str()
+                ));
+            }
             current = match interpreter.send(&current, *member, &[]) {
                 Ok(answer) => answer,
                 Err(HostSignal::Error(error)) => {

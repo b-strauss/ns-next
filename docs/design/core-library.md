@@ -1519,12 +1519,13 @@ superclass clause — Newspeak the decoder must never run.
   a shipped class — a `List`, a second transcript — is an ordinary
   record (below).
 - **On load, before the graph is decoded**, the host sends each listed
-  path's members to the loading interpreter's platform, as ordinary public
-  unary sends: exactly what the program's own `platform collections List`
-  may do, and loading a stateless binary runs its code anyway. Each member
-  must be a symbol, the path length and the number of paths are bounded,
-  and a send that fails or answers something that is not a shipped object
-  refuses the image. The decoder then only looks paths up, so it still
+  path's members to the loading interpreter's platform, each step a public
+  slot's or nested class's accessor of the shipped instance reached so far,
+  sent as an ordinary public send: exactly what the program's own
+  `platform collections List` may do, and loading a stateless binary runs
+  its code anyway. Each member must be a symbol, the path length and the
+  number of paths are bounded, and a step that is no such accessor, a send
+  that fails or an answer that is not a shipped object refuses the image. The decoder then only looks paths up, so it still
   runs no code.
 - **A stored platform is a reference, never its state.** A program that
   keeps `platform` in a slot and sends `platform collections` only after a
