@@ -1,7 +1,7 @@
 //! The exceptions `Kernel.ns` builds over the activation leaves, where a
 //! golden cannot reach: the debugger's resumption of an unhandled exception,
 //! which `Interpreter::resume_unhandled_exceptions` stands in for
-//! (`docs/design/core-library.md`, "Planned: exceptions").
+//! (`docs/design/core-library.md`, "Exceptions").
 
 use indoc::indoc;
 use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Lowering, Root, Symbol};

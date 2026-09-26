@@ -566,7 +566,7 @@ impl<'gc> Mutator<'gc> {
     /// The message is a `Message` of the kernel's, its `selector` a Symbol
     /// and its `arguments` an Array, which `Object>>doesNotUnderstand:`
     /// sends again with `sentTo:` when the debugger resumed it
-    /// (`docs/design/core-library.md`, "Planned: exceptions"). It is built
+    /// (`docs/design/core-library.md`, "Exceptions"). It is built
     /// once the handler is found; allocation order is unobservable, identity
     /// hashes being drawn lazily.
     fn handler_message(&mut self, selector: Symbol, arguments: &[Value<'gc>]) -> Value<'gc> {

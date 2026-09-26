@@ -456,7 +456,7 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         // declares (`Mutator::platform_value`), and on the exception classes,
         // whose instances `decide_instantiation` gives an ordinary field
         // vector like any other class's (`docs/design/core-library.md`,
-        // "Planned: exceptions"). `Activation` and `KernelNamespace` declare
+        // "Exceptions"). `Activation` and `KernelNamespace` declare
         // no slots of their own: an activation's state lives in the running
         // activation it wraps, and the namespace is stateless.
         assert!(
@@ -777,10 +777,10 @@ mod tests {
         // selector, a send, and its receiver, a slot.
         (BuiltinClass::MessageNotUnderstood, "hostSelector"),
         (BuiltinClass::MessageNotUnderstood, "hostReceiver"),
-        // The exception protocol (`docs/design/core-library.md`, "Planned:
-        // exceptions") is Newspeak over the activation leaves: each method
-        // sends, keeps state in the exception's slots, or makes several
-        // mirror sends, none of them a forwarder of `self` alone.
+        // The exception protocol (`docs/design/core-library.md`, "Exceptions")
+        // is Newspeak over the activation leaves: each method sends, keeps
+        // state in the exception's slots, or makes several mirror sends, none
+        // of them a forwarder of `self` alone.
         (BuiltinClass::Exception, "description"),
         (BuiltinClass::Exception, "printString"),
         (BuiltinClass::Exception, "reachedDefaultHandler"),
@@ -1003,7 +1003,7 @@ mod tests {
             MethodFastPath::BuiltinClass(BuiltinClass::OrderedCollection),
         ),
         // `platform kernel`'s accessors, the same form
-        // (`docs/design/core-library.md`, "Planned: exceptions").
+        // (`docs/design/core-library.md`, "Exceptions").
         (
             BuiltinClass::KernelNamespace,
             "Exception",
@@ -1323,7 +1323,7 @@ mod tests {
     /// so every kernel class has to say `public` for a program to name it --
     /// every one but `Top`, which §3.2 lets only `Object` name, and
     /// `Activation`, which no program may reach at all
-    /// (`docs/design/core-library.md`, "Planned: exceptions").
+    /// (`docs/design/core-library.md`, "Exceptions").
     #[test]
     fn only_top_and_activation_are_private() {
         let mut interpreter = Interpreter::bootstrap();

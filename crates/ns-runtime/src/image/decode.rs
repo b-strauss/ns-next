@@ -803,7 +803,7 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// methods. `Activation`: a running activation as an object reads other
 /// frames and unwinds stacks, a capability Newspeak hands out only through
 /// mirrors, so no artifact may name its class either
-/// (`docs/design/core-library.md`, "Planned: exceptions") -- except as the
+/// (`docs/design/core-library.md`, "Exceptions") -- except as the
 /// header of an activation record, which `decode_object_header` reads. `Object` declares
 /// an accessor for none of the three, for the same reasons, which is what
 /// keeps source and artifact agreed on the names a program has. Only the

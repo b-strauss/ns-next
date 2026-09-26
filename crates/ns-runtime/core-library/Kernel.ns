@@ -134,7 +134,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
            flat: a class side is not inherited, so only `Class` reaches every
            exception class, and a class side that declares its own
            `handles:` is searched first and overrides it
-           (docs/design/core-library.md, "Planned: exceptions"). *)
+           (docs/design/core-library.md, "Exceptions"). *)
         public handles: exception = ( ^vmMirror object: exception inheritsMixinOf: self ifFail: [false] )
     )
     public class Metaclass = Behavior new () (

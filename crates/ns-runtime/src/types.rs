@@ -269,7 +269,7 @@ pub enum BuiltinClass {
     /// §3.2: every metaclass is an instance of `Metaclass`.
     Metaclass,
     /// A running activation as an object (`docs/design/core-library.md`,
-    /// "Planned: exceptions"): the frame it wraps, and nothing a program can
+    /// "Exceptions"): the frame it wraps, and nothing a program can
     /// reach -- it reads other frames and unwinds stacks, a capability
     /// Newspeak hands out only through mirrors. No program can name it:
     /// `Object` declares no accessor for it, and the image decoder refuses

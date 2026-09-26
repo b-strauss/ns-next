@@ -1,9 +1,9 @@
-//! `Message>>sentTo:`'s leaf (`docs/design/core-library.md`, "Planned:
-//! exceptions"): a message sent to a receiver as an ordinary
-//! explicit-receiver send, decided by `Mutator::decide_send` -- §5.5's
-//! lookupPublic, then `doesNotUnderstand:` -- so that a message a program
-//! built reaches no protected or private method, as Primordial Soup's
-//! `Message>>sendTo:` reaches none. It answers the step the send decided,
+//! `Message>>sentTo:`'s leaf (`docs/design/core-library.md`, "Exceptions"):
+//! a message sent to a receiver as an ordinary explicit-receiver send,
+//! decided by `Mutator::decide_send` -- §5.5's lookupPublic, then
+//! `doesNotUnderstand:` -- so that a message a program built reaches no
+//! protected or private method, as Primordial Soup's `Message>>sendTo:`
+//! reaches none. It answers the step the send decided,
 //! which the run loop runs as any send's; it runs nothing itself.
 
 use crate::builtins::primitive::MessagePrimitive;

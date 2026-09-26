@@ -43,7 +43,7 @@ pub(crate) enum Signal<'gc> {
     /// A non-local return: its home's frame, never its activation, since the
     /// unwind that carries it runs `ensure:` blocks on its way, and an
     /// activation they push can reuse a popped activation's stack index
-    /// (`docs/design/execution.md`, "Non-local return").
+    /// (`docs/design/execution.md`, "Unwinding").
     Return(FrameReference<'gc>, Value<'gc>),
     Error(NewspeakError<'gc>),
     /// `Exception>>retry`: unwind to this `on:do:` activation's frame,
@@ -72,7 +72,7 @@ pub enum HostSignal {
     Error(HostError),
     /// A `^` that reached the host: its home had returned, or it aimed at a
     /// running initializer, which catches none (`docs/design/execution.md`,
-    /// "Non-local return").
+    /// "Unwinding").
     Return,
 }
 
@@ -688,7 +688,7 @@ impl Interpreter {
     /// program can reach: the next `count` unhandled exceptions are resumed
     /// with `nil` by `defaultAction`'s leaf instead of ending the run --
     /// what the debugger will do once it has let the user fix the cause
-    /// (`docs/design/core-library.md`, "Planned: exceptions"). A
+    /// (`docs/design/core-library.md`, "Exceptions"). A
     /// `MessageNotUnderstood` resumed this way sends its message again.
     #[doc(hidden)]
     pub fn resume_unhandled_exceptions(&mut self, count: usize) {
@@ -1329,7 +1329,7 @@ impl<'gc> Mutator<'gc> {
     /// does, and a superclass clause's or its message's, a `<:` clause's
     /// message included. An initializer catches
     /// none -- a `^` into a running one escapes, the known gap in
-    /// `docs/design/execution.md`, "Non-local return" -- and a block's `^`
+    /// `docs/design/execution.md`, "Unwinding" -- and a block's `^`
     /// always targets its home, never the block.
     pub(crate) fn catches_return(&self, activation: ActivationReference) -> bool {
         matches!(

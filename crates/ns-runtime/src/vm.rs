@@ -706,7 +706,7 @@ fn resume_caller<'gc>(
 /// target returns its value, a block the unwind runs on its way -- or the
 /// `signal` an error became -- is pushed and switched to, or the run ends.
 /// Deciding which is `interpreter/`'s, so a JIT reaches the same unwinding
-/// (`docs/design/execution.md`, "Non-local return").
+/// (`docs/design/execution.md`, "Unwinding").
 fn unwind<'gc>(mutator: &mut Mutator<'gc>, signal: Signal<'gc>, floor: usize) -> Flow {
     match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
         UnwindOutcome::Returned { target, value } => finish(mutator, target, value, floor),

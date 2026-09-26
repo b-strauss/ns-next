@@ -1,4 +1,4 @@
-//! Unwind markers (`docs/design/core-library.md`, "Planned: exceptions"):
+//! Unwind markers (`docs/design/core-library.md`, "Exceptions"):
 //! `Block>>on:do:`, `ensure:` and `ifCurtailed:` are ordinary kernel
 //! methods whose compiled code says what they are and where their
 //! parameters and locals live, so that the unwinder -- and, later,

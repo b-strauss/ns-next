@@ -1,5 +1,5 @@
-//! The one unwinder (`docs/design/core-library.md`, "Planned: exceptions",
-//! and `docs/design/execution.md`, "Non-local return"): what a signal
+//! The one unwinder (`docs/design/core-library.md`, "Exceptions",
+//! and `docs/design/execution.md`, "Unwinding"): what a signal
 //! leaving the running activation does to the stack. It decides, and the run
 //! loop only does what the outcome says, so the reference lowering and a
 //! JIT reach the same unwinding.
@@ -110,7 +110,7 @@ pub(crate) fn unwind_signal<'gc>(
 /// and it returns the value through the ordinary return path, or runs
 /// again from its start for a restart. Any other target -- a home that has
 /// returned meanwhile, or a running initializer, which catches none (the
-/// known gap in `docs/design/execution.md`, "Non-local return") -- and a
+/// known gap in `docs/design/execution.md`, "Unwinding") -- and a
 /// termination, which has none, pop every activation of the run, `base`
 /// included, and the run leaves with what `exit_signal` makes of the
 /// unwind.
@@ -315,7 +315,7 @@ fn start_signalling<'gc>(
 }
 
 impl<'gc> Mutator<'gc> {
-    /// §8.6 and `docs/design/core-library.md`, "Planned: exceptions": a VM
+    /// §8.6 and `docs/design/core-library.md`, "Exceptions": a VM
     /// error becomes an `Error` -- its `messageText` the error's text, its
     /// private `originSelector` and `originReceiver` the selector and
     /// receiver the host received before there were exceptions, which

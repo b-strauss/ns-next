@@ -1,5 +1,5 @@
 //! The activation leaves `Kernel.ns`'s `Exception` is built on
-//! (`docs/design/core-library.md`, "Planned: exceptions"): the running
+//! (`docs/design/core-library.md`, "Exceptions"): the running
 //! activation as an object, its sender, the registers an `on:do:`
 //! activation's marker names, and the three ways out -- a return from an
 //! activation, a restart of one, and the termination an unhandled

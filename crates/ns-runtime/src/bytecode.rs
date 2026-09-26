@@ -373,7 +373,7 @@ pub struct CompiledCode {
 }
 
 /// What makes an activation matter to the unwinder
-/// (`docs/design/core-library.md`, "Planned: exceptions"): each variant
+/// (`docs/design/core-library.md`, "Exceptions"): each variant
 /// names the registers of the kernel method's parameters and locals, in the
 /// layout `docs/design/compiler.md`, "Registers" gives a method -- its
 /// parameters, then its named temporaries in declaration order.

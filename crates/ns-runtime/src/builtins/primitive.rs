@@ -139,7 +139,7 @@ pub enum PlatformPrimitive {
 }
 
 /// The activation leaves `Kernel.ns`'s `Exception` is built on
-/// (`docs/design/core-library.md`, "Planned: exceptions"): reading the
+/// (`docs/design/core-library.md`, "Exceptions"): reading the
 /// stack, the `on:do:` activations' marked registers, and the three ways an
 /// exception leaves -- a return from, or a restart of, an activation, and
 /// the termination an unhandled one ends in.

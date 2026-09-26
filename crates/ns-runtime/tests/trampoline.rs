@@ -121,7 +121,7 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
 }
 
 /// A `^` into an initializer that is still running escapes -- the known gap
-/// in `docs/design/execution.md`, "Non-local return" -- and it escapes as the
+/// in `docs/design/execution.md`, "Unwinding" -- and it escapes as the
 /// signal it always was, not as a panic: an initializer catches no return,
 /// so the unwind pops everything down to the floor of the host's run and
 /// leaves it with the signal. Closing the gap changes what this expects;
