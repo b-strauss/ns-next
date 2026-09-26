@@ -2,13 +2,15 @@
 
 > **Status:** partial — the core library is built as Newspeak source,
 > `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
-> `Metaclass` included; missing is `Integer>>/`, and the surface grows on
-> demand, not speculatively.
+> `Metaclass` and §8.6's exceptions included; missing is `Integer>>/`, and
+> the surface grows on demand, not speculatively.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
-> leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table),
-> `compiler/primitive_method.rs`, `platform.rs`.
+> leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
+> `builtins/activation.rs` and `builtins/message.rs` the exceptions'),
+> `interpreter/unwind.rs` (the one unwinder, and a VM error signalled),
+> `compiler/primitive_method.rs`, `compiler/unwind_marker.rs`, `platform.rs`.
 
 The core library is Newspeak source the runtime ships:
 `crates/ns-runtime/core-library/Kernel.ns`, compiled into the binary
@@ -28,7 +30,7 @@ comparison in [image-format.md](image-format.md).
 ```
 Top                     (private; no superclass, declares nothing)
 └── Object              class, ==, =, hash, printString, doesNotUnderstand:,
-    │                   and an accessor per nameable builtin (String, ...)
+    │                   halt, and an accessor per nameable builtin (String, ...)
     ├── Value           =, ==, hash, and the two slot-reading leaves
     │   ├── Boolean     ├── True
     │   │               └── False
@@ -37,15 +39,21 @@ Top                     (private; no superclass, declares nothing)
     │   ├── String
     │   ├── Symbol
     │   ├── UndefinedObject
-    │   ├── Platform    transcript, collections (slots)
+    │   ├── Platform    transcript, collections, kernel (slots)
     │   ├── Transcript  show:, newLine
-    │   └── Collections List
+    │   ├── Collections List
+    │   └── KernelNamespace  Exception, Error, MessageNotUnderstood, Halt, Message
     ├── Array
     ├── OrderedCollection
-    ├── Block
+    ├── Block           ..., on:do:, ensure:, ifCurtailed: (marked methods)
+    ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
+    │   ├── Error       └── MessageNotUnderstood
+    │   └── Halt
+    ├── Message         selector, arguments, sentTo:
+    ├── Activation      (private; a running activation, for the kernel only)
     └── Behavior        =, ==, hash (a class object's, derived from its state
         │               when it is a value)
-        ├── Class       name, printString
+        ├── Class       name, printString, handles:
         └── Metaclass   name, printString, =, ==
 ```
 
@@ -94,7 +102,7 @@ may.
 
 Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
-`printString` and protected `doesNotUnderstand:`, beside its fifteen
+and `printString`, beside its fifteen
 accessors for the predefined classes, `Object` to `Block`, each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
 below); `Integer`'s `+ - * // < >
@@ -113,6 +121,10 @@ and its `printString` an ordinary one ("The nil protocol" below). `True` and
 their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
 `hash` ordinary ones. `Boolean` declares nothing of its own either.
+`Object`'s protected `doesNotUnderstand:` and `halt`, the exception
+classes, `Block`'s `on:do:`, `ensure:` and `ifCurtailed:`, `Message` and
+`KernelNamespace` are the exception machinery, ordinary Newspeak over the
+activation leaves ("Exceptions" below).
 
 The other exceptions are `hash` on `Integer` (`^self`) and `asString` on
 `String` (`^self`), both quick methods ("`True` and `False` are quick
@@ -339,31 +351,35 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 57 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 72 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
 `ifFail:`; its arguments are the subject (the kernel method's `self`), the
 leaf's own arguments, and the failure block. `Array` and `OrderedCollection`
-share rows 43–47, as they share their payload.
+share rows 42–46 (counted from 0), as they share their payload.
 
 ### The platform
 
-The platform a module is handed (§8.3), its transcript and its `collections`
-namespace are three values (§3.1.1), each a `Kernel.ns` class of its own
-below `Value` (decided with the user on 2026-09-25):
+The platform a module is handed (§8.3), its transcript, its `collections`
+namespace and its `kernel` namespace are four values (§3.1.1), each a
+`Kernel.ns` class of its own below `Value` (decided with the user on
+2026-09-25):
 
 ```newspeak
 public class Platform = Value new (
     | public transcript = Transcript new.
-      public collections = Collections new. |
+      public collections = Collections new.
+      public kernel = KernelNamespace new. |
 ) ( )
 public class Transcript = Value new () ( show: and newLine, forwarders )
 public class Collections = Value new () ( public List = ( ^outer Kernel OrderedCollection ) )
+public class KernelNamespace = Value new () ( Exception, Error, MessageNotUnderstood, Halt, Message )
 ```
 
-`transcript` and `collections` are slot getters, `List` the accessor form
-answered without an activation, and only `Transcript`'s output reaches Rust
+`transcript`, `collections` and `kernel` are slot getters, `List` and
+`KernelNamespace`'s five the accessor form answered without an activation
+("Exceptions" below), and only `Transcript`'s output reaches Rust
 (`platform.rs`). Being values, they have no identity: two transcripts are
 equal and so identical, and a transcript kept in an image is the loading
 platform's after the load. None has an accessor on `Object`, since a program
@@ -372,13 +388,15 @@ accessor for a predefined class either: `platform Array` reaches `Object`'s
 (§3.2), which it inherits like every object.
 
 The host builds the one platform (`Mutator::platform_value`) in the state
-`Platform new` would give it — a fresh `Transcript` and `Collections` in the
-slots `Kernel.ns` declares — rather than by running the factory, so that
-asking for the platform, at bootstrap or in `image::load`, runs no Newspeak
-and fills no cache. `goldens/kernel/the_platform_and_its_parts_are_values`
-pins that the two agree (`platform = platform class new`), and
-`interpreter::kernel`'s shape check lets `Platform`, alone of the builtins,
-declare slots, because Rust builds no other instance of it.
+`Platform new` would give it — a fresh `Transcript`, `Collections` and
+`KernelNamespace` in the slots `Kernel.ns` declares — rather than by running
+the factory, so that asking for the platform, at bootstrap or in
+`image::load`, runs no Newspeak and fills no cache.
+`goldens/kernel/the_platform_and_its_parts_are_values` pins that the two
+agree (`platform = platform class new`), and `interpreter::kernel`'s shape
+check lets `Platform` declare slots, because Rust builds no other instance
+of it; of the other builtins only the exception classes and `Message` may,
+whose instances are ordinary ones with a field vector.
 
 ## The on-demand rule
 
@@ -613,6 +631,13 @@ one of them lets a program claim every primitive:
   ([image-format.md](image-format.md), "Verification").
 - The image encoder refuses an image whose graph reaches the mirror, its
   class or its class's metaclass.
+
+The activation objects the exceptions are built on are a capability of the
+same kind — one reads another frame's registers and unwinds the stack — and
+are held the same way: `Activation` is private to `Kernel.ns`, `Object`
+declares no accessor for it, a program reaches one only through a kernel
+method's local, and an image names its class only as the header of an
+activation record ("Exceptions" below).
 - `decide_factory` refuses to instantiate the mirror's class, so there is
   never a second mirror.
 - `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
@@ -669,8 +694,15 @@ through §5.10's super failure path, with the same message text.
 pin it, and `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`
 pins it family by family. `Object`'s own leaves never decline, so its
 blocks are unreachable; they keep the shape so that one rule, and one
-recognizer, covers every method. Every method is `public` but `Object`'s
-`doesNotUnderstand:`, which §5.5 makes `protected`.
+recognizer, covers every method. The exception machinery's mirror sends
+are the exception to the shape: they name another subject — an activation,
+an exception — and their failure blocks answer a value (`ifFail: [nil]`,
+`ifFail: [false]`) rather than resend to `super`. Every method is `public`
+but `Object`'s `doesNotUnderstand:`, which §5.5 makes `protected`, and the
+machinery's own: `Exception`'s `hostSelector` and `hostReceiver` and
+`MessageNotUnderstood`'s overrides of them (`protected`), `Exception`'s
+handler search (`private`) and `Block>>valueOnUnwind:` (`private`) — and
+`Metaclass`'s two `thisClass` helpers (`private`).
 
 Two things about the shape are enforced rather than conventional:
 
@@ -939,11 +971,13 @@ for the builtins", because that decision is about what an artifact arriving
 from outside may carry; bytes compiled into the binary are as trustworthy as
 the Rust beside them.
 
-### Planned: exceptions
+### Exceptions
 
-**Status: designed with the user on 2026-09-25, not built.** It is the next
-piece of work; the platform and collections modules below come after it,
-because `List` reports its errors through it.
+**Status: built** (designed with the user on 2026-09-25, built the same
+day and the next;
+[plan](../superpowers/plans/2026-09-25-2244-ns-next-exceptions.md)). The
+platform and collections modules below come next; `List` reports its errors
+through these.
 
 **Where the machinery lives.** §8.6: "Because Newspeak provides reflective
 access to the activation, exception handling is purely a library issue. The
@@ -965,15 +999,19 @@ an error is the VM's business.
 **The classes**, all under `Object`, none under `Value`:
 
 - `Exception`, with private slots for its signal activation, its handler
-  activation and `messageText`. Instance side: `signal`, `signal:`,
-  `messageText`, `description` (the `messageText`, or else the class name),
-  `printString` (the `description`), `isResumable` (`true`),
-  `defaultAction`, `return:` and `return`, `retry`, `resume:` and `resume`,
-  `pass`. Class side: `signal`, `signal:`, and `handles: anException`, by
-  default "an instance of me or of a subclass", which a class may
-  override.
+  activation, whether it reached its default action (`reachedDefault`),
+  whether a search for its handler is running (`searching`) and the
+  selector and receiver a VM error arose from (`originSelector`,
+  `originReceiver`), and a public `messageText`. Instance side: `signal`,
+  `signal:`, `messageText`, `description` (the `messageText`, or else the
+  class name), `printString` (the `description`), `isResumable` (`true`),
+  `reachedDefaultHandler`, `defaultAction`, `return:` and `return`, `retry`,
+  `resume:` and `resume`, `pass`. `return:`, `retry`, `resume:` and `pass`
+  sent to an exception no handler is running for signal an `Error`, "…
+  sent to an exception that is not being handled".
 - `Error` under `Exception`: `isResumable` is `false`, and `resume:` on one
-  signals an `Error` of its own, as in Squeak.
+  signals an `Error` of its own, "cannot resume a non-resumable exception",
+  as in Squeak.
 - `MessageNotUnderstood` under `Error`: `message`, `receiver`, and
   `isResumable` `true`, as in Squeak, so the live system can offer to create
   the missing method and continue (below).
@@ -984,171 +1022,305 @@ an error is the VM's business.
 - `Message`: `selector`, `arguments`, and `sentTo: receiver`, which sends the
   message as an ordinary *public* send (§5.5), as Primordial Soup's
   `Message>>sendTo:` does — a program can obtain and build messages, so a
-  send through one must not reach a protected or private method.
+  send through one must not reach a protected or private method. It is
+  what every `doesNotUnderstand:` handler receives
+  ([dispatch.md](dispatch.md), "The reified message is a `Message`").
 - `Activation`: private to the kernel, like `Top` (below).
+
+**Class sides are not inherited, so `signal` is declared four times.**
+§3.2's metaclasses are flat ([object-model.md](object-model.md), "Class
+sides and metaclasses"): a class side is its own mixin applied to `Class`,
+not a subclass of its superclass's class side, so a class-side method
+declared on `Exception` alone would not reach `Error`. The default
+`handles: anException` — "an instance of me or of a subclass", the
+`inheritsMixinOf:` leaf — is therefore on `Class`'s instance side, where
+every class object answers it and a class side that declares its own
+`handles:` overrides it. `signal` and `signal:` (`^self new signal`) are
+declared on the class side of each of `Exception`, `Error`,
+`MessageNotUnderstood` and `Halt`. A program's own subclass answers
+`signal:` only if its own class side declares it; otherwise it is signalled
+as `MyError new signal: 'text'`, which the goldens use.
 
 **Programs name them through `platform kernel`** (decided with the user on
 2026-09-25), as the corpus does — `private Exception = platform kernel
 Exception.` appears 16 times, `platform kernel MessageNotUnderstood` 11 —
 and as Primordial Soup's `Kernel wrapping:` facet provides them: the
-platform gains a `kernel` slot holding a value of a small class,
+platform's `kernel` slot holds a value of the kernel class
 `KernelNamespace`, whose accessors answer `Exception`, `Error`,
 `MessageNotUnderstood`, `Halt` and `Message`, as `Collections` does for
 `platform collections`. `Object` gains no accessor, so its set stays what
 §3.2 names. `KernelNamespace` lives in `Kernel.ns` while the platform does,
 and moves with it into the platform module afterwards.
 
-`Block` gains `on: exceptionClass do: handler`, `ensure: aBlock` and
-`ifCurtailed: aBlock`. The three are marked methods (below); `on:do:`'s body
-is `^self value`, and `ensure:`'s runs its block after `self value` in
-Newspeak on the normal path.
+`Block` has `on: exceptionClass do: handler`, `ensure: aBlock` and
+`ifCurtailed: aBlock`, three marked methods (below): `on:do:`'s body sets
+its `handlerActive` local and answers `self value`; `ensure:`'s runs its
+block after `self value` in Newspeak on the normal path, having set its
+`complete` local first; `ifCurtailed:`'s answers `self value` and leaves
+its block to the unwinder. A block the unwinder runs is activated directly;
+an argument that is no block is sent `value` through the kernel's private
+`Block>>valueOnUnwind:`, as the normal path sends it.
 
 **The semantics are ANSI's, as Squeak and Primordial Soup implement them.**
 `signal` walks the sender chain from its own activation for a marked
-`on:do:` activation whose exception class answers `handles:` true, and runs
-the handler block **on top of the stack**: nothing is unwound until the
-handler decides. While a handler runs, its own `on:do:` is disabled — an
-exception signalled in the handler searches further out — by a local flag
-in `on:do:`'s body, Primordial Soup's `handlerActive`. The handler block's
-value becomes the value of `on:do:`, an implicit `return:`. `return:` unwinds
-to the `on:do:` activation and returns the value from it; `retry` unwinds to
-it and restarts it, evaluating the protected block again; `resume:` makes
-the value the result of `signal`, unwinding what lies between the handler
-and the signal; `pass` searches for the next handler out. With no handler,
-`signal` runs `defaultAction`: for `Exception`, `Error` and `Halt` it ends
-the program through a leaf, printing "Uncaught Newspeak error: " and the
-`description` and exiting with status 1 — every recorded outcome stays as it
-is — after running the pending `ensure:` blocks, as Pharo does when it
-terminates a process. A `^` out of a handler block is a non-local return
-through `signal` and the handler's activation, and goes through the same
-unwinder. An exception signalled in an `ensure:` block while an unwind is
-running behaves as any exception does at that point: if its handler unwinds
-beyond the running unwind's target, that unwind is abandoned, and otherwise
-it continues once the block returns.
+`on:do:` activation that is enabled and whose exception class answers
+`handles:` true, and runs the handler block **on top of the stack**:
+nothing is unwound until the handler decides. The handler block's value
+becomes the value of `on:do:`, an implicit `return:`. `return:` unwinds to
+the `on:do:` activation and returns the value from it; `retry` unwinds to
+it and restarts it at its first instruction, evaluating the protected block
+again; `resume:` makes the value the result of `signal`, unwinding what
+lies between the handler and the signal; `pass` searches on from the
+handler's `on:do:` for the next handler out. A `^` out of a handler block is
+a non-local return through `signal` and the handler's activation, and goes
+through the same unwinder. An exception signalled in an `ensure:` block
+while an unwind is running behaves as any exception does at that point: if
+its handler unwinds beyond the running unwind's target, that unwind is
+abandoned, and otherwise it continues once the block returns.
 
-**`doesNotUnderstand:` and creating the missing method.** `Object>>doesNotUnderstand: message`
-is Squeak's: it signals a `MessageNotUnderstood`; when the default handler
-resumed it (`reachedDefaultHandler`) it re-sends the message with
-`message sentTo: self`, and otherwise it answers the resumption value. The
+**The handler environment is ANSI's and Squeak's: an exception signalled in
+a handler is looked for outside the handled block.** While a handler runs,
+every `on:do:` the search passed on its way to it — the handler's own, and
+every enabled one between it and the signal, the protected block's own —
+is disabled, so a second exception is looked for beyond all of them. They
+are enabled again under an `ensure:` however the handler is left:
+returning, `resume:`, `retry`, `return:`, a `pass` that is resumed, or a
+`^` out of it, as Squeak's `Context>>handleSignal:` restores its flag.
+Only an activation the search found enabled is collected, so an inner
+invocation never re-enables one an enclosing invocation disabled, and a
+`pass` continues the first range, so the restores nest in stack order. This
+is where ns-next departs from Primordial Soup, whose `handlerActive` flag
+disables only the `on:do:` whose handler is running, so that an `on:do:`
+inside the protected block could catch an exception its own handler's
+handler signals. Squeak reaches the same environment by skipping, during
+the search, from a handled exception's `signal` to its handler
+(`Context>>findNextHandlerOrSignalingContext`); that would need a marker on
+`Exception>>signal`, a leaf to answer the exception from that activation and
+a way to read another exception's private slot, which §5.9 allows only
+through a lexical send. The cost of the choice made instead: the search
+collects every enabled `on:do:` it passes into an `OrderedCollection`, and
+invoking the handler walks that collection twice more, to disable and to
+enable — the same order as the search itself, so signalling stays linear in
+the depth it searches, but one allocation per handler invocation.
+`goldens/exceptions/a_handlers_exception_is_looked_for_outside_its_on_do`
+and `a_resumed_handler_is_enabled_again` pin it.
+
+**With no handler**, `signal` sets `reachedDefault` and runs
+`defaultAction`: for `Exception`, `Error`, `MessageNotUnderstood` and `Halt`
+it ends the run through the `terminate:selector:receiver:description:ifFail:`
+leaf. That leaf is total: a `description` that is a String or a Symbol is
+the error's text as it is, anything else is rendered as `Heap::describe`
+names it, and a selector that is no Symbol is reported as `signal`'s, so no
+override can make an unhandled exception carry on and the failure block
+never runs. The termination unwinds to the run's floor, running every
+pending `ensure:` and `ifCurtailed:` block on the way, as Pharo does when it
+terminates a process, and the host receives the error: the CLI prints
+"Uncaught Newspeak error: " and the text and exits with status 1. A pending
+block's output therefore precedes the error line, which the host prints
+once the run has ended; a golden records `stdout` and `stderr` apart, so no
+recorded outcome depends on the order. The `HostError`'s selector and
+receiver are `Exception`'s protected `hostSelector` and `hostReceiver`:
+for an exception the VM raised, the origin it recorded (below), so a host
+receives exactly what it received before there were exceptions; for one a
+program signalled, `#signal` and the exception. `MessageNotUnderstood`
+overrides both with its message's selector and its receiver, and falls
+back to `Exception`'s when its `message` is nil — one a program signals
+itself (`goldens/exceptions/a_message_not_understood_a_program_signals_ends_the_run`).
+`defaultAction` is the one place the debugger will replace; until then a
+test stands in for it with `Interpreter::resume_unhandled_exceptions`, a
+`#[doc(hidden)]` hook under which the leaf answers nil instead of
+terminating, as a debugger that resumed the exception would.
+
+**`doesNotUnderstand:` and creating the missing method.**
+`Object>>doesNotUnderstand: message` is Squeak's: it builds a
+`MessageNotUnderstood` with the message, the receiver and the text "an
+object does not understand #…", signals it, and when the default handler
+resumed it (`reachedDefaultHandler`) re-sends the message with
+`message sentTo: self`; otherwise it answers the resumption value. The
 default handler today ends the program; the live system replaces that one
 place with "open the debugger and wait", where creating the method and
-proceeding re-sends the message into it — the user's requirement for a
-live system, and why `MessageNotUnderstood` is resumable although it is an
-`Error`. Its `messageText` is today's "… does not understand #…", so the
-goldens are unchanged, and the mirror row `object:doesNotUnderstand:ifFail:`
-retires.
+proceeding re-sends the message into it — the user's requirement for a live
+system, and why `MessageNotUnderstood` is resumable although it is an
+`Error`. The re-send is a *public* send, as `sentTo:` always is, so a method
+the debugger creates as protected or private would not be reached by it and
+the message would fail again; the debugger has to create it public, or
+re-send it another way. The text is the one the retired mirror row gave, so
+the goldens are unchanged. A program that sends `doesNotUnderstand:` itself
+with an argument that is no `Message` fails inside the handler, on
+`selector`, as Squeak does.
 
 **The VM side.**
 
-- **Activation objects.** A new object kind, `ObjectData::Activation(FrameReference)`,
-  of the private kernel class `Activation`, which no program can name — no
+- **Activation objects.** `ObjectData::Activation(FrameReference)`, of the
+  private kernel class `Activation`, which no program can name — no
   accessor on `Object`, and its builtin class tag is refused wherever an
-  image names a class, as `Top`'s is. An activation reads another frame's
-  temporaries and unwinds stacks, so it is a capability, and Newspeak hands
-  those out only through mirrors, which the reflection step builds on it.
-  The leaves, all on the mirror: `currentActivation`, which reifies the
-  activation that called the kernel method; an activation's `sender`, its
-  `marker`, `argumentAt:`, `localAt:` and `localAt:put:` (the handler flag),
-  `isLive`, `unwindTo:returning:` and `unwindToRestart:` (for `retry`, as
-  Primordial Soup's `restart` resets the program counter), and
-  `terminateWith:` for `defaultAction`. The tracer follows the frame
-  reference, so the stress modes cover it.
+  image names a class but the header of an activation record, as `Top`'s is
+  everywhere. An activation reads another frame's temporaries and unwinds
+  stacks, so it is a capability, and Newspeak hands those out only through
+  mirrors, which the reflection step builds on it. The ten leaves
+  (`builtins/activation.rs`, rows appended to the end of `MIRROR`): `currentActivation` — the activation of the kernel method
+  making the mirror send, reified, answered as a fresh `Activation` object
+  each time, so the kernel compares two only when both came from one call
+  (`handlerActivation` still the `signalActivation` it was set to); an
+  activation's `sender` — the stack entry below it, or nil
+  at the bottom or once it has returned; the three the `on:do:` marker's
+  registers answer, `isActiveHandler` (false for a returned activation or
+  one with no marker), `handlerClass` and `handlerBlock`, and
+  `handlerActive:`, which writes the flag; `returnValue:` and `restart`,
+  which answer the signals the unwinder carries out (a returned target is
+  §7.2's "cannotReturn: the activation has already returned");
+  `inheritsMixinOf:` for `Class>>handles:`; and `terminate…` for
+  `defaultAction`. `Message>>sentTo:`'s row, `message:sendTo:ifFail:`, is
+  the last row (`builtins/message.rs`), and the row `Object>>doesNotUnderstand:`
+  used to forward to retired with the Rust handler it ran, which moved the
+  rows after it down by one. The tracer follows the frame reference, so the stress
+  modes cover it.
 - **Markers.** Whether a method is `on:do:`, `ensure:` or `ifCurtailed:` is
-  a property of its compiled code, recognized when the kernel is compiled,
-  as the quick methods are; only kernel methods can carry one. The unwinder
-  reads it off each activation's code afresh, never from an inline cache.
-- **One unwinder**, in `interpreter/` (taking over `vm::unwind`), for every
-  cause: non-local return, `unwindTo:returning:`, `unwindToRestart:` and
-  termination. It pops from the top towards its target; at an `ensure:`
-  activation whose block has not run — or an `ifCurtailed:` one, which runs
-  only on this path — it marks the block run, starts it as a trampoline
-  step and continues once it returns. That is the run loop scheduling steps,
-  not a leaf calling back. Popped activations' continuations go to
-  `Mutator::abandon` as today. A normal return needs no unwinder and costs
-  nothing; a non-local return pays one flag test per popped activation.
-  A Primordial Soup-style unwind in Newspeak was weighed and rejected: the
-  non-local return would still need a path of its own in the VM (Squeak's
+  a property of its compiled code (`bytecode::UnwindMarker`, naming the
+  registers of the method's arguments and of its `handlerActive` or
+  `complete` local), recognized by selector when the kernel's `Block` is
+  compiled (`compiler::unwind_marker`), as the quick methods are; only
+  kernel methods carry one, it is never written to an image, and a decoded
+  body has none. The unwinder and the leaves read it off each activation's
+  code afresh, never from an inline cache.
+- **One unwinder**, `interpreter::unwind`, for every cause: non-local
+  return, `returnValue:`, `restart` and termination. It pops from the top
+  towards its target; at an `ensure:` activation whose block has not run —
+  or an `ifCurtailed:` one, which runs only on this path — it marks the
+  block run, starts it as a trampoline step and continues once it returns.
+  That is the run loop scheduling steps, not a leaf calling back. Popped
+  activations' continuations go to `Mutator::abandon`. A normal return needs
+  no unwinder and costs nothing; an unwind pays one marker test per popped
+  activation ([execution.md](execution.md), "Unwinding"). A Primordial
+  Soup-style unwind in Newspeak was weighed and rejected: the non-local
+  return would still need a path of its own in the VM (Squeak's
   `aboutToReturn:through:`), two mechanisms doing one thing, and unwinding
   would cost several sends per frame on exception-heavy code.
 - **An unwind target is a `FrameReference`, never an `ActivationReference`.**
   Once code runs while an unwind is in progress, a pushed activation can
-  reuse a target's stack index, and a release build does not check the
-  generation ("Non-local return" in [execution.md](execution.md) names the
-  hazard). A reified frame keeps its identity; whether it is still live is
-  `Heap::frame_activation`, in every build. `Signal::Return` carries the
-  home's `FrameReference`, which `closure_home` already is.
+  reuse a target's stack index, and a release build does not check an
+  activation's generation. A reified frame keeps its identity; whether it
+  is still live is `Heap::frame_activation`, in every build.
+  `Signal::Return` and `Signal::Restart` carry the target's
+  `FrameReference`.
 - **Every VM error becomes a signalled `Error`.** Where a step answers
-  `Signal::Error(NewspeakError)` today, `interpreter/` creates an `Error`
-  whose `messageText` is today's text and whose private slots keep the
-  selector and receiver, and starts `signal` on it as a send step from the
-  activation where it arose. So `on: Error do:` catches an index error from
-  `Array>>at:`, a wrong block arity, an instantiation refusal or a
+  `Signal::Error(NewspeakError)`, the unwinder (`start_signalling`) creates
+  an `Error` whose `messageText` is the error's text and whose
+  `originSelector` and `originReceiver` are its selector and receiver
+  (`Mutator::signal_vm_error`, filling the slots by name as the platform's
+  are filled), and pushes `signal` on it above the activation where the
+  error arose; nothing is popped. So `on: Error do:` catches an index error
+  from `Array>>at:`, a wrong block arity, an instantiation refusal or a
   `cannotReturn`, and an uncaught one ends the host's run with the same
-  `HostError` and the same line as today. Finer classes (`ArgumentError`,
-  `CannotReturn`, …) come when something wants to catch one alone. Until the
-  kernel is installed, errors stay host errors, as there is no `Error` class
-  yet.
-- **The depth limit keeps a reserve**, as Python's `RecursionError` and the
-  JVM's yellow zone do: on reaching the limit of 100,000 activations it is
-  raised by 1,000 for as long as the signal is handled, and restored once
-  the stack falls below the limit again; a handler that overruns the reserve
-  too ends the run at once, unsignalled, with the same message. Both
-  lowerings keep counting alike.
+  `HostError` and the same line as before. An `Error` cannot be resumed, so
+  that `signal` returns only if the debugger resumes its default action;
+  its continuation, `Continuation::VmErrorSignalled`, then ends the run
+  with the error. Finer classes (`ArgumentError`, `CannotReturn`, …) come
+  when something wants to catch one alone. Until the kernel is installed,
+  errors stay host errors, popped to the floor without running any block,
+  as there is no `Error` class yet.
+- **The depth limit keeps a reserve** of 1,000 activations
+  (`DEPTH_RESERVE`), as Python's `RecursionError` and the JVM's yellow zone
+  do, because `signal`, the search and the handler are activations too:
+  without it an error raised a few activations below the limit could only
+  end the run as the limit, uncatchable and under the wrong name. A VM
+  error signalled within the reserve's distance of the limit — the limit's
+  own error included — takes it, and so does the kernel's
+  `Object>>doesNotUnderstand:` activated there, since §5.5 makes a message
+  nothing understood the VM's error too; a program's own `signal` does not,
+  so one signalled at the limit is reported as the limit, which is itself
+  caught. While the reserve is held, counted pushes may go 1,000 past the
+  limit. It is held by the frame of the activation the error arose in,
+  while that activation runs and directly above it is the error's `signal`
+  or the kernel's `doesNotUnderstand:`: a frame, not a stack index, because
+  a frame is divorced on its activation's pop and never married again,
+  where a later signal at the same index would inherit an index. It is
+  given back once that activation above is gone, and released whenever a
+  host's run ends. A push past the reserve ends the run at once and
+  uncatchably — as a termination, so pending `ensure:` blocks still run.
+  If the overrun is the signalling machinery's — the error it holds the
+  reserve for is still searching for its handler, after `signal` or a
+  `pass`, or running its default action — the run ends with that error, as
+  it would have had there been room to signal it; an error the search
+  itself raises, a `handles:` nothing understands, belongs to that search,
+  so the error reported is the outermost one still searching. An overrun
+  inside a handler, or in anything run once a handler was found, ends the
+  run with "stack overflow: recursion too deep". Both lowerings keep
+  counting alike, and the stack holds at most 129 × (L + `DEPTH_RESERVE`)
+  entries ([execution.md](execution.md), "The depth limit").
+- **The handler search does not stop at the run's floor.** It follows
+  senders to the bottom of the stack, so a handler below the floor of a
+  nested run would be a target the unwinder refuses. That is latent while
+  runs cannot nest: a host's run is the only one, and nothing re-enters the
+  loop ([execution.md](execution.md), "No re-entry from Rust").
 - **Actors**, when they come, need no change here: whoever receives the
   signal decides in `defaultAction`, and for an asynchronous message that
   will be breaking the promise (§3.7).
 
 **The image format.** An `Activation` is a record whose body is a frame id
-(`OBJECT_ACTIVATION`, the next free body tag), validated as every frame
-reference is. `Activation`, `Exception`, `Error`, `MessageNotUnderstood`,
-`Message` and `Halt` take the next free builtin class tags. A snapshot in
-the middle of an unwind is no more possible than one in the middle of a
-loop today: the continuation "carry the unwind on to its target" joins the
-list [image-format.md](image-format.md)'s "Planned: suspend and resume" says
-that step must encode; the "has this `ensure:` block run" flag is a local of
-the frame and travels in its record already.
+(`OBJECT_ACTIVATION`, body tag 9), validated as every frame reference is.
+`Activation`, `Exception`, `Error`, `MessageNotUnderstood`, `Message`,
+`Halt` and `KernelNamespace` take builtin class tags 23 to 29
+([image-format.md](image-format.md), "Verification"). A snapshot in the
+middle of an unwind is no more possible than one in the middle of a loop:
+the continuations "carry the unwind on" and "end the run with this VM
+error" join the list [image-format.md](image-format.md)'s "Planned: suspend
+and resume" says that step must encode; the "has this `ensure:` block run"
+flag is a local of the frame and travels in its record already.
 
 **Deliberately left out**, to come on demand: `ExceptionSet`,
 `Notification` and `Warning`, `outer`, `retryUsing:`, `signalerContext`,
 `Object>>error:` and the finer `Error` subclasses. The known gap of a `^`
 into an initializer that is still running ("internal: non-local return
-escaped the entry send", [execution.md](execution.md)) stays as it is; the
-new unwinder must not make it worse.
+escaped the entry send", [execution.md](execution.md), "Unwinding") stays;
+the unwind now runs every pending `ensure:` block on its way to the floor,
+and the host's outcome is unchanged.
 
 **Tail calls.** An `on:do:` activation is never skipped by a later
 tail-call elimination, since its `^self value` is a tail send and `signal`
 would no longer find the handler ([execution.md](execution.md), "Planned:
 tail calls, skipped but kept").
 
-**Pinned by** new goldens under `goldens/exceptions/`: a handler's value
+**Pinned by** the goldens under `goldens/exceptions/` — a handler's value
 answered by `on:do:`; `return:`, `retry` (with a counter, so it ends),
 `resume:` on an `Exception` and refused on an `Error`, `pass` reaching an
-outer handler; an overridden `handles:`; an exception in a handler searching
-further out; `ensure:` running on a normal end, a `^` from a block, a
-`return:` and termination after an uncaught error (after the error line),
-and `ifCurtailed:` only on an unwind; an exception in an `ensure:` block
-during an unwind; a `^` out of a handler block; an index error from
-`Array>>at:` and a `doesNotUnderstand:` caught with `on: Error do:`, and
-`on: MessageNotUnderstood do: [:e | e resume: 42]` answering 42; the depth
-limit caught, and a recursive handler overrunning the reserve; a caught
-`cannotReturn`; `on: Halt do: [:e | e resume: 7]` continuing after the
-`halt`, and an uncaught `halt` ending the run. Rust tests pin the re-send
-after the default handler resumed a `MessageNotUnderstood` (with
-`defaultAction` replaced and the missing method defined), that no program
-reaches an `Activation`, that an unwind target survives the reuse of its
-stack index in a release build, and the crafted-image refusals for
-`OBJECT_ACTIVATION`. No existing golden's outcome changes.
+outer handler; an overridden `handles:`; an exception in a handler
+searching further out, past the protected block's own `on:do:`, and a
+resumed handler enabled again; `ensure:` on a normal end, a `^` from a
+block, a `return:` and termination after an uncaught error, `ifCurtailed:`
+only on an unwind, and an argument that is no block; an exception in an
+`ensure:` block during an unwind; a `^` out of a handler block; an index
+error from `Array>>at:` and a `doesNotUnderstand:` caught with
+`on: Error do:`, `on: MessageNotUnderstood do: [:e | e resume: 42]`
+answering 42, and `sentTo:` a public send; the depth limit caught twice in
+a row, an index error and a `doesNotUnderstand:` just below it caught as
+themselves, a recursion through `on:do:` counted alike, and a recursive
+handler overrunning the reserve; a caught `cannotReturn`; `on: Halt do: [:e
+| e resume: 7]` continuing after the `halt`, and an uncaught `halt` ending
+the run; and unhandled exceptions whose description is a Symbol or no
+string. Rust tests (`crates/ns-runtime/tests/exceptions.rs`) pin the
+re-send after the default handler resumed a `MessageNotUnderstood`, a
+resumed VM error still ending the run, an uncaught error and an uncaught
+`doesNotUnderstand:` just below the limit ending the run as themselves,
+and a search and a `pass` that overrun the reserve ending it with the error
+being signalled; `interpreter::unwind`'s own tests that an unwind target
+survives the reuse of its stack index and that a later signal at the same
+index does not inherit the reserve; and `tests/image.rs` the crafted-image
+refusals for `OBJECT_ACTIVATION` and tag 23. No golden's recorded outcome
+changed; two golden sources that read the old two-element message with
+`at:` moved to `Message`'s protocol.
 
 **Measured** by the usual protocol: every `bench` source against `master`,
 expected level, since none uses exceptions; plus `on:do:` and `ensure:` in a
 hot path with nothing signalled, and a signal caught twenty activations
 down.
+<!-- MEASUREMENT PLACEHOLDER: the numbers are recorded when the measurement is taken; none are invented here. -->
 
 ### Planned: the platform and collections as core-library modules
 
 **Status: decided with the user on 2026-09-25, not designed in detail and
-not built; it comes after exceptions, which `List` needs to report its
-errors.** `Kernel.ns` is to hold only what the VM must know — the classes
+not built; it is the next piece of work, now that the exceptions `List`
+needs to report its errors exist ("Exceptions" above).** `Kernel.ns` is to hold only what the VM must know — the classes
 whose instances the VM creates or on which dispatch depends — and the rest
 of the library moves into modules the runtime ships and loads at every
 start. Primordial Soup splits it this way (`KernelForPrimordialSoup.ns`
@@ -1162,7 +1334,11 @@ an object that "provides accessors to various modules". What was decided:
   written in Newspeak over a fixed `Array` in a `Collections.ns` module, as
   Primordial Soup's `List` is. That removes the one payload that grows in
   place (`Heap::array_push`) and its leaf, which answers the question step 7
-  has to settle first.
+  has to settle first. **The kernel itself uses `OrderedCollection`:**
+  `Exception`'s handler search collects the `on:do:` activations it passes
+  in one ("Exceptions" above), so this step has to give the kernel another
+  way — an `Array`, or walking the passed range again instead of keeping
+  it — since a `List` in a module the kernel does not know cannot serve it. `KernelNamespace` moves with the platform.
 - **The mirror is a capability handed over, and shipped source is resolved
   as the kernel is.** The host boots the platform module with
   `usingVmMirror:`, as SOMns's `Platform usingVmMirror:` is booted, and the
@@ -1295,6 +1471,10 @@ Each decision below was taken with the user.
 `OrderedCollection` and `Block`. `Top`, the VM mirror's class and `Platform`
 get none: §3.2 lets only `Object` name `Top`, as its superclass; the mirror
 is a capability; and a program is handed the platform through its factory.
+Nor do the classes the exceptions added: a program names `Exception`,
+`Error`, `MessageNotUnderstood`, `Halt` and `Message` through
+`platform kernel`, and `Activation` and `KernelNamespace` not at all
+("Exceptions" above).
 Each is an ordinary public method of `Kernel.ns`'s `Object`,
 `public String = ( ^outer Kernel String )`, whose body sends the kernel
 instance its nested-class accessor. The `outer Kernel` is required, not
@@ -1476,6 +1656,30 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   retired — "The predefined classes are accessors on `Object`" above.
 - **`i64` with an error on overflow**, rather than silent wraparound or a bignum
   library nothing yet needs.
+- **Exceptions** (nine decisions taken with the user on 2026-09-25, built
+  2026-09-25 to 2026-09-26; "Exceptions" above;
+  [plan](../superpowers/plans/2026-09-25-2244-ns-next-exceptions.md)):
+  Newspeak in `Kernel.ns` over activation leaves, as Primordial Soup, not
+  native as SOMns; the scope — `Exception`, `Error`, `MessageNotUnderstood`,
+  `Halt`, `Message` and the kernel-private `Activation`, ANSI's protocol
+  with `on:do:`, `ensure:` and `ifCurtailed:`, and `ExceptionSet`,
+  `Notification`, `outer`, `retryUsing:`, `signalerContext`,
+  `Object>>error:` and the finer `Error` subclasses left out;
+  `doesNotUnderstand:` is Squeak's, re-sending with `sentTo:` when the
+  default handler resumed it; every VM error becomes a signalled `Error`
+  with today's text; the depth limit keeps a reserve of 1,000; one unwinder
+  in `interpreter/`, running `ensure:` blocks as trampoline steps and aiming
+  at a `FrameReference`; `Activation` is `ObjectData::Activation`, reachable
+  only through mirror leaves; `halt` terminates in the CLI; and programs name
+  the classes through `platform kernel`. Settled while building it: class
+  sides are not inherited, so `handles:` is on `Class` and `signal` and
+  `signal:` on each kernel exception class's class side; every `on:do:` the
+  search passed is disabled while a handler runs, ANSI's environment rather
+  than Primordial Soup's one flag; and the reserve is taken by any VM error
+  and by the kernel's `doesNotUnderstand:` near the limit, not by a
+  program's own `signal`, held by the frame the error arose in, and an
+  overrun reports the error still searching or, inside a handler, the
+  limit.
 
 The move itself implements nine decisions, each taken with the user on the
 date given

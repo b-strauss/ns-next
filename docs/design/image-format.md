@@ -755,6 +755,15 @@ class; the encoder never walks an activation object's header as a reference
 (`GraphTable::visit_value`), so writing activations never trips the refusal of
 a graph that reaches the class itself.
 
+**The other classes the exceptions added are ordinary nameable builtins.**
+`Exception`, `Error`, `MessageNotUnderstood`, `Message`, `Halt` and
+`KernelNamespace` carry tags **24** to **29**, in that order, after
+`Activation`'s 23 ([core-library.md](core-library.md), "Exceptions"). A
+program reaches the first five through `platform kernel` and may subclass
+them, so an image may name any of the six wherever it names a class: an
+exception a program made is an ordinary instance record, and so is a
+`KernelNamespace` a program kept in a slot, a value like a kept transcript.
+
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
 `DecodeError::TrailingBytes` if not. With two artifact shapes sharing one
@@ -940,9 +949,15 @@ from Rust"). What is missing is a yield path out of `vm::run`, a re-entry
 point that would continue a decoded frame at its `program_counter`, and an encoding for
 what each stack entry's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
-instantiation's `Instantiation`. An image records none of them today, and a
-suspended activation without its continuation would resume without the rest
-of the loop, the class creation or the walk it belongs to.
+instantiation's `Instantiation`, the unwind an `ensure:` block's return
+carries on (`Unwind`, holding a `PendingUnwind`: its target frame and whether
+it returns a value, restarts or terminates) and the end of the run a VM
+error's `signal` returns into (`VmErrorSignalled`). An image records none of
+them today, and a suspended activation without its continuation would resume
+without the rest of the loop, the class creation, the walk or the unwind it
+belongs to. The depth limit's reserve (`Mutator.depth_reserve`), a frame
+held while an error near the limit is signalled, would have to travel with
+the stack as well ([execution.md](execution.md), "The depth limit").
 Suspending then means reifying and divorcing the whole stack, which is the same
 operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)

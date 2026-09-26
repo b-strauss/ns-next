@@ -317,17 +317,35 @@ so the walk from `class_of(receiver)` meets a class side's
 implicit-receiver send inside a class-side method and a keyword send alike
 (`goldens/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
 
-**Deviation: the reified message is a two-element tuple.** §3.4 says a message
-"may be *reified* by the implementation by means of a *message mirror*", "an
-object obeying the protocol of class `MessageMirror` that provides access to
-*µ*'s selector and arguments". There are no mirrors
-([liveness-and-reflection.md](liveness-and-reflection.md)), so
-`resolve.rs`'s `handler_message` hands the handler `{selector. arguments}` — a
-two-element `Array` whose first element is the selector symbol and whose second
-is an `Array` of the arguments. A handler therefore reads `message at: 1` and
-`message at: 2` rather than sending a mirror protocol, which
+**The reified message is a `Message`.** §3.4 says a message "may be
+*reified* by the implementation by means of a *message mirror*", "an object
+obeying the protocol of class `MessageMirror` that provides access to *µ*'s
+selector and arguments". `resolve.rs`'s `handler_message` hands every
+`doesNotUnderstand:` handler an instance of the kernel's `Message`, as
+Primordial Soup's `doesNotUnderstand: message <Message>` receives one: its
+`selector` is the selector symbol and its `arguments` an `Array` of the
+arguments, built by slot name once the handler is found, and `sentTo:
+receiver` sends it again as an ordinary *public* send (§5.5), through the
+`message:sendTo:ifFail:` leaf's `decide_send` — a program can build a
+message, so a send through one must reach no protected or private method
+(`goldens/exceptions/sent_to_is_a_public_send`). A handler reads
+`message selector` and `message arguments`, which
 `goldens/cache/does_not_understand_site_with_three_kinds_of_handler.ns`
-records. The shape changes when mirrors arrive.
+records.
+
+**`Object`'s handler signals, and re-sends when resumed.** The kernel's
+`Object>>doesNotUnderstand:` is Newspeak, not a forwarder: it signals a
+`MessageNotUnderstood` holding the message and the receiver, with the text
+"an object does not understand #…" the host has always received, and when
+the default handler resumed it — the debugger, once it has created the
+missing method — sends the message again with `message sentTo: self`;
+otherwise it answers the value the exception was resumed with
+([core-library.md](core-library.md), "Exceptions"). Because `sentTo:` is a
+public send, the re-send reaches a method the debugger created only if it
+is public. `act_handler_method` activates the handler whatever its fast
+path, since no kernel handler forwards to a leaf any more, and takes the
+depth limit's reserve for the kernel's own handler near the limit
+([execution.md](execution.md), "The depth limit").
 
 **Unmarked access defaults to `protected`** (§6.3.1). This is binding rather than
 cosmetic: it decides whether a member participates in `lookupPublic` at all. A
@@ -435,7 +453,7 @@ mirror ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary"). `enum Primitive` names every native operation, one variant each,
 grouped by the builtin family whose module executes it —
 `Primitive::Integer(IntegerPrimitive::Add)`,
-`Primitive::Object(ObjectPrimitive::DoesNotUnderstand)`,
+`Primitive::Activation(ActivationPrimitive::Restart)`,
 `Primitive::Collection(CollectionPrimitive::Enumerate)` for `do:`,
 `Primitive::Platform(PlatformPrimitive::Show)` and the rest — and a `MIRROR`
 row names the one it runs. One function,
@@ -625,10 +643,11 @@ body sends `value` or `cull:` to the argument. For a
 send's receiver, selector and arguments; `Some` is the send's answer, and
 `None` falls through to the ordinary `Step::Method`, whose body then runs the leaf
 again from its own mirror send and, declining, its failure block. A
-`doesNotUnderstand:` handler that is a primitive method — `Object`'s — runs
-its leaf on the reified message in `act_handler_method` the same way, before
-it would activate; an accessor is unary and so is never a handler, and no
-kernel handler is a quick method. The fast
+`doesNotUnderstand:` handler never takes a fast path: `act_handler_method`
+always activates it, because `Object`'s is Newspeak that signals a
+`MessageNotUnderstood` and no kernel handler forwards to a leaf, an accessor
+is unary and so is never a handler, and no kernel handler is a quick method.
+The fast
 path costs one field test on every method send;
 the leaf's answer is delivered exactly as a native entry's was, a value or a
 step.

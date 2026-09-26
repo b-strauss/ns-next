@@ -4,7 +4,9 @@
 > from Rust, the loop polls a safepoint, each instruction it executes is
 > one entry of the step state, the sends it executes go through inline
 > caches, except the reference lowering's, and the optimized lowering converts
-> closures, so only by-reference code keeps a returning frame's registers.
+> closures, so only by-reference code keeps a returning frame's registers;
+> one unwinder carries every non-local return, exception unwind and
+> termination, running `ensure:` blocks as trampoline steps.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -12,8 +14,9 @@
 > `types.rs` (`Frame`, `ClosureData`, `Continuation` and the state its variants
 > carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
-> safepoint's slow path, and the indirection vector's reads and writes in
-> `interpreter/locals.rs`), `compiler/capture.rs` (the capture analysis) and
+> safepoint's slow path, the indirection vector's reads and writes in
+> `interpreter/locals.rs`, and the unwinder and the depth limit's reserve in
+> `interpreter/unwind.rs`), `compiler/capture.rs` (the capture analysis) and
 > `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
@@ -353,13 +356,14 @@ activations from its callers'.
   an instantiation's next body, or the method a non-Boolean condition's
   `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
   in the popped activation's place ("The trampoline" below).
-- **A signal** — a Newspeak error, or a non-local return — goes to
-  `vm::unwind`, which hands it to the one unwinder,
-  `interpreter::unwind`, and carries out what it answers: the non-local
-  return's target returns, an `ensure:` or `ifCurtailed:` block the unwind
-  runs on its way is pushed, or `run` ends with the signal ("Non-local
-  return" below). Every activation the unwinder pops hands its continuation
-  to `Mutator::abandon`, which undoes what that continuation had begun.
+- **A signal** — a Newspeak error, a non-local return, or an exception's
+  `return:`, `retry` or termination — goes to `vm::unwind`, which hands it
+  to the one unwinder, `interpreter::unwind`, and carries out what it
+  answers: the target returns or restarts, an `ensure:` or `ifCurtailed:`
+  block the unwind runs on its way is pushed, an error's `signal` is
+  pushed, or `run` ends with the signal ("Unwinding" below). Every
+  activation the unwinder pops hands its continuation to
+  `Mutator::abandon`, which undoes what that continuation had begun.
 
 Four kinds of body run, and each reaches the loop one way:
 
@@ -466,7 +470,7 @@ there.
 Whether a debugger will force `program_counter` at every instruction is an open question for
 the milestone that builds one; it is a deliberate trade, not an oversight.
 
-## Non-local return
+## Unwinding
 
 A closure's `home` is the reified frame of the method, initializer,
 superclass-clause or superclass-message activation that lexically encloses it.
@@ -491,10 +495,33 @@ as on any return. The popped activations' continuations are not applied, so a
 coercion or the loop; they go to `Mutator::abandon` instead, which unmarks a
 nested class's creation in its cache slot and drops every other. A return
 whose target catches none, or has returned meanwhile, pops every activation of
-the run, `base` included, in the same way — running the blocks below on its
-way — and leaves `vm::run` with the signal, for the host that started the run;
-so does an error, which runs nothing on its way until errors are signalled
-exceptions ([core-library.md](core-library.md), "Planned: exceptions").
+the run, `base` included, in the same way — running the pending blocks on
+its way — and leaves `vm::run` with the signal, for the host that started the
+run.
+
+**The exceptions' unwinds are the same unwind.** `Exception>>return:` and
+`resume:` answer `Signal::Return` aimed at the `on:do:` or the `signal`
+activation's frame, and `retry` answers `Signal::Restart`, aimed at the
+`on:do:` activation's, which the unwinder carries down exactly as a `^`; at
+a restart's target it sets the program counter to 0 and the loop switches
+to it, its registers as they are. A restart whose target has returned
+meanwhile ends the run with §7.2's `cannotReturn`. An unhandled exception's
+`defaultAction` answers `Signal::Terminate`, an unwind with no target: it
+runs every pending block down to the floor and leaves the run with the
+error, which the host receives as it received every error before there were
+exceptions. A pending unwind is a `PendingUnwind` — its target frame, if
+it has one, and whether it returns a value, restarts or terminates — and it
+is carried across a block it runs as what it was
+([core-library.md](core-library.md), "Exceptions").
+
+**An error is not unwound at all.** Once the kernel is installed, a
+`Signal::Error` a step raised becomes an `Error`, and the unwinder pushes
+`signal` on it above the activation where it arose, with the continuation
+`Continuation::VmErrorSignalled`, and pops nothing: the handler runs on top
+of the stack, and what is popped is decided by the handler or the default
+action, through the unwinds above. Before the kernel is installed there is
+no `Error` class, and an error pops every activation of the run, running no
+block, and leaves with the error.
 
 **`ensure:` and `ifCurtailed:` blocks run on the way.** `Block>>ensure:` and
 `ifCurtailed:` are kernel methods whose code carries an unwind marker
@@ -520,7 +547,9 @@ divorced on its activation's pop and married to nothing afterwards, so a
 target popped meanwhile is found dead rather than mistaken for its successor
 (`interpreter::unwind`'s `a_target_survives_its_index_being_reused`). The
 unwinder asks the frame for its activation afresh each time it carries on,
-and compares only that handle (`ActivationReference::same`).
+and compares only that handle (`ActivationReference::same`). The depth
+limit's reserve is held by a frame for the same reason ("The depth limit"
+below).
 
 **An initializer home follows the same rule.** A block created during
 initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization has
@@ -528,8 +557,9 @@ finished raises `cannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because
 the initializer's frame was divorced when its activation returned. A `^` into an
 initializer that is still running escapes: an initializer activation catches
 no return, so the unwind pops it with everything else down to the floor of the
-host's run and leaves with the signal, and it reaches the top of the entry
-send as "internal: non-local return escaped the entry send", a known gap
+host's run, running every pending `ensure:` block on its way, and leaves
+with the signal, and it reaches the top of the entry send as "internal:
+non-local return escaped the entry send", a known gap
 (`crates/ns-runtime/tests/trampoline.rs` pins it under both lowerings).
 
 A method body's own `^` is an ordinary `Return` and raises no signal. The
@@ -3834,8 +3864,9 @@ exempt ones as blocks nest — each exempt block was created by the activation
 below it, so a chain of them descends the lexical nesting — and blocks nest at
 most 128 deep, the parser's ceiling in source and the decoder's, derived from
 it, in an artifact ([image-format.md](image-format.md), "Verification"). So the
-stack holds at most 129 × L entries, 12.9 million, whose entries alone take
-about 1.3 GB in a release build (104 bytes each, before their registers). Only
+stack holds at most 129 × (L + `DEPTH_RESERVE`) entries, the reserve below
+included, 13.0 million, whose entries alone take about 1.35 GB in a release
+build (104 bytes each, before their registers). Only
 code that carries `SendInlinable` gets there — the reference lowering's, or an
 artifact's — recursing through 128 nested control-flow blocks at every level;
 the optimized lowering never emits it, so under it the stack holds at most L
@@ -3843,9 +3874,67 @@ entries. The limit agrees under both lowerings, because the control-flow
 natives, `do:`, instantiation and the nested-class accessor are all trampoline
 steps: no recursion costs native stack under one lowering and not the other.
 The error text does not name its number, as Lua's, CPython's, V8's and Nova's
-do not, so that changing the value later changes no recorded answer. It
-unwinds to the entry send like every other Newspeak error; nothing catches it
-yet.
+do not, so that changing the value later changes no recorded answer. It is
+signalled as an `Error` like every other Newspeak error, so `on: Error do:`
+catches it, and an uncaught one ends the run as before.
+
+**The limit keeps a reserve for signalling it** (decided with the user on
+2026-09-25): `DEPTH_RESERVE`, 1,000 activations, as CPython allows a little
+headroom above its recursion limit for the `RecursionError`'s handler and
+HotSpot unprotects its stack's yellow zone for the `StackOverflowError`'s.
+`signal`, the handler search and the handler are activations too, so
+without it an error raised a few activations below L — L's own included —
+could only end the run as L, uncatchable and under the wrong name.
+
+- **Who takes it.** `unwind::start_signalling`, signalling any VM error
+  within `DEPTH_RESERVE` counted activations of L, and `act_handler_method`,
+  activating the kernel's own `Object>>doesNotUnderstand:` there
+  (`Mutator::take_depth_reserve_for_does_not_understand`) — §5.5 makes a
+  message nothing understood the VM's error as much as any other. A
+  program's own `signal` takes none: one signalled at L is refused as any
+  push is, and the refusal is L's error, signalled and catchable. An error
+  far from L takes nothing, so its handler meets L where any code does.
+- **What holds it.** `Mutator.depth_reserve`, the `FrameReference` of the
+  activation the error arose in, counts as held while that frame is married
+  to a running activation and the activation directly above it
+  (`Heap::activation_above`) is the error's `signal`, marked by
+  `Continuation::VmErrorSignalled`, or the kernel's `doesNotUnderstand:`
+  (`Mutator::holds_the_depth_reserve`). A frame and not a stack index: a
+  frame is divorced on its activation's pop and married to nothing again,
+  where an index is reused, and a later signal at the same index — possibly
+  far from L — must not inherit the reserve
+  (`interpreter::unwind`'s `a_later_signal_at_the_same_index_does_not_inherit_the_reserve`).
+  `depth_reserve_held` forgets a reserve it finds no longer held, so the pop
+  that ended it pays nothing, and `Interpreter::run_from_host` releases it
+  when a host's run ends.
+- **What it allows.** `Mutator::push`'s check is the one compare it always
+  was; only a counted push at L reaches the cold `push_past_the_limit`,
+  which refuses it with L's error unless the reserve is held, and allows it
+  up to L + `DEPTH_RESERVE` if it is.
+- **What an overrun ends with.** A push past the reserve answers
+  `Signal::Terminate`, so the run ends at once and uncatchably, running the
+  pending `ensure:` blocks on the way, with the error
+  `Mutator::overrun_of_the_reserve` picks by walking down from the top of
+  the stack, once per run. If the holder nearest the top is still in the
+  signalling machinery's hands — its exception still searching for a
+  handler, after `signal` or a `pass` (`Exception`'s `searching` slot), or
+  running its default action (`reachedDefault`), or the kernel's
+  `doesNotUnderstand:` still building its exception — the run ends with
+  that error, as it would have had there been room to signal it; an error
+  the search itself raised, a `handles:` nothing understands, belongs to
+  the search it arose in, so the walk reports the outermost of a run of
+  such holders. If a handler, or anything run once one was found, overran
+  it, the run ends with L's own error, "stack overflow: recursion too deep".
+  A `signal` push that the used-up reserve refuses ends the run with the
+  error being signalled, the same way.
+
+`goldens/exceptions/the_depth_limit_is_caught`,
+`an_error_just_below_the_depth_limit_is_caught`,
+`a_message_not_understood_just_below_the_depth_limit_is_caught`,
+`recursion_through_on_do_counts_alike` and
+`a_handler_overrunning_the_reserve_ends_the_run` pin it from source, and
+`crates/ns-runtime/tests/exceptions.rs` the uncaught cases at L − 3, L − 1,
+L and L + 1 and the overruns of the machinery, a `pass`'s included.
 
 - **L is checked on every push.** `Mutator::push`, the one function every
   activation the runtime pushes goes through, refuses a counted push when
@@ -3914,7 +4003,7 @@ for.
 ### What the golden outcomes are trusted on
 
 `Signal::Return` is an unwind of the activation stack to its target entry
-("Non-local return" above), with the semantics it had when it propagated
+("Unwinding" above), with the semantics it had when it propagated
 through Rust `?`. This is the part of the trampoline the golden outcomes are
 trusted hardest on: the reference lowering runs on the same VM, so it cannot
 cross-check the unwind — both ways of running a program unwind through the
@@ -4678,7 +4767,16 @@ binds it is that no native code may ever enter an image.
   L = 100,000 activations, counted alike under both lowerings, because a
   callback native would make the reference lowering's native stack grow with
   source nesting; with no re-entry from Rust left, nothing else can run out
-  first ("The depth limit").
+  first ("The depth limit"). It keeps a reserve of 1,000 above it for
+  signalling the errors raised near it (decided with the user on
+  2026-09-25), held by a frame, not a stack index.
+- **One unwinder, aimed at a frame** (decided with the user on 2026-09-25,
+  "Unwinding"): non-local return, the exceptions' `return:`, `retry` and
+  `resume:`, and termination all go through `interpreter::unwind`, which
+  runs `ensure:` and `ifCurtailed:` blocks as trampoline steps rather than
+  calling back into Newspeak, and whose target is a `FrameReference`,
+  because code runs while an unwind is in progress and a release build
+  does not check an activation's generation.
 - **Rust does not re-enter the run loop** (decided 2026-09-13, "No re-entry
   from Rust"): `do:`, instantiation and the nested-class accessor are
   trampoline steps, so that no Rust frame is live below a safepoint and the

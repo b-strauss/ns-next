@@ -575,15 +575,20 @@ time.
   to, and the state its continuation carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver, block and elements, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
-  with their arguments, and phase; and every register. `StackEntry`'s impl is
+  with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries, and
+  a `VmErrorSignalled` error's receiver; and every register. `StackEntry`'s impl is
   in `heap.rs`, where its fields are private.
 - Every arena record: an object's class and payload — an instance's or an
-  array's fields, a closure's captured frame and its copied values, a class's enclosing
+  array's fields, a closure's captured frame and its copied values, an
+  activation object's frame, a class's enclosing
   object, declaring class, superclass and, for a metaclass, its class
   (`this_class`) — and a frame's receiver,
   registers, sender, home, current class and kind. A married frame's registers
   are its entry's, traced with the stack.
 - The host root table.
+- The depth limit's reserve, `Mutator.depth_reserve`: the frame of the
+  activation an error near the limit arose in, marked and forwarded with the
+  bootstrap's roots ([execution.md](execution.md), "The depth limit").
 - The heap's canonical symbol table ([object-model.md](object-model.md),
   "Values and objects"), a strong root until the collector makes it weak, as
   Primordial Soup's `symbolTable` is -- a symbol no program holds any more is
