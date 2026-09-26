@@ -827,13 +827,10 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         10 => BuiltinClass::OrderedCollection,
         11 => BuiltinClass::UndefinedObject,
         12 => BuiltinClass::Block,
-        13 => BuiltinClass::Platform,
         14 => BuiltinClass::VmMirror,
         15 => BuiltinClass::Top,
         16 => BuiltinClass::Value,
         17 => BuiltinClass::Number,
-        18 => BuiltinClass::Transcript,
-        19 => BuiltinClass::Collections,
         20 => BuiltinClass::Behavior,
         21 => BuiltinClass::Class,
         22 => BuiltinClass::Metaclass,
@@ -843,7 +840,6 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         26 => BuiltinClass::MessageNotUnderstood,
         27 => BuiltinClass::Message,
         28 => BuiltinClass::Halt,
-        29 => BuiltinClass::KernelNamespace,
         _ => return None,
     })
 }

@@ -5,6 +5,7 @@
 //! spawning a process, and check the singleton/identity behavior a
 //! process-level test can't easily observe.
 
+use indoc::indoc;
 use ns_runtime::{BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
@@ -169,4 +170,127 @@ fn the_collections_namespace_is_not_a_transcript() {
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return"),
         Ok(_) => panic!("expected `collections newLine` to be refused"),
     }
+}
+
+/// The platform is `Platform.ns`'s module instance, built by the host at
+/// bootstrap, and its members are instances of that module's nested classes.
+#[test]
+fn the_platform_is_an_instance_of_the_shipped_platform_module() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let platform_class = expect_ok(
+        interpreter.send(&platform, Symbol::intern("class"), &[]),
+        "platform class",
+    );
+    let platform_class_name = expect_ok(
+        interpreter.send(&platform_class, Symbol::intern("name"), &[]),
+        "platform class name",
+    );
+    let transcript = expect_ok(
+        interpreter.send(&platform, Symbol::intern("transcript"), &[]),
+        "platform transcript",
+    );
+    let transcript_class = expect_ok(
+        interpreter.send(&transcript, Symbol::intern("class"), &[]),
+        "platform transcript class",
+    );
+    let transcript_class_name = expect_ok(
+        interpreter.send(&transcript_class, Symbol::intern("name"), &[]),
+        "platform transcript class name",
+    );
+    interpreter.enter(|mutator| {
+        for (root, expected) in [
+            (&platform_class_name, "Platform"),
+            (&transcript_class_name, "Transcript"),
+        ] {
+            let value = mutator.fetch(root);
+            let Value::Object(object) = value else {
+                panic!("expected a string, got {}", mutator.heap().describe(&value));
+            };
+            assert_eq!(mutator.heap().str_value(object).as_deref(), Some(expected));
+        }
+    });
+}
+
+/// The platform's members are lazy slots (§6.3.3): the host's boot runs the
+/// factory and nothing more, so the transcript is built on the first
+/// `platform transcript`, not at every start.
+#[test]
+fn the_platform_builds_its_members_on_first_use() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let transcript_field = |interpreter: &mut Interpreter| {
+        interpreter.enter(|mutator| {
+            let Value::Object(platform) = mutator.fetch(&platform) else {
+                panic!("the platform is an object");
+            };
+            let class = mutator.heap().class_of_object(platform);
+            let application = mutator
+                .heap()
+                .class_application(class)
+                .expect("the platform's class has an application");
+            let position = application
+                .mixin
+                .slots
+                .iter()
+                .position(|slot| slot.name.as_str() == "transcript")
+                .expect("the platform declares a transcript slot");
+            let field = mutator
+                .heap()
+                .instance_field(platform, application.own_slot_base + position)
+                .expect("the platform has a field per slot");
+            matches!(field, Value::Nil)
+        })
+    };
+    assert!(
+        transcript_field(&mut interpreter),
+        "the transcript is not built before its first use"
+    );
+    expect_ok(
+        interpreter.send(&platform, Symbol::intern("transcript"), &[]),
+        "platform transcript",
+    );
+    assert!(
+        !transcript_field(&mut interpreter),
+        "the transcript is kept once built"
+    );
+}
+
+/// `Transcript` is a class of the platform module like any other, no
+/// builtin, so a subclass of it inherits a working `show:`: the transcript
+/// leaf reads only its string argument, and the capability is the mirror
+/// the inherited method sends to. §6.1's superclass clause starts with a
+/// name, so the module reaches `platform Transcript` through a method of
+/// its own.
+#[test]
+fn a_subclass_of_the_transcript_class_writes_too() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Loudness usingPlatform: platform = Object <: Value (
+            | private thePlatform = platform. |
+        ) (
+            private TranscriptClass = ( ^thePlatform Transcript )
+            class Loud = TranscriptClass new () ()
+            public speak = ( ^Loud new show: '' )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("speak"), &[]),
+        "a Loud shows",
+    );
 }

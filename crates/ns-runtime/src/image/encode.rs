@@ -182,7 +182,8 @@ impl CodeIds {
 }
 
 /// Explicit wire tags for `BuiltinClass` -- never `as u8` on the enum,
-/// whose declaration order is not a wire format.
+/// whose declaration order is not a wire format. The retired numbers are
+/// listed in `opcodes.rs` (`RETIRED_BUILTIN_CLASS_TAGS`).
 pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
     match kind {
         BuiltinClass::Object => 0,
@@ -197,13 +198,10 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::OrderedCollection => 10,
         BuiltinClass::UndefinedObject => 11,
         BuiltinClass::Block => 12,
-        BuiltinClass::Platform => 13,
         BuiltinClass::VmMirror => 14,
         BuiltinClass::Top => 15,
         BuiltinClass::Value => 16,
         BuiltinClass::Number => 17,
-        BuiltinClass::Transcript => 18,
-        BuiltinClass::Collections => 19,
         BuiltinClass::Behavior => 20,
         BuiltinClass::Class => 21,
         BuiltinClass::Metaclass => 22,
@@ -213,7 +211,6 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::MessageNotUnderstood => 26,
         BuiltinClass::Message => 27,
         BuiltinClass::Halt => 28,
-        BuiltinClass::KernelNamespace => 29,
     }
 }
 

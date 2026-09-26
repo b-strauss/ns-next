@@ -62,7 +62,7 @@ fn resolve_kernel_source() -> ResolvedModule {
 }
 
 /// The name of `kind`'s class in `Kernel.ns`. Every builtin but the mirror's
-/// class has one, `Top` and the platform's three included, unlike the narrower list of
+/// class has one, `Top` included, unlike the narrower list of
 /// names a *program* may write bare -- `Object`'s own accessor methods, which
 /// `tests::OBJECT_CLASS_ACCESSORS` pins.
 pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
@@ -79,9 +79,6 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::OrderedCollection => "OrderedCollection",
         BuiltinClass::UndefinedObject => "UndefinedObject",
         BuiltinClass::Block => "Block",
-        BuiltinClass::Platform => "Platform",
-        BuiltinClass::Transcript => "Transcript",
-        BuiltinClass::Collections => "Collections",
         BuiltinClass::Top => "Top",
         BuiltinClass::Value => "Value",
         BuiltinClass::Number => "Number",
@@ -94,7 +91,6 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::MessageNotUnderstood => "MessageNotUnderstood",
         BuiltinClass::Message => "Message",
         BuiltinClass::Halt => "Halt",
-        BuiltinClass::KernelNamespace => "KernelNamespace",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -339,7 +335,7 @@ fn nested_named<'mixin>(root: &'mixin Rc<Mixin>, name: &str) -> &'mixin Rc<Mixin
 /// The order the fill walks: every superclass before its subclasses.
 /// `BuiltinClass::ALL` is the wire-tag order, and a tag is assigned once and
 /// never renumbered, so a class declared later is appended rather than
-/// slotted in beside its siblings -- `Value` follows `Platform` there while
+/// slotted in beside its siblings -- `Value` follows `Top` there while
 /// standing above `Boolean`. Filling in that order would apply a mixin over
 /// a superclass whose application is still the empty placeholder. Sorting by
 /// depth below `Top` puts every superclass first whatever order `ALL` grows
@@ -413,7 +409,7 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 
 /// The shape the phase relies on and the resolver cannot check: one nested
 /// class per builtin but the mirror's, named as `kernel_class_name` says,
-/// each declaring no slots -- but `Platform`, whose slots the host fills --
+/// each declaring no slots -- but the exception classes and `Message` --
 /// and the default factory `new`; a root class with
 /// exactly one slot, the immutable `vmMirror`; a clause on every class but
 /// `Top`, a bare name with no message arguments -- it is read, never run --
@@ -451,20 +447,16 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         );
         let nested = nested_named(root, name);
         // Rust builds a builtin's instances with a payload and no fields, so
-        // a slot would have nowhere to live -- except on `Platform`, whose one
-        // instance the host builds with exactly the slots `Kernel.ns`
-        // declares (`Mutator::platform_value`), and on the exception classes,
-        // whose instances `decide_instantiation` gives an ordinary field
-        // vector like any other class's (`docs/design/core-library.md`,
-        // "Exceptions"). `Activation` and `KernelNamespace` declare
-        // no slots of their own: an activation's state lives in the running
-        // activation it wraps, and the namespace is stateless.
+        // a slot would have nowhere to live -- except on the exception
+        // classes, whose instances `decide_instantiation` gives an ordinary
+        // field vector like any other class's (`docs/design/core-library.md`,
+        // "Exceptions"). `Activation` declares no slots of its own: an
+        // activation's state lives in the running activation it wraps.
         assert!(
             nested.slots.is_empty()
                 || matches!(
                     kind,
-                    BuiltinClass::Platform
-                        | BuiltinClass::Exception
+                    BuiltinClass::Exception
                         | BuiltinClass::Error
                         | BuiltinClass::MessageNotUnderstood
                         | BuiltinClass::Message
@@ -995,46 +987,13 @@ mod tests {
             "isResumable",
             MethodFastPath::Constant(QuickConstant::True),
         ),
-        // Not a quick method but the accessor form, `^outer Kernel <Name>`,
-        // on a class other than `Object`: the namespace's one member.
-        (
-            BuiltinClass::Collections,
-            "List",
-            MethodFastPath::BuiltinClass(BuiltinClass::OrderedCollection),
-        ),
-        // `platform kernel`'s accessors, the same form
-        // (`docs/design/core-library.md`, "Exceptions").
-        (
-            BuiltinClass::KernelNamespace,
-            "Exception",
-            MethodFastPath::BuiltinClass(BuiltinClass::Exception),
-        ),
-        (
-            BuiltinClass::KernelNamespace,
-            "Error",
-            MethodFastPath::BuiltinClass(BuiltinClass::Error),
-        ),
-        (
-            BuiltinClass::KernelNamespace,
-            "MessageNotUnderstood",
-            MethodFastPath::BuiltinClass(BuiltinClass::MessageNotUnderstood),
-        ),
-        (
-            BuiltinClass::KernelNamespace,
-            "Halt",
-            MethodFastPath::BuiltinClass(BuiltinClass::Halt),
-        ),
-        (
-            BuiltinClass::KernelNamespace,
-            "Message",
-            MethodFastPath::BuiltinClass(BuiltinClass::Message),
-        ),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
-    /// mirror's class, `Platform`, `Transcript`, `Collections`, `Behavior`,
-    /// `Class` and `Metaclass`.
+    /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation` and
+    /// the exception classes and `Message`, which a program reaches through
+    /// `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -1144,10 +1103,13 @@ mod tests {
     fn the_platform_declares_no_class_accessor_of_its_own() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let platform = mutator.builtin_class(BuiltinClass::Platform);
+            let Value::Object(platform) = mutator.platform_value() else {
+                panic!("the platform is an object");
+            };
+            let platform_class = mutator.heap().class_of_object(platform);
             let application = mutator
                 .heap()
-                .class_application(platform)
+                .class_application(platform_class)
                 .expect("Platform has an application");
             for kind in OBJECT_CLASS_ACCESSORS.iter().copied() {
                 let name = super::kernel_class_name(kind);
@@ -1157,6 +1119,71 @@ mod tests {
                         .compiled_method(crate::Symbol::intern(name))
                         .is_none(),
                     "Platform declares its own {name}"
+                );
+            }
+        });
+    }
+
+    /// `Platform.ns`'s namespace members are ordinary methods. The class
+    /// accessor recognizer reads only the form `^outer Kernel <Name>`, which
+    /// a module other than the kernel cannot write, so `Collections>>List`
+    /// (`^OrderedCollection`, an implicit-receiver send reaching `Object`'s
+    /// accessor) gets no `MethodFastPath::BuiltinClass`, and neither do
+    /// `KernelNamespace`'s five, which send to the kernel instance the
+    /// platform was handed. Each costs one activation more than it did as a
+    /// kernel accessor; a namespace member is asked for once, typically in
+    /// a slot initializer, not in a loop. `Transcript`'s two are mirror
+    /// forwarders like the kernel's: `Platform.ns` is resolved with
+    /// `resolve_kernel`.
+    #[test]
+    fn the_platform_modules_members_have_the_fast_path_they_should() {
+        let mut interpreter = Interpreter::bootstrap();
+        let platform = interpreter.platform();
+        let mut class_named =
+            |name: &str| match interpreter.send(&platform, crate::Symbol::intern(name), &[]) {
+                Ok(class) => class,
+                Err(_) => panic!("platform {name} failed"),
+            };
+        let collections = class_named("Collections");
+        let kernel_namespace = class_named("KernelNamespace");
+        let transcript = class_named("Transcript");
+        interpreter.enter(|mutator| {
+            let fast_path = |class: &crate::Root, selector: &str| {
+                let Value::Object(class) = mutator.fetch(class) else {
+                    panic!("a nested class accessor answers a class object");
+                };
+                let application = mutator
+                    .heap()
+                    .class_application(class)
+                    .expect("a class object has an application");
+                let method = application
+                    .mixin
+                    .compiled_method(crate::Symbol::intern(selector))
+                    .unwrap_or_else(|| panic!("no method {selector}"))
+                    .clone();
+                method.fast_path
+            };
+            assert_eq!(fast_path(&collections, "List"), None, "Collections>>List");
+            for selector in [
+                "Exception",
+                "Error",
+                "MessageNotUnderstood",
+                "Halt",
+                "Message",
+            ] {
+                assert_eq!(
+                    fast_path(&kernel_namespace, selector),
+                    None,
+                    "KernelNamespace>>{selector}"
+                );
+            }
+            for selector in ["show:", "newLine"] {
+                assert!(
+                    matches!(
+                        fast_path(&transcript, selector),
+                        Some(crate::mixin::MethodFastPath::Mirror(_))
+                    ),
+                    "Transcript>>{selector} is not recognized as a primitive method"
                 );
             }
         });
@@ -1267,11 +1294,13 @@ mod tests {
     }
 
     /// The accessor set on `Object` is exactly §3.2's nameable builtins,
-    /// each recognized as a fast path answering its own class; `Top`, the
-    /// mirror's class and `Platform` have none, which is one of the locks
-    /// that keep the mirror a capability. Neither have the exception
-    /// classes and `KernelNamespace`, which a program reaches through
-    /// `platform kernel`, nor `Activation`, which it does not reach at all.
+    /// each recognized as a fast path answering its own class; `Top` and the
+    /// mirror's class have none, which is one of the locks that keep the
+    /// mirror a capability. Neither have the exception classes, which a
+    /// program reaches through `platform kernel`, nor `Activation`, which
+    /// it does not reach at all. `Platform.ns`'s class names are listed
+    /// too: `Object` must never grow an accessor for one of them, since a
+    /// program reaches them through the platform it is handed.
     #[test]
     fn objects_class_accessors_are_exactly_the_nameable_builtins() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1376,9 +1405,6 @@ mod tests {
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
                 (BuiltinClass::OrderedCollection, Some(BuiltinClass::Object)),
                 (BuiltinClass::Block, Some(BuiltinClass::Object)),
-                (BuiltinClass::Platform, Some(BuiltinClass::Value)),
-                (BuiltinClass::Transcript, Some(BuiltinClass::Value)),
-                (BuiltinClass::Collections, Some(BuiltinClass::Value)),
                 (BuiltinClass::Top, None),
             ];
             for (kind, superclass) in expected {
@@ -1417,9 +1443,6 @@ mod tests {
                 (BuiltinClass::True, true),
                 (BuiltinClass::UndefinedObject, true),
                 (BuiltinClass::Number, true),
-                (BuiltinClass::Platform, true),
-                (BuiltinClass::Transcript, true),
-                (BuiltinClass::Collections, true),
                 (BuiltinClass::Array, false),
                 (BuiltinClass::OrderedCollection, false),
                 (BuiltinClass::Block, false),

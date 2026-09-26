@@ -314,8 +314,9 @@ kernel's.
   are `True`'s and `False`'s own methods, [core-library.md](core-library.md),
   "`True` and `False` are quick methods"), `Number` with `Integer` and
   `Float`, `String`, `Symbol` and `UndefinedObject` (§5.1.3 names
-  `nil`'s class so), and `Platform`, `Transcript` and `Collections`
-  ([core-library.md](core-library.md), "The platform"). `Number` is empty; it is the
+  `nil`'s class so); the platform and its members, `Platform.ns`'s classes,
+  are values too ([core-library.md](core-library.md), "The platform").
+  `Number` is empty; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
   `Array`, `OrderedCollection` and `Block` stay directly under `Object`,

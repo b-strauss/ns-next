@@ -242,6 +242,17 @@ pub const CLASS_ROOT_LEVEL: u8 = 3;
 pub const CLASS_METACLASS: u8 = 4;
 pub const CLASS_PLATFORM_PATH: u8 = 5;
 
+/// Builtin class tags (`encode::builtin_class_tag`, which a `CLASS_BUILTIN`
+/// reference, a `MIXIN_BUILTIN` level and a `HASHED_BUILTIN_CLASS` entry are
+/// followed by) that no longer name anything and are never reused: 8 was
+/// `Character`, retired 2026-09-25 with the class; 13, 18, 19 and 29 were
+/// `Platform`, `Transcript`, `Collections` and `KernelNamespace`, retired
+/// 2026-09-26 when the four moved into the shipped `Platform.ns`, whose
+/// objects an image names by their platform paths. A stale image's reference
+/// to one names no builtin rather than whichever class took the number.
+/// Next free number: 30.
+pub const RETIRED_BUILTIN_CLASS_TAGS: [u8; 5] = [8, 13, 18, 19, 29];
+
 /// What a frame was activated for, numbered in the order `types::FrameKind`
 /// declares it.
 pub const FRAME_METHOD: u8 = 0;

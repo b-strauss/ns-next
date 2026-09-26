@@ -11,7 +11,9 @@ Rust 1.98.0, edition 2021, four crates:
   caches in `interpreter/inline_cache.rs` in front of the lookups in
   `interpreter/resolve.rs`), the core library -- `core-library/Kernel.ns`,
   Newspeak source the bootstrap compiles into the builtin classes
-  (`interpreter/kernel.rs`), in §3.2's and §3.1.1's hierarchy (`Top`, then
+  (`interpreter/kernel.rs`), and beside it `core-library/Platform.ns`, the
+  platform every program is handed, booted from the table of shipped modules
+  (`interpreter/core_library.rs`) with lazy members, in §3.2's and §3.1.1's hierarchy (`Top`, then
   `Object`, then `Value` over the value classes and `Behavior` over `Class`
   and `Metaclass`; every class object's class is its own metaclass, its class
   side applied to `Class`, and every metaclass's class is `Metaclass`,
@@ -287,13 +289,17 @@ arguments, gives a wrong order or wrong values at exit status 0;
 `goldens/mixin/mixin_initializer_order.ns` pins it.
 
 **The VM mirror is a capability.** Whoever holds the one VM mirror object can run every
-leaf, so it reaches `Kernel.ns` and nothing else (`docs/design/core-library.md`, "The VM
-mirror is the whole Rust boundary"). Six things keep it there, and loosening any one of them
+leaf, so it reaches the shipped core-library modules and nothing else
+(`docs/design/core-library.md`, "The VM mirror is the whole Rust boundary"). Six things keep it there, and loosening any one of them
 lets a program claim every primitive: only `resolver::resolve_kernel` records
 `Binding::MirrorSend`, the mark `SendMirror` and primitive methods are compiled from, and
-only `Kernel.ns` is resolved with it -- a user module goes through `resolve`; the bootstrap
-checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
-(`interpreter::kernel`); no program can name the mirror's class -- `Object` declares no
+only the shipped core-library modules -- `Kernel.ns`, and `Platform.ns` from
+`interpreter/core_library.rs`'s table -- are resolved with it; a user module goes through
+`resolve`; the bootstrap checks that `Kernel`'s one immutable `vmMirror` slot holds the mirror
+(`interpreter::kernel`); the platform holds the mirror in a private slot, is handed to every
+program, and is never written to an image field by field: the encoder names it, and every
+shipped module instance or class it reaches, by its platform path
+(`image/platform_paths.rs`); no program can name the mirror's class -- `Object` declares no
 accessor for it or for `Top` (`interpreter/kernel.rs`'s test pins the accessor set, and the
 recognizer in `compiler::primitive_method` refuses both), and the image decoder refuses builtin
 class tag 14 wherever the graph names a class (`read_referenced_builtin_class`, which refuses
@@ -414,7 +420,7 @@ to send and the output it produces; `run-corpus` runs every listed module from s
 and as a built binary, under both lowerings, and fails if any of the four differs from
 the recorded output. Nothing under `crates/ns-syntax` should change for runtime work.
 
-`platform.rs` is widened only on demand: an accessor exists because a module on
+`Platform.ns` is widened only on demand: an accessor exists because a module on
 `corpus/runnable.toml` needs it, and the whitelist entry that demanded it is named in the
 accessor's comment. A capability nothing on that list asks for has no test that would
 catch it rotting.

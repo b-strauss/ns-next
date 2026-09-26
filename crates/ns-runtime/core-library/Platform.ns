@@ -1,0 +1,44 @@
+Newspeak3
+'Platform'
+(* The platform a module is handed (§8.3): a shipped core-library module,
+   booted by the host with the VM mirror and the kernel instance
+   (`docs/design/core-library.md`, "The module table and the boot").
+   §8.3 describes the platform as an object that "provides accessors to
+   various modules"; each is a lazy slot (§6.3.3), built on first use, so a
+   program pays only for what it asks for, and an image names each by its
+   path from the platform rather than carrying it.
+
+   The factory's parameters are copied into slots because neither a lazy
+   slot nor a method may name them (§6). A send to `vmMirror` here is a
+   mirror send, as in `Kernel.ns`: this module is resolved with
+   `resolve_kernel`, which only shipped source is.
+
+   The platform and its members are values (§3.1.1), as SOMns's `Platform`
+   is: stateless but for what the host hands them. *)
+class Platform usingVmMirror: theMirror kernel: theKernel = Object <: Value (
+    | private vmMirror = theMirror.
+      private kernelModule = theKernel. |
+) (
+    public class Transcript = Value new () (
+        public show: text = ( ^vmMirror transcript: self show: text ifFail: [^super show: text] )
+        public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [^super newLine] )
+    )
+    (* The Core Library's `collections` namespace, whose one member is the
+       one a whitelisted corpus module asks for (`docs/design/core-library.md`,
+       "The on-demand rule"). *)
+    public class Collections = Value new () (
+        public List = ( ^OrderedCollection )
+    )
+    (* `platform kernel`: the kernel classes a program may name, as
+       Primordial Soup's `Kernel wrapping:` facet answers them. *)
+    public class KernelNamespace = Value new () (
+        public Exception = ( ^kernelModule Exception )
+        public Error = ( ^kernelModule Error )
+        public MessageNotUnderstood = ( ^kernelModule MessageNotUnderstood )
+        public Halt = ( ^kernelModule Halt )
+        public Message = ( ^kernelModule Message )
+    )
+    lazy public transcript = Transcript new.
+    lazy public collections = Collections new.
+    lazy public kernel = KernelNamespace new.
+) : ()

@@ -2,10 +2,14 @@
 
 > **Status:** partial — the core library is built as Newspeak source,
 > `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
-> `Metaclass` and §8.6's exceptions included; missing is `Integer>>/`, and
-> the surface grows on demand, not speculatively.
+> `Metaclass` and §8.6's exceptions included, and the platform is the
+> shipped module `Platform.ns` with lazy members; missing is `Integer>>/`,
+> and the surface grows on demand, not speculatively.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
+> `crates/ns-runtime/core-library/Platform.ns` (the platform),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
+> `interpreter/core_library.rs` (the table of shipped modules and the
+> platform's boot),
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
 > `builtins/activation.rs` and `builtins/message.rs` the exceptions'),
@@ -38,11 +42,7 @@ Top                     (private; no superclass, declares nothing)
     │   │               └── Float
     │   ├── String
     │   ├── Symbol
-    │   ├── UndefinedObject
-    │   ├── Platform    transcript, collections, kernel (slots)
-    │   ├── Transcript  show:, newLine
-    │   ├── Collections List
-    │   └── KernelNamespace  Exception, Error, MessageNotUnderstood, Halt, Message
+    │   └── UndefinedObject
     ├── Array
     ├── OrderedCollection
     ├── Block           ..., on:do:, ensure:, ifCurtailed: (marked methods)
@@ -111,10 +111,8 @@ below); `Integer`'s `+ - * // < >
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
 `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
 `add:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
-`numArgs`, `whileTrue:` and `whileFalse:`; and `Transcript`'s `show:` and
-`newLine`. `Platform` holds its transcript and its `collections` namespace in
-slots, and `Collections>>List` is `^outer Kernel OrderedCollection`,
-answered without a leaf ("The platform" below).
+`numArgs`, `whileTrue:` and `whileFalse:`. `Platform.ns`'s `Transcript`
+forwards `show:` and `newLine` the same way ("The platform" below).
 `UndefinedObject` reaches no leaf either: its nil protocol is quick methods
 and its `printString` an ordinary one ("The nil protocol" below). `True` and
 `False` reach no leaf at all:
@@ -122,8 +120,8 @@ their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
 `hash` ordinary ones. `Boolean` declares nothing of its own either.
 `Object`'s protected `doesNotUnderstand:` and `halt`, the exception
-classes, `Block`'s `on:do:`, `ensure:` and `ifCurtailed:`, `Message` and
-`KernelNamespace` are the exception machinery, ordinary Newspeak over the
+classes, `Block`'s `on:do:`, `ensure:` and `ifCurtailed:` and `Message`
+are the exception machinery, ordinary Newspeak over the
 activation leaves ("Exceptions" below).
 
 The other exceptions are `hash` on `Integer` (`^self`) and `asString` on
@@ -361,48 +359,91 @@ share rows 42–46 (counted from 0), as they share their payload.
 
 ### The platform
 
-The platform a module is handed (§8.3), its transcript, its `collections`
-namespace and its `kernel` namespace are four values (§3.1.1), each a
-`Kernel.ns` class of its own below `Value` (decided with the user on
-2026-09-25):
+The platform a module is handed (§8.3) is the one instance of
+`crates/ns-runtime/core-library/Platform.ns`, a shipped core-library module
+beside `Kernel.ns` (decided with the user on 2026-09-25, designed on
+2026-09-26):
 
 ```newspeak
-public class Platform = Value new (
-    | public transcript = Transcript new.
-      public collections = Collections new.
-      public kernel = KernelNamespace new. |
-) ( )
-public class Transcript = Value new () ( show: and newLine, forwarders )
-public class Collections = Value new () ( public List = ( ^outer Kernel OrderedCollection ) )
-public class KernelNamespace = Value new () ( Exception, Error, MessageNotUnderstood, Halt, Message )
+class Platform usingVmMirror: theMirror kernel: theKernel = Object <: Value (
+    | private vmMirror = theMirror. private kernelModule = theKernel. |
+) (
+    public class Transcript = Value new () ( show: and newLine, through vmMirror )
+    public class Collections = Value new () ( public List = ( ^OrderedCollection ) )
+    public class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
+    lazy public transcript = Transcript new.
+    lazy public collections = Collections new.
+    lazy public kernel = KernelNamespace new.
+) : ()
 ```
 
-`transcript`, `collections` and `kernel` are slot getters, `List` and
-`KernelNamespace`'s five the accessor form answered without an activation
-("Exceptions" below), and only `Transcript`'s output reaches Rust
-(`platform.rs`). Being values, they have no identity: two transcripts are
-equal and so identical, and a transcript kept in an image is the loading
-platform's after the load. None has an accessor on `Object`, since a program
-reaches them through the platform it is given, and the platform declares no
-accessor for a predefined class either: `platform Array` reaches `Object`'s
-(§3.2), which it inherits like every object.
+**The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
+built on its first use, so a program pays only for the members it asks for,
+and the host's boot runs the factory and nothing more. The factory's
+parameters are copied into private slots, since neither a lazy slot nor a
+method may name them (§6), and the three nested classes reach the mirror
+and the kernel through those slots, so they keep `new` and declare no
+slots: `t class new` makes a transcript equal to `t`.
 
-The host builds the one platform (`Mutator::platform_value`) in the state
-`Platform new` would give it — a fresh `Transcript`, `Collections` and
-`KernelNamespace` in the slots `Kernel.ns` declares — rather than by running
-the factory, so that asking for the platform, at bootstrap or in
-`image::load`, runs no Newspeak and fills no cache.
-`goldens/kernel/the_platform_and_its_parts_are_values` pins that the two
-agree (`platform = platform class new`), and `interpreter::kernel`'s shape
-check lets `Platform` declare slots, because Rust builds no other instance
-of it; of the other builtins only the exception classes and `Message` may,
-whose instances are ordinary ones with a field vector.
+**The boot.** `Interpreter::install_platform`, run by `bootstrap_with`
+right after `install_kernel`, takes `Platform` from the table of shipped
+modules ("Where the library source lives, and how modules are found"
+below), instantiates it with `usingVmMirror: mirror kernel: kernel` — an
+ordinary run entered from the outside, as the kernel's instantiation is, so
+the stress modes see it — and keeps the answer as the platform
+(`Mutator::platform_singleton`, traced like every root).
+`Mutator::platform_value` only reads it, so asking for the platform, at
+bootstrap or in `image::load`, runs no Newspeak. The kernel instance is the
+second parameter, as in Primordial Soup (`Platform internalKernel: ik`),
+rather than a mirror leaf answering the kernel (SOMns's
+`vmMirror kernelObject: nil`): handing over an object needs no Rust, and
+the dependency stands in the factory's signature. Nothing the factory or a
+member's initializer runs assigns an identity hash, which `image::load`
+relies on: it resolves the image's platform paths before it restores the
+hashes the image recorded.
+
+**The transcript leaf does not check its receiver.** `Transcript`'s `show:`
+and `newLine` are mirror forwarders like the kernel's — `Platform.ns` is
+resolved with `resolve_kernel`, so its `vmMirror` sends are mirror sends and
+the two methods are primitive methods — and their leaf (`platform.rs`)
+reads nothing off the receiver, only the string argument. The capability is
+the mirror, which only shipped source reaches; `Transcript` is no builtin,
+so the VM could not recognize its class anyway. A user subclass of
+`Transcript`, reached as `platform Transcript`, therefore inherits a
+working `show:` (`tests/platform.rs`,
+`a_subclass_of_the_transcript_class_writes_too`).
+
+**The namespace members are ordinary methods.** `Collections>>List` answers
+`OrderedCollection` through `Object`'s accessor, and `KernelNamespace`'s
+five answer the kernel instance's nested classes. The class-accessor fast
+path ("The predefined classes are accessors on `Object`" below) is
+recognized only in the form `^outer Kernel <Name>`, which no module but the
+kernel can write, so each costs one activation more than it did as a kernel
+accessor (`interpreter/kernel.rs`,
+`the_platform_modules_members_have_the_fast_path_they_should`). A
+namespace member is asked for once, typically in a slot initializer.
+
+Being values, the platform and its members have no identity: two
+transcripts are equal and so identical, and a transcript kept in an image
+is the loading platform's after the load. None has an accessor on `Object`,
+since a program reaches them through the platform it is given, and the
+platform declares no accessor for a predefined class either:
+`platform Array` reaches `Object`'s (§3.2), which it inherits like every
+object. A program has nothing to pass to `usingVmMirror:kernel:`, so
+`goldens/kernel/the_platform_and_its_parts_are_values` compares the
+collections namespace, whose class answers `new`, with a fresh one rather
+than the platform.
+
+**An image names the platform and what it reaches by path.** The platform
+holds the mirror, so it is never written field by field: the encoder names
+it, and every shipped module instance or class it reaches, by its path of
+public members from the platform ("Platform paths in the image" below).
 
 ## The on-demand rule
 
-**`platform.rs` is widened only on demand.** An accessor exists because a module
-on `corpus/runnable.toml` needs it, and the whitelist entry that demanded it is
-named in the accessor's comment.
+**`Platform.ns` is widened only on demand.** An accessor exists because a
+module on `corpus/runnable.toml` needs it, and the whitelist entry that
+demanded it is named in the accessor's comment.
 
 This is not minimalism for its own sake. A capability nothing on that list asks
 for has no test that would catch it rotting, so it is a liability rather than an
@@ -643,7 +684,7 @@ activation record ("Exceptions" below).
 - `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
   only for a `MirrorSend` and has no wire tag, so no artifact can carry one.
 
-`platform.rs` keeps its separate role: §8.3 distinguishes the platform object,
+The platform keeps its separate role: §8.3 distinguishes the platform object,
 which is the environment, from the VM mirror, which is the virtual machine.
 Loading a module belongs on the mirror, as it does in SOMns, not on the
 platform.
@@ -849,8 +890,8 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    `Mutator::build_root_mixin`, as every module's root is built, so the root
    rule applies to `Kernel` too — and `check_kernel_shape` checks
    what the phase relies on: one nested class per builtin, named as
-   `kernel_class_name` says, each with no slots but `Platform` ("The
-   platform" above) and with the default factory; the
+   `kernel_class_name` says, each with no slots but the exception classes
+   and `Message` ("Exceptions" below) and with the default factory; the
    one immutable `vmMirror` slot on the root; a superclass clause on every
    class but `Top` that is a bare sibling name, read and never run, naming a
    kernel class, from which the chain reaches `Top` without repeating; that
@@ -941,6 +982,21 @@ The library is source the runtime ships, compiled at bootstrap as the Rust
 bootstrap used to be built, so running a program from source is unchanged:
 the bootstrap gained a phase in front of it and nothing above that changed.
 Loading several *user* modules is a separate, later step.
+
+**The table of shipped modules.** `Kernel.ns` is compiled into the binary
+by `interpreter/kernel.rs`; every other shipped module is an entry of
+`interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name and its source,
+embedded with `include_str!` from `crates/ns-runtime/core-library/` like
+the kernel. Today the one entry is `Platform`. `resolved_shipped_module`
+parses and resolves an entry once per thread, with `resolve_kernel`,
+because the entry is shipped source, and panics for one that does not
+parse or resolve, as the kernel's does: that is a defect in the binary, not
+in a program. Every interpreter still compiles each module itself, since
+compiled code is numbered against one heap's inline caches. Every entry is
+shipped source; a user module joins the table, marked as such by the host
+and resolved with `resolve`, with the step that loads one, and the mirror's
+`moduleNamed:` (below) is the leaf through which Newspeak will reach an
+entry.
 
 **Planned: the module namespace on the mirror.** For the modules there are,
 the namespace belongs on the mirror (decided with the user on 2026-09-21): a
@@ -1049,12 +1105,11 @@ as `MyError new signal: 'text'`, which the goldens use.
 2026-09-25), as the corpus does — `private Exception = platform kernel
 Exception.` appears 16 times, `platform kernel MessageNotUnderstood` 11 —
 and as Primordial Soup's `Kernel wrapping:` facet provides them: the
-platform's `kernel` slot holds a value of the kernel class
-`KernelNamespace`, whose accessors answer `Exception`, `Error`,
-`MessageNotUnderstood`, `Halt` and `Message`, as `Collections` does for
-`platform collections`. `Object` gains no accessor, so its set stays what
-§3.2 names. `KernelNamespace` lives in `Kernel.ns` while the platform does,
-and moves with it into the platform module afterwards.
+platform's lazy `kernel` slot holds a value of `Platform.ns`'s
+`KernelNamespace`, whose methods answer `Exception`, `Error`,
+`MessageNotUnderstood`, `Halt` and `Message` from the kernel instance the
+platform was handed, as `Collections` does for `platform collections`.
+`Object` gains no accessor, so its set stays what §3.2 names.
 
 `Block` has `on: exceptionClass do: handler`, `ensure: aBlock` and
 `ifCurtailed: aBlock`, three marked methods (below): `on:do:`'s body sets
@@ -1270,8 +1325,9 @@ with an argument that is no `Message` fails inside the handler, on
 
 **The image format.** An `Activation` is a record whose body is a frame id
 (`OBJECT_ACTIVATION`, body tag 9), validated as every frame reference is.
-`Activation`, `Exception`, `Error`, `MessageNotUnderstood`, `Message`,
-`Halt` and `KernelNamespace` take builtin class tags 23 to 29
+`Activation`, `Exception`, `Error`, `MessageNotUnderstood`, `Message` and
+`Halt` take builtin class tags 23 to 28 (29, `KernelNamespace`'s, is retired:
+the class moved into `Platform.ns`)
 ([image-format.md](image-format.md), "Verification"). A snapshot in the
 middle of an unwind is no more possible than one in the middle of a loop:
 the continuations "carry the unwind on" and "end the run with this VM
@@ -1337,8 +1393,11 @@ and caught twenty activations up costs about 6.4 µs.
 ### Planned: the platform and collections as core-library modules
 
 **Status: decided with the user on 2026-09-25, designed with the user on
-2026-09-26, not built; it is the next piece of work, in two plans, each
-ending with every gate green.** `Kernel.ns` is to hold only what the VM
+2026-09-26, in two plans, each ending with every gate green. Plan 1 is
+built (2026-09-26): lazy slots, the table of shipped modules and the
+platform's boot, and platform paths in the image ("The platform" above
+describes what exists). Plan 2, the collections module, is not built; it
+is the next piece of work.** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
@@ -1429,6 +1488,14 @@ getter, which `push_step` gives the same `slot_base`.
 
 #### The module table and the boot (plan 1)
 
+**Built**, as "The platform" and "Where the library source lives, and how
+modules are found" above describe, with two parts of the design below
+waiting for plan 2: the table is `interpreter/core_library.rs`'s
+`SHIPPED_MODULES`, read by the host, not yet a table on the mirror, and
+its entries carry no shipped flag yet, since every entry is shipped
+source; the flag comes with the first user module the table holds, and
+the mirror's `moduleNamed:` with `Collections.ns`. The design as decided:
+
 - **One module table, on the mirror** (the decision of 2026-09-21 in
   "Where the library source lives, and how modules are found"). The host
   fills a table of name to source at bootstrap; the shipped modules —
@@ -1496,6 +1563,9 @@ getter, which `push_step` gives the same `slot_base`.
   `Collections.ns`.
 
 #### Platform paths in the image (plan 1)
+
+**Built** (`image/platform_paths.rs`; [image-format.md](image-format.md),
+"Verification"). The design as decided:
 
 An artifact names a shipped object by its **path of public members from
 the platform**: the empty path is the platform, `collections` its
@@ -1597,12 +1667,12 @@ its class. That needs its own decision when the first such module arrives.
 
 #### What changes in the invariants
 
-`CLAUDE.md`'s "The VM mirror is a capability" changes in two places: only
-an entry of the module table marked as shipped source is resolved with
-`resolve_kernel` (today: only `Kernel.ns`), and the platform, which holds
-the mirror as a private factory parameter and is handed to every program,
-is never written field by field — the encoder names it by its path. The
-on-demand rule (above) moves from `platform.rs` to `Platform.ns`.
+Done in plan 1: `CLAUDE.md`'s "The VM mirror is a capability" says that
+only the shipped core-library modules — `Kernel.ns`, and `Platform.ns`
+from the table — are resolved with `resolve_kernel`, and that the
+platform, which holds the mirror in a private slot and is handed to every
+program, is never written field by field: the encoder names it by its
+path. The on-demand rule (above) is `Platform.ns`'s.
 
 #### What is measured
 
@@ -1702,12 +1772,13 @@ Each decision below was taken with the user.
 **The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
 `Float`, `String`, `Symbol`, `UndefinedObject`, `Array`,
-`OrderedCollection` and `Block`. `Top`, the VM mirror's class and `Platform`
-get none: §3.2 lets only `Object` name `Top`, as its superclass; the mirror
-is a capability; and a program is handed the platform through its factory.
+`OrderedCollection` and `Block`. `Top` and the VM mirror's class get none:
+§3.2 lets only `Object` name `Top`, as its superclass, and the mirror is a
+capability; `Platform` and its members' classes are no kernel classes at
+all, and a program is handed the platform through its factory.
 Nor do the classes the exceptions added: a program names `Exception`,
 `Error`, `MessageNotUnderstood`, `Halt` and `Message` through
-`platform kernel`, and `Activation` and `KernelNamespace` not at all
+`platform kernel`, and `Activation` not at all
 ("Exceptions" above).
 Each is an ordinary public method of `Kernel.ns`'s `Object`,
 `public String = ( ^outer Kernel String )`, whose body sends the kernel
@@ -1749,10 +1820,11 @@ its leaf without one** ([dispatch.md](dispatch.md), "Primitive methods").
 `MixinMethod.fast_path: Option<MethodFastPath>` has two variants,
 `Mirror(MirrorPrimitive)` for a primitive method and
 `BuiltinClass(BuiltinClass)` for an accessor. `compiler::primitive_method`
-recognizes the accessor while compiling `Kernel.ns` only —
-`ResolvedModule.kernel` says which module it is, and only `resolve_kernel`
-sets it — from a body that is nothing but `^outer Kernel` and the name of a
-kernel class other than `Top` and `Platform`, and `act` reads the variant off
+recognizes the accessor while compiling shipped source only —
+`ResolvedModule.kernel` says which module is shipped, and only
+`resolve_kernel` sets it — from a body that is nothing but `^outer Kernel`
+and the name of a kernel class other than `Top`, a form only `Kernel.ns`
+can write, and `act` reads the variant off
 the method on every send, hit or miss, and answers the builtin class. The
 inline cache still records only the method it found; it decides nothing, and
 a class that redefines the name reaches its own method through the ordinary

@@ -237,11 +237,6 @@ pub enum BuiltinClass {
     OrderedCollection,
     UndefinedObject,
     Block,
-    Platform,
-    /// The platform's transcript, a value of its own class.
-    Transcript,
-    /// The platform's `collections` namespace, a value of its own class.
-    Collections,
     /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
     /// is the whole Rust boundary"): one instance, built at bootstrap and
     /// handed to the core library alone. No program can name it -- it is
@@ -285,21 +280,19 @@ pub enum BuiltinClass {
     /// `message`.
     Message,
     Halt,
-    /// `platform kernel`: the kernel classes a program may name, as
-    /// Primordial Soup's `Kernel wrapping:` facet answers them.
-    KernelNamespace,
 }
 
 impl BuiltinClass {
     /// Every builtin class, in declaration order. `Mutator::builtin_class`
     /// indexes by discriminant, so the bootstrap builds them in this order,
-    /// and the image's closing hash table writes them in it too -- it is also
-    /// their wire-tag order (`image::encode::builtin_class_tag`), which is
-    /// why a class added later is appended rather than slotted in beside its
-    /// siblings. So this is *not* a superclass-first order: the kernel phase
-    /// sorts the kinds by their depth below `Top` before it fills them
+    /// and the image's closing hash table writes them in it too. It follows
+    /// their wire tags (`image::encode::builtin_class_tag`), less the
+    /// retired ones, which is why a class added later is appended rather
+    /// than slotted in beside its siblings. So this is *not* a
+    /// superclass-first order: the kernel phase sorts the kinds by their
+    /// depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 29] = [
+    pub const ALL: [BuiltinClass; 25] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -312,9 +305,6 @@ impl BuiltinClass {
         BuiltinClass::OrderedCollection,
         BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
-        BuiltinClass::Platform,
-        BuiltinClass::Transcript,
-        BuiltinClass::Collections,
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Value,
@@ -328,7 +318,6 @@ impl BuiltinClass {
         BuiltinClass::MessageNotUnderstood,
         BuiltinClass::Message,
         BuiltinClass::Halt,
-        BuiltinClass::KernelNamespace,
     ];
 }
 

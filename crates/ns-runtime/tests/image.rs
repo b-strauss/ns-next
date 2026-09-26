@@ -1236,9 +1236,6 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::OrderedCollection,
         BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
-        BuiltinClass::Platform,
-        BuiltinClass::Transcript,
-        BuiltinClass::Collections,
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Value,
@@ -10565,13 +10562,7 @@ fn one_instance_of_platform_path_zero(fields: u32) -> Vec<u8> {
 fn an_instance_of_a_path_named_class_carries_exactly_its_layout() {
     // The layout comes from the loading binary: `Transcript` declares no
     // slots, so an instance of it carries none.
-    let mut fixture = GraphFixture::new();
-    let transcript_class = fixture.interpreter.enter(|mutator| {
-        mutator.stash(Value::Object(
-            mutator.builtin_class(BuiltinClass::Transcript),
-        ))
-    });
-    fixture.platform_paths = vec![transcript_class];
+    let mut fixture = fixture_naming_the_transcript_class_by_path();
     fixture.decode(&one_instance_of_platform_path_zero(0), |_, decoded| {
         assert!(decoded.is_ok(), "an instance that fits the layout decodes");
     });
@@ -10655,14 +10646,17 @@ fn a_graph_of_one_root(root: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     writer.into_bytes()
 }
 
-/// A fixture whose platform path 0 answered the builtin `Transcript` class.
+/// A fixture whose platform path 0 answered the platform's `Transcript`
+/// class, `Platform.ns`'s nested class, as the path `Transcript` does.
 fn fixture_naming_the_transcript_class_by_path() -> GraphFixture {
     let mut fixture = GraphFixture::new();
-    let transcript_class = fixture.interpreter.enter(|mutator| {
-        mutator.stash(Value::Object(
-            mutator.builtin_class(BuiltinClass::Transcript),
-        ))
-    });
+    let platform = fixture.platform.clone();
+    let transcript_class = expect_ok(
+        fixture
+            .interpreter
+            .send(&platform, Symbol::intern("Transcript"), &[]),
+        "platform Transcript",
+    );
     fixture.platform_paths = vec![transcript_class];
     fixture
 }
@@ -10754,16 +10748,21 @@ fn a_hash_recorded_for_a_platform_path_past_the_section_is_refused() {
 }
 
 /// A metaclass a path names that a prebuilt class's metaclass entry reaches
-/// as well -- here `Transcript class`, whose class is a builtin -- is listed
-/// once, or the loader would refuse the table as naming one object twice.
+/// as well -- here `Transcript class`, whose class the path `Transcript`
+/// names -- is listed once, or the loader would refuse the table as naming
+/// one object twice.
 #[test]
 fn a_path_named_metaclass_is_listed_once_in_the_hash_table() {
     let (mut interpreter, class) = load(EMPTY);
     let platform = interpreter.platform();
+    let transcript_class = expect_ok(
+        interpreter.send(&platform, Symbol::intern("Transcript"), &[]),
+        "platform Transcript",
+    );
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        let transcript_class = mutator.builtin_class(BuiltinClass::Transcript);
+        let transcript_class = *object(&mutator.fetch(&transcript_class));
         let metaclass = mutator
             .heap()
             .class_metaclass(transcript_class)

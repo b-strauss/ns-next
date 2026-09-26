@@ -4,6 +4,7 @@
 //! `locals.rs`, the errors a deferred literal raises in `literals.rs`; the
 //! bootstrap and class instantiation are in `instantiate.rs`.
 
+pub(crate) mod core_library;
 pub(crate) mod inline_cache;
 pub mod instantiate;
 pub(crate) mod kernel;
@@ -442,8 +443,10 @@ impl Interpreter {
             }
         }
         // Last, after the stress modes are set up: the kernel's own
-        // instantiation is a run like any other, and they should see it.
+        // instantiation is a run like any other, and they should see it, as
+        // is the platform's, which needs the kernel instance.
         interpreter.install_kernel();
+        interpreter.install_platform();
         interpreter
     }
 
@@ -1456,53 +1459,20 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::Activation(frame))
     }
 
-    /// The `platform` object (`docs/design/core-library.md`), memoized on
-    /// first call so every reference within one interpreter sees the same
-    /// one. It is the state `Platform new` would produce -- a fresh
-    /// `Transcript`, `Collections` and `KernelNamespace` in the slots
-    /// `Kernel.ns` declares -- built here rather than by running the
-    /// factory, so that asking for the platform, at bootstrap or in
-    /// `image::load`, runs no Newspeak and fills no cache. The four are
-    /// values, so `platform = platform class new` holds, and
-    /// `goldens/kernel/the_platform_and_its_parts_are_values` pins that the
-    /// two agree.
-    pub(crate) fn platform_value(&mut self) -> Value<'gc> {
-        if let Some(platform) = self.platform_singleton {
-            return platform;
-        }
-        let transcript_class = self.builtin_class(BuiltinClass::Transcript);
-        let transcript = self.new_instance_object(transcript_class, ObjectData::Instance(vec![]));
-        let collections_class = self.builtin_class(BuiltinClass::Collections);
-        let collections = self.new_instance_object(collections_class, ObjectData::Instance(vec![]));
-        let kernel_namespace_class = self.builtin_class(BuiltinClass::KernelNamespace);
-        let kernel_namespace =
-            self.new_instance_object(kernel_namespace_class, ObjectData::Instance(vec![]));
-        let class = self.builtin_class(BuiltinClass::Platform);
-        let application = self
-            .heap
-            .class_application(class)
-            .expect("internal: Platform has an application");
-        let mut fields = vec![Value::Nil; application.slot_count];
-        for (position, slot) in application.mixin.slots.iter().enumerate() {
-            fields[application.own_slot_base + position] = match slot.name.as_str() {
-                "transcript" => Value::Object(transcript),
-                "collections" => Value::Object(collections),
-                "kernel" => Value::Object(kernel_namespace),
-                other => panic!(
-                    "internal: Kernel.ns's Platform declares a slot {other} the host does not fill"
-                ),
-            };
-        }
-        let object = self.new_instance_object(class, ObjectData::Instance(fields));
-        let value = Value::Object(object);
-        self.platform_singleton = Some(value);
-        value
+    /// The `platform` object (`docs/design/core-library.md`, "The
+    /// platform"): the instance of the shipped `Platform.ns` the bootstrap
+    /// built (`Interpreter::install_platform`) with the VM mirror and the
+    /// kernel instance, the same one for every reference within one
+    /// interpreter. Asking for it, at bootstrap or in `image::load`, runs no
+    /// Newspeak and fills no cache.
+    pub(crate) fn platform_value(&self) -> Value<'gc> {
+        self.platform_singleton
+            .expect("internal: the platform is booted at bootstrap")
     }
 
     /// An instance of the kernel class `kind`, every slot its chain declares
-    /// filled by name with what `slot_value` answers for it, built as
-    /// `platform_value` builds the platform: without running the factory,
-    /// so that the run loop can make one -- a `Message` for a
+    /// filled by name with what `slot_value` answers for it, built without
+    /// running the factory, so that the run loop can make one -- a `Message` for a
     /// `doesNotUnderstand:` handler, an `Error` for a VM error -- in the
     /// middle of deciding a step, where no Newspeak can run.
     /// `slot_value` panics for a name it does not know, so that a slot

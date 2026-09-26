@@ -41,8 +41,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
            `String` anywhere is the implicit send `self String` and lands
            here unless something nearer declares the name. Each body names
            the kernel explicitly: inside Object, §5.7's innermost
-           declaration of `String` is this very method. `Top`, the VM
-           mirror's class and `Platform` have no accessor. *)
+           declaration of `String` is this very method. `Top` and the VM
+           mirror's class have no accessor. *)
         public Object = ( ^outer Kernel Object )
         public Value = ( ^outer Kernel Value )
         public Boolean = ( ^outer Kernel Boolean )
@@ -340,15 +340,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
        capability Newspeak hands out only through mirrors. *)
     private class Activation = Object new () (
     )
-    (* `platform kernel`: the kernel classes a program may name, as
-       Primordial Soup's `Kernel wrapping:` facet answers them. *)
-    public class KernelNamespace = Value new () (
-        public Exception = ( ^outer Kernel Exception )
-        public Error = ( ^outer Kernel Error )
-        public MessageNotUnderstood = ( ^outer Kernel MessageNotUnderstood )
-        public Halt = ( ^outer Kernel Halt )
-        public Message = ( ^outer Kernel Message )
-    )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
        class whose instances are values hangs below this one.
@@ -558,30 +549,5 @@ class Kernel vmMirror: theMirror = Object <: Value (
            carries on (`interpreter::unwind`). A block the unwinder activates
            itself. *)
         private valueOnUnwind: onUnwind = ( ^onUnwind value )
-    )
-    (* The platform a module is handed (§8.3), its transcript, its
-       collections namespace and its kernel namespace: four values (§3.1.1),
-       each a class of its own. The platform holds the other three in
-       immutable slots, and only the transcript's output reaches Rust. None
-       of the four has an accessor on `Object`: a program reaches them
-       through the platform it is given. The host builds the one platform in
-       the state `Platform new` would give it (`Mutator::platform_value`),
-       so that asking for it runs nothing. *)
-    public class Platform = Value new (
-        | public transcript = Transcript new.
-          public collections = Collections new.
-          public kernel = KernelNamespace new. |
-    ) (
-    )
-    public class Transcript = Value new () (
-        public show: text = ( ^vmMirror transcript: self show: text ifFail: [^super show: text] )
-        public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [^super newLine] )
-    )
-    (* The Core Library's `collections` namespace, whose one member is the
-       one a whitelisted corpus module asks for (`docs/design/core-library.md`,
-       "The on-demand rule"): `List`, the growable ordered sequence this
-       runtime has under its Smalltalk name. *)
-    public class Collections = Value new () (
-        public List = ( ^outer Kernel OrderedCollection )
     )
 ) : ()

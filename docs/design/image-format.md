@@ -782,7 +782,7 @@ otherwise build a class outside §3.2's hierarchy that inherits nothing at
 all, not even `doesNotUnderstand:`.
 
 **`Behavior`, `Class` and `Metaclass` carry tags 20, 21 and 22**, after
-`Transcript`'s 18 and `Collections`' 19. `read_program_builtin_class` refuses them as the
+the retired 18 and 19. `read_program_builtin_class` refuses them as the
 builtin a `<:` level applies (`MIXIN_BUILTIN`) and as a root's superclass or
 level, since `Object` declares no accessor for any of them and no source
 module can name them — and a class over one of them could never be
@@ -813,14 +813,21 @@ class; the encoder never walks an activation object's header as a reference
 a graph that reaches the class itself.
 
 **The other classes the exceptions added are ordinary nameable builtins.**
-`Exception`, `Error`, `MessageNotUnderstood`, `Message`, `Halt` and
-`KernelNamespace` carry tags **24** to **29**, in that order, after
-`Activation`'s 23 ([core-library.md](core-library.md), "Exceptions"). A
-program reaches the first five through `platform kernel` and may subclass
-them, so an image may name any of the six wherever it names a class: an
-exception a program made is an ordinary instance record. The platform's own
-`KernelNamespace`, like its transcript, is named by its platform path
-(`kernel`) instead.
+`Exception`, `Error`, `MessageNotUnderstood`, `Message` and `Halt` carry
+tags **24** to **28**, in that order, after `Activation`'s 23
+([core-library.md](core-library.md), "Exceptions"). A program reaches them
+through `platform kernel` and may subclass them, so an image may name any
+of the five wherever it names a class: an exception a program made is an
+ordinary instance record.
+
+**Retired builtin class tags: 8, 13, 18, 19 and 29.** 8 was `Character`;
+13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
+`KernelNamespace`, which moved into the shipped `Platform.ns`
+([core-library.md](core-library.md), "The platform"). An image names the
+platform, its members and their classes by their platform paths instead
+(`transcript`, `Transcript`, `kernel`, ...), and a stale image's reference
+to a retired tag is refused as an unknown builtin
+(`opcodes::RETIRED_BUILTIN_CLASS_TAGS`).
 
 **A platform path is resolved before the graph, and only looked up while it
 decodes.** `load` runs in three phases. The first decodes everything up to and

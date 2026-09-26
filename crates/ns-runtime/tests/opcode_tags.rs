@@ -327,13 +327,10 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::OrderedCollection), 10);
     assert_eq!(builtin_class_tag(BuiltinClass::UndefinedObject), 11);
     assert_eq!(builtin_class_tag(BuiltinClass::Block), 12);
-    assert_eq!(builtin_class_tag(BuiltinClass::Platform), 13);
     assert_eq!(builtin_class_tag(BuiltinClass::VmMirror), 14);
     assert_eq!(builtin_class_tag(BuiltinClass::Top), 15);
     assert_eq!(builtin_class_tag(BuiltinClass::Value), 16);
     assert_eq!(builtin_class_tag(BuiltinClass::Number), 17);
-    assert_eq!(builtin_class_tag(BuiltinClass::Transcript), 18);
-    assert_eq!(builtin_class_tag(BuiltinClass::Collections), 19);
     assert_eq!(builtin_class_tag(BuiltinClass::Behavior), 20);
     assert_eq!(builtin_class_tag(BuiltinClass::Class), 21);
     assert_eq!(builtin_class_tag(BuiltinClass::Metaclass), 22);
@@ -343,10 +340,20 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::MessageNotUnderstood), 26);
     assert_eq!(builtin_class_tag(BuiltinClass::Message), 27);
     assert_eq!(builtin_class_tag(BuiltinClass::Halt), 28);
-    assert_eq!(builtin_class_tag(BuiltinClass::KernelNamespace), 29);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);
+    // 13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
+    // `KernelNamespace`, retired 2026-09-26 when the four moved into the
+    // shipped `Platform.ns`: an image names them by their platform paths.
+    assert_eq!(RETIRED_BUILTIN_CLASS_TAGS, [8, 13, 18, 19, 29]);
+    for retired in RETIRED_BUILTIN_CLASS_TAGS {
+        assert_eq!(
+            builtin_class_from_tag(retired),
+            None,
+            "builtin class tag {retired} is retired"
+        );
+    }
 }
 
 /// A mixin-table slot record's kind byte: the accessor shape a slot
