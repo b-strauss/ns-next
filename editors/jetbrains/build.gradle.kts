@@ -1,3 +1,4 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 
@@ -125,5 +126,18 @@ intellijPlatform {
     }
     publishing {
         token = providers.environmentVariable("NEWSPEAK_PLUGIN_PUBLISH_TOKEN")
+    }
+    pluginVerification {
+        ides {
+            // The lowest supported and the current release of four commercial
+            // IDEs: enough to catch an API one of them lacks, without
+            // downloading every patch release.
+            create(IntelliJPlatformType.IntellijIdea, "2026.1.4")
+            create(IntelliJPlatformType.IntellijIdea, providers.gradleProperty("platformVersion"))
+            create(IntelliJPlatformType.RustRover, "2026.1.4")
+            create(IntelliJPlatformType.RustRover, "2026.2.3")
+            create(IntelliJPlatformType.PyCharm, "2026.1.5")
+            create(IntelliJPlatformType.CLion, "2026.2.3")
+        }
     }
 }

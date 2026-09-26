@@ -41,12 +41,12 @@ that cannot name its code is describing an intention, and should say so.
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | **Partial:** `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is Newspeak in `crates/ns-runtime/core-library/Kernel.ns` -- a forwarder to one of the mirror's `MIRROR` rows, which are the leaves, or a quick method or ordinary method that reaches no leaf, as all of `True`'s, `False`'s and the nil protocol's are. Its hierarchy is §3.2's and §3.1.1's — `Top`, then `Object`, then `Value` over the value classes with `Number` among them, and `Behavior` over `Class` and `Metaclass` — and `Value` derives `=`, `==` and `hash` from an instance's state. Every class object's class is its own metaclass, its class side applied to `Class`, and every metaclass's class is `Metaclass`; a class object is a value when its enclosing object is. `Object` carries §3.2's accessors for the predefined classes, so a bare `String` is a send answered without an activation | Real bodies for `whileTrue:`, `whileFalse:` and `do:` before the JIT tiers; settling `Integer>>/` and the numeric tower `Number` is the place for |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
-| Editor support: the language server and the JetBrains plugin | [editor-support.md](editor-support.md) | **Partial:** the language server (`crates/ns-lsp`) is built; the JetBrains plugin is planned | formatting, navigation, more platforms |
+| Editor support: the language server and the JetBrains plugin | [editor-support.md](editor-support.md) | Built — highlighting and errors as you type in every commercial JetBrains IDE from 2026.1.4; the server bundled for Windows x64 | formatting, navigation, more platforms |
 
 ## Architecture
 
 Four crates, with the name-resolution pass as the seam the bytecode compiler
-plugs into:
+plugs into, and the JetBrains plugin beside them:
 
 ```
 crates/
@@ -55,6 +55,10 @@ crates/
                 core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary
   ns-lsp/       the `ns-next-lsp` binary: the editor's language server
+editors/
+  jetbrains/    the JetBrains plugin: a Kotlin lexer mirroring ns-syntax's,
+                highlighting, and the connection to ns-next-lsp over the
+                native LSP API
 ```
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
@@ -188,6 +192,8 @@ cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report
 NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules # the same report
+./editors/jetbrains/gradlew -p editors/jetbrains check   # the plugin's own gate, per commit that touches it
+./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin   # once at the end of a batch: downloads several IDEs
 ```
 
 The three stress modes, six gate invocations, are Git Bash syntax and do

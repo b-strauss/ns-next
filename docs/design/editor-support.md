@@ -1,8 +1,10 @@
 # Editor support — the language server and the JetBrains plugin
 
-> **Status:** **Partial:** the language server is built (`crates/ns-lsp/`, and
-> `resolve_for_editor` in `crates/ns-runtime/src/resolver/mod.rs`); the
-> JetBrains plugin (`editors/jetbrains/`) is planned.
+> **Status:** **Built:** the language server (`crates/ns-lsp/`, and
+> `resolve_for_editor` in `crates/ns-runtime/src/resolver/mod.rs`) and the
+> JetBrains plugin (`editors/jetbrains/`) both exist: highlighting and errors
+> as you type, in every commercial JetBrains IDE from 2026.1.4. Formatting,
+> navigation and further platforms are planned ("Planned later").
 
 Editing `.ns` files in a JetBrains IDE today means editing plain text. This
 document describes the editor support that replaces it: syntax highlighting as
@@ -32,7 +34,7 @@ no machine-specific paths.
 structure view), completion and formatting. Each is described under
 "Planned later", with what it would need.
 
-## Planned: architecture
+## Architecture
 
 ```
 crates/ns-lsp/          binary `ns-next-lsp`: diagnostics and semantic tokens
@@ -219,7 +221,7 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
   `initialize`, `didOpen`, the expected `publishDiagnostics`,
   `semanticTokens/full`, `shutdown`.
 
-## Planned: the plugin, `editors/jetbrains/`
+## The plugin, `editors/jetbrains/`
 
 **Identity.** Plugin ID `io.github.bstrauss.newspeak` — permanent once
 published — name `Newspeak (ns-next)`, vendor Benjamin Strauß, MIT licence like
@@ -230,10 +232,18 @@ suggesting the Newspeak project's own plugin.
 build 261.26222.65), `untilBuild` open. JetBrains
 reworked the LSP API in 2026.1.4 — module `com.intellij.modules.lsp`, extension
 point `com.intellij.platform.lsp.integrationProvider`, classes
-`LspIntegrationProvider` and `ProjectWideLspClientDescriptor`, replacing
-`modules.ultimate`, `serverSupportProvider` and `LspServerSupportProvider`.
-Targeting the new API alone keeps one code path with no deprecated calls for
-the verifier to report; older IDE versions are the price.
+`LspIntegrationProvider` (with its nested `LspIntegrationProvider.LspClientStarter`,
+handed to `fileOpened` to start the client) and `ProjectWideLspClientDescriptor`,
+replacing `modules.ultimate`, `serverSupportProvider` and `LspServerSupportProvider`.
+The client descriptor's `lspCustomization` (`LspCustomization.semanticTokensCustomizer`)
+is where the server's semantic tokens are wired in, over `LspSemanticTokensSupport`;
+restarting the server, after the settings path changes or by hand, goes through
+`LspClientManager.getInstance(project).stopAndRestartClientsIfNeeded(...)`. Every
+one of these names was confirmed against the actual 2026.2.3 platform jars while
+building this plugin (Task 5) — the platform's own documentation and samples lag
+a release behind the API itself. Targeting the new API alone keeps one code path
+with no deprecated calls for the verifier to report; older IDE versions are the
+price.
 
 Components:
 
@@ -258,7 +268,20 @@ Components:
 - **Editor features** — a `BraceMatcher` for `()`, `[]` and `{}`, a
   `Commenter` for `(* *)`, a `QuoteHandler`. Not for `<>`: `<` and `>` are
   also binary selectors, and pairing a comparison with a type's closing
-  bracket would be worse than pairing nothing.
+  bracket would be worse than pairing nothing. TODO markers need only a
+  `NewspeakIndexPatternBuilder` (the `indexPatternBuilder` extension point,
+  pointed at the lexer's own comment tokens) — no dedicated `todoIndexer` was
+  needed. Spell checking is wired the same shallow way, but as an *optional*
+  dependency: `plugin.xml` declares
+  `<depends optional="true" config-file="newspeak-spellchecker.xml">com.intellij.modules.spellchecker</depends>`,
+  and `newspeak-spellchecker.xml` registers a `spellchecker.support` for
+  `Newspeak` there, in a file the platform loads only when that module is
+  present, rather than in the main descriptor — so an IDE built without the
+  spellchecker module still loads this plugin, with no spell checking in
+  Newspeak comments and strings rather than a failure to start. The build
+  still needs the module's classes to compile and test against, which
+  `bundledModule("intellij.spellchecker")` supplies, since the module has no
+  plugin descriptor of its own to depend on at compile time.
 - **LSP client** — an `LspIntegrationProvider` for `.ns` files, one server per
   project.
 - **Settings** — *Languages & Frameworks → Newspeak*: a server path, empty by
@@ -283,51 +306,95 @@ per platform so that `windows-arm64`, `macos-x64`, `macos-arm64`, `linux-x64`
 and `linux-arm64` are added later by a CI build placing their binaries in the
 same tree, with no change to the plugin's code.
 
-## Planned: build and packaging
+## Build and packaging
 
 - **Gradle project** under `editors/jetbrains/`, with the wrapper committed,
   Kotlin, and the IntelliJ Platform Gradle Plugin 2.x, built against IntelliJ
-  IDEA 2026.2.x. Bytecode targets Java 21, the runtime of the 2026 platform.
-  Gradle 9.8 runs on any JDK from 17 to 26; the JDK 21 the build compiles with
-  is a toolchain the foojay resolver provisions, so the build does not depend
-  on which JDK happens to run Gradle.
-- **Rust from Gradle.** A `buildLanguageServer` task runs `cargo build -p
-  ns-lsp` at the repository root; `prepareSandbox` and `buildPlugin` copy the
-  binary into `bin/windows-x64/`. The tests use the debug binary; only
-  `buildPlugin` and `runIde` build `--release`, because the release profile's
-  fat LTO and single codegen unit make that build slow and only there does the
-  binary ship.
+  IDEA 2026.2.x. Bytecode targets Java 21, the floor this plugin supports
+  (2026.1.x's bundled JBR) rather than 2026.2.x's JBR 25 — see
+  "`verifyPluginProjectConfiguration`" below for why that is the right target
+  even while compiling against the newer platform. Gradle 9.8 runs on any JDK
+  from 17 to 26; the JDK 21 the build compiles with is a toolchain the foojay
+  resolver provisions, so the build does not depend on which JDK happens to
+  run Gradle.
+- **Rust from Gradle.** `buildLanguageServerDebug` and `buildLanguageServerRelease`
+  each run `cargo build -p ns-lsp` at the repository root, debug and `--release`
+  respectively; `tasks.test` depends on the debug build and points the tests at
+  it, and `prepareSandbox` (so `buildPlugin` and `runIde` too) depends on the
+  release build and copies the binary into `bin/windows-x64/`, beside
+  `THIRD-PARTY-NOTICES.txt` and `LICENSE`. Only `prepareSandbox` builds
+  `--release`, because the release profile's fat LTO and single codegen unit
+  make that build slow and only there does the binary ship.
 - `runIde` starts a sandbox IDE with the plugin, for trying it by hand.
 - `editors/jetbrains/build/` and `.gradle/` are ignored.
 
 **Marketplace readiness from the first commit.** `plugin.xml` carries the ID,
 name, vendor, description, change notes, `sinceBuild` and the dependency on
 `com.intellij.modules.lsp`. The bundled binary contains third-party crates —
-`lsp-server`, `lsp-types`, `serde_json` and what they depend on, all under MIT
-or Apache-2.0 — whose licence texts go into a hand-maintained
-`THIRD-PARTY-NOTICES` in the plugin; the list is short enough that a generator
-such as `cargo-about` would be one more tool for no gain. `verifyPlugin` checks
-against several commercial IDEs — IntelliJ IDEA, RustRover, PyCharm, CLion — at
-the lowest supported and the current version. `signPlugin` and
-`publishPlugin` are configured but have no certificate or token; those come
-from environment variables when publishing, never from the repository.
+those `cargo tree -p ns-lsp -e normal,no-proc-macro` shows compiled into
+`ns-next-lsp` itself, excluding build-time-only proc macros — whose licence
+texts go into a hand-maintained `THIRD-PARTY-NOTICES` in the plugin; the list
+is short enough that a generator such as `cargo-about` would be one more tool
+for no gain. `verifyPlugin` checks the lowest supported and the current
+release of four commercial IDEs — IntelliJ IDEA 2026.1.4 and 2026.2.3,
+RustRover 2026.1.4 and 2026.2.3, PyCharm 2026.1.5, CLion 2026.2.3 (the exact
+versions `printProductsReleases` printed for each product, constrained to
+build 261.26222 or later) — all `Compatible`, with no deprecated or internal
+API usage. Reaching that took one fix: `NewspeakLspIntegrationProvider`
+originally read its own installation directory with
+`PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.pluginPath`, and
+every overload of that lookup — on `PluginManagerCore`, on `PluginManager`
+and on `PluginAwareClassLoader.getPluginDescriptor` — is `@ApiStatus.Internal`
+in this platform version; `verifyPlugin` fails on `INTERNAL_API_USAGES` by
+default, not just warns. The fix implements `com.intellij.openapi.extensions.PluginAware`
+instead: `XmlExtensionAdapter` calls `setPluginDescriptor` right after
+constructing an extension instance that implements it, with no lookup on the
+plugin's own part. `signPlugin` and `publishPlugin` are configured but
+have no certificate or token; those come from environment variables when
+publishing, never from the repository.
 
-## Planned: plugin testing and gates
+**`verifyPluginProjectConfiguration`** is not part of `check` on this
+platform version and is run on its own; it reports two findings, both the
+same decision seen from different angles, and both stand as configured:
+
+- *since-build's major version (261) is lower than the target platform's
+  (262).* Deliberate: `sinceBuild` `261.26222` is IntelliJ IDEA 2026.1.4, the
+  floor this plugin supports, chosen because that release carries the LSP API
+  this plugin depends on exclusively; the project compiles and tests against
+  the current 2026.2.x release (`platformVersion`) because that is what a
+  developer working on the plugin today has installed, not because 2026.1.x
+  support is an oversight. Raising `sinceBuild` to silence this would narrow
+  the supported range for no gain.
+- *Java sourceCompatibility (21) is lower than the target platform's JBR
+  (25).* Also deliberate, and the reason is the same decision from the other
+  side: IntelliJ IDEA 2026.1.x still bundles JBR 21, so bytecode compiled for
+  Java 25 would not load on the lowest IDE this plugin supports at all — an
+  older JVM cannot run newer class files, where a newer JVM runs older ones
+  without issue. `verifyPlugin`'s own report is the evidence that Java 21
+  bytecode is fine on every targeted IDE, 2026.2.x's JBR 25 included: all six
+  verifications above, the 2026.1.x ones among them, came back `Compatible`.
+  Raising `sourceCompatibility` to match the tool's advice would break the
+  IDEs this plugin's `sinceBuild` promises to support.
+
+## Plugin testing and gates
 
 The server's own tests are described under its section, above ("Testing").
-The plugin's are still planned.
 
 **Kotlin, `./gradlew -p editors/jetbrains check`:**
 
-- the lexer comparison — `ns-next-lsp dump-tokens` against the Kotlin lexer
-  over `corpus/modules`, `goldens/` and `Kernel.ns`: kind and span of every
-  token must agree, and the Kotlin lexer's whitespace and comment tokens must
-  fill exactly the gaps between the Rust tokens;
-- restart — lexing from any token boundary answers the same tokens, the
-  platform test framework's standard check;
-- plugin tests on `BasePlatformTestCase` — file type, brace matching,
-  commenting, the colour settings page loading, and the order in which the
-  binary is found.
+- the lexer comparison (`LexerComparisonTest`) — `ns-next-lsp dump-tokens`
+  against the Kotlin lexer over `corpus/modules`, `goldens/` and `Kernel.ns`:
+  kind and span of every token must agree, and the Kotlin lexer's whitespace
+  and comment tokens must fill exactly the gaps between the Rust tokens.
+  `dump-tokens` runs in batches of 100 files, which keeps each command line
+  under Windows' length limit over the repository's close to 400 `.ns` files;
+- restart (`LexerRestartTest`) — lexing from any token boundary answers the
+  same tokens, the platform test framework's standard check;
+- plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`,
+  `NewspeakColorSettingsPageTest`) — file type, brace matching, commenting,
+  the colour settings page loading; `ServerBinaryLocatorTest` and
+  `NewspeakSemanticTokensTest` cover the binary lookup order and the
+  semantic-token classification directly, with no platform test case needed.
 
 **Gates.** The runtime's per-commit suite is `cargo test --workspace
 --exclude ns-lsp`, so runtime work does not pay for the editor's corpus-wide
@@ -336,11 +403,13 @@ touches `crates/ns-lsp/` or `crates/ns-syntax/`; `cargo clippy --workspace
 --all-targets` still compiles `ns-lsp` on every commit, so a resolver or
 `ns-syntax` change that breaks its API fails at the commit even when its tests
 only run at the end of the batch (`CLAUDE.md`, "Working in this repository").
-The stress-mode runs exclude `ns-lsp` too: it never starts the VM. Once the
-plugin exists, its own gate joins this:
+The stress-mode runs exclude `ns-lsp` too: it never starts the VM. The
+plugin's own gate joins this:
 
-- **Before every commit** that touches `editors/jetbrains/` — `./gradlew -p
-  editors/jetbrains check`, besides the usual `fmt` and `clippy`.
+- **Before every commit** that touches `editors/jetbrains/`, `crates/ns-lsp/`
+  or `crates/ns-syntax/` — `./gradlew -p editors/jetbrains check`, besides the
+  usual `fmt` and `clippy`. A change to `crates/ns-syntax/src/lexer.rs` must be
+  mirrored in `NewspeakLexer.kt` in the same commit, or the comparison fails.
 - **Once at the end of a batch**, whether runtime or editor work, both test
   groups, and `./gradlew -p editors/jetbrains verifyPlugin buildPlugin` —
   which downloads several IDEs, and so is not a per-commit gate. A resolver

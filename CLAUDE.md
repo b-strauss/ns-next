@@ -34,6 +34,10 @@ Rust 1.98.0, edition 2021, four crates:
   against. It never starts the VM. Its dependencies (`lsp-server`, `lsp-types`,
   `serde_json`) stay in this crate. See `docs/design/editor-support.md`.
 
+`editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
+lexer mirroring `ns-syntax`'s, compared against it token by token over every
+module (`LexerComparisonTest`), and the connection to `ns-next-lsp`.
+
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology
 beside it; its "Where the next session starts" names the next piece of work.
@@ -325,6 +329,9 @@ cargo run -p ns-cli -- parse-corpus corpus/modules
 # --- before every commit that touches crates/ns-lsp or crates/ns-syntax ---
 cargo test -p ns-lsp
 
+# --- before every commit that touches editors/jetbrains, crates/ns-lsp or crates/ns-syntax ---
+./editors/jetbrains/gradlew -p editors/jetbrains check
+
 # --- once at the end of a batch of work, before handing it on ---
 # the same suite with every object moved at the run loop's safepoints
 # (debug builds only; Git Bash syntax)
@@ -341,13 +348,19 @@ NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
 
+# --- once at the end of a batch of work (downloads several IDEs) ---
+./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin
+
 # build every crate
 cargo build --workspace
 ```
 
 `cargo clippy --workspace --all-targets` still compiles `ns-lsp` on every commit,
 so a change to the resolver or to `ns-syntax` that breaks the API the server uses
-fails at the commit even when its tests only run at the end of the batch.
+fails at the commit even when its tests only run at the end of the batch. A change
+to `crates/ns-syntax/src/lexer.rs` must be mirrored in
+`editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/lexer/NewspeakLexer.kt`
+in the same commit, or the comparison fails.
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
 one to measure. Every binary a measurement compares — the current tree included — is

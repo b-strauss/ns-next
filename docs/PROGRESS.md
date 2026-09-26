@@ -15,6 +15,11 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
+**Editor support — the language server and the JetBrains plugin — reached
+Built on 2026-09-26** ("Editor support: the language server and the
+JetBrains plugin" below); it runs beside the runtime milestones above rather
+than as one of them, and does not change what is next for the runtime.
+
 **Step 6's third plan, `Behavior`, `Class` and `Metaclass`, is done**
 (2026-09-25;
 [ns-next-class-behavior-metaclass](superpowers/plans/2026-09-25-1331-ns-next-class-behavior-metaclass.md);
@@ -4268,3 +4273,75 @@ skips ASCII whitespace (it handles nested block comments too).
 default; it is now enabled in `[workspace.lints.clippy]` with `[lints]
 workspace = true` in each crate manifest, so the existing "clippy must be
 warning-free" gate covers it and the question stops needing a note here.
+
+## Editor support: the language server and the JetBrains plugin (2026-09-26)
+
+**Built:** `crates/ns-lsp/` (the `ns-next-lsp` binary) and `editors/jetbrains/`
+(the JetBrains plugin), across seven tasks
+([editor-support-jetbrains-plugin](superpowers/plans/2026-09-26-0031-editor-support-jetbrains-plugin.md));
+[editor-support.md](design/editor-support.md) is the living design document,
+now marked **Built**.
+
+`ns_runtime::resolve_for_editor` answers a file's bindings and errors together,
+so one resolver pass serves both diagnostics and semantic tokens even when the
+module has an error; it never records `Binding::MirrorSend`, so the VM
+mirror's capability invariant (`CLAUDE.md`, "The VM mirror is a capability")
+is untouched. `ns-next-lsp` speaks `initialize`, `didOpen`, `didChange`,
+`didClose`, `publishDiagnostics`, `semanticTokens/full`, `shutdown` and `exit`
+over `lsp-server`, synchronously on one thread, and runs every analysis under
+`catch_unwind` so a panic becomes one diagnostic rather than taking the
+server down. Its `dump-tokens` subcommand prints a file's tokens as JSON, in
+UTF-16 offsets, for the plugin's lexer comparison.
+
+`editors/jetbrains/` is a Gradle project (Kotlin, the IntelliJ Platform
+Gradle Plugin, the wrapper committed) building a plugin whose Kotlin lexer
+mirrors `crates/ns-syntax/src/lexer.rs` function by function — reviewed side
+by side rather than generated, so `LexerComparisonTest` can hold the two to
+the same tokens, kind and span, over `corpus/modules`, `goldens/` and
+`Kernel.ns` (`ns-next-lsp dump-tokens`, batched at 100 files for Windows'
+command-line length limit, over the repository's close to 400 `.ns` files).
+Highlighting and the editor features (brace matching, commenting, quote
+handling, TODO markers via `NewspeakIndexPatternBuilder` — no dedicated
+`todoIndexer` was needed) run off that lexer alone, with no server involved;
+semantic tokens from `ns-next-lsp`, reached through the platform's native LSP
+API (`LspIntegrationProvider`, `ProjectWideLspClientDescriptor`,
+`LspCustomization.semanticTokensCustomizer`), are layered over them once the
+server answers. Spell checking is an optional dependency
+(`<depends optional="true" config-file="newspeak-spellchecker.xml">
+com.intellij.modules.spellchecker</depends>`), so an IDE built without that
+module still loads the plugin.
+
+The plugin bundles `ns-next-lsp`, built `--release` from the same commit as
+the Kotlin lexer, for Windows x64; `THIRD-PARTY-NOTICES.txt` covers the
+crates linked into that binary (`cargo tree -p ns-lsp -e normal,no-proc-macro`),
+excluding build-time-only proc macros. `verifyPlugin` checked the plugin
+against the lowest supported and the current release of four commercial
+IDEs — IntelliJ IDEA 2026.1.4 and 2026.2.3, RustRover 2026.1.4 and 2026.2.3,
+PyCharm 2026.1.5, CLion 2026.2.3 — all `Compatible`, with no deprecated or
+internal API usage, targeting the LSP API JetBrains reworked in 2026.1.4
+alone. Every sandbox task (tests, `runIde`) disables the bundled
+`com.intellij.modules.ultimate` marker plugin, whose startup activity cannot
+run headless; the shipped plugin never references it.
+
+The first `verifyPlugin` run found one real defect: `NewspeakLspIntegrationProvider`
+read its own installation directory with
+`PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.pluginPath`, and
+every overload of that lookup is `@ApiStatus.Internal` in this platform
+version, which fails `verifyPlugin` outright rather than merely warning. The
+fix implements `com.intellij.openapi.extensions.PluginAware`, the platform's
+own way to hand an extension its plugin descriptor: `XmlExtensionAdapter`
+calls `setPluginDescriptor` right after constructing an instance that
+implements it, with no internal call needed. `verifyPluginProjectConfiguration`
+(not part of `check` on this platform, run on its own) reports two findings
+that both stand, as `editor-support.md` records: `sinceBuild`'s major version
+sits below the target platform's on purpose (2026.1.4 is the deliberate
+floor), and Java bytecode stays at 21 rather than the 2026.2.x platform's
+JBR 25 for the same reason — 2026.1.x still bundles JBR 21, which cannot run
+Java 25 bytecode, and `verifyPlugin`'s own six `Compatible` results are the
+evidence that Java 21 bytecode runs fine on the newer JBR too.
+
+`CLAUDE.md`, `docs/design/README.md` and this file now name
+`editors/jetbrains/` and its gates: `./gradlew -p editors/jetbrains check`
+before every commit that touches it, `crates/ns-lsp/` or
+`crates/ns-syntax/`, and `./gradlew -p editors/jetbrains verifyPlugin
+buildPlugin` once at the end of a batch.
