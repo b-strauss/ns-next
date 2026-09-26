@@ -29,6 +29,12 @@ dependencies {
     testImplementation("org.opentest4j:opentest4j:1.3.0")
 }
 
+val repositoryRoot = layout.projectDirectory.dir("../..").asFile
+
+tasks.test {
+    systemProperty("nsNext.repositoryRoot", repositoryRoot.absolutePath)
+}
+
 tasks.withType<PrepareSandboxTask>().configureEach {
     // The full IntelliJ IDEA Ultimate distribution bundles a closed-source,
     // obfuscated "ultimate" marker plugin whose postStartupActivity cannot be
