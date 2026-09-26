@@ -51,7 +51,9 @@ measurement: [execution.md](design/execution.md), "What the profile shows
 beyond it" (after "What `Behavior`, `Class` and `Metaclass` cost") finds
 about a quarter of `bench_send.ns`'s samples sitting on 16-byte loads of
 `Value`s written piecewise, in `decide_slot_accessor`, `vm::make_value` and
-`push_activation`.
+`push_activation` — profiled before the exceptions branch's `1d7587f`
+removed the spill inside `decide_slot_accessor`, so it wants profiling
+again before it is worked on.
 
 Everything the user put ahead of the third plan is done, each described
 below under its own heading: the predefined classes are accessors on

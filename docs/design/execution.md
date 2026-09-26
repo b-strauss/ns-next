@@ -3759,7 +3759,10 @@ two instructions), and so does `push_activation` on the activation
 description `push_step` writes as a doubleword and a quadword and reads as
 one 16-byte field. None of them moved with this branch. Handing a `Value`
 back in a form that is written the way it is read is an open performance
-item, not part of this measurement.
+item, not part of this measurement. This profile predates `1d7587f` (below,
+"What exceptions cost"), which moved `decide_slot_accessor`'s error out of
+line and with it the spill inside the accessor; the shares above have not
+been profiled again since.
 
 **`vm::run`'s step is still one function.** A release build with debug
 information of each tree, `dumpbin -disasm`: one function label
