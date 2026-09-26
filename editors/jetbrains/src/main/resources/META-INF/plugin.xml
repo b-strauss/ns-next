@@ -1,0 +1,35 @@
+<idea-plugin>
+    <id>io.github.bstrauss.newspeak</id>
+    <name>Newspeak (ns-next)</name>
+    <vendor url="https://github.com/b-strauss/ns-next">Benjamin Strauß</vendor>
+
+    <description><![CDATA[
+    <p>Support for <a href="https://newspeaklanguage.org/">Newspeak</a> <code>.ns</code> modules,
+    from the <a href="https://github.com/b-strauss/ns-next">ns-next</a> runtime.</p>
+    <ul>
+      <li>Syntax highlighting as you type, with brace matching, block comments, TODO markers
+          and spell checking in comments and strings.</li>
+      <li>Errors as you type: every lexer, parser and resolver error ns-next reports before
+          running a module, with ns-next's own message.</li>
+      <li>Semantic colouring from ns-next's resolver: parameters, locals, slots, nested classes
+          and sends.</li>
+    </ul>
+    <p>The language server, <code>ns-next-lsp</code>, is bundled for Windows x64. On other
+    platforms, set its path under <em>Settings | Languages &amp; Frameworks | Newspeak</em>.</p>
+    ]]></description>
+
+    <change-notes><![CDATA[
+    <p>0.1.0: highlighting, errors as you type and semantic colouring.</p>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lsp</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType name="Newspeak"
+                  implementationClass="io.github.bstrauss.newspeak.NewspeakFileType"
+                  fieldName="INSTANCE"
+                  language="Newspeak"
+                  extensions="ns"/>
+    </extensions>
+</idea-plugin>
