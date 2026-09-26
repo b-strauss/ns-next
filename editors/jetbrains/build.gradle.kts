@@ -67,6 +67,41 @@ tasks.withType<PrepareSandboxTask>().configureEach {
     disabledPlugins.add("com.intellij.modules.ultimate")
 }
 
+/** The platform this build runs on, as `ServerBinaryLocator` names it; only its server is bundled for now. */
+val hostPlatform: String = run {
+    val osName = System.getProperty("os.name")
+    val system = when {
+        osName.startsWith("Windows") -> "windows"
+        osName.startsWith("Mac") -> "macos"
+        else -> "linux"
+    }
+    val architecture = when (System.getProperty("os.arch").lowercase()) {
+        "aarch64", "arm64" -> "arm64"
+        else -> "x64"
+    }
+    "$system-$architecture"
+}
+
+val buildLanguageServerRelease by tasks.registering(Exec::class) {
+    description = "Builds ns-next-lsp (release) with Cargo for the plugin distribution."
+    workingDir = repositoryRoot
+    commandLine("cargo", "build", "-p", "ns-lsp", "--release")
+}
+
+tasks.prepareSandbox {
+    dependsOn(buildLanguageServerRelease)
+    // Beside the jars rather than inside one, so it starts without being extracted.
+    from(repositoryRoot.resolve("target/release/ns-next-lsp$executableSuffix")) {
+        into(pluginName.map { name -> "$name/bin/$hostPlatform" })
+    }
+    from(layout.projectDirectory.file("THIRD-PARTY-NOTICES.txt")) {
+        into(pluginName)
+    }
+    from(repositoryRoot.resolve("LICENSE")) {
+        into(pluginName)
+    }
+}
+
 intellijPlatform {
     pluginConfiguration {
         id = "io.github.bstrauss.newspeak"
@@ -82,5 +117,13 @@ intellijPlatform {
             name = "Benjamin Strauß"
             url = "https://github.com/b-strauss/ns-next"
         }
+    }
+    signing {
+        certificateChain = providers.environmentVariable("NEWSPEAK_PLUGIN_CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("NEWSPEAK_PLUGIN_PRIVATE_KEY")
+        password = providers.environmentVariable("NEWSPEAK_PLUGIN_PRIVATE_KEY_PASSWORD")
+    }
+    publishing {
+        token = providers.environmentVariable("NEWSPEAK_PLUGIN_PUBLISH_TOKEN")
     }
 }
