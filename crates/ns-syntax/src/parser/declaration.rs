@@ -50,7 +50,9 @@ impl<'a> Parser<'a> {
     /// including initialized locals `| x = expression. |`. `CodeBody::temporaries`
     /// keeps the full declaration, so the runtime can initialize each slot in
     /// declaration order (§3.6) and tell an immutable one from a mutable one;
-    /// `lazy` is still dropped, as it is for class slots. A code body never
+    /// a temporary's `lazy` is still dropped, since the grammar gives a
+    /// temporary no `lazy` form -- a class body's is kept, `lazy: true`, in
+    /// `parse_lazy_slot_declaration`. A code body never
     /// legitimately starts with a binary `|` send (there is no left operand),
     /// so a leading `Bar` / `DoubleBar` is unambiguously a temporary section.
     fn parse_temporaries(&mut self) -> Vec<SlotDeclaration> {
@@ -224,6 +226,7 @@ impl<'a> Parser<'a> {
                 name,
                 mutability,
                 initializer,
+                lazy: false,
                 span: start.merge(end),
             });
         }
@@ -773,6 +776,7 @@ impl<'a> Parser<'a> {
             name,
             mutability,
             initializer,
+            lazy: true,
             span: start.merge(end),
         }
     }
@@ -1229,6 +1233,10 @@ mod class_tests {
         assert_eq!(body.slots.len(), 1);
         assert_eq!(body.slots[0].name.name, "foo");
         assert_eq!(body.slots[0].mutability, SlotMutability::Immutable);
+        assert!(
+            body.slots[0].lazy,
+            "a class body's `lazy` slot is lazy (§6.3.3)"
+        );
     }
 
     #[test]
@@ -1242,6 +1250,19 @@ mod class_tests {
         assert_eq!(body.slots.len(), 1);
         assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
         assert_eq!(body.slots[0].mutability, SlotMutability::MutableInitialized);
+        assert!(body.slots[0].lazy);
+    }
+
+    #[test]
+    fn a_header_slot_is_never_lazy() {
+        let module = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( | foo = 1. | ) ( ) : ()
+        "});
+        let body = &module.root_class.instance_side;
+        assert_eq!(body.slots.len(), 1);
+        assert!(!body.slots[0].lazy);
     }
 
     // A method literally named `lazy` must not be mistaken for a lazy slot.

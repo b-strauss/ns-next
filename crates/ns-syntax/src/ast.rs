@@ -64,6 +64,10 @@ pub struct SlotDeclaration {
     pub name: Identifier,
     pub mutability: SlotMutability,
     pub initializer: Option<Expression>,
+    /// §6.3.3: declared `lazy` in a class body -- initialized on first read
+    /// of its getter, not by the instance initializer. Never set on a header
+    /// slot or a temporary, which the grammar gives no `lazy` form.
+    pub lazy: bool,
     pub span: Span,
 }
 

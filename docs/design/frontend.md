@@ -64,10 +64,10 @@ be checked against it. The load-bearing ones:
   (simultaneous). A `slotDef` is
   `accessModifier? slotDecl (('=' | '::=') expression)? '.'` — `=` is an
   immutable slot, `::=` a mutable one, and neither means an uninitialized
-  mutable slot. A lazy slot declaration on the instance side
-  (`lazy m ::= e.`, §6.3.3) parses, but the parser drops `lazy` and adds the
-  slot to the ordinary slots: it is initialized eagerly, a deviation from
-  §6.3.3's "initialized lazily, upon first use".
+  mutable slot. A lazy slot declaration on the instance side (`lazy m ::= e.`,
+  §6.3.3) parses into a `SlotDeclaration` whose `lazy` is set; the runtime
+  initializes it on first read (`docs/design/core-library.md`, "Lazy slots
+  first").
 - `messagePattern = unarySelector | (binarySelector slotDecl) |
   (keyword slotDecl)+`
 - `methodDecl = accessModifier? , messagePattern , '=' , '(' , codeBody , ')'`

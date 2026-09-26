@@ -24,6 +24,7 @@ fn raw_slot_declaration(name: &str) -> Rc<ast::SlotDeclaration> {
         },
         mutability: ast::SlotMutability::Immutable,
         initializer: None,
+        lazy: false,
         span: Span::new(0, 0),
     })
 }
