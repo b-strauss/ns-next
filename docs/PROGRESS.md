@@ -4346,3 +4346,18 @@ evidence that Java 21 bytecode runs fine on the newer JBR too.
 before every commit that touches it, `crates/ns-lsp/` or
 `crates/ns-syntax/`, and `./gradlew -p editors/jetbrains verifyPlugin
 buildPlugin` once at the end of a batch.
+
+Tried by hand under `runIde` afterwards, which found one more defect: `runIde`
+starts from its own sandbox (`prepareSandbox_runIde`, `plugins_runIde/`), and
+only `prepareSandbox` had copied the server into a sandbox, so the plugin under
+`runIde` found none. Every sandbox an IDE starts from now gets it. With that,
+the server starts, the semantic colours land and a resolver error is
+underlined. The settings page's server path gained a file picker.
+
+The hand check also surfaced a runtime deviation from the specification, not
+an editor defect: the resolver recognizes `outer N m` only when `N` starts
+with an uppercase letter (`resolver/sends.rs`, `outer_class_name`), where
+§5.9's outer send takes any identifier and makes a non-enclosing one a
+compile-time error. `^outer missing foo` therefore resolves as the chain
+`(outer missing) foo` and fails only at run time. It is a resolver change,
+left for runtime work.

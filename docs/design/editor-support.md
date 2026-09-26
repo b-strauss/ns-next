@@ -329,10 +329,10 @@ same tree, with no change to the plugin's code.
   (`prepareTest…`) are left out: only these build `--release`, because the
   release profile's fat LTO and single codegen unit make that build slow and
   the tests use the debug build.
-- `runIde` starts a sandbox IDE with the plugin, for trying it by hand. This
-  has not been done yet: every claim in this document rests on the automated
-  gates above, never on having watched the plugin run in a live IDE, and that
-  end-to-end check is still owed.
+- `runIde` starts a sandbox IDE with the plugin, for trying it by hand. It has
+  been tried end to end: the server starts from `plugins_runIde/`, the
+  semantic colours land over the lexer's, and a resolver error
+  (`^outer Missing foo`) is underlined with ns-next's message.
 - `editors/jetbrains/build/` and `.gradle/` are ignored.
 
 **Marketplace readiness from the first commit.** `plugin.xml` carries the ID,
@@ -427,14 +427,11 @@ plugin's own gate joins this:
 Reviewed and deliberately left for later; none affects a module that parses
 and resolves cleanly in a JetBrains IDE today.
 
-- **Not yet seen in a running IDE.** Everything up to the IDE boundary is
-  tested, verified or probed, but no one has yet opened a `.ns` file under
-  `runIde` and watched the server start, an error appear and the semantic
-  colours land. That the platform hands `NewspeakLspIntegrationProvider` its
-  descriptor (`PluginAware`) for this extension point is inferred, not seen;
-  if it does not, the balloon says the plugin could not locate its own
-  directory. The sandbox also disables the ultimate marker plugin for
-  `runIde`, not only for tests.
+- **The IDE path has no automated test.** It was checked by hand under
+  `runIde` (see "Build and packaging"); nothing but that check covers the
+  platform handing `NewspeakLspIntegrationProvider` its descriptor
+  (`PluginAware`) or the sandbox layout `runIde` starts from. The sandbox
+  also disables the ultimate marker plugin for `runIde`, not only for tests.
 - **Warning-severity diagnostics.** `ns_syntax::parse` answers a module or
   errors, so a lexer or parser warning on a module that parses is not shown.
   None exists today.
