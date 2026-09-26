@@ -11,6 +11,8 @@ sealed interface ServerLocation {
     data class ConfiguredPathMissing(val path: String) : ServerLocation
     /** No server is configured and none is bundled for [platform]; null when the platform is not one the layout names. */
     data class NotBundledForPlatform(val platform: String?) : ServerLocation
+    /** The plugin could not determine its own installation directory, so it has nowhere to look for a bundled server. */
+    data object PluginDirectoryUnknown : ServerLocation
 }
 
 /**
@@ -22,8 +24,8 @@ sealed interface ServerLocation {
 class ServerBinaryLocator(
     private val configuredPath: String?,
     private val pluginDirectory: Path?,
-    private val osName: String,
-    private val osArch: String,
+    private val operatingSystemName: String,
+    private val operatingSystemArchitecture: String,
 ) {
     fun locate(): ServerLocation {
         val configured = configuredPath?.trim().orEmpty()
@@ -31,12 +33,9 @@ class ServerBinaryLocator(
             val path = Path.of(configured)
             return if (Files.isRegularFile(path)) ServerLocation.Found(path) else ServerLocation.ConfiguredPathMissing(configured)
         }
-        val platform = platformDirectory(osName, osArch)
-        val bundled = if (platform == null || pluginDirectory == null) {
-            null
-        } else {
-            pluginDirectory.resolve("bin").resolve(platform).resolve(executableName(osName))
-        }
+        if (pluginDirectory == null) return ServerLocation.PluginDirectoryUnknown
+        val platform = platformDirectory(operatingSystemName, operatingSystemArchitecture)
+        val bundled = platform?.let { pluginDirectory.resolve("bin").resolve(it).resolve(executableName(operatingSystemName)) }
         if (bundled == null || !Files.isRegularFile(bundled)) return ServerLocation.NotBundledForPlatform(platform)
         ensureExecutable(bundled)
         return ServerLocation.Found(bundled)
@@ -44,7 +43,7 @@ class ServerBinaryLocator(
 
     /** The zip format the plugin ships in does not carry the executable bit. */
     private fun ensureExecutable(path: Path) {
-        if (osName.startsWith("Windows") || Files.isExecutable(path)) return
+        if (isWindows(operatingSystemName) || Files.isExecutable(path)) return
         try {
             val permissions = Files.getPosixFilePermissions(path) +
                 setOf(PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_EXECUTE, PosixFilePermission.OTHERS_EXECUTE)
@@ -57,15 +56,18 @@ class ServerBinaryLocator(
     }
 }
 
+/** Whether `operatingSystemName` (`System.getProperty("os.name")`) names a Windows system. */
+private fun isWindows(operatingSystemName: String): Boolean = operatingSystemName.startsWith("Windows")
+
 /** `windows-x64`, `macos-arm64`, ...: the directory under `bin/` for this machine, or null for one the layout does not name. */
-fun platformDirectory(osName: String, osArch: String): String? {
+fun platformDirectory(operatingSystemName: String, operatingSystemArchitecture: String): String? {
     val system = when {
-        osName.startsWith("Windows") -> "windows"
-        osName.startsWith("Mac") -> "macos"
-        osName.startsWith("Linux") -> "linux"
+        isWindows(operatingSystemName) -> "windows"
+        operatingSystemName.startsWith("Mac") -> "macos"
+        operatingSystemName.startsWith("Linux") -> "linux"
         else -> return null
     }
-    val architecture = when (osArch.lowercase()) {
+    val architecture = when (operatingSystemArchitecture.lowercase()) {
         "amd64", "x86_64" -> "x64"
         "aarch64", "arm64" -> "arm64"
         else -> return null
@@ -73,5 +75,5 @@ fun platformDirectory(osName: String, osArch: String): String? {
     return "$system-$architecture"
 }
 
-private fun executableName(osName: String): String =
-    if (osName.startsWith("Windows")) "ns-next-lsp.exe" else "ns-next-lsp"
+private fun executableName(operatingSystemName: String): String =
+    if (isWindows(operatingSystemName)) "ns-next-lsp.exe" else "ns-next-lsp"

@@ -161,6 +161,42 @@ fn an_editor_session() {
 }
 
 #[test]
+fn a_malformed_notification_is_logged_and_the_server_keeps_serving() {
+    let (server, client) = Connection::memory();
+    let server_thread = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || ns_lsp::server::run(server).map_err(|error| error.to_string()))
+        .expect("spawn the server");
+    request(&client, 1, "initialize", json!({ "capabilities": {} }));
+    notify(&client, "initialized", json!({}));
+
+    // `textDocument` must be an object with `uri`/`languageId`/`version`/
+    // `text`; a bare string fails `DidOpenTextDocumentParams` deserialization.
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({ "textDocument": "not an object" }),
+    );
+
+    // The server must still be alive and answering: a request right after
+    // the malformed notification gets a real response, not a timeout.
+    let tokens = request(
+        &client,
+        2,
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": "file:///never/opened.ns" } }),
+    );
+    assert_eq!(tokens["data"], json!([]));
+
+    request(&client, 3, "shutdown", Value::Null);
+    notify(&client, "exit", Value::Null);
+    let outcome = server_thread
+        .join()
+        .expect("the server thread does not panic");
+    assert!(outcome.is_ok(), "{outcome:?}");
+}
+
+#[test]
 fn an_unknown_request_is_method_not_found() {
     let (server, client) = Connection::memory();
     let server_thread = std::thread::Builder::new()

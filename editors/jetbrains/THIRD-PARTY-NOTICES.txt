@@ -25,9 +25,11 @@ Every crate above is used here under its MIT option. The full text of the
 MIT licence follows, then the full text of the Apache-2.0 licence (offered
 by some of the crates above as an alternative to MIT, not relied on here,
 included because the brief asks for the text of every licence a listed
-crate offers), then the copyright line each crate's own LICENSE-MIT carries
--- or, where a crate ships no such line (or no LICENSE-MIT at all), the
-authors named in its own Cargo.toml.
+crate offers), then a copyright line per crate. The rule for that line: a
+crate's own licence file (`LICENSE` or `LICENSE-MIT`) supplies the copyright
+line first; the authors named in its own Cargo.toml are used only when that
+file carries no copyright line of its own (or the crate ships no such file
+at all).
 
 ================================================================================
 The MIT License
@@ -251,8 +253,8 @@ crossbeam-channel 0.5.17:
 crossbeam-utils 0.8.23:
     Copyright (c) 2019 The Crossbeam Project Developers
 
-fluent-uri 0.1.4 (no LICENSE-MIT file; from its Cargo.toml `authors`):
-    Copyright (c) the fluent-uri authors: Scallop Ye <yescallop@gmail.com>
+fluent-uri 0.1.4 (from its own LICENSE file):
+    Copyright (c) 2021 Scallop Ye
 
 itoa 1.0.18 (its LICENSE-MIT carries no copyright line; from its Cargo.toml `authors`):
     Copyright (c) the itoa authors: David Tolnay <dtolnay@gmail.com>
@@ -264,8 +266,8 @@ lsp-server 0.10.0 (its LICENSE-MIT carries no copyright line, and it ships no
 `authors` field in its Cargo.toml either):
     Copyright (c) the lsp-server authors
 
-lsp-types 0.97.0 (no LICENSE-MIT file; from its Cargo.toml `authors`):
-    Copyright (c) the lsp-types authors: Markus Westerlind <marwes91@gmail.com>, Bruno Medeiros <bruno.do.medeiros@gmail.com>
+lsp-types 0.97.0 (from its own LICENSE file):
+    Copyright (c) 2016 Markus Westerlind
 
 memchr 2.8.3:
     Copyright (c) 2015 Andrew Gallant

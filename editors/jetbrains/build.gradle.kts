@@ -70,10 +70,10 @@ tasks.withType<PrepareSandboxTask>().configureEach {
 
 /** The platform this build runs on, as `ServerBinaryLocator` names it; only its server is bundled for now. */
 val hostPlatform: String = run {
-    val osName = System.getProperty("os.name")
+    val operatingSystemName = System.getProperty("os.name")
     val system = when {
-        osName.startsWith("Windows") -> "windows"
-        osName.startsWith("Mac") -> "macos"
+        operatingSystemName.startsWith("Windows") -> "windows"
+        operatingSystemName.startsWith("Mac") -> "macos"
         else -> "linux"
     }
     val architecture = when (System.getProperty("os.arch").lowercase()) {
@@ -131,7 +131,11 @@ intellijPlatform {
         ides {
             // The lowest supported and the current release of four commercial
             // IDEs: enough to catch an API one of them lacks, without
-            // downloading every patch release.
+            // downloading every patch release. Re-derive these versions with
+            // `./editors/jetbrains/gradlew -p editors/jetbrains
+            // printProductsReleases`; widen the product types below first
+            // (add or change a `create(IntelliJPlatformType.<type>, ...)`
+            // line) to have it also print releases for a newly added IDE.
             create(IntelliJPlatformType.IntellijIdea, "2026.1.4")
             create(IntelliJPlatformType.IntellijIdea, providers.gradleProperty("platformVersion"))
             create(IntelliJPlatformType.RustRover, "2026.1.4")

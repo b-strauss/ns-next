@@ -54,6 +54,17 @@ class ServerBinaryLocatorTest {
         )
     }
 
+    @Test fun anUnknownPluginDirectoryIsReportedDistinctlyFromAnUnbundledPlatform() {
+        // Windows is bundled for, so a `NotBundledForPlatform` balloon here
+        // would be simply wrong; the plugin failing to locate its own
+        // directory is a different problem with a different fix (the
+        // setting, not a `cargo build`).
+        assertEquals(
+            ServerLocation.PluginDirectoryUnknown,
+            ServerBinaryLocator(null, null, "Windows 11", "amd64").locate(),
+        )
+    }
+
     @Test fun anUnknownPlatformHasNoDirectory() {
         assertEquals(null, platformDirectory("Plan 9", "mips"))
         assertEquals(

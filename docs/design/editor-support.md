@@ -79,8 +79,8 @@ alternatives weighed were worse:
   dependency and build step on an approach with no established precedent in
   plugins.
 
-What keeps the second lexer honest is the comparison gate (see "Planned:
-plugin testing and gates"): Newspeak's lexical grammar is small and fixed by
+What keeps the second lexer honest is the comparison gate (see "Plugin
+testing and gates"): Newspeak's lexical grammar is small and fixed by
 the specification, and every file the repository holds is lexed by both and
 compared token by token.
 
@@ -325,7 +325,10 @@ same tree, with no change to the plugin's code.
   `THIRD-PARTY-NOTICES.txt` and `LICENSE`. Only `prepareSandbox` builds
   `--release`, because the release profile's fat LTO and single codegen unit
   make that build slow and only there does the binary ship.
-- `runIde` starts a sandbox IDE with the plugin, for trying it by hand.
+- `runIde` starts a sandbox IDE with the plugin, for trying it by hand. This
+  has not been done yet: every claim in this document rests on the automated
+  gates above, never on having watched the plugin run in a live IDE, and that
+  end-to-end check is still owed.
 - `editors/jetbrains/build/` and `.gradle/` are ignored.
 
 **Marketplace readiness from the first commit.** `plugin.xml` carries the ID,
@@ -390,11 +393,11 @@ The server's own tests are described under its section, above ("Testing").
   under Windows' length limit over the repository's close to 400 `.ns` files;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
-- plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`,
-  `NewspeakColorSettingsPageTest`) — file type, brace matching, commenting,
-  the colour settings page loading; `ServerBinaryLocatorTest` and
-  `NewspeakSemanticTokensTest` cover the binary lookup order and the
-  semantic-token classification directly, with no platform test case needed.
+- plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`) — file type,
+  brace matching, commenting; `NewspeakColorSettingsPageTest` is plain JUnit,
+  over the colour settings page directly, with no platform test case needed
+  either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
+  which cover the binary lookup order and the semantic-token classification.
 
 **Gates.** The runtime's per-commit suite is `cargo test --workspace
 --exclude ns-lsp`, so runtime work does not pay for the editor's corpus-wide

@@ -165,14 +165,17 @@ class NewspeakLexer : LexerBase() {
         return wordKind(start, position)
     }
 
+    // `lexWord` is only entered on a word character (see its one call site's
+    // guard), so `start < end` always: there is no empty-word case to guard
+    // against here.
     private fun wordKind(start: Int, end: Int): IElementType =
-        when (val word = buffer.subSequence(start, end).toString()) {
+        when (buffer.subSequence(start, end).toString()) {
             "class" -> Types.CLASS
             "private" -> Types.PRIVATE
             "public" -> Types.PUBLIC
             "protected" -> Types.PROTECTED
             in Types.RESERVED_WORDS -> Types.RESERVED_WORD
-            else -> if (word.isEmpty()) TokenType.BAD_CHARACTER else Types.IDENTIFIER
+            else -> Types.IDENTIFIER
         }
 
     private fun lexOperator(): IElementType {

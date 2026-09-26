@@ -39,6 +39,6 @@ class NewspeakLspIntegrationProvider : LspIntegrationProvider, PluginAware {
 fun locateServer(pluginDirectory: Path?): ServerLocation = ServerBinaryLocator(
     configuredPath = NewspeakSettings.getInstance().state.serverPath,
     pluginDirectory = pluginDirectory,
-    osName = System.getProperty("os.name"),
-    osArch = System.getProperty("os.arch"),
+    operatingSystemName = System.getProperty("os.name"),
+    operatingSystemArchitecture = System.getProperty("os.arch"),
 ).locate()

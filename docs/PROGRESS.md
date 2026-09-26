@@ -4276,8 +4276,9 @@ warning-free" gate covers it and the question stops needing a note here.
 
 ## Editor support: the language server and the JetBrains plugin (2026-09-26)
 
-**Built:** `crates/ns-lsp/` (the `ns-next-lsp` binary) and `editors/jetbrains/`
-(the JetBrains plugin), across seven tasks
+**Built:** `crates/ns-lsp/` (the `ns-next-lsp` binary)
+([editor-support-language-server](superpowers/plans/2026-09-26-0030-editor-support-language-server.md))
+and `editors/jetbrains/` (the JetBrains plugin), across seven tasks
 ([editor-support-jetbrains-plugin](superpowers/plans/2026-09-26-0031-editor-support-jetbrains-plugin.md));
 [editor-support.md](design/editor-support.md) is the living design document,
 now marked **Built**.

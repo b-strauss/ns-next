@@ -136,14 +136,26 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
 }
 
 /// Applies a document notification; answers the URI whose diagnostics must be
-/// published, or `None` for a notification that changes nothing.
+/// published, or `None` for a notification that changes nothing, including
+/// one whose params do not match the schema. A notification carries no id to
+/// answer an error to and no client-visible response at all, unlike a
+/// request, so a malformed one is logged to stderr and passed over rather
+/// than ending the server -- the one message lost is better than every
+/// document already open going dark.
 fn apply(
     documents: &mut HashMap<String, Document>,
     notification: Notification,
 ) -> ServerResult<Option<Uri>> {
     match notification.method.as_str() {
         DidOpenTextDocument::METHOD => {
-            let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
+            let params: DidOpenTextDocumentParams =
+                match serde_json::from_value(notification.params) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        eprintln!("{}: {error}", DidOpenTextDocument::METHOD);
+                        return Ok(None);
+                    }
+                };
             let uri = params.text_document.uri;
             documents.insert(
                 uri.as_str().to_string(),
@@ -152,7 +164,14 @@ fn apply(
             Ok(Some(uri))
         }
         DidChangeTextDocument::METHOD => {
-            let params: DidChangeTextDocumentParams = serde_json::from_value(notification.params)?;
+            let params: DidChangeTextDocumentParams =
+                match serde_json::from_value(notification.params) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        eprintln!("{}: {error}", DidChangeTextDocument::METHOD);
+                        return Ok(None);
+                    }
+                };
             let uri = params.text_document.uri;
             // Full synchronisation: the last change carries the whole text.
             let Some(change) = params.content_changes.into_iter().last() else {
@@ -162,7 +181,14 @@ fn apply(
             Ok(Some(uri))
         }
         DidCloseTextDocument::METHOD => {
-            let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
+            let params: DidCloseTextDocumentParams =
+                match serde_json::from_value(notification.params) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        eprintln!("{}: {error}", DidCloseTextDocument::METHOD);
+                        return Ok(None);
+                    }
+                };
             let uri = params.text_document.uri;
             documents.remove(uri.as_str());
             Ok(Some(uri))

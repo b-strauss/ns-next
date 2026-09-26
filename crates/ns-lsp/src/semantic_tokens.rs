@@ -398,6 +398,16 @@ impl Classifier<'_> {
     }
 
     fn identifier(&mut self, identifier: &ast::Identifier, chain: &[&ClassMembers]) {
+        // `outer` is reserved by the lexer, never a member name (per the
+        // spec). `resolve_identifier` skips only `self`/`super`, so a bare
+        // `outer` with no further message chained after it (the two-hop
+        // `outer N m` shape's `outer_class_name` recognizer only matches
+        // when `outer N` is itself a receiver) falls through to the
+        // ordinary bare-name case and gets a `LexicalSend` binding like any
+        // other identifier. The classifier must not colour it regardless.
+        if identifier.name == "outer" {
+            return;
+        }
         match self.bindings.get(&identifier.span) {
             Some(Binding::Local(_) | Binding::OuterLocal { .. }) => {
                 let (category, readonly) = self.local(&identifier.name);
@@ -714,6 +724,35 @@ mod tests {
             classified_at(3),
             Some((Method, false, false)),
             "super Inner"
+        );
+    }
+
+    #[test]
+    fn a_bare_outer_receiver_with_no_further_message_is_not_classified() {
+        // `outer_class_name` (`crates/ns-runtime/src/resolver/sends.rs`) only
+        // recognizes the two-hop `outer N m` shape when the `outer N` send is
+        // itself the receiver of a further message. Here `outer Shapes` is
+        // the whole return expression, with nothing chained after it, so
+        // `resolve_send` falls through to its ordinary-send case and
+        // resolves the `outer` identifier like any other bare name --
+        // recording a `LexicalSend` for it. The classifier must still not
+        // colour it: `outer` is a reserved word, not a member reference.
+        let text = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Shapes = Object new () (
+              public nested = ( ^outer Shapes )
+            ) : ()
+        "};
+        let analysis = crate::analysis::analyze(text);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let start = text.find("outer Shapes").expect("the expression") as u32;
+        assert!(
+            !analysis
+                .classified
+                .iter()
+                .any(|classified| classified.span.start == start),
+            "a bare `outer` receiver must not be classified"
         );
     }
 
