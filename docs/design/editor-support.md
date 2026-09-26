@@ -418,6 +418,37 @@ plugin's own gate joins this:
   which downloads several IDEs, and so is not a per-commit gate. A resolver
   change that shifts the semantic tokens is then noticed within one batch.
 
+## Known gaps
+
+Reviewed and deliberately left for later; none affects a module that parses
+and resolves cleanly in a JetBrains IDE today.
+
+- **Not yet seen in a running IDE.** Everything up to the IDE boundary is
+  tested, verified or probed, but no one has yet opened a `.ns` file under
+  `runIde` and watched the server start, an error appear and the semantic
+  colours land. That the platform hands `NewspeakLspIntegrationProvider` its
+  descriptor (`PluginAware`) for this extension point is inferred, not seen;
+  if it does not, the balloon says the plugin could not locate its own
+  directory. The sandbox also disables the ultimate marker plugin for
+  `runIde`, not only for tests.
+- **Warning-severity diagnostics.** `ns_syntax::parse` answers a module or
+  errors, so a lexer or parser warning on a module that parses is not shown.
+  None exists today.
+- **A name declared on both sides of a class** with different kinds (a slot on
+  the instance side, a method on the class side) is coloured by the first
+  declaration, as `ClassMembers` merges both sides the way the resolver's
+  member set does.
+- **A malformed notification** is logged to stderr and ignored, so the client
+  sees no error for it.
+- **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
+  block comment over a whole-line selection; TODO markers through the
+  project-wide TODO index rather than a single open file.
+- **Two copies of the platform-directory mapping:** `hostPlatform` in
+  `build.gradle.kts` falls back to `linux`/`x64` for a host
+  `ServerBinaryLocator.platformDirectory` does not name, and `plugin.xml`'s
+  description says the server is bundled for Windows x64 whatever host built
+  it. Both matter once the CI build for other platforms exists.
+
 ## Planned later
 
 - **Formatting.** The native LSP API supports `textDocument/formatting` since
