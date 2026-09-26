@@ -156,11 +156,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
        activation (docs/design/core-library.md, "Exceptions"). The slots are
        the exception's own state; `originSelector` and `originReceiver` are
        set by the VM for an error it raises, so a host still receives the
-       selector and receiver it received before exceptions existed. *)
+       selector and receiver it received before exceptions existed.
+       `searching` is true from `signal` or `pass` until a handler is
+       invoked: the VM reads it to tell a search that overran the depth
+       limit's reserve from a handler that did (`Mutator::overrun_of_the_reserve`). *)
     public class Exception = Object new (
         | private signalActivation ::= nil.
           private handlerActivation ::= nil.
           private reachedDefault ::= false.
+          private searching ::= false.
           private originSelector ::= nil.
           private originReceiver ::= nil.
           public messageText ::= nil. |
@@ -174,6 +178,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public signal = (
             signalActivation:: vmMirror currentActivation: self ifFail: [nil].
             handlerActivation:: signalActivation.
+            searching:: true.
             ^self invokeNextHandler
         )
         public signal: text = (
@@ -182,6 +187,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         )
         public pass = (
             handlerActivation isNil ifTrue: [^self notInAHandler: #pass].
+            searching:: true.
             ^self invokeNextHandler
         )
         public return: value = (
@@ -265,7 +271,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
             handlerActivation:: activation.
             handler:: vmMirror activationHandlerBlock: activation ifFail: [nil].
             handlers do: [:each | vmMirror activation: each handlerActive: false ifFail: [nil]].
-            result:: [handler cull: self] ensure: [
+            result:: [searching:: false. handler cull: self] ensure: [
                 handlers do: [:each | vmMirror activation: each handlerActive: true ifFail: [nil]]].
             ^self return: result
         )

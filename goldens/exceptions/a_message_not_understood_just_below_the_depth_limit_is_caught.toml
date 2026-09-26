@@ -1,0 +1,9 @@
+stdout = '''
+stack overflow: recursion too deep
+an object does not understand #foo
+an object does not understand #foo
+an object does not understand #foo
+stack overflow: recursion too deep
+stack overflow: recursion too deep
+own
+'''

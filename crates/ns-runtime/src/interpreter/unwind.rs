@@ -285,11 +285,12 @@ fn start_signalling<'gc>(
     };
     let taking = !mutator.depth_reserve_held()
         && mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE;
-    if taking {
-        mutator.depth_reserve = Some(mutator.heap.activation_depth());
+    let sender = mutator.heap.top_activation();
+    let taking = taking && sender.is_some();
+    if let (true, Some(top)) = (taking, sender) {
+        mutator.depth_reserve = Some(mutator.heap.reify(top));
         mutator.taking_depth_reserve = true;
     }
-    let sender = mutator.heap.top_activation();
     let pushed = mutator.push_step(step, &[], sender, false);
     mutator.taking_depth_reserve = false;
     match pushed {
@@ -332,7 +333,7 @@ impl<'gc> Mutator<'gc> {
             "messageText" => text,
             "originSelector" => selector,
             "originReceiver" => receiver,
-            "reachedDefault" => Value::Boolean(false),
+            "reachedDefault" | "searching" => Value::Boolean(false),
             "signalActivation" | "handlerActivation" => Value::Nil,
             other => panic!("internal: Kernel.ns's Error has a slot {other} the VM does not fill"),
         });
@@ -341,51 +342,109 @@ impl<'gc> Mutator<'gc> {
 
     /// What the run ends with when a push overruns the depth limit's
     /// reserve, for the activation `header` describes. When the refusal
-    /// came from the signalling machinery -- the innermost VM error being
-    /// signalled is still looking for its handler, or running its default
-    /// action -- it is that error: the run ends as it would have had there
-    /// been room to signal it, not as the depth limit. When a handler, or
-    /// anything else that runs once a handler has been found, overran the
-    /// reserve, it is the depth limit's own error.
+    /// came from the signalling machinery -- the innermost error the
+    /// reserve is taken for is still looking for its handler, after its
+    /// `signal` or a `pass`, or running its default action -- it is that
+    /// error: the run ends as it would have had there been room to signal
+    /// it, not as the depth limit. An error the machinery itself raised
+    /// while looking -- a `handles:` nothing understands -- is part of the
+    /// search it arose in, so the error reported is the outermost of a run
+    /// of such errors, each raised by the search of the one below it. When
+    /// a handler, or anything else that runs once a handler has been
+    /// found, overran the reserve, it is the depth limit's own error. A
+    /// program's own `signal` takes no reserve, so it is never the error an
+    /// overrun reports.
     ///
-    /// Walks the stack from its top to that `signal`: once per run, since
-    /// an overrun ends it.
+    /// Walks the stack from its top: once per run, since an overrun ends
+    /// it.
     pub(crate) fn overrun_of_the_reserve(
         &self,
         header: &ActivationHeader<'gc>,
     ) -> NewspeakError<'gc> {
+        let mut reported = None;
+        let mut above = None;
         let mut current = self.heap.top_activation();
         while let Some(activation) = current {
             if let Some(error) = self.heap.activation_signalled_vm_error(activation) {
-                let exception = self.heap.activation_receiver(activation);
-                if self.is_finding_its_handler(exception) {
-                    return error;
+                if !self.is_finding_its_handler(self.heap.activation_receiver(activation)) {
+                    break;
                 }
-                break;
+                reported = Some(error);
+            } else if self.is_kernel_does_not_understand(activation) {
+                if !self.does_not_understand_is_finding_its_handler(above) {
+                    break;
+                }
+                match self.does_not_understand_error(activation) {
+                    Some(error) => reported = Some(error),
+                    None => break,
+                }
             }
+            above = Some(activation);
             current = self.heap.activation_sender(activation);
         }
-        super::recursion_too_deep_error(header)
+        reported.unwrap_or_else(|| super::recursion_too_deep_error(header))
+    }
+
+    /// Whether a kernel `doesNotUnderstand:` activation is still in the
+    /// kernel's own hands. `above` is the activation directly above it, the
+    /// one it sent to: while that
+    /// is `Exception>>signal`, the `MessageNotUnderstood` it signals says
+    /// (`is_finding_its_handler`); before it -- building the exception --
+    /// or after it has returned, it is the machinery.
+    fn does_not_understand_is_finding_its_handler(
+        &self,
+        above: Option<ActivationReference>,
+    ) -> bool {
+        let Some(signal) = above else {
+            return true;
+        };
+        let exception_class = self.builtin_class(BuiltinClass::Exception);
+        let is_signal = matches!(self.heap.activation_kind(signal),
+            FrameKind::Method(method) if method.selector == Symbol::SIGNAL)
+            && self
+                .heap
+                .activation_current_class(signal)
+                .is_some_and(|class| class.same(exception_class));
+        !is_signal || self.is_finding_its_handler(self.heap.activation_receiver(signal))
+    }
+
+    /// The error an unhandled `MessageNotUnderstood` would have ended the
+    /// run with, for the kernel's `doesNotUnderstand:` activation: the
+    /// selector and receiver of the send nothing understood, and the text
+    /// `Object>>doesNotUnderstand:` gives it. Read from the activation's
+    /// argument, the `Message` (a method's registers start with its
+    /// arguments).
+    fn does_not_understand_error(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<NewspeakError<'gc>> {
+        let Value::Object(message) = self.heap.activation_local(activation, 0) else {
+            return None;
+        };
+        let Value::Object(selector) =
+            self.kernel_slot(message, BuiltinClass::Message, "selector")?
+        else {
+            return None;
+        };
+        let selector = self.heap.symbol_value(selector)?;
+        Some(NewspeakError {
+            selector,
+            receiver: self.heap.activation_receiver(activation),
+            message: format!("an object does not understand #{}", selector.as_str()),
+        })
     }
 
     /// Whether `exception`'s `signal` is still in the kernel's own hands:
-    /// the search has not found a handler yet -- `signal` sets
-    /// `handlerActivation` to its own activation, and
-    /// `invokeHandlerAt:disabling:` to the handler's -- or has found none
-    /// and is running the default action. Read off the slots `Kernel.ns`'s
-    /// `Exception` declares.
+    /// the search for a handler -- after `signal` or a `pass` -- has not
+    /// invoked one yet, or has found none and is running the default action.
+    /// Read off the slots `Kernel.ns`'s `Exception` declares for it.
     fn is_finding_its_handler(&self, exception: Value<'gc>) -> bool {
         let Value::Object(object) = exception else {
             return false;
         };
         let slot = |name: &str| self.kernel_slot(object, BuiltinClass::Exception, name);
-        if matches!(slot("reachedDefault"), Some(Value::Boolean(true))) {
-            return true;
-        }
-        match (slot("signalActivation"), slot("handlerActivation")) {
-            (Some(Value::Object(signal)), Some(Value::Object(handler))) => signal.same(handler),
-            _ => false,
-        }
+        matches!(slot("searching"), Some(Value::Boolean(true)))
+            || matches!(slot("reachedDefault"), Some(Value::Boolean(true)))
     }
 
     /// Pushes what runs `block` -- an `ensure:` or `ifCurtailed:` argument
@@ -609,6 +668,48 @@ mod tests {
             };
             assert_eq!(error.message, "boom");
             assert_eq!(mutator.heap.activation_depth(), floor);
+        });
+    }
+
+    /// The depth limit's reserve belongs to the activation it was taken
+    /// for, not to a stack index: once that activation and its `signal`
+    /// are gone, another error whose `signal` lands at the very same index
+    /// -- which exempt block activations make possible far from the limit
+    /// -- does not find the reserve held.
+    #[test]
+    fn a_later_signal_at_the_same_index_does_not_inherit_the_reserve() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(BuiltinClass::Object);
+            let signalling = |class| ActivationHeader {
+                then: Continuation::VmErrorSignalled(Box::new(NewspeakError {
+                    selector: crate::Symbol::SIGNAL,
+                    receiver: Value::Nil,
+                    message: "boom".to_string(),
+                })),
+                ..header(class)
+            };
+            let raised = mutator.heap.push_activation(header(class), &[], 1);
+            mutator.depth_reserve = Some(mutator.heap.reify(raised));
+            let signal = mutator.heap.push_activation(signalling(class), &[], 1);
+            assert!(mutator.depth_reserve_held(), "held while its signal runs");
+            let signal_position = mutator.heap.activation_position(signal);
+            mutator.heap.pop_activation(signal);
+            mutator.heap.pop_activation(raised);
+            let other = mutator.heap.push_activation(header(class), &[], 1);
+            let other_signal = mutator.heap.push_activation(signalling(class), &[], 1);
+            assert_eq!(
+                mutator.heap.activation_position(other_signal),
+                signal_position,
+                "the second signal takes the first one's index"
+            );
+            assert!(
+                !mutator.depth_reserve_held(),
+                "the second signal must not inherit the reserve"
+            );
+            assert!(mutator.depth_reserve.is_none(), "and it is released");
+            mutator.heap.pop_activation(other_signal);
+            mutator.heap.pop_activation(other);
         });
     }
 }

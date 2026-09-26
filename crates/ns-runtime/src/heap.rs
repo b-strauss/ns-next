@@ -2528,16 +2528,12 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Whether the activation at stack index `position` is the `signal` of
-    /// a VM error: how the depth limit's reserve, which records only the
-    /// index its `signal` took, tells that the signal is still running
-    /// rather than holding a handle past its pop. An index popped and
-    /// reused by anything else answers false.
-    pub(crate) fn signals_vm_error_at(&self, position: usize) -> bool {
-        self.stack
-            .entries
-            .get(position)
-            .is_some_and(|entry| matches!(entry.then, Continuation::VmErrorSignalled(_)))
+    /// The activation directly above `activation` on the stack, if any:
+    /// the one it sent to, while it waits for it.
+    pub fn activation_above(&self, activation: ActivationReference) -> Option<ActivationReference> {
+        self.check_activation(activation);
+        let above = activation.index as usize + 1;
+        (above < self.stack.entries.len()).then(|| self.activation_handle(above as u32))
     }
 
     /// The `program_counter` last stored for `activation` -- at a send, the

@@ -93,12 +93,13 @@ pub struct HostError {
 }
 
 /// L: the most activations that may be live at once, counted by the rule in
-/// `docs/design/compiler.md`, "How the limit counts". It bounds memory, not
-/// the native stack, which the trampoline no longer recurses on: with the
-/// exempt block activations, at most one per level of block nesting above
-/// each counted one, the stack holds at most 129 x L entries -- 128 being
-/// the parser's nesting ceiling, which `image::decode` holds an artifact to
-/// as well (`docs/design/execution.md`, "The depth limit").
+/// `docs/design/compiler.md`, "How the limit counts", but for the reserve
+/// above it (`DEPTH_RESERVE`). It bounds memory, not the native stack, which
+/// the trampoline no longer recurses on: with the exempt block activations,
+/// at most one per level of block nesting above each counted one, the stack
+/// holds at most 129 x (L + `DEPTH_RESERVE`) entries -- 128 being the
+/// parser's nesting ceiling, which `image::decode` holds an artifact to as
+/// well (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 
 /// How far past L the stack may grow while a VM error raised near L is
@@ -345,16 +346,19 @@ pub struct Mutator<'gc> {
     /// `Interpreter::resume_unhandled_exceptions`, standing in for the
     /// debugger. Zero outside a test that asks.
     pub(crate) unhandled_exceptions_to_resume: usize,
-    /// The stack index of the `signal` activation that holds the depth
-    /// limit's reserve (`DEPTH_RESERVE`), while it holds it. An index and
-    /// not a handle: the reserve is held exactly while the activation at
-    /// that index is a VM error's `signal` (`Heap::signals_vm_error_at`),
-    /// which is what a stale index reused by anything else fails, so it is
-    /// checked rather than trusted, and only once the depth has reached L.
-    pub(crate) depth_reserve: Option<usize>,
+    /// The depth limit's reserve (`DEPTH_RESERVE`), while it is held: the
+    /// frame of the activation a VM error arose in, whose `signal` -- or,
+    /// for a message nothing understood, whose `Object>>doesNotUnderstand:`
+    /// -- sits directly above it (`Mutator::depth_reserve_held`). A frame
+    /// and not a stack index, because a frame is divorced when its
+    /// activation is popped and married to nothing again, where an index is
+    /// reused -- by another error's `signal`, possibly far from the limit,
+    /// which must not inherit the reserve. Released when a host's run ends,
+    /// and forgotten whenever it is found no longer held.
+    pub(crate) depth_reserve: Option<FrameReference<'gc>>,
     /// Whether `unwind::start_signalling` is pushing the `signal` that
     /// takes the reserve: the one moment the reserve is held with nothing
-    /// at its index yet.
+    /// above its activation yet.
     pub(crate) taking_depth_reserve: bool,
 }
 
@@ -580,6 +584,10 @@ impl Interpreter {
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
+                // Every activation of the run has been popped, so whatever
+                // held the reserve is gone: released here rather than left
+                // to the next check to find so.
+                self.enter(|mutator| mutator.depth_reserve = None);
                 result
             }
         };
@@ -912,7 +920,9 @@ impl<'gc> Mutator<'gc> {
     /// A counted push at or past L. While a VM error's `signal` holds the
     /// reserve, the push is allowed up to `DEPTH_RESERVE` further; past it,
     /// the run ends (`overrun_of_the_reserve`). Otherwise it is refused
-    /// with L's error, which the unwinder signals -- taking the reserve.
+    /// with L's error, which the unwinder signals -- taking the reserve --
+    /// unless it is the push of the `doesNotUnderstand:` that has just
+    /// taken it (`take_depth_reserve_for_does_not_understand`).
     #[cold]
     #[inline(never)]
     fn push_past_the_limit(
@@ -921,7 +931,10 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        if !self.depth_reserve_held() {
+        // The push that makes a freshly taken reserve held is asked about
+        // first: `depth_reserve_held` would find nothing above its activation
+        // yet, and forget it.
+        if !self.pushes_the_reserves_does_not_understand(&header) && !self.depth_reserve_held() {
             return Err(recursion_too_deep(&header));
         }
         if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
@@ -930,20 +943,97 @@ impl<'gc> Mutator<'gc> {
         Err(Signal::Terminate(self.overrun_of_the_reserve(&header)))
     }
 
-    /// Whether the depth limit's reserve is held: its `signal` is being
-    /// pushed, or is still on the stack at the index it took. Forgets a
-    /// reserve whose `signal` is gone -- handled, or ended -- which is how
-    /// the reserve is given back without the pop that ended it paying for
-    /// it.
+    /// Whether the depth limit's reserve is held: its activation is still
+    /// running, and directly above it is the `signal` of the VM error that
+    /// arose there -- or its `Object>>doesNotUnderstand:` -- or that
+    /// `signal` is being pushed. Forgets a reserve found no longer held, so
+    /// that the pop that ended it pays nothing to give it back.
     pub(crate) fn depth_reserve_held(&mut self) -> bool {
-        let Some(position) = self.depth_reserve else {
+        let Some(frame) = self.depth_reserve else {
             return false;
         };
-        if self.taking_depth_reserve || self.heap.signals_vm_error_at(position) {
-            return true;
+        let held = self.heap.frame_activation(frame).is_some_and(|activation| {
+            self.taking_depth_reserve
+                || self
+                    .heap
+                    .activation_above(activation)
+                    .is_some_and(|above| self.holds_the_depth_reserve(above))
+        });
+        if !held {
+            self.depth_reserve = None;
         }
-        self.depth_reserve = None;
-        false
+        held
+    }
+
+    /// Whether `activation` is one the reserve is taken for: the `signal`
+    /// the unwinder pushed for a VM error (`Continuation::VmErrorSignalled`),
+    /// or the kernel's own `Object>>doesNotUnderstand:` -- §5.5's error, the
+    /// VM's as much as any other, though `Kernel.ns` signals it.
+    pub(crate) fn holds_the_depth_reserve(&self, activation: ActivationReference) -> bool {
+        self.heap
+            .activation_signalled_vm_error(activation)
+            .is_some()
+            || self.is_kernel_does_not_understand(activation)
+    }
+
+    /// Whether `activation` runs the kernel's `Object>>doesNotUnderstand:`,
+    /// not an override of it: the one method of that selector whose current
+    /// class is `Object` itself.
+    pub(crate) fn is_kernel_does_not_understand(&self, activation: ActivationReference) -> bool {
+        let object = self.builtin_class(BuiltinClass::Object);
+        match self.heap.activation_kind(activation) {
+            FrameKind::Method(method) => {
+                method.selector == Symbol::DOES_NOT_UNDERSTAND
+                    && self
+                        .heap
+                        .activation_current_class(activation)
+                        .is_some_and(|class| class.same(object))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `header` is the kernel's `Object>>doesNotUnderstand:`, about
+    /// to be pushed directly above the activation that has just taken the
+    /// reserve for it: the decision took the reserve, and this is the push
+    /// that makes it held.
+    fn pushes_the_reserves_does_not_understand(&self, header: &ActivationHeader<'gc>) -> bool {
+        let Some(frame) = self.depth_reserve else {
+            return false;
+        };
+        let Some(sender) = self.heap.frame_activation(frame) else {
+            return false;
+        };
+        let object = self.builtin_class(BuiltinClass::Object);
+        let is_kernel_handler = matches!(&header.kind,
+            FrameKind::Method(method) if method.selector == Symbol::DOES_NOT_UNDERSTAND)
+            && header.current_class.is_some_and(|class| class.same(object));
+        is_kernel_handler
+            && self
+                .heap
+                .top_activation()
+                .is_some_and(|top| top.same(sender))
+    }
+
+    /// Takes the depth limit's reserve for a `doesNotUnderstand:` about to
+    /// be pushed above the top activation, as `unwind::start_signalling`
+    /// takes it for a VM error's `signal`: when the kernel's handler runs,
+    /// the reserve is not held, and the counted depth is within
+    /// `DEPTH_RESERVE` of the limit. Called by the decision, which pushes
+    /// nothing; the push follows it at once.
+    pub(crate) fn take_depth_reserve_for_does_not_understand(
+        &mut self,
+        defining_class: ClassReference<'gc>,
+    ) {
+        if !defining_class.same(self.builtin_class(BuiltinClass::Object))
+            || self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || self.depth_reserve_held()
+        {
+            return;
+        }
+        if let Some(top) = self.heap.top_activation() {
+            self.depth_reserve = Some(self.heap.reify(top));
+        }
     }
 
     /// Pushes the activation `step` describes. `send_arguments` are the

@@ -138,13 +138,25 @@ const DEEP: &str = indoc! {"
     class Deep usingPlatform: thePlatform = Object new (
         | private Error = thePlatform kernel Error.
           public deepest ::= 0.
-          public reserveDeepest ::= 0. |
+          public reserveDeepest ::= 0.
+          public passes ::= 0. |
     ) (
         public probe: n = ( deepest:: n. ^self probe: n + 1 )
         reserveProbe: n = ( reserveDeepest:: n. ^self reserveProbe: n + 1 )
         public descend: n to: bottom = (
             n = bottom ifTrue: [^#(1) at: 5].
             ^self descend: n + 1 to: bottom
+        )
+        public notUnderstood: n to: bottom = (
+            n = bottom ifTrue: [^nil foo].
+            ^self notUnderstood: n + 1 to: bottom
+        )
+        descendPassing: n to: bottom = (
+            n = bottom ifTrue: [^[#(1) at: 5] on: Error do: [:e | passes:: passes + 1. e pass]].
+            ^self descendPassing: n + 1 to: bottom
+        )
+        public passInTheReserveAt: bottom = (
+            ^[[self probe: 1] on: Error do: [:e | self descendPassing: 1 to: bottom]] on: Error do: [:e | 7]
         )
         public measureTheReserve = (
             ^[[self probe: 1] on: Error do: [:e | self reserveProbe: 1]] on: Error do: [:e | 7]
@@ -290,5 +302,78 @@ fn an_error_whose_signalling_overruns_the_reserve_ends_the_run_as_itself() {
             );
             assert_eq!(error.selector, Symbol::intern("at:"), "{lowering:?}");
         }
+    }
+}
+
+/// §5.5 makes a message nothing understood the VM's error, so it takes the
+/// reserve as any VM error does: raised a few levels below the depth limit,
+/// or at it, and unhandled, it ends the run as itself, with the selector and
+/// receiver of the send nothing understood.
+#[test]
+fn an_unhandled_does_not_understand_just_below_the_depth_limit_ends_the_run_as_itself() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, deep) = a_deep(lowering);
+        let error = expect_error(
+            send_integers(&mut interpreter, &deep, "probe:", &[1]),
+            "probe:",
+        );
+        assert_eq!(error.message, DEPTH_ERROR, "{lowering:?}");
+        let deepest = integer_slot(&mut interpreter, &deep, "deepest");
+        for (bottom, expected) in [
+            (deepest - 3, "an object does not understand #foo"),
+            (deepest - 1, "an object does not understand #foo"),
+            (deepest, "an object does not understand #foo"),
+            (deepest + 1, DEPTH_ERROR),
+        ] {
+            let error = expect_error(
+                send_integers(&mut interpreter, &deep, "notUnderstood:to:", &[1, bottom]),
+                "notUnderstood:to:",
+            );
+            assert_eq!(
+                error.message,
+                expected,
+                "{lowering:?}: a doesNotUnderstand: {} levels below the limit",
+                deepest - bottom
+            );
+            if expected != DEPTH_ERROR {
+                assert_eq!(error.selector, Symbol::intern("foo"), "{lowering:?}");
+            }
+        }
+    }
+}
+
+/// The search a `pass` starts is the kernel's, as the first one is: an
+/// overrun of the reserve during it ends the run with the error being
+/// passed, not the depth limit. Near the reserve's end the passing
+/// handler runs (`passes` counts it) and its `pass` cannot finish; at some
+/// such depth the run must end with the index error the handler passed.
+#[test]
+fn a_pass_that_overruns_the_reserve_ends_the_run_with_the_passed_error() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, deep) = a_deep(lowering);
+        let error = expect_error(
+            interpreter.send(&deep, Symbol::intern("measureTheReserve"), &[]),
+            "measureTheReserve",
+        );
+        assert_eq!(error.message, DEPTH_ERROR, "{lowering:?}");
+        let reserve_deepest = integer_slot(&mut interpreter, &deep, "reserveDeepest");
+        // From the reserve's end outwards, stopping at the first depth that
+        // shows it: nearer the end the handler never runs, further out the
+        // `pass` finds the outer handler.
+        let overran_while_passing = (0..60).any(|offset| {
+            let passes_before = integer_slot(&mut interpreter, &deep, "passes");
+            let result = send_integers(
+                &mut interpreter,
+                &deep,
+                "passInTheReserveAt:",
+                &[reserve_deepest - offset],
+            );
+            let passed = integer_slot(&mut interpreter, &deep, "passes") > passes_before;
+            matches!(result, Err(HostSignal::Error(error)) if passed && error.message == INDEX_ERROR)
+        });
+        assert!(
+            overran_while_passing,
+            "{lowering:?}: some depth ends the run with the passed error once the handler ran"
+        );
     }
 }

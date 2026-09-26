@@ -514,6 +514,10 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let message = self.handler_message(selector, arguments);
+        // §5.5 makes a message nothing understood the VM's error, so the
+        // kernel's handler takes the depth limit's reserve near the limit
+        // as a VM error's `signal` does; an override is the program's own.
+        self.take_depth_reserve_for_does_not_understand(defining_class);
         // Activated whatever its fast path: `Object`'s own handler is
         // Newspeak that signals a `MessageNotUnderstood`, and no kernel
         // handler forwards to a leaf; a builtin-class accessor is unary and
