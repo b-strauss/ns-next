@@ -2532,9 +2532,20 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].then = then;
     }
 
+    /// Whether the unwinder pushed `activation` to signal a VM error
+    /// (`Continuation::VmErrorSignalled`): what the depth limit's reserve
+    /// asks, without cloning the error `activation_signalled_vm_error`
+    /// answers.
+    pub(crate) fn activation_signals_a_vm_error(&self, activation: ActivationReference) -> bool {
+        self.check_activation(activation);
+        matches!(
+            self.stack.entries[activation.index as usize].then,
+            Continuation::VmErrorSignalled(_)
+        )
+    }
+
     /// The VM error `activation` is the `signal` of, if the unwinder pushed
-    /// it to signal one (`Continuation::VmErrorSignalled`). Read by the
-    /// depth limit's reserve, on a refused push only.
+    /// it to signal one (`Continuation::VmErrorSignalled`).
     pub(crate) fn activation_signalled_vm_error(
         &self,
         activation: ActivationReference,

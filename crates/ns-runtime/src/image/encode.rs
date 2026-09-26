@@ -969,7 +969,13 @@ impl<'gc> GraphTable<'gc> {
             // for, and which `unnameable_class` refuses wherever else the
             // graph reaches it -- the header of its own instances is the one
             // place an image may name it.
-            if !matches!(record.data, ObjectData::Activation(_)) {
+            if matches!(record.data, ObjectData::Activation(_)) {
+                debug_assert_eq!(
+                    heap.class_builtin(record.class),
+                    Some(BuiltinClass::Activation),
+                    "an activation object's header names the builtin `Activation`"
+                );
+            } else {
                 stack.push(Pending::Value(Value::Object(record.class)));
             }
             match &record.data {

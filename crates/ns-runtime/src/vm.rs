@@ -707,31 +707,43 @@ fn resume_caller<'gc>(
 /// `signal` an error became -- is pushed and switched to, or the run ends.
 /// Deciding which is `interpreter/`'s, so a JIT reaches the same unwinding
 /// (`docs/design/execution.md`, "Unwinding").
-fn unwind<'gc>(mutator: &mut Mutator<'gc>, signal: Signal<'gc>, floor: usize) -> Flow {
-    match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
-        UnwindOutcome::Returned { target, value } => finish(mutator, target, value, floor),
-        UnwindOutcome::Restarted { target } => Flow::Switch {
-            activation: target,
-            code: mutator.heap.activation_code(target),
-            program_counter: 0,
-            feedback_base: mutator.heap.activation_feedback_base(target),
-        },
-        UnwindOutcome::Signalling(next) => Flow::Switch {
+///
+/// A block's push the depth limit refuses raises a signal that is unwound in
+/// turn, hence the loop rather than a recursion. It ends: the unwinder marks
+/// each block run before answering it, so no block is answered twice and
+/// every refusal leaves one pending block fewer on the stack.
+fn unwind<'gc>(mutator: &mut Mutator<'gc>, mut signal: Signal<'gc>, floor: usize) -> Flow {
+    loop {
+        let next = match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
+            UnwindOutcome::Returned { target, value } => {
+                return finish(mutator, target, value, floor)
+            }
+            UnwindOutcome::Restarted { target } => {
+                return Flow::Switch {
+                    activation: target,
+                    code: mutator.heap.activation_code(target),
+                    program_counter: 0,
+                    feedback_base: mutator.heap.activation_feedback_base(target),
+                }
+            }
+            UnwindOutcome::Signalling(next) => next,
+            UnwindOutcome::RunBlock { block, then } => {
+                match mutator.start_unwind_block(block, then) {
+                    Ok(next) => next,
+                    Err(refused) => {
+                        signal = refused;
+                        continue;
+                    }
+                }
+            }
+            UnwindOutcome::Exit(result) => return Flow::Exit(mutator.to_host(result)),
+        };
+        return Flow::Switch {
             activation: next,
             code: mutator.heap.activation_code(next),
             program_counter: 0,
             feedback_base: mutator.heap.activation_feedback_base(next),
-        },
-        UnwindOutcome::RunBlock { block, then } => match mutator.start_unwind_block(block, then) {
-            Ok(next) => Flow::Switch {
-                activation: next,
-                code: mutator.heap.activation_code(next),
-                program_counter: 0,
-                feedback_base: mutator.heap.activation_feedback_base(next),
-            },
-            Err(signal) => unwind(mutator, signal, floor),
-        },
-        UnwindOutcome::Exit(result) => Flow::Exit(mutator.to_host(result)),
+        };
     }
 }
 

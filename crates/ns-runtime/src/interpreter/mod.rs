@@ -981,9 +981,7 @@ impl<'gc> Mutator<'gc> {
     /// or the kernel's own `Object>>doesNotUnderstand:` -- §5.5's error, the
     /// VM's as much as any other, though `Kernel.ns` signals it.
     pub(crate) fn holds_the_depth_reserve(&self, activation: ActivationReference) -> bool {
-        self.heap
-            .activation_signalled_vm_error(activation)
-            .is_some()
+        self.heap.activation_signals_a_vm_error(activation)
             || self.is_kernel_does_not_understand(activation)
     }
 
