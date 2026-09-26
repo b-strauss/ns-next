@@ -1839,6 +1839,7 @@ fn round_trip_graph(
                 platform: platform_value,
                 mixins: &mixin_order,
                 root_levels: &root_levels,
+                platform_paths: &[],
             };
             decode::decode_graph_section(&mut reader, &mut context, &symbol_table).expect("graph")
         };
@@ -2196,6 +2197,9 @@ struct GraphFixture {
     /// `EMPTY`'s one declaration, so mixin id 0 is in range and every
     /// larger id is not.
     mixins: Vec<Rc<Mixin>>,
+    /// What the section's platform paths resolved to, by index. Empty by
+    /// default: most fixtures name no path.
+    platform_paths: Vec<Root>,
 }
 
 impl GraphFixture {
@@ -2217,6 +2221,7 @@ impl GraphFixture {
             codes: Vec::new(),
             symbols: symbols::Table::empty(),
             mixins,
+            platform_paths: Vec::new(),
         }
     }
 
@@ -2239,10 +2244,15 @@ impl GraphFixture {
         let codes = &self.codes;
         let mixins = &self.mixins;
         let symbols = &self.symbols;
+        let platform_paths = &self.platform_paths;
         self.interpreter.enter(|mutator| {
             let class = class_reference(mutator, class);
             let platform = mutator.fetch(platform);
             let root_levels = encode::root_levels(mutator.heap(), class);
+            let platform_paths: Vec<Value> = platform_paths
+                .iter()
+                .map(|path| mutator.fetch(path))
+                .collect();
             let decoded = {
                 let mut context = decode::DecodeContext {
                     mutator,
@@ -2251,6 +2261,7 @@ impl GraphFixture {
                     platform,
                     mixins,
                     root_levels: &root_levels,
+                    platform_paths: &platform_paths,
                 };
                 decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, symbols)
             };
@@ -2826,6 +2837,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
             platform,
             mixins: &mixin_order,
             root_levels: &root_levels,
+            platform_paths: &[],
         };
         for cut in 1..graph.len() {
             let mut reader = decode::Reader::new(&graph[..cut]);
@@ -4508,6 +4520,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
         // gave the compiled body to.
         symbols: table_with(&["foo"]),
         mixins,
+        platform_paths: Vec::new(),
     };
     (fixture, table)
 }
@@ -5130,7 +5143,7 @@ fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let mut reader = decode::Reader::new(bytes);
-        decode::decode_tag_named_hashes(&mut reader, mutator, class)
+        decode::decode_tag_named_hashes(&mut reader, mutator, class, &[])
     })
 }
 
@@ -5179,13 +5192,13 @@ fn a_tag_named_hash_at_the_ceiling_is_refused() {
 fn an_unknown_tag_named_hash_tag_is_refused() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(HASHED_METACLASS + 1); // one past the last tag-named hash
+    writer.write_u8(HASHED_PLATFORM_PATH + 1); // one past the last tag-named hash
     writer.write_u32(5);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
         Err(decode::DecodeError::InvalidTag {
             what: "tag-named hash",
-            tag: HASHED_METACLASS + 1
+            tag: HASHED_PLATFORM_PATH + 1
         })
     );
 }
@@ -10329,4 +10342,290 @@ fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
         "cannot instantiate ValueModuleDefiningIdentity: a value class may not define ==, and \
          ValueModuleDefiningIdentity defines it"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Platform paths: an object the image reaches through the platform is named
+// by the public members that lead to it, and resolved on load against the
+// loading interpreter's own platform (`docs/design/image-format.md`, "The
+// platform path section").
+// ---------------------------------------------------------------------------
+
+/// A module whose root keeps two platform members in slots of its own. Its
+/// one method is never run: it is there so that the selectors the crafted
+/// path sections below name are in the image's symbol table.
+const PLATFORM_MEMBERS: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Holder usingPlatform: platform = Object new (
+        | public transcript = platform transcript.
+          public collections = platform collections. |
+    ) (
+        public unused = ( ^transcript show: transcript nonexistent printString )
+    ) : ()
+"};
+
+/// The id `text` has in the image's symbol table, as `inspect` lists it.
+fn symbol_id(report: &image::inspect::Report, text: &str) -> u32 {
+    let position = report
+        .symbols
+        .iter()
+        .position(|symbol| symbol == text)
+        .unwrap_or_else(|| panic!("the image interns {text}"));
+    u32::try_from(position).expect("a symbol id fits a u32")
+}
+
+/// `bytes` with its platform path section replaced by `section`.
+fn with_platform_path_section(bytes: &[u8], section: &[u8]) -> Vec<u8> {
+    let report = image::inspect::inspect(bytes).expect("inspect");
+    let located = report
+        .sections
+        .iter()
+        .find(|candidate| candidate.name == "platform paths")
+        .expect("a stateful image carries a platform path section");
+    let mut crafted = bytes[..located.start].to_vec();
+    crafted.extend_from_slice(section);
+    crafted.extend_from_slice(&bytes[located.end..]);
+    crafted
+}
+
+/// A platform path section naming `paths`, each a list of symbol ids.
+fn platform_path_section(paths: &[Vec<u32>]) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(u32::try_from(paths.len()).expect("a count fits a u32"));
+    for path in paths {
+        writer.write_u32(u32::try_from(path.len()).expect("a length fits a u32"));
+        for member in path {
+            writer.write_u32(*member);
+        }
+    }
+    writer.into_bytes()
+}
+
+fn same_object(loaded: &mut image::LoadedImage, first: &Root, second: &Root) -> bool {
+    loaded
+        .interpreter
+        .enter(|mutator| object(&mutator.fetch(first)).same(*object(&mutator.fetch(second))))
+}
+
+#[test]
+fn a_platform_member_is_named_by_its_path() {
+    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.platform_paths,
+        vec!["transcript".to_string(), "collections".to_string()],
+        "the paths the graph uses, in the order it first reaches them"
+    );
+    assert!(
+        report.graph_objects.iter().all(|record| {
+            !record.starts_with("class Transcript") && !record.starts_with("class Collections")
+        }),
+        "neither member is written as a record: {:#?}",
+        report.graph_objects
+    );
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let platform = loaded.interpreter.platform();
+    for member in ["transcript", "collections"] {
+        let stored = send_to(&mut loaded, &instance, member);
+        let fresh = send_to(&mut loaded, &platform, member);
+        assert!(
+            same_object(&mut loaded, &stored, &fresh),
+            "the stored {member} is the loading platform's own"
+        );
+    }
+}
+
+#[test]
+fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder usingPlatform: platform = Object new (
+            | public keptPlatform = platform.
+              public collections = platform collections. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let kept = send_to(&mut loaded, &instance, "keptPlatform");
+    let through_the_platform = send_to(&mut loaded, &kept, "collections");
+    let stored = send_to(&mut loaded, &instance, "collections");
+    assert!(
+        same_object(&mut loaded, &through_the_platform, &stored),
+        "a stored platform and a stored member answer one collections module"
+    );
+}
+
+#[test]
+fn a_platform_path_the_loader_cannot_follow_is_refused() {
+    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let transcript = symbol_id(&report, "transcript");
+    let nonexistent = symbol_id(&report, "nonexistent");
+    let show = symbol_id(&report, "show:");
+    let print_string = symbol_id(&report, "printString");
+    let no_symbol = u32::try_from(report.symbols.len()).expect("a count fits a u32") + 1000;
+    let too_long = vec![transcript; image::platform_paths::MAX_PLATFORM_PATH_LENGTH + 1];
+
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[vec![nonexistent]]),
+    ));
+    assert!(message.contains("nonexistent"), "{message}");
+
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[vec![show]]),
+    ));
+    assert!(message.contains("show:"), "{message}");
+
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[too_long]),
+    ));
+    assert!(message.contains("members"), "{message}");
+
+    let mut too_many = encode::Writer::new();
+    too_many.write_u32(
+        u32::try_from(image::platform_paths::MAX_PLATFORM_PATHS + 1).expect("fits a u32"),
+    );
+    let message = load_error(&with_platform_path_section(&bytes, &too_many.into_bytes()));
+    assert!(message.contains("platform paths"), "{message}");
+
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[vec![no_symbol]]),
+    ));
+    assert!(message.contains("symbol id"), "{message}");
+
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[vec![transcript, print_string]]),
+    ));
+    assert!(message.contains("transcript printString"), "{message}");
+}
+
+#[test]
+fn an_index_past_the_path_section_is_refused() {
+    // The graph names `collections` as path 1; a section listing only
+    // `transcript` leaves that index past its end.
+    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let transcript = symbol_id(&report, "transcript");
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[vec![transcript]]),
+    ));
+    assert_eq!(
+        message,
+        decode::DecodeError::BadPlatformPath(1).to_string(),
+        "{message}"
+    );
+}
+
+/// A one-object graph section: an instance record whose header names
+/// platform path 0, carrying `fields` `nil` fields.
+fn one_instance_of_platform_path_zero(fields: u32) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1, 0);
+    writer.write_u8(CLASS_PLATFORM_PATH);
+    writer.write_u32(0);
+    writer.write_u32(5); // identity hash
+    writer.write_u8(OBJECT_INSTANCE);
+    writer.write_u32(fields);
+    for _ in 0..fields {
+        writer.write_u8(VALUE_NIL);
+    }
+    writer.write_u32(0); // no roots
+    writer.into_bytes()
+}
+
+#[test]
+fn an_instance_of_a_path_named_class_carries_exactly_its_layout() {
+    // The layout comes from the loading binary: `Transcript` declares no
+    // slots, so an instance of it carries none.
+    let mut fixture = GraphFixture::new();
+    let transcript_class = fixture.interpreter.enter(|mutator| {
+        mutator.stash(Value::Object(
+            mutator.builtin_class(BuiltinClass::Transcript),
+        ))
+    });
+    fixture.platform_paths = vec![transcript_class];
+    fixture.decode(&one_instance_of_platform_path_zero(0), |_, decoded| {
+        assert!(decoded.is_ok(), "an instance that fits the layout decodes");
+    });
+    assert_eq!(
+        fixture.decode_error(&one_instance_of_platform_path_zero(1)),
+        decode::DecodeError::PlatformInstanceFieldCount {
+            expected: 0,
+            found: 1
+        }
+    );
+}
+
+#[test]
+fn a_class_reference_to_a_path_that_is_no_class_is_refused() {
+    let mut fixture = GraphFixture::new();
+    let platform = fixture.platform.clone();
+    let transcript = expect_ok(
+        fixture
+            .interpreter
+            .send(&platform, Symbol::intern("transcript"), &[]),
+        "transcript",
+    );
+    fixture.platform_paths = vec![transcript];
+    assert_eq!(
+        fixture.decode_error(&one_instance_of_platform_path_zero(0)),
+        decode::DecodeError::PlatformPathNotAClass
+    );
+}
+
+/// A module instance holds the core library's state, as the platform holds
+/// the mirror, and a class compiled from shipped source belongs to the
+/// loading binary: the encoder writes neither, and refuses one no platform
+/// path names. The kernel instance and its class are both.
+#[test]
+fn a_shipped_object_no_platform_path_names_is_refused() {
+    let (mut interpreter, class) = load(EMPTY);
+    let platform = interpreter.platform();
+    interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let object = mutator.builtin_class(BuiltinClass::Object);
+        let kernel = mutator
+            .heap()
+            .class_enclosing(object)
+            .expect("the kernel instance encloses Object");
+        let kernel_class = mutator.heap().class_of_object(kernel);
+        for (shipped, expected) in [
+            (
+                kernel,
+                "image encoding refuses a module instance of Kernel: it holds the core \
+                 library's state, and no platform path names it",
+            ),
+            (
+                kernel_class,
+                "image encoding refuses the class object Kernel: it is compiled from shipped \
+                 source, and no platform path names it",
+            ),
+        ] {
+            let refused = image::snapshot(
+                mutator,
+                None,
+                &Origin::File(PathBuf::from("t.ns")),
+                root_class,
+                &platform,
+                &[Value::Object(shipped)],
+            );
+            let Err(message) = refused else {
+                panic!("a graph reaching {expected} was encoded");
+            };
+            assert_eq!(message, expected);
+        }
+    });
 }

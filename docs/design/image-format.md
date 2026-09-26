@@ -74,7 +74,7 @@ encoding runs no code.
 ## Layout
 
 ```
-Image:   [header][source?][origin][symbols][code][mixins][root class][entry][graph]
+Image:   [header][source?][origin][symbols][code][mixins][root class][entry][platform paths][graph]
 Binary:  [header][source?][origin][symbols][code][mixins][root class][entry]
 ```
 
@@ -109,11 +109,12 @@ surface is.
 - **The `platform` singleton** gets its own tag, resolved to the loading
   interpreter's own singleton. Essentially every module stores it in a slot, so
   without this the whole platform graph would come along.
-  **Planned:** once the platform is a shipped module, every shipped object
-  a program can reach is named by its path of public members from the
-  platform, listed in a section of its own and resolved by the loading host
-  before the graph is decoded; the platform's tag is the empty path
-  ([core-library.md](core-library.md), "Platform paths in the image").
+- **Every object reached through the platform** is named by its **platform
+  path**, the public members sent from the platform that answer it
+  (`transcript`, `collections`): listed in a section of its own, resolved by the
+  loading host before the graph is decoded, and never written as a record
+  ("Platform paths" below, [core-library.md](core-library.md), "Platform
+  paths in the image"). The platform's own tag is the empty path.
 - **Mixin applications** are not serialized. Layout and lookup follow
   deterministically from a mixin and its superclass application, so they are
   rebuilt as class objects decode. This removes a section, a verification pass,
@@ -298,7 +299,7 @@ function (`bytecode::family_size_of`). A block precedes its parent in the
 table, but its numbers depend on where its `MakeClosure` sits in its root's
 emission order, so the decoder numbers a family only once its root -- the
 body nothing else's `MakeClosure` creates -- has been read in full. The
-golden image is 1243 bytes.
+golden image is 1274 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -309,7 +310,10 @@ of surfacing later as an image that no longer means what it said.
 The graph section's six tag families live there under the same rule: how a
 `Value` is encoded, an object record's body, how a class record names its mixin,
 how a class reference is named, what a frame was activated for, and which tag-named object an entry of the closing
-hash table names (`HASHED_*`, below). They were bare literals in the encoder and
+hash table names (`HASHED_*`, below). The platform paths added one tag to three
+of them, each followed by a `u32` index into the platform path section:
+`VALUE_PLATFORM_PATH` = 8, `CLASS_PLATFORM_PATH` = 5 and
+`HASHED_PLATFORM_PATH` = 4. They were bare literals in the encoder and
 again in the decoder until `inspect` became a third reader of those bytes — and
 three hand-kept copies of one numbering is how a viewer starts quietly
 disagreeing with the loader. A closure frame (`FRAME_CLOSURE`) names the closure
@@ -374,10 +378,11 @@ application, enclosing object and declaring class follow from its class
 ([object-model.md](object-model.md), "The image format") — and the decoder
 applies it over `Class` from its class's row (`rebuild_metaclasses`). The
 metaclass of a class that is no record — a builtin, the root class or a root
-level — is named by class tag 4, `CLASS_METACLASS`, followed by that class's
-own class tag, which may be `CLASS_BUILTIN`, `CLASS_USER_ROOT` or
-`CLASS_ROOT_LEVEL` and nothing else (`read_prebuilt_class`), so the nesting is
-one level deep. The encoder refuses a class record whose class object has no
+level or a class a platform path names — is named by class tag 4,
+`CLASS_METACLASS`, followed by that class's own class tag, which may be
+`CLASS_BUILTIN`, `CLASS_USER_ROOT`, `CLASS_ROOT_LEVEL` or
+`CLASS_PLATFORM_PATH` and nothing else (`read_prebuilt_class`), so the nesting
+is one level deep. The encoder refuses a class record whose class object has no
 metaclass rather than write a header the decoder could not pair. A metaclass
 record is a record like any other — no shorter than the minimum record, one
 placeholder in the first pass — so the decode amplification is unchanged,
@@ -393,6 +398,38 @@ builtin tags are enough, and there is at most one level; a root the rule
 refuses is never written ("Verification" below). `load` rebuilds the level
 with the root class, before the graph, so the graph names it by its position
 (`CLASS_ROOT_LEVEL`, class tag 3) rather than as a record.
+
+**Platform paths.** Written only in an image, immediately before the graph:
+a `u32` count, then per path a `u32` member count and that many symbol ids
+(`image::platform_paths`). A path is the list of public members sent from the
+platform, one unary send each. The encoder finds them with
+`platform_paths::discover`, which walks from the platform over, for every level
+of an object's class, each **public** slot's field — a lazy slot's included,
+skipped while `nil` — and each **public** nested class's cache slot, skipped
+while empty. It records every object it reaches that is a class object or a
+shipped instance — an instance with slots of a class compiled from shipped
+source (`Mixin.shipped`, `Heap::class_is_shipped`) — and descends into shipped
+instances only, never into a class object. Breadth-first, visiting each object
+once, so an object's path is its shortest, and among equals the first in
+declaration order, superclass level first: one world encodes to one byte
+sequence. A string or an array is no shipped instance even when its class is a
+builtin: it carries its own data, and the image writes it as a record. Only the
+paths the graph **uses** are written, in the order the graph first reaches
+them, numbered densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
+`MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the kernel-built
+platform's public slots name `transcript`, `collections` and `kernel`.
+
+An object a path names is referenced as `VALUE_PLATFORM_PATH` (value tag 8), a
+class a path names as `CLASS_PLATFORM_PATH` (class tag 5), each followed by the
+`u32` index into the section; a path-named class counts as prebuilt, so
+`CLASS_METACLASS` may be followed by one. The encoder refuses a shipped object
+no path names instead of writing it: a class object compiled from shipped
+source that no builtin tag names, and a **module instance** — an instance of a
+shipped class whose class object has no enclosing object, such as the kernel
+instance — which holds the core library's state as the platform holds the
+mirror. A level a `<:` clause naming a builtin added applies that builtin's
+shipped mixin but belongs to the user class, and stays a `MIXIN_BUILTIN`
+record.
 
 **Object table.** Every heap object reachable from the roots — instances,
 strings, symbols, arrays, closures — decoded in two passes (placeholder, then
@@ -427,17 +464,21 @@ loaded one. A record's 0 means "not yet assigned" and is preserved the same way
 ([object-model.md](object-model.md)).
 
 **The exception is an object the image names by tag rather than by record**: a
-builtin class, the module's root class, the `platform` singleton and the
-metaclass of a builtin, of the root class or of a root level
-(`encode::is_class_tag`, and the platform check beside it in
-`GraphTable::visit_value`). None of them is a record, so nothing about a record
-could carry its hash. Instead the graph section closes, after its roots, with a
-table of exactly the tag-named objects whose stored hash is not 0 — the builtin
-classes in wire-tag order, then the root class, then `platform`, then the
-metaclasses (`HASHED_METACLASS` followed by the class's reference) of the
-builtins in wire-tag order, of the root class and of its levels — each entry a
-tag from the `HASHED_*` family in `opcodes.rs` naming the object, and its hash
-(`encode::encode_tag_named_hashes`). `load` restores each hash onto the object
+builtin class, the module's root class, the `platform` singleton, an object a
+used platform path names, and the metaclass of a builtin, of the root class, of
+a root level or of a path-named class (`encode::is_class_tag`, and the platform
+and path checks beside it in `GraphTable::visit_value`). None of them is a
+record, so nothing about a record could carry its hash. Instead the graph
+section closes, after its roots, with a table of exactly the tag-named objects
+whose stored hash is not 0 — the builtin classes in wire-tag order, then the
+root class, then `platform`, then the path-named objects in section order
+(`HASHED_PLATFORM_PATH` followed by the path's index), then the metaclasses
+(`HASHED_METACLASS` followed by the class's reference) of the builtins in
+wire-tag order, of the root class, of its levels and of the path-named classes
+in section order — each entry a tag from the `HASHED_*` family in `opcodes.rs`
+naming the object, and its hash (`encode::encode_tag_named_hashes`). A builtin
+class a path names keeps only its builtin entry, since the loader refuses one
+object listed twice. `load` restores each hash onto the object
 the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
 duplicate entry or `u32::MAX` like any other malformed hash. The
 identity-hash counter is then advanced past the larger of this table's maximum
@@ -774,8 +815,37 @@ a graph that reaches the class itself.
 `Activation`'s 23 ([core-library.md](core-library.md), "Exceptions"). A
 program reaches the first five through `platform kernel` and may subclass
 them, so an image may name any of the six wherever it names a class: an
-exception a program made is an ordinary instance record, and so is a
-`KernelNamespace` a program kept in a slot, a value like a kept transcript.
+exception a program made is an ordinary instance record. The platform's own
+`KernelNamespace`, like its transcript, is named by its platform path
+(`kernel`) instead.
+
+**A platform path is resolved before the graph, and only looked up while it
+decodes.** `load` runs in three phases. The first decodes everything up to and
+including the platform path section and roots the root class and its levels.
+The section's reader refuses what a loader cannot follow before anything is
+sent: more than `MAX_PLATFORM_PATHS` paths (`TooManyPlatformPaths`), a path of
+no members or more than `MAX_PLATFORM_PATH_LENGTH` (`PlatformPathLength`), a
+member that is no symbol id (`BadSymbolId`) and one that is no unary selector
+(`PlatformPathMemberNotUnary`). The second, outside any entry, sends each
+path's members to the loading interpreter's platform with `Interpreter::send`,
+one ordinary public unary send each — exactly what the program's own
+`platform collections` may do, and loading a stateless binary runs its code
+anyway — and refuses the image, naming the path, when a send fails or the
+final answer is neither a class object whose own mixin is shipped nor an
+instance with slots of a shipped class (`platform_paths::is_shipped_object`):
+`transcript printString` answers a fresh `String`, which the loading binary
+does not own. The third decodes the graph against the answers
+(`DecodeContext::platform_paths`), so the decoder still runs no code; an index
+past the section is `BadPlatformPath`, and a `CLASS_PLATFORM_PATH` whose
+object is no class is `PlatformPathNotAClass`. A crafted image can make the
+second phase run public unary methods of shipped objects; it cannot make it
+run anything a program could not.
+
+**An instance of a path-named class carries exactly that class's layout.** The
+code and the layout of a shipped class come from the loading binary, not from
+the image, so an `OBJECT_INSTANCE` record whose header is a
+`CLASS_PLATFORM_PATH` must carry exactly the class's `slot_count` fields, or
+the image is refused (`PlatformInstanceFieldCount`).
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns

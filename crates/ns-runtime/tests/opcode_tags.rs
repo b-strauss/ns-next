@@ -211,6 +211,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(VALUE_OBJECT_ID, 5);
     assert_eq!(VALUE_CLASS_TAG, 6);
     assert_eq!(VALUE_PLATFORM, 7);
+    assert_eq!(VALUE_PLATFORM_PATH, 8);
 
     assert_eq!(OBJECT_INSTANCE, 0);
     assert_eq!(OBJECT_STRING, 1);
@@ -229,6 +230,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(CLASS_RECORD, 2);
     assert_eq!(CLASS_ROOT_LEVEL, 3);
     assert_eq!(CLASS_METACLASS, 4);
+    assert_eq!(CLASS_PLATFORM_PATH, 5);
 
     assert_eq!(FRAME_METHOD, 0);
     assert_eq!(FRAME_CLOSURE, 1);
@@ -242,6 +244,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(HASHED_ROOT_CLASS, 1);
     assert_eq!(HASHED_PLATFORM, 2);
     assert_eq!(HASHED_METACLASS, 3);
+    assert_eq!(HASHED_PLATFORM_PATH, 4);
 }
 
 /// Within each family a number means one thing. Nothing but a copy-paste
@@ -258,6 +261,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             VALUE_OBJECT_ID,
             VALUE_CLASS_TAG,
             VALUE_PLATFORM,
+            VALUE_PLATFORM_PATH,
         ],
         &[
             OBJECT_INSTANCE,
@@ -276,6 +280,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             CLASS_RECORD,
             CLASS_ROOT_LEVEL,
             CLASS_METACLASS,
+            CLASS_PLATFORM_PATH,
         ],
         &[
             FRAME_METHOD,
@@ -291,6 +296,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             HASHED_ROOT_CLASS,
             HASHED_PLATFORM,
             HASHED_METACLASS,
+            HASHED_PLATFORM_PATH,
         ],
     ];
     for family in families {

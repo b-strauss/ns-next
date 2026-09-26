@@ -10,9 +10,10 @@ use crate::types::{
     BuiltinClass, ClassData, ClassReference, ClosureData, FrameKind, FrameReference, ObjectData,
     ObjectReference, SourceOrigin, Value,
 };
-use crate::Mutator;
+use crate::{Mutator, Symbol};
 
 use super::opcodes::*;
+use super::platform_paths::{self, PlatformPaths};
 use super::{mixins, symbols};
 
 pub const MAGIC: &[u8; 4] = b"NSNX";
@@ -822,11 +823,12 @@ fn is_class_tag<'gc>(
     object: ObjectReference<'gc>,
     root_class: ClassReference<'gc>,
     root_levels: &[ClassReference<'gc>],
+    paths: &PlatformPaths<'gc>,
 ) -> bool {
-    is_prebuilt_class(heap, object, root_class, root_levels)
-        || heap
-            .class_this_class(object)
-            .is_some_and(|this_class| is_prebuilt_class(heap, this_class, root_class, root_levels))
+    is_prebuilt_class(heap, object, root_class, root_levels, paths)
+        || heap.class_this_class(object).is_some_and(|this_class| {
+            is_prebuilt_class(heap, this_class, root_class, root_levels, paths)
+        })
 }
 
 /// `object` described, when it is a class object an image may not name:
@@ -852,24 +854,63 @@ fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Opti
     }
 }
 
-/// Whether `object` is a builtin, the module's root class or one of its
-/// levels -- the class objects the loading world has before the graph, and
-/// what `decode::read_prebuilt_class` reads behind a `CLASS_METACLASS`
-/// reference. The explicit `is_class` guard is redundant with
-/// `object.same(root_class)` today -- that can only be true when `object` is
-/// literally `root_class`, a class by construction -- but it keeps this
-/// answering `false` for a non-class object on its own terms, so it stays
-/// honest if either check's meaning shifts later.
+/// Whether `object` is a builtin, the module's root class, one of its levels
+/// or a class a platform path names -- the class objects the loading world
+/// has before the graph, and what `decode::read_prebuilt_class` reads behind
+/// a `CLASS_METACLASS` reference. The explicit `is_class` guard is redundant
+/// with `object.same(root_class)` today -- that can only be true when
+/// `object` is literally `root_class`, a class by construction -- but it
+/// keeps this answering `false` for a non-class object on its own terms, so
+/// it stays honest if either check's meaning shifts later.
 fn is_prebuilt_class<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
     root_class: ClassReference<'gc>,
     root_levels: &[ClassReference<'gc>],
+    paths: &PlatformPaths<'gc>,
 ) -> bool {
     heap.is_class(object)
         && (heap.class_builtin(object).is_some()
             || object.same(root_class)
-            || root_levels.iter().any(|level| level.same(object)))
+            || root_levels.iter().any(|level| level.same(object))
+            || paths.id_of(heap, object).is_some())
+}
+
+/// Why the image cannot carry `object` -- reached by no platform path, and
+/// not named by any other tag -- when it is shipped: a class object compiled
+/// from shipped source, or a module instance, an instance of a shipped class
+/// whose class object has no enclosing object. Either one's code and layout
+/// belong to the loading binary, and a module instance holds the kernel, as
+/// the platform holds the mirror, so neither is ever written field by field.
+///
+/// A metaclass is judged by its class, whose class side it applies. A level a
+/// `<:` clause naming a builtin added applies that builtin's shipped mixin,
+/// but belongs to the user class that applied it: the image writes it as a
+/// `MIXIN_BUILTIN` record, so it is no refusal.
+fn shipped_without_path<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
+    if heap.is_class(object) {
+        let class = heap.class_this_class(object).unwrap_or(object);
+        let applies_a_named_builtin = heap
+            .class_applied_origin(class)
+            .is_some_and(|applied| applied.named_builtin.is_some());
+        if heap.class_is_shipped(class) && !applies_a_named_builtin {
+            return Some(format!(
+                "image encoding refuses the class object {}: it is compiled from shipped \
+                 source, and no platform path names it",
+                heap.class_display_name(object)
+            ));
+        }
+        return None;
+    }
+    let class = heap.class_of_object(object);
+    if heap.class_is_shipped(class) && heap.class_enclosing(class).is_none() {
+        return Some(format!(
+            "image encoding refuses a module instance of {}: it holds the core library's \
+             state, and no platform path names it",
+            heap.class_display_name(class)
+        ));
+    }
+    None
 }
 
 /// Every heap object (instances, strings, symbols, arrays, closures, and
@@ -887,6 +928,17 @@ pub struct GraphTable<'gc> {
     /// them -- which
     /// `encode_graph_section` refuses (`unnameable_class`).
     unnameable: Option<String>,
+    /// The first shipped object the traversal reached that no platform path
+    /// names (`shipped_without_path`), refused the same way.
+    shipped_without_path: Option<String>,
+    /// Every object a platform path reaches from the platform the graph
+    /// hangs off (`platform_paths::discover`).
+    platform_paths: PlatformPaths<'gc>,
+    /// The ids of the paths the graph uses, in the order it first reached
+    /// each -- the order the platform path section lists them in -- and each
+    /// one's position in that list, which is what a reference writes.
+    used_paths: Vec<u32>,
+    used_path_index: HashMap<u32, u32>,
 }
 
 impl<'gc> GraphTable<'gc> {
@@ -904,6 +956,7 @@ impl<'gc> GraphTable<'gc> {
         platform: &Value<'gc>,
         root_class: ClassReference<'gc>,
         root_levels: &[ClassReference<'gc>],
+        platform_paths: PlatformPaths<'gc>,
     ) -> GraphTable<'gc> {
         let mut table = GraphTable {
             objects: Vec::new(),
@@ -911,6 +964,10 @@ impl<'gc> GraphTable<'gc> {
             frames: Vec::new(),
             frame_ids: HashMap::new(),
             unnameable: None,
+            shipped_without_path: None,
+            platform_paths,
+            used_paths: Vec::new(),
+            used_path_index: HashMap::new(),
         };
         let mut stack: Vec<Pending> = roots
             .iter()
@@ -944,9 +1001,25 @@ impl<'gc> GraphTable<'gc> {
         if is_same_object(value, platform) {
             return;
         }
-        if is_class_tag(heap, *object, root_class, root_levels) {
+        // Named by its path, like the platform by its tag: the loading
+        // platform answers it, so the image carries nothing of it.
+        if self.use_platform_path(heap, *object) {
+            return;
+        }
+        if is_class_tag(heap, *object, root_class, root_levels, &self.platform_paths) {
             if self.unnameable.is_none() {
                 self.unnameable = unnameable_class(heap, *object);
+            }
+            // The metaclass of a class a path names is written as a
+            // reference through that path (`CLASS_METACLASS`).
+            if let Some(this_class) = heap.class_this_class(*object) {
+                self.use_platform_path(heap, this_class);
+            }
+            return;
+        }
+        if let Some(refusal) = shipped_without_path(heap, *object) {
+            if self.shipped_without_path.is_none() {
+                self.shipped_without_path = Some(refusal);
             }
             return;
         }
@@ -1081,6 +1154,50 @@ impl<'gc> GraphTable<'gc> {
             .expect("frame was visited by build()")
     }
 
+    /// Records that the graph names `object` by its platform path, when one
+    /// reaches it, and answers whether one does. The first use fixes the
+    /// path's position in the section.
+    fn use_platform_path(&mut self, heap: &Heap<'gc>, object: ObjectReference<'gc>) -> bool {
+        let Some(id) = self.platform_paths.id_of(heap, object) else {
+            return false;
+        };
+        if !self.used_path_index.contains_key(&id) {
+            let index = u32_field("platform path index", self.used_paths.len());
+            self.used_path_index.insert(id, index);
+            self.used_paths.push(id);
+        }
+        true
+    }
+
+    /// The position in the platform path section of the path that names
+    /// `object`, when the graph names it by one.
+    pub fn platform_path_index(
+        &self,
+        heap: &Heap<'gc>,
+        object: ObjectReference<'gc>,
+    ) -> Option<u32> {
+        self.platform_paths
+            .id_of(heap, object)
+            .and_then(|id| self.used_path_index.get(&id).copied())
+    }
+
+    /// The paths the graph uses, in section order, with the objects they
+    /// reach.
+    pub fn used_platform_paths(&self) -> UsedPlatformPaths<'gc> {
+        UsedPlatformPaths {
+            paths: self
+                .used_paths
+                .iter()
+                .map(|id| self.platform_paths.path(*id).to_vec())
+                .collect(),
+            objects: self
+                .used_paths
+                .iter()
+                .map(|id| self.platform_paths.object(*id))
+                .collect(),
+        }
+    }
+
     /// The class no program may name that the traversal reached, described
     /// for the refusal; `None` when it reached none.
     pub fn unnameable_class(&self) -> Option<&str> {
@@ -1137,12 +1254,20 @@ fn encode_class_tag<'gc>(
     if !context.heap.is_class(class) {
         panic!("internal: a class reference does not point at a class object");
     }
+    // Ahead of every other shape, a metaclass's included: the graph never
+    // entered a class a path names, so it has no record to name.
+    if let Some(index) = context.table.platform_path_index(context.heap, class) {
+        writer.write_u8(CLASS_PLATFORM_PATH);
+        writer.write_u32(index);
+        return;
+    }
     if let Some(this_class) = context.heap.class_this_class(class) {
         if is_prebuilt_class(
             context.heap,
             this_class,
             *context.root_class,
             context.root_levels,
+            &context.table.platform_paths,
         ) {
             writer.write_u8(CLASS_METACLASS);
             encode_class_tag(writer, this_class, context);
@@ -1190,7 +1315,8 @@ fn encode_optional_class<'gc>(
 }
 
 /// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
-/// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton.
+/// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton, 8 = an
+/// object a platform path names, a class object's included.
 ///
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
@@ -1204,6 +1330,11 @@ fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeCo
     };
     if is_same_object(value, context.platform) {
         writer.write_u8(VALUE_PLATFORM);
+        return;
+    }
+    if let Some(index) = context.table.platform_path_index(context.heap, *object) {
+        writer.write_u8(VALUE_PLATFORM_PATH);
+        writer.write_u32(index);
         return;
     }
     if context.heap.is_class(*object) {
@@ -1490,9 +1621,22 @@ fn encode_frame<'gc>(
     writer.write_boolean(snapshot.uncontinuable);
 }
 
+/// The platform paths a graph section uses, in the order its references
+/// number them: what the platform path section lists
+/// (`platform_paths::encode_section`), and the objects the closing hash table
+/// records a hash for (`encode_tag_named_hashes`).
+pub struct UsedPlatformPaths<'gc> {
+    pub paths: Vec<Vec<Symbol>>,
+    pub objects: Vec<ObjectReference<'gc>>,
+}
+
 /// The object table, the frame table, and the roots. Both counts come
 /// first so the decoder can placeholder-allocate both tables before
 /// filling either (objects and frames reference each other freely).
+///
+/// Answers the platform paths the section uses, which the caller writes
+/// ahead of it: an object a path from `platform` reaches
+/// (`platform_paths::discover`) is named by its index there, not written.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_graph_section<'gc>(
     writer: &mut Writer,
@@ -1503,9 +1647,13 @@ pub fn encode_graph_section<'gc>(
     root_class: ClassReference<'gc>,
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
-) -> Result<(), String> {
+) -> Result<UsedPlatformPaths<'gc>, String> {
     let root_levels = root_levels(heap, root_class);
-    let table = GraphTable::build(heap, roots, platform, root_class, &root_levels);
+    let paths = match platform {
+        Value::Object(platform) => platform_paths::discover(heap, *platform),
+        _ => PlatformPaths::empty(),
+    };
+    let table = GraphTable::build(heap, roots, platform, root_class, &root_levels, paths);
     // The VM mirror is a capability the bootstrap hands to the core library
     // alone (`docs/design/core-library.md`, "The VM mirror is the whole Rust
     // boundary"); an artifact that carried it would hand it to whatever
@@ -1528,6 +1676,19 @@ pub fn encode_graph_section<'gc>(
              loader refuses an image that does"
         ));
     }
+    if let Some(refusal) = &table.shipped_without_path {
+        return Err(refusal.clone());
+    }
+    let used = table.used_platform_paths();
+    // `discover` records no path longer than a loader follows; the count is
+    // the one bound left, and an image past it would load as nothing.
+    if used.paths.len() > platform_paths::MAX_PLATFORM_PATHS {
+        return Err(format!(
+            "image encoding cannot name {} platform paths: a loader follows at most {}",
+            used.paths.len(),
+            platform_paths::MAX_PLATFORM_PATHS
+        ));
+    }
     let context = EncodeContext {
         table: &table,
         code_ids,
@@ -1546,19 +1707,22 @@ pub fn encode_graph_section<'gc>(
         encode_frame(writer, *frame, &context, symbols);
     }
     encode_values(writer, roots, &context);
-    Ok(())
+    Ok(used)
 }
 
 /// The graph section's closing table: the identity hash of every object the
 /// image names by tag rather than carries as a record -- each builtin class,
-/// the module's root class, the `platform` singleton, and the metaclasses of
-/// the builtins, the root class and its levels -- so that a hash the program
+/// the module's root class, the `platform` singleton, each object a used
+/// platform path names, and the metaclasses of the builtins, the root class,
+/// its levels and the classes a used path names -- so that a hash the program
 /// was given survives the load. Only an assigned hash (not 0) is written, in
 /// a fixed order -- the builtin classes in wire-tag order, then the root
-/// class, then `platform`, then the builtins' metaclasses in wire-tag order,
-/// the root class's and its levels', lowest first -- so one world encodes to
-/// one byte sequence. See `docs/design/image-format.md`, "Identity hashes are
-/// preserved verbatim".
+/// class, then `platform`, then the path-named objects in section order, then
+/// the builtins' metaclasses in wire-tag order, the root class's and its
+/// levels', lowest first, and the path-named classes' in section order -- so
+/// one world encodes to one byte sequence. A builtin class a path names is
+/// left to its builtin entry, since one object listed twice is refused. See
+/// `docs/design/image-format.md`, "Identity hashes are preserved verbatim".
 ///
 /// Every builtin is considered, not only those the graph reaches: a program
 /// can keep `Integer hash` in a slot without keeping `Integer`. The
@@ -1571,8 +1735,17 @@ pub fn encode_tag_named_hashes<'gc>(
     mutator: &Mutator<'gc>,
     root_class: ClassReference<'gc>,
     platform: &Value<'gc>,
+    used_platform_objects: &[ObjectReference<'gc>],
 ) {
     let heap = &mutator.heap;
+    // The path-named objects the builtin entries do not already cover, with
+    // their position in the section.
+    let path_named: Vec<(u32, ObjectReference<'gc>)> = used_platform_objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| heap.class_builtin(**object).is_none())
+        .map(|(index, object)| (u32_field("platform path index", index), *object))
+        .collect();
     let mut entries: Vec<(u8, Vec<u8>, u32)> = Vec::new();
     for kind in BuiltinClass::ALL {
         let hash = heap.identity_hash(mutator.builtin_class(kind));
@@ -1588,6 +1761,12 @@ pub fn encode_tag_named_hashes<'gc>(
         let hash = heap.identity_hash(*platform);
         if hash != 0 {
             entries.push((HASHED_PLATFORM, Vec::new(), hash));
+        }
+    }
+    for (index, object) in &path_named {
+        let hash = heap.identity_hash(*object);
+        if hash != 0 {
+            entries.push((HASHED_PLATFORM_PATH, index.to_le_bytes().to_vec(), hash));
         }
     }
     let mut prebuilt: Vec<(ClassReference<'gc>, Vec<u8>)> = BuiltinClass::ALL
@@ -1611,6 +1790,14 @@ pub fn encode_tag_named_hashes<'gc>(
         reference.write_u8(CLASS_ROOT_LEVEL);
         reference.write_u32(u32_field("root class level position", position));
         prebuilt.push((level, reference.into_bytes()));
+    }
+    for (index, object) in &path_named {
+        if heap.is_class(*object) && heap.class_this_class(*object).is_none() {
+            let mut reference = Writer::new();
+            reference.write_u8(CLASS_PLATFORM_PATH);
+            reference.write_u32(*index);
+            prebuilt.push((*object, reference.into_bytes()));
+        }
     }
     for (class, reference) in prebuilt {
         let Some(metaclass) = heap.class_metaclass(class) else {

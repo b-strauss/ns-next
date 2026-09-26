@@ -2,7 +2,8 @@
 //! live `ns-next` world, decoded on load (never a memory dump). See
 //! `docs/design/image-format.md`. Layout: header, optional source text,
 //! `SourceOrigin`, symbol table, code table, mixin table, root class, entry
-//! field, object table, frame table, roots, tag-named hashes.
+//! field, then for an image the platform paths, object table, frame table,
+//! roots, tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
@@ -20,11 +21,12 @@ pub mod encode;
 pub mod inspect;
 pub mod mixins;
 pub mod opcodes;
+pub mod platform_paths;
 pub mod symbols;
 
 use crate::heap::{Heap, Root};
 use crate::types::{ClassReference, SourceOrigin, Value};
-use crate::{Interpreter, Mutator, Symbol};
+use crate::{HostSignal, Interpreter, Mutator, Symbol};
 
 /// The sections that describe code and structure, encoded into their own
 /// buffers with the symbol table still open so the caller can intern into it.
@@ -137,7 +139,8 @@ fn write_describing<'gc>(
 /// `Some(source)` additionally stores `source` verbatim; `load` hands it back
 /// on `LoadedImage::source` and does nothing else with it. The graph closes
 /// with the hashes of the objects it names by tag
-/// (`encode::encode_tag_named_hashes`).
+/// (`encode::encode_tag_named_hashes`), and is preceded by the platform paths
+/// it names objects by (`platform_paths`).
 pub fn snapshot<'gc>(
     mutator: &Mutator<'gc>,
     source: Option<&str>,
@@ -165,7 +168,7 @@ pub fn snapshot<'gc>(
     // consumes `describing` -- the graph needs the mixin table's row ids, and
     // those exist only on `describing.mixin_ids`.
     let mut graph_writer = encode::Writer::new();
-    encode::encode_graph_section(
+    let used_paths = encode::encode_graph_section(
         &mut graph_writer,
         heap,
         roots,
@@ -175,7 +178,18 @@ pub fn snapshot<'gc>(
         &describing.mixin_ids,
         &mut describing.symbols,
     )?;
-    encode::encode_tag_named_hashes(&mut graph_writer, mutator, root_class, platform);
+    encode::encode_tag_named_hashes(
+        &mut graph_writer,
+        mutator,
+        root_class,
+        platform,
+        &used_paths.objects,
+    );
+    // Encoded after the graph, which is what decides which paths are used
+    // and in what order, and written ahead of it, since the loader resolves
+    // every path before it decodes the graph.
+    let mut path_writer = encode::Writer::new();
+    platform_paths::encode_section(&mut path_writer, &used_paths.paths, &mut describing.symbols);
     let mut writer = encode::Writer::new();
     write_describing(&mut writer, source, origin, 0, describing, root_class, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
@@ -183,6 +197,7 @@ pub fn snapshot<'gc>(
     // it fresh -- but the field is written unconditionally so every artifact
     // this format can produce shares one layout from here on.
     encode::encode_entry(&mut writer, None);
+    writer.write_raw(&path_writer.into_bytes());
     writer.write_raw(&graph_writer.into_bytes());
     Ok(writer.into_bytes())
 }
@@ -248,9 +263,9 @@ pub struct LoadedImage {
 }
 
 /// Decodes an artifact: symbols, code table, mixin table, root class, entry,
-/// then -- for an image, never a binary -- the object graph. Verifies the
-/// decoded declarations against their code and, for an image, advances the
-/// identity-hash counter past the graph's maximum.
+/// then -- for an image, never a binary -- the platform paths and the object
+/// graph. Verifies the decoded declarations against their code and, for an
+/// image, advances the identity-hash counter past the graph's maximum.
 ///
 /// Nothing here parses, resolves or compiles. The root class is rebuilt
 /// from mixin-table row 0 (`decode::build_root_class`), which is what makes
@@ -269,6 +284,17 @@ pub struct LoadedImage {
 /// built on the code, `verify_graph` (image only) resolving each frame's
 /// body off the decoded mixins that carry it. A corrupt but version-matching
 /// artifact is an `Err` here, never a panic in the VM later.
+///
+/// An image loads in three phases, because its platform paths are resolved
+/// by running code and its graph is decoded by running none
+/// (`docs/design/core-library.md`, "Platform paths in the image"). The first
+/// decodes everything up to and including the platform path section and
+/// roots the root class and its levels: a run may move them, and the mixins
+/// and the code hold no handle. The second, outside any entry, sends each
+/// path's members to the loading platform -- ordinary public unary sends,
+/// what the program's own `platform collections` may do -- and refuses a
+/// path that fails or answers no shipped object. The third decodes the graph
+/// against what the paths answered, and runs nothing.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut reader = decode::Reader::new(bytes);
     let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
@@ -279,7 +305,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     };
     let origin = decode::decode_source_origin(&mut reader).map_err(|error| error.to_string())?;
     let mut interpreter = Interpreter::bootstrap();
-    let decoded = interpreter.enter(|mutator| -> Result<_, String> {
+    let described = interpreter.enter(|mutator| -> Result<Described, String> {
         let symbols = symbols::decode(&mut reader).map_err(|error| error.to_string())?;
         let mut table =
             decode::decode_code_table(&mut reader, &symbols).map_err(|error| error.to_string())?;
@@ -307,6 +333,49 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             // something to send.
             return Err("a stateless artifact must record an entry selector".to_string());
         }
+        // A binary carries no graph, and so names no path.
+        let paths = if header.stateless {
+            Vec::new()
+        } else {
+            platform_paths::decode_section(&mut reader, &symbols)
+                .map_err(|error| error.to_string())?
+        };
+        // Rooted, because the next phase runs code, and a run may move them.
+        Ok(Described {
+            symbols,
+            table,
+            mixins,
+            root_class: mutator.stash(Value::Object(root_class)),
+            root_levels: root_levels
+                .into_iter()
+                .map(|level| mutator.stash(Value::Object(level)))
+                .collect(),
+            entry,
+            paths,
+        })
+    })?;
+    let resolved = resolve_platform_paths(&mut interpreter, &described.paths)?;
+    let Described {
+        symbols,
+        table,
+        mixins,
+        root_class,
+        root_levels,
+        entry,
+        paths: _,
+    } = described;
+    let roots = interpreter.enter(|mutator| -> Result<Vec<Root>, String> {
+        let Value::Object(root_class_object) = mutator.fetch(&root_class) else {
+            unreachable!("internal: the root class is a class object");
+        };
+        let root_levels: Vec<ClassReference> = root_levels
+            .iter()
+            .map(|level| match mutator.fetch(level) {
+                Value::Object(level) => level,
+                _ => unreachable!("internal: a root level is a class object"),
+            })
+            .collect();
+        let platform_paths: Vec<Value> = resolved.iter().map(|path| mutator.fetch(path)).collect();
         let platform = mutator.platform_value();
         // A binary carries no graph section at all -- `decode_graph_section`
         // would read the next artifact's bytes (there are none) as if they were
@@ -317,18 +386,24 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         } else {
             let mut context = decode::DecodeContext {
                 mutator,
-                root_class: &root_class,
+                root_class: &root_class_object,
                 codes: &table.codes,
                 platform,
                 mixins: &mixins.mixins,
                 root_levels: &root_levels,
+                platform_paths: &platform_paths,
             };
             decode::decode_graph_section(&mut reader, &mut context, &symbols)
                 .map_err(|error| error.to_string())?
         };
         if !header.stateless {
-            let tag_named_max = decode::decode_tag_named_hashes(&mut reader, mutator, root_class)
-                .map_err(|error| error.to_string())?;
+            let tag_named_max = decode::decode_tag_named_hashes(
+                &mut reader,
+                mutator,
+                root_class_object,
+                &platform_paths,
+            )
+            .map_err(|error| error.to_string())?;
             decode::verify_graph(&graph, &table, &mutator.heap)
                 .map_err(|error| error.to_string())?;
             mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
@@ -344,18 +419,15 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             .to_string());
         }
         // Rooted only now, after every verification pass and the trailing-bytes
-        // check: nothing runs while an artifact decodes, so nothing moves under
+        // check: nothing runs while the graph decodes, so nothing moves under
         // the plain handles above, and a refused artifact answers nothing to
         // root (`docs/design/image-format.md`, "Two artifacts").
-        let root_class = mutator.stash(Value::Object(root_class));
-        let roots = graph
+        Ok(graph
             .roots
             .into_iter()
             .map(|root| mutator.stash(root))
-            .collect();
-        Ok((root_class, roots, entry, header.stateless))
+            .collect())
     })?;
-    let (root_class, roots, entry, stateless) = decoded;
     Ok(LoadedImage {
         interpreter,
         root_class,
@@ -363,6 +435,67 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         origin,
         source,
         entry,
-        stateless,
+        stateless: header.stateless,
     })
+}
+
+/// What `load`'s first phase decoded, carried across the second, which runs
+/// code: the tables hold no handle, and the root class and its levels are
+/// rooted.
+struct Described {
+    symbols: symbols::Table,
+    table: decode::DecodedCodeTable,
+    mixins: mixins::Decoded,
+    root_class: Root,
+    root_levels: Vec<Root>,
+    entry: Option<Symbol>,
+    paths: Vec<Vec<Symbol>>,
+}
+
+/// Sends each path's members to the loading interpreter's platform, one
+/// unary send each, and answers what every path reached, rooted, in section
+/// order. A send that fails refuses the image, naming the path, and so does a
+/// final answer that is no shipped object
+/// (`platform_paths::is_shipped_object`): what an image names by a path must
+/// be something the loading binary owns, never an object a send made on the
+/// spot.
+fn resolve_platform_paths(
+    interpreter: &mut Interpreter,
+    paths: &[Vec<Symbol>],
+) -> Result<Vec<Root>, String> {
+    let mut resolved = Vec::with_capacity(paths.len());
+    for path in paths {
+        let described = platform_paths::describe(path);
+        let mut current = interpreter.platform();
+        for member in path {
+            current = match interpreter.send(&current, *member, &[]) {
+                Ok(answer) => answer,
+                Err(HostSignal::Error(error)) => {
+                    return Err(format!(
+                        "the image names platform path `{described}`, which the loading \
+                         platform cannot follow: {}",
+                        error.message
+                    ))
+                }
+                Err(HostSignal::Return) => {
+                    return Err(format!(
+                        "the image names platform path `{described}`, whose sends escaped \
+                         with a non-local return"
+                    ))
+                }
+            };
+        }
+        let shipped = interpreter.enter(|mutator| match mutator.fetch(&current) {
+            Value::Object(object) => platform_paths::is_shipped_object(&mutator.heap, object),
+            _ => false,
+        });
+        if !shipped {
+            return Err(format!(
+                "the image names platform path `{described}`, which answers no object of the \
+                 loading binary's core library"
+            ));
+        }
+        resolved.push(current);
+    }
+    Ok(resolved)
 }

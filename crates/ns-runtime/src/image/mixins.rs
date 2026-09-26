@@ -900,6 +900,8 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             // The decoder refuses a root section the root rule forbids
             // (`decode::decode_root_section`), so no decoded mixin has one.
             root_clause_defect: None,
+            // An image carries only its own module, never shipped source.
+            shipped: false,
         });
         built[index] = Some(mixin);
     }

@@ -556,6 +556,13 @@ pub struct Mixin {
     /// the encoder never writes one. `Mutator::apply_mixin` turns it into
     /// `InstantiationRefusal::RootClause` on the application.
     pub root_clause_defect: Option<RootClauseDefect>,
+    /// Compiled from shipped core-library source (`ResolvedModule.kernel`):
+    /// set on the declaration's mixin, on every nested mixin and on its class
+    /// side. The image encoder names an object of a shipped class by its
+    /// platform path rather than writing it (`image::platform_paths`), and
+    /// the loader accepts a path only when it answers such an object. A
+    /// decoded mixin is never shipped: an image carries only its own module.
+    pub shipped: bool,
 }
 
 impl Mixin {
@@ -582,6 +589,7 @@ impl Mixin {
             superclass_clause_code: None,
             superclass_message_code: None,
             root_clause_defect: None,
+            shipped: false,
         }
     }
 

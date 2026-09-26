@@ -258,7 +258,8 @@ impl<'gc> Mutator<'gc> {
     ///
     /// `kernel` is the module's `ResolvedModule.kernel`, carried down to
     /// every method so that only a kernel method can carry a fast path
-    /// (`MixinMethod::from_declaration`).
+    /// (`MixinMethod::from_declaration`), and recorded on every mixin of the
+    /// tree, class sides included, as `Mixin.shipped`.
     pub(crate) fn build_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
@@ -357,6 +358,7 @@ impl<'gc> Mutator<'gc> {
             superclass_clause_code: None,
             superclass_message_code: None,
             root_clause_defect: None,
+            shipped: kernel,
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
         mixin
@@ -393,6 +395,7 @@ impl<'gc> Mutator<'gc> {
             has_initializer_expressions: !side.initializer_expressions.is_empty(),
             initializer_expressions: side.initializer_expressions.clone(),
             span: side.span,
+            shipped: kernel,
             ..Mixin::empty(Symbol::CLASS_SIDE)
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);

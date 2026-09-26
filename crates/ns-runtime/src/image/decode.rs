@@ -361,6 +361,36 @@ pub enum DecodeError {
     TrailingBytes {
         count: usize,
     },
+    /// The platform path section lists more paths than
+    /// `platform_paths::MAX_PLATFORM_PATHS`. Each path costs the loader
+    /// sends, so the count is bounded before any is made.
+    TooManyPlatformPaths {
+        count: usize,
+    },
+    /// A platform path of no members -- the empty path is the platform,
+    /// which `VALUE_PLATFORM` names -- or of more than
+    /// `platform_paths::MAX_PLATFORM_PATH_LENGTH`.
+    PlatformPathLength {
+        length: usize,
+    },
+    /// A platform path member that is not a unary selector. A path is a
+    /// chain of unary sends, so no other selector can be one of its steps.
+    PlatformPathMemberNotUnary(String),
+    /// A platform path reference whose index is past the image's platform
+    /// path section.
+    BadPlatformPath(u32),
+    /// A class reference names a platform path whose object is not a class.
+    PlatformPathNotAClass,
+    /// An `OBJECT_INSTANCE` record of a class the loading platform names by
+    /// path carries a field count other than that class's layout. The layout
+    /// comes from the loading binary, not from the image
+    /// (`docs/design/core-library.md`, "Platform paths in the image"), so a
+    /// mismatch would leave the class's code reading fields the record does
+    /// not have, or not reading ones it does.
+    PlatformInstanceFieldCount {
+        expected: usize,
+        found: usize,
+    },
 }
 
 impl std::fmt::Display for DecodeError {
@@ -584,6 +614,32 @@ impl std::fmt::Display for DecodeError {
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
+            DecodeError::TooManyPlatformPaths { count } => write!(
+                f,
+                "the image lists {count} platform paths, more than the {} a loader follows",
+                super::platform_paths::MAX_PLATFORM_PATHS
+            ),
+            DecodeError::PlatformPathLength { length } => write!(
+                f,
+                "a platform path in the image has {length} members, but a path has between 1 and {} members",
+                super::platform_paths::MAX_PLATFORM_PATH_LENGTH
+            ),
+            DecodeError::PlatformPathMemberNotUnary(member) => write!(
+                f,
+                "platform path member `{member}` is not a unary selector"
+            ),
+            DecodeError::BadPlatformPath(index) => {
+                write!(f, "platform path {index} out of range")
+            }
+            DecodeError::PlatformPathNotAClass => write!(
+                f,
+                "an image field that must name a class names a platform path whose object is not a class"
+            ),
+            DecodeError::PlatformInstanceFieldCount { expected, found } => write!(
+                f,
+                "an instance of a class the platform names carries {found} field(s), but the loading \
+                 binary lays that class out with {expected}"
+            ),
         }
     }
 }
@@ -1990,6 +2046,12 @@ pub struct DecodeContext<'a, 'gc> {
     /// The root class's `<:` levels, lowest first, as `build_root_class`
     /// built them: what a `CLASS_ROOT_LEVEL` class tag names by position.
     pub root_levels: &'a [ClassReference<'gc>],
+    /// What each entry of the image's platform path section answered when
+    /// `load` sent its members to the loading platform, by index: what a
+    /// `VALUE_PLATFORM_PATH`, a `CLASS_PLATFORM_PATH` and a
+    /// `HASHED_PLATFORM_PATH` name. Resolved before the graph is decoded, so
+    /// the decoder only looks them up and runs no code.
+    pub platform_paths: &'a [Value<'gc>],
 }
 
 pub struct DecodedGraph<'gc> {
@@ -2043,32 +2105,53 @@ pub fn decode_class_tag<'gc>(
     decode_class_tag_after(tag, reader, context, tables)
 }
 
+/// An object record's header, as `decode_object_header` read it.
+struct ObjectHeader<'gc> {
+    class: ClassReference<'gc>,
+    /// The header named the builtin `Activation`.
+    activation: bool,
+    /// The header named a class by platform path (`CLASS_PLATFORM_PATH`),
+    /// whose layout comes from the loading binary.
+    platform_path: bool,
+}
+
 /// An object record's header: its class tag, which is `decode_class_tag`'s
 /// except that it also accepts the builtin `Activation` -- the header of an
 /// activation record, the one place an image may name that class. Answers
 /// whether it did, so the caller can hold the header and the body to each
-/// other (`DecodeError::ActivationHeader`) once it has read the body's tag.
+/// other (`DecodeError::ActivationHeader`) once it has read the body's tag,
+/// and whether it named its class by platform path, so the caller can hold an
+/// instance's fields to that class's layout.
 fn decode_object_header<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
-) -> Result<(ClassReference<'gc>, bool), DecodeError> {
+) -> Result<ObjectHeader<'gc>, DecodeError> {
     let tag = reader.read_u8()?;
     if tag != CLASS_BUILTIN {
-        return Ok((decode_class_tag_after(tag, reader, context, tables)?, false));
+        return Ok(ObjectHeader {
+            class: decode_class_tag_after(tag, reader, context, tables)?,
+            activation: false,
+            platform_path: tag == CLASS_PLATFORM_PATH,
+        });
     }
-    match read_builtin_class(reader)? {
-        BuiltinClass::Activation => Ok((
+    let (class, activation) = match read_builtin_class(reader)? {
+        BuiltinClass::Activation => (
             context.mutator.builtin_class(BuiltinClass::Activation),
             true,
-        )),
-        kind => Ok((
+        ),
+        kind => (
             context
                 .mutator
                 .builtin_class(referenced_builtin_class(kind)?),
             false,
-        )),
-    }
+        ),
+    };
+    Ok(ObjectHeader {
+        class,
+        activation,
+        platform_path: false,
+    })
 }
 
 /// `decode_class_tag` once its tag byte has been read.
@@ -2085,12 +2168,16 @@ fn decode_class_tag_after<'gc>(
         CLASS_USER_ROOT => Ok(*context.root_class),
         CLASS_RECORD => decode_object_id(reader, tables),
         CLASS_ROOT_LEVEL => read_root_level(reader, context.root_levels),
+        CLASS_PLATFORM_PATH => {
+            read_platform_path_class(reader, &context.mutator.heap, context.platform_paths)
+        }
         CLASS_METACLASS => {
             let class = read_prebuilt_class(
                 reader,
                 context.mutator,
                 *context.root_class,
                 context.root_levels,
+                context.platform_paths,
             )?;
             context
                 .mutator
@@ -2103,25 +2190,54 @@ fn decode_class_tag_after<'gc>(
 }
 
 /// The class a `CLASS_METACLASS` reference or a `HASHED_METACLASS` entry
-/// names the metaclass of: a builtin, the root class or a root level -- a
-/// class the loading world has before the graph. A second
-/// `CLASS_METACLASS` or a `CLASS_RECORD` here is refused, which bounds the
-/// nesting at one: a class record's metaclass is a record of its own and is
-/// named by its id.
+/// names the metaclass of: a builtin, the root class, a root level or a
+/// class named by platform path -- a class the loading world has before the
+/// graph. A second `CLASS_METACLASS` or a `CLASS_RECORD` here is refused,
+/// which bounds the nesting at one: a class record's metaclass is a record of
+/// its own and is named by its id.
 fn read_prebuilt_class<'gc>(
     reader: &mut Reader,
     mutator: &Mutator<'gc>,
     root_class: ClassReference<'gc>,
     root_levels: &[ClassReference<'gc>],
+    platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match reader.read_u8()? {
         CLASS_BUILTIN => Ok(mutator.builtin_class(read_referenced_builtin_class(reader)?)),
         CLASS_USER_ROOT => Ok(root_class),
         CLASS_ROOT_LEVEL => read_root_level(reader, root_levels),
+        CLASS_PLATFORM_PATH => read_platform_path_class(reader, &mutator.heap, platform_paths),
         tag => Err(DecodeError::InvalidTag {
             what: "prebuilt class",
             tag,
         }),
+    }
+}
+
+/// A platform path reference's index, after its tag, resolved against what
+/// `load` resolved the section's paths to: in range, or `BadPlatformPath`
+/// before anything indexes by it.
+fn read_platform_path<'gc>(
+    reader: &mut Reader,
+    platform_paths: &[Value<'gc>],
+) -> Result<Value<'gc>, DecodeError> {
+    let index = reader.read_u32()?;
+    platform_paths
+        .get(index as usize)
+        .copied()
+        .ok_or(DecodeError::BadPlatformPath(index))
+}
+
+/// `read_platform_path` where the format types the reference as a class:
+/// its object must be a class object.
+fn read_platform_path_class<'gc>(
+    reader: &mut Reader,
+    heap: &Heap<'gc>,
+    platform_paths: &[Value<'gc>],
+) -> Result<ClassReference<'gc>, DecodeError> {
+    match read_platform_path(reader, platform_paths)? {
+        Value::Object(class) if heap.is_class(class) => Ok(class),
+        _ => Err(DecodeError::PlatformPathNotAClass),
     }
 }
 
@@ -2164,6 +2280,7 @@ fn decode_value<'gc>(
         VALUE_OBJECT_ID => Ok(Value::Object(decode_object_id(reader, tables)?)),
         VALUE_CLASS_TAG => Ok(Value::Object(decode_class_tag(reader, context, tables)?)),
         VALUE_PLATFORM => Ok(context.platform),
+        VALUE_PLATFORM_PATH => read_platform_path(reader, context.platform_paths),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
 }
@@ -2970,7 +3087,11 @@ pub fn decode_graph_section<'gc>(
     let metaclass_rows = metaclass_rows(context.mixins);
     let metaclass_class = context.mutator.builtin_class(BuiltinClass::Metaclass);
     for (index, object) in objects.iter().enumerate() {
-        let (class, activation_header) = decode_object_header(reader, context, &tables)?;
+        let ObjectHeader {
+            class,
+            activation: activation_header,
+            platform_path: class_named_by_path,
+        } = decode_object_header(reader, context, &tables)?;
         let identity_hash = reader.read_u32()?;
         // Checked here, the one place identity hashes are read: `load`
         // hands the maximum straight to `advance_identity_hash_past`, which
@@ -2984,7 +3105,25 @@ pub fn decode_graph_section<'gc>(
             return Err(DecodeError::ActivationHeader);
         }
         let data = match body {
-            OBJECT_INSTANCE => ObjectData::Instance(decode_values(reader, context, &tables)?),
+            OBJECT_INSTANCE => {
+                let fields = decode_values(reader, context, &tables)?;
+                // The loading binary lays a shipped class out, not the image,
+                // so an instance of one must fit that layout exactly.
+                if class_named_by_path {
+                    let expected = context
+                        .mutator
+                        .heap
+                        .class_application(class)
+                        .map_or(0, |application| application.slot_count);
+                    if fields.len() != expected {
+                        return Err(DecodeError::PlatformInstanceFieldCount {
+                            expected,
+                            found: fields.len(),
+                        });
+                    }
+                }
+                ObjectData::Instance(fields)
+            }
             OBJECT_STRING => ObjectData::String(reader.read_str()?),
             OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
             OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
@@ -3093,14 +3232,16 @@ pub fn decode_graph_section<'gc>(
 }
 
 /// The inverse of `encode::encode_tag_named_hashes`: puts each recorded hash
-/// back onto the object the bootstrap -- or `build_root_class` -- built, and
-/// answers the largest one, which `load` advances the counter past together
-/// with the graph's own maximum. A 0, a repeated object and `u32::MAX` are
-/// refused, each for the reason its `DecodeError` gives.
+/// back onto the object the bootstrap -- or `build_root_class`, or a
+/// platform path's sends -- built, and answers the largest one, which `load`
+/// advances the counter past together with the graph's own maximum. A 0, a
+/// repeated object and `u32::MAX` are refused, each for the reason its
+/// `DecodeError` gives.
 pub fn decode_tag_named_hashes<'gc>(
     reader: &mut Reader,
     mutator: &mut Mutator<'gc>,
     root_class: ClassReference<'gc>,
+    platform_paths: &[Value<'gc>],
 ) -> Result<u32, DecodeError> {
     let count = bounded_count(
         reader.read_u32()? as usize,
@@ -3118,8 +3259,16 @@ pub fn decode_tag_named_hashes<'gc>(
                 Value::Object(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },
+            HASHED_PLATFORM_PATH => {
+                let index = reader.read_u32()?;
+                match platform_paths.get(index as usize) {
+                    Some(Value::Object(object)) => *object,
+                    _ => return Err(DecodeError::BadPlatformPath(index)),
+                }
+            }
             HASHED_METACLASS => {
-                let class = read_prebuilt_class(reader, mutator, root_class, &root_levels)?;
+                let class =
+                    read_prebuilt_class(reader, mutator, root_class, &root_levels, platform_paths)?;
                 mutator
                     .heap
                     .class_metaclass(class)

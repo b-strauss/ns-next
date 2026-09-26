@@ -1140,9 +1140,9 @@ impl<'gc> Heap<'gc> {
 
     /// Overwrites `object`'s identity hash. Two legitimate callers:
     /// `image::decode::decode_tag_named_hashes`, which puts a recorded hash
-    /// back onto a builtin class, the root class or `platform` -- none of
-    /// them a record, so nothing else could restore what the image
-    /// remembered for one -- and `tests/image.rs`'s
+    /// back onto a builtin class, the root class, `platform` or an object a
+    /// platform path names -- none of them a record, so nothing else could
+    /// restore what the image remembered for one -- and `tests/image.rs`'s
     /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating`,
     /// which forces a live object's hash to one below the ceiling by hand,
     /// the only way to reach `advance_identity_hash_past`'s overflow guard
@@ -1679,6 +1679,17 @@ impl<'gc> Heap<'gc> {
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => Some(read(&data.application.declared_slots)),
             _ => None,
+        }
+    }
+
+    /// Whether `class`'s application applies a mixin compiled from shipped
+    /// core-library source (`Mixin.shipped`); `false` for an object that is
+    /// not a class object. Read without cloning the application's `Rc`.
+    pub fn class_is_shipped(&self, class: ClassReference<'gc>) -> bool {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.application.mixin.shipped,
+            _ => false,
         }
     }
 
