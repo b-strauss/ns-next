@@ -632,7 +632,18 @@ fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
             .filter(|slot| slot.mutable)
             .map(|slot| Symbol::intern(&format!("{}:", slot.name)));
         // A lazy slot's getter is one of the row's methods, so its name is
-        // counted there, not here.
+        // counted there, not among the members below. Two lazy slots of one
+        // name would then share that one getter, which serves only one of
+        // their fields and leaves the other silently dead, so they are
+        // refused here as the duplicate getter they are.
+        let mut lazy_names = std::collections::HashSet::new();
+        for slot in row.slots.iter().filter(|slot| slot.lazy) {
+            if !lazy_names.insert(slot.name) {
+                return Err(DecodeError::DuplicateSelector(
+                    slot.name.as_str().to_string(),
+                ));
+            }
+        }
         let members = row
             .slots
             .iter()

@@ -315,6 +315,36 @@ fn write_mixin_row_with_slots(
     methods: &[(u32, u32)],
     nested: &[u32],
 ) {
+    let methods: Vec<MethodShape> = methods
+        .iter()
+        .map(|&(selector, code)| MethodShape {
+            selector,
+            access: AccessModifier::Protected,
+            argument_count: 0,
+            code,
+        })
+        .collect();
+    write_mixin_row_with_method_shapes(writer, name_id, slots, &methods, nested);
+}
+
+/// One method record of a hand-crafted row, every field of it chosen.
+#[derive(Clone, Copy)]
+struct MethodShape {
+    selector: u32,
+    access: AccessModifier,
+    argument_count: u16,
+    code: u32,
+}
+
+/// `write_mixin_row_with_slots` with each method's accessibility and
+/// argument count chosen, for the checks that read them.
+fn write_mixin_row_with_method_shapes(
+    writer: &mut encode::Writer,
+    name_id: u32,
+    slots: &[(u32, u8, u8)],
+    methods: &[MethodShape],
+    nested: &[u32],
+) {
     writer.write_u32(name_id);
     writer.write_u8(mixins::access_tag(AccessModifier::Protected)); // AccessModifier::Protected
     writer.write_u32(0); // span.start
@@ -330,11 +360,11 @@ fn write_mixin_row_with_slots(
     writer.write_boolean(false); // no superclass clause
     writer.write_u32(0); // no mixin applications
     writer.write_u32(methods.len() as u32);
-    for (selector, code) in methods {
-        writer.write_u32(*selector);
-        writer.write_u8(mixins::access_tag(AccessModifier::Protected)); // AccessModifier::Protected
-        writer.write_u16(0); // argument_count
-        writer.write_u32(*code);
+    for method in methods {
+        writer.write_u32(method.selector);
+        writer.write_u8(mixins::access_tag(method.access));
+        writer.write_u16(method.argument_count);
+        writer.write_u32(method.code);
     }
     writer.write_u32(nested.len() as u32);
     for id in nested {
@@ -3421,10 +3451,11 @@ fn trace_of(interpreter: &mut Interpreter, holder: &Root) -> String {
 /// A lazy slot (§6.3.3) survives an image both filled and empty: the
 /// decoded class keeps the slot lazy, so the empty one still evaluates its
 /// initializer on its first read after the load, and the filled one answers
-/// its value without evaluating it again. A slot decoded as eager would
-/// answer `nil` for the empty one; a getter decoded without its fast path
-/// would still work, but one decoded without its slot base would write the
-/// wrong field.
+/// its value without evaluating it again. `Holder` sits over `Base`, whose
+/// two slots put the lazy slot at a non-zero `own_slot_base`: a slot decoded
+/// as eager would answer `nil` for the empty one, and a getter decoded
+/// without its `LazySlot` fast path would be activated with a slot base of
+/// 0 and write `Base`'s first field instead.
 #[test]
 fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
     let source = indoc! {"
@@ -3433,7 +3464,8 @@ fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
         class Root = Object new (
           | public first = Holder new. public second = Holder new. |
         ) (
-          class Holder = Object new (| public trace ::= ''. |) (
+          class Base = Object new (| public left = 'left'. public right = 'right'. |) () : ()
+          class Holder = Base new (| public trace ::= ''. |) (
             lazy public computed = mark.
             mark = ( trace:: trace, '!'. ^42 )
           ) : ()
@@ -3496,6 +3528,22 @@ fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
             marks_after,
             "{name}'s initializer ran at most once, before or after the load"
         );
+        let left = expect_ok(
+            loaded
+                .interpreter
+                .send(&holder, Symbol::intern("left"), &[]),
+            "left",
+        );
+        loaded
+            .interpreter
+            .enter(|mutator| match mutator.fetch(&left) {
+                Value::Object(string) => assert_eq!(
+                    mutator.heap().str_value(string).as_deref(),
+                    Some("left"),
+                    "{name}'s inherited slot keeps its value"
+                ),
+                other => panic!("left answered {}", mutator.heap().describe(&other)),
+            });
     }
 }
 
@@ -6172,6 +6220,113 @@ fn decode_one_row_with_slots(
     let mut reader = decode::Reader::new(&bytes);
     let codes = [Rc::new(every_instruction_once())];
     mixins::decode(&mut reader, &table_with(names), &codes)
+}
+
+/// `decode_one_row_with_slots` with every field of each method chosen.
+fn decode_one_row_with_method_shapes(
+    names: &[&str],
+    slots: &[(u32, u8, u8)],
+    methods: &[MethodShape],
+) -> Result<mixins::Decoded, decode::DecodeError> {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    write_mixin_row_with_method_shapes(&mut writer, 0, slots, methods, &[]);
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    let codes = [Rc::new(every_instruction_once())];
+    mixins::decode(&mut reader, &table_with(names), &codes)
+}
+
+/// A lazy slot record (§6.3.3) named by symbol `name`, immutable.
+fn lazy_slot_record(name: u32, access: AccessModifier) -> (u32, u8, u8) {
+    (
+        name,
+        mixins::slot_kind_tag(false, true),
+        mixins::access_tag(access),
+    )
+}
+
+/// A lazy slot's getter as the encoder writes it: a unary method of the
+/// slot's name and accessibility.
+fn getter_shape(selector: u32, access: AccessModifier) -> MethodShape {
+    MethodShape {
+        selector,
+        access,
+        argument_count: 0,
+        code: 0,
+    }
+}
+
+/// A lazy slot decodes as one, with no accessor getter, and its getter --
+/// one of the row's methods -- gets back the `LazySlot` fast path at the
+/// slot's own position.
+#[test]
+fn a_decoded_lazy_slot_restores_its_getters_fast_path() {
+    let decoded = decode_one_row_with_method_shapes(
+        &["X", "eager", "later"],
+        &[
+            slot_record(1, false, AccessModifier::Public),
+            lazy_slot_record(2, AccessModifier::Public),
+        ],
+        &[getter_shape(2, AccessModifier::Public)],
+    )
+    .expect("decode");
+    let root = decoded.root().expect("a root row");
+    assert!(root.slots[1].lazy, "the slot record says lazy");
+    let getter = root
+        .compiled_method(Symbol::intern("later"))
+        .expect("the getter is a compiled method");
+    assert_eq!(
+        getter.fast_path,
+        Some(ns_runtime::mixin::MethodFastPath::LazySlot { own_index: 1 })
+    );
+}
+
+/// Two lazy slots of one name would share the one getter the row carries
+/// for that name, which serves only one of their fields and leaves the other
+/// dead: the row is refused as declaring that member twice, as two eager
+/// slots of one name are.
+#[test]
+fn a_row_declaring_one_lazy_slot_twice_is_refused() {
+    let error = decode_one_row_with_method_shapes(
+        &["X", "later"],
+        &[
+            lazy_slot_record(1, AccessModifier::Public),
+            lazy_slot_record(1, AccessModifier::Public),
+        ],
+        &[getter_shape(1, AccessModifier::Public)],
+    )
+    .err();
+    assert_eq!(
+        error,
+        Some(decode::DecodeError::DuplicateSelector("later".to_string()))
+    );
+}
+
+/// A lazy slot's getter takes no argument and has the slot's accessibility
+/// (`MixinMethod::lazy_slot_getter`). A method of the slot's name that
+/// differs in either is not its getter, and the row is refused rather than
+/// given a `LazySlot` fast path on a method that is none.
+#[test]
+fn a_lazy_slot_whose_method_is_not_its_getter_is_refused() {
+    let taking_an_argument = MethodShape {
+        argument_count: 1,
+        ..getter_shape(1, AccessModifier::Public)
+    };
+    let of_another_access = getter_shape(1, AccessModifier::Private);
+    for method in [taking_an_argument, of_another_access] {
+        assert_eq!(
+            decode_one_row_with_method_shapes(
+                &["X", "later"],
+                &[lazy_slot_record(1, AccessModifier::Public)],
+                &[method],
+            )
+            .err(),
+            Some(decode::DecodeError::LazySlotWithoutGetter(
+                "later".to_string()
+            ))
+        );
+    }
 }
 
 #[test]
