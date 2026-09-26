@@ -20,7 +20,9 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
         AttributesDescriptor("Keywords//Return (^)", NewspeakColors.RETURN),
         AttributesDescriptor("Identifier", NewspeakColors.IDENTIFIER),
         AttributesDescriptor("Selectors//Keyword selector", NewspeakColors.KEYWORD_SELECTOR),
+        AttributesDescriptor("Selectors//Setter (name::)", NewspeakColors.SETTER_KEYWORD),
         AttributesDescriptor("Selectors//Binary selector", NewspeakColors.BINARY_SELECTOR),
+        AttributesDescriptor("Selectors//Angle brackets (< and >)", NewspeakColors.ANGLE_BRACKET),
         AttributesDescriptor("Operators//Assignment and mixin application (=, ::=, <:)", NewspeakColors.ASSIGNMENT),
         AttributesDescriptor("Literals//Number", NewspeakColors.NUMBER),
         AttributesDescriptor("Literals//String", NewspeakColors.STRING),
@@ -55,16 +57,16 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
     override fun getDemoText(): String = """
         Newspeak3
         'Examples'
-        class <class>Counter</class> usingPlatform: <parameter>platform</parameter> = Object new (
+        class <class>Counter</class> usingPlatform: <parameter>platform</parameter> = Object <send>new</send> (
           (* A counter. TODO: reset *)
           | private <slot>count</slot> ::= 0. private <immutable>limit</immutable> = 16rFF. |
         ) (
           public <declaration>increment:</declaration> <parameter>step</parameter> = (
             | <local>next</local> |
-            <local>next</local>:: <slot>count</slot> + <parameter>step</parameter>.
-            <local>next</local> > <immutable>limit</immutable> ifTrue: [^nil].
-            <slot>count</slot>:: <local>next</local>.
-            ^self <send>report:</send> #counted with: 'done' and: "!"
+            <local>next::</local> <slot>count</slot> <send>+</send> <parameter>step</parameter>.
+            <local>next</local> <send>></send> <immutable>limit</immutable> <send>ifTrue:</send> [^nil].
+            <slot>count::</slot> <local>next</local>.
+            ^self <send>report:</send> #counted <send>with:</send> 'done' <send>and:</send> "!"
           )
           public <declaration>report:</declaration> <parameter>what</parameter> with: <parameter>text</parameter> and: <parameter>mark</parameter> = ( ^{ <parameter>what</parameter>. <parameter>text</parameter>. <parameter>mark</parameter> } )
         ) : ()

@@ -169,7 +169,14 @@ excluded when the selector's tokens are found.
   like any other; the server looks the selector up among the declarations of
   the class `depth` levels out — slot, nested class or method — and colours it
   accordingly. A name that class only inherits cannot be placed statically and
-  is coloured `method`, which is what it is: a send.
+  is coloured `method`, which is what it is: a send. A write, `name:: value`,
+  is coloured over the whole `name::` token, the colons with the name.
+- **Messages to an object.** A send with an explicit receiver has no binding;
+  its selector -- unary, binary or keyword -- is coloured `method`, in an
+  expression, in a cascade and in a superclass or `<:` clause alike: `a + b` is
+  a send like any other. A binary selector may be any of the tokens the parser
+  takes as one after a receiver, `=`, `<`, `>`, `|` and `||` included. The `N`
+  of `outer N` is left alone: it names an enclosing class, not a message.
 - **Selector parts.** The AST's `Selector` carries no span, so the keyword
   parts of a send are found among the lexer's tokens inside the message's span,
   outside its arguments' spans. `ns-syntax` does not change.
@@ -236,7 +243,10 @@ point `com.intellij.platform.lsp.integrationProvider`, classes
 handed to `fileOpened` to start the client) and `ProjectWideLspClientDescriptor`,
 replacing `modules.ultimate`, `serverSupportProvider` and `LspServerSupportProvider`.
 The client descriptor's `lspCustomization` (`LspCustomization.semanticTokensCustomizer`)
-is where the server's semantic tokens are wired in, over `LspSemanticTokensSupport`;
+is where the server's semantic tokens are wired in, over `LspSemanticTokensSupport`,
+whose `shouldAskServerForSemanticTokens` the plugin overrides to answer `true`: the
+platform's default asks only for plain-text and TextMate files, so a `.ns` file,
+which has a language of its own, would never be asked for at all;
 restarting the server, after the settings path changes or by hand, goes through
 `LspClientManager.getInstance(project).stopAndRestartClientsIfNeeded(...)`. Every
 one of these names was confirmed against the actual 2026.2.3 platform jars while
@@ -264,7 +274,18 @@ Components:
   from `DefaultLanguageHighlighterColors`, so every colour scheme works as is,
   and a `ColorSettingsPage` with sample code covering the semantic-token
   categories too: the server's token types are mapped onto the plugin's own
-  keys, so each one can be configured.
+  keys, so each one can be configured. A send and a keyword selector derive
+  from `INSTANCE_METHOD`, not `FUNCTION_CALL`: the platform's schemes leave a
+  function call in the plain text colour but give an instance method its own
+  blue, which is what a message to an object is. A setter token, `name::`,
+  has a key of its own over `IDENTIFIER`: the lexer cannot tell a slot's or a
+  local's write from a setter send, so it leaves the token neutral for the
+  semantic colour to replace instead of showing it as a send first. A binary
+  selector token derives from `INSTANCE_METHOD` too, since it is always a send
+  or a method's own selector; `<` and `>`, which also delimit type annotations
+  and pattern literals, have a neutral key of their own and are coloured by the
+  server where they are sends. A parameter derives from
+  `PARAMETER` and a slot from `INSTANCE_FIELD`, as in TypeScript.
 - **Editor features** — a `BraceMatcher` for `()`, `[]` and `{}`, a
   `Commenter` for `(* *)`, a `QuoteHandler`. Not for `<>`: `<` and `>` are
   also binary selectors, and pairing a comparison with a type's closing

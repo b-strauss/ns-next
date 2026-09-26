@@ -278,7 +278,10 @@ impl Classifier<'_> {
             .iter()
             .chain(&declaration.mixin_applications)
         {
+            // The clause's messages go to the class its receiver names -- a
+            // message to an object like any other.
             for message in &clause.messages {
+                self.selector(clause.receiver.span, message, TokenCategory::Method, false);
                 for argument in &message.arguments {
                     self.expression(argument, &chain);
                 }
@@ -374,6 +377,10 @@ impl Classifier<'_> {
             Expression::Literal(_) => {}
             Expression::Send(send) => self.send(send, chain),
             Expression::Cascade(cascade) => {
+                let receiver = expression_span(&cascade.receiver);
+                for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
+                    self.explicit_receiver_selector(&cascade.receiver, receiver, message);
+                }
                 self.expression(&cascade.receiver, chain);
                 for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                     for argument in &message.arguments {
@@ -421,16 +428,37 @@ impl Classifier<'_> {
     }
 
     fn setter_target(&mut self, target: &ast::Identifier, chain: &[&ClassMembers]) {
+        // The binding is keyed by the name's span; the colour covers the
+        // whole `name::` token, so the colons read as part of the write.
+        let span = self.setter_token(target.span);
         match self.bindings.get(&target.span) {
             Some(Binding::Local(_) | Binding::OuterLocal { .. }) => {
                 let (category, readonly) = self.local(&target.name);
-                self.emit(target.span, category, false, readonly);
+                self.emit(span, category, false, readonly);
             }
-            Some(Binding::LexicalSend { .. }) => {
+            Some(Binding::LexicalSend { depth }) => {
                 let setter = format!("{}:", target.name);
-                self.member_use(target.span, &setter, chain);
+                let (category, readonly) = member_category(chain, *depth, &setter);
+                self.emit(span, category, false, readonly);
             }
             _ => {}
+        }
+    }
+
+    /// The `name::` token that starts where `name` does, or `name`'s own span
+    /// when the lexer produced no such token.
+    fn setter_token(&self, name: Span) -> Span {
+        let first = self
+            .tokens
+            .partition_point(|token| token.span.start < name.start);
+        match self.tokens.get(first) {
+            Some(token)
+                if matches!(token.kind, TokenKind::SetterKeyword)
+                    && token.span.start == name.start =>
+            {
+                token.span
+            }
+            _ => name,
         }
     }
 
@@ -439,10 +467,24 @@ impl Classifier<'_> {
             Some(Binding::LexicalSend { depth }) => {
                 let (category, readonly) =
                     member_category(chain, depth, selector_name(&send.message.selector));
-                self.selector(send, category, readonly);
+                self.selector(
+                    expression_span(&send.receiver),
+                    &send.message,
+                    category,
+                    readonly,
+                );
             }
-            Some(Binding::SuperSend) => self.selector(send, TokenCategory::Method, false),
-            _ => {}
+            Some(Binding::SuperSend) => self.selector(
+                expression_span(&send.receiver),
+                &send.message,
+                TokenCategory::Method,
+                false,
+            ),
+            _ => self.explicit_receiver_selector(
+                &send.receiver,
+                expression_span(&send.receiver),
+                &send.message,
+            ),
         }
         // Visiting a `self`, `super` or `outer N` receiver emits nothing: the
         // resolver records no binding inside one.
@@ -452,14 +494,37 @@ impl Classifier<'_> {
         }
     }
 
-    /// Emits the selector tokens of `send`: inside the message's span, but
+    /// Colours the selector of a message sent to an object -- a send with an
+    /// explicit receiver, which the resolver records no binding for -- as a
+    /// method, a binary one included: `a + b` is a send like any other.
+    /// `outer N` is not such a send: `N` names an enclosing class, and the
+    /// send it receives is the one the resolver binds.
+    fn explicit_receiver_selector(
+        &mut self,
+        receiver: &Expression,
+        receiver_span: Span,
+        message: &ast::MessageSend,
+    ) {
+        if matches!(receiver, Expression::Identifier(identifier) if identifier.name == "outer") {
+            return;
+        }
+        self.selector(receiver_span, message, TokenCategory::Method, false);
+    }
+
+    /// Emits the selector tokens of `message`: inside the message's span, but
     /// outside the receiver's and every argument's. A keyword message's span
     /// starts at its receiver, so the receiver has to be excluded explicitly.
-    fn selector(&mut self, send: &ast::Send, category: TokenCategory, readonly: bool) {
-        let excluded: Vec<Span> = std::iter::once(expression_span(&send.receiver))
-            .chain(send.message.arguments.iter().map(expression_span))
+    fn selector(
+        &mut self,
+        receiver: Span,
+        message: &ast::MessageSend,
+        category: TokenCategory,
+        readonly: bool,
+    ) {
+        let excluded: Vec<Span> = std::iter::once(receiver)
+            .chain(message.arguments.iter().map(expression_span))
             .collect();
-        let message = send.message.span;
+        let message = message.span;
         let first = self
             .tokens
             .partition_point(|token| token.span.start < message.start);
@@ -473,6 +538,15 @@ impl Classifier<'_> {
                         | TokenKind::Keyword
                         | TokenKind::SetterKeyword
                         | TokenKind::BinarySelector
+                        // `=`, `<`, `>`, `|` and `||` have tokens of their
+                        // own for the declaration syntax, but after a
+                        // receiver the parser takes them as binary selectors
+                        // (`parse_binary_message`), so they are one here too.
+                        | TokenKind::Equals
+                        | TokenKind::LessThan
+                        | TokenKind::GreaterThan
+                        | TokenKind::Bar
+                        | TokenKind::DoubleBar
                 )
             })
             .filter(|token| !excluded.iter().any(|span| contains(*span, token.span)))
@@ -640,6 +714,24 @@ mod tests {
     }
 
     #[test]
+    fn a_write_colours_the_colons_with_the_name() {
+        let analysis = crate::analysis::analyze(MODULE);
+        for setter in ["count::", "total::"] {
+            let start = MODULE.find(setter).expect("the write") as u32;
+            let classified = analysis
+                .classified
+                .iter()
+                .find(|classified| classified.span.start == start)
+                .expect("the write is classified");
+            assert_eq!(
+                classified.span,
+                Span::new(start, start + setter.len() as u32),
+                "`{setter}` is coloured as a whole"
+            );
+        }
+    }
+
+    #[test]
     fn a_nested_class_in_use_is_a_class() {
         assert_eq!(classified_at("Inner", 1), Some((Class, false, false)));
     }
@@ -757,14 +849,51 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_receiver_send_is_not_classified() {
+    fn a_message_to_an_object_colours_its_selector_as_a_method() {
         // `new` in `Inner new` has an explicit receiver and no binding.
-        let start = MODULE.find("Inner new").expect("the send") + "Inner ".len();
-        let analysis = crate::analysis::analyze(MODULE);
-        assert!(!analysis
-            .classified
-            .iter()
-            .any(|classified| classified.span.start as usize == start));
+        let text = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Shapes = Object new (
+              | list = Object new. |
+            ) (
+              public make = ( ^Object new )
+              public sum = ( ^list size + 1 )
+              public put = ( ^list at: 1 put: 2 )
+              public cascade = ( ^list yourself; hash )
+              public compare = ( ^(list size = 2) | true )
+              public less = ( ^list size < 3 )
+            ) : ()
+        "};
+        let analysis = crate::analysis::analyze(text);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let category_of = |needle: &str| {
+            let start = text.find(needle).expect("the token") as u32;
+            analysis
+                .classified
+                .iter()
+                .find(|classified| classified.span.start == start)
+                .map(|classified| classified.category)
+        };
+        assert_eq!(
+            category_of("new ("),
+            Some(TokenCategory::Method),
+            "a superclass clause's message goes to the class it names"
+        );
+        for selector in ["new )", "size", "at:", "put:", "yourself", "hash"] {
+            assert_eq!(
+                category_of(selector),
+                Some(TokenCategory::Method),
+                "`{selector}` is a message to an object"
+            );
+        }
+        for operator in ["+ 1", "= 2", "< 3", "| true"] {
+            assert_eq!(
+                category_of(operator),
+                Some(TokenCategory::Method),
+                "`{operator}` is a binary message to an object"
+            );
+        }
     }
 
     #[test]
