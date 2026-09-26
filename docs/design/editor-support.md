@@ -320,11 +320,15 @@ same tree, with no change to the plugin's code.
 - **Rust from Gradle.** `buildLanguageServerDebug` and `buildLanguageServerRelease`
   each run `cargo build -p ns-lsp` at the repository root, debug and `--release`
   respectively; `tasks.test` depends on the debug build and points the tests at
-  it, and `prepareSandbox` (so `buildPlugin` and `runIde` too) depends on the
-  release build and copies the binary into `bin/windows-x64/`, beside
-  `THIRD-PARTY-NOTICES.txt` and `LICENSE`. Only `prepareSandbox` builds
-  `--release`, because the release profile's fat LTO and single codegen unit
-  make that build slow and only there does the binary ship.
+  it. Every sandbox an IDE starts from depends on the release build and gets
+  the binary in `bin/windows-x64/`, beside `THIRD-PARTY-NOTICES.txt` and
+  `LICENSE`: `prepareSandbox`, which `buildPlugin` packages, and
+  `prepareSandbox_runIde` with its split-mode siblings, which `runIde` starts
+  from — a separate sandbox (`plugins_runIde/`), so configuring
+  `prepareSandbox` alone leaves `runIde` without a server. The test sandboxes
+  (`prepareTest…`) are left out: only these build `--release`, because the
+  release profile's fat LTO and single codegen unit make that build slow and
+  the tests use the debug build.
 - `runIde` starts a sandbox IDE with the plugin, for trying it by hand. This
   has not been done yet: every claim in this document rests on the automated
   gates above, never on having watched the plugin run in a live IDE, and that

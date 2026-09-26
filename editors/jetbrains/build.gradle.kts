@@ -89,19 +89,26 @@ val buildLanguageServerRelease by tasks.registering(Exec::class) {
     commandLine("cargo", "build", "-p", "ns-lsp", "--release")
 }
 
-tasks.prepareSandbox {
-    dependsOn(buildLanguageServerRelease)
-    // Beside the jars rather than inside one, so it starts without being extracted.
-    from(repositoryRoot.resolve("target/release/ns-next-lsp$executableSuffix")) {
-        into(pluginName.map { name -> "$name/bin/$hostPlatform" })
+// Every sandbox an IDE is started from gets the server: `prepareSandbox`, which
+// `buildPlugin` packages, and the separate `prepareSandbox_runIde` (and its
+// split-mode siblings), which `runIde` starts from. Configuring `prepareSandbox`
+// alone left `runIde`'s sandbox without the server. The test sandboxes are left
+// out: the tests use the debug build, and the release build is slow.
+tasks.withType<PrepareSandboxTask>()
+    .matching { task -> !task.name.startsWith("prepareTest") }
+    .configureEach {
+        dependsOn(buildLanguageServerRelease)
+        // Beside the jars rather than inside one, so it starts without being extracted.
+        from(repositoryRoot.resolve("target/release/ns-next-lsp$executableSuffix")) {
+            into(pluginName.map { name -> "$name/bin/$hostPlatform" })
+        }
+        from(layout.projectDirectory.file("THIRD-PARTY-NOTICES.txt")) {
+            into(pluginName)
+        }
+        from(repositoryRoot.resolve("LICENSE")) {
+            into(pluginName)
+        }
     }
-    from(layout.projectDirectory.file("THIRD-PARTY-NOTICES.txt")) {
-        into(pluginName)
-    }
-    from(repositoryRoot.resolve("LICENSE")) {
-        into(pluginName)
-    }
-}
 
 intellijPlatform {
     pluginConfiguration {
