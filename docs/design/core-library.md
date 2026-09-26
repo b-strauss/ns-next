@@ -1349,12 +1349,13 @@ an object that "provides accessors to various modules".
 
 The two plans:
 
-1. **The platform module**: §6.3.3's lazy slots, the module table on the
-   mirror, `Platform.ns` with `Platform`, `Transcript` and
+1. **The platform module**: §6.3.3's lazy slots, the module table,
+   `Platform.ns` with `Platform`, `Transcript` and
    `KernelNamespace`, booted with `usingVmMirror:kernel:`, and platform
    paths in the image. `Collections` moves too, still answering the
    kernel's `OrderedCollection` for `List`.
-2. **The collections module**: `Array new:`, `Collections.ns` with a
+2. **The collections module**: the mirror's `moduleNamed:`, `Array new:`,
+   `Collections.ns` with a
    Newspeak `List`, a handler search that keeps no `OrderedCollection`, and
    `OrderedCollection` removed with its leaf and `Heap::array_push`.
 
@@ -1379,11 +1380,32 @@ recorded expectation is what then has to hold. This touches
 `crates/ns-syntax`'s parser (not its lexer), so the `ns-lsp` and JetBrains
 gates apply to that commit.
 
-**Open, to be settled in plan 1:** how a value's state-derived `=` and
-`hash` (`Value`, "What exists" above) treat a lazy slot that is still
-`nil` in one of two otherwise equal values. The proposal is that they skip
-lazy slots, since a lazy slot is state derived from the rest and §6.3.3
-excludes it from persistence and synchronization alike.
+**A value's state-derived `=` and `hash` skip lazy slots** (decided with
+the user on 2026-09-26): two values whose ordinary slots are equal are
+equal, whether or not either has filled a lazy slot yet. A lazy slot is
+state derived from the rest — Bracha's "transient fields ... not properly
+part of the data's natural representation", purged on synchronization and
+recomputed on demand (*Objects as Software Services*, §2.3, the [Bra] of
+§6.3.3) — and Primordial Soup's `Serialization.ns` skips its transient
+slots for the same reason. No prior art defines a value's equality over
+one: canonical Newspeak derives no equality for values, and SOMns, which
+does, has no lazy slots.
+
+**A lazy slot's initializer does not see the factory's parameters.** §6:
+the primary factory's formal parameters "are in scope in the instance
+initializer but not in the rest of the class body", and a lazy slot is
+declared in the class body. A class that needs one in a lazy slot copies
+it into an ordinary slot first, as `Kernel.ns` already does with
+`theMirror`.
+
+**The mechanism** is canonical Newspeak's and Primordial Soup's —
+both desugar `lazy n = e` into a hidden cache slot and a getter that
+evaluates `e` when the cache holds `nil` (`NewspeakCompilation.ns`,
+`astForLazySlotGetter:`; `Intermediates.ns`,
+`IntermediateTransientSlotDeclaration`) — with the slot itself as the
+cache: the getter is a compiled method that evaluates `e`, stores it with
+the existing `InitializeSlot` and answers it, and a
+`MethodFastPath::LazySlot` answers a filled slot without an activation.
 
 #### The module table and the boot (plan 1)
 
@@ -1395,8 +1417,8 @@ excludes it from persistence and synchronization alike.
   **Loading is unified; trust and visibility are not:** every entry carries
   whether it is shipped core-library source, set by the host and never by
   the module, and only such an entry is resolved with `resolve_kernel`.
-  A mirror leaf `moduleNamed:` answers an entry's module class, built on
-  its first request and kept; compiling is total, so the leaf runs no
+  A mirror leaf `moduleNamed:` (plan 2) answers an entry's module class,
+  built on its first request and kept; compiling is total, so the leaf runs no
   Newspeak. The same table later holds user modules and falls back to the
   file system. The loader a program is later handed through the platform
   sees user modules only: a program reaches the standard modules as the
@@ -1417,7 +1439,8 @@ excludes it from persistence and synchronization alike.
 - **`Platform.ns`** in plan 1:
 
   ```newspeak
-  class Platform usingVmMirror: vmMirror kernel: kernelModule = Object <: Value (
+  class Platform usingVmMirror: theMirror kernel: theKernel = Object <: Value (
+      | private vmMirror = theMirror. private kernelModule = theKernel. |
   ) (
       public class Transcript = Value new () ( show: and newLine, through vmMirror )
       public class Collections = Value new () ( public List = ( ^OrderedCollection ) )
@@ -1428,17 +1451,19 @@ excludes it from persistence and synchronization alike.
   )
   ```
 
-  The three nested classes reach the mirror and the kernel through the
-  enclosing platform's factory parameters, so they keep `new` and declare
-  no slots: `t class new` still makes a transcript equal to `t`. In plan 1
+  The factory's parameters are copied into private slots, since neither a
+  lazy slot nor a method may name them (§6), and the three nested classes
+  reach the mirror and the kernel through those slots, so they keep `new`
+  and declare no slots: `t class new` still makes a transcript equal to `t`. In plan 1
   `Collections>>List` answers the kernel's `OrderedCollection` through
   `Object`'s accessor.
 - **The transcript leaf takes no receiver.** It checked
   `BuiltinClass::Transcript` so that a user subclass of a builtin declines;
   it reads nothing off the receiver, only the string argument, and once
   `Transcript` is no builtin the VM cannot recognize its class at all. The
-  capability is the mirror: `vmMirror transcriptShow: text`, which checks
-  only that `text` is a string. A user subclass of `Transcript` inherits a
+  capability is the mirror: the row `transcript:show:ifFail:` keeps its
+  shape, since every row takes its subject first, and its leaf checks only
+  that `text` is a string. A user subclass of `Transcript` inherits a
   working `show:`, which no golden pinned the other way.
 - **Retired:** `BuiltinClass::Platform`, `Transcript`, `Collections` and
   `KernelNamespace`, with builtin class tags 13, 18, 19 and 29.
@@ -1446,6 +1471,9 @@ excludes it from persistence and synchronization alike.
   asks `platform = platform class new`, which `Platform`'s
   `usingVmMirror:kernel:` factory no longer answers; that line is replaced,
   and the other checks keep their recorded output.
+- **`moduleNamed:` waits for plan 2.** The host takes `Platform` from the
+  table itself; the leaf is needed only once `Platform.ns` fetches
+  `Collections.ns`.
 
 #### Platform paths in the image (plan 1)
 
@@ -1462,10 +1490,14 @@ superclass clause — Newspeak the decoder must never run.
 - **The encoder** writes, in a section of its own, the platform paths the
   graph uses, and a record tag (the next free number) that names one of
   them. It writes an object or class it reached by a path as that record,
-  and refuses any other object whose class was compiled from shipped
-  source: a module instance holds the kernel, as the platform holds the
+  and refuses a module instance or a class object compiled from shipped
+  source that no path reaches: a module instance holds the kernel, as the
+  platform holds the
   mirror, so neither is ever written field by field. `HASHED_PLATFORM`
-  stays, for the empty path.
+  stays, for the empty path. What needs a path is a **module instance** or
+  a **class object** compiled from shipped source; any other instance of
+  a shipped class — a `List`, a second transcript — is an ordinary
+  record (below).
 - **On load, before the graph is decoded**, the host sends each listed
   path's members to the loading interpreter's platform, as ordinary public
   unary sends: exactly what the program's own `platform collections List`
