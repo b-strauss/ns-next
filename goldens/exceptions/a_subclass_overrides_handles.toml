@@ -1,0 +1,9 @@
+status = 1
+stdout = '''
+picked mine
+picked picky
+error catches picky
+'''
+stderr = '''
+Uncaught Newspeak error: other
+'''

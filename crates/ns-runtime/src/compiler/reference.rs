@@ -524,6 +524,7 @@ impl<'a> Body<'a> {
             family_size: crate::bytecode::family_size_of(&self.instructions),
             copied_count: 0,
             outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
+            unwind_marker: None,
             instructions: self.instructions,
             argument_count: self.argument_count,
             register_count: self.next_register,

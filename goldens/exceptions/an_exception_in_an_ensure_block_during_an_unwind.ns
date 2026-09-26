@@ -1,0 +1,26 @@
+Newspeak3
+'Test'
+(* An exception signalled in an `ensure:` block while an unwind runs it
+   behaves as any exception does there. Caught inside the block, its
+   handler returns into the block, and the unwind completes once the block
+   returns. Caught by a handler further out than the unwind's own target,
+   its `return:` unwinds past that target, and the first unwind is
+   abandoned: the method's `^` never answers. *)
+class AnExceptionInAnEnsureBlockDuringAnUnwind usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private Error = thePlatform kernel Error. |
+) (
+    unwinding = (
+        [^'unwound'] ensure: [
+            transcript show: ([Error signal: 'in ensure'] on: Error do: [:e | e messageText]); newLine].
+        ^'not reached'
+    )
+    escaping = (
+        [^'unwound'] ensure: [Error signal: 'escape'].
+        ^'not reached'
+    )
+    public main: platform args: arguments = (
+        transcript show: self unwinding; newLine.
+        transcript show: ([self escaping] on: Error do: [:e | 'abandoned by ' , e messageText]); newLine.
+    )
+) : ()

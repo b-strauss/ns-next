@@ -23,6 +23,8 @@ pub enum Primitive {
     Collection(CollectionPrimitive),
     Block(BlockPrimitive),
     Platform(PlatformPrimitive),
+    Activation(ActivationPrimitive),
+    Message(MessagePrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
 }
@@ -34,7 +36,6 @@ pub enum ObjectPrimitive {
     Equal,
     Hash,
     PrintString,
-    DoesNotUnderstand,
 }
 
 /// §3.1.1's value objects: the equality and hash `Value` derives from an
@@ -137,6 +138,32 @@ pub enum PlatformPrimitive {
     NewLine,
 }
 
+/// The activation leaves `Kernel.ns`'s `Exception` is built on
+/// (`docs/design/core-library.md`, "Exceptions"): reading the
+/// stack, the `on:do:` activations' marked registers, and the three ways an
+/// exception leaves -- a return from, or a restart of, an activation, and
+/// the termination an unhandled one ends in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationPrimitive {
+    Current,
+    Sender,
+    IsActiveHandler,
+    HandlerClass,
+    HandlerBlock,
+    SetHandlerActive,
+    ReturnValue,
+    Restart,
+    InheritsMixinOf,
+    Terminate,
+}
+
+/// `Message>>sentTo:`'s leaf: the message sent to a receiver as an
+/// ordinary public send (§5.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessagePrimitive {
+    SendTo,
+}
+
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
 /// `Resolved::Primitive` carries one, and its size is pinned
 /// (`interpreter::resolve`'s
@@ -211,7 +238,7 @@ const fn mirror(
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"); a row's index is its
 /// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
-/// rows 43-47, as they share their payload; each of their kernel classes
+/// rows 42-46, as they share their payload; each of their kernel classes
 /// forwards only the selectors `Kernel.ns` declares for it.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(
@@ -238,11 +265,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "objectPrintString:ifFail:",
         "printString",
         Primitive::Object(ObjectPrimitive::PrintString),
-    ),
-    mirror(
-        "object:doesNotUnderstand:ifFail:",
-        "doesNotUnderstand:",
-        Primitive::Object(ObjectPrimitive::DoesNotUnderstand),
     ),
     mirror(
         "value:sameAs:ifFail:",
@@ -525,6 +547,63 @@ pub const MIRROR: &[MirrorEntry] = &[
         "behaviorSuperclass:ifFail:",
         "superclass",
         Primitive::Behavior(BehaviorPrimitive::Superclass),
+    ),
+    mirror(
+        "currentActivation:ifFail:",
+        "currentActivation",
+        Primitive::Activation(ActivationPrimitive::Current),
+    ),
+    mirror(
+        "activationSender:ifFail:",
+        "sender",
+        Primitive::Activation(ActivationPrimitive::Sender),
+    ),
+    mirror(
+        "activationIsActiveHandler:ifFail:",
+        "isActiveHandler",
+        Primitive::Activation(ActivationPrimitive::IsActiveHandler),
+    ),
+    mirror(
+        "activationHandlerClass:ifFail:",
+        "handlerClass",
+        Primitive::Activation(ActivationPrimitive::HandlerClass),
+    ),
+    mirror(
+        "activationHandlerBlock:ifFail:",
+        "handlerBlock",
+        Primitive::Activation(ActivationPrimitive::HandlerBlock),
+    ),
+    mirror(
+        "activation:handlerActive:ifFail:",
+        "handlerActive:",
+        Primitive::Activation(ActivationPrimitive::SetHandlerActive),
+    ),
+    mirror(
+        "activation:returnValue:ifFail:",
+        "returnValue:",
+        Primitive::Activation(ActivationPrimitive::ReturnValue),
+    ),
+    mirror(
+        "activationRestart:ifFail:",
+        "restart",
+        Primitive::Activation(ActivationPrimitive::Restart),
+    ),
+    mirror(
+        "object:inheritsMixinOf:ifFail:",
+        "inheritsMixinOf:",
+        Primitive::Activation(ActivationPrimitive::InheritsMixinOf),
+    ),
+    mirror(
+        "terminate:selector:receiver:description:ifFail:",
+        // Named with its three arguments, since a row's arity is counted
+        // from its reported selector; it raises no error text of its own.
+        "terminateSelector:receiver:description:",
+        Primitive::Activation(ActivationPrimitive::Terminate),
+    ),
+    mirror(
+        "message:sendTo:ifFail:",
+        "sentTo:",
+        Primitive::Message(MessagePrimitive::SendTo),
     ),
 ];
 

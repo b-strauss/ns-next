@@ -1,0 +1,20 @@
+Newspeak3
+'Test'
+(* An `on:do:` is disabled only while its handler runs, however the handler
+   is left: `resume:` unwinds out of it back to the signal, and the handler
+   is enabled again for the next exception the protected block signals --
+   here both resumed signals are handled, and answer 1 + 1. After a `pass`
+   whose outer handler resumes, both handlers are enabled again: the inner
+   one sees the second exception too, and passes it on as well. *)
+class AResumedHandlerIsEnabledAgain usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private Exception = thePlatform kernel Exception. |
+) (
+    public main: platform args: arguments = (
+        transcript show: ([(Exception signal: 'one') + (Exception signal: 'two')]
+                              on: Exception do: [:e | e resume: 1]) printString; newLine.
+        transcript show: ([[(Exception signal: 'a') + (Exception signal: 'b')]
+                               on: Exception do: [:e | transcript show: 'inner ' , e messageText; newLine. e pass]]
+                              on: Exception do: [:e | e resume: 10]) printString; newLine.
+    )
+) : ()

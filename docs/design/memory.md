@@ -575,15 +575,20 @@ time.
   to, and the state its continuation carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver, block and elements, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
-  with their arguments, and phase; and every register. `StackEntry`'s impl is
+  with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries, and
+  a `VmErrorSignalled` error's receiver; and every register. `StackEntry`'s impl is
   in `heap.rs`, where its fields are private.
 - Every arena record: an object's class and payload — an instance's or an
-  array's fields, a closure's captured frame and its copied values, a class's enclosing
+  array's fields, a closure's captured frame and its copied values, an
+  activation object's frame, a class's enclosing
   object, declaring class, superclass and, for a metaclass, its class
   (`this_class`) — and a frame's receiver,
   registers, sender, home, current class and kind. A married frame's registers
   are its entry's, traced with the stack.
 - The host root table.
+- The depth limit's reserve, `Mutator.depth_reserve`: the frame of the
+  activation an error near the limit arose in, marked and forwarded with the
+  bootstrap's roots ([execution.md](execution.md), "The depth limit").
 - The heap's canonical symbol table ([object-model.md](object-model.md),
   "Values and objects"), a strong root until the collector makes it weak, as
   Primordial Soup's `symbolTable` is -- a symbol no program holds any more is
@@ -1072,6 +1077,19 @@ per allocated slot is amortized constant. The floor — 4096 slots — keeps a
 small program out of the collector altogether: `bench_loop.ns` and
 `bench_send.ns` run in 4.6 MB today and should never collect. Soup's
 `GrowthPolicy` and HotSpot's free-ratio control have the same shape.
+
+Compaction gives memory back against the same limit (`collection_limit`, which
+`compact_arena` and `reset_collection_limits` share): an arena whose buffer is
+more than twice its next limit is cut back to the limit, and one within twice
+it is kept. Measured against the live set instead, the two part under the
+floor -- a live set of 72 objects cut the buffer to 144 slots, and the next
+cycle, allowed to reach 4,096, grew it back through five reallocations, each
+a copy and fresh pages, at every collection; that was about 5% of
+`bench_value.ns` ([execution.md](execution.md), "What exceptions cost").
+The price is retention: under the floor each arena keeps up to twice the
+floor after a collection, 8,192 slots in both -- about 458 KB of the object
+arena (56 bytes a slot) and about 1.1 MB of the frame arena (136 bytes an
+entry), some 1.6 MB in all in a release build.
 
 The image decoder never collects, because it never polls — it does not run in
 the run loop. The transient peak described under the decode amplification above

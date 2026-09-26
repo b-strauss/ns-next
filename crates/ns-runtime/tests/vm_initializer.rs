@@ -131,7 +131,7 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
 
 #[test]
 fn a_return_inside_a_block_in_initializer_expressions_escapes_instantiate() {
-    // A known gap (`docs/design/execution.md`, "Non-local return"): the
+    // A known gap (`docs/design/execution.md`, "Unwinding"): the
     // `Signal::Return` targets the initializer activation, which is still
     // running, and nothing catches it: the host receives it as
     // `HostSignal::Return`.

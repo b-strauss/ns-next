@@ -66,6 +66,7 @@ impl Trace for ObjectData<'_> {
             ObjectData::String(_) | ObjectData::Symbol(_) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
+            ObjectData::Activation(frame) => tracer.frame(frame),
         }
     }
 }
@@ -157,6 +158,22 @@ impl Trace for Continuation<'_> {
             Continuation::DoElement(state) => state.trace(tracer),
             Continuation::NestedClass(state) => state.trace(tracer),
             Continuation::Instantiate(state) => state.trace(tracer),
+            Continuation::Unwind(pending) => pending.trace(tracer),
+            Continuation::VmErrorSignalled(error) => tracer.value(&mut error.receiver),
+        }
+    }
+}
+
+impl Trace for PendingUnwind<'_> {
+    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
+        let PendingUnwind { target, action } = self;
+        if let Some(target) = target {
+            tracer.frame(target);
+        }
+        match action {
+            UnwindAction::Return(value) => tracer.value(value),
+            UnwindAction::Restart => {}
+            UnwindAction::Terminate(error) => tracer.value(&mut error.receiver),
         }
     }
 }

@@ -1,0 +1,12 @@
+status = 1
+stdout = '''
+5
+nil
+3
+7
+8
+p passed
+'''
+stderr = '''
+Uncaught Newspeak error: cannot resume a non-resumable exception
+'''

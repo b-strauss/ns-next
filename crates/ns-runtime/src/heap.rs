@@ -168,9 +168,10 @@ pub struct FrameReference<'gc> {
 
 impl<'gc> FrameReference<'gc> {
     /// Frame identity. Guarded like an accessor: see `ObjectReference::same`.
-    /// `Signal::Return` names its target by `ActivationReference`, not by
-    /// frame, so nothing in the runtime compares frames: the callers are the
-    /// image round-trip tests (`tests/image.rs`) and this module's unit tests.
+    /// The unwinder finds its target through the frame's marriage
+    /// (`frame_activation`) rather than by comparing frames, so nothing in
+    /// the runtime compares them: the callers are the image round-trip tests
+    /// (`tests/image.rs`) and this module's unit tests.
     pub fn same(self, other: FrameReference<'gc>) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -221,12 +222,12 @@ pub struct ActivationReference {
 }
 
 impl ActivationReference {
-    /// Activation identity: `vm::unwind` finds the activation a
-    /// `Signal::Return` targets by it. Two handles at the same index are the
-    /// same activation because a return only ever unwinds downward -- nothing
-    /// is pushed while a `Signal::Return` propagates, so the target's index
-    /// cannot have been reused by the time the unwind compares it. A debug
-    /// build checks that rather than assuming it.
+    /// Activation identity: the unwinder stops at its target by it
+    /// (`interpreter::unwind`). Two handles at the same index are the same
+    /// activation only while neither has been popped, which is why the
+    /// unwinder compares against a handle it has just asked the target's
+    /// frame for (`Heap::frame_activation`) and never keeps one across the
+    /// blocks it runs. A debug build checks that rather than assuming it.
     pub fn same(self, other: ActivationReference) -> bool {
         #[cfg(debug_assertions)]
         {
@@ -611,8 +612,10 @@ impl Relocation for ForwardingTable {
 
 /// Slides the marked slots of one arena to the front, truncates the rest
 /// away -- which is where the dead records drop, and their payloads with
-/// them -- and answers the table that maps old index to new.
-fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits) -> ForwardingTable {
+/// them -- and answers the table that maps old index to new. `floor` is the
+/// heap's collection floor, which the arena's next limit never falls below
+/// (`collection_limit`).
+fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits, floor: usize) -> ForwardingTable {
     let mut table = vec![DEAD; slots.len()];
     let mut destination = 0usize;
     for (source, destination_of_source) in table.iter_mut().enumerate() {
@@ -630,12 +633,28 @@ fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits) -> ForwardingTabl
     // without this the pages a collection frees stay with the process and
     // the peak this step exists to lower does not move. With hysteresis, so
     // that a heap which oscillates does not reallocate and copy at every
-    // collection: shrink only when three quarters of the buffer is idle,
-    // and leave the live set room to double.
-    if slots.capacity() > destination.saturating_mul(4) {
-        slots.shrink_to(destination.saturating_mul(2));
+    // collection: shrink only when the buffer is more than twice the next
+    // limit, and leave room for the limit itself. Measured against the
+    // limit rather than the live set, because under the floor the two part:
+    // a live set of 72 shrank the buffer to 144 slots, and the next cycle,
+    // allowed to reach 4096, grew it back through five reallocations, a copy
+    // and fresh pages each -- at every collection, about 5% of an
+    // allocating benchmark (`docs/design/memory.md`, "The trigger and the
+    // growth policy").
+    let limit = collection_limit(floor, destination);
+    if slots.capacity() > limit.saturating_mul(2) {
+        slots.shrink_to(limit);
     }
     ForwardingTable { table }
+}
+
+/// How long an arena may grow after a collection that left `live` slots in
+/// it before the next one is requested: no more is allocated between two
+/// collections than is live, so the marking work per allocated slot is
+/// amortized constant, and never less than `floor`, which keeps a small
+/// program out of the collector altogether.
+fn collection_limit(floor: usize, live: usize) -> usize {
+    floor.max(live.saturating_mul(2))
 }
 
 /// The tracer a move or a collection forwards every handle with. In a debug
@@ -1459,6 +1478,21 @@ impl<'gc> Heap<'gc> {
         })
     }
 
+    /// The frame activation object `object` reifies, or `None` when `object`
+    /// is not an activation object. `None` rather than a panic, so that a
+    /// kernel leaf handed some other object by a program answers a failure
+    /// instead of aborting.
+    pub fn activation_object_frame(
+        &self,
+        object: ObjectReference<'gc>,
+    ) -> Option<FrameReference<'gc>> {
+        self.check_object_origin(object);
+        match &self.objects[object.index as usize].data {
+            ObjectData::Activation(frame) => Some(*frame),
+            _ => None,
+        }
+    }
+
     /// The whole of `object`'s record -- `class`, `identity_hash` and `data`
     /// -- in the one borrow all three live behind.
     /// `image::encode::encode_object` writes a whole object record and
@@ -1513,6 +1547,7 @@ impl<'gc> Heap<'gc> {
                     ObjectData::Symbol(symbol) => format!("the Symbol #{symbol}"),
                     ObjectData::Array(items) => format!("an Array of {}", items.len()),
                     ObjectData::Closure(_) => "a Block".to_string(),
+                    ObjectData::Activation(_) => "an Activation".to_string(),
                     ObjectData::Class(_) => {
                         format!("the class {}", self.class_display_name(*object))
                     }
@@ -2471,6 +2506,65 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].code.clone()
     }
 
+    /// The unwind marker of the code `activation` runs, read afresh on every
+    /// call: the unwinder asks it of every activation it pops, so an
+    /// activation without one costs it this one test.
+    pub(crate) fn activation_unwind_marker(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<crate::bytecode::UnwindMarker> {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize]
+            .code
+            .unwind_marker
+    }
+
+    /// Replaces what `activation` does with its value when it returns. The
+    /// unwinder's one use: the activation it pushes to run an `ensure:`
+    /// argument that is no block is pushed as a method, which delivers, and
+    /// its return has to carry the unwind on instead.
+    pub(crate) fn set_activation_continuation(
+        &mut self,
+        activation: ActivationReference,
+        then: Continuation<'gc>,
+    ) {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize].then = then;
+    }
+
+    /// Whether the unwinder pushed `activation` to signal a VM error
+    /// (`Continuation::VmErrorSignalled`): what the depth limit's reserve
+    /// asks, without cloning the error `activation_signalled_vm_error`
+    /// answers.
+    pub(crate) fn activation_signals_a_vm_error(&self, activation: ActivationReference) -> bool {
+        self.check_activation(activation);
+        matches!(
+            self.stack.entries[activation.index as usize].then,
+            Continuation::VmErrorSignalled(_)
+        )
+    }
+
+    /// The VM error `activation` is the `signal` of, if the unwinder pushed
+    /// it to signal one (`Continuation::VmErrorSignalled`).
+    pub(crate) fn activation_signalled_vm_error(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<NewspeakError<'gc>> {
+        self.check_activation(activation);
+        match &self.stack.entries[activation.index as usize].then {
+            Continuation::VmErrorSignalled(error) => Some((**error).clone()),
+            _ => None,
+        }
+    }
+
+    /// The activation directly above `activation` on the stack, if any:
+    /// the one it sent to, while it waits for it.
+    pub fn activation_above(&self, activation: ActivationReference) -> Option<ActivationReference> {
+        self.check_activation(activation);
+        let above = activation.index as usize + 1;
+        (above < self.stack.entries.len()).then(|| self.activation_handle(above as u32))
+    }
+
     /// The `program_counter` last stored for `activation` -- at a send, the
     /// send's own index, which is where the run loop resumes it from when its
     /// callee returns.
@@ -2494,40 +2588,19 @@ impl<'gc> Heap<'gc> {
         activation.index as usize
     }
 
-    /// Whether `activation` is still on the stack -- the one question that may
-    /// be asked of a handle whose activation has returned. A non-local return
-    /// into an activation that catches none (an initializer) pops its target on
-    /// its way out and goes on naming it, out to the host that started the run;
-    /// the unwind asks this before it reads a target, and a host holding the
-    /// escaped signal may ask nothing else. Nothing is pushed while a signal
-    /// propagates (`ActivationReference::same`), so the target is live exactly
-    /// while the stack still reaches its index; a debug build checks that the
-    /// entry there is still the one the handle was minted for.
-    ///
-    /// A release build has only the index, so its answer is sound only
-    /// while that holds. Anything that runs code while a signal propagates
-    /// -- an `ensure:`, an `on:do:` handler, any unwind protection -- pushes
-    /// activations at the indices the popped target used, and a release
-    /// build would then take one of them for the target and land the return
-    /// in the wrong activation. Such a mechanism needs a generation in every
-    /// build, not only in a debug one.
-    pub fn activation_is_live(&self, activation: ActivationReference) -> bool {
-        let live = (activation.index as usize) < self.stack.entries.len();
-        #[cfg(debug_assertions)]
-        {
-            assert_eq!(
-                activation.origin, self.heap_id,
-                "handle belongs to a different heap (handle from heap {}, read through heap {})",
-                activation.origin, self.heap_id
-            );
-            if live {
-                assert_eq!(
-                    self.stack.entries[activation.index as usize].generation, activation.generation,
-                    "stale activation handle: its index was reused while it was still named"
-                );
-            }
-        }
-        live
+    /// The activation `activation` returns to: the entry below it, since a
+    /// callee -- a method, a block a leaf activated, an `ensure:` block the
+    /// unwinder runs -- is always pushed above the activation it answers
+    /// to. `None` for the bottom of the stack.
+    pub fn activation_sender(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<ActivationReference> {
+        self.check_activation(activation);
+        activation
+            .index
+            .checked_sub(1)
+            .map(|index| self.activation_handle(index))
     }
 
     /// What `activation` was activated for.
@@ -2652,17 +2725,11 @@ impl<'gc> Heap<'gc> {
         self.collection_requested
     }
 
-    /// After a collection: no more is allowed to be allocated before the
-    /// next one than is live, so the marking work per allocated slot is
-    /// amortized constant.
+    /// After a collection: each arena's next limit (`collection_limit`).
     pub(crate) fn reset_collection_limits(&mut self) {
         self.collection_requested = false;
-        self.next_object_collection = self
-            .collection_floor
-            .max(self.objects.len().saturating_mul(2));
-        self.next_frame_collection = self
-            .collection_floor
-            .max(self.frames.len().saturating_mul(2));
+        self.next_object_collection = collection_limit(self.collection_floor, self.objects.len());
+        self.next_frame_collection = collection_limit(self.collection_floor, self.frames.len());
     }
 
     #[cfg(debug_assertions)]
@@ -2746,8 +2813,8 @@ impl<'gc> Heap<'gc> {
         {
             self.epoch = to_epoch;
         }
-        let objects = compact_arena(&mut self.objects, &marker.objects);
-        let frames = compact_arena(&mut self.frames, &marker.frames);
+        let objects = compact_arena(&mut self.objects, &marker.objects, self.collection_floor);
+        let frames = compact_arena(&mut self.frames, &marker.frames, self.collection_floor);
         let mut forwarder = Forwarder {
             #[cfg(debug_assertions)]
             heap_id: self.heap_id,
@@ -3157,8 +3224,6 @@ mod tests {
     /// Frame identity is what the image round trip checks sharing by -- a
     /// closure's `captured_frame` and `home` naming one frame or two -- so two
     /// reified frames may never compare equal however alike their contents are.
-    /// (`Signal::Return` names its target by `ActivationReference`, not by
-    /// frame.)
     #[test]
     fn two_frames_are_never_the_same_activation() {
         let mut heap = Heap::new();
@@ -3270,6 +3335,7 @@ mod tests {
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
+            unwind_marker: None,
             source: ns_syntax::Span::new(0, 0),
         })
     }
@@ -3486,8 +3552,8 @@ mod tests {
         let _ = other.activation_local(mine, 0);
     }
 
-    /// `ActivationReference::same` is how `vm::unwind` finds the activation a
-    /// `Signal::Return` targets, and it is handed two handles
+    /// `ActivationReference::same` is how the unwinder stops at its target,
+    /// and it is handed two handles
     /// and no `Heap`, so no accessor guard can reach it. Both handles below
     /// are the first entry of their own heap's stack, so they share an index
     /// and a release build answers "identical".
@@ -3502,12 +3568,11 @@ mod tests {
         let _ = mine.same(theirs);
     }
 
-    /// The comparison `same`'s doc comment argues cannot happen: a catcher
-    /// holding a handle whose entry was popped, compared against the
-    /// activation that reused its index. A release build answers
-    /// "identical", which would land a return in the wrong activation; a
-    /// debug build must refuse the comparison instead of trusting that
-    /// argument.
+    /// The comparison `same`'s doc comment says the unwinder never makes: a
+    /// handle whose entry was popped, compared against the activation that
+    /// reused its index. A release build answers "identical", which would
+    /// land a return in the wrong activation -- the reason an unwind's
+    /// target is a frame -- and a debug build must refuse the comparison.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(
@@ -3519,21 +3584,6 @@ mod tests {
         heap.pop_activation(first);
         let second = heap.push_activation(header(), &[], 1);
         let _ = first.same(second);
-    }
-
-    /// `activation_is_live` is the one accessor a popped handle may reach:
-    /// an escaping non-local return goes on naming the target it popped.
-    #[test]
-    fn a_popped_activation_is_no_longer_live() {
-        let mut heap = Heap::new();
-        let outer = heap.push_activation(header(), &[], 1);
-        let inner = heap.push_activation(header(), &[], 1);
-        assert!(heap.activation_is_live(inner));
-        heap.pop_activation(inner);
-        assert!(!heap.activation_is_live(inner));
-        assert!(heap.activation_is_live(outer));
-        heap.pop_activation(outer);
-        assert!(!heap.activation_is_live(outer));
     }
 
     /// Popping below the top would truncate the registers of every
@@ -3613,6 +3663,7 @@ mod tests {
                         family_size: 0,
                         copied_count: 0,
                         outer_reach: 0,
+                        unwind_marker: None,
                         source: ns_syntax::Span::new(0, 0),
                     }),
                     captured_frame,
@@ -3893,6 +3944,46 @@ mod tests {
         heap.pop_activation(activation);
     }
 
+    /// An activation object answers the frame it reifies and describes itself
+    /// as an Activation; any other object answers no frame rather than
+    /// panicking, which is what a kernel leaf handed the wrong object relies
+    /// on.
+    #[test]
+    fn an_activation_object_answers_its_frame() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let frame = heap.allocate_frame(top_level_frame());
+        let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
+        let other = heap.allocate_object(class, ObjectData::String("other".to_string()));
+
+        let answered = heap
+            .activation_object_frame(activation_object)
+            .expect("an activation object answers its frame");
+        assert_eq!(answered.index, frame.index);
+        assert!(heap.activation_object_frame(other).is_none());
+        assert_eq!(
+            heap.describe(&Value::Object(activation_object)),
+            "an Activation"
+        );
+    }
+
+    /// The collector traces an activation object's frame: a frame that only
+    /// an activation object reaches stays alive.
+    #[test]
+    fn marking_reaches_a_frame_through_an_activation_object() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let frame = heap.allocate_frame(top_level_frame());
+        let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
+        let activation = heap.push_activation(header(), &[Value::Object(activation_object)], 1);
+
+        let marker = heap.mark_from_roots_for_test();
+
+        assert!(marker.objects.is_set(activation_object.index));
+        assert!(marker.frames.is_set(frame.index));
+        heap.pop_activation(activation);
+    }
+
     /// Two ordinary objects reference each other through their `Instance`
     /// payloads, so the traversal reaches back to the first one through the
     /// second. This is what pins that the traversal terminates on a cycle:
@@ -3998,5 +4089,35 @@ mod tests {
         heap.reset_collection_limits();
         assert_eq!(heap.next_object_collection, object_count * 2);
         assert_eq!(heap.next_frame_collection, frame_count * 2);
+    }
+
+    /// Compaction shrinks an arena against its next limit, never against
+    /// the live set alone: under the floor, a buffer cut to twice the live
+    /// set had to grow back to the floor through a string of reallocations
+    /// at every collection. A buffer within twice the limit is kept whole,
+    /// and one past it is cut back to no less than the limit.
+    #[test]
+    fn compaction_never_shrinks_an_arena_below_its_next_limit() {
+        let floor = 64;
+
+        let mut within: Vec<u32> = Vec::with_capacity(2 * floor);
+        within.extend(0..100);
+        let kept = within.capacity();
+        let _ = compact_arena(&mut within, &mark::MarkBits::new(100), floor);
+        assert!(within.is_empty());
+        assert_eq!(
+            within.capacity(),
+            kept,
+            "a buffer within twice the limit is kept"
+        );
+
+        let mut past: Vec<u32> = Vec::with_capacity(16 * floor);
+        past.extend(0..100);
+        let _ = compact_arena(&mut past, &mark::MarkBits::new(100), floor);
+        assert!(past.is_empty());
+        assert!(
+            (floor..16 * floor).contains(&past.capacity()),
+            "a buffer past twice the limit is cut back, but not below the limit"
+        );
     }
 }

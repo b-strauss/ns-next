@@ -1,7 +1,9 @@
 # Liveness, reflection, and concurrency
 
 > **Status:** planned. Nothing in this document is built. What *is* built is the
-> groundwork every part of it depends on — reified activations, the safepoint
+> groundwork every part of it depends on — reified activations and the
+> kernel-private activation objects the exceptions are built on
+> ([core-library.md](core-library.md), "Exceptions"), the safepoint
 > statement→program-counter table, stable call-site identity, source and provenance retention,
 > identity hashes, §3.2's reified class hierarchy — each described in the document for its own aspect.
 > **Code:** none yet.

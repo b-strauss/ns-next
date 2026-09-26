@@ -8,7 +8,7 @@ Newspeak3
    caches"). *)
 class CacheDoesNotUnderstandHandlers usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
     class Catcher = Object new () (
-        public doesNotUnderstand: message = ( ^'caught ', (message at: 1) printString )
+        public doesNotUnderstand: message = ( ^'caught ', message selector printString )
     )
     class Recorder = Object new (| public doesNotUnderstand ::= nil. |) (
     )
@@ -17,8 +17,8 @@ class CacheDoesNotUnderstandHandlers usingPlatform: thePlatform = Object new (| 
         recorder:: Recorder new.
         {Catcher new. recorder. Catcher new. recorder} do: [:each |
             transcript show: (each zork == each) printString; newLine].
-        transcript show: (recorder doesNotUnderstand at: 1) printString; newLine.
-        transcript show: (recorder doesNotUnderstand at: 2) size printString; newLine.
+        transcript show: recorder doesNotUnderstand selector printString; newLine.
+        transcript show: recorder doesNotUnderstand arguments size printString; newLine.
         {Catcher new. 3} do: [:each | transcript show: each zork printString; newLine].
     )
 ) : ()

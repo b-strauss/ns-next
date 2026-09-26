@@ -33,29 +33,47 @@ impl<'gc> Mutator<'gc> {
         field: usize,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        let object = match receiver {
-            Value::Object(object) => Some(object),
-            _ => None,
-        };
-        let answered = match (kind, object) {
-            (AccessorKind::Getter, Some(object)) => self.heap.instance_field(object, field),
-            (AccessorKind::Setter, Some(object)) => arguments
-                .first()
-                .copied()
-                .filter(|value| self.heap.set_instance_field(object, field, *value))
-                .map(|_| receiver),
-            (_, None) => None,
-        };
-        answered.map(Step::Value).ok_or_else(|| {
-            Signal::Error(NewspeakError {
-                selector,
-                receiver,
-                message: format!(
-                    "{} has no field {field} for the slot accessor {}",
-                    self.heap.describe(&receiver),
-                    selector
-                ),
-            })
+        if let Value::Object(object) = receiver {
+            match kind {
+                AccessorKind::Getter => {
+                    if let Some(value) = self.heap.instance_field(object, field) {
+                        return Ok(Step::Value(value));
+                    }
+                }
+                AccessorKind::Setter => {
+                    if let Some(value) = arguments.first() {
+                        if self.heap.set_instance_field(object, field, *value) {
+                            return Ok(Step::Value(receiver));
+                        }
+                    }
+                }
+            }
+        }
+        Err(self.no_field_for_slot_accessor(receiver, selector, field))
+    }
+
+    /// `decide_slot_accessor`'s error, out of line: formatted in place, it
+    /// gave the accessor -- every slot read and write of a program -- a
+    /// stack frame through which the field it read was spilled and reloaded
+    /// before it reached the step, and that cost `bench_send` 18% and
+    /// `bench_loop` 25% (`docs/design/execution.md`, "What exceptions
+    /// cost").
+    #[cold]
+    #[inline(never)]
+    fn no_field_for_slot_accessor(
+        &self,
+        receiver: Value<'gc>,
+        selector: Symbol,
+        field: usize,
+    ) -> Signal<'gc> {
+        Signal::Error(NewspeakError {
+            selector,
+            receiver,
+            message: format!(
+                "{} has no field {field} for the slot accessor {}",
+                self.heap.describe(&receiver),
+                selector
+            ),
         })
     }
 }

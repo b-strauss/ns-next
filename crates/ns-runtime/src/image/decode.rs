@@ -108,6 +108,14 @@ pub enum DecodeError {
     /// from its class, so a class record applying a class side describes a
     /// second, unpaired metaclass no live world has.
     ClassRecordAppliesAClassSide,
+    /// An activation record (`OBJECT_ACTIVATION`) whose header is not the
+    /// builtin `Activation`, or a record of another kind whose header is.
+    /// Only `Mutator::new_activation_object` makes an activation object, and
+    /// it gives every one that class and nothing else that class, so a
+    /// mismatch describes an object no live world has -- an activation
+    /// answering some other class's methods, or an ordinary object answering
+    /// `Activation`'s, which read other frames and unwind the stack.
+    ActivationHeader,
     /// An object record that is not a class object is an instance of a class
     /// whose chain reaches `Behavior` -- `Class`, `Metaclass` or a
     /// metaclass. A class object is made only by evaluating a declaration
@@ -398,6 +406,11 @@ impl std::fmt::Display for DecodeError {
             DecodeError::ClassRecordAppliesAClassSide => write!(
                 f,
                 "a class object in the image applies a class side, which only its metaclass may"
+            ),
+            DecodeError::ActivationHeader => write!(
+                f,
+                "an object in the image is an Activation without an activation's record, \
+                 or an activation's record under another class"
             ),
             DecodeError::InstanceOfAClassClass => write!(
                 f,
@@ -759,6 +772,13 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         20 => BuiltinClass::Behavior,
         21 => BuiltinClass::Class,
         22 => BuiltinClass::Metaclass,
+        23 => BuiltinClass::Activation,
+        24 => BuiltinClass::Exception,
+        25 => BuiltinClass::Error,
+        26 => BuiltinClass::MessageNotUnderstood,
+        27 => BuiltinClass::Message,
+        28 => BuiltinClass::Halt,
+        29 => BuiltinClass::KernelNamespace,
         _ => return None,
     })
 }
@@ -773,18 +793,30 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 
 /// A builtin class referenced in the graph: a class reference recorded as a
 /// value (`CLASS_BUILTIN`), which from Task 4 on can hold `Metaclass` -- `3
-/// class class class` reaches it. Two tags are refused here, because no
+/// class class class` reaches it. Three tags are refused here, because no
 /// source module can produce them and an artifact that carried one would
 /// decode into a program the language does not admit. The VM mirror's class:
 /// there is exactly one mirror, and an artifact that could name its class
 /// could instantiate or reach a second one, and so claim every primitive.
 /// `Top`: §3.2 lets only `Object` have it as a superclass, so a class named
 /// over `Top` would sit outside `Object`'s chain and inherit none of its
-/// methods. `Object` declares an accessor for neither, for the same reasons,
-/// which is what keeps source and artifact agreed on the names a program has.
-/// Only the closing hash table names them, by tag, as it names every builtin.
+/// methods. `Activation`: a running activation as an object reads other
+/// frames and unwinds stacks, a capability Newspeak hands out only through
+/// mirrors, so no artifact may name its class either
+/// (`docs/design/core-library.md`, "Exceptions") -- except as the
+/// header of an activation record, which `decode_object_header` reads. `Object` declares
+/// an accessor for none of the three, for the same reasons, which is what
+/// keeps source and artifact agreed on the names a program has. Only the
+/// closing hash table names them, by tag, as it names every builtin.
 pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
-    match read_builtin_class(reader)? {
+    referenced_builtin_class(read_builtin_class(reader)?)
+}
+
+/// `read_referenced_builtin_class`'s refusals, of a builtin already read --
+/// what `decode_object_header` applies to every header but an activation
+/// record's.
+fn referenced_builtin_class(kind: BuiltinClass) -> Result<BuiltinClass, DecodeError> {
+    match kind {
         BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
             tag: 14,
@@ -792,6 +824,10 @@ pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass
         BuiltinClass::Top => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
             tag: 15,
+        }),
+        BuiltinClass::Activation => Err(DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 23,
         }),
         kind => Ok(kind),
     }
@@ -1605,6 +1641,7 @@ fn decode_code(
         // `outer_reach`, which is already filled because post-order puts a
         // block's code before its parent's.
         outer_reach: crate::bytecode::outer_reach_of(&instructions),
+        unwind_marker: None,
         instructions,
         argument_count,
         register_count,
@@ -1993,7 +2030,46 @@ pub fn decode_class_tag<'gc>(
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
 ) -> Result<ClassReference<'gc>, DecodeError> {
-    match reader.read_u8()? {
+    let tag = reader.read_u8()?;
+    decode_class_tag_after(tag, reader, context, tables)
+}
+
+/// An object record's header: its class tag, which is `decode_class_tag`'s
+/// except that it also accepts the builtin `Activation` -- the header of an
+/// activation record, the one place an image may name that class. Answers
+/// whether it did, so the caller can hold the header and the body to each
+/// other (`DecodeError::ActivationHeader`) once it has read the body's tag.
+fn decode_object_header<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<(ClassReference<'gc>, bool), DecodeError> {
+    let tag = reader.read_u8()?;
+    if tag != CLASS_BUILTIN {
+        return Ok((decode_class_tag_after(tag, reader, context, tables)?, false));
+    }
+    match read_builtin_class(reader)? {
+        BuiltinClass::Activation => Ok((
+            context.mutator.builtin_class(BuiltinClass::Activation),
+            true,
+        )),
+        kind => Ok((
+            context
+                .mutator
+                .builtin_class(referenced_builtin_class(kind)?),
+            false,
+        )),
+    }
+}
+
+/// `decode_class_tag` once its tag byte has been read.
+fn decode_class_tag_after<'gc>(
+    tag: u8,
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<ClassReference<'gc>, DecodeError> {
+    match tag {
         CLASS_BUILTIN => Ok(context
             .mutator
             .builtin_class(read_referenced_builtin_class(reader)?)),
@@ -2885,7 +2961,7 @@ pub fn decode_graph_section<'gc>(
     let metaclass_rows = metaclass_rows(context.mixins);
     let metaclass_class = context.mutator.builtin_class(BuiltinClass::Metaclass);
     for (index, object) in objects.iter().enumerate() {
-        let class = decode_class_tag(reader, context, &tables)?;
+        let (class, activation_header) = decode_object_header(reader, context, &tables)?;
         let identity_hash = reader.read_u32()?;
         // Checked here, the one place identity hashes are read: `load`
         // hands the maximum straight to `advance_identity_hash_past`, which
@@ -2894,12 +2970,20 @@ pub fn decode_graph_section<'gc>(
             return Err(DecodeError::IdentityHashExhausted);
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
-        let data = match reader.read_u8()? {
+        let body = reader.read_u8()?;
+        if activation_header != (body == OBJECT_ACTIVATION) {
+            return Err(DecodeError::ActivationHeader);
+        }
+        let data = match body {
             OBJECT_INSTANCE => ObjectData::Instance(decode_values(reader, context, &tables)?),
             OBJECT_STRING => ObjectData::String(reader.read_str()?),
             OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
             OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
             OBJECT_CLOSURE => ObjectData::Closure(decode_closure_record(reader, context, &tables)?),
+            // One frame id, resolved like a closure's captured frame: every
+            // frame was placeholder-allocated before this pass, so a forward
+            // reference is ordinary and an id past the table is `BadFrameId`.
+            OBJECT_ACTIVATION => ObjectData::Activation(decode_frame_id(reader, &tables)?),
             OBJECT_CLASS => {
                 let (data, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;

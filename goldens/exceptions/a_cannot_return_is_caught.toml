@@ -1,0 +1,5 @@
+stdout = '''
+stashed
+cannotReturn: the enclosing method activation has already returned
+after
+'''

@@ -1,0 +1,5 @@
+stdout = '''
+outer
+inner outer
+right
+'''

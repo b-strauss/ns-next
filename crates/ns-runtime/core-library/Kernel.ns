@@ -59,8 +59,22 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Block = ( ^outer Kernel Block )
         (* §5.5: protected, so an explicit-receiver send of it finds nothing
            through lookupPublic and falls to the access-blind "defined for"
-           walk that invokes it for the failing send itself. *)
-        protected doesNotUnderstand: message = ( ^vmMirror object: self doesNotUnderstand: message ifFail: [^super doesNotUnderstand: message] )
+           walk that invokes it for the failing send itself.
+
+           §5.5: Object's default `doesNotUnderstand:` throws a
+           `MessageNotUnderstood`. As in Squeak, if the default handler
+           resumed it -- the debugger, once the missing method has been
+           created -- the message is sent again, into the new method. *)
+        protected doesNotUnderstand: message = (
+            | exception value |
+            exception:: outer Kernel MessageNotUnderstood new.
+            exception message: message.
+            exception receiver: self.
+            exception messageText: 'an object does not understand #', message selector asString.
+            value:: exception signal.
+            exception reachedDefaultHandler ifTrue: [^message sentTo: self].
+            ^value
+        )
         (* The nil protocol, as SOMns's kernel and Newspeak's own declare it:
            every object but nil is not nil, and `UndefinedObject` answers the
            other way. A block for the not-nil case is culled with the
@@ -73,6 +87,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public ifNotNil: block = ( ^block cull: self )
         public ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )
         public ifNotNil: notNilBlock ifNil: nilBlock = ( ^notNilBlock cull: self )
+        (* Signals a `Halt`, whose `defaultAction` is the hook the debugger
+           will replace; handled, it resumes after the send. *)
+        public halt = ( ^outer Kernel Halt new signal )
     )
     (* §3.2: "Each class is an instance of a unique metaclass. All
        metaclasses are instances of class Metaclass, and are direct
@@ -110,6 +127,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Class = Behavior new () (
         public name = ( ^vmMirror className: self ifFail: [^nil] )
         public printString = ( ^name )
+        (* ANSI's `handles:`, by default "an instance of me or of a
+           subclass", compared by mixin so that a nested exception class
+           catches its instances under any enclosing instance. Here rather
+           than on `Exception`'s class side because §3.2's metaclasses are
+           flat: a class side is not inherited, so only `Class` reaches every
+           exception class, and a class side that declares its own
+           `handles:` is searched first and overrides it
+           (docs/design/core-library.md, "Exceptions"). *)
+        public handles: exception = ( ^vmMirror object: exception inheritsMixinOf: self ifFail: [false] )
     )
     public class Metaclass = Behavior new () (
         public name = ( ^thisClass name, ' class' )
@@ -125,6 +151,203 @@ class Kernel vmMirror: theMirror = Object <: Value (
            name; here it is `ClassData`'s, read through a leaf. *)
         private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
         private thisClassOf: subject = ( ^vmMirror metaclassThisClass: subject ifFail: [^nil] )
+    )
+    (* §8.6: exception handling is a library issue, built here over the
+       activation (docs/design/core-library.md, "Exceptions"). The slots are
+       the exception's own state; `originSelector` and `originReceiver` are
+       set by the VM for an error it raises, so a host still receives the
+       selector and receiver it received before exceptions existed.
+       `searching` is true from `signal` or `pass` until a handler is
+       invoked: the VM reads it to tell a search that overran the depth
+       limit's reserve from a handler that did (`Mutator::overrun_of_the_reserve`). *)
+    public class Exception = Object new (
+        | private signalActivation ::= nil.
+          private handlerActivation ::= nil.
+          private reachedDefault ::= false.
+          private searching ::= false.
+          private originSelector ::= nil.
+          private originReceiver ::= nil.
+          public messageText ::= nil. |
+    ) (
+        public description = ( ^messageText isNil ifTrue: [self class name] ifFalse: [messageText] )
+        public printString = ( ^self description )
+        public isResumable = ( ^true )
+        public reachedDefaultHandler = ( ^reachedDefault )
+        (* ANSI's signal: the handler runs on top of the stack, above this
+           activation, and nothing is unwound until it decides. *)
+        public signal = (
+            signalActivation:: vmMirror currentActivation: self ifFail: [nil].
+            handlerActivation:: signalActivation.
+            searching:: true.
+            ^self invokeNextHandler
+        )
+        public signal: text = (
+            messageText:: text.
+            ^self signal
+        )
+        public pass = (
+            handlerActivation isNil ifTrue: [^self notInAHandler: #pass].
+            searching:: true.
+            ^self invokeNextHandler
+        )
+        public return: value = (
+            | target |
+            target:: handlerActivation.
+            (target isNil or: [target == signalActivation]) ifTrue: [^self notInAHandler: #return:].
+            signalActivation:: nil.
+            handlerActivation:: nil.
+            ^vmMirror activation: target returnValue: value ifFail: [nil]
+        )
+        public return = ( ^self return: nil )
+        public retry = (
+            | target |
+            target:: handlerActivation.
+            (target isNil or: [target == signalActivation]) ifTrue: [^self notInAHandler: #retry].
+            signalActivation:: nil.
+            handlerActivation:: nil.
+            ^vmMirror activationRestart: target ifFail: [nil]
+        )
+        public resume: value = (
+            | target |
+            self isResumable ifFalse: [^(outer Kernel Error new) signal: 'cannot resume a non-resumable exception'].
+            target:: signalActivation.
+            target isNil ifTrue: [^self notInAHandler: #resume:].
+            signalActivation:: nil.
+            handlerActivation:: nil.
+            ^vmMirror activation: target returnValue: value ifFail: [nil]
+        )
+        public resume = ( ^self resume: nil )
+        (* No handler: the run ends through the leaf, once the pending
+           `ensure:` blocks have run. The one place the debugger will
+           replace. The leaf takes any selector, receiver and description
+           and never declines, so the failure block never runs and an
+           unhandled exception cannot carry on. *)
+        public defaultAction = (
+            | selector receiver |
+            selector:: self hostSelector.
+            receiver:: self hostReceiver.
+            ^vmMirror terminate: self selector: selector receiver: receiver description: self description ifFail: [nil]
+        )
+        (* The VM sets the origin as a pair, and its receiver may be nil,
+           so whether there is one is read off the selector. *)
+        protected hostSelector = ( ^originSelector isNil ifTrue: [#signal] ifFalse: [originSelector] )
+        protected hostReceiver = ( ^originSelector isNil ifTrue: [self] ifFalse: [originReceiver] )
+        (* The search walks the senders from where the last one stopped and
+           collects every enabled `on:do:` it passes, the one that handles
+           this exception included, for `invokeHandlerAt:disabling:`. *)
+        private invokeNextHandler = (
+            | activation passed |
+            passed:: outer Kernel OrderedCollection new.
+            activation:: vmMirror activationSender: handlerActivation ifFail: [nil].
+            [activation isNil] whileFalse: [
+                (vmMirror activationIsActiveHandler: activation ifFail: [false]) ifTrue: [
+                    passed add: activation.
+                    (self isHandledAt: activation) ifTrue: [^self invokeHandlerAt: activation disabling: passed]].
+                activation:: vmMirror activationSender: activation ifFail: [nil]].
+            reachedDefault:: true.
+            handlerActivation:: nil.
+            ^self defaultAction
+        )
+        (* The candidate is disabled while `handles:` runs, so that an
+           exception `handles:` raises -- a `nil handles:`'s
+           `doesNotUnderstand:` for `on: nil do:` -- is not offered to the
+           very `on:do:` whose test raised it: that would test it again, and
+           every nested search would walk the whole stack once more. It is
+           enabled again however the test is left, as the handlers
+           `invokeHandlerAt:disabling:` disables are: an `on:do:` inside the
+           protected block may catch that exception and return, which leaves
+           the candidate on the stack. *)
+        private isHandledAt: activation = (
+            | exceptionClass |
+            exceptionClass:: vmMirror activationHandlerClass: activation ifFail: [nil].
+            vmMirror activation: activation handlerActive: false ifFail: [nil].
+            ^[exceptionClass handles: self] ensure: [
+                vmMirror activation: activation handlerActive: true ifFail: [nil]]
+        )
+        (* ANSI's handler environment: an exception signalled while a handler
+           runs is looked for outside the `on:do:` that caught this one --
+           not in it, and not in any `on:do:` between it and the signal, the
+           protected block's own. Squeak gets there by skipping, during the
+           search, from a handled exception's `signal` to its handler
+           (`Context>>findNextHandlerOrSignalingContext`); here every
+           `on:do:` the search passed is disabled while the handler runs,
+           which needs no way to recognize another exception's `signal`
+           activation and costs the search's own walk again.
+           They are enabled again however the handler is left: returning,
+           `resume:`, `retry`, `return:`, or a `^` out of it, as Squeak's
+           `Context>>handleSignal:` restores its flag in an `ensure:`. The
+           handler's value is an implicit `return:`. *)
+        private invokeHandlerAt: activation disabling: handlers = (
+            | handler result |
+            handlerActivation:: activation.
+            handler:: vmMirror activationHandlerBlock: activation ifFail: [nil].
+            handlers do: [:each | vmMirror activation: each handlerActive: false ifFail: [nil]].
+            result:: [searching:: false. handler cull: self] ensure: [
+                handlers do: [:each | vmMirror activation: each handlerActive: true ifFail: [nil]]].
+            ^self return: result
+        )
+        private notInAHandler: selector = (
+            ^(outer Kernel Error new) signal: selector asString, ' sent to an exception that is not being handled'
+        )
+    ) : (
+        (* §3.2's metaclasses are flat, so each kernel exception class
+           declares these on its own class side; `handles:` is `Class`'s. *)
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
+    public class Error = Exception new () (
+        public isResumable = ( ^false )
+    ) : (
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
+    (* §5.5's exception. Resumable although an `Error`, as in Squeak, so
+       that the debugger can create the missing method and carry on:
+       `Object>>doesNotUnderstand:` then sends the message again. A host
+       receives the selector and receiver of the send nothing understood. *)
+    public class MessageNotUnderstood = Error new (
+        | public message ::= nil.
+          public receiver ::= nil. |
+    ) (
+        public isResumable = ( ^true )
+        (* One a program signals itself may carry no message: it then ends
+           the run as any other exception does. *)
+        protected hostSelector = ( ^message isNil ifTrue: [super hostSelector] ifFalse: [message selector] )
+        protected hostReceiver = ( ^message isNil ifTrue: [super hostReceiver] ifFalse: [receiver] )
+    ) : (
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
+    public class Halt = Exception new () (
+    ) : (
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
+    (* What a `doesNotUnderstand:` handler receives. `sentTo:` sends it as
+       an ordinary public send (§5.5), as Primordial Soup's `sendTo:` does:
+       a program can build a message, so a send through one must reach no
+       protected or private method. *)
+    public class Message = Object new (
+        | public selector ::= nil.
+          public arguments ::= nil. |
+    ) (
+        (* A message built without `arguments:` holds nil there, and is
+           sent with none. *)
+        public sentTo: receiver = ( ^vmMirror message: self sendTo: receiver ifFail: [^(outer Kernel Error new) signal: 'sentTo: needs a Symbol selector and an Array of arguments'] )
+    )
+    (* A running activation as an object: the frame it wraps, and nothing a
+       program can reach -- it reads other frames and unwinds stacks, a
+       capability Newspeak hands out only through mirrors. *)
+    private class Activation = Object new () (
+    )
+    (* `platform kernel`: the kernel classes a program may name, as
+       Primordial Soup's `Kernel wrapping:` facet answers them. *)
+    public class KernelNamespace = Value new () (
+        public Exception = ( ^outer Kernel Exception )
+        public Error = ( ^outer Kernel Error )
+        public MessageNotUnderstood = ( ^outer Kernel MessageNotUnderstood )
+        public Halt = ( ^outer Kernel Halt )
+        public Message = ( ^outer Kernel Message )
     )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
@@ -306,17 +529,48 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public cull: argument = ( ^self numArgs = 0 ifTrue: [self value] ifFalse: [self value: argument] )
         public whileTrue: body = ( ^vmMirror block: self whileTrue: body ifFail: [^super whileTrue: body] )
         public whileFalse: body = ( ^vmMirror block: self whileFalse: body ifFail: [^super whileFalse: body] )
+        (* ANSI's handler: the marker on this method's code tells `signal`
+           this activation handles `exceptionClass` with `handler`, while
+           `handlerActive` is true (docs/design/core-library.md,
+           "Exceptions"). The body is a tail send that tail-call elimination
+           must never skip (docs/design/execution.md, "Planned: tail calls"). *)
+        public on: exceptionClass do: handler = (
+            | handlerActive ::= true. |
+            ^self value
+        )
+        (* On a normal end the block runs here; on an unwind the unwinder
+           runs it, having set `complete` first, so it runs exactly once. *)
+        public ensure: onUnwind = (
+            | complete ::= nil. result |
+            result:: self value.
+            complete isNil ifTrue: [complete:: true. onUnwind value].
+            ^result
+        )
+        (* Runs `onUnwind` only when an unwind abandons the block. *)
+        public ifCurtailed: onUnwind = (
+            | complete ::= nil. |
+            ^self value
+        )
+        (* What the unwinder activates to run an `ensure:` or `ifCurtailed:`
+           argument that is no block: an ordinary send of `value`, as the
+           normal path's, whatever that send decides -- a method, an
+           instantiation -- and this activation's return is where the unwind
+           carries on (`interpreter::unwind`). A block the unwinder activates
+           itself. *)
+        private valueOnUnwind: onUnwind = ( ^onUnwind value )
     )
-    (* The platform a module is handed (§8.3), its transcript and its
-       collections namespace: three values (§3.1.1), each a class of its own.
-       The platform holds the other two in immutable slots, and only the
-       transcript's output reaches Rust. None of the three has an accessor on
-       `Object`: a program reaches them through the platform it is given. The
-       host builds the one platform in the state `Platform new` would give it
-       (`Mutator::platform_value`), so that asking for it runs nothing. *)
+    (* The platform a module is handed (§8.3), its transcript, its
+       collections namespace and its kernel namespace: four values (§3.1.1),
+       each a class of its own. The platform holds the other three in
+       immutable slots, and only the transcript's output reaches Rust. None
+       of the four has an accessor on `Object`: a program reaches them
+       through the platform it is given. The host builds the one platform in
+       the state `Platform new` would give it (`Mutator::platform_value`),
+       so that asking for it runs nothing. *)
     public class Platform = Value new (
         | public transcript = Transcript new.
-          public collections = Collections new. |
+          public collections = Collections new.
+          public kernel = KernelNamespace new. |
     ) (
     )
     public class Transcript = Value new () (

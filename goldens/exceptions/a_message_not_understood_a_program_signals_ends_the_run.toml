@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+start
+'''
+stderr = '''
+Uncaught Newspeak error: MessageNotUnderstood
+'''
