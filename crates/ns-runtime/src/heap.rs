@@ -638,7 +638,7 @@ fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits, floor: usize) -> 
     // limit rather than the live set, because under the floor the two part:
     // a live set of 72 shrank the buffer to 144 slots, and the next cycle,
     // allowed to reach 4096, grew it back through five reallocations, a copy
-    // and fresh pages each -- at every collection, about 3% of an
+    // and fresh pages each -- at every collection, about 5% of an
     // allocating benchmark (`docs/design/memory.md`, "The trigger and the
     // growth policy").
     let limit = collection_limit(floor, destination);
