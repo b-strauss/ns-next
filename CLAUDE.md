@@ -359,7 +359,9 @@ cargo build --workspace
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
-one to measure. Every binary a measurement compares — the current tree included — is
+one to measure; a release build is also the only one that runs the size tests
+`a_signal_fits_in_the_niche_of_its_one_unboxed_error` and the `Object` size test
+(`cargo test --workspace --release`). Every binary a measurement compares — the current tree included — is
 built with the same explicit flags, which pin every function start to a 64-byte
 boundary: in PowerShell,
 `$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`
