@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.settings
 
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.BoundConfigurable
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.dsl.builder.AlignX
@@ -12,7 +13,9 @@ class NewspeakSettingsConfigurable : BoundConfigurable("Newspeak") {
         val settings = NewspeakSettings.getInstance().state
         return panel {
             row("Language server:") {
-                textField()
+                textFieldWithBrowseButton(
+                    FileChooserDescriptorFactory.singleFile().withTitle("Choose the ns-next-lsp Executable"),
+                )
                     .bindText({ settings.serverPath.orEmpty() }, { text -> settings.serverPath = text.trim().ifEmpty { null } })
                     .align(AlignX.FILL)
                     .comment(

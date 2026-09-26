@@ -285,7 +285,7 @@ Components:
 - **LSP client** — an `LspIntegrationProvider` for `.ns` files, one server per
   project.
 - **Settings** — *Languages & Frameworks → Newspeak*: a server path, empty by
-  default, and a "Restart server" action. Stored at application level: the
+  default, typed or chosen with a file picker, and a "Restart server" action. Stored at application level: the
   path is specific to a machine, so it does not belong in `.idea/`.
 
 ### Which binary runs
