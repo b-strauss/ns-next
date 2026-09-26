@@ -24,6 +24,9 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.lsp</depends>
+    <!-- Optional: an IDE built without the spellchecker module still loads this
+         plugin, with no spell checking in Newspeak comments and strings. -->
+    <depends optional="true" config-file="newspeak-spellchecker.xml">com.intellij.modules.spellchecker</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <fileType name="Newspeak"
@@ -43,7 +46,5 @@
         <lang.quoteHandler language="Newspeak"
                            implementationClass="io.github.bstrauss.newspeak.editor.NewspeakQuoteHandler"/>
         <indexPatternBuilder implementation="io.github.bstrauss.newspeak.editor.NewspeakIndexPatternBuilder"/>
-        <spellchecker.support language="Newspeak"
-                              implementationClass="io.github.bstrauss.newspeak.editor.NewspeakSpellcheckingStrategy"/>
     </extensions>
 </idea-plugin>

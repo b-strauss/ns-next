@@ -1,0 +1,6 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <spellchecker.support language="Newspeak"
+                              implementationClass="io.github.bstrauss.newspeak.editor.NewspeakSpellcheckingStrategy"/>
+    </extensions>
+</idea-plugin>

@@ -27,8 +27,11 @@ dependencies {
         // The spellchecker is a content module of the platform itself, not a
         // separate bundled plugin (no plugins/*/plugin.xml of its own -- its
         // descriptor lives inside lib/intellij.spellchecker.jar, and its
-        // module id is a `pluginAlias` in product-info.json). Depending on it
-        // needs no `<depends>` in plugin.xml, only the compile classpath.
+        // module id is a `pluginAlias` in product-info.json). plugin.xml
+        // still declares an optional `<depends>` on it -- the platform's own
+        // extenders of `spellchecker.support` do the same -- so an IDE built
+        // without the module still loads this plugin; this entry is only
+        // what puts its classes on the compile and test classpath.
         bundledModule("intellij.spellchecker")
     }
     testImplementation("junit:junit:4.13.2")

@@ -4,7 +4,9 @@ import com.intellij.codeInsight.highlighting.BraceMatchingUtil
 import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.psi.search.PsiTodoSearchHelper
+import com.intellij.spellchecker.tokenizer.LanguageSpellchecking
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import io.github.bstrauss.newspeak.editor.NewspeakSpellcheckingStrategy
 
 class NewspeakEditorTest : BasePlatformTestCase() {
     fun testNsFilesAreNewspeak() {
@@ -41,5 +43,16 @@ class NewspeakEditorTest : BasePlatformTestCase() {
     fun testTodoInACommentIsFound() {
         myFixture.configureByText("Module.ns", "(* TODO: finish *) x")
         assertEquals(1, PsiTodoSearchHelper.getInstance(project).findTodoItems(myFixture.file).size)
+    }
+
+    /**
+     * Pins the registration itself, not just the strategy's own logic: the
+     * `spellchecker.support` entry moved into the optional `newspeak-spellchecker.xml`
+     * (see `plugin.xml`'s `<depends optional="true" ...>`), and only a test against the
+     * live extension point catches that move silently dropping it.
+     */
+    fun testSpellCheckingIsRegisteredForNewspeak() {
+        val strategies = LanguageSpellchecking.INSTANCE.allForLanguage(NewspeakLanguage)
+        assertTrue(strategies.any { strategy -> strategy is NewspeakSpellcheckingStrategy })
     }
 }
