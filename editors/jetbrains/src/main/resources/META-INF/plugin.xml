@@ -46,5 +46,20 @@
         <lang.quoteHandler language="Newspeak"
                            implementationClass="io.github.bstrauss.newspeak.editor.NewspeakQuoteHandler"/>
         <indexPatternBuilder implementation="io.github.bstrauss.newspeak.editor.NewspeakIndexPatternBuilder"/>
+        <applicationConfigurable parentId="language"
+                                 instance="io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable"
+                                 id="io.github.bstrauss.newspeak.settings"
+                                 displayName="Newspeak"/>
+        <notificationGroup id="Newspeak" displayType="BALLOON"/>
+        <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
     </extensions>
+
+    <actions>
+        <action id="io.github.bstrauss.newspeak.RestartServer"
+                class="io.github.bstrauss.newspeak.lsp.RestartServerAction"
+                text="Restart Newspeak Language Server"
+                description="Stops the Newspeak language server and starts it again">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>
