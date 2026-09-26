@@ -3772,6 +3772,123 @@ has no label of its own and so is inlined into each,
 `inline_cache::miss` instances grew by 135 to 144; `resolve_class_side` is
 gone.
 
+### What exceptions cost
+
+Exceptions ([core-library.md](core-library.md), "Exceptions") changed four
+things a release build runs whether or not a program uses them. A signal
+leaving an activation goes to the one unwinder (`interpreter::unwind`, "Unwinding"
+above), which reads each popped activation's unwind marker; a counted push
+checks its depth with the one compare it had, the reserve's logic moved to a
+cold `push_past_the_limit`; `Continuation` gained the variants an unwind and
+a signalled VM error resume with; and a `doesNotUnderstand:` now runs
+`Object>>doesNotUnderstand:`, which builds a `MessageNotUnderstood` and a
+`Message`, where a mirror row answered it in Rust.
+
+**The sources.** The four fixtures under `goldens/bench/` use no exception.
+Four throwaway sources, not fixtures, each printing what it accumulates:
+
+- `bench_ensure.ns`: 100,000 iterations of
+  `[count:: count + 1] ensure: [total:: total + 1]` and
+  `[count:: count + 1] on: Error do: [:e | 0]`, nothing signalled.
+- `bench_value.ns`: its control, the same three block bodies each sent
+  `value`, runnable on both trees.
+- `bench_signal.ns`: 10,000 iterations of
+  `[self down: 19] on: Error do: [:e | 1]`, where `down:` recurses twenty
+  activations and the last signals `Error signal: 'deep'`.
+- `bench_deep.ns`: its control, the same recursion answering `1` instead of
+  signalling, sent `value` in a block, runnable on both trees.
+
+`bench_ensure.ns` and `bench_signal.ns` cannot run on the base, which has no
+`platform kernel`, so they are measured on the head alone against their
+controls.
+
+**Measured 2026-09-26, `3d5f69c` against `3cbfd31`**, the `master` it
+started from, by the protocol of "What `Behavior`, `Class` and `Metaclass`
+cost" above: each tree built plain and with `-C metadata=layoutprobe` and
+`=secondprobe`, every build with the pinned flags, the six binaries
+differing byte for byte, none importing `VCRUNTIME140.dll`, each printing
+the expected answer for every source it can run first;
+`ns-next bench <source> --iterations 30`, five rounds a sitting, the six
+binaries rotating by one position from round to round, four sittings.
+Medians in ms per layout, the four sittings pooled (the median of the 20
+round medians):
+
+| Source | `base` | `base-p` | `base-q` | `head` | `head-p` | `head-q` |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.32 | 7.35 | 7.30 | 7.19 | 7.20 | 7.22 |
+| `bench_send.ns` | 8.79 | 8.75 | 8.74 | 8.92 | 8.88 | 8.90 |
+| `bench_block.ns` | 16.45 | 19.25 | 19.24 | 20.20 | 20.23 | 20.19 |
+| `bench_megamorphic.ns` | 11.62 | 11.64 | 11.66 | 11.50 | 11.50 | 11.45 |
+| `bench_value.ns` | 43.90 | 44.07 | 44.00 | 45.88 | 46.09 | 46.07 |
+| `bench_deep.ns` | 16.34 | 16.18 | 16.24 | 17.31 | 17.35 | 17.21 |
+| `bench_ensure.ns` | -- | -- | -- | 60.66 | 60.36 | 60.40 |
+| `bench_signal.ns` | -- | -- | -- | 78.44 | 82.89 | 82.82 |
+
+The base's three layouts against the head's three, means of the layout
+medians, and the range of every round median of each tree:
+
+| Source | `3cbfd31` | `3d5f69c` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 7.32 | 7.21 | −1.6% | −1.0% / −1.1% / −1.2% / −1.5% | 7.15–8.48 / 7.04–8.30 |
+| `bench_send.ns` | 8.76 | 8.90 | +1.6% | +1.8% / +2.4% / +0.7% / +1.3% | 8.59–9.66 / 8.65–9.54 |
+| `bench_block.ns` | 18.31 | 20.21 | see below | +10.4% / +10.4% / +10.1% / +10.5% | 16.22–19.70 / 19.76–20.65 |
+| `bench_megamorphic.ns` | 11.64 | 11.48 | −1.3% | −1.3% / −1.9% / −1.3% / −1.0% | 11.42–12.05 / 11.34–11.95 |
+| `bench_value.ns` | 43.99 | 46.01 | **+4.6%** | +5.0% / +3.7% / +4.3% / +3.7% | 43.05–45.71 / 45.17–47.87 |
+| `bench_deep.ns` | 16.26 | 17.29 | **+6.4%** | +6.5% / +6.3% / +6.4% / +6.0% | 16.04–16.93 / 17.08–17.75 |
+
+**Two fixtures are level, one is 1.6% slower.** `bench_loop.ns` and
+`bench_megamorphic.ns` are 1.6% and 1.3% faster in every sitting.
+`bench_send.ns` is 1.6% slower in every sitting, though the ranges of the
+two trees' rounds overlap.
+
+**Block activation and deep returns are slower, beyond noise.**
+`bench_block.ns` is the bimodal source: the base drew one fast layout
+(16.45) and two slow ones (19.25, 19.24), and the head three slow ones
+(20.19–20.23), so the pooled +10.4% counts layouts; slow layout against
+slow layout the head is **5.0% slower**, every round of the head above
+every round of `base-p` and `base-q`. `bench_value.ns`, which sends `value`
+to three blocks an iteration and uses no exception, is 4.6% slower
+(about 20 ns an iteration), and `bench_deep.ns`, twenty sends deep and
+back, 6.4% (about 100 ns an iteration, some 5 ns an activation); every
+round of the head is above every round of the base on `bench_deep.ns`, and
+all four sittings agree on both. Nothing of the exception protocol runs in
+either source. What moved is not yet located: a sampling profile of
+`bench_value.ns` (`samply` at 8 kHz, 100 iterations, release builds with
+debug information of both trees) puts the head's extra samples in
+`vm::run` (+470 of about 36,000) and in `Heap::reify` (132), which the head
+calls out of line from `vm::run` at two sites and the base inlined; a
+profile that locates it is an open performance item.
+
+**What the protocol costs when nothing is signalled.** `bench_ensure.ns`
+runs the same three block bodies as `bench_value.ns`, one as an `ensure:`
+receiver, one as its argument, one as an `on:do:` receiver: 60.47 ms
+against 46.01, about **145 ns an iteration for one `ensure:` and one
+`on:do:`** that signal nothing -- each is a Newspeak method that marks its
+activation and sends `value`, and `ensure:` then sends `value` to its
+argument itself.
+
+**What a signal costs.** `bench_signal.ns` takes 81.38 ms (the mean of the
+three layouts; 78.44 to 82.89 between them), against 17.29 for
+`bench_deep.ns`, the same recursion answering instead of signalling: about
+**6.4 µs for each `Error signal:` caught twenty activations up**, which is
+`signal`'s search in Newspeak over the activation leaves, the handler's
+activation, and the unwind of the twenty activations and the handler's
+own to the `on:do:`.
+
+**`vm::run`'s step is still one function, and `push` still inlines.** A
+release build with debug information of each tree, pinned flags,
+`dumpbin -disasm`: one function label `ns_runtime::vm::run` in each and no
+`vm::run::closure`. The base has **6,741 instructions** and the head
+**6,603**. `Mutator::push` has no label in either build: it is inlined into
+`push_step` and `push_initializer`, which call `Heap::push_activation` from
+the same five sites as the base (four and one); `push_past_the_limit` is a
+function of its own (`#[cold]`, `#[inline(never)]`) called from those same
+five sites, so the path below the limit is the one compare it was. Other
+sizes that moved: `push_step` from 1,361 to 1,214 instructions, `vm::finish`
+from 606 to 716, `vm::unwind` from 177 to 1,942 (the unwinder's outcome
+handling, with `interpreter::unwind::unwind`, 439, out of line), and
+`Heap::reify` (258) now has a label of its own.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the

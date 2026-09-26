@@ -1310,11 +1310,17 @@ refusals for `OBJECT_ACTIVATION` and tag 23. No golden's recorded outcome
 changed; two golden sources that read the old two-element message with
 `at:` moved to `Message`'s protocol.
 
-**Measured** by the usual protocol: every `bench` source against `master`,
-expected level, since none uses exceptions; plus `on:do:` and `ensure:` in a
-hot path with nothing signalled, and a signal caught twenty activations
-down.
-<!-- MEASUREMENT PLACEHOLDER: the numbers are recorded when the measurement is taken; none are invented here. -->
+**Measured** 2026-09-26 against `3cbfd31`, the `master` it started from
+([execution.md](execution.md), "What exceptions cost"). None of the
+`bench` fixtures uses exceptions: `bench_loop.ns` and
+`bench_megamorphic.ns` are 1.6% and 1.3% faster, `bench_send.ns` 1.6%
+slower; `bench_block.ns`, slow layout against slow layout, is 5.0% slower,
+and two throwaway controls that use no
+exception are slower beyond noise too -- three block `value`s an iteration
+4.6%, twenty sends deep and back 6.4% -- a cost of the branch not yet
+located. With nothing signalled, one `ensure:` and one `on:do:` cost about
+145 ns an iteration over sending `value` to the same blocks; an `Error`
+signalled and caught twenty activations up costs about 6.4 µs.
 
 ### Planned: the platform and collections as core-library modules
 

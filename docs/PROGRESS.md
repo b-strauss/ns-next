@@ -4282,12 +4282,29 @@ overruns of the reserve by the search and by a `pass`), and
 tests for the unwind target, the reserve, the activation record and the
 markers.
 
-**Measured:**
-<!-- MEASUREMENT PLACEHOLDER: the release-build measurement of this plan
-(every bench source against master, on:do: and ensure: in a hot path with
-nothing signalled, a signal caught twenty activations down, and the check
-that push still inlines into vm::run) is recorded here once it is taken;
-no numbers are written before then. -->
+**Measured** against `3cbfd31`, the `master` it started from
+([execution.md](design/execution.md), "What exceptions cost"), three
+layouts of each tree, four sittings pooled, at `3d5f69c`:
+`bench_loop.ns` 1.6% faster (7.32 → 7.21 ms) and `bench_megamorphic.ns`
+1.3% faster (11.64 → 11.48), each in every sitting; `bench_send.ns` 1.6%
+slower (8.76 → 8.90), the rounds of the two trees overlapping.
+**Block activation and deep returns are slower beyond noise**, and the
+cause is not yet located: `bench_block.ns`, the bimodal source, is 5.0%
+slower slow layout against slow layout (19.25 → 20.21 ms; the base drew
+one fast layout, the head none), the throwaway `bench_value.ns` (three
+block `value`s an iteration, no exception) 4.6% (43.99 → 46.01) and
+`bench_deep.ns` (twenty sends deep and back) 6.4% (16.26 → 17.29), all
+four sittings agreeing; a profile of `bench_value.ns` puts the extra
+samples in `vm::run` and in `Heap::reify`, which the head calls out of
+line from `vm::run` where the base inlined it. With nothing signalled,
+`bench_ensure.ns` (one `ensure:` and one `on:do:` an iteration) costs
+about 145 ns an iteration over the same blocks sent `value`
+(60.47 against 46.01 ms); `bench_signal.ns`, an `Error` signalled twenty
+activations down and caught, about 6.4 µs a signal (81.38 against 17.29
+ms for the same recursion answering). `vm::run` is still one function,
+with no `vm::run::closure`, and shrank from 6,741 instructions to 6,603;
+`push` is inlined into `push_step` and `push_initializer` as before, with
+`push_past_the_limit` out of line.
 
 **Small follow-ups the reviews deferred**, none affecting an outcome:
 the image encoder's `GraphTable::visit_value` skips an activation object's
