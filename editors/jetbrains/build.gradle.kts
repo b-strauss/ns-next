@@ -57,6 +57,16 @@ tasks.test {
         "nsNext.languageServer",
         repositoryRoot.resolve("target/debug/ns-next-lsp$executableSuffix").absolutePath,
     )
+    // The tests read these through the system properties above, which Gradle
+    // sees only as strings. Declared as inputs, a change to the Rust lexer
+    // (through the rebuilt server), the kernel, a corpus module or a golden
+    // reruns the lexer comparison instead of leaving `check` up to date.
+    inputs.file(repositoryRoot.resolve("target/debug/ns-next-lsp$executableSuffix"))
+        .withPropertyName("languageServer")
+    inputs.dir(repositoryRoot.resolve("corpus/modules")).withPropertyName("corpusModules")
+    inputs.dir(repositoryRoot.resolve("goldens")).withPropertyName("goldens")
+    inputs.file(repositoryRoot.resolve("crates/ns-runtime/core-library/Kernel.ns"))
+        .withPropertyName("kernel")
 }
 
 tasks.withType<PrepareSandboxTask>().configureEach {

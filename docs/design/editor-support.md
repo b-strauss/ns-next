@@ -394,7 +394,11 @@ The server's own tests are described under its section, above ("Testing").
   kind and span of every token must agree, and the Kotlin lexer's whitespace
   and comment tokens must fill exactly the gaps between the Rust tokens.
   `dump-tokens` runs in batches of 100 files, which keeps each command line
-  under Windows' length limit over the repository's close to 400 `.ns` files;
+  under Windows' length limit over the repository's close to 400 `.ns` files.
+  The test task declares the debug server, `corpus/modules`, `goldens/` and
+  `Kernel.ns` as inputs, so a change to any of them — the Rust lexer reaches
+  it through the rebuilt server — reruns the comparison rather than leaving
+  `check` up to date;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`) — file type,
