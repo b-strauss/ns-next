@@ -3,7 +3,9 @@ Newspeak3
 (* `Message>>sentTo:` sends the message as an ordinary public send (§5.5),
    as Primordial Soup's `sendTo:` does: a program can build a message, so a
    send through one reaches a public method and never a private or a
-   protected one, which end in `doesNotUnderstand:`. *)
+   protected one, which end in `doesNotUnderstand:`. A message built without
+   `arguments:` is sent with none; one whose selector is no Symbol cannot be
+   sent, and `sentTo:` raises an `Error` rather than answering nil. *)
 class SentToIsAPublicSend usingPlatform: thePlatform = Object new (
     | transcript = thePlatform transcript.
       private Error = thePlatform kernel Error.
@@ -21,5 +23,7 @@ class SentToIsAPublicSend usingPlatform: thePlatform = Object new (
         transcript show: ([(Message new selector: #secret; arguments: {}) sentTo: holder] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([(Message new selector: #guarded; arguments: {}) sentTo: holder] on: Error do: [:e | e messageText]); newLine.
         transcript show: ((Message new selector: #at:; arguments: {2}) sentTo: #(7 8)) printString; newLine.
+        transcript show: ((Message new selector: #open) sentTo: holder); newLine.
+        transcript show: ([(Message new selector: 'open'; arguments: {}) sentTo: holder] on: Error do: [:e | e messageText]); newLine.
     )
 ) : ()

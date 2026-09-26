@@ -248,10 +248,21 @@ class Kernel vmMirror: theMirror = Object <: Value (
             handlerActivation:: nil.
             ^self defaultAction
         )
+        (* The candidate is disabled while `handles:` runs, so that an
+           exception `handles:` raises -- a `nil handles:`'s
+           `doesNotUnderstand:` for `on: nil do:` -- is not offered to the
+           very `on:do:` whose test raised it: that would test it again, and
+           every nested search would walk the whole stack once more. It is
+           enabled again however the test is left, as the handlers
+           `invokeHandlerAt:disabling:` disables are: an `on:do:` inside the
+           protected block may catch that exception and return, which leaves
+           the candidate on the stack. *)
         private isHandledAt: activation = (
             | exceptionClass |
             exceptionClass:: vmMirror activationHandlerClass: activation ifFail: [nil].
-            ^exceptionClass handles: self
+            vmMirror activation: activation handlerActive: false ifFail: [nil].
+            ^[exceptionClass handles: self] ensure: [
+                vmMirror activation: activation handlerActive: true ifFail: [nil]]
         )
         (* ANSI's handler environment: an exception signalled while a handler
            runs is looked for outside the `on:do:` that caught this one --
@@ -320,7 +331,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         | public selector ::= nil.
           public arguments ::= nil. |
     ) (
-        public sentTo: receiver = ( ^vmMirror message: self sendTo: receiver ifFail: [nil] )
+        (* A message built without `arguments:` holds nil there, and is
+           sent with none. *)
+        public sentTo: receiver = ( ^vmMirror message: self sendTo: receiver ifFail: [^(outer Kernel Error new) signal: 'sentTo: needs a Symbol selector and an Array of arguments'] )
     )
     (* A running activation as an object: the frame it wraps, and nothing a
        program can reach -- it reads other frames and unwinds stacks, a

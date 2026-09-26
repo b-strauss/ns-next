@@ -1,0 +1,27 @@
+Newspeak3
+'Test'
+(* `on: nil do:` names no class: the search sends `nil handles:`, which
+   `nil` does not understand. The `on:do:` whose test raised that is
+   disabled while the test runs, so the `MessageNotUnderstood` is looked
+   for outside it and is not offered to it again -- else each nested search
+   would test it anew and walk the whole stack once more, which took
+   minutes before the run reported anything. An `on:do:` inside the
+   protected block may catch that exception and return, which leaves the
+   candidate on the stack: it is enabled again, so the next `Error` the
+   block signals is offered to it once more, and with nothing further out
+   the run ends with the `#handles:` error rather than the `Error`'s own
+   text. *)
+class OnANonClassEndsTheRunWithItsHandlesError usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private Error = thePlatform kernel Error.
+      private MessageNotUnderstood = thePlatform kernel MessageNotUnderstood. |
+) (
+    public main: platform args: arguments = (
+        [
+            transcript show: ([Error signal: 'first'] on: MessageNotUnderstood do: [:e | 'caught ' , e message selector printString]); newLine.
+            Error signal: 'second'.
+            transcript show: 'not reached'; newLine.
+        ] on: nil do: [:e | transcript show: 'wrong'; newLine].
+        transcript show: 'not reached either'; newLine.
+    )
+) : ()

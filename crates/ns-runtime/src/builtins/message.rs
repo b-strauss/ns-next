@@ -12,8 +12,9 @@ use crate::types::*;
 use crate::{Mutator, Symbol};
 
 /// Runs `primitive` on `subject`, a `Message`. `None` -- the kernel
-/// method's failure block -- for a subject that is no `Message`, a selector
-/// that is no Symbol or arguments that are no Array.
+/// method's failure block, which raises an `Error` -- for a subject that is
+/// no `Message`, a selector that is no Symbol or arguments that are neither
+/// an Array nor nil.
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: MessagePrimitive,
@@ -44,13 +45,14 @@ fn message_parts<'gc>(
     let Value::Object(selector) = field("selector")? else {
         return None;
     };
-    let Value::Object(message_arguments) = field("arguments")? else {
-        return None;
+    // The slot's default: a message built without `arguments:` is sent
+    // with none, as a unary message a program builds naturally is.
+    let message_arguments = match field("arguments")? {
+        Value::Nil => Vec::new(),
+        Value::Object(message_arguments) => mutator.heap.array_elements(message_arguments)?,
+        _ => return None,
     };
-    Some((
-        mutator.heap.symbol_value(selector)?,
-        mutator.heap.array_elements(message_arguments)?,
-    ))
+    Some((mutator.heap.symbol_value(selector)?, message_arguments))
 }
 
 /// A step that activates something "with the send's own arguments" means

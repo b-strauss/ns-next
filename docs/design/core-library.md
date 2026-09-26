@@ -1022,7 +1022,9 @@ an error is the VM's business.
 - `Message`: `selector`, `arguments`, and `sentTo: receiver`, which sends the
   message as an ordinary *public* send (§5.5), as Primordial Soup's
   `Message>>sendTo:` does — a program can obtain and build messages, so a
-  send through one must not reach a protected or private method. It is
+  send through one must not reach a protected or private method. A message
+  built without `arguments:` is sent with none; a selector that is no Symbol
+  or arguments that are no Array make `sentTo:` signal an `Error`. It is
   what every `doesNotUnderstand:` handler receives
   ([dispatch.md](dispatch.md), "The reified message is a `Message`").
 - `Activation`: private to the kernel, like `Top` (below).
@@ -1103,7 +1105,12 @@ invoking the handler walks that collection twice more, to disable and to
 enable — the same order as the search itself, so signalling stays linear in
 the depth it searches, but one allocation per handler invocation.
 `goldens/exceptions/a_handlers_exception_is_looked_for_outside_its_on_do`
-and `a_resumed_handler_is_enabled_again` pin it.
+and `a_resumed_handler_is_enabled_again` pin it. The candidate `on:do:` is
+likewise disabled, under an `ensure:`, while its class's `handles:` runs, so
+an exception the test raises — `nil handles:` for `on: nil do:` — is not
+offered to that same `on:do:` again, which would nest one search per level
+and walk the whole stack each time
+(`goldens/exceptions/on_a_non_class_ends_the_run_with_its_handles_error`).
 
 **With no handler**, `signal` sets `reachedDefault` and runs
 `defaultAction`: for `Exception`, `Error`, `MessageNotUnderstood` and `Halt`
