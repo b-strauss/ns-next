@@ -4326,8 +4326,9 @@ reserve; `Transcript show:` with an argument that is no String prints
 nothing at status 0 (older than this plan); `tests/collector.rs`'s
 give-back test proves little under the new arena rule, which only
 `compaction_never_shrinks_an_arena_below_its_next_limit` pins; the
-release-only size test for `Signal` is run by no listed gate, and
-`CLAUDE.md`'s measurement paragraph does not yet name it; and the last fix
+release-only size test for `Signal` is run by no listed gate (`CLAUDE.md`'s
+measurement paragraph names it and `cargo test --workspace --release`); and
+the last fix
 wave turned `vm::unwind` into a loop — it stays a function of its own and
 `vm::run` grew from 6,486 to 6,561 instructions, which no timing has
 checked since.
