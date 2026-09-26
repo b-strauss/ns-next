@@ -109,8 +109,8 @@ pub struct MixinMethod {
 
 /// What a method's send does without an activation, read off the method by
 /// `act` on every send (`docs/design/dispatch.md`, "Primitive methods").
-/// Only `Kernel.ns`'s methods carry one, but for `LazySlot`, which every
-/// lazy slot's getter carries.
+/// Only shipped core-library source's methods carry one, but for
+/// `LazySlot`, which every lazy slot's getter carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MethodFastPath {
     /// The method forwards to one mirror row: run the leaf, and activate
@@ -563,6 +563,15 @@ pub struct Mixin {
     /// the loader accepts a path only when it answers such an object. A
     /// decoded mixin is never shipped: an image carries only its own module.
     pub shipped: bool,
+    /// The root mixin of a shipped core-library module -- `Kernel.ns`'s or
+    /// `Platform.ns`'s -- which only the runtime instantiates, once, at
+    /// bootstrap, with the VM mirror it hands it. `Mutator::apply_mixin`
+    /// turns it into `InstantiationRefusal::CoreLibraryModule` on the
+    /// application, and on every application built over it, so a program
+    /// can neither build a second platform nor subclass one and hand the
+    /// subclass's initializer something that is not the mirror. Only the
+    /// bootstrap's `Interpreter::instantiate_core_library_module` passes it.
+    pub core_library_module: bool,
 }
 
 impl Mixin {
@@ -590,6 +599,7 @@ impl Mixin {
             superclass_message_code: None,
             root_clause_defect: None,
             shipped: false,
+            core_library_module: false,
         }
     }
 
@@ -677,6 +687,13 @@ pub enum InstantiationRefusal {
     /// every metaclass, and any subclass of them a program manages to
     /// declare.
     ClassObject,
+    /// A shipped core-library module's root class, or a class built over
+    /// one: `module` names the module (`Mixin::core_library_module`). Its
+    /// instance holds the VM mirror, so the runtime makes the one there is,
+    /// at bootstrap, and a program makes none.
+    CoreLibraryModule {
+        module: Symbol,
+    },
 }
 
 #[derive(Debug)]

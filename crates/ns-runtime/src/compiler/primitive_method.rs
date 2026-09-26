@@ -437,8 +437,8 @@ mod tests {
         );
     }
 
-    /// Outside the kernel there is no `MirrorSend`, so the same text is an
-    /// ordinary method.
+    /// Outside shipped source there is no `MirrorSend`, so the same text is
+    /// an ordinary method.
     #[test]
     fn does_not_recognize_a_forwarder_outside_the_kernel() {
         assert_eq!(
@@ -534,8 +534,8 @@ mod tests {
         );
     }
 
-    /// Outside the kernel, `outer Kernel` names whatever the module's own
-    /// `Kernel` is, so the same text is an ordinary method.
+    /// Outside shipped source, `outer Kernel` names whatever the module's
+    /// own `Kernel` is, so the same text is an ordinary method.
     #[test]
     fn does_not_recognize_an_accessor_outside_the_kernel() {
         assert_eq!(
@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(fast_path_in_the_kernel("mirror = ( ^vmMirror )"), None);
     }
 
-    /// Outside the kernel a quick body is an ordinary method, activated
+    /// Outside shipped source a quick body is an ordinary method, activated
     /// like any other.
     #[test]
     fn does_not_recognize_a_quick_method_outside_the_kernel() {

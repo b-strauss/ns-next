@@ -376,9 +376,10 @@ pub enum Binding {
     /// user module ever carries it. Every consumer treats it as an ordinary
     /// send with no binding; the two recognizers that inline a mirror send
     /// (`control_flow::recognize_mirror_send`,
-    /// `primitive_method::recognize`) read it, because only the kernel's
-    /// `vmMirror` is known to hold the mirror (`docs/design/core-library.md`,
-    /// "The VM mirror is the whole Rust boundary").
+    /// `primitive_method::recognize`) read it, because only a shipped
+    /// module's `vmMirror` is known to hold the mirror
+    /// (`docs/design/core-library.md`, "The VM mirror is the whole Rust
+    /// boundary").
     MirrorSend,
 }
 

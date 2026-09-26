@@ -112,7 +112,7 @@ impl Interpreter {
                 mutator.stash(mirror),
             )
         });
-        let kernel = match self.instantiate(&kernel_class, &[mirror]) {
+        let kernel = match self.instantiate_core_library_module(&kernel_class, &[mirror]) {
             Ok(kernel) => kernel,
             Err(HostSignal::Error(error)) => {
                 panic!(
@@ -142,7 +142,11 @@ impl<'gc> Mutator<'gc> {
     /// this phase can still hold a placeholder application.
     fn fill_builtin_classes(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let root_mixin = self.build_root_mixin(declaration, &resolved.bindings, resolved.kernel);
+        let root_mixin = self.build_root_mixin(
+            declaration,
+            &resolved.bindings,
+            super::instantiate::ModuleSource::Kernel,
+        );
         check_kernel_shape(&root_mixin, resolved);
         for kind in fill_order(&root_mixin) {
             let class = self.builtin_class(kind);
@@ -1265,6 +1269,69 @@ mod tests {
                             .compiled_method(crate::Symbol::intern(selector))
                             .is_some(),
                         "Block declares no {selector}"
+                    );
+                }
+            });
+        }
+    }
+
+    /// Only `Kernel.ns`'s own `Block` may carry unwind markers: a class of
+    /// that name in another shipped module, with the same bodies, gets none,
+    /// since the unwinder trusts a marked method's registers. Other shipped
+    /// modules are resolved with `resolve_kernel` too, so the mark cannot
+    /// rest on that alone.
+    #[test]
+    fn a_block_class_in_another_shipped_module_carries_no_unwind_marker() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'Shipped'
+            class Shipped = Object new () (
+                public class Block = Object new () (
+                    public on: exceptionClass do: handler = (
+                        | handlerActive ::= true. |
+                        ^self value
+                    )
+                    public ensure: onUnwind = (
+                        | complete ::= nil. result |
+                        result:: self value.
+                        complete isNil ifTrue: [complete:: true. onUnwind value].
+                        ^result
+                    )
+                )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            std::rc::Rc::from(source),
+            crate::types::SourceOrigin::File(std::path::PathBuf::from("Shipped.ns")),
+        ) else {
+            panic!("the module resolves");
+        };
+        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+            let mut interpreter = Interpreter::bootstrap_with(lowering);
+            let class = interpreter.load_module(&resolved);
+            interpreter.enter(|mutator| {
+                let Value::Object(class) = mutator.fetch(&class) else {
+                    panic!("load_module answers a class object");
+                };
+                let application = mutator
+                    .heap()
+                    .class_application(class)
+                    .expect("the root class has an application");
+                let block = application
+                    .mixin
+                    .nested
+                    .iter()
+                    .find(|nested| nested.name.as_str() == "Block")
+                    .expect("the module declares Block");
+                assert!(block.shipped, "the module is shipped source");
+                for method in block.compiled_methods() {
+                    assert_eq!(
+                        method.code.unwind_marker,
+                        None,
+                        "{lowering:?}: Shipped's Block>>{}",
+                        method.selector.as_str()
                     );
                 }
             });

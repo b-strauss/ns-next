@@ -902,6 +902,7 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             root_clause_defect: None,
             // An image carries only its own module, never shipped source.
             shipped: false,
+            core_library_module: false,
         });
         built[index] = Some(mixin);
     }

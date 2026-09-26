@@ -294,3 +294,87 @@ fn a_subclass_of_the_transcript_class_writes_too() {
         "a Loud shows",
     );
 }
+
+/// The error message a refused send answers.
+fn refusal(result: HostResult, what: &str) -> String {
+    match result {
+        Err(HostSignal::Error(error)) => error.message,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Ok(_) => panic!("{what}: was not refused"),
+    }
+}
+
+/// The platform holds the VM mirror, so only the runtime instantiates
+/// `Platform`, at bootstrap: a program's factory send is refused, and so is
+/// a host's `instantiate`, whatever either passes.
+#[test]
+fn a_program_cannot_instantiate_the_platform() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let platform_class = expect_ok(
+        interpreter.send(&platform, Symbol::intern("class"), &[]),
+        "platform class",
+    );
+    let not_the_mirror = interpreter.stash(Value::SmallInteger(42));
+    let not_the_kernel = interpreter.stash(Value::SmallInteger(7));
+    let expected =
+        "cannot instantiate Platform: a core-library module is instantiated only by the runtime";
+    assert_eq!(
+        refusal(
+            interpreter.send(
+                &platform_class,
+                Symbol::intern("usingVmMirror:kernel:"),
+                &[not_the_mirror.clone(), not_the_kernel.clone()],
+            ),
+            "platform class usingVmMirror:kernel:",
+        ),
+        expected
+    );
+    assert_eq!(
+        refusal(
+            interpreter.instantiate(&platform_class, &[not_the_mirror, not_the_kernel]),
+            "a host's instantiate",
+        ),
+        expected
+    );
+}
+
+/// A subclass of `Platform` would run `Platform`'s initializer with
+/// whatever its superclass clause passes as the mirror, so it is refused as
+/// `Platform` itself is.
+#[test]
+fn a_subclass_of_the_platform_cannot_be_instantiated() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Forger usingPlatform: platform = Object <: Value (
+            | private thePlatform = platform. |
+        ) (
+            private PlatformClass = ( ^thePlatform class )
+            class Forged = PlatformClass usingVmMirror: 42 kernel: 7 () ()
+            public forge = ( ^Forged new )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    assert_eq!(
+        refusal(
+            interpreter.send(&instance, Symbol::intern("forge"), &[]),
+            "Forged new",
+        ),
+        "cannot instantiate Forged: it is built on Platform, a core-library module, which is \
+         instantiated only by the runtime"
+    );
+}

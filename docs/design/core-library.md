@@ -429,10 +429,31 @@ is the loading platform's after the load. None has an accessor on `Object`,
 since a program reaches them through the platform it is given, and the
 platform declares no accessor for a predefined class either:
 `platform Array` reaches `Object`'s (§3.2), which it inherits like every
-object. A program has nothing to pass to `usingVmMirror:kernel:`, so
-`goldens/kernel/the_platform_and_its_parts_are_values` compares the
-collections namespace, whose class answers `new`, with a fresh one rather
-than the platform.
+object. `goldens/kernel/the_platform_and_its_parts_are_values` compares
+the collections namespace, whose class answers `new`, with a fresh one
+rather than the platform, since a program cannot instantiate `Platform`
+(below).
+
+**Only the runtime instantiates a shipped module.** `platform class` is
+reachable, and its factory is public, but a shipped module's root mixin is
+marked (`Mixin::core_library_module`, set by `build_root_mixin` for shipped
+source) and every application of it or over it carries
+`InstantiationRefusal::CoreLibraryModule`, so a program's
+`platform class usingVmMirror: nil kernel: nil`, a host's
+`Interpreter::instantiate` and a program's subclass of `Platform` are all
+refused as an ordinary Newspeak error ("cannot instantiate Platform: a
+core-library module is instantiated only by the runtime"). The bootstrap
+alone passes, through the crate-private
+`Interpreter::instantiate_core_library_module`, for `Kernel` and
+`Platform`. Without it a second platform over something that is not the
+mirror would run `Transcript>>show:`'s leaf through the primitive method's
+fast path, which never reads `vmMirror`, and fail through its `SendMirror`
+fallback, which does: the paths would disagree
+(`goldens/kernel/a_program_cannot_instantiate_the_platform`,
+`tests/platform.rs`). After the instantiation the bootstrap checks that the
+platform's `vmMirror` is an immutable, eager slot holding the mirror
+(`interpreter::core_library`'s `check_platform_holds_the_mirror`), as it
+checks the kernel's.
 
 **An image names the platform and what it reaches by path.** The platform
 holds the mirror, so it is never written field by field: the encoder names
@@ -651,18 +672,26 @@ compiler reads, which is what lets the compiler bind a mirror send to its row
 one §8.2 gives for mirror-based reflection generally. Whoever is not handed
 the mirror cannot call a primitive. Under a pragma, any method anywhere can
 claim one and nothing marks where the VM surface lies. The bootstrap creates
-the mirror and hands it to exactly one factory, `Kernel vmMirror:`; every
-other module would receive it only if `Kernel` or a configuration module
-passed it on, and none does. Six things keep it that way, and loosening any
-one of them lets a program claim every primitive:
+the mirror and hands it to the factories of the shipped core-library
+modules alone, `Kernel vmMirror:` and `Platform usingVmMirror:kernel:`,
+which only the bootstrap may instantiate ("The platform" above); a user
+module would receive it only if a shipped module passed it on, and none
+does: the platform keeps it in a private slot. Six things keep it that way,
+and loosening any one of them lets a program claim every primitive:
 
 - Only `resolver::resolve_kernel` records `Binding::MirrorSend`, the mark the
-  compiler's recognizers read, and only `Kernel.ns` is resolved with it; a
-  user module goes through `resolve`, so copying the kernel's text gets an
-  ordinary send to whatever that module's own `vmMirror` holds.
+  compiler's recognizers read, and only the shipped core-library modules —
+  `Kernel.ns`, and `Platform.ns` from `interpreter/core_library.rs`'s table —
+  are resolved with it; a user module goes through `resolve`, so copying
+  shipped text gets an ordinary send to whatever that module's own
+  `vmMirror` holds.
 - The bootstrap checks what the resolver cannot: that `Kernel`'s root class
   declares exactly one slot, the immutable `vmMirror`, and that after
-  instantiation it holds the mirror (`interpreter::kernel`).
+  instantiation it holds the mirror (`interpreter::kernel`), and that
+  `Platform`'s `vmMirror` is an immutable, eager slot holding it
+  (`interpreter::core_library`); and no program can instantiate either
+  module (`InstantiationRefusal::CoreLibraryModule`), so no instance of a
+  class declared in one has any other `vmMirror`.
 - No program can name the mirror's class: `Object` declares no accessor for
   it or for `Top` (`interpreter/kernel.rs`'s
   `objects_class_accessors_are_exactly_the_nameable_builtins` pins the
@@ -791,7 +820,7 @@ the other two fast paths ([dispatch.md](dispatch.md), "Primitive
 methods"). `ValueOfParameter` answers a closure argument as the block to
 activate, as a trampoline step, marked as a control-flow step for a Boolean
 receiver; any other argument activates the method, whose body then sends
-`value` for real. Only `Kernel.ns`'s methods are
+`value` for real. Only shipped core-library source's methods are
 recognized, and `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch them off,
 since they run no leaf.
 

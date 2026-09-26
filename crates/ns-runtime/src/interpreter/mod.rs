@@ -1712,10 +1712,17 @@ impl<'gc> Mutator<'gc> {
             .behavior_mixin
             .as_ref()
             .is_some_and(|behavior_mixin| Rc::ptr_eq(behavior_mixin, mixin));
+        // A shipped module's root comes before everything: whatever else
+        // would refuse it, a program may not instantiate it at all.
         let instantiation_refusal = mixin
-            .root_clause_defect
-            .clone()
-            .map(crate::mixin::InstantiationRefusal::RootClause)
+            .core_library_module
+            .then_some(crate::mixin::InstantiationRefusal::CoreLibraryModule { module: mixin.name })
+            .or_else(|| {
+                mixin
+                    .root_clause_defect
+                    .clone()
+                    .map(crate::mixin::InstantiationRefusal::RootClause)
+            })
             .or_else(|| {
                 superclass.and_then(|application| application.instantiation_refusal.clone())
             })

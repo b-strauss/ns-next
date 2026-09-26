@@ -529,8 +529,8 @@ mirror row and the failure block for a send that is:
 
 - marked `Binding::MirrorSend` — which only `resolver::resolve_kernel`
   records, on a plain explicit-receiver send whose receiver is the bare
-  identifier `vmMirror` naming the module root's member, so only `Kernel.ns`
-  ever has one (a cascade to `vmMirror` is not marked, and compiles as
+  identifier `vmMirror` naming the module root's member, so only shipped
+  core-library source (`Kernel.ns`, `Platform.ns`) ever has one (a cascade to `vmMirror` is not marked, and compiles as
   ordinary sends);
 - a keyword send whose selector names a `MIRROR` row
   (`builtins::primitive::mirror_primitive_named`); and
@@ -584,15 +584,18 @@ is no lookup to cache. The VM arm reads the registers, calls
 delivers the leaf's answer — a value, or a step such as a block to activate —
 exactly as a send's decision is delivered. Whether the receiver register
 holds the mirror is `send_inlined`'s check, standing in for the lookup; only
-`Kernel.ns` has a `SendMirror` and the bootstrap checks that its `vmMirror`
-holds the mirror, so the check's error is unreachable while that holds. The
+shipped core-library source (`Kernel.ns`, `Platform.ns`) has a `SendMirror`,
+only the bootstrap instantiates either module, and it checks that each one's
+`vmMirror` holds the mirror, so the check's error is unreachable while that
+holds. The
 instruction reads and writes only its own activation's registers, so
 `bytecode::outer_reach_of` does not name it.
 
 **It has no wire tag**, and the encoder treats one as unreachable. It is
-emitted only for a `MirrorSend`, so only into `Kernel.ns`, and no image
-carries the kernel: an image names a builtin class by tag and the bootstrap of
-the loading process supplies it ([image-format.md](image-format.md), "What is
+emitted only for a `MirrorSend`, so only into shipped core-library source,
+and no image carries shipped code: an image names a builtin class by tag and a
+shipped object by its platform path, and the bootstrap of the loading process
+supplies both ([image-format.md](image-format.md), "What is
 *not* serialized"). A tag would be a wire form nothing legitimate writes, and
 a decoder that accepted one would hand an artifact a way to run any leaf with
 no lookup.

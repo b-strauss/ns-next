@@ -102,7 +102,8 @@ surface is.
   methods are the loading process's own `Kernel.ns`, compiled at its
   bootstrap ([core-library.md](core-library.md)), and no image carries the
   kernel's code, its instance or the VM mirror — which is also why
-  `Instruction::SendMirror`, emitted only into `Kernel.ns`, has no wire tag
+  `Instruction::SendMirror`, emitted only into shipped core-library source
+  (`Kernel.ns`, `Platform.ns`), has no wire tag
   ([compiler.md](compiler.md), "Mirror sends").
 - **`nil`, `true` and `false`** are unboxed `Value` scalars with no heap identity
   to preserve, encoded as scalar tags.
@@ -740,9 +741,10 @@ text answer the mis-classed object too.
 
 **The VM mirror is refused on both sides of the format.** The mirror is a
 capability: whoever holds it can run any leaf, and the bootstrap hands it to
-`Kernel.ns` alone ([core-library.md](core-library.md), "The VM mirror is the
-whole Rust boundary"). Its class has builtin class tag **14**
-(`BuiltinClass::VmMirror`, appended to `BuiltinClass::ALL` after `Platform`'s
+the shipped core-library modules alone, `Kernel.ns` and `Platform.ns`
+([core-library.md](core-library.md), "The VM mirror is the whole Rust
+boundary"). Its class has builtin class tag **14**
+(`BuiltinClass::VmMirror`, appended to `BuiltinClass::ALL` after the retired
 13), which `builtin_class_from_tag` knows so that the closing table of
 tag-named hashes can name it as it names every builtin. **Everywhere the
 graph names a class — a class reference, the class behind a

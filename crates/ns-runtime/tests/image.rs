@@ -10747,37 +10747,47 @@ fn a_hash_recorded_for_a_platform_path_past_the_section_is_refused() {
     assert_eq!(result, Err(decode::DecodeError::BadPlatformPath(1)));
 }
 
-/// A metaclass a path names that a prebuilt class's metaclass entry reaches
-/// as well -- here `Transcript class`, whose class the path `Transcript`
-/// names -- is listed once, or the loader would refuse the table as naming
-/// one object twice.
+/// An object the closing hash table reaches twice is listed once, or the
+/// loader would refuse the table as naming one object twice. The path
+/// `collections List` answers `OrderedCollection`, a builtin class compiled
+/// from shipped source, so the class is reached both as a builtin and by its
+/// path -- it keeps its builtin entry -- and its metaclass both as a
+/// builtin's metaclass and as the metaclass of a path-named class -- it keeps
+/// the builtin one's.
 #[test]
-fn a_path_named_metaclass_is_listed_once_in_the_hash_table() {
+fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
     let (mut interpreter, class) = load(EMPTY);
     let platform = interpreter.platform();
-    let transcript_class = expect_ok(
-        interpreter.send(&platform, Symbol::intern("Transcript"), &[]),
-        "platform Transcript",
+    let collections = expect_ok(
+        interpreter.send(&platform, Symbol::intern("collections"), &[]),
+        "platform collections",
+    );
+    let list = expect_ok(
+        interpreter.send(&collections, Symbol::intern("List"), &[]),
+        "platform collections List",
     );
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        let transcript_class = *object(&mutator.fetch(&transcript_class));
+        let list = *object(&mutator.fetch(&list));
+        assert!(
+            list.same(mutator.builtin_class(BuiltinClass::OrderedCollection)),
+            "the path answers the builtin class"
+        );
         let metaclass = mutator
             .heap()
-            .class_metaclass(transcript_class)
-            .expect("Transcript has a metaclass");
-        let hash = mutator.heap_mut().ensure_identity_hash(metaclass);
+            .class_metaclass(list)
+            .expect("OrderedCollection has a metaclass");
+        let class_hash = mutator.heap_mut().ensure_identity_hash(list);
+        let metaclass_hash = mutator.heap_mut().ensure_identity_hash(metaclass);
         let mut writer = encode::Writer::new();
-        encode::encode_tag_named_hashes(&mut writer, mutator, class, &platform, &[metaclass]);
+        encode::encode_tag_named_hashes(&mut writer, mutator, class, &platform, &[list]);
         let bytes = writer.into_bytes();
+        let entries = u32::from_le_bytes(bytes[..4].try_into().expect("a count"));
         let mut reader = decode::Reader::new(&bytes);
-        let decoded = decode::decode_tag_named_hashes(
-            &mut reader,
-            mutator,
-            class,
-            &[Value::Object(metaclass)],
-        );
-        assert_eq!(decoded, Ok(hash));
+        let decoded =
+            decode::decode_tag_named_hashes(&mut reader, mutator, class, &[Value::Object(list)]);
+        assert_eq!(decoded, Ok(class_hash.max(metaclass_hash)));
+        assert_eq!(entries, 2, "one entry for the class, one for its metaclass");
     });
 }

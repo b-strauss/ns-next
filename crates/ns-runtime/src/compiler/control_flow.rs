@@ -242,7 +242,7 @@ mod tests {
     }
 
     /// The same text in a module `resolve` resolved is an ordinary send:
-    /// only the kernel's `vmMirror` is known to hold the mirror.
+    /// only a shipped module's `vmMirror` is known to hold the mirror.
     #[test]
     fn does_not_recognize_a_mirror_send_outside_the_kernel() {
         let send = parse_send("vmMirror stringSize: self ifFail: [^nil]");

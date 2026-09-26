@@ -72,10 +72,14 @@ pub(crate) fn send_inlined<'gc>(
     run_leaf(mutator, primitive, subject, leaf_arguments)
 }
 
-/// Only `Kernel.ns` contains a `SendMirror`, and the bootstrap checks that
-/// its `vmMirror` holds the mirror, so this is unreachable while that holds.
-/// It is an error rather than a panic so that it stays one if it ever does
-/// not.
+/// Only shipped core-library source -- `Kernel.ns` and `Platform.ns` --
+/// contains a `SendMirror`; the bootstrap checks that each one's `vmMirror`
+/// holds the mirror (`interpreter::kernel`, `interpreter::core_library`),
+/// and only the bootstrap instantiates either module
+/// (`InstantiationRefusal::CoreLibraryModule`), so no instance of a class
+/// declared in one has any other `vmMirror`. This is unreachable while that
+/// holds. It is an error rather than a panic so that it stays one if it ever
+/// does not.
 fn not_the_mirror<'gc>(primitive: MirrorPrimitive, receiver: Value<'gc>) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: Symbol::intern(mirror_entry(primitive).selector),
@@ -365,10 +369,14 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(lowering);
         let class = interpreter.load_module(&resolved);
         let mirror = the_mirror(&mut interpreter);
-        let instance = expect_ok(
-            interpreter.instantiate(&class, &[mirror]),
-            "K vmMirror: the mirror",
-        );
+        // A module resolved as shipped source is instantiated only the way
+        // the bootstrap instantiates one (`InstantiationRefusal::CoreLibraryModule`).
+        let instantiated = if kernel {
+            interpreter.instantiate_core_library_module(&class, &[mirror])
+        } else {
+            interpreter.instantiate(&class, &[mirror])
+        };
+        let instance = expect_ok(instantiated, "K vmMirror: the mirror");
         let probe = expect_ok(
             interpreter.send(&instance, Symbol::intern("probe"), &[]),
             "probe",
@@ -521,7 +529,8 @@ mod tests {
     }
 
     /// The same forwarders in a module plain `resolve` resolved are ordinary
-    /// methods: only the kernel's `vmMirror` is known to hold the mirror.
+    /// methods: only a shipped module's `vmMirror` is known to hold the
+    /// mirror.
     #[test]
     fn forwarders_outside_the_kernel_are_ordinary_methods() {
         for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {

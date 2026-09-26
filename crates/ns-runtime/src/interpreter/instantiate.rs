@@ -166,6 +166,27 @@ impl Interpreter {
     /// but a class object is refused as a Newspeak error, never a panic:
     /// the caller is a host.
     pub fn instantiate(&mut self, class: &Root, factory_arguments: &[Root]) -> HostResult {
+        self.instantiate_as(class, factory_arguments, Instantiator::Program)
+    }
+
+    /// `instantiate` for the bootstrap alone: the one instance of a shipped
+    /// core-library module, `Kernel` or `Platform`, which every other path
+    /// refuses (`InstantiationRefusal::CoreLibraryModule`). Crate-private,
+    /// so no host and no program reaches it.
+    pub(crate) fn instantiate_core_library_module(
+        &mut self,
+        class: &Root,
+        factory_arguments: &[Root],
+    ) -> HostResult {
+        self.instantiate_as(class, factory_arguments, Instantiator::Runtime)
+    }
+
+    fn instantiate_as(
+        &mut self,
+        class: &Root,
+        factory_arguments: &[Root],
+        instantiator: Instantiator,
+    ) -> HostResult {
         let depth = self.world.activation_depth();
         let start = self.enter(|mutator| {
             let value = mutator.fetch(class);
@@ -186,11 +207,38 @@ impl Interpreter {
                 .iter()
                 .map(|argument| mutator.fetch(argument))
                 .collect();
-            let decided = mutator.decide_instantiation(class, factory_arguments);
+            let decided = mutator.decide_instantiation_as(class, factory_arguments, instantiator);
             mutator.start(decided, &[])
         });
         self.run_from_host(start, depth)
     }
+}
+
+/// What a module's source is, for `Mutator::build_mixin`: a program's,
+/// shipped core-library source (`ResolvedModule.kernel`), or `Kernel.ns`
+/// itself, which is shipped too.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModuleSource {
+    User,
+    CoreLibrary,
+    Kernel,
+}
+
+impl ModuleSource {
+    pub(crate) fn is_shipped(self) -> bool {
+        self != ModuleSource::User
+    }
+}
+
+/// Who asks for an instance. Only the runtime may instantiate a shipped
+/// core-library module (`InstantiationRefusal::CoreLibraryModule`); every
+/// other refusal holds for both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Instantiator {
+    /// A program's factory send, or a host's `Interpreter::instantiate`.
+    Program,
+    /// The bootstrap, instantiating `Kernel` and `Platform`.
+    Runtime,
 }
 
 impl<'gc> Mutator<'gc> {
@@ -198,7 +246,12 @@ impl<'gc> Mutator<'gc> {
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let mixin = self.build_root_mixin(declaration, &resolved.bindings, resolved.kernel);
+        let source = if resolved.kernel {
+            ModuleSource::CoreLibrary
+        } else {
+            ModuleSource::User
+        };
+        let mixin = self.build_root_mixin(declaration, &resolved.bindings, source);
         // The rule leaves three shapes, and a defective root is built as the
         // first so that its class exists, answers its class side and can be
         // inspected -- only an instance is refused (`apply_mixin` carries the
@@ -256,29 +309,33 @@ impl<'gc> Mutator<'gc> {
     /// materializes it (the accessor), and a class side until
     /// `Mutator::attach_metaclass` builds the metaclass that applies it.
     ///
-    /// `kernel` is the module's `ResolvedModule.kernel`, carried down to
-    /// every method so that only a kernel method can carry a fast path
+    /// `source` says what the module is. Whether it is shipped
+    /// (`ResolvedModule.kernel`) is carried down to every method so that
+    /// only a shipped method can carry a fast path
     /// (`MixinMethod::from_declaration`), and recorded on every mixin of the
-    /// tree, class sides included, as `Mixin.shipped`.
+    /// tree, class sides included, as `Mixin.shipped`; whether it is
+    /// `Kernel.ns` itself decides which `Block` may carry unwind markers.
     pub(crate) fn build_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
-        kernel: bool,
+        source: ModuleSource,
     ) -> Rc<Mixin> {
-        Rc::new(self.mixin_of(declaration, bindings, kernel))
+        Rc::new(self.mixin_of(declaration, bindings, source))
     }
 
     /// A module's root mixin: `build_mixin`'s, with the root rule's verdict
-    /// recorded on it for `apply_mixin` and the encoder to read.
+    /// recorded on it for `apply_mixin` and the encoder to read, and, for
+    /// shipped source, the mark that only the runtime instantiates it.
     pub(crate) fn build_root_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
-        kernel: bool,
+        source: ModuleSource,
     ) -> Rc<Mixin> {
-        let mut mixin = self.mixin_of(declaration, bindings, kernel);
+        let mut mixin = self.mixin_of(declaration, bindings, source);
         mixin.root_clause_defect = root_clause_defect(declaration);
+        mixin.core_library_module = source.is_shipped();
         Rc::new(mixin)
     }
 
@@ -287,10 +344,14 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
-        kernel: bool,
+        source: ModuleSource,
     ) -> Mixin {
+        let kernel = source.is_shipped();
         let slots = build_slots(&declaration.instance_side);
-        let kernel_block = kernel
+        // `Kernel.ns`'s own `Block`, not a class of that name in another
+        // shipped module: an unwind marker makes the unwinder trust the
+        // method's registers (`compiler::unwind_marker`).
+        let kernel_block = source == ModuleSource::Kernel
             && declaration.name.name
                 == super::kernel::kernel_class_name(crate::types::BuiltinClass::Block);
         let methods = build_methods(
@@ -305,7 +366,7 @@ impl<'gc> Mutator<'gc> {
             .instance_side
             .nested_classes
             .iter()
-            .map(|nested| self.build_mixin(nested, bindings, kernel))
+            .map(|nested| self.build_mixin(nested, bindings, source))
             .collect();
         // §6's unnumbered introduction, before §6.1 begins: "If the
         // signature is omitted it defaults to `new`" -- a class written
@@ -359,6 +420,7 @@ impl<'gc> Mutator<'gc> {
             superclass_message_code: None,
             root_clause_defect: None,
             shipped: kernel,
+            core_library_module: false,
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
         mixin
@@ -474,13 +536,34 @@ impl<'gc> Mutator<'gc> {
         class: ClassReference<'gc>,
         factory_arguments: Vec<Value<'gc>>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
+        self.decide_instantiation_as(class, factory_arguments, Instantiator::Program)
+    }
+
+    /// `decide_instantiation`, for `instantiator`: the runtime passes the
+    /// refusal of a shipped core-library module, and nothing else.
+    pub(crate) fn decide_instantiation_as(
+        &mut self,
+        class: ClassReference<'gc>,
+        factory_arguments: Vec<Value<'gc>>,
+        instantiator: Instantiator,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         let application = self.heap.class_application(class);
         // Asked before anything is allocated: a class whose instances could
         // never be what §3.1.1 or the root rule demands has no instance to
         // make. The answer was computed once, when the application was built
         // (`Mutator::apply_mixin`).
         if let Some(application) = application.as_ref() {
-            if let Some(refusal) = &application.instantiation_refusal {
+            let refusal = application
+                .instantiation_refusal
+                .as_ref()
+                .filter(|refusal| {
+                    !(instantiator == Instantiator::Runtime
+                        && matches!(
+                            refusal,
+                            crate::mixin::InstantiationRefusal::CoreLibraryModule { .. }
+                        ))
+                });
+            if let Some(refusal) = refusal {
                 let display_name = self.heap.class_display_name(class);
                 return Err(Signal::Error(instantiation_refusal_error(
                     class,
@@ -1294,6 +1377,19 @@ fn instantiation_refusal_error<'gc>(
             message: format!(
                 "cannot instantiate {display_name}: a class object is made only by evaluating its declaration"
             ),
+        },
+        crate::mixin::InstantiationRefusal::CoreLibraryModule { module } => NewspeakError {
+            selector: factory_selector(application),
+            receiver: Value::Object(class),
+            message: if module.as_str() == display_name {
+                format!(
+                    "cannot instantiate {display_name}: a core-library module is instantiated only by the runtime"
+                )
+            } else {
+                format!(
+                    "cannot instantiate {display_name}: it is built on {module}, a core-library module, which is instantiated only by the runtime"
+                )
+            },
         },
     }
 }

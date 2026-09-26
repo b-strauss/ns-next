@@ -624,7 +624,8 @@ method is built onto its mixin, and stores the variant on the method. For
 Anything else — a second statement, a temporary, another subject, a
 parameter out of place, a row whose arity is not the method's — is an
 ordinary method. Only `resolve_kernel` records `MirrorSend`, so only a
-`Kernel.ns` method can be one; the same text in a user module is an ordinary
+method of shipped core-library source (`Kernel.ns`, `Platform.ns`) can be
+one; the same text in a user module is an ordinary
 method sending to whatever its `vmMirror` holds. What the failure block
 contains is not examined: it runs only when the method is activated. A method
 decoded from an image never carries a kernel fast path, since no image carries a
@@ -632,10 +633,11 @@ kernel method.
 
 For `BuiltinClass`, `recognize_builtin_class_accessor` accepts a unary method
 whose body is one statement with no temporaries, `^outer Kernel <Name>`, the
-send bound `LexicalSend` and `<Name>` a kernel class other than `Top` and
-`Platform` (`interpreter::kernel::kernel_kind_named`, which never names the
-mirror's class). It runs only when `ResolvedModule.kernel` is set, which
-`resolver::resolve_kernel` alone sets: in a user module `outer Kernel` names
+send bound `LexicalSend` and `<Name>` a kernel class other than `Top`
+(`interpreter::kernel::kernel_kind_named`, which never names the mirror's
+class). It runs only when `ResolvedModule.kernel` is set, which
+`resolver::resolve_kernel` alone sets, for shipped source; only `Kernel.ns`
+can write `outer Kernel`, so only its methods match: in a user module `outer Kernel` names
 whatever that module's own `Kernel` is, so the same text there is an ordinary
 method. `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch it off, since an
 accessor runs no leaf.
@@ -696,8 +698,8 @@ measurement can report both what the move costs and what the fast path
 recovers. It leaves the quick methods alone, but breaks the agreement above
 for `whileTrue:` and `whileFalse:`, so an overflow compared across the
 lowerings is not valid under it, and no gate runs with it. It is read once per
-process, and only once a kernel mirror send has been recognized, so no method
-outside the kernel consults the environment.
+process, and only once a mirror send in shipped source has been recognized,
+so no user method consults the environment.
 
 **A cache needs no change.** A site whose target is a primitive method records
 a `Target::Method` like any other, and the mark is read off the method in

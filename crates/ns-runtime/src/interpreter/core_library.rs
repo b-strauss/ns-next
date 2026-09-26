@@ -5,7 +5,8 @@
 
 use std::rc::Rc;
 
-use crate::types::{ResolvedModule, SourceOrigin};
+use crate::interpreter::Mutator;
+use crate::types::{ResolvedModule, SourceOrigin, Value};
 
 pub(crate) const PLATFORM_SOURCE: &str = include_str!("../../core-library/Platform.ns");
 
@@ -99,21 +100,54 @@ impl crate::interpreter::Interpreter {
                 .expect("internal: the kernel is wired in before the platform boots");
             (mutator.stash(mirror), mutator.stash(kernel))
         });
-        let platform = match self.instantiate(&platform_class, &[mirror, kernel]) {
-            Ok(platform) => platform,
-            Err(crate::interpreter::HostSignal::Error(error)) => {
-                panic!(
-                    "internal: Platform.ns failed to instantiate: {}",
-                    error.message
-                )
-            }
-            Err(crate::interpreter::HostSignal::Return) => {
-                panic!("internal: a return escaped Platform.ns's instantiation")
-            }
-        };
+        let platform =
+            match self.instantiate_core_library_module(&platform_class, &[mirror, kernel]) {
+                Ok(platform) => platform,
+                Err(crate::interpreter::HostSignal::Error(error)) => {
+                    panic!(
+                        "internal: Platform.ns failed to instantiate: {}",
+                        error.message
+                    )
+                }
+                Err(crate::interpreter::HostSignal::Return) => {
+                    panic!("internal: a return escaped Platform.ns's instantiation")
+                }
+            };
         self.enter(|mutator| {
             let platform = mutator.fetch(&platform);
+            check_platform_holds_the_mirror(mutator, platform);
             mutator.platform_singleton = Some(platform);
         });
     }
+}
+
+/// The resolver marks every send to the root class's `vmMirror` in shipped
+/// source as a mirror send (`resolver::is_the_mirror_slot`) without knowing
+/// what that member holds; that it is an eager, immutable slot holding the
+/// VM mirror is checked here for the platform, as `interpreter::kernel`
+/// checks it for the kernel. Otherwise a mirror send's fast path and its
+/// `SendMirror` fallback could disagree about the receiver.
+fn check_platform_holds_the_mirror<'gc>(mutator: &Mutator<'gc>, platform: Value<'gc>) {
+    let Value::Object(platform) = platform else {
+        panic!("internal: Platform.ns's instance is an object");
+    };
+    let heap = mutator.heap();
+    let application = heap
+        .class_application(heap.class_of_object(platform))
+        .expect("internal: the platform's class is a class object");
+    let position = application
+        .mixin
+        .slots
+        .iter()
+        .position(|slot| slot.name.as_str() == "vmMirror" && !slot.mutable && !slot.lazy)
+        .expect(
+            "internal: Platform.ns's root class must declare the immutable, eager slot vmMirror",
+        );
+    let holds_the_mirror = heap
+        .instance_field(platform, application.own_slot_base + position)
+        .is_some_and(|value| mutator.is_vm_mirror(value));
+    assert!(
+        holds_the_mirror,
+        "internal: Platform's vmMirror slot must hold the VM mirror"
+    );
 }

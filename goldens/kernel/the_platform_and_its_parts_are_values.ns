@@ -4,9 +4,11 @@ Newspeak3
    (§3.1.1): stateless but for what the host handed the platform, so any two
    of a kind are equal and, a value having no identity, identical. Each is
    an instance of its own class, so none answers another's protocol. The
-   platform itself is not compared with a fresh one: its factory is
-   `usingVmMirror:kernel:`, which a program has nothing to pass to, so the
-   collections namespace, whose class answers `new`, stands in for it. *)
+   platform itself is not compared with a fresh one: only the runtime
+   instantiates `Platform`, whose factory is `usingVmMirror:kernel:`, and a
+   program's send of it is refused
+   (`a_program_cannot_instantiate_the_platform`), so the collections
+   namespace, whose class answers `new`, stands in for it. *)
 class PlatformValues usingPlatform: platformAtCreation = Object new () (
     public main: platform args: arguments = (
         | t c |

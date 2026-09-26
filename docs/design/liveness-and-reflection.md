@@ -174,7 +174,8 @@ that the mirror's class and table are fixed at bootstrap
 replaced a method there would be seen by a sent mirror send and bypassed by
 both, so the two paths would disagree. **Open:** how a replaced *kernel*
 method is compiled. Its primitive-method mark and its `SendMirror` rest on
-`Binding::MirrorSend`, which only `Kernel.ns`'s resolution records, and
+`Binding::MirrorSend`, which only shipped core-library source's
+resolution records, and
 recording it for an edit would hand that edit the whole Rust boundary
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary").

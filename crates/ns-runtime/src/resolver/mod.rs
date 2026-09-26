@@ -25,9 +25,11 @@ pub fn resolve(
     resolve_with(module, source, origin, false)
 }
 
-/// `resolve`, for `Kernel.ns` alone: additionally marks each send to the
-/// root class's `vmMirror` with `Binding::MirrorSend`. Only the bootstrap
-/// (`interpreter::kernel`) and crate-internal tests call it.
+/// `resolve`, for the shipped core-library modules alone -- `Kernel.ns`,
+/// and the entries of `interpreter::core_library`'s table: additionally
+/// marks each send to the root class's `vmMirror` with
+/// `Binding::MirrorSend`. Only the bootstrap (`interpreter::kernel`,
+/// `interpreter::core_library`) and crate-internal tests call it.
 pub(crate) fn resolve_kernel(
     module: ast::Module,
     source: Rc<str>,
@@ -88,8 +90,9 @@ fn walk(module: &ast::Module, kernel: bool) -> (HashMap<Span, Binding>, Vec<Reso
 struct Resolver {
     bindings: HashMap<Span, Binding>,
     errors: Vec<ResolveError>,
-    /// Whether this is `Kernel.ns`, whose sends to `vmMirror` are marked
-    /// (`resolve_kernel`). `false` for every user module.
+    /// Whether this is shipped core-library source, whose sends to
+    /// `vmMirror` are marked (`resolve_kernel`). `false` for every user
+    /// module.
     kernel: bool,
 }
 
@@ -415,7 +418,7 @@ impl Resolver {
         // Ordinary explicit-receiver send: resolve the receiver
         // sub-expression on its own merits; the send itself needs no
         // binding (dispatch.rs's lookupPublic runs on the receiver's
-        // actual runtime class). In the kernel, a send to `vmMirror` is
+        // actual runtime class). In shipped source, a send to `vmMirror` is
         // marked for the recognizers that inline a mirror send.
         if self.kernel && is_the_mirror_slot(&send.receiver, scope, chain) {
             self.bindings.insert(send.span, Binding::MirrorSend);
@@ -515,8 +518,10 @@ impl Resolver {
 
 /// The bare identifier `vmMirror`, not a local, naming a member of the
 /// module's root class -- the outermost entry of `chain`. That it is an
-/// immutable slot holding the mirror is the bootstrap's to check
-/// (`interpreter::kernel`), since the resolver cannot know what a slot holds.
+/// immutable slot holding the mirror is the bootstrap's to check, for each
+/// shipped module it instantiates (`interpreter::kernel`'s `wire_kernel_in`,
+/// `interpreter::core_library`'s `check_platform_holds_the_mirror`), since
+/// the resolver cannot know what a slot holds.
 fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[EnclosingClass]) -> bool {
     let Expression::Identifier(identifier) = receiver else {
         return false;
