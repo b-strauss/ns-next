@@ -461,3 +461,35 @@ fn an_undeclared_outer_class_in_a_mixin_clause_is_a_resolve_error() {
         "{errors:?}"
     );
 }
+
+/// §6: the primary factory's parameters "are in scope in the instance
+/// initializer but not in the rest of the class body", and a lazy slot is
+/// declared in the class body (§6.3.3), so `seed` in its initializer is the
+/// implicit-receiver send `self seed`, not the factory's parameter.
+#[test]
+fn a_lazy_slot_initializer_does_not_see_the_factory_parameters() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Foo seed: seed = Object new (
+            | eager = seed. |
+        ) (
+            lazy public later = seed.
+        ) : ()
+    "};
+    let resolved = resolve_source(source);
+    let eager = source.find("= seed.").expect("the eager initializer") + 2;
+    let later = source.rfind("= seed.").expect("the lazy initializer") + 2;
+    let binding_at = |start: usize| {
+        resolved
+            .bindings
+            .iter()
+            .find(|(span, _)| span.start as usize == start)
+            .map(|(_, binding)| *binding)
+    };
+    assert!(matches!(binding_at(eager), Some(Binding::Local(_))));
+    assert!(matches!(
+        binding_at(later),
+        Some(Binding::LexicalSend { depth: 0 })
+    ));
+}

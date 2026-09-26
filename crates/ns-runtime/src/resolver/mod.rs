@@ -184,6 +184,12 @@ impl Resolver {
         let mut scope = ScopeStack::new();
         scope.push(LocalScope::new(&factory_parameters, &[]));
         for slot in &declaration.instance_side.slots {
+            // A lazy slot (§6.3.3) is resolved below, after this scope is
+            // popped: its initializer is not part of the instance
+            // initializer's activation.
+            if slot.lazy {
+                continue;
+            }
             if let Some(initializer) = &slot.initializer {
                 self.resolve_expression(initializer, &mut scope, &class_chain);
             }
@@ -213,6 +219,26 @@ impl Resolver {
                 for argument in &message.arguments {
                     self.resolve_expression(argument, &mut scope, &class_chain);
                 }
+            }
+        }
+
+        // A lazy slot's initializer (§6.3.3) runs when its getter is
+        // invoked, not when the instance is built, so it is part of the
+        // class body the spec's rule for the primary factory's parameters
+        // excludes: they "are in scope in the instance initializer but not
+        // in the rest of the class body" (§6). Resolve it the way
+        // `resolve_method` resolves a unary method's body -- a fresh scope
+        // with no locals but its own, over the same `class_chain` -- since
+        // the compiler (a later task) lowers it as a zero-argument method
+        // body.
+        for slot in &declaration.instance_side.slots {
+            if !slot.lazy {
+                continue;
+            }
+            if let Some(initializer) = &slot.initializer {
+                let mut lazy_scope = ScopeStack::new();
+                lazy_scope.push(LocalScope::new(&[], &[]));
+                self.resolve_expression(initializer, &mut lazy_scope, &class_chain);
             }
         }
 
