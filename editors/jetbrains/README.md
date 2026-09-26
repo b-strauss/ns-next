@@ -18,28 +18,28 @@ tool window's **+** and pick `editors/jetbrains/build.gradle.kts`.
 
 ## Commands
 
-From the repository root (`gradlew.bat` on Windows outside Git Bash):
+From this directory (`gradlew.bat` on Windows outside Git Bash):
 
 ```bash
 # a sandbox IDE with the plugin and a release build of ns-next-lsp
-./editors/jetbrains/gradlew -p editors/jetbrains runIde
+./gradlew runIde
 
 # the tests, including LexerComparisonTest against the Rust lexer
 # (builds ns-next-lsp in debug first)
-./editors/jetbrains/gradlew -p editors/jetbrains check
+./gradlew check
 
 # the distributable archive: build/distributions/newspeak-jetbrains-<version>.zip
-./editors/jetbrains/gradlew -p editors/jetbrains buildPlugin
+./gradlew buildPlugin
 
 # the plugin verifier against the IDEs listed in build.gradle.kts
 # (downloads several IDEs)
-./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin
+./gradlew verifyPlugin
 ```
 
 Every task that prepares a sandbox builds `ns-next-lsp` with Cargo itself, so
 `cargo` must be on `PATH`; the binary is bundled for the platform the build
 runs on only.
 
-A change to `crates/ns-syntax/src/lexer.rs` must be mirrored in
+A change to `../../crates/ns-syntax/src/lexer.rs` must be mirrored in
 `src/main/kotlin/io/github/bstrauss/newspeak/lexer/NewspeakLexer.kt` in the
 same commit, or `check` fails.
