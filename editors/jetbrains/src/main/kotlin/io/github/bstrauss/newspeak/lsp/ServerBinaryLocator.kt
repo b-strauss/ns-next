@@ -35,7 +35,9 @@ class ServerBinaryLocator(
         }
         if (pluginDirectory == null) return ServerLocation.PluginDirectoryUnknown
         val platform = platformDirectory(operatingSystemName, operatingSystemArchitecture)
-        val bundled = platform?.let { pluginDirectory.resolve("bin").resolve(it).resolve(executableName(operatingSystemName)) }
+        val bundled = platform?.let { platformName ->
+            pluginDirectory.resolve("bin").resolve(platformName).resolve(executableName(operatingSystemName))
+        }
         if (bundled == null || !Files.isRegularFile(bundled)) return ServerLocation.NotBundledForPlatform(platform)
         ensureExecutable(bundled)
         return ServerLocation.Found(bundled)
