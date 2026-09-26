@@ -4314,24 +4314,23 @@ with no `vm::run::closure`: 6,741 instructions on the base, 6,486 at
 `d7a6680`; `push` is inlined into `push_step` and `push_initializer` as
 before, with `push_past_the_limit` out of line.
 
-**Small follow-ups the reviews deferred**, none affecting an outcome:
-the image encoder's `GraphTable::visit_value` skips an activation object's
-class walk by its payload, where a `debug_assert!` that the header is
-`Activation` would record the assumption; the test
-`a_level_applying_the_mirrors_or_tops_mixin_is_refused` covers `Activation`
-too and its name is stale; `activation_leaf`'s `unreachable!` arm holds only
-by `execute`'s routing; a restart sets its target's program counter to 0
-twice (`arrive` and `vm.rs`); a user `handles:` override runs before
-anything is disabled, so one that signals could see its search re-enter the
-same `on:do:`; `defaultAction` keeps an `ifFail: [nil]` nothing can reach;
-`searching` and `reachedDefault` stay true after a resumed default action,
-visible only through the test hook; no test drives a `doesNotUnderstand:`
-whose own machinery overruns the reserve; `Transcript show:` with an
-argument that is no String prints nothing at status 0 (older than this
-plan); and the Rust and Newspeak comments that cite
-`docs/design/core-library.md`, "Planned: exceptions" and
-`docs/design/execution.md`, "Non-local return" name the sections now headed
-"Exceptions" and "Unwinding".
+**Small follow-ups the reviews deferred**, none affecting an outcome: the
+test `a_level_applying_the_mirrors_or_tops_mixin_is_refused` covers
+`Activation` too and its name is stale; `activation_leaf`'s `unreachable!`
+arm holds only by `execute`'s routing; a restart sets its target's program
+counter to 0 twice (`arrive` and `vm.rs`); `defaultAction` keeps an
+`ifFail: [nil]` nothing can reach; `searching` and `reachedDefault` stay
+true after a resumed default action, visible only through the test hook; no
+test drives a `doesNotUnderstand:` whose own machinery overruns the
+reserve; `Transcript show:` with an argument that is no String prints
+nothing at status 0 (older than this plan); `tests/collector.rs`'s
+give-back test proves little under the new arena rule, which only
+`compaction_never_shrinks_an_arena_below_its_next_limit` pins; the
+release-only size test for `Signal` is run by no listed gate, and
+`CLAUDE.md`'s measurement paragraph does not yet name it; and the last fix
+wave turned `vm::unwind` into a loop — it stays a function of its own and
+`vm::run` grew from 6,486 to 6,561 instructions, which no timing has
+checked since.
 
 ## Notes
 
