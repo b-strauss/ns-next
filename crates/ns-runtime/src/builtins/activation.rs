@@ -210,9 +210,9 @@ fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Signal<'g
         _ => None,
     }
     .unwrap_or_else(|| mutator.heap.describe(&description));
-    Signal::Terminate(NewspeakError {
+    Signal::Terminate(Box::new(NewspeakError {
         selector,
         receiver: argument(1),
         message,
-    })
+    }))
 }

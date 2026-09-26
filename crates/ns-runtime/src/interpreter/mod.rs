@@ -53,8 +53,14 @@ pub(crate) enum Signal<'gc> {
     /// An unhandled exception's `defaultAction`: unwind to the run's floor,
     /// running every pending `ensure:` block, and leave the run with this
     /// error, which the host receives as it received every error before
-    /// there were exceptions.
-    Terminate(NewspeakError<'gc>),
+    /// there were exceptions. Boxed, as the rarest of the four, so that
+    /// `Error` is the one variant holding a `NewspeakError` in place and the
+    /// others fit in its niche: two in place made `Signal` 56 bytes rather
+    /// than 48, and every `Result<Step, Signal>` a send decides 64 rather
+    /// than 56, which cost about 6% on a benchmark of deep sends and returns
+    /// that never signals (`docs/design/execution.md`, "What exceptions
+    /// cost").
+    Terminate(Box<NewspeakError<'gc>>),
 }
 
 pub(crate) type EvaluationResult<'gc> = Result<Value<'gc>, Signal<'gc>>;
@@ -848,16 +854,19 @@ impl<'gc> Mutator<'gc> {
 
     /// A run's outcome as the host receives it. Nothing runs between the
     /// run's last safepoint and here, so every value in `result` is current.
+    fn host_error(&self, error: NewspeakError<'gc>) -> HostSignal {
+        HostSignal::Error(HostError {
+            selector: error.selector,
+            receiver: self.stash(error.receiver),
+            message: error.message,
+        })
+    }
+
     pub(crate) fn to_host(&self, result: EvaluationResult<'gc>) -> HostResult {
         match result {
             Ok(value) => Ok(self.stash(value)),
-            Err(Signal::Error(error) | Signal::Terminate(error)) => {
-                Err(HostSignal::Error(HostError {
-                    selector: error.selector,
-                    receiver: self.stash(error.receiver),
-                    message: error.message,
-                }))
-            }
+            Err(Signal::Error(error)) => Err(self.host_error(error)),
+            Err(Signal::Terminate(error)) => Err(self.host_error(*error)),
             // A run's unwinder leaves with neither a restart nor a
             // termination (`unwind::exit_signal`); only a leaf a host's own
             // send to the mirror decided, before any run, comes here with
@@ -940,7 +949,9 @@ impl<'gc> Mutator<'gc> {
         if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
             return Ok(self.heap.push_activation(header, arguments, temporaries));
         }
-        Err(Signal::Terminate(self.overrun_of_the_reserve(&header)))
+        Err(Signal::Terminate(Box::new(
+            self.overrun_of_the_reserve(&header),
+        )))
     }
 
     /// Whether the depth limit's reserve is held: its activation is still
@@ -1280,7 +1291,7 @@ impl<'gc> Mutator<'gc> {
             // raised again as the signal it was, from the activation it had
             // stopped at -- now the top of the stack again.
             Continuation::Unwind(pending) => Err(unwind::signal_of(*pending)),
-            Continuation::VmErrorSignalled(error) => Err(Signal::Terminate(*error)),
+            Continuation::VmErrorSignalled(error) => Err(Signal::Terminate(error)),
         }
     }
 
@@ -2407,5 +2418,18 @@ mod tests {
             }
             assert_eq!(mutator.next_dispatch_id, start + 5);
         });
+    }
+
+    /// Every send decides a `Result<Step, Signal>` and every step answers
+    /// an `EvaluationResult`, so a `Signal` that grows grows both on the
+    /// hottest path there is: 8 bytes more measured about 6% on deep sends
+    /// and returns (`Signal::Terminate` says why it is boxed). Pinned in a
+    /// release build, where a handle carries no origin or epoch.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn a_signal_fits_in_the_niche_of_its_one_unboxed_error() {
+        assert_eq!(std::mem::size_of::<Signal>(), 48);
+        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
+        assert_eq!(std::mem::size_of::<EvaluationResult>(), 48);
     }
 }

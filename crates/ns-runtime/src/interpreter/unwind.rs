@@ -86,7 +86,7 @@ pub(crate) fn unwind_signal<'gc>(
         },
         Signal::Terminate(error) => PendingUnwind {
             target: None,
-            action: UnwindAction::Terminate(error),
+            action: UnwindAction::Terminate(*error),
         },
         error @ Signal::Error(_) => {
             while mutator.heap.activation_depth() > floor {
@@ -226,7 +226,7 @@ pub(crate) fn signal_of(pending: PendingUnwind<'_>) -> Signal<'_> {
             };
             Signal::Restart(target)
         }
-        UnwindAction::Terminate(error) => Signal::Terminate(error),
+        UnwindAction::Terminate(error) => Signal::Terminate(Box::new(error)),
     }
 }
 
