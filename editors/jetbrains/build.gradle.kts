@@ -31,8 +31,22 @@ dependencies {
 
 val repositoryRoot = layout.projectDirectory.dir("../..").asFile
 
+val executableSuffix = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
+
+/** The debug build is what the tests use: the release profile's fat LTO makes that build slow. */
+val buildLanguageServerDebug by tasks.registering(Exec::class) {
+    description = "Builds ns-next-lsp (debug) with Cargo for the tests."
+    workingDir = repositoryRoot
+    commandLine("cargo", "build", "-p", "ns-lsp")
+}
+
 tasks.test {
+    dependsOn(buildLanguageServerDebug)
     systemProperty("nsNext.repositoryRoot", repositoryRoot.absolutePath)
+    systemProperty(
+        "nsNext.languageServer",
+        repositoryRoot.resolve("target/debug/ns-next-lsp$executableSuffix").absolutePath,
+    )
 }
 
 tasks.withType<PrepareSandboxTask>().configureEach {
