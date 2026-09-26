@@ -612,8 +612,10 @@ impl Relocation for ForwardingTable {
 
 /// Slides the marked slots of one arena to the front, truncates the rest
 /// away -- which is where the dead records drop, and their payloads with
-/// them -- and answers the table that maps old index to new.
-fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits) -> ForwardingTable {
+/// them -- and answers the table that maps old index to new. `floor` is the
+/// heap's collection floor, which the arena's next limit never falls below
+/// (`collection_limit`).
+fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits, floor: usize) -> ForwardingTable {
     let mut table = vec![DEAD; slots.len()];
     let mut destination = 0usize;
     for (source, destination_of_source) in table.iter_mut().enumerate() {
@@ -631,12 +633,28 @@ fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits) -> ForwardingTabl
     // without this the pages a collection frees stay with the process and
     // the peak this step exists to lower does not move. With hysteresis, so
     // that a heap which oscillates does not reallocate and copy at every
-    // collection: shrink only when three quarters of the buffer is idle,
-    // and leave the live set room to double.
-    if slots.capacity() > destination.saturating_mul(4) {
-        slots.shrink_to(destination.saturating_mul(2));
+    // collection: shrink only when the buffer is more than twice the next
+    // limit, and leave room for the limit itself. Measured against the
+    // limit rather than the live set, because under the floor the two part:
+    // a live set of 72 shrank the buffer to 144 slots, and the next cycle,
+    // allowed to reach 4096, grew it back through five reallocations, a copy
+    // and fresh pages each -- at every collection, about 3% of an
+    // allocating benchmark (`docs/design/memory.md`, "The trigger and the
+    // growth policy").
+    let limit = collection_limit(floor, destination);
+    if slots.capacity() > limit.saturating_mul(2) {
+        slots.shrink_to(limit);
     }
     ForwardingTable { table }
+}
+
+/// How long an arena may grow after a collection that left `live` slots in
+/// it before the next one is requested: no more is allocated between two
+/// collections than is live, so the marking work per allocated slot is
+/// amortized constant, and never less than `floor`, which keeps a small
+/// program out of the collector altogether.
+fn collection_limit(floor: usize, live: usize) -> usize {
+    floor.max(live.saturating_mul(2))
 }
 
 /// The tracer a move or a collection forwards every handle with. In a debug
@@ -2696,17 +2714,11 @@ impl<'gc> Heap<'gc> {
         self.collection_requested
     }
 
-    /// After a collection: no more is allowed to be allocated before the
-    /// next one than is live, so the marking work per allocated slot is
-    /// amortized constant.
+    /// After a collection: each arena's next limit (`collection_limit`).
     pub(crate) fn reset_collection_limits(&mut self) {
         self.collection_requested = false;
-        self.next_object_collection = self
-            .collection_floor
-            .max(self.objects.len().saturating_mul(2));
-        self.next_frame_collection = self
-            .collection_floor
-            .max(self.frames.len().saturating_mul(2));
+        self.next_object_collection = collection_limit(self.collection_floor, self.objects.len());
+        self.next_frame_collection = collection_limit(self.collection_floor, self.frames.len());
     }
 
     #[cfg(debug_assertions)]
@@ -2790,8 +2802,8 @@ impl<'gc> Heap<'gc> {
         {
             self.epoch = to_epoch;
         }
-        let objects = compact_arena(&mut self.objects, &marker.objects);
-        let frames = compact_arena(&mut self.frames, &marker.frames);
+        let objects = compact_arena(&mut self.objects, &marker.objects, self.collection_floor);
+        let frames = compact_arena(&mut self.frames, &marker.frames, self.collection_floor);
         let mut forwarder = Forwarder {
             #[cfg(debug_assertions)]
             heap_id: self.heap_id,
@@ -4066,5 +4078,35 @@ mod tests {
         heap.reset_collection_limits();
         assert_eq!(heap.next_object_collection, object_count * 2);
         assert_eq!(heap.next_frame_collection, frame_count * 2);
+    }
+
+    /// Compaction shrinks an arena against its next limit, never against
+    /// the live set alone: under the floor, a buffer cut to twice the live
+    /// set had to grow back to the floor through a string of reallocations
+    /// at every collection. A buffer within twice the limit is kept whole,
+    /// and one past it is cut back to no less than the limit.
+    #[test]
+    fn compaction_never_shrinks_an_arena_below_its_next_limit() {
+        let floor = 64;
+
+        let mut within: Vec<u32> = Vec::with_capacity(2 * floor);
+        within.extend(0..100);
+        let kept = within.capacity();
+        let _ = compact_arena(&mut within, &mark::MarkBits::new(100), floor);
+        assert!(within.is_empty());
+        assert_eq!(
+            within.capacity(),
+            kept,
+            "a buffer within twice the limit is kept"
+        );
+
+        let mut past: Vec<u32> = Vec::with_capacity(16 * floor);
+        past.extend(0..100);
+        let _ = compact_arena(&mut past, &mark::MarkBits::new(100), floor);
+        assert!(past.is_empty());
+        assert!(
+            (floor..16 * floor).contains(&past.capacity()),
+            "a buffer past twice the limit is cut back, but not below the limit"
+        );
     }
 }
