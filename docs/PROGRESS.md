@@ -15,6 +15,54 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
+**The platform module is done** (2026-09-26 to 2026-09-27;
+[ns-next-platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md);
+[core-library.md](design/core-library.md), "Planned: the platform and
+collections as core-library modules"): §6.3.3's lazy slots — a lazy getter
+is a compiled method with `MethodFastPath::LazySlot`, and a value's `=` and
+`hash` skip them; the table of shipped modules
+(`interpreter/core_library.rs`'s `SHIPPED_MODULES`) and a shipped
+`Platform.ns`, holding `Platform`, `Transcript` and `KernelNamespace`,
+booted with `usingVmMirror:kernel:` beside `Kernel.ns` (`Collections` moved
+too, still answering the kernel's `OrderedCollection` for `List`); and
+platform paths in the image (`VALUE_PLATFORM_PATH`, `CLASS_PLATFORM_PATH`,
+`HASHED_PLATFORM_PATH`), each resolved through a public slot getter or
+nested-class accessor before the rest of a graph decodes. `Platform`'s root
+class is uninstantiable by a program
+(`InstantiationRefusal::CoreLibraryModule`,
+`goldens/kernel/a_program_cannot_instantiate_the_platform`); builtin class
+tags 13, 18, 19 and 29 (`Platform`, `Transcript`, `KernelNamespace`,
+`Collections`) are retired.
+`goldens/kernel/the_platform_and_its_parts_are_values` compares the
+collections namespace against a fresh one instead of the platform itself,
+now that only the runtime can make one; new goldens pin the lazy-slot
+rules (`goldens/spec/spec_6_3_3_*`, `goldens/kernel/a_values_lazy_slot_*`)
+and the instantiation refusal, and
+`spec_6_3_3_a_lazy_slot_is_initialized_on_first_use`, skipped since the
+parser dropped `lazy` and ran the initializer eagerly, is unskipped: its
+recorded `stdout` now holds, since a lazy slot is initialized on first use
+rather than at instantiation. **Measured** ([execution.md](design/execution.md),
+"What the platform module cost"): start-up is unchanged, +0.2%, inside the
+protocol's own spread — the platform's classes moved out of `Kernel.ns`
+rather than being added on top of it. Two of the four `goldens/bench/`
+fixtures are reproducibly slower: `bench_block.ns` +2.6%, `bench_send.ns`
++4.6% (one outlier round aside) — both send a method or activate a block
+in their timed loop, through `vm::run`, which grew 2.9% (6,561 to 6,750
+instructions, `dumpbin -disasm`) for the one `MethodFastPath::LazySlot` arm
+`act_with_base` added, inlined into `vm::run` on every send whether or not
+it ever reaches a lazy slot; `bench_loop.ns`, which never leaves
+`IntegerBinary`'s inlined fast path, is level, and `bench_megamorphic.ns`'s
+already-megamorphic send absorbs the same growth as a smaller share of a
+bigger cost.
+
+**The next piece of work is the collections module** (plan 2 of
+[core-library.md](design/core-library.md), "Planned: the platform and
+collections as core-library modules"): the mirror's `moduleNamed:`, `Array
+new:`, a Newspeak `List` in `Collections.ns`, a handler search that keeps
+no `OrderedCollection`, and `OrderedCollection` removed with its leaf and
+`Heap::array_push` — which answers the question step 7 (below) has to
+settle first.
+
 **Editor support — the language server and the JetBrains plugin — reached
 Built on 2026-09-26** ("Editor support: the language server and the
 JetBrains plugin" below); it runs beside the runtime milestones above rather
@@ -32,20 +80,7 @@ one unwinder aimed at a `FrameReference`; every VM error and every message
 nothing understands signalled; and a reserve above the depth limit for
 signalling it — see "Exceptions" below. It followed step 6's third plan,
 `Behavior`, `Class` and `Metaclass` (2026-09-25; "`Behavior`, `Class` and
-`Metaclass`" below). **The next piece of work is the platform and
-collections as core-library modules** (decided with the user on
-2026-09-25, designed with the user on 2026-09-26,
-[core-library.md](design/core-library.md), "Planned: the platform and
-collections as core-library modules"), in two plans not yet written. The
-first closes §6.3.3's lazy-slot deviation, adds the module table on the
-mirror and moves `Platform`, `Transcript`, `Collections` and
-`KernelNamespace` into a shipped `Platform.ns` booted with
-`usingVmMirror:kernel:`, whose members are lazy slots and which an image
-names by platform paths. The second adds `Array new:` and a Newspeak `List`
-in `Collections.ns`, gives the handler search an `Array` instead of an
-`OrderedCollection`, and removes `OrderedCollection` and
-`Heap::array_push` — which answers the question step 7 has to settle
-first.
+`Metaclass`" below).
 **Then step 7, the payload space**
 (item 4 of the list under "What came next was the third plan, now done, and
 then step 7" below), whose open question is that one: the space was ordered

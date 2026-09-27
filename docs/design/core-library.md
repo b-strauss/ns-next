@@ -1708,9 +1708,23 @@ path. The on-demand rule (above) is `Platform.ns`'s.
 Every start now compiles one more module, and `List>>add:` is Newspeak
 where `OrderedCollection>>add:` was a leaf. Each plan measures, release
 build and pinned protocol ([execution.md](execution.md)), the start-up of a
-module that answers at once against the 4.07 ms recorded in "Where the
-library source lives, and how modules are found" above, and plan 2 the
-bench sources as well.
+module that answers at once, and the four `goldens/bench/` fixtures.
+
+**Plan 1, measured 2026-09-27** ([execution.md](execution.md), "What the
+platform module cost"): start-up is unchanged, +0.2%, inside the
+measurement's own spread — the platform's classes moved out of `Kernel.ns`
+rather than being added on top of it, so there is ten lines more for
+bootstrap to compile, not a second module's worth. The bench fixtures split:
+`bench_loop.ns`, which sends no method in its timed loop, is level; **`bench_block.ns`
+is 2.6% slower, reproducibly**, and `bench_send.ns` agrees where one outlier
+round does not obscure it, both because `interpreter/resolve.rs`'s
+`act_with_base` — inlined into `vm::run` on every method send — grew one
+arm for `MethodFastPath::LazySlot`, and `vm::run` grew with it: 6,561
+instructions at `7c6bdbf` to 6,750 at the head, 2.9% more, on the path a
+method send or a block activation runs through and `bench_loop.ns`'s inlined
+`IntegerBinary` does not. `bench_megamorphic.ns`'s send is megamorphic
+already, so the same growth is a smaller share of its larger cost and does
+not show.
 
 ### What this step did not break
 

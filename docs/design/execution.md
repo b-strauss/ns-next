@@ -3971,6 +3971,126 @@ three fixes above, the same check finds one `ns_runtime::vm::run` label and no
 `decide_slot_accessor` at 80 with its error, `no_field_for_slot_accessor`
 (84), a function of its own.
 
+### What the platform module cost
+
+The platform module (`docs/design/core-library.md`, "Planned: the platform
+and collections as core-library modules", plan 1) added §6.3.3's lazy
+slots — a lazy getter is a compiled method with `MethodFastPath::LazySlot`,
+its arm sitting beside the other `MethodFastPath` arms in
+`interpreter/resolve.rs`'s `act_with_base` — platform paths in the image,
+and a shipped `Platform.ns` compiled and resolved once at bootstrap,
+alongside `Kernel.ns`, with `usingVmMirror:kernel:`. `Platform`, `Transcript`
+and `KernelNamespace`, previously builtin classes declared inside
+`Kernel.ns` (tags 13, 18, 19 and 29, now retired), moved into that module;
+`Collections` moved too, still answering the kernel's `OrderedCollection`
+for `List`. Combined, the two files grow from `Kernel.ns`'s 587 lines at
+`7c6bdbf` to 553 (`Kernel.ns`) plus 44 (`Platform.ns`), 597 in all — the
+module split does not shrink what bootstrap compiles, it adds a second
+`resolve_shipped_module` call and ten lines net.
+
+**Measured 2026-09-27, `054e980` against `7c6bdbf`** (the plan commit Task 1
+started from), by the protocol of "What removing the re-entries moved"
+above: `7c6bdbf` built in a throwaway worktree
+(`git worktree add`, removed afterwards), the head in the current tree, two
+builds of each with `RUSTFLAGS="-C target-feature=+crt-static -C
+llvm-args=-align-all-functions=6"`, the four binaries differing byte for
+byte; none imports `VCRUNTIME140.dll` (`dumpbin -dependents`); each checked
+to print the expected answer first.
+
+**Start-up.** `ns-next run` of a module whose `main:args:` answers `0` at
+once (no `platform` member other than the implicit factory parameter),
+wall-clock from the parent process (a .NET `Process` under `Measure`-style
+`Stopwatch`, not piped through a shell), 200 runs of each of the four
+binaries per sitting, five discarded warm-up runs each, the binaries'
+turn order rotated between the two sittings; nothing else running. This
+machine's per-process overhead is higher than the 3.56/4.08 ms recorded
+against `e2bb31e` ("What the core library's move cost" above) — `ns-next
+--help`, which never compiles a kernel, medians 2.84 ms here — so the
+figures below are not comparable to that entry's across machines, only to
+each other.
+
+| Binary | Sitting 1 median | Sitting 1 mean | Sitting 2 median | Sitting 2 mean |
+|---|---|---|---|---|
+| Head, build a | 5.288 | 5.353 | 5.282 | 5.333 |
+| Head, build b | 5.305 | 5.370 | 5.274 | 5.329 |
+| `7c6bdbf`, build a | 5.288 | 5.327 | 5.285 | 5.334 |
+| `7c6bdbf`, build b | 5.291 | 5.329 | 5.315 | 5.348 |
+
+Pooled across both builds and both sittings (n = 800 runs a side): head mean
+**5.346 ms**, `7c6bdbf` mean **5.335 ms** — +0.011 ms, +0.2%, inside the
+p10–p90 spread of every single group (about 0.45–0.5 ms wide). **No
+measurable start-up cost**: the ten extra lines the module split adds are
+far below what this protocol resolves, consistent with the line count
+above — the platform's classes moved out of `Kernel.ns` rather than being
+added on top of it.
+
+**The four `goldens/bench/` fixtures.** `ns-next bench <source>
+--iterations 30`, five rounds a sitting, the four binaries rotating by one
+position from round to round, two whole sittings, nothing else running.
+Means of the five rounds:
+
+Sitting 1:
+
+| Source | Head, build a | Head, build b | `7c6bdbf`, build a | `7c6bdbf`, build b |
+|---|---|---|---|---|
+| `bench_loop.ns` | 5.1305 | 5.1530 | 5.1257 | 5.1060 |
+| `bench_send.ns` | 6.8934 | 6.8777 | 6.5611 | 6.5898 |
+| `bench_block.ns` | 14.5002 | 14.4043 | 14.0099 | 14.1108 |
+| `bench_megamorphic.ns` | 9.4685 | 9.5302 | 9.3776 | 9.3968 |
+
+Sitting 2:
+
+| Source | Head, build a | Head, build b | `7c6bdbf`, build a | `7c6bdbf`, build b |
+|---|---|---|---|---|
+| `bench_loop.ns` | 5.1344 | 5.1392 | 5.1487 | 5.1424 |
+| `bench_send.ns` | 6.9355 | 6.9221 | 6.6847 | 6.5828 |
+| `bench_block.ns` | 14.4286 | 14.5544 | 14.1677 | 14.1145 |
+| `bench_megamorphic.ns` | 9.4002 | 9.4250 | 9.4048 | 9.3723 |
+
+Both sittings pooled (n = 20 rounds a side), means in ms, and whether every
+round of the head lies outside every round of `7c6bdbf`'s, sitting by
+sitting:
+
+| Source | Head | `7c6bdbf` | Change | Sitting 1 | Sitting 2 |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.1393 | 5.1307 | +0.17% | overlapping | overlapping |
+| `bench_send.ns` | 6.9072 | 6.6046 | **+4.6%** | entirely above | overlapping (one `7c6bdbf` round at 7.03) |
+| `bench_block.ns` | 14.4719 | 14.1007 | **+2.6%** | entirely above | entirely above |
+| `bench_megamorphic.ns` | 9.4560 | 9.3879 | +0.7% | overlapping | overlapping |
+
+**`bench_loop.ns` is level; `bench_block.ns` is a reproducible regression,
+entirely above in both sittings, and `bench_send.ns` agrees in the sitting
+its one outlier round does not obscure.** The three that moved all send at
+least one method or activate a block inside their timed loop —
+`bench_send.ns` a lexical `self tick:`, `bench_block.ns` a block literal's
+`value:`, `bench_megamorphic.ns` a polymorphic `value` through an `Array`
+— where `bench_loop.ns`'s `+` and `<` never leave `IntegerBinary`'s inlined
+fast path. `bench_megamorphic.ns` is the one exception to that split,
+overlapping in both sittings despite sending a method every iteration; its
+send is megamorphic by design (`docs/design/dispatch.md`'s namesake cache
+miss), so it already pays a table walk this step did not touch, and
+whatever the other two lost is a smaller fraction of its larger per-send
+cost.
+
+**The cause is `vm::run`'s growth, not the platform module's own work.**
+A release build with debug information of each tree (the timed build's
+`RUSTFLAGS` plus `CARGO_PROFILE_RELEASE_DEBUG=true`, a separate
+`--target-dir`), then `dumpbin -disasm`: one `ns_runtime::vm::run` label in
+each, no `vm::run::closure` — the step did not split the function.
+`7c6bdbf` measures **6,561 instructions**, the head **6,750** — 189 more,
+2.9%. `act_with_base` carries no label of its own in either build: like
+every other primitive method's fast path, it is inlined into `vm::run`
+(`docs/design/dispatch.md`, "Primitive methods"), so the one arm
+`MethodFastPath::LazySlot` added to its match is inlined too, on every
+method send whether or not it ever reaches a lazy slot. 2.9% more code
+in the function every method send and every block activation runs through
+is consistent with `bench_send.ns` and `bench_block.ns` losing 2.6–4.6%,
+`bench_megamorphic.ns` losing nothing measurable on top of its own bigger
+cost, and `bench_loop.ns`, which never enters that growth at all, losing
+nothing. No profile beyond the instruction count was taken; distinguishing
+an instruction-cache effect from a changed branch layout inside the match
+would need one, and is not a case this step's measurement makes on its own.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
