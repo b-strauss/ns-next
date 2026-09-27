@@ -8278,7 +8278,10 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     // it must be turned off here too, for the same reason as above.
     #[cfg(debug_assertions)]
     loaded.interpreter.set_stress_caches(false);
-    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 0);
+    // The bootstrap runs shipped code of its own (the platform's boot), so
+    // an empty table is one that holds only what a fresh bootstrap leaves.
+    let booted = Interpreter::bootstrap().cache_statistics().site_entries;
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, booted);
     let forty_one = loaded.interpreter.stash(Value::SmallInteger(41));
     let answer = expect_ok(
         loaded
@@ -8300,7 +8303,10 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     // a `CachedTargetKind::Method` also reserves the target's own family --
     // `Block>>value:`'s two sends (the lexical read of `vmMirror` and its
     // `block:value:ifFail:` send) -- so the total is 5, not 3.
-    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 5);
+    assert_eq!(
+        loaded.interpreter.cache_statistics().site_entries,
+        booted + 5
+    );
     // A second call reuses the range `fresh_range` minted for the decoded
     // closure on its first activation (`base_for` supplies only `apply:`'s
     // own range): the closure's `NOT_ASSIGNED` feedback base is written back
@@ -8321,7 +8327,10 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
             _ => panic!("apply: answers a small integer"),
         });
     assert_eq!(second_answer, 2);
-    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 5);
+    assert_eq!(
+        loaded.interpreter.cache_statistics().site_entries,
+        booted + 5
+    );
 }
 
 /// A metaclass that reaches the graph is rebuilt **over `Class`**: its
@@ -10358,6 +10367,7 @@ const PLATFORM_MEMBERS: &str = indoc! {"
     ) (
         public unused = (
             transcript newLine.
+            collections List.
             ^transcript show: transcript nonexistent printString
         )
     ) : ()
@@ -10459,6 +10469,92 @@ fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
     );
 }
 
+/// The platform hands out its module's classes by class accessors
+/// (`public Transcript = ( ^outer PlatformFactory Transcript )`), so a class
+/// a program got from one is named by the accessor's path, and the loading
+/// platform answers its own class for it.
+#[test]
+fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder usingPlatform: platform = Object new (
+            | public transcriptClass = platform Transcript.
+              public platformClass = platform class. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.platform_paths,
+        vec!["Transcript".to_string(), "Platform".to_string()],
+        "the paths the graph uses, in the order it first reaches them"
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let platform = loaded.interpreter.platform();
+    for (member, accessor) in [
+        ("transcriptClass", "Transcript"),
+        ("platformClass", "Platform"),
+    ] {
+        let stored = send_to(&mut loaded, &instance, member);
+        let fresh = send_to(&mut loaded, &platform, accessor);
+        assert!(
+            same_object(&mut loaded, &stored, &fresh),
+            "the stored {member} is the loading platform's {accessor}"
+        );
+    }
+}
+
+/// A second platform is an ordinary instance of a shipped class: written as
+/// a record of the class the path `Platform` names, with its own lazy
+/// slots, and it writes after a load as it did before.
+#[test]
+fn a_second_platform_is_a_record_of_its_path_named_class() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder usingPlatform: platform = Object new (
+            | public second = platform class new. |
+            second transcript.
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report.platform_paths.contains(&"Platform".to_string()),
+        "the second platform's class is named by its path: {:?}",
+        report.platform_paths
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let platform = loaded.interpreter.platform();
+    let second = send_to(&mut loaded, &instance, "second");
+    assert!(
+        !same_object(&mut loaded, &second, &platform),
+        "the second platform is its own record, not the loading platform"
+    );
+    let second_class = send_to(&mut loaded, &second, "class");
+    let platform_class = send_to(&mut loaded, &platform, "class");
+    assert!(
+        same_object(&mut loaded, &second_class, &platform_class),
+        "the second platform is an instance of the loading platform's class"
+    );
+    let transcript = send_to(&mut loaded, &second, "transcript");
+    let text = loaded.interpreter.enter(|mutator| {
+        let text = Value::Object(mutator.new_string(String::new()));
+        mutator.stash(text)
+    });
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&transcript, Symbol::intern("show:"), &[text]),
+        "second transcript show: ''",
+    );
+}
+
 #[test]
 fn a_platform_path_the_loader_cannot_follow_is_refused() {
     let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
@@ -10522,8 +10618,9 @@ fn a_platform_path_the_loader_cannot_follow_is_refused() {
     ));
     assert!(message.contains("transcript printString"), "{message}");
 
-    // A public method that is no slot's getter and no nested class's
-    // accessor is never sent: `newLine` would print while the image is read.
+    // A public method that is no slot's getter, no nested class's accessor
+    // and no class accessor is never sent: `newLine` would print while the
+    // image is read.
     let message = load_error(&with_platform_path_section(
         &bytes,
         &platform_path_section(&[vec![transcript, new_line]]),
@@ -10531,7 +10628,22 @@ fn a_platform_path_the_loader_cannot_follow_is_refused() {
     assert_eq!(
         message,
         "the image names platform path `transcript newLine`, whose member `newLine` is no \
-         public slot or nested class of what the path has reached"
+         public slot, nested class or class accessor of what the path has reached"
+    );
+
+    // `Collections>>List` answers a class, but its body is no class accessor
+    // of the module that declares it (`^OrderedCollection`), so it is no step
+    // either.
+    let collections = symbol_id(&report, "collections");
+    let list = symbol_id(&report, "List");
+    let message = load_error(&with_platform_path_section(
+        &bytes,
+        &platform_path_section(&[vec![collections, list]]),
+    ));
+    assert_eq!(
+        message,
+        "the image names platform path `collections List`, whose member `List` is no \
+         public slot, nested class or class accessor of what the path has reached"
     );
 }
 
@@ -10659,7 +10771,8 @@ fn a_graph_of_one_root(root: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
 }
 
 /// A fixture whose platform path 0 answered the platform's `Transcript`
-/// class, `Platform.ns`'s nested class, as the path `Transcript` does.
+/// class, `PlatformFactory.ns`'s nested class, as the path `Transcript` --
+/// the platform's class accessor -- does.
 fn fixture_naming_the_transcript_class_by_path() -> GraphFixture {
     let mut fixture = GraphFixture::new();
     let platform = fixture.platform.clone();

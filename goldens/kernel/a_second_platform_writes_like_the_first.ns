@@ -1,0 +1,21 @@
+Newspeak3
+'Kernel'
+(* A program may make a platform of its own: the platform's class is a
+   nested class of the `PlatformFactory` module, whose factory is `new`,
+   and its members reach the module's classes lexically, so a second
+   platform's transcript writes through the mirror the first one's does.
+   The platform hands out the module's classes by methods, and each answers
+   the class its own members are instances of. *)
+class ASecondPlatformWritesLikeTheFirst usingPlatform: platformAtCreation = Object new () (
+    public main: platform args: arguments = (
+        | second |
+        second:: platform class new.
+        platform transcript show: 'first'; newLine.
+        second transcript show: 'second'; newLine.
+        platform transcript show: (second transcript = platform transcript) printString; newLine.
+        platform transcript show: (platform Collections new = platform collections) printString; newLine.
+        platform transcript show: (platform Transcript == platform transcript class) printString; newLine.
+        platform transcript show: (platform Platform == platform class) printString; newLine.
+        platform transcript show: (second Platform == platform class) printString; newLine
+    )
+) : ()

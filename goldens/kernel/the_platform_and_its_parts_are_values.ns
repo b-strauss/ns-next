@@ -1,14 +1,12 @@
 Newspeak3
 'Kernel'
 (* The platform, its transcript and its collections namespace are values
-   (§3.1.1): stateless but for what the host handed the platform, so any two
-   of a kind are equal and, a value having no identity, identical. Each is
-   an instance of its own class, so none answers another's protocol. The
-   platform itself is not compared with a fresh one: only the runtime
-   instantiates `Platform`, whose factory is `usingVmMirror:kernel:`, and a
-   program's send of it is refused
-   (`a_program_cannot_instantiate_the_platform`), so the collections
-   namespace, whose class answers `new`, stands in for it. *)
+   (§3.1.1): stateless but for what the host handed the module they belong
+   to, so any two of a kind are equal and, a value having no identity,
+   identical. Each is an instance of its own class, so none answers
+   another's protocol. The platform's class answers `new`: what holds the
+   VM mirror is the `PlatformFactory` instance enclosing it, which no
+   program is handed, so a second platform is as harmless as the first. *)
 class PlatformValues usingPlatform: platformAtCreation = Object new () (
     public main: platform args: arguments = (
         | t c |
@@ -16,8 +14,8 @@ class PlatformValues usingPlatform: platformAtCreation = Object new () (
         c:: platform collections.
         t show: (t == platform transcript) printString; newLine.
         t show: (t = t class new) printString; newLine.
-        t show: (c = c class new) printString; newLine.
-        t show: (c hash = c class new hash) printString; newLine.
+        t show: (platform = platform class new) printString; newLine.
+        t show: (platform hash = platform class new hash) printString; newLine.
         t show: (t class == platform class) printString; show: ' ';
             show: (c class == platform class) printString; newLine.
         t show: (c List == OrderedCollection) printString; newLine

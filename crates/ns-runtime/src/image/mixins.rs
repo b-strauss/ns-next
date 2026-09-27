@@ -818,6 +818,8 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
                         // A lazy slot's getter needs none either: its body
                         // answers the filled slot (`ReturnSlotIfFilled`).
                         fast_path: None,
+                        // A class accessor is recognized in shipped source alone.
+                        class_accessor: None,
                     })),
                 )
             });
@@ -885,7 +887,6 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             root_clause_defect: None,
             // An image carries only its own module, never shipped source.
             shipped: false,
-            core_library_module: false,
         });
         built[index] = Some(mixin);
     }

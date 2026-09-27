@@ -105,6 +105,27 @@ pub struct MixinMethod {
     /// activation), and for every method decoded from an image, which never
     /// carries a kernel method.
     pub fast_path: Option<MethodFastPath>,
+    /// The nested class of its module's root this method answers, when it is
+    /// a pure class accessor `compiler::primitive_method` recognized in
+    /// shipped core-library source other than the kernel: a unary method
+    /// whose whole body is `^outer <Root> <Nested>`. Read by the image code
+    /// alone (`image::platform_paths`), which lets a platform path step
+    /// through it -- `platform Transcript` -- without running it; no send
+    /// ever reads it, so it costs the run loop nothing, unlike a
+    /// `MethodFastPath` variant (`docs/design/execution.md`, "What the
+    /// platform module cost"). `None` for every other method, and for every
+    /// method decoded from an image, which never carries shipped source.
+    pub class_accessor: Option<ClassAccessor>,
+}
+
+/// A pure class accessor (`MixinMethod::class_accessor`): `^outer <Root>
+/// <Nested>`, with `depth` the lexical depth `outer <Root>` resolved to --
+/// how many levels out from the class declaring the method its module's root
+/// lies -- and `class_name` the nested class it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassAccessor {
+    pub depth: u16,
+    pub class_name: Symbol,
 }
 
 /// What a method's send does without an activation, read off the method by
@@ -187,6 +208,9 @@ impl MixinMethod {
                 lowering,
             )),
             fast_path: crate::compiler::primitive_method::recognize(&declaration, bindings, kernel),
+            // Recognized against the module's root by `build_methods`, which
+            // alone knows it.
+            class_accessor: None,
             declaration: Some(declaration),
         }
     }
@@ -203,6 +227,7 @@ impl MixinMethod {
             declaration: None,
             code,
             fast_path: None,
+            class_accessor: None,
         }
     }
 }
@@ -556,18 +581,6 @@ pub struct Mixin {
     /// the loader accepts a path only when it answers such an object. A
     /// decoded mixin is never shipped: an image carries only its own module.
     pub shipped: bool,
-    /// The root mixin of a shipped core-library module -- `Kernel.ns`'s or
-    /// `Platform.ns`'s -- which only the runtime instantiates, once, at
-    /// bootstrap, with the VM mirror it hands it. `Mutator::apply_mixin`
-    /// turns it into `InstantiationRefusal::CoreLibraryModule` on the
-    /// application, and on every application built over it, so a program
-    /// can neither build a second platform nor subclass one and hand the
-    /// subclass's initializer something that is not the mirror. Only the
-    /// bootstrap's `Interpreter::instantiate_core_library_module` passes it,
-    /// and only it: the refusal is the last `apply_mixin` considers, so a
-    /// shipped root that any other rule refuses -- a root clause, a mutable
-    /// slot under `Value` -- is refused to the bootstrap too.
-    pub core_library_module: bool,
 }
 
 impl Mixin {
@@ -595,7 +608,6 @@ impl Mixin {
             superclass_message_code: None,
             root_clause_defect: None,
             shipped: false,
-            core_library_module: false,
         }
     }
 
@@ -683,13 +695,6 @@ pub enum InstantiationRefusal {
     /// every metaclass, and any subclass of them a program manages to
     /// declare.
     ClassObject,
-    /// A shipped core-library module's root class, or a class built over
-    /// one: `module` names the module (`Mixin::core_library_module`). Its
-    /// instance holds the VM mirror, so the runtime makes the one there is,
-    /// at bootstrap, and a program makes none.
-    CoreLibraryModule {
-        module: Symbol,
-    },
 }
 
 #[derive(Debug)]

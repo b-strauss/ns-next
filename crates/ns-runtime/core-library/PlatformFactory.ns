@@ -1,0 +1,67 @@
+Newspeak3
+'PlatformFactory'
+(* The module behind the platform a module is handed (§8.3): a shipped
+   core-library module, booted by the host with the VM mirror and the
+   kernel instance (`docs/design/core-library.md`, "The module table and
+   the boot").
+
+   The factory pattern: this root holds what is privileged -- the mirror
+   and the kernel -- and the host never hands its instance to anyone. It
+   instantiates the root once, sends it `Platform new`, and hands every
+   program that platform, an instance of the nested class `Platform`,
+   whose factory is a harmless `new`. What a program may instantiate are
+   the public nested classes, the facets; each reaches the mirror and the
+   kernel lexically, as a member of this root, never through a slot of its
+   own, so a program can make as many platforms, transcripts and
+   namespaces as it likes and every one of them writes through the one
+   mirror. Nothing a program can name answers this root's instance or its
+   class, so no program can build a second one over something that is not
+   the mirror.
+
+   The factory's parameters are copied into slots because neither a lazy
+   slot nor a method may name them (§6). A send to `vmMirror` here is a
+   mirror send, as in `Kernel.ns`: this module is resolved with
+   `resolve_kernel`, which only shipped source is.
+
+   Everything here is a value (§3.1.1), as SOMns's `Platform` is: stateless
+   but for what the host hands the root. *)
+class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
+    | private vmMirror = theMirror.
+      private kernelModule = theKernel. |
+) (
+    (* §8.3 describes the platform as an object that "provides accessors to
+       various modules"; each is a lazy slot (§6.3.3), built on first use,
+       so a program pays only for what it asks for. The module's classes
+       are handed out by class accessors, each exactly `^outer
+       PlatformFactory <Name>`, which an image names by its path from the
+       platform rather than carrying the class
+       (`docs/design/image-format.md`, "The platform path section"). *)
+    public class Platform = Value new () (
+        lazy public transcript = Transcript new.
+        lazy public collections = Collections new.
+        lazy public kernel = KernelNamespace new.
+        public Platform = ( ^outer PlatformFactory Platform )
+        public Transcript = ( ^outer PlatformFactory Transcript )
+        public Collections = ( ^outer PlatformFactory Collections )
+        public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
+    )
+    public class Transcript = Value new () (
+        public show: text = ( ^vmMirror transcript: self show: text ifFail: [^super show: text] )
+        public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [^super newLine] )
+    )
+    (* The Core Library's `collections` namespace, whose one member is the
+       one a whitelisted corpus module asks for (`docs/design/core-library.md`,
+       "The on-demand rule"). *)
+    public class Collections = Value new () (
+        public List = ( ^OrderedCollection )
+    )
+    (* `platform kernel`: the kernel classes a program may name, as
+       Primordial Soup's `Kernel wrapping:` facet answers them. *)
+    public class KernelNamespace = Value new () (
+        public Exception = ( ^kernelModule Exception )
+        public Error = ( ^kernelModule Error )
+        public MessageNotUnderstood = ( ^kernelModule MessageNotUnderstood )
+        public Halt = ( ^kernelModule Halt )
+        public Message = ( ^kernelModule Message )
+    )
+) : ()

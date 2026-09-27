@@ -1,7 +1,0 @@
-status = 1
-stdout = '''
-before
-'''
-stderr = '''
-Uncaught Newspeak error: cannot instantiate Platform: a core-library module is instantiated only by the runtime
-'''

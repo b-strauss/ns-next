@@ -461,13 +461,17 @@ fn a_vacant_lexical_site_uses_the_global_cache() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
+    // The bootstrap runs shipped code of its own (the platform's boot), so
+    // the count is taken from what it left.
+    let before = interpreter.cache_statistics().filled_global_entries;
     let first_instance = instantiate(&mut interpreter, &class);
     let second_instance = instantiate(&mut interpreter, &class);
     send(&mut interpreter, &first_instance, "first", &[]);
     send(&mut interpreter, &second_instance, "second", &[]);
     let statistics = interpreter.cache_statistics();
     assert_eq!(
-        statistics.filled_global_entries, 1,
+        statistics.filled_global_entries - before,
+        1,
         "both sites must share one global entry"
     );
 }
@@ -631,11 +635,14 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
+    // The bootstrap runs shipped code of its own (the platform's boot), so
+    // the table is measured from what it left.
+    let booted = interpreter.cache_statistics().site_entries;
     let instance = instantiate(&mut interpreter, &class);
-    assert_eq!(interpreter.cache_statistics().site_entries, 0);
+    assert_eq!(interpreter.cache_statistics().site_entries, booted);
     let answer = send(&mut interpreter, &instance, "used", &[]);
     assert_eq!(small_integer(&mut interpreter, &answer), 3);
-    assert_eq!(interpreter.cache_statistics().site_entries, 4);
+    assert_eq!(interpreter.cache_statistics().site_entries, booted + 4);
 }
 
 /// A cached kernel method whose leaf declines on a receiver of its own class

@@ -172,8 +172,9 @@ fn the_collections_namespace_is_not_a_transcript() {
     }
 }
 
-/// The platform is `Platform.ns`'s module instance, built by the host at
-/// bootstrap, and its members are instances of that module's nested classes.
+/// The platform is an instance of `PlatformFactory.ns`'s nested `Platform`,
+/// built by the host at bootstrap, and its members are instances of that
+/// module's other nested classes.
 #[test]
 fn the_platform_is_an_instance_of_the_shipped_platform_module() {
     let mut interpreter = Interpreter::bootstrap();
@@ -304,11 +305,12 @@ fn refusal(result: HostResult, what: &str) -> String {
     }
 }
 
-/// The platform holds the VM mirror, so only the runtime instantiates
-/// `Platform`, at bootstrap: a program's factory send is refused, and so is
-/// a host's `instantiate`, whatever either passes.
+/// The platform's class is `PlatformFactory`'s nested `Platform`, whose
+/// factory is `new`: the factory that takes the mirror belongs to the module
+/// root, which no program is handed, so the platform's class has no such
+/// message to understand at all.
 #[test]
-fn a_program_cannot_instantiate_the_platform() {
+fn the_platform_class_takes_no_mirror() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
     let platform_class = expect_ok(
@@ -317,42 +319,60 @@ fn a_program_cannot_instantiate_the_platform() {
     );
     let not_the_mirror = interpreter.stash(Value::SmallInteger(42));
     let not_the_kernel = interpreter.stash(Value::SmallInteger(7));
-    let expected =
-        "cannot instantiate Platform: a core-library module is instantiated only by the runtime";
-    assert_eq!(
-        refusal(
-            interpreter.send(
-                &platform_class,
-                Symbol::intern("usingVmMirror:kernel:"),
-                &[not_the_mirror.clone(), not_the_kernel.clone()],
-            ),
-            "platform class usingVmMirror:kernel:",
+    let message = refusal(
+        interpreter.send(
+            &platform_class,
+            Symbol::intern("usingVmMirror:kernel:"),
+            &[not_the_mirror, not_the_kernel],
         ),
-        expected
+        "platform class usingVmMirror:kernel:",
     );
-    assert_eq!(
-        refusal(
-            interpreter.instantiate(&platform_class, &[not_the_mirror, not_the_kernel]),
-            "a host's instantiate",
-        ),
-        expected
+    assert!(
+        message.contains("does not understand"),
+        "message was: {message}"
     );
 }
 
-/// A subclass of `Platform` would run `Platform`'s initializer with
-/// whatever its superclass clause passes as the mirror, so it is refused as
-/// `Platform` itself is.
+/// The platform's class is enclosed by the module instance the host built
+/// with the mirror, and is no module root itself: nothing a program can
+/// name answers that instance.
 #[test]
-fn a_subclass_of_the_platform_cannot_be_instantiated() {
+fn the_platform_class_is_nested_in_the_platform_factory() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    interpreter.enter(|mutator| {
+        let Value::Object(platform) = mutator.fetch(&platform) else {
+            panic!("the platform is an object");
+        };
+        let heap = mutator.heap();
+        let platform_class = heap.class_of_object(platform);
+        let factory = heap
+            .class_enclosing(platform_class)
+            .expect("the platform's class is a nested class");
+        let factory_class = heap.class_of_object(factory);
+        assert_eq!(heap.class_display_name(factory_class), "PlatformFactory");
+        assert!(
+            heap.class_enclosing(factory_class).is_none(),
+            "PlatformFactory is the module's root"
+        );
+    });
+}
+
+/// A second platform, and a subclass of the platform's class, are ordinary
+/// instances of shipped classes: their members reach the module's classes
+/// lexically, so their transcripts write like the first platform's.
+#[test]
+fn a_subclass_of_the_platform_class_writes_too() {
     let source = indoc! {"
         Newspeak3
         'Test'
-        class Forger usingPlatform: platform = Object <: Value (
+        class Copier usingPlatform: platform = Object <: Value (
             | private thePlatform = platform. |
         ) (
             private PlatformClass = ( ^thePlatform class )
-            class Forged = PlatformClass usingVmMirror: 42 kernel: 7 () ()
-            public forge = ( ^Forged new )
+            class Copied = PlatformClass new () ()
+            public speak = ( ^Copied new transcript show: '' )
+            public speakAgain = ( ^PlatformClass new transcript show: '' )
         ) : ()
     "};
     let module = ns_syntax::parse(source).expect("parse");
@@ -369,12 +389,12 @@ fn a_subclass_of_the_platform_cannot_be_instantiated() {
         interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
         "usingPlatform:",
     );
-    assert_eq!(
-        refusal(
-            interpreter.send(&instance, Symbol::intern("forge"), &[]),
-            "Forged new",
-        ),
-        "cannot instantiate Forged: it is built on Platform, a core-library module, which is \
-         instantiated only by the runtime"
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("speak"), &[]),
+        "a Copied platform shows",
+    );
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("speakAgain"), &[]),
+        "a second platform shows",
     );
 }

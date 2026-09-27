@@ -72,14 +72,17 @@ pub(crate) fn send_inlined<'gc>(
     run_leaf(mutator, primitive, subject, leaf_arguments)
 }
 
-/// Only shipped core-library source -- `Kernel.ns` and `Platform.ns` --
-/// contains a `SendMirror`; the bootstrap checks that each one's `vmMirror`
-/// holds the mirror (`interpreter::kernel`, `interpreter::core_library`),
-/// and only the bootstrap instantiates either module
-/// (`InstantiationRefusal::CoreLibraryModule`), so no instance of a class
-/// declared in one has any other `vmMirror`. This is unreachable while that
-/// holds. It is an error rather than a panic so that it stays one if it ever
-/// does not.
+/// Only shipped core-library source -- `Kernel.ns` and
+/// `PlatformFactory.ns` -- contains a `SendMirror`, and only as a send to its
+/// root's `vmMirror`; the bootstrap checks that each root instance's
+/// `vmMirror` holds the mirror (`interpreter::kernel`,
+/// `interpreter::core_library`). No program reaches a shipped module's root
+/// instance or its root class -- the platform it is handed is an instance of
+/// `PlatformFactory`'s nested `Platform`, and nothing it can name answers
+/// either root -- so no program can make a second root instance over
+/// something else, and every object whose code sends to `vmMirror` reaches
+/// the one the bootstrap checked. This is unreachable while that holds. It
+/// is an error rather than a panic so that it stays one if it ever does not.
 fn not_the_mirror<'gc>(primitive: MirrorPrimitive, receiver: Value<'gc>) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: Symbol::intern(mirror_entry(primitive).selector),
@@ -335,13 +338,13 @@ mod tests {
         ));
     }
 
-    /// The runtime sets aside only `InstantiationRefusal::CoreLibraryModule`,
-    /// so every other refusal of a shipped root must still reach it: a
-    /// shipped module whose root is a value with a mutable slot is refused
-    /// to `instantiate_core_library_module` exactly as to a program, rather
-    /// than booting with a mutable value.
+    /// The bootstrap instantiates a shipped module through the ordinary
+    /// `Interpreter::instantiate`, so every refusal a program's module meets
+    /// reaches a shipped one too: a shipped root that is a value with a
+    /// mutable slot is refused, and the bootstrap panics on it, rather than
+    /// booting with a mutable value.
     #[test]
-    fn a_defective_shipped_root_is_refused_to_the_runtime_too() {
+    fn a_defective_shipped_root_is_refused_to_the_bootstrap() {
         let source = indoc::indoc! {"
             Newspeak3
             'T'
@@ -359,8 +362,8 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         let class = interpreter.load_module(&resolved);
         let mirror = the_mirror(&mut interpreter);
-        match interpreter.instantiate_core_library_module(&class, &[mirror]) {
-            Ok(_) => panic!("the runtime instantiated a shipped root with a mutable value slot"),
+        match interpreter.instantiate(&class, &[mirror]) {
+            Ok(_) => panic!("the bootstrap instantiated a shipped root with a mutable value slot"),
             Err(HostSignal::Return) => panic!("a non-local return escaped"),
             Err(HostSignal::Error(error)) => assert_eq!(
                 error.message,
@@ -404,14 +407,10 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(lowering);
         let class = interpreter.load_module(&resolved);
         let mirror = the_mirror(&mut interpreter);
-        // A module resolved as shipped source is instantiated only the way
-        // the bootstrap instantiates one (`InstantiationRefusal::CoreLibraryModule`).
-        let instantiated = if kernel {
-            interpreter.instantiate_core_library_module(&class, &[mirror])
-        } else {
-            interpreter.instantiate(&class, &[mirror])
-        };
-        let instance = expect_ok(instantiated, "K vmMirror: the mirror");
+        let instance = expect_ok(
+            interpreter.instantiate(&class, &[mirror]),
+            "K vmMirror: the mirror",
+        );
         let probe = expect_ok(
             interpreter.send(&instance, Symbol::intern("probe"), &[]),
             "probe",

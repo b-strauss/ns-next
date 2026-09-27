@@ -250,7 +250,7 @@ pub const CLASS_PLATFORM_PATH: u8 = 5;
 /// followed by) that no longer name anything and are never reused: 8 was
 /// `Character`, retired 2026-09-25 with the class; 13, 18, 19 and 29 were
 /// `Platform`, `Transcript`, `Collections` and `KernelNamespace`, retired
-/// 2026-09-26 when the four moved into the shipped `Platform.ns`, whose
+/// 2026-09-26 when the four moved into a shipped module (`PlatformFactory.ns`), whose
 /// objects an image names by their platform paths. A stale image's reference
 /// to one names no builtin rather than whichever class took the number.
 /// Next free number: 30.

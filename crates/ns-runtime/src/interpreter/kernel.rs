@@ -112,7 +112,7 @@ impl Interpreter {
                 mutator.stash(mirror),
             )
         });
-        let kernel = match self.instantiate_core_library_module(&kernel_class, &[mirror]) {
+        let kernel = match self.instantiate(&kernel_class, &[mirror]) {
             Ok(kernel) => kernel,
             Err(HostSignal::Error(error)) => {
                 panic!(
@@ -1104,7 +1104,7 @@ mod tests {
     /// `Object`'s, which answer the same classes (§3.2), so a copy of its own
     /// would only be a second way to the same answer.
     #[test]
-    fn the_platform_declares_no_class_accessor_of_its_own() {
+    fn the_platform_declares_no_accessor_for_a_predefined_class() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Value::Object(platform) = mutator.platform_value() else {
@@ -1128,7 +1128,7 @@ mod tests {
         });
     }
 
-    /// `Platform.ns`'s namespace members are ordinary methods. The class
+    /// `PlatformFactory.ns`'s namespace members are ordinary methods. The class
     /// accessor recognizer reads only the form `^outer Kernel <Name>`, which
     /// a module other than the kernel cannot write, so `Collections>>List`
     /// (`^OrderedCollection`, an implicit-receiver send reaching `Object`'s
@@ -1137,7 +1137,7 @@ mod tests {
     /// platform was handed. Each costs one activation more than it did as a
     /// kernel accessor; a namespace member is asked for once, typically in
     /// a slot initializer, not in a loop. `Transcript`'s two are mirror
-    /// forwarders like the kernel's: `Platform.ns` is resolved with
+    /// forwarders like the kernel's: `PlatformFactory.ns` is resolved with
     /// `resolve_kernel`.
     #[test]
     fn the_platform_modules_members_have_the_fast_path_they_should() {
@@ -1189,6 +1189,53 @@ mod tests {
                     ),
                     "Transcript>>{selector} is not recognized as a primitive method"
                 );
+            }
+        });
+    }
+
+    /// The platform hands out its module's classes by methods the compiler
+    /// recognizes as class accessors (`MixinMethod::class_accessor`), which
+    /// only the image code reads: none carries a fast path, so no send pays
+    /// for the recognition. `Object`'s accessors are `Kernel.ns`'s, whose
+    /// classes an image names by their builtin tags, so none of them is one.
+    #[test]
+    fn the_platforms_class_accessors_are_recognized_without_a_fast_path() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let Value::Object(platform) = mutator.platform_value() else {
+                panic!("the platform is an object");
+            };
+            let platform_class = mutator.heap().class_of_object(platform);
+            let application = mutator
+                .heap()
+                .class_application(platform_class)
+                .expect("Platform has an application");
+            for name in ["Platform", "Transcript", "Collections", "KernelNamespace"] {
+                let method = application
+                    .mixin
+                    .compiled_method(crate::Symbol::intern(name))
+                    .unwrap_or_else(|| panic!("Platform declares no {name}"));
+                assert_eq!(
+                    method.class_accessor,
+                    Some(crate::mixin::ClassAccessor {
+                        depth: 1,
+                        class_name: crate::Symbol::intern(name),
+                    }),
+                    "Platform>>{name}"
+                );
+                assert_eq!(method.fast_path, None, "Platform>>{name}");
+            }
+            let object = mutator.builtin_class(BuiltinClass::Object);
+            let object_application = mutator
+                .heap()
+                .class_application(object)
+                .expect("Object has an application");
+            for kind in OBJECT_CLASS_ACCESSORS.iter().copied() {
+                let method = object_application
+                    .mixin
+                    .compiled_method(crate::Symbol::intern(super::kernel_class_name(kind)))
+                    .unwrap_or_else(|| panic!("Object declares no accessor {kind:?}"));
+                assert_eq!(method.class_accessor, None, "Object>>{kind:?}");
             }
         });
     }
@@ -1365,7 +1412,7 @@ mod tests {
     /// mirror's class have none, which is one of the locks that keep the
     /// mirror a capability. Neither have the exception classes, which a
     /// program reaches through `platform kernel`, nor `Activation`, which
-    /// it does not reach at all. `Platform.ns`'s class names are listed
+    /// it does not reach at all. `PlatformFactory.ns`'s class names are listed
     /// too: `Object` must never grow an accessor for one of them, since a
     /// program reaches them through the platform it is handed.
     #[test]
@@ -1391,6 +1438,7 @@ mod tests {
             }
             for absent in [
                 "Top",
+                "PlatformFactory",
                 "Platform",
                 "Transcript",
                 "Collections",

@@ -1446,10 +1446,10 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The `platform` object (`docs/design/core-library.md`, "The
-    /// platform"): the instance of the shipped `Platform.ns` the bootstrap
-    /// built (`Interpreter::install_platform`) with the VM mirror and the
-    /// kernel instance, the same one for every reference within one
-    /// interpreter. Asking for it, at bootstrap or in `image::load`, runs no
+    /// platform"): the instance of `PlatformFactory.ns`'s nested `Platform`
+    /// the bootstrap built (`Interpreter::install_platform`) from the module
+    /// instance it made with the VM mirror and the kernel instance, the same
+    /// one for every reference within one interpreter. Asking for it, at bootstrap or in `image::load`, runs no
     /// Newspeak and fills no cache.
     pub(crate) fn platform_value(&self) -> Value<'gc> {
         self.platform_singleton
@@ -1719,17 +1719,6 @@ impl<'gc> Mutator<'gc> {
                     && mixin.compiled_method(Symbol::IDENTICAL).is_some())
                 .then_some(mixin.name)
                 .map(|declaring| crate::mixin::InstantiationRefusal::IdentityMethod { declaring })
-            })
-            // A shipped module's root comes last, behind every refusal that
-            // is a defect: the runtime, which alone may instantiate the root,
-            // sets aside exactly this verdict
-            // (`Mutator::decide_instantiation_as`), so any refusal ahead of it
-            // would be set aside with it and a defective shipped module would
-            // boot. A program is refused either way.
-            .or_else(|| {
-                mixin.core_library_module.then_some(
-                    crate::mixin::InstantiationRefusal::CoreLibraryModule { module: mixin.name },
-                )
             });
         // The declared slots, in field order, computed here for the same
         // reason `nested_slot` is: nothing about an application changes

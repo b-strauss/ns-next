@@ -21,8 +21,9 @@ use std::rc::Rc;
 
 use ns_syntax::ast::AccessModifier;
 
+use crate::dispatch::{self, Lookup};
 use crate::heap::Heap;
-use crate::mixin::{mixin_key, MixinApplication};
+use crate::mixin::{mixin_key, MethodEntry, MixinApplication};
 use crate::types::{ObjectReference, Value};
 use crate::Symbol;
 
@@ -97,16 +98,20 @@ pub fn is_shipped_object<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) ->
 
 /// Walks from `platform` over, for every level of an object's class, each
 /// public slot's field -- a lazy slot's included, skipped while `nil` -- and
-/// each public nested class's cache slot, skipped while empty, and records
-/// every shipped object it reaches (`is_shipped_object`, the one rule the
-/// encoder and the loader apply too, so no path is written that a loader
-/// must refuse). It descends into shipped instances only, never into a class
-/// object.
+/// each public nested class's cache slot, skipped while empty, and then over
+/// each public class accessor the object answers (`MixinMethod::
+/// class_accessor`), reading, without running it, the cache slot of the
+/// nested class it answers in its module root's instance, skipped while
+/// empty. It records every shipped object it reaches (`is_shipped_object`,
+/// the one rule the encoder and the loader apply too, so no path is written
+/// that a loader must refuse). It descends into shipped instances only,
+/// never into a class object.
 ///
 /// Breadth-first, visiting each object once, so an object's recorded path is
-/// its shortest, and among paths of one length the first in declaration
-/// order -- superclass level first, within a level its slots and then its
-/// nested classes as declared -- which keeps the encoding canonical.
+/// its shortest, and among paths of one length the first in member order --
+/// superclass level first, within a level its slots and then its nested
+/// classes as declared, then the class accessors by selector -- which keeps
+/// the encoding canonical.
 pub fn discover<'gc>(heap: &Heap<'gc>, platform: ObjectReference<'gc>) -> PlatformPaths<'gc> {
     let mut found = PlatformPaths::empty();
     let mut visited: HashSet<usize> = HashSet::new();
@@ -144,7 +149,8 @@ pub fn discover<'gc>(heap: &Heap<'gc>, platform: ObjectReference<'gc>) -> Platfo
 /// Whether a path may take the step `member` from `object`: `object` is a
 /// shipped instance, which is all `discover` descends into, and `member` is
 /// one of its public members `discover` walks -- a public slot's getter, a
-/// lazy slot's included, or a public nested class's accessor. The loader
+/// lazy slot's included, a public nested class's accessor, or a public
+/// class accessor answering a nested class of its module's root. The loader
 /// asks this before every send, so a crafted path can run no other method:
 /// `transcript newLine` is refused rather than printed.
 pub fn is_path_step<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>, member: Symbol) -> bool {
@@ -155,14 +161,110 @@ pub fn is_path_step<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>, member:
             .any(|(name, _)| *name == member)
 }
 
-/// `object`'s public members that hold state, with what each holds: every
-/// level's public slots, then its public nested classes' cache slots,
-/// superclass level first. A member holding `nil` is answered as such, and
-/// the caller skips it.
+/// `object`'s public members a path may step through, with what each holds:
+/// every level's public slots, then its public nested classes' cache slots,
+/// superclass level first, and then its class accessors
+/// (`class_accessor_members`). A member holding `nil` is answered as such,
+/// and the caller skips it.
 fn public_members<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
 ) -> Vec<(Symbol, Value<'gc>)> {
+    let mut members = state_members(heap, object);
+    members.extend(class_accessor_members(heap, object));
+    members
+}
+
+/// The public class accessors `object` answers, by selector, each with the
+/// nested class it answers as its module root's instance caches it -- `nil`
+/// until something has asked for the class. Each is decided as the send
+/// would be, without running anything: the lookup a public send makes must
+/// find a method the compiler recognized as a class accessor
+/// (`MixinMethod::class_accessor`), whose `outer <Root>` must reach a module
+/// root's shipped instance, and the lexical send of `<Nested>` there must
+/// find that root's nested class. Anything else -- an override that is no
+/// class accessor, a root that is none -- is no member at all.
+fn class_accessor_members<'gc>(
+    heap: &Heap<'gc>,
+    object: ObjectReference<'gc>,
+) -> Vec<(Symbol, Value<'gc>)> {
+    let class = heap.class_of_object(object);
+    let Some(application) = heap.class_application(class) else {
+        return Vec::new();
+    };
+    let mut selectors: Vec<Symbol> = Vec::new();
+    let mut level = Some(&application);
+    while let Some(current) = level {
+        for entry in current.mixin.methods.values() {
+            if let MethodEntry::Compiled(method) = entry {
+                if method.class_accessor.is_some() && method.access == AccessModifier::Public {
+                    selectors.push(method.selector);
+                }
+            }
+        }
+        level = current.superclass.as_ref();
+    }
+    selectors.sort_by(|first, second| first.as_str().cmp(second.as_str()));
+    selectors.dedup();
+    selectors
+        .into_iter()
+        .filter_map(|selector| {
+            class_accessor_target(heap, object, class, selector).map(|value| (selector, value))
+        })
+        .collect()
+}
+
+/// What the class accessor `selector` of `object` answers, read off its
+/// module root's nested-class cache slot, when the send would run one
+/// (`class_accessor_members`).
+fn class_accessor_target<'gc>(
+    heap: &Heap<'gc>,
+    object: ObjectReference<'gc>,
+    class: crate::types::ClassReference<'gc>,
+    selector: Symbol,
+) -> Option<Value<'gc>> {
+    let Lookup::Method(method, defining_class) = dispatch::lookup_public(heap, class, selector)
+    else {
+        return None;
+    };
+    let accessor = method.class_accessor?;
+    let Value::Object(root) = dispatch::kth_enclosing_object(
+        heap,
+        &Value::Object(object),
+        Some(&defining_class),
+        accessor.depth,
+    ) else {
+        return None;
+    };
+    let root_class = heap.class_of_object(root);
+    if heap.class_enclosing(root_class).is_some() || !is_shipped_object(heap, root) {
+        return None;
+    }
+    // `outer <Root> <Nested>` is a lexical send (§5.9): the root's own
+    // private member first, then lookupProtected on the root instance's
+    // class.
+    let private = dispatch::kth_lexical_class(heap, Some(defining_class), accessor.depth)
+        .map_or(Lookup::NotFound, |lexical_class| {
+            dispatch::private_member(heap, lexical_class, accessor.class_name)
+        });
+    let found = match private {
+        Lookup::NotFound => dispatch::lookup_protected(heap, root_class, accessor.class_name),
+        found => found,
+    };
+    let Lookup::NestedClass(nested, _) = found else {
+        return None;
+    };
+    let index = *heap
+        .class_application(root_class)?
+        .nested_slot
+        .get(&mixin_key(&nested))?;
+    heap.instance_field(root, index)
+}
+
+/// `object`'s public members that hold state, with what each holds: every
+/// level's public slots, then its public nested classes' cache slots,
+/// superclass level first.
+fn state_members<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Vec<(Symbol, Value<'gc>)> {
     let Some(application) = heap.class_application(heap.class_of_object(object)) else {
         return Vec::new();
     };

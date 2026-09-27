@@ -360,7 +360,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     // the graph restores the identity hashes the image recorded, and
     // `advance_identity_hash_past` moves the counter past them only
     // afterwards. A hash drawn now could therefore equal one the graph hands
-    // back to a decoded object. Nothing `Platform.ns` runs on these paths
+    // back to a decoded object. Nothing `PlatformFactory.ns` runs on these paths
     // draws one today; this is what notices the day something does.
     #[cfg(debug_assertions)]
     let hash_before_paths = interpreter.enter(|mutator| mutator.heap().next_identity_hash());
@@ -491,10 +491,10 @@ fn resolve_platform_paths(
         let mut current = interpreter.platform();
         for member in path {
             // Only a step `discover` could have taken is sent: a public
-            // slot's getter or a public nested class's accessor of the
-            // shipped instance reached so far. Any other public method --
-            // `transcript newLine` -- would run arbitrary shipped code while
-            // the image is still being read.
+            // slot's getter, a public nested class's accessor or a public
+            // class accessor of the shipped instance reached so far. Any
+            // other public method -- `transcript newLine` -- would run
+            // arbitrary shipped code while the image is still being read.
             let is_step = interpreter.enter(|mutator| match mutator.fetch(&current) {
                 Value::Object(object) => {
                     platform_paths::is_path_step(&mutator.heap, object, *member)
@@ -504,7 +504,8 @@ fn resolve_platform_paths(
             if !is_step {
                 return Err(format!(
                     "the image names platform path `{described}`, whose member `{}` is no \
-                     public slot or nested class of what the path has reached",
+                     public slot, nested class or class accessor of what the path has \
+                     reached",
                     member.as_str()
                 ));
             }

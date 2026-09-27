@@ -145,7 +145,7 @@ fn parameter_position(
 /// ordinary method; so does `Top`, which §3.2 lets only `Object` name, as
 /// its superclass, and which has no accessor. `Platform` and its members'
 /// classes are no kernel classes at all: they live in the shipped
-/// `Platform.ns`, which a program reaches only through the platform it is
+/// `PlatformFactory.ns`, which a program reaches only through the platform it is
 /// handed.
 ///
 /// Not switched off by `NS_NEXT_NO_PRIMITIVE_METHODS`: that switch measures
@@ -174,6 +174,52 @@ fn recognize_builtin_class_accessor(
         return None;
     }
     crate::interpreter::kernel::kernel_kind_named(name).filter(|kind| *kind != BuiltinClass::Top)
+}
+
+/// The nested class of `root` that `declaration` answers, when its whole
+/// body is `^outer <Root> <Nested>` with `<Root>` the module root's name,
+/// resolved lexically, and `<Nested>` a class the root declares: a pure
+/// class accessor, which a platform path may step through
+/// (`MixinMethod::class_accessor`, `image::platform_paths`). The caller
+/// passes `root` for a shipped module other than the kernel alone. A
+/// parameter, a temporary, a second statement or a name the root does not
+/// declare as a nested class makes it an ordinary method.
+///
+/// No fast path: the method is compiled and activated like any other, and
+/// nothing on a send's path reads what this answers
+/// (`docs/design/execution.md`, "What the platform module cost").
+pub(crate) fn recognize_class_accessor(
+    declaration: &ast::MethodDeclaration,
+    bindings: &HashMap<Span, Binding>,
+    root: &ast::ClassDeclaration,
+) -> Option<crate::mixin::ClassAccessor> {
+    if !matches!(declaration.pattern, ast::MessagePattern::Unary { .. }) {
+        return None;
+    }
+    let body = &declaration.body;
+    if !body.temporaries.is_empty() || body.statements.len() != 1 {
+        return None;
+    }
+    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+        return None;
+    };
+    if crate::resolver::sends::outer_class_name(&send.receiver) != Some(root.name.name.as_str()) {
+        return None;
+    }
+    let ast::Selector::Unary(name) = &send.message.selector else {
+        return None;
+    };
+    let Some(Binding::LexicalSend { depth }) = bindings.get(&send.span) else {
+        return None;
+    };
+    root.instance_side
+        .nested_classes
+        .iter()
+        .any(|nested| nested.name.name == *name)
+        .then(|| crate::mixin::ClassAccessor {
+            depth: *depth,
+            class_name: crate::Symbol::intern(name),
+        })
 }
 
 /// The row `declaration` forwards to, when its body is exactly
@@ -476,7 +522,7 @@ mod tests {
 
     /// No program is handed a `Platform` except as its factory's argument,
     /// so `Object` has no accessor for it, and none is ever recognized:
-    /// `Platform` lives in the shipped `Platform.ns`, not in `Kernel.ns`, so
+    /// `Platform` lives in the shipped `PlatformFactory.ns`, not in `Kernel.ns`, so
     /// the name is no kernel class at all.
     #[test]
     fn does_not_recognize_an_accessor_for_platform() {
@@ -532,6 +578,64 @@ mod tests {
             fast_path_in_the_kernel("String = ( outer Kernel String )"),
             None
         );
+    }
+
+    /// `method` as the one method of the nested class `C` of a shipped
+    /// module whose root `Shipped` also declares the nested class `Other`,
+    /// and what `recognize_class_accessor` answers for it.
+    fn class_accessor_in_a_shipped_module(method: &str) -> Option<crate::mixin::ClassAccessor> {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class Shipped vmMirror: theMirror = Object new (
+              | private vmMirror = theMirror. |
+            ) (
+              class C = Object new () (
+                {method}
+              )
+              class Other = Object new () ()
+            ) : ()
+        "};
+        let module = ns_syntax::parse(&source).expect("parse");
+        let Ok(resolved) = crate::resolver::resolve_kernel(
+            module,
+            std::rc::Rc::from(source.as_str()),
+            crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        ) else {
+            panic!("the shipped module resolves");
+        };
+        let root = &resolved.module.root_class;
+        let nested = &root.instance_side.nested_classes[0];
+        recognize_class_accessor(&nested.instance_side.methods[0], &resolved.bindings, root)
+    }
+
+    #[test]
+    fn recognizes_a_class_accessor_of_the_module_root() {
+        assert_eq!(
+            class_accessor_in_a_shipped_module("public Other = ( ^outer Shipped Other )"),
+            Some(crate::mixin::ClassAccessor {
+                depth: 1,
+                class_name: crate::Symbol::intern("Other"),
+            })
+        );
+    }
+
+    /// Anything but exactly `^outer <Root> <Nested>` in a unary method is an
+    /// ordinary method: a name the root declares no nested class of, an
+    /// `outer` that is not the root, a temporary, a second statement, a
+    /// parameter.
+    #[test]
+    fn recognizes_nothing_else_as_a_class_accessor() {
+        for method in [
+            "public Missing = ( ^outer Shipped Missing )",
+            "public Other = ( ^outer C Other )",
+            "public Other = ( | unused | ^outer Shipped Other )",
+            "public Other = ( outer Shipped C. ^outer Shipped Other )",
+            "public other: unused = ( ^outer Shipped Other )",
+            "public Other = ( ^outer Shipped Other new )",
+        ] {
+            assert_eq!(class_accessor_in_a_shipped_module(method), None, "{method}");
+        }
     }
 
     /// Outside shipped source, `outer Kernel` names whatever the module's

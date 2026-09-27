@@ -1,7 +1,8 @@
 //! The transcript's output, the one part of the platform that reaches Rust.
-//! The platform is the shipped `Platform.ns` module
-//! (`docs/design/core-library.md`, "The platform"): its members are lazy
-//! slots holding values of its nested classes, and `Collections>>List`
+//! The platform is an instance of the shipped `PlatformFactory.ns` module's
+//! nested `Platform` (`docs/design/core-library.md`, "The platform"): its
+//! members are lazy slots holding values of the module's nested classes,
+//! and `Collections>>List`
 //! answers its class without a leaf. What is left here is `show:` and
 //! `newLine`, the forwarders of `Transcript`'s two methods.
 //!
