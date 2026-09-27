@@ -96,8 +96,17 @@ fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     let (mut interpreter, class) = load(EVERY_CONTINUATION);
     interpreter.set_stress_moves(stress);
     interpreter.set_stress_collect(false);
+    // Counted from here: the bootstrap runs shipped code of its own (the
+    // platform's boot), which a stress mode set in the environment already
+    // moved under before either switch above was thrown.
+    let moves_before = interpreter.moves();
+    let safepoints_before = interpreter.stress_safepoints();
     let sum = run_sum(&mut interpreter, &class);
-    (sum, interpreter.moves(), interpreter.stress_safepoints())
+    (
+        sum,
+        interpreter.moves() - moves_before,
+        interpreter.stress_safepoints() - safepoints_before,
+    )
 }
 
 #[test]
