@@ -15,6 +15,27 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
+**The syntax is the specification's grammar** (2026-09-27 to 2026-09-28,
+decided with the user; [frontend.md](design/frontend.md), "Grammar"): every
+production of `newspeak-spec.pdf` §4.2 to §8.1 is accepted as written and
+nothing else, read as a PEG over tokens, every rule pinned by a parser test
+and every accepted form by a golden; §3.6's and §5.9's compile-time errors
+are reported before anything runs; the corpus parses completely and its
+blacklist is gone; `main:args:` receives the program's arguments; the
+JetBrains plugin's lexer and the language server follow all of it. The
+entries below "The unreserved words are names" in this file list each step.
+The deviations that remain are decided and recorded in
+[README.md](design/README.md)'s deviations table.
+
+**Noted for later, not started:** lowering a pattern literal to the
+`Pattern` send §5.1.9 defines instead of **nil** ([frontend.md](design/frontend.md),
+"What is parsed and dropped", "Planned"); chains and object literals as
+possible extensions (frontend.md, "Possible future extensions"); and the
+semantic deviations that answer a correct program wrongly at exit status 0
+-- sequential simultaneous slots and the synchronous `<-:` -- as the first
+candidates of a section-by-section semantic audit of the specification, like
+the syntax one. Unbounded integers were set aside by the user (2026-09-28).
+
 **The platform module is done** (2026-09-26 to 2026-09-27;
 [ns-next-platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md);
 [core-library.md](design/core-library.md), "Planned: the platform and
