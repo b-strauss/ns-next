@@ -2,8 +2,7 @@
 
 use indoc::indoc;
 mod common;
-use common::{golden, ns_next, ScratchDirectory};
-use std::path::Path;
+use common::{assert_snapshot_load_matches_run, golden, ns_next, ScratchDirectory};
 
 #[test]
 fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
@@ -107,95 +106,6 @@ fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
     let (ok, _out, error) = ns_next(&["load".as_ref(), image.as_os_str()]);
     assert!(!ok);
     assert!(error.contains("version"), "{error}");
-}
-
-/// One source, snapshotted and reloaded: everything `run` produces --
-/// stdout, stderr and exit status -- is exactly what the initializer
-/// produces while snapshotting plus what the entry send produces after a
-/// load. Returns the three `run` outputs so a caller can assert what the
-/// program itself did.
-fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String, String) {
-    let directory = ScratchDirectory::new(name);
-    let image = directory.join("world.img");
-    let (run_ok, run_out, run_error) = ns_next(&["run".as_ref(), source.as_os_str()]);
-    let (snapshot_ok, snapshot_out, snapshot_error) =
-        ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
-    let (load_ok, load_out, load_error) = if snapshot_ok {
-        ns_next(&[
-            "load".as_ref(),
-            image.as_os_str(),
-            "--send".as_ref(),
-            "main:args:".as_ref(),
-        ])
-    } else {
-        // `snapshot` sends no entry, so it fails only where `run` already
-        // failed before its own entry send -- while instantiating the root
-        // class. There is then no image and nothing further to compare: its
-        // own streams carry the whole outcome.
-        (snapshot_ok, String::new(), String::new())
-    };
-    // `snapshot`'s own last line ("wrote <path>") is the command's report,
-    // not the program's output; everything before it is what the module
-    // printed while being instantiated.
-    let printed_while_snapshotting = snapshot_out
-        .strip_suffix(&format!("wrote {}\n", image.display()))
-        .unwrap_or(&snapshot_out)
-        .to_string();
-    assert_eq!(
-        format!("{printed_while_snapshotting}{load_out}"),
-        run_out,
-        "{name}: snapshot-then-load must print exactly what `run` prints"
-    );
-    // stderr too: `report_entry_send` is shared, so an `Uncaught Newspeak
-    // error:` line must come out identical on both paths -- comparing only
-    // stdout would let the two diverge on exactly the messages the goldens'
-    // recorded `stderr` pins byte for byte.
-    assert_eq!(
-        format!("{snapshot_error}{load_error}"),
-        run_error,
-        "{name}: snapshot-then-load must report exactly what `run` reports"
-    );
-    assert_eq!(
-        snapshot_ok && load_ok,
-        run_ok,
-        "{name}: snapshot-then-load must succeed exactly when `run` does"
-    );
-    (run_ok, run_out, run_error)
-}
-
-/// Every golden, snapshotted and reloaded. That is the strongest property
-/// the image has -- the image's own bytecode, its own object graph,
-/// and a freshly bootstrapped world reproduce a plain `run` byte for byte
-/// -- and it is asserted per golden rather than argued.
-///
-/// The goldens recorded as failing are swept too. `snapshot` without `--send`
-/// only instantiates, so a program that raises in its entry still yields an
-/// image, and the raise happens on the `load` that runs it: that is where the
-/// image's own code is pinned to report the uncaught error exactly as `run`
-/// does.
-#[test]
-fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
-    let mut checked = 0;
-    for source in common::golden_sources() {
-        if common::expectation_of(&source).skipped().is_some() {
-            continue;
-        }
-        let name = source
-            .file_stem()
-            .expect("stem")
-            .to_string_lossy()
-            .to_string();
-        let (ok, _out, error) = assert_snapshot_load_matches_run(&name, &source);
-        // Not "the run succeeded" -- a golden recorded as failing is swept
-        // too, and the recorded answer is what says which it is.
-        assert_eq!(
-            ok,
-            common::expectation_of(&source).succeeds(),
-            "run {name} did not end as its recorded status says: {error}"
-        );
-        checked += 1;
-    }
-    assert!(checked >= 3, "expected at least three goldens");
 }
 
 /// The failing direction, on an inline source rather than a golden, and

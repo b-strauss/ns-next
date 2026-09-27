@@ -39,7 +39,7 @@ fn main() {
         ),
     ];
     for source in common::golden_sources() {
-        let name = golden_name(&source);
+        let name = common::golden_name(&source);
         let expectation = common::expectation_of(&source);
         // A skipped golden is a recorded intention, not a failure: it is
         // listed as ignored, and `cargo test -- --ignored` runs it to see
@@ -63,22 +63,6 @@ fn main() {
         }
     }
     libtest_mimic::run(&arguments, trials).exit();
-}
-
-/// `<category>/<name>`, the golden's path below `goldens/` without its
-/// extension -- the name `common::golden` takes, so a failing trial names the
-/// golden the same way a test that wants it does.
-fn golden_name(source: &Path) -> String {
-    let category = source
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    let name = source
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    format!("{category}/{name}")
 }
 
 /// A golden's exit status, stdout and stderr match its recorded

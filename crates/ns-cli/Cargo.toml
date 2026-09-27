@@ -29,5 +29,9 @@ toml.workspace = true
 name = "run_goldens"
 harness = false
 
+[[test]]
+name = "golden_round_trips"
+harness = false
+
 [lints]
 workspace = true

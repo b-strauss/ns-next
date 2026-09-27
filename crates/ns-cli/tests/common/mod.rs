@@ -94,6 +94,22 @@ pub fn golden(path: &str) -> PathBuf {
     source
 }
 
+/// `<category>/<name>`, the golden's path below `goldens/` without its
+/// extension -- the name `golden` takes, so a failing trial names the
+/// golden the same way a test that wants it does.
+pub fn golden_name(source: &Path) -> String {
+    let category = source
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let name = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    format!("{category}/{name}")
+}
+
 /// A golden's recorded outcome. Every field defaults to the success case, so
 /// an ordinary golden's file is just its `stdout` and a failing one's is its
 /// `status` and `stderr`. `deny_unknown_fields` turns a misspelled key into a
@@ -236,4 +252,58 @@ pub fn ns_next(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
         String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
         String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n"),
     )
+}
+
+/// One source, snapshotted and reloaded: everything `run` produces --
+/// stdout, stderr and exit status -- is exactly what the initializer
+/// produces while snapshotting plus what the entry send produces after a
+/// load. Returns the three `run` outputs so a caller can assert what the
+/// program itself did.
+pub fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String, String) {
+    let directory = ScratchDirectory::new(name);
+    let image = directory.join("world.img");
+    let (run_ok, run_out, run_error) = ns_next(&["run".as_ref(), source.as_os_str()]);
+    let (snapshot_ok, snapshot_out, snapshot_error) =
+        ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    let (load_ok, load_out, load_error) = if snapshot_ok {
+        ns_next(&[
+            "load".as_ref(),
+            image.as_os_str(),
+            "--send".as_ref(),
+            "main:args:".as_ref(),
+        ])
+    } else {
+        // `snapshot` sends no entry, so it fails only where `run` already
+        // failed before its own entry send -- while instantiating the root
+        // class. There is then no image and nothing further to compare: its
+        // own streams carry the whole outcome.
+        (snapshot_ok, String::new(), String::new())
+    };
+    // `snapshot`'s own last line ("wrote <path>") is the command's report,
+    // not the program's output; everything before it is what the module
+    // printed while being instantiated.
+    let printed_while_snapshotting = snapshot_out
+        .strip_suffix(&format!("wrote {}\n", image.display()))
+        .unwrap_or(&snapshot_out)
+        .to_string();
+    assert_eq!(
+        format!("{printed_while_snapshotting}{load_out}"),
+        run_out,
+        "{name}: snapshot-then-load must print exactly what `run` prints"
+    );
+    // stderr too: `report_entry_send` is shared, so an `Uncaught Newspeak
+    // error:` line must come out identical on both paths -- comparing only
+    // stdout would let the two diverge on exactly the messages the goldens'
+    // recorded `stderr` pins byte for byte.
+    assert_eq!(
+        format!("{snapshot_error}{load_error}"),
+        run_error,
+        "{name}: snapshot-then-load must report exactly what `run` reports"
+    );
+    assert_eq!(
+        snapshot_ok && load_ok,
+        run_ok,
+        "{name}: snapshot-then-load must succeed exactly when `run` does"
+    );
+    (run_ok, run_out, run_error)
 }
