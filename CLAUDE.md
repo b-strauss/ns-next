@@ -362,6 +362,16 @@ gate is the first group and the rest runs once, at the end of a stretch of
 work, before it is handed on. Nothing here is optional: a commit that never
 saw the second group is not finished work, it is work in progress.
 
+The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`,
+once per machine; a tool, not a dependency of any crate). It runs every test
+of every binary in parallel, one process each, where `cargo test` runs the
+binaries one after another; the goldens are one test each
+(`crates/ns-cli/tests/run_goldens.rs`, `golden_round_trips.rs`, on
+`libtest-mimic`), so they spread across the cores too. A stress mode measured
+219 s under nextest against 947 s under `cargo test`. Nextest runs no
+doctests, and three `compile_fail` doctests pin the brand on
+`Interpreter::enter`, so `cargo test --doc` runs beside it.
+
 ```bash
 # --- before every commit ---
 cargo fmt --all
@@ -369,12 +379,13 @@ cargo fmt --all
 cargo clippy --workspace --all-targets
 # the full suite, including every golden under both lowerings; the editor's
 # language server has its own group below
-cargo test --workspace --exclude ns-lsp
+cargo nextest run --workspace --exclude ns-lsp
+cargo test --workspace --exclude ns-lsp --doc
 # non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
 
 # --- before every commit that touches crates/ns-lsp or crates/ns-syntax ---
-cargo test -p ns-lsp
+cargo nextest run -p ns-lsp
 
 # --- before every commit that touches editors/jetbrains, crates/ns-lsp or crates/ns-syntax ---
 ./editors/jetbrains/gradlew -p editors/jetbrains check
@@ -382,12 +393,12 @@ cargo test -p ns-lsp
 # --- once at the end of a batch of work, before handing it on ---
 # the same suite with every object moved at the run loop's safepoints
 # (debug builds only; Git Bash syntax)
-NS_NEXT_STRESS_MOVES=1 cargo test --workspace --exclude ns-lsp
+NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-lsp
 # the same suite with every inline cache vacated at every safepoint
-NS_NEXT_STRESS_CACHES=1 cargo test --workspace --exclude ns-lsp
+NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-lsp
 # the same suite with a collection at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo test --workspace --exclude ns-lsp
-cargo test -p ns-lsp
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-lsp
+cargo nextest run -p ns-lsp
 # non-regression gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
 # the same report under each stress mode
@@ -412,7 +423,7 @@ in the same commit, or the comparison fails.
 Never judge performance from a debug build — `cargo build --workspace --release` is the
 one to measure; a release build is also the only one that runs the size tests
 `a_signal_fits_in_the_niche_of_its_one_unboxed_error` and the `Object` size test
-(`cargo test --workspace --release`). Every binary a measurement compares — the current tree included — is
+(`cargo nextest run --workspace --release`). Every binary a measurement compares — the current tree included — is
 built with the same explicit flags, which pin every function start to a 64-byte
 boundary: in PowerShell,
 `$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`
