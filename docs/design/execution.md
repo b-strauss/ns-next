@@ -3980,7 +3980,9 @@ slots — as first measured below, a lazy getter was a compiled method with
 `MethodFastPath` arms in `interpreter/resolve.rs`'s `act_with_base`; since
 "Recovering it" below, it has no fast path and answers a filled slot with
 `Instruction::ReturnSlotIfFilled` — platform paths in the image,
-and a shipped `Platform.ns` compiled and resolved once at bootstrap,
+and a shipped `Platform.ns` (since 2026-09-27 `PlatformFactory.ns`, in the
+factory pattern of [core-library.md](core-library.md), "The platform")
+compiled and resolved once at bootstrap,
 alongside `Kernel.ns`, with `usingVmMirror:kernel:`. `Platform`, `Transcript`
 and `KernelNamespace`, previously builtin classes declared inside
 `Kernel.ns` (tags 13, 18, 19 and 29, now retired), moved into that module;

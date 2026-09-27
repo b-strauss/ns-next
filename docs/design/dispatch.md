@@ -607,7 +607,7 @@ variants:
   methods", "The nil protocol").
 
 Only a method of shipped core-library source carries one -- `Kernel.ns`'s,
-and `Platform.ns`'s `Transcript` forwarders to the mirror. Every other method -- a lazy slot's
+and `PlatformFactory.ns`'s `Transcript` forwarders to the mirror. Every other method -- a lazy slot's
 getter included ("Slot accessors" above) -- and every method decoded from
 an image has `None`. Each variant is an arm inlined into every send site of
 the run loop, so a new one is paid for by every method send, whether or
@@ -631,7 +631,7 @@ method is built onto its mixin, and stores the variant on the method. For
 Anything else — a second statement, a temporary, another subject, a
 parameter out of place, a row whose arity is not the method's — is an
 ordinary method. Only `resolve_kernel` records `MirrorSend`, so only a
-method of shipped core-library source (`Kernel.ns`, `Platform.ns`) can be
+method of shipped core-library source (`Kernel.ns`, `PlatformFactory.ns`) can be
 one; the same text in a user module is an ordinary
 method sending to whatever its `vmMirror` holds. What the failure block
 contains is not examined: it runs only when the method is activated. A method

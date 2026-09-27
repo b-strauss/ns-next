@@ -58,13 +58,35 @@ two sittings, -0.7% to +0.4%, every comparison overlapping); `vm::run` is
 6,691 instructions against 6,561, the difference an arm no ordinary send
 runs.
 
+**The platform is a facet of a `PlatformFactory`** (2026-09-27, decided
+with the user; [core-library.md](design/core-library.md), "The platform"):
+`core-library/Platform.ns` became `PlatformFactory.ns`, whose root holds the
+mirror and the kernel and is never handed out; the host instantiates it
+through the ordinary `Interpreter::instantiate`, checks its `vmMirror`, and
+hands every program `PlatformFactory Platform new`, whose factory is `new`
+and whose class accessors (`public Transcript = ( ^outer PlatformFactory
+Transcript )`) hand out the module's classes. That replaces the runtime
+refusal with plain Newspeak: `InstantiationRefusal::CoreLibraryModule`,
+`Mixin::core_library_module`, `instantiate_core_library_module` and
+`goldens/kernel/a_program_cannot_instantiate_the_platform` are gone. A
+platform path may now also step through a pure class accessor, recognized
+by the compiler in shipped source (`MixinMethod::class_accessor`, read only
+by the image code, no fast path); a second platform is an ordinary record of
+the class the path `Platform` names.
+`goldens/kernel/the_platform_and_its_parts_are_values` has its original
+`platform = platform class new` checks back, and
+`goldens/kernel/a_second_platform_writes_like_the_first` is new. The boot
+now runs `Platform`'s superclass clause, so a freshly bootstrapped
+interpreter's cache table is no longer empty; no send path changed.
+
 **The next piece of work is the collections module** (plan 2 of
 [core-library.md](design/core-library.md), "Planned: the platform and
-collections as core-library modules"): the mirror's `moduleNamed:`, `Array
-new:`, a Newspeak `List` in `Collections.ns`, a handler search that keeps
-no `OrderedCollection`, and `OrderedCollection` removed with its leaf and
-`Heap::array_push` — which answers the question step 7 (below) has to
-settle first.
+collections as core-library modules"), written in the factory pattern: the
+mirror's `moduleNamed:`, `Array new:`, a Newspeak `List` in
+`CollectionsFactory.ns`, whose root holds the kernel and is never handed
+out, a handler search that keeps no `OrderedCollection`, and
+`OrderedCollection` removed with its leaf and `Heap::array_push` — which
+answers the question step 7 (below) has to settle first.
 
 **Editor support — the language server and the JetBrains plugin — reached
 Built on 2026-09-26** ("Editor support: the language server and the

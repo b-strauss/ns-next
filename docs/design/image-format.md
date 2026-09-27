@@ -103,7 +103,7 @@ surface is.
   bootstrap ([core-library.md](core-library.md)), and no image carries the
   kernel's code, its instance or the VM mirror — which is also why
   `Instruction::SendMirror`, emitted only into shipped core-library source
-  (`Kernel.ns`, `Platform.ns`), has no wire tag
+  (`Kernel.ns`, `PlatformFactory.ns`), has no wire tag
   ([compiler.md](compiler.md), "Mirror sends").
 - **`nil`, `true` and `false`** are unboxed `Value` scalars with no heap identity
   to preserve, encoded as scalar tags.
@@ -112,7 +112,8 @@ surface is.
   without this the whole platform graph would come along.
 - **Every object reached through the platform** is named by its **platform
   path**, the public members sent from the platform that answer it
-  (`transcript`, `collections`): listed in a section of its own, resolved by the
+  (`transcript`, `collections`, `Transcript`, `Platform`): listed in a section
+  of its own, resolved by the
   loading host before the graph is decoded, and never written as a record
   ("Platform paths" below, [core-library.md](core-library.md), "Platform
   paths in the image"). The platform's own tag is the empty path.
@@ -413,7 +414,16 @@ platform, one unary send each. The encoder finds them with
 `platform_paths::discover`, which walks from the platform over, for every level
 of an object's class, each **public** slot's field — a lazy slot's included,
 skipped while `nil` — and each **public** nested class's cache slot, skipped
-while empty. It records every **shipped object** it reaches — a class object
+while empty, and then over each **public class accessor** the object
+answers: a method the compiler recognized, in shipped source other than the
+kernel, as exactly `^outer <Root> <Nested>` naming a nested class of its
+module's root (`MixinMethod::class_accessor`, read by the image code alone —
+no fast path and no per-send check). For one, `discover` decides without
+running anything what the send would do — the public lookup must find the
+recognized method, its `outer <Root>` must reach a module root's shipped
+instance, and the lexical send of `<Nested>` there must find that root's
+nested class — and reads the root instance's cache slot for that class,
+skipped while empty. It records every **shipped object** it reaches — a class object
 whose own mixin is compiled from shipped source (`Mixin.shipped`,
 `Heap::class_is_shipped`), or an instance with slots of such a class — and
 descends into shipped instances only, never into a class object. The one
@@ -421,17 +431,22 @@ definition, `platform_paths::is_shipped_object`, is what the encoder's
 refusals and the loader apply too, so no path is written that a loader must
 refuse. Breadth-first, visiting each object
 once, so an object's path is its shortest, and among equals the first in
-declaration order, superclass level first: one world encodes to one byte
-sequence. A string or an array is no shipped instance even when its class is a
+member order — superclass level first, within a level its slots and nested
+classes in declaration order, then the class accessors by selector: one
+world encodes to one byte sequence. A string or an array is no shipped instance even when its class is a
 builtin: it carries its own data, and the image writes it as a record. Only the
 paths the graph **uses** are written, in the order the graph first reaches
 them, numbered densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
-`MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the platform is the
-instance of the shipped `Platform.ns` ([core-library.md](core-library.md),
-"The platform"): its public slots are the lazy `transcript`, `collections` and
-`kernel`, and, once their accessors have run, the cache slots of its public
-nested classes `Transcript`, `Collections` and `KernelNamespace` name those
-classes too.
+`MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the platform is an
+instance of the nested class `Platform` of the shipped `PlatformFactory.ns`
+([core-library.md](core-library.md), "The platform"): its public slots are
+the lazy `transcript`, `collections` and `kernel`, and its class accessors
+`Platform`, `Transcript`, `Collections` and `KernelNamespace` name those
+classes of the module, once the module root's accessor for each has run.
+The root instance itself is named by no path, and never written: nothing a
+program can name answers it. A second platform a program made with
+`platform class new` is an ordinary instance record of the class the path
+`Platform` names.
 
 An object a path names is referenced as `VALUE_PLATFORM_PATH` (value tag 8), a
 class a path names as `CLASS_PLATFORM_PATH` (class tag 5), each followed by the
@@ -752,7 +767,7 @@ text answer the mis-classed object too.
 
 **The VM mirror is refused on both sides of the format.** The mirror is a
 capability: whoever holds it can run any leaf, and the bootstrap hands it to
-the shipped core-library modules alone, `Kernel.ns` and `Platform.ns`
+the shipped core-library modules alone, `Kernel.ns` and `PlatformFactory.ns`
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary"). Its class has builtin class tag **14**
 (`BuiltinClass::VmMirror`, appended to `BuiltinClass::ALL` after the retired
@@ -835,7 +850,7 @@ ordinary instance record.
 
 **Retired builtin class tags: 8, 13, 18, 19 and 29.** 8 was `Character`;
 13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
-`KernelNamespace`, which moved into the shipped `Platform.ns`
+`KernelNamespace`, which moved into a shipped module, now `PlatformFactory.ns`
 ([core-library.md](core-library.md), "The platform"). An image names the
 platform, its members and their classes by their platform paths instead
 (`transcript`, `Transcript`, `kernel`, ...), and a stale image's reference
@@ -852,9 +867,10 @@ member that is no symbol id (`BadSymbolId`) and one that is no unary selector
 (`PlatformPathMemberNotUnary`). The second, outside any entry, sends each
 path's members to the loading interpreter's platform with `Interpreter::send`.
 Each step must be one `discover` could have taken — a public slot's getter, a
-lazy slot's included, or a public nested class's accessor of the shipped
-instance reached so far, found by the same enumeration of its class's levels
-(`platform_paths::is_path_step`) — and is checked before it is sent, then
+lazy slot's included, a public nested class's accessor, or a public class
+accessor of the shipped instance reached so far, found by the same
+enumeration of its members (`platform_paths::is_path_step`) — and is checked
+before it is sent, then
 sent as an ordinary public send. So a crafted `transcript newLine` is refused
 before anything prints, rather than run 131,072 times while the image is
 read. The image is refused, naming the path, when a step is none of these,
@@ -863,9 +879,11 @@ when a send fails, or when the final answer is no shipped object
 (`DecodeContext::platform_paths`), so the decoder still runs no code; an index
 past the section is `BadPlatformPath`, and a `CLASS_PLATFORM_PATH` whose
 object is no class is `PlatformPathNotAClass`. A crafted image can make the
-second phase read public slots and nested classes of shipped objects, and so
-run their lazy initializers and superclass clauses; it can run no other
-method.
+second phase read public slots, nested classes and class accessors of
+shipped objects, and so run their lazy initializers, the class accessors'
+one send and superclass clauses; it can run no other method. A crafted
+`collections List` is refused too: `List` answers a class, but its body,
+`^OrderedCollection`, is no class accessor.
 
 **An instance of a path-named class carries exactly that class's layout.** The
 code and the layout of a shipped class come from the loading binary, not from

@@ -536,7 +536,7 @@ mirror row and the failure block for a send that is:
 - marked `Binding::MirrorSend` — which only `resolver::resolve_kernel`
   records, on a plain explicit-receiver send whose receiver is the bare
   identifier `vmMirror` naming the module root's member, so only shipped
-  core-library source (`Kernel.ns`, `Platform.ns`) ever has one (a cascade to `vmMirror` is not marked, and compiles as
+  core-library source (`Kernel.ns`, `PlatformFactory.ns`) ever has one (a cascade to `vmMirror` is not marked, and compiles as
   ordinary sends);
 - a keyword send whose selector names a `MIRROR` row
   (`builtins::primitive::mirror_primitive_named`); and
@@ -590,8 +590,8 @@ is no lookup to cache. The VM arm reads the registers, calls
 delivers the leaf's answer — a value, or a step such as a block to activate —
 exactly as a send's decision is delivered. Whether the receiver register
 holds the mirror is `send_inlined`'s check, standing in for the lookup; only
-shipped core-library source (`Kernel.ns`, `Platform.ns`) has a `SendMirror`,
-only the bootstrap instantiates either module, and it checks that each one's
+shipped core-library source (`Kernel.ns`, `PlatformFactory.ns`) has a `SendMirror`,
+no program reaches either module's root, and the bootstrap checks that each one's
 `vmMirror` holds the mirror, so the check's error is unreachable while that
 holds. The
 instruction reads and writes only its own activation's registers, so
