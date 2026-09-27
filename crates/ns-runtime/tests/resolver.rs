@@ -139,6 +139,39 @@ fn undeclared_outer_class_name_is_a_resolve_error() {
     assert!(result.is_err());
 }
 
+/// §5.9: `N` in `outer N m` is any identifier, so a lowercase one is an
+/// outer send too -- resolved when an enclosing class has that name, and a
+/// compile-time error when none has, rather than a send of `outer` that
+/// nothing understands at run time.
+#[test]
+fn a_lowercase_outer_class_name_is_an_outer_send() {
+    assert_eq!(
+        resolve_errors(indoc! {"
+            Newspeak3
+            'T'
+            class Foo = Object new () (
+              class public = Object new () (
+                class Inner = Object new () (
+                  bar = ( ^outer public baz )
+                ) : ()
+                baz = ( ^1 )
+              ) : ()
+            ) : ()
+        "}),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        resolve_errors(indoc! {"
+            Newspeak3
+            'T'
+            class Foo = Object new () (
+              bar = ( ^outer missing baz )
+            ) : ()
+        "}),
+        vec!["`outer missing` does not name a lexically enclosing class".to_string()]
+    );
+}
+
 /// The resolve errors `source` produces, as messages; empty when it resolves.
 fn resolve_errors(source: &str) -> Vec<String> {
     let module = ns_syntax::parse(source).expect("parse");

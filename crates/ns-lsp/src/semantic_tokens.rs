@@ -581,6 +581,12 @@ impl Classifier<'_> {
                 matches!(
                     token.kind,
                     TokenKind::Identifier
+                        // §4.1 does not reserve them, so `x public` is a
+                        // unary send like any other.
+                        | TokenKind::Class
+                        | TokenKind::Public
+                        | TokenKind::Protected
+                        | TokenKind::Private
                         | TokenKind::Keyword
                         | TokenKind::SetterKeyword
                         | TokenKind::BinarySelector
@@ -1001,6 +1007,53 @@ mod tests {
             classified_at("platform", 1),
             Some((8, Method, false, false))
         );
+    }
+
+    #[test]
+    fn the_unreserved_words_are_coloured_as_the_names_they_are() {
+        // §4.1 reserves neither `class` nor the access modifiers: behind a
+        // modifier one names a slot, and after a receiver it is a send.
+        let text = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Holder = Object new (
+              | public public = 1. private class ::= 2. |
+            ) (
+              public read = ( ^public + class )
+              public send: other = ( ^other public; private; protected; class )
+            ) : ()
+        "};
+        let analysis = crate::analysis::analyze(text);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let classified_at = |needle: &str, occurrence: usize| {
+            let start = text
+                .match_indices(needle)
+                .nth(occurrence)
+                .unwrap_or_else(|| panic!("`{needle}` #{occurrence} is not in the module"))
+                .0 as u32;
+            analysis
+                .classified
+                .iter()
+                .find(|classified| classified.span.start == start)
+                .map(|classified| (classified.category, classified.declaration))
+        };
+        assert_eq!(classified_at("public", 0), None, "the modifier");
+        assert_eq!(classified_at("public", 1), Some((Property, true)));
+        assert_eq!(classified_at("class", 1), Some((Property, true)));
+        assert_eq!(classified_at("public", 3), Some((Property, false)), "read");
+        assert_eq!(classified_at("class", 2), Some((Property, false)), "read");
+        for (word, occurrence) in [
+            ("public", 5),
+            ("private", 1),
+            ("protected", 0),
+            ("class", 3),
+        ] {
+            assert_eq!(
+                classified_at(word, occurrence),
+                Some((Method, false)),
+                "`{word}` sent to `other`"
+            );
+        }
     }
 
     #[test]

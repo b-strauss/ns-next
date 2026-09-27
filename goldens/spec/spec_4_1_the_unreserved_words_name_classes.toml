@@ -1,0 +1,4 @@
+stdout = '''
+public, public protected private lazy class, public
+a method named class
+'''

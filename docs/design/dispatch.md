@@ -256,7 +256,9 @@ The parser normalizes several forms, and the resolver keys off those shapes:
 - **`outer N m`** parses as an ordinary two-hop unary chain with no dedicated AST
   shape. The resolver matches the whole shape as one `outer N s` send — a
   compile-time error if `N` does not name a lexically enclosing class — and never
-  dispatches the inner "send `N` to `outer`" step as a real message.
+  dispatches the inner "send `N` to `outer`" step as a real message. `N` is any
+  identifier, lowercase or one of the words §4.1 leaves unreserved
+  (`outer public s`); nothing about its spelling decides the shape.
 - **`super m`** always has a real span; the grammar has no implicit form.
 
 ## The three lookup algorithms

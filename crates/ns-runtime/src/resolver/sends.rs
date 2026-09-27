@@ -78,7 +78,10 @@ pub(super) fn is_explicit_super(receiver: &Expression) -> bool {
 
 /// Recognizes the `outer N m` two-hop shape: `receiver` is itself a `Send`
 /// whose own receiver is `Identifier("outer")` and whose message is a unary
-/// send to an uppercase-starting selector. Returns that selector's name if so.
+/// send. Returns that selector's name if so. §5.9 takes any identifier for
+/// `N` -- `outer public m` names an enclosing class `public` -- and makes it
+/// a compile-time error when no lexically enclosing class has that name,
+/// which the caller reports; nothing about `N`'s spelling decides it.
 /// The inner "send N to outer" step is never dispatched as a real message —
 /// callers that get `Some(name)` back must resolve `name`'s depth via
 /// `depth_of_named_outer` and use the *outer* `Send`'s own message/selector
@@ -94,9 +97,7 @@ pub(crate) fn outer_class_name(receiver: &Expression) -> Option<&str> {
         return None;
     }
     match &inner.message.selector {
-        Selector::Unary(name) if name.chars().next().is_some_and(char::is_uppercase) => {
-            Some(name.as_str())
-        }
+        Selector::Unary(name) => Some(name.as_str()),
         _ => None,
     }
 }

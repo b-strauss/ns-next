@@ -1,0 +1,39 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
+   nil, so class, public, protected, private and lazy name a method's, a
+   block's and a factory's parameters like any identifier (6.3.4's
+   keywordMsgPattern and binaryMsgPattern, 5.3's blockParameter, 6's
+   factory pattern; each a slotDecl, which is an identifier). A temporary is
+   a slotDef (5.3's temporaries) and follows 6.3.2's rule: class and lazy
+   need no modifier, an access modifier's word names one behind a
+   modifier. *)
+class Spec41TheUnreservedWordsNameParametersAndTemporaries usingPlatform: p = Object new (| t = p transcript. |) (
+    class Box value: public = Object new (| public held = public. |) ()
+    class Holder = Object new () (
+        public class: class protected: protected private: private lazy: lazy = (
+            ^class + protected + private + lazy
+        )
+        public + public = ( ^public * 10 )
+        public blocks = (
+            ^([:class :public :lazy | class + public + lazy] value: 1 value: 2 value: 3)
+                + ([:protected :private | protected + private] value: 4 value: 5)
+        )
+        public temporaries = (
+            | class lazy. public private = 7. private public ::= 8. |
+            class:: 1.
+            lazy:: 2.
+            public:: public + 1.
+            ^class + lazy + private + public
+        )
+    ) : ()
+    public main: platform args: arguments = (
+        | holder |
+        holder:: Holder new.
+        t show: (Box value: 42) held printString; newLine.
+        t show: (holder class: 1 protected: 2 private: 3 lazy: 4) printString; newLine.
+        t show: (holder + 5) printString; newLine.
+        t show: holder blocks printString; newLine.
+        t show: holder temporaries printString; newLine
+    )
+) : ()

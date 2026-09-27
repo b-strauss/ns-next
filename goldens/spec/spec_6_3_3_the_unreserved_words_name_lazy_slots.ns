@@ -1,0 +1,29 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.3's lazySlotDecl is ((lazyModifier [accessModifier]) |
+   (accessModifier lazyModifier)) slotDecl ..., a PEG (4.2), and 4.1 reserves
+   none of these words: the modifiers come first and the name after them,
+   so lazy lazy = e. is a lazy slot named lazy, lazy public public = e. a
+   public one named public, and an access modifier's word names a lazy slot
+   only behind a modifier. Each starts nil and runs its initializer on its
+   first read only. *)
+class Spec633TheUnreservedWordsNameLazySlots usingPlatform: p = Object new (| t = p transcript. |) (
+    class Holder = Object new (| public trace ::= ''. |) (
+        lazy public public = mark: 'a'.
+        public lazy protected = mark: 'b'.
+        lazy public private ::= mark: 'c'.
+        lazy lazy = mark: 'd'.
+        protected lazy class = mark: 'e'.
+        mark: tag = ( trace:: trace, tag. ^tag )
+        public all = ( ^public, protected, private, lazy, class )
+    ) : ()
+    public main: platform args: arguments = (
+        | holder |
+        holder:: Holder new.
+        t show: 'before: ', holder trace; newLine.
+        t show: holder all; newLine.
+        t show: holder all; newLine.
+        t show: holder public, holder protected, holder private; newLine.
+        t show: 'after: ', holder trace; newLine
+    )
+) : ()

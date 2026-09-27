@@ -184,7 +184,10 @@ excluded when the selector's tokens are found.
   its selector -- unary, binary or keyword -- is coloured `method`, in an
   expression, in a cascade and in a superclass or `<:` clause alike: `a + b` is
   a send like any other. A binary selector may be any of the tokens the parser
-  takes as one after a receiver, `=`, `<`, `>`, `|` and `||` included. The `N`
+  takes as one after a receiver, `=`, `<`, `>`, `|` and `||` included, and a
+  unary one may be `class` or an access modifier, which §4.1 does not reserve
+  (`x public`): the lexer colours those words as keywords, and the server's
+  colour replaces it where one is a name. The `N`
   of `outer N` is left alone: it names an enclosing class, not a message.
 - **Selector parts.** The AST's `Selector` carries no span, so the keyword
   parts of a send are found among the lexer's tokens inside the message's span,

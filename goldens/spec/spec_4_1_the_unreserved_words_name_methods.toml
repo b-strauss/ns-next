@@ -1,0 +1,7 @@
+stdout = '''
+public protected private lazy class 
+public protected private class 
+class-side public
+class-side class
+a private method named lazy
+'''

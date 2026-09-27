@@ -62,12 +62,16 @@ be checked against it. The load-bearing ones:
   exercise the form; `goldens/mixin/` does.
 - `slotDecls = '|' slotDef* '|'` (sequential) or `'||' slotDef* '||'`
   (simultaneous). A `slotDef` is
-  `accessModifier? slotDecl (('=' | '::=') expression)? '.'` — `=` is an
-  immutable slot, `::=` a mutable one, and neither means an uninitialized
-  mutable slot. A lazy slot declaration on the instance side (`lazy m ::= e.`,
-  §6.3.3) parses into a `SlotDeclaration` whose `lazy` is set; the runtime
-  initializes it on first read (`docs/design/core-library.md`, "Lazy slots
-  first").
+  `accessModifier? slotDecl ((('=' | '::=') expression '.') | '.'?)` — `=` is
+  an immutable slot, `::=` a mutable one, and neither means an uninitialized
+  mutable slot; the dot is mandatory after an initializer (§6.3.2) and
+  refused without one. A lazy slot declaration on the instance side
+  (`lazy m ::= e.`, §6.3.3) parses into a `SlotDeclaration` whose `lazy` is
+  set; its dot is mandatory too. The runtime initializes it on first read
+  (`docs/design/core-library.md`, "Lazy slots first").
+- `sideDecl = '(' (nestedClassDecl | lazySlotDecl | methodDecl)* ')'`, tried
+  in that order, each in full before the next ("Words that are not reserved"
+  below).
 - `messagePattern = unarySelector | (binarySelector slotDecl) |
   (keyword slotDecl)+`
 - `methodDecl = accessModifier? , messagePattern , '=' , '(' , codeBody , ')'`
@@ -173,6 +177,53 @@ not harmlessly: `foo: nil = ( ^nil )` answered the literal `nil` whatever
 argument it was sent. A keyword that merely begins with one, `ifNil:` or
 `selfish:`, is not an identifier and is unaffected. No corpus module used the
 illegal forms; one golden and one test did, and were renamed.
+
+## Words that are not reserved
+
+§4.1 reserves the six words above and nothing else, so `class`, `public`,
+`protected`, `private` and `lazy` are identifiers like any other (decided
+with the user on 2026-09-27: the syntax follows the specification strictly).
+The lexer gives the first four tokens of their own, `Class`, `Public`,
+`Protected` and `Private`, so the declarations that start with one can find
+it, and leaves `lazy` an `Identifier`; `parser::is_name` is the one place
+that says all of them are names. Wherever the grammar takes an
+`identifier` -- a name read, written or sent, a parameter, a block
+parameter, a class, a superclass clause's receiver, `outer`'s class name, a
+literal array's bare word, the `languageId` -- any of them is accepted.
+
+Where a word could also begin a declaration, the grammar decides, and the
+grammar is a PEG (§4.2, and the specification's own `classDeclaration`
+spells its two alternatives out for exactly this reason): an optional part
+is taken whenever it matches and never retried as absent, and of several
+alternatives the first that matches in full wins. So:
+
+- `slotDef` and `methodDecl` start with `[accessModifier]`. An access
+  modifier's word standing first is the modifier, so it names a slot, a
+  temporary or a method only behind one: `| public public = 1. |` and
+  `public private = ( ... )` are accepted, `| public |` and
+  `public = ( ... )` are refused. `class` and `lazy` need no modifier.
+- `sideDecl` tries a nested class, then a lazy slot, then a method.
+  `[accessModifier] class <name>` is a nested class, whatever the name;
+  `public class = ( ... )` is a method named `class`. §6.3.3's
+  `lazySlotDecl` is `((lazy [accessModifier]) | (accessModifier lazy))
+  slotDecl (= | ::=) expression dot`, and it is a lazy slot only if all of
+  that matches: `lazy lazy = 1.` is a lazy slot named `lazy`, `lazy public
+  public = 1.` a public one named `public`, while `lazy = ( ... )` and
+  `private lazy = ( ... )` are methods named `lazy`, and `lazy public = 1.`
+  is refused (`Parser::at_lazy_slot`).
+
+**One deviation, decided with the user on 2026-09-27:** the grammar's
+`accessModifier` and `lazyModifier` end in `whitespace`, so taken literally
+`| public= 1. |` would declare a slot named `public` beside a refused
+`| public = 1. |`. With a lexer the two are the same tokens and are treated
+alike, both refused. [README.md](README.md)'s deviations table records it.
+
+`parser::declaration`'s `unreserved_word_tests` pin every position, the
+refused forms included; `goldens/spec/spec_4_1_the_unreserved_words_*` and
+`spec_6_3_3_the_unreserved_words_name_lazy_slots` run each accepted one.
+The resolver took §5.9's `outer N` only for an `N` starting with an
+uppercase letter; it now takes any identifier, and one naming no enclosing
+class is the compile-time error §5.9 makes it ([dispatch.md](dispatch.md)).
 
 ## `:=` is refused
 

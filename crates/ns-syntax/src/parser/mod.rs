@@ -106,6 +106,11 @@ impl<'a> Parser<'a> {
         token.span.text(self.source)
     }
 
+    /// Whether the current token can be an `identifier` (§4.2's `id`).
+    fn at_name(&self) -> bool {
+        is_name(self.peek())
+    }
+
     fn identifier(&mut self) -> Identifier {
         let token = self.bump();
         Identifier {
@@ -313,6 +318,26 @@ impl<'a> Parser<'a> {
 
 /// §4.1's reserved words, which no program may use as an ordinary identifier.
 pub(super) const RESERVED_WORDS: [&str; 6] = ["self", "super", "outer", "true", "false", "nil"];
+
+/// Whether a token of this kind is an `id` (§4.2). §4.1 reserves only its six
+/// words, and the grammar is a PEG with no separate scanner, so `class`,
+/// `public`, `protected` and `private` are ids like any other: the
+/// productions that start with one (`classToken`, `accessModifier`) try it
+/// first, and wherever the grammar takes an `identifier` -- a name declared,
+/// read, written or sent -- it is a name. The lexer gives the four words
+/// tokens of their own only so the declarations can find them; this is the
+/// one place that says they are names too (`docs/design/frontend.md`, "Words
+/// that are not reserved").
+pub(super) fn is_name(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Identifier
+            | TokenKind::Class
+            | TokenKind::Public
+            | TokenKind::Protected
+            | TokenKind::Private
+    )
+}
 
 /// Strip the first and last character from a lexeme — the quotes of a
 /// single- or double-quoted string literal, the inner `'...'` of a quoted

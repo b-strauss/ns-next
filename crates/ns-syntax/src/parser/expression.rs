@@ -80,12 +80,12 @@ impl<'a> Parser<'a> {
                     _ => Expression::Identifier(self.identifier()),
                 }
             }
-            // `class` lexes as the reserved `TokenKind::Class` token, but outside a
-            // class-declaration prefix it is the pseudo-variable naming the
-            // receiver's class (`self class`, `class onContext: it`). Grammar:
-            // `primary = slotName | ...` (`NewspeakGrammar.ns:123`); the real
-            // parser's `id` admits `class` in expression position.
-            TokenKind::Class => Expression::Identifier(self.identifier()),
+            // `class` and the access modifiers have tokens of their own, but
+            // in an expression they are names (`super::is_name`): `class
+            // onContext: it`, a slot read `^public`.
+            TokenKind::Class | TokenKind::Public | TokenKind::Protected | TokenKind::Private => {
+                Expression::Identifier(self.identifier())
+            }
             TokenKind::LessThan => Expression::Literal(self.parse_pattern_literal()),
             TokenKind::Pound if self.peek2() == TokenKind::LeftParenthesis => {
                 Expression::Literal(self.parse_literal_array())
@@ -156,7 +156,7 @@ impl<'a> Parser<'a> {
         let mut parameters = Vec::new();
         while self.at(TokenKind::Colon) {
             self.bump();
-            if self.at(TokenKind::Identifier) {
+            if self.at_name() {
                 parameters.push(self.declared_identifier("name a block parameter"));
                 // `[:x <T> :y <T> | ...]` — block parameters carry the same
                 // declaration-position `<Type>` annotations as method parameters.
@@ -247,7 +247,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.parse_array_element()
             }
-            TokenKind::Identifier => {
+            kind if super::is_name(kind) => {
                 let id = self.bump();
                 // bare word inside a literal array is a symbol
                 Literal::Symbol {
@@ -437,7 +437,7 @@ impl<'a> Parser<'a> {
                 self.bump(); // `<-`
                 self.bump(); // `:`
             }
-            if !(self.at(TokenKind::Identifier) || self.at(TokenKind::Class)) {
+            if !self.at_name() {
                 break;
             }
             let selector_token = self.bump();
@@ -490,10 +490,16 @@ impl<'a> Parser<'a> {
                     arguments: vec![argument],
                 }
             }
-            TokenKind::Class => {
+            kind if super::is_name(kind) => {
                 let selector_token = self.bump();
+                let selector_name = self.text(selector_token).to_string();
+                self.refuse_reserved_word(
+                    &selector_name,
+                    selector_token.span,
+                    "be a message selector",
+                );
                 MessageSend {
-                    selector: Selector::Unary(self.text(selector_token).to_string()),
+                    selector: Selector::Unary(selector_name),
                     arguments: Vec::new(),
                     span: selector_token.span,
                 }
@@ -529,23 +535,22 @@ impl<'a> Parser<'a> {
 }
 
 /// Whether a token of this kind can begin a `primary` (`NewspeakGrammar.ns:123`
-/// plus the parser's `nil`/`true`/`false`, `class` pseudo-variable and `<...>`
-/// pattern-literal extensions). Used to disambiguate `|` / `||` as a binary
-/// operator from a slot/temporary-section delimiter.
+/// plus the parser's `nil`/`true`/`false` and `<...>` pattern-literal
+/// extensions). Used to disambiguate `|` / `||` as a binary operator from a
+/// slot/temporary-section delimiter.
 fn starts_primary(kind: TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::Identifier
-            | TokenKind::Class
-            | TokenKind::Number
-            | TokenKind::String
-            | TokenKind::Symbol
-            | TokenKind::LeftParenthesis
-            | TokenKind::LeftBracket
-            | TokenKind::LeftBrace
-            | TokenKind::Pound
-            | TokenKind::LessThan
-    )
+    super::is_name(kind)
+        || matches!(
+            kind,
+            TokenKind::Number
+                | TokenKind::String
+                | TokenKind::Symbol
+                | TokenKind::LeftParenthesis
+                | TokenKind::LeftBracket
+                | TokenKind::LeftBrace
+                | TokenKind::Pound
+                | TokenKind::LessThan
+        )
 }
 
 pub(super) fn expression_span(expression: &Expression) -> crate::span::Span {

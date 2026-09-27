@@ -1,0 +1,36 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
+   nil, so class, public, protected, private and lazy name methods like any
+   identifier. 6.3.4's methodDecl, [accessModifier] messagePattern, is a PEG
+   (4.2): an access modifier's word standing first is the modifier, so it
+   names a method only behind one, while class and lazy need none -- and
+   private lazy = ( ... ) is a private method named lazy, since 6.3.3's
+   lazySlotDecl, tried before it, does not match. Both sides alike. *)
+class Spec41TheUnreservedWordsNameMethods usingPlatform: p = Object new (| t = p transcript. |) (
+    class Holder = Object new () (
+        public public = ( ^'public ' )
+        public protected = ( ^'protected ' )
+        public private = ( ^'private ' )
+        lazy = ( ^'lazy ' )
+        public class = ( ^'class ' )
+        public all = ( ^public, protected, private, lazy, class )
+    ) : (
+        public public = ( ^'class-side public' )
+        class = ( ^'class-side class' )
+        public classSide = ( ^class )
+    )
+    class PrivateLazy = Object new () (
+        private lazy = ( ^'a private method named lazy' )
+        public read = ( ^lazy )
+    ) : ()
+    public main: platform args: arguments = (
+        | holder |
+        holder:: Holder new.
+        t show: holder all; newLine.
+        t show: holder public, holder protected, holder private, holder class; newLine.
+        t show: Holder public; newLine.
+        t show: Holder classSide; newLine.
+        t show: PrivateLazy new read; newLine
+    )
+) : ()

@@ -1,0 +1,7 @@
+stdout = '''
+before: 
+abcde
+abcde
+abc
+after: abcde
+'''

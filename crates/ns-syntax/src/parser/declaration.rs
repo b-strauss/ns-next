@@ -104,7 +104,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::LessThan
                 | TokenKind::GreaterThan
                 | TokenKind::Bar
-        ) && self.peek2() == TokenKind::Identifier
+        ) && super::is_name(self.peek2())
     }
 
     pub(crate) fn parse_message_pattern(&mut self) -> MessagePattern {
@@ -192,10 +192,13 @@ impl<'a> Parser<'a> {
         let mut slots = Vec::new();
         while !self.at(close) && !self.at(TokenKind::EndOfInput) {
             let start = self.current().span;
+            // `slotDef → [accessModifier] slotDecl ...` (§6.3.2), a PEG: an
+            // access modifier's word is taken as the modifier whenever it
+            // stands first, and never tried again as the name, so
+            // `| public |` declares nothing and is refused, while
+            // `| public public |` declares a public slot named `public`.
             let access = self.parse_access_modifier();
-            // A slot / temporary may be named `class` (`| class |` locals in
-            // the mirror libraries); `class` lexes as `TokenKind::Class`.
-            if !self.at(TokenKind::Identifier) && !self.at(TokenKind::Class) {
+            if !self.at_name() {
                 // recovery: skip to next '.' or close
                 let token = self.bump();
                 self.push_error(token.span, "expected a slot name");
@@ -220,7 +223,14 @@ impl<'a> Parser<'a> {
                 _ => (SlotMutability::MutableBare, None),
             };
             let end = self.current().span;
-            self.eat(TokenKind::Dot);
+            // §6.3.2: "The trailing dot is mandatory after an initializer
+            // and optional after an uninitialized slot".
+            if !self.eat(TokenKind::Dot) && initializer.is_some() {
+                self.push_error(
+                    self.current().span,
+                    "expected `.` after a slot's initializer (§6.3.2)",
+                );
+            }
             slots.push(SlotDeclaration {
                 access,
                 name,
@@ -258,7 +268,7 @@ impl<'a> Parser<'a> {
     /// reported but parsing continues (recovery).
     pub(crate) fn parse_module(&mut self) -> Module {
         let start = self.current().span;
-        let language_id = if self.at(TokenKind::Identifier) {
+        let language_id = if self.at_name() {
             let token = self.bump();
             self.text(token).to_string()
         } else {
@@ -501,9 +511,7 @@ impl<'a> Parser<'a> {
     /// unary*, then binary*, then an optional keyword send — the grammar's
     /// `message`, seeded by an already-parsed receiver.
     fn parse_trailing_sends(&mut self, out: &mut Vec<MessageSend>) {
-        while (self.at(TokenKind::Identifier) || self.at(TokenKind::Class))
-            && !self.is_reserved_identifier(self.current())
-        {
+        while self.at_name() && !self.is_reserved_identifier(self.current()) {
             let selector_token = self.bump();
             out.push(MessageSend {
                 selector: Selector::Unary(self.text(selector_token).to_string()),
@@ -636,11 +644,20 @@ impl<'a> Parser<'a> {
                     nested_classes.push(self.parse_class_declaration());
                     self.leave();
                 }
+                // `sideDecl`'s alternatives in their PEG order: a nested class
+                // above, then a lazy slot, then a method. Each is tried in
+                // full before the next, so `private lazy = ( ^1 )`, which is
+                // no lazy slot, is a method named `lazy`.
                 _ if self.at_lazy_slot() => {
                     lazy_slots.push(self.parse_lazy_slot_declaration());
                 }
                 _ if self.looks_like_method() => {
                     methods.push(self.parse_method_declaration());
+                }
+                // Neither matched in full: a declaration that starts as a lazy
+                // slot is reported as one, so its error names what is missing.
+                _ if self.at_lazy_slot_prefix() => {
+                    lazy_slots.push(self.parse_lazy_slot_declaration());
                 }
                 _ => {
                     let token = self.bump();
@@ -699,67 +716,99 @@ impl<'a> Parser<'a> {
     }
 
     /// A nested class is `accessModifier? 'class' classId ...` — the token
-    /// after `class` must be the class-name identifier. `public class = (...)`
-    /// (a method literally named `class`, common in the mirror libraries) has
-    /// `=` there, not an identifier, so it is NOT a nested class.
+    /// after `class` must be the class name, any name (`class public = ...`
+    /// declares a class named `public`). `public class = (...)` (a method
+    /// literally named `class`, common in the mirror libraries) has `=`
+    /// there, so it is NOT a nested class. Once `class` and a name are seen
+    /// neither of the other two alternatives can match, so the parser commits
+    /// to the class and reports its errors rather than retrying.
     fn at_nested_class(&self) -> bool {
-        if self.peek() == TokenKind::Class {
-            return self.peek2() == TokenKind::Identifier;
-        }
-        if matches!(
-            self.peek(),
-            TokenKind::Public | TokenKind::Protected | TokenKind::Private
-        ) && self.peek2() == TokenKind::Class
-        {
-            return self.tokens.get(self.position + 2).map(|token| token.kind)
-                == Some(TokenKind::Identifier);
-        }
-        false
-    }
-
-    /// `lazy` lexes as an `Identifier` with text `"lazy"`. A lazy slot declaration is
-    /// either `lazy accessModifier? slotName ...` (lazy-first) or
-    /// `accessModifier lazy slotName ...` (modifier-first) —
-    /// `NewspeakGrammar.ns:183-186`.
-    fn at_lazy_slot(&self) -> bool {
-        if self.at(TokenKind::Identifier) && self.text(self.current()) == "lazy" {
-            // Distinguish from a method literally named `lazy` (`lazy = (...)`).
-            return matches!(
-                self.peek2(),
-                TokenKind::Public
-                    | TokenKind::Protected
-                    | TokenKind::Private
-                    | TokenKind::Identifier
-            );
-        }
-        if matches!(
+        let class_position = if matches!(
             self.peek(),
             TokenKind::Public | TokenKind::Protected | TokenKind::Private
         ) {
-            if let Some(next_token) = self.tokens.get(self.position + 1) {
-                return next_token.kind == TokenKind::Identifier
-                    && self.text(*next_token) == "lazy";
-            }
-        }
-        false
+            self.position + 1
+        } else {
+            self.position
+        };
+        let kind_at = |position: usize| self.tokens.get(position).map(|token| token.kind);
+        kind_at(class_position) == Some(TokenKind::Class)
+            && kind_at(class_position + 1).is_some_and(super::is_name)
     }
 
-    /// Parse a lazy slot declaration. Milestone 1's AST has no "lazy" flag, so
-    /// the laziness is dropped and the slot is recorded as an ordinary
-    /// [`SlotDeclaration`] (mutability from `=` vs `::=`). Both grammar
-    /// orderings are accepted.
+    fn at_lazy_word(&self, position: usize) -> bool {
+        self.tokens
+            .get(position)
+            .is_some_and(|token| token.kind == TokenKind::Identifier && self.text(*token) == "lazy")
+    }
+
+    /// §6.3.3's `lazySlotDecl`, a PEG:
+    ///
+    /// ```text
+    /// ((lazyModifier [accessModifier]) | (accessModifier lazyModifier))
+    ///     slotDecl (equalSign | "::=") expression dot
+    /// ```
+    ///
+    /// `lazy` lexes as an `Identifier`; it is the modifier only here. Whether
+    /// the whole production matches decides it, not its first tokens: `lazy =
+    /// ( ^1 )` and `private lazy = ( ^1 )` are no lazy slot but methods named
+    /// `lazy`, and `lazy lazy = 1.` is a lazy slot named `lazy`. The optional
+    /// access modifier is taken whenever it stands there and never retried
+    /// as the name, so `lazy public = 1.` matches nothing.
+    fn at_lazy_slot(&mut self) -> bool {
+        let checkpoint = self.checkpoint();
+        let matched = self.lazy_slot_modifiers().is_some()
+            && self.at_name()
+            && {
+                self.bump(); // the name
+                self.skip_type_annotation();
+                self.eat(TokenKind::Equals) || self.eat(TokenKind::ColonColonEquals)
+            }
+            && {
+                let diagnostics = self.diagnostics.len();
+                let _ = self.parse_expression();
+                self.diagnostics.len() == diagnostics
+            }
+            && self.at(TokenKind::Dot);
+        self.restore(checkpoint);
+        matched
+    }
+
+    /// Whether the cursor sits at a lazy slot's modifiers and a name, which
+    /// is how a declaration that means to be one starts. It only decides how
+    /// a declaration no alternative matches is reported.
+    fn at_lazy_slot_prefix(&mut self) -> bool {
+        let checkpoint = self.checkpoint();
+        let matched = self.lazy_slot_modifiers().is_some() && self.at_name();
+        self.restore(checkpoint);
+        matched
+    }
+
+    /// Consumes `lazy [accessModifier]` or `accessModifier lazy` and answers
+    /// the access modifier; the outer `None` means neither is there.
+    fn lazy_slot_modifiers(&mut self) -> Option<Option<AccessModifier>> {
+        if self.at_lazy_word(self.position) {
+            self.bump(); // `lazy`
+            return Some(self.parse_access_modifier());
+        }
+        if matches!(
+            self.peek(),
+            TokenKind::Public | TokenKind::Protected | TokenKind::Private
+        ) && self.at_lazy_word(self.position + 1)
+        {
+            let access = self.parse_access_modifier();
+            self.bump(); // `lazy`
+            return Some(access);
+        }
+        None
+    }
+
+    /// Parse a lazy slot declaration (§6.3.3), in either order of `lazy` and
+    /// the access modifier. The caller has checked that the declaration
+    /// starts as one (`at_lazy_slot_prefix`).
     fn parse_lazy_slot_declaration(&mut self) -> SlotDeclaration {
         let start = self.current().span;
-        let access = if self.at(TokenKind::Identifier) && self.text(self.current()) == "lazy" {
-            self.bump(); // `lazy`
-            self.parse_access_modifier()
-        } else {
-            let modifier = self.parse_access_modifier();
-            if self.at(TokenKind::Identifier) && self.text(self.current()) == "lazy" {
-                self.bump(); // `lazy`
-            }
-            modifier
-        };
+        let access = self.lazy_slot_modifiers().flatten();
         let name = self.declared_identifier("name a slot or a temporary");
         self.skip_type_annotation();
         let mutability = if self.eat(TokenKind::ColonColonEquals) {
@@ -770,7 +819,12 @@ impl<'a> Parser<'a> {
         };
         let initializer = Some(self.parse_expression());
         let end = self.current().span;
-        self.eat(TokenKind::Dot);
+        if !self.eat(TokenKind::Dot) {
+            self.push_error(
+                self.current().span,
+                "expected `.` after a lazy slot's initializer (§6.3.3)",
+            );
+        }
         SlotDeclaration {
             access,
             name,
@@ -808,7 +862,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Keyword | TokenKind::SetterKeyword => {
                     while self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
                         self.bump();
-                        if self.at(TokenKind::Identifier) {
+                        if self.at_name() {
                             self.bump();
                         } else {
                             return None;
@@ -817,7 +871,7 @@ impl<'a> Parser<'a> {
                     }
                     Some(())
                 }
-                TokenKind::Identifier | TokenKind::Class => {
+                kind if super::is_name(kind) => {
                     self.bump();
                     self.skip_type_arguments();
                     self.skip_type_annotation();
@@ -1713,5 +1767,232 @@ mod reserved_word_tests {
                 "{member}"
             );
         }
+    }
+}
+
+/// §4.1 reserves six words and no others, and the grammar is a PEG with no
+/// separate scanner (§4.2), so `class`, the access modifiers and `lazy` are
+/// names wherever the grammar takes an `identifier`, and are taken as what
+/// they introduce only where the production that starts with them matches.
+#[cfg(test)]
+mod unreserved_word_tests {
+    use super::*;
+    use indoc::formatdoc;
+
+    const WORDS: [&str; 5] = ["class", "public", "protected", "private", "lazy"];
+    const ACCESS_MODIFIERS: [&str; 3] = ["public", "protected", "private"];
+
+    fn parse_sides(instance_side: &str, class_side: &str) -> Result<Module, Vec<String>> {
+        let source = formatdoc! {"
+            Newspeak3
+            'T'
+            class Root = Object new () (
+              {instance_side}
+            ) : (
+              {class_side}
+            )
+        "};
+        crate::parse(&source).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect()
+        })
+    }
+
+    fn assert_accepted(instance_side: &str) {
+        if let Err(errors) = parse_sides(instance_side, "") {
+            panic!("{instance_side}: {errors:?}");
+        }
+    }
+
+    fn assert_refused(instance_side: &str) {
+        assert!(
+            parse_sides(instance_side, "").is_err(),
+            "{instance_side} parsed"
+        );
+    }
+
+    #[test]
+    fn every_word_is_a_name_in_an_expression() {
+        for word in WORDS {
+            for member in [
+                format!("read = ( ^{word} )"),
+                format!("write = ( {word}:: 3 )"),
+                format!("unary = ( ^3 {word} )"),
+                format!("cascade = ( ^3 printString; {word} )"),
+                format!("keyword = ( ^3 {word}: 4 )"),
+                format!("argument = ( ^3 + {word} )"),
+                format!("symbols = ( ^#({word} #{word}) )"),
+                format!("receiver = ( ^{word} {word} )"),
+            ] {
+                assert_accepted(&member);
+            }
+        }
+    }
+
+    #[test]
+    fn every_word_names_a_parameter() {
+        for word in WORDS {
+            for member in [
+                format!("at: {word} = ( ^{word} )"),
+                format!("+ {word} = ( ^{word} )"),
+                format!("block = ( ^[:{word} | {word}] )"),
+                format!("class Box value: {word} = Object new ( | held = {word}. | ) ()"),
+            ] {
+                assert_accepted(&member);
+            }
+        }
+    }
+
+    #[test]
+    fn every_word_names_a_class_and_a_superclass() {
+        for word in WORDS {
+            assert_accepted(&format!("class {word} = Object new () ()"));
+            assert_accepted(&format!("private class {word} = Object new () ()"));
+            assert_accepted(&format!(
+                "class {word} = Object new () () class Other = {word} new () ()"
+            ));
+        }
+    }
+
+    /// `slotDef → [accessModifier] slotDecl ...` (§6.3.2) takes an access
+    /// modifier's word as the modifier whenever it stands first, so one names
+    /// a slot or a temporary only behind a modifier; the other two words need
+    /// none.
+    #[test]
+    fn every_word_names_a_slot_and_a_temporary_where_the_grammar_lets_it() {
+        for word in WORDS {
+            assert_accepted(&format!(
+                "class Box = Object new ( | private {word} = 1. | ) ()"
+            ));
+            assert_accepted(&format!("temporaries = ( | public {word} | ^{word} )"));
+        }
+        for word in ["class", "lazy"] {
+            assert_accepted(&format!("class Box = Object new ( | {word} = 1. | ) ()"));
+            assert_accepted(&format!("temporaries = ( | {word} | ^{word} )"));
+        }
+        for word in ACCESS_MODIFIERS {
+            assert_refused(&format!("class Box = Object new ( | {word} = 1. | ) ()"));
+            assert_refused(&format!("class Box = Object new ( | {word} | ) ()"));
+            assert_refused(&format!("temporaries = ( | {word} | ^1 )"));
+            assert_refused(&format!("block = ( ^[:each | | {word} | each] )"));
+        }
+    }
+
+    /// `methodDecl → [accessModifier] messagePattern ...` (§6.3.4), the same
+    /// rule, on both sides.
+    #[test]
+    fn every_word_names_a_method_where_the_grammar_lets_it() {
+        for word in WORDS {
+            assert_accepted(&format!("public {word} = ( ^1 )"));
+            assert!(
+                parse_sides("", &format!("public {word} = ( ^1 )")).is_ok(),
+                "class side {word}"
+            );
+        }
+        for word in ["class", "lazy"] {
+            assert_accepted(&format!("{word} = ( ^1 )"));
+        }
+        for word in ACCESS_MODIFIERS {
+            assert_refused(&format!("{word} = ( ^1 )"));
+            assert!(
+                parse_sides("", &format!("{word} = ( ^1 )")).is_err(),
+                "class side {word}"
+            );
+        }
+    }
+
+    /// `lazySlotDecl → ((lazyModifier [accessModifier]) | (accessModifier
+    /// lazyModifier)) slotDecl ...` (§6.3.3): the modifiers first, then the
+    /// name.
+    #[test]
+    fn every_word_names_a_lazy_slot_where_the_grammar_lets_it() {
+        for word in WORDS {
+            assert_accepted(&format!("lazy private {word} = 1."));
+            assert_accepted(&format!("private lazy {word} ::= 1."));
+        }
+        for word in ["class", "lazy"] {
+            assert_accepted(&format!("lazy {word} = 1."));
+        }
+        for word in ACCESS_MODIFIERS {
+            assert_refused(&format!("lazy {word} = 1."));
+        }
+    }
+
+    fn instance_side_of(member: &str) -> ClassBody {
+        match parse_sides(member, "") {
+            Ok(module) => module.root_class.instance_side,
+            Err(errors) => panic!("{member}: {errors:?}"),
+        }
+    }
+
+    fn unary_selector(method: &MethodDeclaration) -> &str {
+        match &method.pattern {
+            MessagePattern::Unary { selector } => &selector.name,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_declaration_is_what_its_whole_production_matches() {
+        // No lazy slot: a private method named `lazy`.
+        let body = instance_side_of("private lazy = ( ^1 )");
+        assert!(body.slots.is_empty());
+        assert_eq!(body.methods[0].access, Some(AccessModifier::Private));
+        assert_eq!(unary_selector(&body.methods[0]), "lazy");
+
+        // A lazy slot named `lazy`.
+        let body = instance_side_of("lazy lazy = 1.");
+        assert!(body.methods.is_empty());
+        assert_eq!(body.slots[0].name.name, "lazy");
+        assert!(body.slots[0].lazy);
+
+        // A public lazy slot named `public`.
+        let body = instance_side_of("lazy public public = 1.");
+        assert_eq!(body.slots[0].name.name, "public");
+        assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
+        assert!(body.slots[0].lazy);
+
+        // A nested class named `public`, and a public method named `class`.
+        let body = instance_side_of("class public = Object new () () public class = ( ^1 )");
+        assert_eq!(body.nested_classes[0].name.name, "public");
+        assert_eq!(body.methods[0].access, Some(AccessModifier::Public));
+        assert_eq!(unary_selector(&body.methods[0]), "class");
+    }
+
+    /// The one deviation (decided with the user on 2026-09-27): §6.3.4's
+    /// `accessModifier` and §6.3.3's `lazyModifier` end in `whitespace`, which
+    /// would make `| public= 1. |` a slot named `public` beside an erroneous
+    /// `| public = 1. |`. Both are the same tokens here, and both are refused.
+    #[test]
+    fn a_modifier_needs_no_whitespace_after_it() {
+        assert_refused("class Box = Object new ( | public= 1. | ) ()");
+        assert_refused("lazy public= 1.");
+        assert_accepted("lazy public public= 1.");
+    }
+
+    #[test]
+    fn an_initializer_ends_with_a_dot() {
+        for (member, expected) in [
+            (
+                "class Box = Object new ( | held = 1 | ) ()",
+                "after a slot's initializer",
+            ),
+            (
+                "temporaries = ( | held = 1 | ^held )",
+                "after a slot's initializer",
+            ),
+            ("lazy held = 1", "after a lazy slot's initializer"),
+        ] {
+            let Err(errors) = parse_sides(member, "") else {
+                panic!("{member} parsed");
+            };
+            assert!(
+                errors.iter().any(|message| message.contains(expected)),
+                "{member}: {errors:?}"
+            );
+        }
+        assert_accepted("class Box = Object new ( | held. other | ) ()");
     }
 }

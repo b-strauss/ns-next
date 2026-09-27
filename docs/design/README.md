@@ -246,6 +246,7 @@ trusting a program's output.
 | There are no character literals and no `Character` class: `"c"` is a one-character string, as the section itself announces and §5.1.5's `"σ"` form states; a double-quoted string has no escape, and a quote in one is written `"""`, not the section's `""""` | §5.1.4 | [frontend.md](frontend.md) |
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
+| An access modifier or `lazy` needs no whitespace after it, where the grammar's `accessModifier` and `lazyModifier` end in `whitespace`: `\| public= 1. \|` is refused like `\| public = 1. \|` rather than declaring a slot named `public` | §6.3.3, §6.3.4 | [frontend.md](frontend.md) |
 | The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 

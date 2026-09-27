@@ -4590,3 +4590,23 @@ with an uppercase letter (`resolver/sends.rs`, `outer_class_name`), where
 compile-time error. `^outer missing foo` therefore resolves as the chain
 `(outer missing) foo` and fails only at run time. It is a resolver change,
 left for runtime work.
+
+## The unreserved words are names (2026-09-27)
+
+§4.1 reserves six words, and the syntax now follows the specification
+strictly for the rest ([frontend.md](design/frontend.md), "Words that are
+not reserved"): `class`, `public`, `protected`, `private` and `lazy` are
+names wherever the grammar takes an identifier, and where one could also
+begin a declaration the grammar decides as the PEG it is -- an access
+modifier standing first is the modifier, and a lazy slot is one only if
+§6.3.3's whole production matches, so `private lazy = ( ... )` is a method
+named `lazy`. One deviation was decided with the user: the modifiers need
+no whitespace after them. A slot's or a lazy slot's initializer now needs
+its mandatory dot. The resolver's `outer N` no longer requires an uppercase
+`N` (the deviation the editor entry above found), so `outer missing foo` is
+the compile-time error §5.9 makes it. The language server colours `lazy` as
+a keyword and a send named like one of these words as a send.
+
+`parse-corpus` stays at 210/0/1/0 and `run-corpus` at 6/0/205. Six new
+goldens under `goldens/spec/` run every accepted form, and
+`unreserved_word_tests` in `parser::declaration` pins the refused ones.
