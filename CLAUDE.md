@@ -393,13 +393,16 @@ cargo nextest run -p ns-lsp
 ./editors/jetbrains/gradlew -p editors/jetbrains check
 
 # --- once at the end of a batch of work, before handing it on ---
-# the same suite with every object moved at the run loop's safepoints
-# (debug builds only; Git Bash syntax)
-NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-lsp
-# the same suite with every inline cache vacated at every safepoint
-NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-lsp
-# the same suite with a collection at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-lsp
+# the same suite under the three stress modes (debug builds only; Git Bash
+# syntax): MOVES moves every object at the run loop's safepoints, CACHES
+# vacates every inline cache at every safepoint, COLLECT collects at every
+# safepoint. All three at once: each run ends in a long tail of a few
+# depth-limit tests that leaves most cores idle, and the tails overlap
+# (225 s against about 6 minutes one after another). Each writes its own log
+# under the git-ignored .temp/, and every mode that fails is named at the end.
+mkdir -p .temp && for mode in MOVES CACHES COLLECT; do
+  (env NS_NEXT_STRESS_$mode=1 cargo nextest run --workspace --exclude ns-lsp      > .temp/stress-$mode.log 2>&1 || echo "stress $mode FAILED: .temp/stress-$mode.log") &
+done; wait; grep -h Summary .temp/stress-*.log
 cargo nextest run -p ns-lsp
 # non-regression gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
