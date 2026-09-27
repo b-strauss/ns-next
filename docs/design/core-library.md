@@ -445,7 +445,12 @@ refused as an ordinary Newspeak error ("cannot instantiate Platform: a
 core-library module is instantiated only by the runtime"). The bootstrap
 alone passes, through the crate-private
 `Interpreter::instantiate_core_library_module`, for `Kernel` and
-`Platform`. Without it a second platform over something that is not the
+`Platform`, and it sets aside that one refusal and nothing else. That is
+sound only because `Mutator::apply_mixin` records it last, when no other
+refusal applies: a shipped root with a defect of its own -- a mutable slot
+under `Value`, a root clause the root rule refuses -- carries that defect
+instead, and the bootstrap is refused it like any program
+(`mirror.rs`'s `a_defective_shipped_root_is_refused_to_the_runtime_too`). Without it a second platform over something that is not the
 mirror would run `Transcript>>show:`'s leaf through the primitive method's
 fast path, which never reads `vmMirror`, and fail through its `SendMirror`
 fallback, which does: the paths would disagree

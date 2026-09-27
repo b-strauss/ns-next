@@ -570,7 +570,10 @@ pub struct Mixin {
     /// application, and on every application built over it, so a program
     /// can neither build a second platform nor subclass one and hand the
     /// subclass's initializer something that is not the mirror. Only the
-    /// bootstrap's `Interpreter::instantiate_core_library_module` passes it.
+    /// bootstrap's `Interpreter::instantiate_core_library_module` passes it,
+    /// and only it: the refusal is the last `apply_mixin` considers, so a
+    /// shipped root that any other rule refuses -- a root clause, a mutable
+    /// slot under `Value` -- is refused to the bootstrap too.
     pub core_library_module: bool,
 }
 

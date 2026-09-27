@@ -335,6 +335,41 @@ mod tests {
         ));
     }
 
+    /// The runtime sets aside only `InstantiationRefusal::CoreLibraryModule`,
+    /// so every other refusal of a shipped root must still reach it: a
+    /// shipped module whose root is a value with a mutable slot is refused
+    /// to `instantiate_core_library_module` exactly as to a program, rather
+    /// than booting with a mutable value.
+    #[test]
+    fn a_defective_shipped_root_is_refused_to_the_runtime_too() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'T'
+            class K vmMirror: theMirror = Object <: Value (
+              | private vmMirror = theMirror. public count ::= 0. |
+            ) () : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let origin = crate::SourceOrigin::File(std::path::PathBuf::from("t.ns"));
+        let Ok(resolved) =
+            crate::resolver::resolve_kernel(module, std::rc::Rc::from(source), origin)
+        else {
+            panic!("the defective module does not resolve under `resolve_kernel`");
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let mirror = the_mirror(&mut interpreter);
+        match interpreter.instantiate_core_library_module(&class, &[mirror]) {
+            Ok(_) => panic!("the runtime instantiated a shipped root with a mutable value slot"),
+            Err(HostSignal::Return) => panic!("a non-local return escaped"),
+            Err(HostSignal::Error(error)) => assert_eq!(
+                error.message,
+                "cannot instantiate K: a value object is deeply immutable, and it declares \
+                 the mutable slot count"
+            ),
+        }
+    }
+
     /// A kernel-shaped module, resolved by `resolve_kernel` when `kernel`
     /// and by plain `resolve` otherwise: its `Probe` sends the mirror inline
     /// (`sizeOf:`) and declares two primitive methods, one whose leaf accepts

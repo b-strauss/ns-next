@@ -232,7 +232,8 @@ impl ModuleSource {
 
 /// Who asks for an instance. Only the runtime may instantiate a shipped
 /// core-library module (`InstantiationRefusal::CoreLibraryModule`); every
-/// other refusal holds for both.
+/// other refusal holds for both, because `Mutator::apply_mixin` records that
+/// one only when no other applies.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Instantiator {
     /// A program's factory send, or a host's `Interpreter::instantiate`.

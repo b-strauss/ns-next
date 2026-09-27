@@ -1712,17 +1712,10 @@ impl<'gc> Mutator<'gc> {
             .behavior_mixin
             .as_ref()
             .is_some_and(|behavior_mixin| Rc::ptr_eq(behavior_mixin, mixin));
-        // A shipped module's root comes before everything: whatever else
-        // would refuse it, a program may not instantiate it at all.
         let instantiation_refusal = mixin
-            .core_library_module
-            .then_some(crate::mixin::InstantiationRefusal::CoreLibraryModule { module: mixin.name })
-            .or_else(|| {
-                mixin
-                    .root_clause_defect
-                    .clone()
-                    .map(crate::mixin::InstantiationRefusal::RootClause)
-            })
+            .root_clause_defect
+            .clone()
+            .map(crate::mixin::InstantiationRefusal::RootClause)
             .or_else(|| {
                 superclass.and_then(|application| application.instantiation_refusal.clone())
             })
@@ -1740,6 +1733,17 @@ impl<'gc> Mutator<'gc> {
                     && mixin.compiled_method(Symbol::IDENTICAL).is_some())
                 .then_some(mixin.name)
                 .map(|declaring| crate::mixin::InstantiationRefusal::IdentityMethod { declaring })
+            })
+            // A shipped module's root comes last, behind every refusal that
+            // is a defect: the runtime, which alone may instantiate the root,
+            // sets aside exactly this verdict
+            // (`Mutator::decide_instantiation_as`), so any refusal ahead of it
+            // would be set aside with it and a defective shipped module would
+            // boot. A program is refused either way.
+            .or_else(|| {
+                mixin.core_library_module.then_some(
+                    crate::mixin::InstantiationRefusal::CoreLibraryModule { module: mixin.name },
+                )
             });
         // The declared slots, in field order, computed here for the same
         // reason `nested_slot` is: nothing about an application changes
