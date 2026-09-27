@@ -391,8 +391,11 @@ may name a factory parameter (§6) -- and is never handed to anyone. What a
 program receives, and may instantiate, are the root's public nested
 classes, its facets. Each reaches the privileged state lexically, as a
 member of the root, never through a slot of its own, so the facets keep
-`new` and declare no slots: `t class new` makes a transcript equal to `t`,
-and `platform class new` a platform that writes like the first
+`new` and hold no privileged state in slots of their own -- `Transcript`,
+`Collections` and `KernelNamespace` declare none, and `Platform`'s three
+lazy slots hold only facets it builds itself: `t class new` makes a
+transcript equal to `t`, and `platform class new` a platform that writes
+like the first
 (`goldens/kernel/a_second_platform_writes_like_the_first`). The platform
 hands out instances of the facets by lazy slots and their classes by class
 accessors, methods whose whole body is `^outer PlatformFactory <Name>`.
@@ -489,6 +492,19 @@ path, which never reads `vmMirror`, and failed through its `SendMirror`
 fallback, which does. The factory pattern makes the paths agree with plain
 Newspeak instead: every object whose code sends to `vmMirror` reaches it
 through the one root instance the bootstrap checked.
+
+That the root instance stays unreachable rests on more than naming: it
+must never become the answer to anything a program sees, and the one place
+the runtime hands a receiver to a program is a `MessageNotUnderstood`,
+whose `receiver` slot is public. So no code whose receiver is the factory
+instance may ever send it a message it does not understand -- today the
+only sends to it are the class accessors' `outer PlatformFactory <Name>`,
+each naming a nested class it declares, and the nested classes' superclass
+clauses, run with it as receiver. Whoever edits `PlatformFactory.ns` (or
+writes another `XFactory` root) keeps it that way: a send to the root that
+can miss, or a method of the root that sends to `self` something it may
+not understand, would hand the root, and with it `usingVmMirror:kernel:`
+through its class, to any program that catches the error.
 
 **The authority to run a leaf lies with an object, not with code.**
 Weighed with the user on 2026-09-27: making the two paths agree the other
@@ -1653,9 +1669,9 @@ the mirror's `moduleNamed:` with `CollectionsFactory.ns`. The design as decided:
   The factory's parameters are copied into private slots, since neither a
   lazy slot nor a method may name them (§6), and the three nested classes
   reach the mirror and the kernel through those slots, so they keep `new`
-  and declare no slots: `t class new` still makes a transcript equal to `t`. In plan 1
-  `Collections>>List` answers the kernel's `OrderedCollection` through
-  `Object`'s accessor.
+  and declare no slots: `t class new` still makes a transcript equal to
+  `t`. In plan 1 `Collections>>List` answers the kernel's
+  `OrderedCollection` through `Object`'s accessor.
 - **The transcript leaf takes no receiver.** It checked
   `BuiltinClass::Transcript` so that a user subclass of a builtin declines;
   it reads nothing off the receiver, only the string argument, and once
@@ -1766,7 +1782,14 @@ its class. That needs its own decision when the first such module arrives.
   with `kernelModule`, once, so every platform shares one module instance
   and one `List` class; the platform's lazy `collections` slot answers that
   instance's `Collections new`, and plan 1's `Collections` class leaves
-  `PlatformFactory.ns`.
+  `PlatformFactory.ns`. **Open for plan 2:** once `Collections` is a
+  nested class of `CollectionsFactory` rather than of `PlatformFactory`,
+  `Platform>>Collections` can no longer be `^outer PlatformFactory
+  Collections`, so the class-accessor recognition (`MixinMethod::
+  class_accessor`) would not mark whatever replaces it, and the platform
+  path `Collections` would vanish from images. Plan 2 must decide how that
+  class is named -- a path through the collections module instance, a
+  wider recognition, or no path at all.
 - **The handler search keeps no `OrderedCollection`.** `invokeNextHandler`
   counts the enabled `on:do:` activations it passes, and
   `invokeHandlerAt:` fills an `Array new: count` by walking the same range

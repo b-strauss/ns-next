@@ -16,7 +16,11 @@ Newspeak3
    namespaces as it likes and every one of them writes through the one
    mirror. Nothing a program can name answers this root's instance or its
    class, so no program can build a second one over something that is not
-   the mirror.
+   the mirror. Keep it so: no code whose receiver is this root's instance
+   may send it anything it does not understand, since a
+   `MessageNotUnderstood` hands its receiver to whoever catches it
+   (`docs/design/core-library.md`, "No program reaches a shipped module's
+   root").
 
    The factory's parameters are copied into slots because neither a lazy
    slot nor a method may name them (§6). A send to `vmMirror` here is a
