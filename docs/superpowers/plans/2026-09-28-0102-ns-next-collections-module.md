@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the Core Library's collections as a Newspeak module, `Collections.ns`, whose instance `platform collections` answers and whose `List` replaces the kernel's `OrderedCollection`, and remove `OrderedCollection`, its `add:` leaf and `Heap::array_push` from the runtime.
+**Goal:** Ship the Core Library's collections as a Newspeak module, `CollectionsFactory.ns`, whose `List` replaces the kernel's `OrderedCollection` behind `platform collections`, and remove `OrderedCollection`, its `add:` leaf and `Heap::array_push` from the runtime.
 
-**Architecture:** Plan 2 of the two in `docs/design/core-library.md`, "Planned: the platform and collections as core-library modules", with the open question it recorded settled with the user on 2026-09-28 as **option A**: `platform collections` answers the module's instance itself, as Primordial Soup's `Runtime.ns` (`public collections = Collections usingInternalKernel: ik`) and SOMns's `core-lib/Platform.ns` (`public collections = (vmMirror load: 'Collections.ns' nextTo: self) usingKernel: kernel`) do. The root is therefore handed out, so it holds nothing privileged: it takes the kernel *namespace* (`platform kernel`, which hands out the exception classes and nothing else), not the kernel instance. `PlatformFactory`'s root fetches the module's class through a new mirror leaf, `moduleNamed:`, in a lazy slot, so every platform shares one module instance and one `List` class. There is no nested `Collections` class and no `Platform>>Collections` accessor any more; the platform paths `collections` and `collections List` use step kinds that already exist (a public slot's getter, a public nested class's accessor), so the class-accessor recognition is not widened. `Array new:` comes first, because `List` and the handler search both need a sized array, and the removal comes last, once nothing uses `OrderedCollection`.
+**Architecture:** Plan 2 of the two in `docs/design/core-library.md`, "Planned: the platform and collections as core-library modules", in the **factory pattern** the design names ("The platform"; confirmed by the user on 2026-09-28): `class CollectionsFactory usingKernel: theKernel = Object <: Value` is a root that holds the kernel instance and is never handed out; its nested classes are private; its one public member, `newCollections`, answers an instance of its nested `Collections`, the facet `platform collections` answers. `PlatformFactory`'s root builds the one `CollectionsFactory` instance in a lazy slot, through a new mirror leaf `moduleNamed:`, so every platform shares one `List` class. The design's open question -- how the `Collections` class is named in an image once it is no longer `PlatformFactory`'s -- is settled the way `Platform` names its own class: the facet declares `public Collections = ( ^outer CollectionsFactory Collections )` and `public List = ( ^outer CollectionsFactory List )`, class accessors the compiler already recognizes in every shipped module but the kernel (`MixinMethod::class_accessor`), so the platform paths `collections Collections` and `collections List` need no wider recognition, and `Platform>>Collections` goes. Because no program reaches the root, it needs no check of its own and can hold the kernel itself. `Array new:` comes first, because `List` and the handler search both need a sized array, and the removal comes last, once nothing uses `OrderedCollection`.
 
 **Tech Stack:** Rust 1.98.0 (edition 2021), the `ns-runtime` and `ns-cli` crates, `indoc` as a dev-dependency, Newspeak source under `crates/ns-runtime/core-library/`, `cargo-nextest`.
 
 **Spec:** `docs/design/core-library.md` — "Planned: the platform and collections as core-library modules", its subsections "The module table and the boot (plan 1)" (the `moduleNamed:` bullet), "Platform paths in the image (plan 1)", "The collections module (plan 2)", "What changes in the invariants" and "What is measured"; and "The platform" for the factory pattern. Read them before any task. Where this plan departs from the recorded design, it says so at the task and the departure is written into the design document by that task:
 
-- **Option A replaces the design's `CollectionsFactory.ns`**: the module is `Collections.ns`, `class Collections usingKernel: theKernel = Object <: Value`, whose root instance *is* the namespace; the design's "a root that holds the kernel and is never handed out" and its nested `Collections` class are gone, and so is the platform path `Collections`.
+- **The open question is settled by the facet's own class accessor** (above): the platform path `Collections` becomes `collections Collections`, and `platform Collections` is gone -- the corpus never sends it, only one golden and one image test did, and both move to `platform collections Collections`.
 - **`moduleNamed:` keeps nothing in Rust.** The design says the leaf answers a module class "built on its first request and kept". Here the leaf builds the class on every request and the caller keeps it: `PlatformFactory`'s root holds it in a lazy slot, which Newspeak evaluates once. That needs no new root in `Mutator` and no tracing (`ns-next-prefer-newspeak-semantics-over-runtime-rules`). *Proposed by the plan's author, to be confirmed by the user at review.*
 - **`List>>at:put:` answers the value**, as `add:` answers the element and as Smalltalk's and Primordial Soup's `at:put:` do; the kernel's `Array>>at:put:` leaf answers the receiver and is left as it is. *Proposed, to be confirmed.*
 - **`List>>do:` visits the elements the list held when it started** (Primordial Soup's `1 to: size_ do:` reads `size_` once): an `add:` inside the block does not extend the walk, as `OrderedCollection>>do:`'s copied payload did not; an `at:put:` inside it is seen. A non-block argument is sent `value:`, as any Newspeak loop written over `at:` would, where the `Array>>do:` leaf treats it as a no-op. *Proposed, to be confirmed.*
@@ -18,17 +18,17 @@
 ## Global Constraints
 
 - All code, identifiers, comments, doc comments and commit messages are in English; conversation with the user is in German.
-- Names are written out: no identifier of one or two characters, no truncated word (`CLAUDE.md`, "Conventions"; `clippy.toml`'s `min_ident_chars`). Every code sample below follows it; `size_` in `Collections.ns` is Primordial Soup's Newspeak slot name, which the design names, not a Rust identifier.
+- Names are written out: no identifier of one or two characters, no truncated word (`CLAUDE.md`, "Conventions"; `clippy.toml`'s `min_ident_chars`). Every code sample below follows it; `size_` in `CollectionsFactory.ns` is Primordial Soup's Newspeak slot name, which the design names, not a Rust identifier.
 - Classic terminology: `blacklist`, `whitelist`, `sane`.
 - Never `{:?}` a `Value`; never `.unwrap()` / `.expect()` / `{:?}` an `EvaluationResult` or a `HostResult`. Tests unwrap through a local `expect_ok` helper copied from a neighbouring test file (`crates/ns-runtime/tests/platform.rs` has one).
 - A Newspeak module written inline in a test is an `indoc! {"…"}`, indented with spaces, closing `"}` on a line of its own.
 - Object, frame and activation access goes through `crates/ns-runtime/src/heap.rs`; add a missing accessor there.
 - `vm.rs` holds no dispatch logic; nothing in this plan touches `vm.rs`.
-- The VM mirror is a capability: a program never obtains the mirror, its class or a `MirrorSend` binding. `Collections.ns` is shipped source, resolved with `resolve_kernel`, and must contain no send to a `vmMirror`; Task 3 pins it with a test.
+- The VM mirror is a capability: a program never obtains the mirror, its class or a `MirrorSend` binding. `CollectionsFactory.ns` is shipped source, resolved with `resolve_kernel`; it declares no `vmMirror` and needs none. No program reaches its root instance or root class, exactly as for `PlatformFactory` (`docs/design/core-library.md`, "No program reaches a shipped module's root"): no code whose receiver is that root may send it anything it does not understand, since a `MessageNotUnderstood` hands its receiver to whoever catches it.
 - A leaf never calls back into Newspeak (`ns-next-builtins-must-stay-optimizable`): `moduleNamed:` builds a class, which is pure structure (`Mutator::load_root_class`), and runs no Newspeak.
 - An image is untrusted input; a wire tag is assigned once and never renumbered or reused. Builtin class tag 10 (`OrderedCollection`) is **retired**, not reused; "Next free number: 30" stays. A mirror row is no wire tag — no artifact carries one (`SendMirror` has no wire tag, and `image/mixins.rs` decodes every method with `fast_path: None`) — so removing the `add:` row may shift the rows after it.
 - Program outcomes are pinned: a golden's recorded `status`, `stdout` and `stderr` change only where this plan names the change and says why. A golden that changes anywhere else is a defect to investigate, never a file to re-record.
-- `PlatformFactory.ns` and `Collections.ns` are widened only on demand: every `List` selector exists because the corpus or a golden asks for it (`corpus/runnable.toml`'s `Ducts.ns`, `NewspeakASTs.ns`, `V5BytecodeSimulation.ns` bind `platform collections List`; the goldens send `new`, `add:`, `at:`, `at:put:`, `do:` and `size`).
+- `PlatformFactory.ns` and `CollectionsFactory.ns` are widened only on demand: every `List` selector exists because the corpus or a golden asks for it (`corpus/runnable.toml`'s `Ducts.ns`, `NewspeakASTs.ns`, `V5BytecodeSimulation.ns` bind `platform collections List`; the goldens send `new`, `add:`, `at:`, `at:put:`, `do:` and `size`).
 - Conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`). Every commit message ends with a `Co-Authored-By:` trailer naming the model that actually wrote the code, a subagent's commits included, followed by the `Claude-Session:` line the session's attribution reminder gives.
 - **Before every commit** (from `CLAUDE.md`, "Working in this repository"; no task touches `crates/ns-syntax`, `crates/ns-lsp` or `editors/jetbrains`, so their per-commit gates do not apply):
   ```bash
@@ -48,7 +48,7 @@
 1. **The handler search near the depth limit.** The search now fills an `Array new: count` instead of an `OrderedCollection`. If `Array class>>new:` were not recognized as a mirror forwarder, each search would push one activation more than before, and the depth-limit goldens (`goldens/exceptions/an_error_just_below_the_depth_limit_is_caught`, `a_message_not_understood_just_below_the_depth_limit_is_caught`, `a_handler_overrunning_the_reserve_ends_the_run`, `goldens/limits/`) would change outcome. They must not change. Pinned in Task 1 (`array_new_is_a_mirror_forwarder`) and Task 2 (the second walk is inlined into `invokeNextHandler`, adding no method activation).
 2. **An `Array new:` size that cannot be allocated.** `Array new: 9223372036854775807` must be an ordinary, catchable `Error`, never a Rust allocation abort; a negative size and a size that is no `Integer` likewise. Pinned in Task 1 (`goldens/kernel/array_new_refuses_what_is_no_size`).
 3. **A `List` index that is no `Integer`, zero, or past the end** — `at:` and `at:put:` must signal an `Error` with `Array>>at:`'s text, catchable by `on: Error do:`, never read the backing array's spare capacity (`List new at: 1` must fail although `data` has four slots). Pinned in Task 3 (`goldens/collections/a_list_index_error_is_caught_as_an_error`).
-4. **An image holding a `List`, and one holding what option A leaves without a path.** A `List` with elements in module state must survive snapshot and build/load as an ordinary record of the class `collections List` names; `platform collections class` and a second module instance a program built itself must be refused by the encoder with a clear message, never written field by field and never a panic. Pinned in Task 4.
+4. **An image holding a `List`, a second `Collections` facet, or the factory itself.** A `List` with elements in module state must survive snapshot and build/load as an ordinary record of the class `collections List` names; a facet a program made with `platform collections class new` is an ordinary record of the class `collections Collections` names; the `CollectionsFactory` instance and class, which only a host can reach, must be refused by the encoder with a clear message, never written field by field and never a panic. Pinned in Task 4.
 5. **A user subclass of `List`, and a module that binds `platform collections List` before `main:args:` runs.** A subclass must inherit the whole protocol and reach `size_` by a self send (protected); the three whitelisted corpus modules must still run and build (Task 7's `run-corpus`). Pinned in Task 3 (`goldens/collections/a_user_subclass_of_list_inherits_its_protocol`) and Task 7.
 
 ---
@@ -60,13 +60,13 @@
 - `crates/ns-runtime/src/builtins/primitive.rs` — `CollectionPrimitive::Allocate` and its mirror row (Task 1); `Primitive::Module(ModulePrimitive)` and the `moduleNamed:ifFail:` row (Task 3); `CollectionPrimitive::Add` and its row leave (Task 6).
 - `crates/ns-runtime/src/builtins/module.rs` (new, Task 3) — the `moduleNamed:` leaf.
 - `crates/ns-runtime/src/builtins/mod.rs` — the new module and its `execute` arm (Task 3).
-- `crates/ns-runtime/core-library/Collections.ns` (new, Task 3) — the module root and `List`.
-- `crates/ns-runtime/core-library/PlatformFactory.ns` — the lazy `collectionsModule`, `Platform>>collections` answering it, no `Collections` class (Task 3).
+- `crates/ns-runtime/core-library/CollectionsFactory.ns` (new, Task 3) — the factory root, the `Collections` facet and `List`.
+- `crates/ns-runtime/core-library/PlatformFactory.ns` — the lazy `collectionsModule`, `Platform>>collections` answering its facet, no `Collections` class (Task 3).
 - `crates/ns-runtime/src/interpreter/core_library.rs` — the table entry, `shipped_module_named` (Task 3).
 - `crates/ns-runtime/src/platform.rs` — module doc (Task 3).
 - `crates/ns-runtime/src/types.rs`, `src/interpreter/kernel.rs`, `src/interpreter/instantiate.rs`, `src/interpreter/nested.rs`, `src/heap.rs`, `src/image/encode.rs`, `src/image/decode.rs`, `src/image/opcodes.rs` — `BuiltinClass::OrderedCollection`, tag 10 and `Heap::array_push` leave (Task 6).
 - Tests: `crates/ns-runtime/tests/platform.rs`, `image.rs`, `builtins_collections_block.rs`, `factory_send.rs`, `builtin_object_inheritance.rs`, `heap.rs`, `opcode_tags.rs`, `vm.rs`, `reference_lowering.rs`, `collector.rs`, `inline_caches.rs`, `interpreter.rs`, `resolver.rs`, and the unit tests in `src/compiler/lower.rs`, `src/interpreter/kernel.rs`, `src/interpreter/core_library.rs`, `src/heap.rs`.
-- Goldens: `goldens/kernel/` (Tasks 1, 3, 6), `goldens/collections/` (new category, Task 3), the eleven goldens that write `OrderedCollection` (Task 5).
+- Goldens: `goldens/kernel/` (Tasks 1, 3, 6), `goldens/collections/` (new category, Task 3), the goldens that write `OrderedCollection` (Task 5).
 - Docs: `CLAUDE.md`, `docs/design/core-library.md`, `image-format.md`, `object-model.md`, `dispatch.md`, `memory.md`, `execution.md`, `README.md`, `docs/PROGRESS.md`.
 
 ---
@@ -410,16 +410,16 @@ git commit -m "refactor: the handler search collects its handlers into an Array"
 
 ---
 
-### Task 3: `Collections.ns`, `moduleNamed:` and the platform's `collections`
+### Task 3: `CollectionsFactory.ns`, `moduleNamed:` and the platform's `collections`
 
 **Files:**
-- Create: `crates/ns-runtime/core-library/Collections.ns`
+- Create: `crates/ns-runtime/core-library/CollectionsFactory.ns`
 - Create: `crates/ns-runtime/src/builtins/module.rs`
 - Modify: `crates/ns-runtime/src/builtins/mod.rs`, `crates/ns-runtime/src/builtins/primitive.rs`
 - Modify: `crates/ns-runtime/src/interpreter/core_library.rs`
 - Modify: `crates/ns-runtime/core-library/PlatformFactory.ns`
 - Modify: `crates/ns-runtime/src/platform.rs` (module doc only)
-- Modify: `crates/ns-runtime/tests/platform.rs`, `crates/ns-runtime/tests/image.rs`, `crates/ns-runtime/src/interpreter/kernel.rs` (tests that name the removed `Collections` class)
+- Modify: `crates/ns-runtime/tests/platform.rs`, `crates/ns-runtime/tests/image.rs`, `crates/ns-runtime/src/interpreter/kernel.rs` (tests that name the removed `Platform>>Collections`)
 - Modify: `goldens/kernel/the_platform_and_its_parts_are_values.ns`, `goldens/kernel/a_second_platform_writes_like_the_first.ns`
 - Create: `goldens/collections/` with six goldens (below)
 - Modify: `docs/design/core-library.md`, `docs/design/README.md` (the goldens table), `CLAUDE.md`
@@ -429,8 +429,8 @@ git commit -m "refactor: the handler search collects its handlers into an Array"
 - Produces:
   - `core_library::shipped_module_named(name: &str) -> Option<Rc<ResolvedModule>>`.
   - `builtins::primitive::ModulePrimitive::Named`, `Primitive::Module(ModulePrimitive)`, the mirror row `moduleNamed:ifFail:` (reported `moduleNamed`), subject a `Symbol`, answering the module's root class or declining.
-  - `platform collections` — the one instance of `Collections.ns`'s root, shared by every platform; `platform collections List` — its public nested class `List`, protocol `new`, `add:` (answers the element), `at:`, `at:put:` (answers the value), `do:`, `size`.
-  - Platform paths `collections` and `collections List`; the path `Collections` no longer exists.
+  - `platform collections` — a `Collections` facet of the one `CollectionsFactory` instance every platform shares; `platform collections List` — the factory's `List` class, protocol `new`, `add:` (answers the element), `at:`, `at:put:` (answers the value), `do:`, `size`; `platform collections Collections` — the facet's own class.
+  - Platform paths `collections`, `collections List` and `collections Collections`; the path `Collections` no longer exists.
 
 - [ ] **Step 1: Write the `List` goldens**
 
@@ -552,8 +552,9 @@ Uncaught Newspeak error: index 1 out of range: valid indices are 1..0 (size 0)
 ```newspeak
 Newspeak3
 'Collections'
-(* A class of the program may inherit from List: it keeps the whole
-   protocol and reaches the protected `size_` by a self send. *)
+(* A class of the program may inherit from List, which the collections
+   facet hands out although it is a private class of its module: it keeps
+   the whole protocol and reaches the protected `size_` by a self send. *)
 class AUserSubclassOfListInheritsItsProtocol usingPlatform: thePlatform = Object new (
     | transcript = thePlatform transcript.
       private List = thePlatform collections List. |
@@ -617,11 +618,10 @@ stdout = '''
 ```newspeak
 Newspeak3
 'Collections'
-(* The platform's collections module is one instance, built on first use
-   and shared by every platform, so a List made through a second platform
-   is an instance of the same class. The module is a value: a module a
-   program instantiates itself over the platform's kernel namespace is
-   equal to it. *)
+(* Every platform's collections facet comes from one CollectionsFactory,
+   built on first use, so a List made through a second platform is an
+   instance of the same class. The facet is a value: any two are equal,
+   one a program makes from the facet's class included. *)
 class EveryPlatformSharesOneCollectionsModule usingPlatform: thePlatform = Object new (
     | transcript = thePlatform transcript. |
 ) (
@@ -630,13 +630,15 @@ class EveryPlatformSharesOneCollectionsModule usingPlatform: thePlatform = Objec
         second:: platform class new.
         transcript show: (second collections == platform collections) printString; newLine.
         transcript show: (second collections List == platform collections List) printString; newLine.
-        transcript show: (platform collections = (platform collections class usingKernel: platform kernel)) printString; newLine
+        transcript show: (platform collections Collections new = platform collections) printString; newLine.
+        transcript show: (platform collections Collections == platform collections class) printString; newLine
     )
 ) : ()
 ```
 
 ```toml
 stdout = '''
+true
 true
 true
 true
@@ -649,40 +651,52 @@ true
 cargo nextest run -p ns-cli --test run_goldens collections/
 ```
 
-Expected: failures. `platform collections List` still answers `OrderedCollection`, which has no `at:put:`, answers `do:` over a copy and raises the leaf's own errors; `platform collections class usingKernel:` is not understood. A golden that happens to pass against `OrderedCollection` already is fine — it pins behaviour `List` must keep.
+Expected: failures. `platform collections List` still answers `OrderedCollection`, which has no `at:put:`, answers `do:` over a copy and raises the leaf's own errors; `platform collections Collections` is not understood. A golden that happens to pass against `OrderedCollection` already is fine — it pins behaviour `List` must keep.
 
-- [ ] **Step 3: Write `Collections.ns`**
+- [ ] **Step 3: Write `CollectionsFactory.ns`**
 
-`crates/ns-runtime/core-library/Collections.ns`:
+`crates/ns-runtime/core-library/CollectionsFactory.ns`:
 
 ```newspeak
 Newspeak3
-'Collections'
+'CollectionsFactory'
 (* The Core Library's collections module (§8.3: the platform "provides
    accessors to various modules"; docs/design/core-library.md, "The
-   collections module"). `platform collections` answers this module's one
-   instance, as Primordial Soup's and SOMns's platforms answer theirs, and
-   a program reaches its classes as the instance's public nested classes.
+   collections module"), in the factory pattern `PlatformFactory.ns` is
+   written in.
 
-   The root is handed out, so it holds nothing privileged. Nothing here
-   sends to a VM mirror -- `interpreter::core_library`'s test pins that no
-   binding of this module is a mirror send -- and instead of the kernel
-   instance it holds the kernel namespace `platform kernel` answers, which
-   hands out the exception classes and nothing else. A program that
-   instantiates this class itself gets a module over whatever it passed,
-   and only that module's lists see it.
+   This root holds what is privileged -- the kernel instance -- and nothing
+   hands its instance to a program: `PlatformFactory`'s root builds it once,
+   through the mirror's `moduleNamed:`, sends it `newCollections`, its one
+   public member, and keeps it in a private lazy slot. What a program gets
+   is the `Collections` facet `newCollections` answers, which hands out this
+   module's classes by class accessors, each exactly `^outer
+   CollectionsFactory <Name>` -- a lexical send, which reaches the root's
+   private classes (§5.9), and which an image names by its path from the
+   platform (`docs/design/image-format.md`, "The platform path section").
+   Nothing a program can name answers this root's instance or its class, so
+   no program can build one over something that is not the kernel. Keep it
+   so: no code whose receiver is this root's instance may send it anything
+   it does not understand, since a `MessageNotUnderstood` hands its
+   receiver to whoever catches it.
 
-   A value (§3.1.1), so that the platform, a value, may hold it in a slot:
-   its one slot holds the kernel namespace, a value too. *)
-class Collections usingKernel: theKernel = Object <: Value (
-    | private kernel = theKernel. |
+   A value (§3.1.1), so that its facet is one and the platform, a value,
+   may hold the facet in a slot. *)
+class CollectionsFactory usingKernel: theKernel = Object <: Value (
+    | private kernelModule = theKernel. |
 ) (
+    (* `platform collections`: the module's namespace. It names its own
+       class as `Platform` does, so that the class has a path too. *)
+    private class Collections = Value new () (
+        public Collections = ( ^outer CollectionsFactory Collections )
+        public List = ( ^outer CollectionsFactory List )
+    )
     (* An ordered, growable sequence: Primordial Soup's `List`, with the
        protocol the corpus and the goldens ask for (the on-demand rule,
        docs/design/core-library.md). The elements live in `data`, an Array
        at least `size_` long, replaced by one twice as long when it is
        full; nothing grows in place. *)
-    public class List = Object new (
+    private class List = Object new (
         | protected size_ ::= 0.
           protected data ::= Array new: 4. |
     ) (
@@ -731,22 +745,25 @@ class Collections usingKernel: theKernel = Object <: Value (
         )
         (* `Array>>at:`'s text, so a program sees one error from either. *)
         protected indexOutOfRange: index = (
-            ^kernel Error signal: 'index ', index printString,
+            ^kernelModule Error signal: 'index ', index printString,
                 ' out of range: valid indices are 1..', size_ printString,
                 ' (size ', size_ printString, ')'
         )
     )
+    (* The one public member: the facet `platform collections` answers. *)
+    public newCollections = ( ^Collections new )
 ) : ()
 ```
 
-`Array` and `Integer` inside `List` are implicit-receiver sends that no enclosing declaration answers, so they reach `Object`'s accessors (§5.7, §3.2); `kernel` is a lexical send to the root's private slot (§5.9).
+`Array` and `Integer` inside `List` are implicit-receiver sends that no enclosing declaration answers, so they reach `Object`'s accessors (§5.7, §3.2); `kernelModule` is a lexical send to the root's private slot (§5.9).
 
 - [ ] **Step 4: Add the table entry and `shipped_module_named`**
 
 In `crates/ns-runtime/src/interpreter/core_library.rs`:
 
 ```rust
-pub(crate) const COLLECTIONS_SOURCE: &str = include_str!("../../core-library/Collections.ns");
+pub(crate) const COLLECTIONS_FACTORY_SOURCE: &str =
+    include_str!("../../core-library/CollectionsFactory.ns");
 
 pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
     ShippedModule {
@@ -754,8 +771,8 @@ pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
         source: PLATFORM_FACTORY_SOURCE,
     },
     ShippedModule {
-        name: "Collections",
-        source: COLLECTIONS_SOURCE,
+        name: "CollectionsFactory",
+        source: COLLECTIONS_FACTORY_SOURCE,
     },
 ];
 
@@ -858,55 +875,22 @@ Widen `core_library` or `load_root_class` to `pub(crate)` if either is not reach
 In the root's body — the second parenthesis, where lazy slots may be declared; a header slot cannot be lazy — add, before `Platform`:
 
 ```newspeak
-    (* The collections module, built on first use and shared by every
-       platform, so that every platform hands out one `List` class. The
-       module takes the kernel namespace, not the kernel: its root is
-       handed out (`platform collections`), so it must hold nothing a
-       program may not have. *)
-    lazy private collectionsModule = (vmMirror moduleNamed: #Collections ifFail: [nil]) usingKernel: KernelNamespace new.
+    (* The collections module, built on first use and kept here, so that
+       every platform's facet comes from one factory and hands out one
+       `List` class. Its instance is as private as this one: only its
+       `newCollections` facet leaves this module. *)
+    lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [nil]) usingKernel: kernelModule.
 ```
 
-In `Platform`, replace `lazy public collections = Collections new.` with `lazy public collections = collectionsModule.`, delete `public Collections = ( ^outer PlatformFactory Collections )`, and delete the nested `Collections` class with its comment. Update the root's comment where it lists what the platform hands out, and the comment above `Platform` (the class accessors are now `Platform`, `Transcript` and `KernelNamespace`).
+In `Platform`, replace `lazy public collections = Collections new.` with `lazy public collections = collectionsModule newCollections.`, delete `public Collections = ( ^outer PlatformFactory Collections )`, and delete the nested `Collections` class with its comment. Update the root's comment where it lists what the platform hands out, and the comment above `Platform` (its class accessors are now `Platform`, `Transcript` and `KernelNamespace`; the collections module's classes are the facet's).
 
-Update `install_platform`'s doc comment in `core_library.rs`: nothing past `Platform new` runs at boot; the first `platform collections` builds the module through `moduleNamed:`, and `image::load` may do so while it resolves a path. Update `crates/ns-runtime/src/platform.rs`'s module doc, which says `Collections>>List` answers its class without a leaf.
+Update `install_platform`'s doc comment in `core_library.rs`: nothing past `Platform new` runs at boot; the first `platform collections` builds the collections module through `moduleNamed:`, and `image::load` may do so while it resolves a path. Update `crates/ns-runtime/src/platform.rs`'s module doc, which says `Collections>>List` answers its class without a leaf.
 
-- [ ] **Step 7: Pin that the handed-out root holds no mirror**
+- [ ] **Step 7: Test the leaf**
 
 In `core_library.rs`'s `#[cfg(test)] mod tests` (create it if there is none):
 
 ```rust
-    use crate::types::Binding;
-
-    /// `platform collections` hands a program `Collections.ns`'s root
-    /// instance, and a program may instantiate its class over anything. So
-    /// the module must never send to a VM mirror: a mirror send there would
-    /// be compiled to `SendMirror`, whose fast path and fallback read the
-    /// root's `vmMirror` slot, and a program could fill that slot. The
-    /// resolver marks a send to the root's `vmMirror` in any shipped
-    /// module, so the rule is checked here, per module whose root is
-    /// handed out.
-    #[test]
-    fn the_collections_module_sends_nothing_to_the_mirror() {
-        let resolved = resolved_shipped_module("Collections");
-        assert!(
-            resolved
-                .bindings
-                .values()
-                .all(|binding| !matches!(binding, Binding::MirrorSend)),
-            "Collections.ns sends to the VM mirror"
-        );
-        assert!(
-            resolved
-                .module
-                .root_class
-                .instance_side
-                .slots
-                .iter()
-                .all(|slot| slot.name.name != "vmMirror"),
-            "Collections.ns's root declares a vmMirror slot"
-        );
-    }
-
     fn module_named<'gc>(
         mutator: &mut Mutator<'gc>,
         subject: Value<'gc>,
@@ -925,16 +909,16 @@ In `core_library.rs`'s `#[cfg(test)] mod tests` (create it if there is none):
     fn module_named_answers_a_shipped_root_class_and_declines_anything_else() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let collections = mutator.new_symbol(crate::Symbol::intern("Collections"));
-            let Some(Ok(Value::Object(class))) = module_named(mutator, collections) else {
-                panic!("moduleNamed: #Collections answers no class");
+            let name = mutator.new_symbol(crate::Symbol::intern("CollectionsFactory"));
+            let Some(Ok(Value::Object(class))) = module_named(mutator, name) else {
+                panic!("moduleNamed: #CollectionsFactory answers no class");
             };
             assert!(mutator.heap().is_class(class));
             assert!(mutator.heap().class_is_shipped(class));
-            assert_eq!(mutator.heap().class_display_name(class), "Collections");
+            assert_eq!(mutator.heap().class_display_name(class), "CollectionsFactory");
             let unknown = mutator.new_symbol(crate::Symbol::intern("NoSuchModule"));
             assert!(module_named(mutator, unknown).is_none());
-            let string = Value::Object(mutator.new_string("Collections".to_string()));
+            let string = Value::Object(mutator.new_string("CollectionsFactory".to_string()));
             assert!(module_named(mutator, string).is_none());
         });
     }
@@ -942,39 +926,41 @@ In `core_library.rs`'s `#[cfg(test)] mod tests` (create it if there is none):
 
 `Mutator::new_symbol` (`interpreter/mod.rs`) makes the symbol value. `class_display_name`'s return type decides whether the comparison needs `.as_str()`.
 
-- [ ] **Step 8: Update the tests that name the removed `Collections` class**
+- [ ] **Step 8: Update the tests that name the removed `Platform>>Collections`**
 
 - `crates/ns-runtime/tests/platform.rs`:
-  - Replace `platform_collections_answers_list_with_the_ordered_collection_class` with `platform_collections_answers_the_collections_modules_list`: `platform collections List` answers a class object with no builtin kind (`heap.class_builtin(list) == None`), compiled from shipped source (`heap.class_is_shipped(list)`), named `List`; and a second platform (`platform class new`, sent through `interpreter.send`) answers the same `collections` object (`same`). Rewrite its doc comment: the three whitelisted corpus modules bind `platform collections List`, which is `Collections.ns`'s `List`.
+  - Replace `platform_collections_answers_list_with_the_ordered_collection_class` with `platform_collections_answers_the_collections_modules_list`: `platform collections List` answers a class object with no builtin kind (`heap.class_builtin(list) == None`), compiled from shipped source (`heap.class_is_shipped(list)`), named `List`; `platform collections Collections` answers the same object as `platform collections class`; and a second platform (`platform class new`, sent through `interpreter.send`) answers the same `List` class object (`same`). Rewrite its doc comment: the three whitelisted corpus modules bind `platform collections List`, which is `CollectionsFactory.ns`'s `List`.
   - In `the_platform_factory_answers_only_new_platform` and `the_platforms_class_accessors_reach_the_private_classes`, drop `"Collections"` from the name lists.
+  - Add, beside `the_platform_factory_answers_only_new_platform`, `the_collections_factory_answers_only_new_collections`: reach the factory instance as the host can — `platform collections`'s class, then `heap.class_enclosing` of it, stashed — and check that `Collections` and `List` sent to it are not understood while `newCollections` answers a facet whose `List` answers a class. A second line of defence behind the instance being unreachable, as for `PlatformFactory`.
 - `crates/ns-runtime/src/interpreter/kernel.rs`:
-  - In `the_platform_modules_members_have_the_fast_path_they_should`, delete the `collections` class, its `assert_eq!(fast_path(&collections, "List"), None, …)` and the doc comment's sentence about `Collections>>List`.
-  - In `the_platforms_class_accessors_are_recognized_without_a_fast_path`, drop `"Collections"` from the list.
-  - Keep `"Collections"` in the list of names `Object` declares no accessor for.
+  - In `the_platform_modules_members_have_the_fast_path_they_should`, the `collections` class is now reached as `platform collections` then `class` (two sends) instead of `platform Collections`; its `List` still has no fast path (a class accessor carries none). Rewrite the doc comment's sentence: `Collections>>List` is a class accessor of `CollectionsFactory.ns`, which only the image code reads.
+  - In `the_platforms_class_accessors_are_recognized_without_a_fast_path`, drop `"Collections"` from the list, and add the facet's two, `Collections` and `List`, each `ClassAccessor { depth: 1, class_name }`, read off `platform collections class`'s application.
+  - Keep `"Collections"` in the list of names `Object` declares no accessor for, and add `"CollectionsFactory"`.
 - `crates/ns-runtime/tests/image.rs`:
-  - `a_class_the_platform_hands_out_is_named_by_its_accessor`: replace `public collectionsClass = platform Collections.` with `public listClass = platform collections List.`; the expected paths become `["Transcript", "Platform", "collections List", "KernelNamespace"]` (confirm the separator with `platform_paths::describe`, which `inspect` prints each path with); compare the stored `listClass` against `platform collections List` sent to the loading platform in two sends, instead of the `("collectionsClass", "Collections")` pair in the loop.
-  - The block in the path-refusal test that says `Collections>>List` "is no class accessor" (around line 10508): `collections List` is now a step, so replace it with the private slot, which is none:
+  - `a_class_the_platform_hands_out_is_named_by_its_accessor`: replace `public collectionsClass = platform Collections.` with `public collectionsClass = platform collections Collections.` and add `public listClass = platform collections List.` after it; the expected paths become `["Transcript", "Platform", "collections Collections", "collections List", "KernelNamespace"]` (confirm the separator with `platform_paths::describe`, which `inspect` prints each path with); compare each stored class with what the loading platform answers — the two new ones through two sends, `collections` then the accessor.
+  - The block in the path-refusal test that says `Collections>>List` "is no class accessor" (around line 10508): `collections List` is now a step, so replace it with the factory's own member, which is none of the facet's:
     ```rust
-    // The module's `kernel` slot is private, so it is no step: a path can
-    // never reach the kernel namespace the module was handed.
+    // `newCollections` is the factory's member, not the facet's, so it is
+    // no step: a path can never reach the collections factory.
     let collections = symbol_id(&report, "collections");
-    let kernel = symbol_id(&report, "kernel");
+    let new_collections = symbol_id(&report, "newCollections");
     let message = load_error(&with_platform_path_section(
         &bytes,
-        &platform_path_section(&[vec![collections, kernel]]),
+        &platform_path_section(&[vec![collections, new_collections]]),
     ));
     assert_eq!(
         message,
-        "the image names platform path `collections kernel`, whose member `kernel` is no \
-         public slot, nested class or class accessor of what the path has reached"
+        "the image names platform path `collections newCollections`, whose member \
+         `newCollections` is no public slot, nested class or class accessor of what the path \
+         has reached"
     );
     ```
-    If `kernel` is not in that image's symbol table, snapshot a source that interns it (a slot or selector named `kernel`), as the test does for the other members.
+    If `newCollections` is not in that image's symbol table, snapshot a source that interns it (a selector named `newCollections`), as the test does for the other members.
 
 - [ ] **Step 9: Update the two platform goldens (recorded outcomes unchanged)**
 
 - `goldens/kernel/the_platform_and_its_parts_are_values.ns`: replace `t show: (c List == OrderedCollection) printString; newLine` with `t show: (c List == platform class new collections List) printString; newLine`. The `.toml` stays as it is: the line still prints `true`.
-- `goldens/kernel/a_second_platform_writes_like_the_first.ns`: replace `platform transcript show: (platform Collections new = platform collections) printString; newLine.` with `platform transcript show: (second collections == platform collections) printString; newLine.`, and in its comment say that the platform hands out the module's classes by methods (`Transcript`, `Platform`, `KernelNamespace`) and its modules by lazy slots. The `.toml` stays as it is.
+- `goldens/kernel/a_second_platform_writes_like_the_first.ns`: replace `platform transcript show: (platform Collections new = platform collections) printString; newLine.` with `platform transcript show: (platform collections Collections new = second collections) printString; newLine.`, and in its comment say that the collections facet hands out its module's classes as the platform hands out its own. The `.toml` stays as it is.
 
 - [ ] **Step 10: Run the tests**
 
@@ -988,20 +974,20 @@ Expected: all pass. The round trips check that a `List` class bound in module st
 
 - [ ] **Step 11: Update the documentation**
 
-- `docs/design/README.md`: add a row for `collections/` to the goldens table: "the collections module `platform collections` answers: `List`'s protocol, its growth, its index errors, a user subclass, and one module shared by every platform".
+- `docs/design/README.md`: add a row for `collections/` to the goldens table: "the collections module behind `platform collections`: `List`'s protocol, its growth, its index errors, a user subclass, and one module shared by every platform".
 - `docs/design/core-library.md`:
-  - "The collections module (plan 2)": rewrite the `CollectionsFactory.ns` bullet as built, describing option A (the root instance is the namespace; it takes `platform kernel`, not the kernel; it is a value; `Platform>>Collections` and the nested class are gone, and why no path names the module's class), and resolve the "Open for plan 2" paragraph with that decision and its date (2026-09-28, decided with the user), citing Primordial Soup's `Runtime.ns` and SOMns's `core-lib/Platform.ns`.
+  - "The collections module (plan 2)": the `CollectionsFactory.ns` bullet becomes current state, and the "Open for plan 2" paragraph is resolved with its decision and date (2026-09-28, with the user): the facet names its own class with `^outer CollectionsFactory Collections`, as `Platform>>Platform` does, so the path is `collections Collections`, the recognition is not widened, and `Platform>>Collections` is gone. `List` is a private class of the factory, handed out by the facet's class accessor.
   - "The module table and the boot (plan 1)": the `moduleNamed:` bullets become current state — the leaf answers a root class built on every request, `PlatformFactory`'s lazy `collectionsModule` keeps it — and the table now has two entries.
-  - "The platform": the source excerpt or description of `Platform`'s members (`collections` is the module, not a `Collections new`).
-  - "What changes in the invariants": the rule is now that no program reaches the root of a shipped module that holds the mirror — `Kernel.ns`'s or `PlatformFactory.ns`'s — while `Collections.ns`'s root is handed out and sends nothing to a mirror, which a test pins.
-  - "List"'s semantics as the plan's Spec section lists them: `add:` answers the element, `at:put:` the value, `do:` reads the size once and sends `value:` to any argument, index errors carry `Array>>at:`'s text.
-- `CLAUDE.md`, "The VM mirror is a capability": "only the shipped core-library modules -- `Kernel.ns`, and `PlatformFactory.ns` from `interpreter/core_library.rs`'s table" becomes "`Kernel.ns`, and `PlatformFactory.ns` and `Collections.ns` from `interpreter/core_library.rs`'s table"; "no program reaches a shipped module's root instance or root class" becomes "no program reaches the root instance or root class of a shipped module that holds the mirror -- `Kernel.ns`'s or `PlatformFactory.ns`'s; `platform collections` hands out `Collections.ns`'s root, which holds only the platform's kernel namespace and sends nothing to a mirror, as `interpreter::core_library`'s test pins"; and the crate description at the top names `core-library/Collections.ns` beside `PlatformFactory.ns` and the `moduleNamed:` leaf.
+  - "The platform": `Platform`'s members (`collections` is the collections factory's facet, not a `Collections new` of `PlatformFactory`'s).
+  - "What changes in the invariants": `CollectionsFactory.ns` joins the modules resolved with `resolve_kernel` and whose root no program reaches.
+  - `List`'s semantics as the plan's Spec section lists them: `add:` answers the element, `at:put:` the value, `do:` reads the size once and sends `value:` to any argument, index errors carry `Array>>at:`'s text.
+- `CLAUDE.md`, "The VM mirror is a capability": "only the shipped core-library modules -- `Kernel.ns`, and `PlatformFactory.ns` from `interpreter/core_library.rs`'s table" becomes "`Kernel.ns`, and `PlatformFactory.ns` and `CollectionsFactory.ns` from `interpreter/core_library.rs`'s table"; the sentence on `PlatformFactory`'s factory pattern gains that `CollectionsFactory` is written the same way, its root held by `PlatformFactory`'s and its facet what `platform collections` answers; and the crate description at the top names `core-library/CollectionsFactory.ns` beside `PlatformFactory.ns` and the `moduleNamed:` leaf.
 
 - [ ] **Step 12: Run the per-commit gate and commit**
 
 ```bash
 git add crates/ns-runtime/core-library/ crates/ns-runtime/src/builtins/ crates/ns-runtime/src/interpreter/core_library.rs crates/ns-runtime/src/interpreter/kernel.rs crates/ns-runtime/src/platform.rs crates/ns-runtime/tests/platform.rs crates/ns-runtime/tests/image.rs goldens/collections goldens/kernel docs/design CLAUDE.md
-git commit -m "feat: platform collections is the Collections module, with a Newspeak List"
+git commit -m "feat: platform collections comes from a CollectionsFactory module with a Newspeak List"
 ```
 
 ---
@@ -1013,7 +999,7 @@ git commit -m "feat: platform collections is the Collections module, with a News
 - Modify: `docs/design/image-format.md`, `docs/design/core-library.md` ("Platform paths in the image")
 
 **Interfaces:**
-- Consumes: the paths `collections` and `collections List` (Task 3).
+- Consumes: the paths `collections`, `collections List` and `collections Collections` (Task 3).
 - Produces: tests only. No code change is expected; if one of these tests fails, the defect is in the encoder or the path discovery, and fixing it belongs to this task.
 
 - [ ] **Step 1: Write a `List` round-trip test**
@@ -1064,30 +1050,69 @@ fn a_list_is_a_record_of_its_path_named_class() {
 
 `send_to` takes a unary selector; for `at: 2`, add a send through `loaded.interpreter.send` with an integer root, as neighbouring tests do, and assert `4`.
 
-- [ ] **Step 2: Extend the refusal test with what option A leaves without a path**
+- [ ] **Step 2: Write a second-facet round-trip test**
 
-In `a_shipped_object_no_platform_path_names_is_refused`, before the `interpreter.enter`, fetch through host sends `platform collections`, its `class`, `platform kernel`, and a second module instance `interpreter.instantiate(&collections_class, &[kernel_namespace])`; add two rows to the loop:
+```rust
+/// A facet a program makes itself from `platform collections class` is an
+/// ordinary record of the class the path `collections Collections` names,
+/// and after a load it is equal to the loading platform's facet: a value.
+#[test]
+fn a_second_collections_facet_is_a_record_of_its_path_named_class() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder usingPlatform: platform = Object new (
+            | public facet = platform collections class new. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report.platform_paths.contains(&"collections Collections".to_string()),
+        "the facet's class is named by its path: {:?}",
+        report.platform_paths
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let facet = send_to(&mut loaded, &instance, "facet");
+    let list = send_to(&mut loaded, &facet, "List");
+    let platform = loaded.interpreter.platform();
+    let collections = send_to(&mut loaded, &platform, "collections");
+    let fresh_list = send_to(&mut loaded, &collections, "List");
+    assert!(
+        same_object(&mut loaded, &list, &fresh_list),
+        "the loaded facet hands out the loading platform's List"
+    );
+}
+```
+
+If `platform collections class new`'s class is reached before any accessor has filled the factory's nested-class slot, discovery skips it and the encoder refuses the image: then this test has found a real defect in the path discovery for a facet class reached by `class`, and fixing it (discovery reading the class of a path-named instance, or the facet's slot being filled whenever the facet exists) belongs to this task.
+
+- [ ] **Step 3: Extend the refusal test with the factory**
+
+In `a_shipped_object_no_platform_path_names_is_refused`, before the `interpreter.enter`, fetch through host sends `platform collections` and its `class`; inside, take `heap.class_enclosing` of that class — the `CollectionsFactory` instance — and its class, and add two rows to the loop:
 
 ```rust
             (
-                collections_class,
-                "image encoding refuses the class object Collections: it is compiled from \
-                 shipped source, and no platform path names it",
+                collections_factory,
+                "image encoding refuses a module instance of CollectionsFactory: it holds the \
+                 core library's state, and no platform path names it",
             ),
             (
-                second_module,
-                "image encoding refuses a module instance of Collections: it holds the core \
-                 library's state, and no platform path names it",
+                collections_factory_class,
+                "image encoding refuses the class object CollectionsFactory: it is compiled from \
+                 shipped source, and no platform path names it",
             ),
 ```
 
-and rewrite the doc comment: the module's class has no path because option A gives the platform no accessor for it, and a module a program built itself is not the platform's; both are refused rather than written field by field.
+and extend the doc comment: the collections factory is the second such module, reached here only because a host can walk a class's enclosing object, which no program can.
 
-- [ ] **Step 3: Retarget the hash-table test that relied on a builtin `List`**
+- [ ] **Step 4: Retarget the hash-table test that relied on a builtin `List`**
 
 `an_object_reached_twice_is_listed_once_in_the_hash_table` rested on `collections List` answering the builtin `OrderedCollection`. No path answers a builtin now, but `encode_tag_named_hashes` must still list an object once however it is reached. Hand it the builtin `Array` class as the path-named object directly (the function takes the list of path-named objects; it does not discover them), replace every `OrderedCollection` in the test with `Array`, and rewrite the doc comment accordingly: "No platform path answers a builtin class today; the table must still list one once if a path ever does, so this hands the encoder `Array` as a path-named object …". Drop the `platform collections` / `List` sends, which the test no longer needs.
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 5: Run the tests**
 
 ```bash
 cargo nextest run -p ns-runtime --test image
@@ -1095,16 +1120,16 @@ cargo nextest run -p ns-runtime --test image
 
 Expected: all pass.
 
-- [ ] **Step 5: Update the documentation**
+- [ ] **Step 6: Update the documentation**
 
-- `docs/design/image-format.md`: the platform path section's examples (`collections`, `collections List`), and the sentence at line 895 that cites `^OrderedCollection` as no class accessor — replace it with what is true now (`collections List` is a nested class accessor step; the module's private `kernel` is no step).
-- `docs/design/core-library.md`, "Platform paths in the image": the paths the platform offers, and that the module's class and a program-built module instance have none and are refused.
+- `docs/design/image-format.md`: the platform path section's examples (`collections`, `collections List`, `collections Collections`), and the sentence at line 895 that cites `^OrderedCollection` as no class accessor — replace it with what is true now (`collections List` is a class accessor step of the facet; the factory's `newCollections` is no step).
+- `docs/design/core-library.md`, "Platform paths in the image": the paths the collections facet offers, and that the factory instance and class have none and are refused.
 
-- [ ] **Step 6: Run the per-commit gate and commit**
+- [ ] **Step 7: Run the per-commit gate and commit**
 
 ```bash
 git add crates/ns-runtime/tests/image.rs docs/design/image-format.md docs/design/core-library.md
-git commit -m "test: a List round-trips through an image and the module's class is refused"
+git commit -m "test: a List and a second collections facet round-trip through an image"
 ```
 
 ---
@@ -1197,7 +1222,7 @@ git commit -m "test: programs build growable sequences with platform collections
 
 - [ ] **Step 1: Change the tests and the golden to what the removal makes true**
 
-- `tests/opcode_tags.rs`, `builtin_class_tags_are_fixed`: delete the `OrderedCollection` line; the retired assertion becomes `assert_eq!(RETIRED_BUILTIN_CLASS_TAGS, [8, 10, 13, 18, 19, 29]);`, with a comment line: "10 was `OrderedCollection`, retired 2026-09-28 when `platform collections List`, Newspeak in the shipped `Collections.ns`, replaced it."
+- `tests/opcode_tags.rs`, `builtin_class_tags_are_fixed`: delete the `OrderedCollection` line; the retired assertion becomes `assert_eq!(RETIRED_BUILTIN_CLASS_TAGS, [8, 10, 13, 18, 19, 29]);`, with a comment line: "10 was `OrderedCollection`, retired 2026-09-28 when `platform collections List`, Newspeak in the shipped `CollectionsFactory.ns`, replaced it."
 - `tests/image.rs`, `every_builtin_class_tag_round_trips`: delete `BuiltinClass::OrderedCollection` from the list.
 - `tests/platform.rs`, `platform_class_accessors_return_the_matching_builtin_class`: delete the `("OrderedCollection", …)` row.
 - `tests/builtins_collections_block.rs`: delete `new_ordered_collection` and the three `ordered_collection_*` tests; the module doc speaks of `Array`'s leaves only.
@@ -1224,7 +1249,7 @@ Expected: `builtin_class_tags_are_fixed` fails on the retired list, since tag 10
 - `src/interpreter/kernel.rs`: delete its name mapping.
 - `src/interpreter/instantiate.rs`, `decide_factory`: the arm is `Some(BuiltinClass::Array) => …`; rewrite the comment above it for `Array` alone.
 - `src/interpreter/nested.rs`: the two doc comments that name `OrderedCollection` as a builtin with its own payload name `Array` alone.
-- `src/builtins/collections.rs`: delete `add`, its arm and every mention of `OrderedCollection`, including the module's design note, which becomes: "`Array`'s leaves. An `Array` is fixed-size once made -- `new:` sizes it, a literal fills it -- and nothing grows a payload in place; the growable sequence is `List`, Newspeak in `Collections.ns`, over arrays it replaces when full."
+- `src/builtins/collections.rs`: delete `add`, its arm and every mention of `OrderedCollection`, including the module's design note, which becomes: "`Array`'s leaves. An `Array` is fixed-size once made -- `new:` sizes it, a literal fills it -- and nothing grows a payload in place; the growable sequence is `List`, Newspeak in `CollectionsFactory.ns`, over arrays it replaces when full."
 - `src/builtins/primitive.rs`: delete `CollectionPrimitive::Add` and the `collection:add:ifFail:` row; rewrite the doc comments on `CollectionPrimitive` and `MIRROR`: the rows are `Array`'s; and replace "Appended, so no row above moves ("A wire tag is assigned once", `CLAUDE.md`)" with the reason that holds: "A row's index never reaches an artifact -- `SendMirror` has no wire tag and a decoded method carries no fast path -- so a row may be removed; new rows are appended all the same, so a diff shows what was added."
 - `src/heap.rs`: delete `array_push`.
 - `src/image/encode.rs`: delete the `OrderedCollection => 10` arm. `src/image/decode.rs`: delete the `10 =>` arm. `src/image/opcodes.rs`: `RETIRED_BUILTIN_CLASS_TAGS: [u8; 6] = [8, 10, 13, 18, 19, 29]`, and its doc comment names 10 as `OrderedCollection`, retired 2026-09-28.
@@ -1309,7 +1334,7 @@ Expected: every stress mode's summary shows no failure; `run-corpus` reports `ra
 
 In `docs/PROGRESS.md`:
 
-- Add an entry "The collections module is done (2026-09-28)" beside the platform module's, in the same style: option A and its prior art, `moduleNamed:`, `Array new:`, `List`, the handler search, the removal with tag 10 retired, the one golden whose output changed and why, and the measurement's result, linking this plan and the design sections.
+- Add an entry "The collections module is done (2026-09-28)" beside the platform module's, in the same style: the factory pattern and the facet's own class accessor, `moduleNamed:`, `Array new:`, `List`, the handler search, the removal with tag 10 retired, the one golden whose output changed and why, and the measurement's result, linking this plan and the design sections.
 - In "Where the next session starts", replace the paragraph that says the next piece of work is the collections module; step 7, the payload space, is now unblocked (no payload grows in place), and the "Noted for later" items stay as they are.
 
 - [ ] **Step 5: Commit**
