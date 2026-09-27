@@ -90,6 +90,19 @@ where `show: 42` used to write nothing; `print:` writes any object's
 `goldens/kernel/the_transcript_prints_any_object` and
 `goldens/errors/show_of_something_that_is_no_string_is_an_error` pin both.
 
+**The test harness was reworked** (2026-09-27, decided with the user;
+`CLAUDE.md`, "Working in this repository"; [README.md](design/README.md),
+"The goldens" and "Gates"; [compiler.md](design/compiler.md), "The
+harness"): the suites run under `cargo-nextest`, with `cargo test --doc`
+beside it for the doctests; every golden is a test of its own, and so is
+each of its build/load and snapshot/load round trips
+(`crates/ns-cli/tests/run_goldens.rs`, `golden_round_trips.rs`, on
+`libtest-mimic`); a test whose two lowerings are independent is written once
+with `ns_runtime::for_each_lowering!` and runs as one test per lowering;
+debug builds compile at `opt-level = 1`; and the end-of-batch gate runs the
+three stress modes at once. The normal suite went from about 47 s to 16 s,
+the three stress modes from about 48 minutes to under 4.
+
 **The next piece of work is the collections module** (plan 2 of
 [core-library.md](design/core-library.md), "Planned: the platform and
 collections as core-library modules"), written in the factory pattern: the

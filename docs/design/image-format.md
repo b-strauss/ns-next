@@ -1059,7 +1059,8 @@ in the runtime needs to know it was invoked from a terminal.
 
 **Tests**, in order of importance: `build` then `load` reproduces
 `run`'s stdout, stderr and exit status byte for byte
-(`every_golden_runs_identically_from_source_and_from_a_binary`); `build` and
+(`crates/ns-cli/tests/golden_round_trips.rs`, one test per golden and
+lowering, `build_load::<lowering>::<category>/<name>`); `build` and
 `snapshot` agree on the describing sections' bytes
 (`a_build_and_a_snapshot_agree_on_the_describing_sections`); `run-corpus`
 carries a third lane that builds and loads each whitelisted entry, where a
