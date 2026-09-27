@@ -10487,14 +10487,28 @@ fn a_platform_path_the_loader_cannot_follow_is_refused() {
         &bytes,
         &platform_path_section(&[too_long]),
     ));
-    assert!(message.contains("members"), "{message}");
+    assert_eq!(
+        message,
+        format!(
+            "a platform path in the image has {} members, but a path has between 1 and {} members",
+            image::platform_paths::MAX_PLATFORM_PATH_LENGTH + 1,
+            image::platform_paths::MAX_PLATFORM_PATH_LENGTH
+        )
+    );
 
     let mut too_many = encode::Writer::new();
     too_many.write_u32(
         u32::try_from(image::platform_paths::MAX_PLATFORM_PATHS + 1).expect("fits a u32"),
     );
     let message = load_error(&with_platform_path_section(&bytes, &too_many.into_bytes()));
-    assert!(message.contains("platform paths"), "{message}");
+    assert_eq!(
+        message,
+        format!(
+            "the image lists {} platform paths, more than the {} a loader follows",
+            image::platform_paths::MAX_PLATFORM_PATHS + 1,
+            image::platform_paths::MAX_PLATFORM_PATHS
+        )
+    );
 
     let message = load_error(&with_platform_path_section(
         &bytes,
