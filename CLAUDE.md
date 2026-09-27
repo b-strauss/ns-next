@@ -368,7 +368,9 @@ of every binary in parallel, one process each, where `cargo test` runs the
 binaries one after another; the goldens are one test each
 (`crates/ns-cli/tests/run_goldens.rs`, `golden_round_trips.rs`, on
 `libtest-mimic`), so they spread across the cores too. A stress mode measured
-219 s under nextest against 947 s under `cargo test`. Nextest runs no
+219 s under nextest against 947 s under `cargo test`, and 141 s once debug
+builds compile at `opt-level = 1` (`Cargo.toml`, `[profile.dev]`), which keeps
+`debug_assertions` and so every stress mode. Nextest runs no
 doctests, and three `compile_fail` doctests pin the brand on
 `Interpreter::enter`, so `cargo test --doc` runs beside it.
 

@@ -33,6 +33,14 @@ libtest-mimic = "0.8"
 # `opt-level = "z"` and `panic = "abort"` shrink the binary further and are deliberately
 # not set: the first trades away this project's first-order concern, and the second
 # changes behaviour on panic (no unwinding, no `Drop`) and breaks `cargo test --release`.
+# Debug builds at `opt-level = 1`: the suite is dominated by the interpreter
+# running Newspeak, which unoptimized code runs several times slower -- the
+# suite under nextest measured 16 s against 47 s, a stress mode 141 s against
+# 219 s. Nothing a debug build checks is lost: `debug_assertions`, overflow
+# checks and with them every stress mode stay on, and debug information stays.
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
