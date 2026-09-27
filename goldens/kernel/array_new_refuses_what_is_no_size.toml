@@ -1,0 +1,5 @@
+stdout = '''
+new: requires a size of at least 0, got -1
+new: requires an Integer size, got the String "three"
+new: cannot allocate an Array of 9223372036854775807 elements
+'''

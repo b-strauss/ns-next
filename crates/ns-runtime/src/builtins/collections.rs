@@ -138,6 +138,53 @@ fn add<'gc>(
     Some(Ok(value))
 }
 
+/// `Array new: size`: an array of `size` `nil`s. Its subject is the class
+/// the forwarder runs in, which is only ever `Array` itself -- §3.2's
+/// metaclasses are flat, so no subclass inherits `new:` -- and anything
+/// else declines. A size that cannot be allocated is an error, found with
+/// `try_reserve_exact` before anything is filled, never a Rust allocation
+/// abort: the size is the program's, and an abort is not catchable.
+fn allocate<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let Value::Object(class) = receiver else {
+        return None;
+    };
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::Array) {
+        return None;
+    }
+    let refusal = |message: String| NewspeakError {
+        selector,
+        receiver,
+        message,
+    };
+    let size = match arguments.first() {
+        Some(Value::SmallInteger(size)) => *size,
+        other => {
+            return Some(Err(refusal(format!(
+                "{selector} requires an Integer size, got {}",
+                mutator.heap.describe_argument(other)
+            ))))
+        }
+    };
+    let Ok(length) = usize::try_from(size) else {
+        return Some(Err(refusal(format!(
+            "{selector} requires a size of at least 0, got {size}"
+        ))));
+    };
+    let mut elements: Vec<Value<'gc>> = Vec::new();
+    if elements.try_reserve_exact(length).is_err() {
+        return Some(Err(refusal(format!(
+            "{selector} cannot allocate an Array of {size} elements"
+        ))));
+    }
+    elements.resize(length, Value::Nil);
+    Some(Ok(Value::Object(mutator.new_array(elements))))
+}
+
 /// Lifts a leaf's result into the step it is, so `execute`'s leaf arms don't
 /// each repeat the wrapping.
 fn leaf_step<'gc>(
@@ -167,6 +214,9 @@ pub(crate) fn execute<'gc>(
             leaf_step(element_at_put(mutator, receiver, selector, arguments))
         }
         CollectionPrimitive::Add => leaf_step(add(mutator, receiver, arguments)),
+        CollectionPrimitive::Allocate => {
+            leaf_step(allocate(mutator, receiver, selector, arguments))
+        }
     }
 }
 

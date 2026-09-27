@@ -1,0 +1,18 @@
+Newspeak3
+'Kernel'
+(* `Array new: size` answers an array of `size` nils, which `at:put:`
+   fills (docs/design/core-library.md, "The collections module"). `Array
+   new` is `Array new: 0`. *)
+class ArrayNewAnswersAnArrayOfNils usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript. |
+) (
+    public main: platform args: arguments = (
+        | sized |
+        sized:: Array new: 3.
+        transcript show: sized size printString; newLine.
+        transcript show: (sized at: 1) printString; show: ' '; show: (sized at: 3) printString; newLine.
+        sized at: 2 put: 42.
+        transcript show: (sized at: 2) printString; newLine.
+        transcript show: (Array new: 0) size printString; show: ' '; show: Array new size printString; newLine
+    )
+) : ()

@@ -488,6 +488,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public at: index put: value = ( ^vmMirror collection: self at: index put: value ifFail: [^super at: index put: value] )
         public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
+    ) : (
+        (* A sized array of nils, which `List` grows into and the handler
+           search fills. The leaf declines only a subject that is not `Array`
+           itself, which a flat class side cannot be sent from. *)
+        public new: size = ( ^vmMirror arrayClass: self new: size ifFail: [nil] )
     )
     public class OrderedCollection = Object new () (
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )

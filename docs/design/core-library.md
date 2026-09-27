@@ -1539,8 +1539,11 @@ and caught twenty activations up costs about 6.4 µs.
 2026-09-26, in two plans, each ending with every gate green. Plan 1 is
 built (2026-09-26): lazy slots, the table of shipped modules and the
 platform's boot, and platform paths in the image ("The platform" above
-describes what exists). Plan 2, the collections module, is not built; it
-is the next piece of work.** `Kernel.ns` is to hold only what the VM
+describes what exists). Plan 2, the collections module, is under way:
+`Array new: size` is built ("The collections module (plan 2)" below); the
+rest -- `moduleNamed:`, `CollectionsFactory.ns` with a Newspeak `List`, the
+handler search and the `OrderedCollection` removal -- is the next piece of
+work.** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
@@ -1792,9 +1795,18 @@ its class. That needs its own decision when the first such module arrives.
 
 #### The collections module (plan 2)
 
-- **`Array new: size`**, a new leaf answering an array of `size` `nil`s;
-  `Array new` stays, meaning `new: 0`. Nothing makes a sized array today,
-  and a `List` over a fixed array needs one.
+- **`Array new: size`**, a leaf answering an array of `size` `nil`s,
+  **built**: a class-side forwarder on `Array` (`Kernel.ns`) reaches the
+  mirror row `arrayClass:new:ifFail:`, reported selector `new:`
+  (`CollectionPrimitive::Allocate`). `Array new` stays, meaning `new: 0`. A
+  negative size or a non-`Integer` size is an ordinary `Error`
+  ("`new:` requires a size of at least 0, got …" / "… requires an Integer
+  size, got …"), and a size that cannot be allocated is one too ("…
+  cannot allocate an Array of … elements") — found with
+  `Vec::try_reserve_exact` before anything is filled, never a Rust
+  allocation abort, since the size is the program's and an abort is not
+  catchable. A `List` over a fixed array needs a sized array; this is what
+  it grows into.
 - **`CollectionsFactory.ns`**, in the factory pattern ("The platform"
   above): `class CollectionsFactory usingKernel: kernelModule = Object <:
   Value`, a root that holds the kernel and is never handed out, with the

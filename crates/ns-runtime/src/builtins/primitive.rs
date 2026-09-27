@@ -122,6 +122,8 @@ pub enum CollectionPrimitive {
     ElementAt,
     ElementAtPut,
     Add,
+    /// `Array new: size`, on `Array`'s class side.
+    Allocate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -604,6 +606,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         "message:sendTo:ifFail:",
         "sentTo:",
         Primitive::Message(MessagePrimitive::SendTo),
+    ),
+    mirror(
+        "arrayClass:new:ifFail:",
+        "new:",
+        Primitive::Collection(CollectionPrimitive::Allocate),
     ),
 ];
 

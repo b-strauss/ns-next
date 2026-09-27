@@ -1193,6 +1193,37 @@ mod tests {
         });
     }
 
+    /// `Array new:` is a class-side mirror forwarder, so a send of it runs
+    /// the leaf with no activation. The handler search depends on that: it
+    /// sends `Array new:` on every handled exception, and one activation
+    /// more per search would move where the depth limit's goldens overflow.
+    #[test]
+    fn array_new_is_a_mirror_forwarder() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let array = mutator.builtin_class(BuiltinClass::Array);
+            let metaclass = mutator
+                .heap()
+                .class_metaclass(array)
+                .expect("Array has a metaclass");
+            let application = mutator
+                .heap()
+                .class_application(metaclass)
+                .expect("a metaclass has an application");
+            let method = application
+                .mixin
+                .compiled_method(crate::Symbol::intern("new:"))
+                .expect("Array's class side declares new:")
+                .clone();
+            let row = crate::builtins::primitive::mirror_primitive_named("arrayClass:new:ifFail:")
+                .expect("the row exists");
+            assert_eq!(
+                method.fast_path,
+                Some(crate::mixin::MethodFastPath::Mirror(row))
+            );
+        });
+    }
+
     /// The platform hands out its module's classes by methods the compiler
     /// recognizes as class accessors (`MixinMethod::class_accessor`), which
     /// only the image code reads: none carries a fast path, so no send pays
