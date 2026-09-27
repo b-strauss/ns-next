@@ -245,6 +245,20 @@ A pattern literal (§5.1.9) is parsed in full and kept as its source text,
 but lowers to **nil**: the section makes `<_>` `Pattern wildcard` and `<l>`
 `Pattern literal: l`, and there is no `Pattern` class for either to reach.
 
+**Planned (noted with the user on 2026-09-28): lower a pattern literal to
+the send §5.1.9 defines.** `<_>` becomes `Pattern wildcard`, `<l>` becomes
+`Pattern literal: l`, and a keyword pattern `<x: 1 y: ?z>` becomes
+`Pattern keywords: kws patterns: pats`, with `kws` the list of its keyword
+symbols and `pats` the list of its values -- `_`, a literal, a `?name`
+variable pattern or a nested pattern, each lowered the same way. `Pattern` is
+an implicit-receiver send, so whatever the environment binds it to answers:
+by default `Object`'s accessor to the library's class, and until a library
+provides one, a clean `doesNotUnderstand: #Pattern` instead of a silent
+`nil`. This needs a pattern AST in place of today's source text, which
+`parse_pattern_literal` already walks; the library side has prior art in the
+corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
+Closing it retires the deviations-table row.
+
 Three of the things dropped here change what a correct program answers,
 rather than only what an incorrect one is allowed to say. Each has a row in
 [README.md](README.md)'s deviations table; this section is what those rows
