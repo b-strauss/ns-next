@@ -217,26 +217,41 @@ pub enum Instruction {
         index: u16,
         source: u16,
     },
-    /// Writes `self`'s instance field at `frame.slot_base + own_index` --
-    /// emitted only by instance-initializer compilation for a slot's own
-    /// initializer expression. `own_index` is the slot's position among the
+    /// Writes `self`'s instance field at the activation's slot base plus
+    /// `own_index` -- emitted by instance-initializer compilation for a
+    /// slot's own initializer expression, and by a lazy slot's getter
+    /// (§6.3.3). `own_index` is the slot's position among the
     /// *mixin's own* slots (declaration order), never an absolute field
     /// index: the compiled initializer is shared by every application of
     /// its mixin (it lives on the mixin, not on a class object -- §6.2),
     /// and different applications legitimately have
     /// different absolute offsets for the same mixin's own slots depending
     /// on how many slots their own superclass contributes. The VM
-    /// resolves the absolute index at run time via `frame.slot_base`, which
-    /// is fixed when that level's activation is pushed, from the slot base
-    /// `Mutator::initializer_body` finds: that level's own
-    /// `MixinApplication.own_slot_base` -- one frame per level, so a frame's
-    /// base never describes a level other than its own. Still the one
-    /// layout-dependent instruction (a class-shape-change flush must
+    /// resolves the absolute index at run time via the activation's slot
+    /// base (`Heap::activation_slot_base`): the own
+    /// `MixinApplication.own_slot_base` of its `current_class`, which is the
+    /// level an initializer activation initializes -- one activation per
+    /// level, so a base never describes a level other than its own -- and a
+    /// lazy slot's getter's defining class. With `ReturnSlotIfFilled`, one of
+    /// the two layout-dependent instructions (a class-shape-change flush must
     /// invalidate compiled initializers: `docs/design/liveness-and-reflection.md`,
     /// "Caches and their dependency keys") -- layout-dependent on the
     /// mixin's own slot order, not on the whole hierarchy's.
     InitializeSlot {
         source: u16,
+        own_index: u32,
+    },
+    /// A lazy slot's getter's first instruction (§6.3.3): reads `self`'s
+    /// field at the activation's slot base plus `own_index`, as
+    /// `InitializeSlot` addresses it, and returns it from the method when it
+    /// holds anything but `nil`; falls through to the initializer when it
+    /// holds `nil`, which §6.3.3 reads as "not yet computed". A filled read
+    /// therefore costs an activation. It was a `MethodFastPath` answered
+    /// without one, but that arm, inlined into every send site of the run
+    /// loop, taxed every method send for a rare feature
+    /// (`docs/design/execution.md`, "What the platform module cost"); an
+    /// instruction costs nothing to a send that never runs it.
+    ReturnSlotIfFilled {
         own_index: u32,
     },
     /// A method or initializer body's `^`.
@@ -680,6 +695,9 @@ fn format_instruction(instruction: &Instruction) -> String {
         } => format!("StoreVector r{vector}[{index}] <- r{source}"),
         Instruction::InitializeSlot { source, own_index } => {
             format!("InitSlot own {own_index} <- r{source}")
+        }
+        Instruction::ReturnSlotIfFilled { own_index } => {
+            format!("ReturnSlotIfFilled own {own_index}")
         }
         Instruction::Return { register } => format!("Return r{register}"),
         Instruction::ImplicitReturn { register } => format!("ImplicitReturn r{register}"),

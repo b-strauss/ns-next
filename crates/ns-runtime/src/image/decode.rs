@@ -1523,6 +1523,7 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
         } => vec![*destination, *vector],
         Instruction::StoreVector { vector, source, .. } => vec![*vector, *source],
         Instruction::InitializeSlot { source, .. } => vec![*source],
+        Instruction::ReturnSlotIfFilled { .. } => vec![],
         Instruction::Return { register }
         | Instruction::ImplicitReturn { register }
         | Instruction::NonLocalReturn { register }
@@ -1567,6 +1568,7 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::LoadVector { .. }
         | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. } => None,
@@ -1895,6 +1897,9 @@ fn decode_instruction(
                 own_index: reader.read_u32()?,
             }
         }
+        OPCODE_RETURN_SLOT_IF_FILLED => Instruction::ReturnSlotIfFilled {
+            own_index: reader.read_u32()?,
+        },
         OPCODE_RETURN => Instruction::Return {
             register: reader.read_u16()?,
         },
@@ -2446,7 +2451,6 @@ fn decode_frame<'gc>(
         // Nothing re-activates a decoded frame (this module's doc comment,
         // below), so no compiled `InitializeSlot` ever reads this on a frame
         // that came off the wire.
-        slot_base: 0,
     })
 }
 
@@ -2463,7 +2467,6 @@ fn placeholder_frame<'gc>() -> Frame<'gc> {
         current_class: None,
         kind: FrameKind::TopLevel,
         uncontinuable: false,
-        slot_base: 0,
     }
 }
 

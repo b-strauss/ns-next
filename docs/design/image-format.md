@@ -216,7 +216,8 @@ Instructions:
 - 12 `MakeArray`: creates an array from the values of a list of registers, for a
   `{ ... }` expression.
 - 13 `InitializeSlot`: writes the initial value of one of the running mixin's
-  own slots into `self`; emitted only in instance initializers.
+  own slots into `self`; emitted in instance initializers and in lazy slots'
+  getters.
 - 14 `Return`: returns a register's value from the running method or
   initializer, a `^` outside a block.
 - 15 `ImplicitReturn`: returns from a body that fell off its end, `self` from a
@@ -258,8 +259,12 @@ Instructions:
   not an instruction tag -- assigned once and never renumbered or reused by
   the same rule, but nine values wide rather than one, since nothing outside
   `lower_integer_binary` and the VM arm ever reads it standalone.
+- 34 `ReturnSlotIfFilled`: a lazy slot's getter's first instruction
+  (§6.3.3), its `own_index` a `u32`: returns `self`'s own slot at that index,
+  addressed as `InitializeSlot` addresses it, when it holds anything but
+  `nil`, and otherwise falls through to the initializer.
 
-The next free instruction number is 34. A send's `CallSite` -- its number
+The next free instruction number is 35. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see
@@ -336,9 +341,10 @@ tags the record carried before lazy slots. The accessors themselves are not
 written: the decoder derives them from the slots, as building a mixin from
 source does. A lazy slot's getter is the exception: it carries the
 initializer's compiled body, so it is written as one of the row's compiled
-methods, and the decoder restores its `MethodFastPath::LazySlot` from the slot
-record -- a row whose lazy slot has no unary method of its name and
-accessibility among its methods is refused (`LazySlotWithoutGetter`). A mutable
+methods -- a body that opens with `ReturnSlotIfFilled` (tag 34) and carries no
+fast path, so the decoder restores nothing from the slot record for it -- and
+a row whose lazy slot has no unary method of its name and accessibility among
+its methods is refused (`LazySlotWithoutGetter`). A mutable
 lazy slot's setter is derived like any other. A row in which two members would
 share a name — a compiled method, an eager slot's getter, a mutable slot's
 setter, a nested declaration — is refused before any mixin is built, so a
@@ -594,13 +600,14 @@ legitimately register-less frame from a crafted one. It is the same class as
 the `own_index` gap below — wrong but safe output from a mutated program,
 never a panic.
 
-**`Instruction::InitializeSlot`'s `own_index` is not one of the counts these passes
-bound.** `verify_mixins` checks a body's kind and arity against its
-declaration, but nothing checks that a slot-store instruction's index falls
-within the mixin's own slot count. This is harmless at run time:
-`Heap::set_instance_field` is total, so an out-of-range index writes nothing,
-and an in-range but wrong one writes a different slot of the instance being
-initialized — silently wrong output, never a panic. That is acceptable for
+**`Instruction::InitializeSlot`'s and `ReturnSlotIfFilled`'s `own_index` is not
+one of the counts these passes bound.** `verify_mixins` checks a body's kind and
+arity against its declaration, but nothing checks that a slot instruction's
+index falls within the mixin's own slot count. This is harmless at run time:
+`Heap::set_instance_field` and `Heap::instance_field` are total, so an
+out-of-range index writes nothing and reads as an empty slot, and an in-range
+but wrong one writes or reads a different slot of the instance -- silently
+wrong output, never a panic. That is acceptable for
 the reason `CLAUDE.md`'s "An image is untrusted input" gives: loading a
 stateless binary already runs its own code, with the same exposure as running
 the equivalent source, so a wrong slot from a malformed index is no worse

@@ -136,6 +136,26 @@ fn vector_error<'gc>(vector: Value<'gc>) -> Signal<'gc> {
     })
 }
 
+/// The value of the running activation's receiver's own slot `own_index`
+/// -- addressed as `Instruction::InitializeSlot` addresses it, from the
+/// activation's slot base (`Heap::activation_slot_base`) -- when it holds
+/// anything but `nil`. `None` for `nil`, a lazy slot not yet computed
+/// (§6.3.3), and for a receiver or index with no such field, both of which
+/// run the getter's initializer: `vm::execute`'s
+/// `Instruction::ReturnSlotIfFilled` arm.
+pub(crate) fn filled_own_slot<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    own_index: u32,
+) -> Option<Value<'gc>> {
+    let Value::Object(object) = heap.activation_receiver(activation) else {
+        return None;
+    };
+    let base = heap.activation_slot_base(activation);
+    heap.instance_field(object, base + own_index as usize)
+        .filter(|value| !matches!(value, Value::Nil))
+}
+
 /// Writes `value` into instance field `index` on `instance`'s
 /// `ObjectData::Instance` fields -- silently skipped when `instance` is not an
 /// object, or is an object with some other `ObjectData` shape, or `index` is

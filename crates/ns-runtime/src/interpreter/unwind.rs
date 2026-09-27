@@ -550,7 +550,6 @@ mod tests {
             receiver: Value::Nil,
             current_class: Some(class),
             kind: FrameKind::SuperclassClause(class),
-            slot_base: 0,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,

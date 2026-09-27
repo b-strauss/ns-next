@@ -29,8 +29,8 @@ use ns_syntax::Span;
 use crate::bytecode::CompiledCode;
 use crate::heap::Heap;
 use crate::mixin::{
-    mixin_key, slot_accessors, Factory, MethodEntry, MethodFastPath, Mixin, MixinApplicationClause,
-    MixinMethod, MixinSlot, SuperclassClause,
+    mixin_key, slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod,
+    MixinSlot, SuperclassClause,
 };
 use crate::types::ClassReference;
 use crate::Symbol;
@@ -669,9 +669,9 @@ fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// getter is not derived from the slot record the way an accessor is -- it
 /// carries the initializer's compiled body -- so a row without one would
 /// decode into a slot no send can read, and a row whose method of that name
-/// takes an argument would give `build` a `LazySlot` fast path for a method
-/// that is not a getter. Runs after `check_member_names`, so the method is
-/// the only member of that name.
+/// takes an argument or has another accessibility would leave the slot
+/// without the getter §6.3.3 gives it. Runs after `check_member_names`, so
+/// the method is the only member of that name.
 ///
 /// Through a map rather than a scan of the methods per slot, because both
 /// counts are the image's to choose: a scan would make the check quadratic
@@ -792,19 +792,6 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
         // `check_member_names` proved no compiled method shares a selector
         // with an accessor, so neither overwrites the other.
         let accessors = slot_accessors(&slots);
-        // Each lazy slot's name and its position among the row's own slots,
-        // the `own_index` its getter's fast path reads the field at.
-        let lazy_slot_positions: HashMap<Symbol, u32> = slots
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| slot.lazy)
-            .map(|(position, slot)| {
-                (
-                    slot.name,
-                    u32::try_from(position).expect("a slot count read as a u32 fits a u32"),
-                )
-            })
-            .collect();
         // §6.3: a row another row names as its class side is a metaclass
         // mixin, and carries that declaration's primary factory as an entry
         // of its method table. `check_member_names` proved the row declares
@@ -828,13 +815,9 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
                         code: code_at(id),
                         // An image never carries a kernel method: the
                         // kernel is compiled from `Kernel.ns` at bootstrap.
-                        // The one fast path a decoded method takes is a
-                        // lazy slot's getter's, restored from the slot
-                        // record -- `check_lazy_slot_getters` proved the
-                        // method of the slot's name is its getter.
-                        fast_path: lazy_slot_positions
-                            .get(&selector)
-                            .map(|&own_index| MethodFastPath::LazySlot { own_index }),
+                        // A lazy slot's getter needs none either: its body
+                        // answers the filled slot (`ReturnSlotIfFilled`).
+                        fast_path: None,
                     })),
                 )
             });

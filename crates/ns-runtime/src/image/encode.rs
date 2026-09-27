@@ -649,6 +649,10 @@ fn encode_instruction(
             writer.write_u16(*index);
             writer.write_u16(*source);
         }
+        Instruction::ReturnSlotIfFilled { own_index } => {
+            writer.write_u8(OPCODE_RETURN_SLOT_IF_FILLED);
+            writer.write_u32(*own_index);
+        }
         Instruction::InitializeSlot { source, own_index } => {
             writer.write_u8(OPCODE_INITIALIZE_SLOT);
             writer.write_u16(*source);

@@ -446,11 +446,21 @@ getter has to evaluate the initializer while the slot holds `nil`, so
 `mixin::slot_accessors` gives a lazy slot no getter entry, and
 `interpreter::instantiate::build_methods` compiles one
 (`compiler::compile_lazy_slot_getter`, `MixinMethod::lazy_slot_getter`) whose
-body evaluates the initializer, stores it with `InitializeSlot` and returns
-it. Its `fast_path` is `MethodFastPath::LazySlot { own_index }` ("Primitive
-methods" below): a send answers a filled slot without an activation, as an
-accessor would, and activates the getter only while the slot is empty. A
-mutable lazy slot's setter is an ordinary accessor entry.
+body opens with `Instruction::ReturnSlotIfFilled`, which returns the field
+when it holds anything but `nil`, and otherwise evaluates the initializer,
+stores it with `InitializeSlot` and returns it. Both instructions address
+the field from the activation's slot base, its `current_class`'s own
+`own_slot_base` (`Heap::activation_slot_base`) -- the getter's defining
+class, as an initializer's is the level it initializes. The getter has no
+fast path: every send of it, filled or not, activates it. A
+`MethodFastPath::LazySlot` once answered a filled slot without an
+activation, as an accessor does, but its arm sat in `act_with_base`, which
+is inlined into every send site of the run loop, and cost every method send
+2.6-4.6% on `bench_send.ns` and `bench_block.ns` for a feature almost no
+send reaches; moving its body out of line, and taking the slot base off the
+activation, did not recover it, and dropping the arm did
+([execution.md](execution.md), "What the platform module cost"). A mutable
+lazy slot's setter is an ordinary accessor entry.
 
 ## Primitives
 
@@ -595,16 +605,12 @@ variants:
   method except when that argument is no closure
   ([core-library.md](core-library.md), "`True` and `False` are quick
   methods", "The nil protocol").
-- `LazySlot { own_index }` — the method is a lazy slot's getter ("Slot
-  accessors" above): a send reads the field at the defining application's
-  `own_slot_base` plus `own_index` and answers it unless it is `nil`, and
-  activates the getter, which computes and stores it, when it is.
 
-Only a `Kernel.ns` method carries one of the first seven, and every lazy
-slot's getter carries `LazySlot` -- one decoded from an image too, which the
-decoder restores from the slot record ([image-format.md](image-format.md),
-"Mixin table"). Every other method, and every other method decoded from an
-image, has `None`.
+Only a `Kernel.ns` method carries one. Every other method -- a lazy slot's
+getter included ("Slot accessors" above) -- and every method decoded from
+an image has `None`. Each variant is an arm inlined into every send site of
+the run loop, so a new one is paid for by every method send, whether or
+not it is ever reached: that is why a lazy slot's getter has none.
 
 **Recognition** (`compiler/primitive_method.rs`, `recognize`) runs as a
 method is built onto its mixin, and stores the variant on the method. For
@@ -652,11 +658,7 @@ is not switched off either: a quick method runs no leaf.
 `Resolved::Method` of any chain but the two handler chains. A
 `BuiltinClass(kind)` method answers `kind`'s class object at once, a
 `Constant` its constant, a `Receiver` the receiver and a `Parameter` its
-argument. A `LazySlot` method answers its field when the field holds
-anything but `nil`, and otherwise falls through to the ordinary
-`Step::Method`, which `push_step` gives the defining application's
-`own_slot_base` as its `slot_base` -- the one method activation whose
-`InitializeSlot` needs one. A `ValueOfParameter` method answers a closure argument as a
+argument. A `ValueOfParameter` method answers a closure argument as a
 `Step::Block` -- with `StepArguments::ControlFlow`, the step a control-flow
 leaf answers, for a Boolean receiver, the one the optimized lowering
 inlines, and with no arguments otherwise -- and a `CullParameter` method

@@ -99,18 +99,20 @@ pub struct MixinMethod {
     /// new `MixinMethod`.
     pub code: Rc<CompiledCode>,
     /// What a send of this method does without an activation, when it is a
-    /// kernel method `compiler::primitive_method` recognized or a lazy
-    /// slot's getter (`MethodFastPath::LazySlot`): `act` reads it on every
-    /// send. `None` for every other method. A method decoded from an image
-    /// never carries a kernel method's; a lazy slot's getter gets its
-    /// `LazySlot` back from the slot record (`image::mixins`).
+    /// kernel method `compiler::primitive_method` recognized: `act` reads it
+    /// on every send. `None` for every other method, a lazy slot's getter
+    /// included (its `ReturnSlotIfFilled` answers a filled slot inside the
+    /// activation), and for every method decoded from an image, which never
+    /// carries a kernel method.
     pub fast_path: Option<MethodFastPath>,
 }
 
 /// What a method's send does without an activation, read off the method by
 /// `act` on every send (`docs/design/dispatch.md`, "Primitive methods").
-/// Only shipped core-library source's methods carry one, but for
-/// `LazySlot`, which every lazy slot's getter carries.
+/// Only shipped core-library source's methods carry one. Every variant's
+/// arm is inlined into each send site of the run loop, so a new one taxes
+/// every method send: a lazy slot's getter had one and gave it up for that
+/// reason (`Instruction::ReturnSlotIfFilled`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MethodFastPath {
     /// The method forwards to one mirror row: run the leaf, and activate
@@ -139,11 +141,6 @@ pub enum MethodFastPath {
     /// takes none; anything else activates the method, whose body sends
     /// `cull:` for real.
     CullParameter(u8),
-    /// A lazy slot's getter (§6.3.3): answer the slot's field -- the
-    /// defining application's `own_slot_base` plus `own_index` -- without an
-    /// activation when it holds anything but `nil`; activate the method,
-    /// which evaluates the initializer and stores it, when it holds `nil`.
-    LazySlot { own_index: u32 },
 }
 
 /// The constant a quick method answers (`MethodFastPath::Constant`).
@@ -198,18 +195,14 @@ impl MixinMethod {
     /// and accessibility whose `code` evaluates the initializer, stores it
     /// with `InitializeSlot` and answers it
     /// (`compiler::compile_lazy_slot_getter`).
-    pub fn lazy_slot_getter(
-        slot: &MixinSlot,
-        own_index: u32,
-        code: Rc<CompiledCode>,
-    ) -> MixinMethod {
+    pub fn lazy_slot_getter(slot: &MixinSlot, code: Rc<CompiledCode>) -> MixinMethod {
         MixinMethod {
             selector: slot.name,
             access: slot.access,
             argument_count: 0,
             declaration: None,
             code,
-            fast_path: Some(MethodFastPath::LazySlot { own_index }),
+            fast_path: None,
         }
     }
 }
@@ -782,8 +775,8 @@ pub struct MixinApplication {
     pub declared_slots: Vec<usize>,
     pub slot_count: usize,
     /// Where this application's *own* slots start -- `superclass.slot_count`,
-    /// or 0 with none. Read at run time (`Mutator::initializer_body`, into the
-    /// activation's `slot_base`) to turn a compiled `InitializeSlot`'s
+    /// or 0 with none. Read at run time (`Heap::activation_slot_base`, off the
+    /// activation's `current_class`) to turn a compiled `InitializeSlot`'s
     /// mixin-relative `own_index` into this application's absolute field index:
     /// the compiled initializer is shared by every application of the mixin
     /// (keying code by mixin without this would bake ONE application's offset

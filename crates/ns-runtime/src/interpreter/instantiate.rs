@@ -87,7 +87,7 @@ fn build_methods(
             bindings,
             lowering,
         );
-        let getter = MixinMethod::lazy_slot_getter(slot, own_index, Rc::new(code));
+        let getter = MixinMethod::lazy_slot_getter(slot, Rc::new(code));
         let previous = methods.insert(getter.selector, MethodEntry::Compiled(Rc::new(getter)));
         debug_assert!(
             previous.is_none(),
@@ -992,12 +992,11 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The compiled instance initializer of `level`, a level
-    /// `class_has_initializer_code` has confirmed, and the `slot_base` its
-    /// activation runs with.
+    /// `class_has_initializer_code` has confirmed.
     pub(super) fn initializer_body(
         &self,
         level: ClassReference<'gc>,
-    ) -> (Rc<crate::bytecode::CompiledCode>, usize) {
+    ) -> Rc<crate::bytecode::CompiledCode> {
         let application = self
             .heap
             .class_application(level)
@@ -1007,11 +1006,11 @@ impl<'gc> Mutator<'gc> {
         });
         // `InitializeSlot`'s `own_index` is relative to the mixin's own slots,
         // not an absolute field index, because the compiled body is shared by
-        // every application of the mixin. This level's own
-        // `MixinApplication.own_slot_base`, taken as the activation's
-        // `slot_base`, turns it into an absolute index at run time; it is set
-        // with the rest of the level's identity, and never changes.
-        (code, application.own_slot_base)
+        // every application of the mixin. The activation runs with `level` as
+        // its `current_class`, whose own `MixinApplication.own_slot_base`
+        // turns it into an absolute index at run time
+        // (`Heap::activation_slot_base`).
+        code
     }
 
     /// Rejects a factory-arity mismatch as a NewspeakError before this

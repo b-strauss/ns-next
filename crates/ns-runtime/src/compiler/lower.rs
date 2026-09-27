@@ -462,7 +462,7 @@ impl<'a> Lowerer<'a> {
     /// setter send. One `statement_program_counter` entry. `own_index` is the
     /// slot's position among the mixin's own slots (declaration order) -- the
     /// VM turns it into an absolute field index at run time via the executing
-    /// frame's `slot_base`.
+    /// activation's slot base (`Heap::activation_slot_base`).
     pub(crate) fn lower_slot_initializer(&mut self, initializer: &Expression, own_index: u32) {
         self.next_scratch = self.base;
         let start = self.instructions.len();
@@ -474,15 +474,18 @@ impl<'a> Lowerer<'a> {
         self.statement_index += 1;
     }
 
-    /// A lazy slot's getter (§6.3.3): the initializer, then `InitializeSlot`
-    /// -- "the slot's value is set to o (but not by means of a setter
-    /// method)" -- then `Return` of the same register, "and o is returned as
-    /// the result of the send". Nothing runs between the two reads of the
-    /// register, so it needs no protective copy. The activation's
-    /// `slot_base` is the defining application's, which `push_step` gives a
-    /// method whose fast path is `LazySlot`.
+    /// A lazy slot's getter (§6.3.3): `ReturnSlotIfFilled`, which answers
+    /// the slot once it holds anything but `nil`, then the initializer, then
+    /// `InitializeSlot` -- "the slot's value is set to o (but not by means of
+    /// a setter method)" -- then `Return` of the same register, "and o is
+    /// returned as the result of the send". Nothing runs between the two
+    /// reads of the register, so it needs no protective copy. The
+    /// activation's slot base is its defining class's own
+    /// (`Heap::activation_slot_base`), the class whose slot this is. The
+    /// test precedes the one statement, as a prologue.
     pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
         self.next_scratch = self.base;
+        self.emit(Instruction::ReturnSlotIfFilled { own_index });
         let start = self.instructions.len();
         let source = self.lower_expression_for(initializer, ValueUse::Read);
         self.emit(Instruction::InitializeSlot { source, own_index });

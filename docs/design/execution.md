@@ -108,8 +108,8 @@ struct StackEntry {
                                // carries home and captured_frame
     base: u32,                 // first register in `values`
     argument_count: u32,
-    program_counter: usize,
-    slot_base: usize,
+    program_counter: usize,    // no slot base: `InitializeSlot` derives it from
+                               // current_class (`Heap::activation_slot_base`)
     code: Rc<CompiledCode>,    // the body it runs, which the loop resumes it in
     then: Continuation,        // what the loop does with its value
     counted: bool,             // whether it counts against the depth limit
@@ -3975,9 +3975,11 @@ three fixes above, the same check finds one `ns_runtime::vm::run` label and no
 
 The platform module (`docs/design/core-library.md`, "Planned: the platform
 and collections as core-library modules", plan 1) added §6.3.3's lazy
-slots — a lazy getter is a compiled method with `MethodFastPath::LazySlot`,
-its arm sitting beside the other `MethodFastPath` arms in
-`interpreter/resolve.rs`'s `act_with_base` — platform paths in the image,
+slots — as first measured below, a lazy getter was a compiled method with
+`MethodFastPath::LazySlot`, its arm sitting beside the other
+`MethodFastPath` arms in `interpreter/resolve.rs`'s `act_with_base`; since
+"Recovering it" below, it has no fast path and answers a filled slot with
+`Instruction::ReturnSlotIfFilled` — platform paths in the image,
 and a shipped `Platform.ns` compiled and resolved once at bootstrap,
 alongside `Kernel.ns`, with `usingVmMirror:kernel:`. `Platform`, `Transcript`
 and `KernelNamespace`, previously builtin classes declared inside
@@ -4090,6 +4092,96 @@ cost, and `bench_loop.ns`, which never enters that growth at all, losing
 nothing. No profile beyond the instruction count was taken; distinguishing
 an instruction-cache effect from a changed branch layout inside the match
 would need one, and is not a case this step's measurement makes on its own.
+
+#### Recovering it
+
+The fix was tried in three steps, in order, each stopping only if it
+recovered the loss, all measured by the protocol above against `7c6bdbf`:
+the baseline built in a throwaway worktree outside the repository (`git
+worktree add`, removed afterwards), the candidates from this tree, every
+build with the pinned `RUSTFLAGS` in its own `--target-dir`, every binary
+checked to print its fixture's recorded answer and, for the final
+comparison, not to import `VCRUNTIME140.dll`. `ns-next bench <source>
+--iterations 30`, five rounds a sitting, the binaries rotating by one
+position from round to round; each figure is the mean of the rounds'
+medians, in ms. "Head" is the tree before the fix (`2fc5b07`, whose hot path
+is `8212048`'s).
+
+1. **(a) The arm's body out of line.** `Mutator::lazy_slot_field`,
+   `#[inline(never)]` (not `#[cold]`: every filled read takes it), left a
+   call and one test at each of the four send sites `act_with_base` is
+   inlined into. Pooled over two sittings (n = 20 base, 10-20 candidate):
+   `bench_send.ns` +4.5%, `bench_block.ns` +1.9%, the same as the head's
+   +4.5% and +1.9% in the same sittings; `bench_send.ns` entirely above
+   `7c6bdbf` in both.
+2. **(b) The slot base off the activation as well.** `push_step` matched on
+   `method.fast_path` on every method push to give a lazy getter its
+   defining application's `own_slot_base`; the activation's `slot_base`
+   field went instead, `Heap::activation_slot_base` deriving the base from
+   the activation's `current_class`, which is exactly the class whose slots
+   `InitializeSlot` writes in both bodies that contain it. Pooled (n = 20):
+   `bench_send.ns` +3.6%, `bench_block.ns` +1.2%, `bench_send.ns` still
+   entirely above in both sittings. `vm::run` measured 6,758 instructions,
+   more than the head's 6,750, with the four inlined `class_own_slot_base`
+   and `instance_field` calls replaced by four calls to the helper.
+3. **(c) No fast path.** Built as a diagnostic first, `act_with_base`
+   with the `LazySlot` arm removed and the variant kept brought `vm::run`
+   to 6,616: the arm itself, even as a call, was ~140 instructions over
+   its four inlined copies. So the variant went: a lazy slot's getter
+   opens with `Instruction::ReturnSlotIfFilled` (wire tag 34), which returns
+   the field from the getter's own activation when it holds anything but
+   `nil` (`interpreter::locals::filled_own_slot`, addressed through the same
+   derived slot base), and the decoder no longer restores anything for it.
+   A read of a filled lazy slot now costs an activation; an ordinary send
+   costs nothing for the feature.
+
+**(c), measured 2026-09-27 against `7c6bdbf`**, three builds of each tree,
+two sittings. Means of the five rounds:
+
+Sitting 1:
+
+| Source | `7c6bdbf` a | `7c6bdbf` b | `7c6bdbf` c | (c) a | (c) b | (c) c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.1604 | 5.0940 | 5.1340 | 5.1208 | 5.0937 | 5.1083 |
+| `bench_send.ns` | 6.5869 | 6.5671 | 6.6040 | 6.5123 | 6.6111 | 6.5309 |
+| `bench_block.ns` | 14.0906 | 14.1355 | 14.0696 | 14.1063 | 14.1029 | 14.2168 |
+| `bench_megamorphic.ns` | 9.4264 | 9.4336 | 9.3884 | 9.4219 | 9.4060 | 9.4244 |
+
+Sitting 2:
+
+| Source | `7c6bdbf` a | `7c6bdbf` b | `7c6bdbf` c | (c) a | (c) b | (c) c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.1844 | 5.1355 | 5.0598 | 5.1111 | 5.1841 | 5.0750 |
+| `bench_send.ns` | 6.6278 | 6.5537 | 6.6398 | 6.5408 | 6.5348 | 6.5835 |
+| `bench_block.ns` | 14.0719 | 14.1692 | 14.1405 | 14.0850 | 14.0767 | 14.4189 |
+| `bench_megamorphic.ns` | 9.3944 | 9.3866 | 9.3831 | 9.4351 | 9.4417 | 9.3910 |
+
+Both sittings pooled (n = 30 rounds a side):
+
+| Source | (c) | `7c6bdbf` | Change | Sitting 1 | Sitting 2 |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.1155 | 5.1280 | -0.24% | overlapping | overlapping |
+| `bench_send.ns` | 6.5522 | 6.5966 | -0.67% | overlapping | overlapping |
+| `bench_block.ns` | 14.1678 | 14.1129 | +0.39% | overlapping | overlapping |
+| `bench_megamorphic.ns` | 9.4200 | 9.4021 | +0.19% | overlapping | overlapping |
+
+A third sitting that ran all four trees side by side (two builds each,
+n = 10) agrees: `7c6bdbf` 6.6100 / 14.1607, the head +4.2% / +2.2%, (b)
++3.5% / +1.4%, (c) -0.8% / +0.5% on `bench_send.ns` / `bench_block.ns`.
+**The regression is gone**: every fixture is within its own spread of
+`7c6bdbf`, and no comparison lies entirely on one side in either sitting.
+`bench_block.ns`'s largest single round, 15.14 for one (c) build, is the
+kind of build-to-build outlier the protocol's pooling exists for.
+
+`dumpbin /disasm` of a release build with debug information: one
+`ns_runtime::vm::run` label, no `vm::run::closure`, and no
+`act_with_base` label of its own; **6,691 instructions**, against 6,561 at
+`7c6bdbf` and 6,750 at the head. The 130 over `7c6bdbf` are the
+`ReturnSlotIfFilled` arm, which no ordinary send runs, and the ~55 the
+diagnostic build above still showed without the `LazySlot` arm -- an
+instruction count, then, is not what these fixtures measure: (b) was
+larger than the head and no slower, (c) larger than `7c6bdbf` and level. What
+they measure is the send sites' shape, which (c) restored.
 
 ## The trampoline
 

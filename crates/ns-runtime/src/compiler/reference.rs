@@ -86,9 +86,11 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
     body.finish(source_span.unwrap_or(Span::new(0, 0)))
 }
 
-/// A lazy slot's getter (§6.3.3): `initializer`'s value, stored with
-/// `InitializeSlot` as `initializer`'s per-slot step stores it, then
-/// returned. A zero-argument method body with no temporaries.
+/// A lazy slot's getter (§6.3.3): the filled slot answered by
+/// `ReturnSlotIfFilled`, as the optimized lowering answers it; otherwise
+/// `initializer`'s value, stored with `InitializeSlot` as `initializer`'s
+/// per-slot step stores it, then returned. A zero-argument method body with
+/// no temporaries.
 pub(crate) fn compile_lazy_slot_getter(
     initializer: &Expression,
     own_index: u32,
@@ -96,6 +98,7 @@ pub(crate) fn compile_lazy_slot_getter(
     bindings: &Bindings,
 ) -> CompiledCode {
     let mut body = Body::new(CodeKind::Method, 0, 0, bindings);
+    body.emit(Instruction::ReturnSlotIfFilled { own_index });
     let start = body.instructions.len();
     let source = body.value(initializer);
     body.emit(Instruction::InitializeSlot { source, own_index });
@@ -677,6 +680,7 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         | Instruction::LoadOuterLocal { .. }
         | Instruction::MakeClosure { .. }
         | Instruction::MakeVector { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
         | Instruction::Jump { .. } => vec![],
     }
 }
@@ -703,6 +707,7 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::StoreOuterLocal { .. }
         | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. }

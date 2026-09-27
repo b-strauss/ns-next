@@ -1508,17 +1508,24 @@ both desugar `lazy n = e` into a hidden cache slot and a getter that
 evaluates `e` when the cache holds `nil` (`NewspeakCompilation.ns`,
 `astForLazySlotGetter:`; `Intermediates.ns`,
 `IntermediateTransientSlotDeclaration`) — with the slot itself as the
-cache: the getter is a compiled method that evaluates `e`, stores it with
-the existing `InitializeSlot` and answers it, and a
-`MethodFastPath::LazySlot` answers a filled slot without an activation.
+cache: the getter is a compiled method whose first instruction,
+`ReturnSlotIfFilled` (wire tag 34), returns the field when it holds
+anything but `nil`, and which otherwise evaluates `e`, stores it with the
+existing `InitializeSlot` and answers it.
 `interpreter::instantiate::build_methods` compiles one getter per lazy
 slot (`compiler::compile_lazy_slot_getter`, under both lowerings) into the
 mixin's method table, where `mixin::slot_accessors` puts no accessor
 getter for it; a mutable lazy slot keeps its ordinary setter. The
-instance initializer skips lazy slots. `resolve::act_with_base` reads the
-field at the defining application's `own_slot_base` plus the slot's
-`own_index` and answers it unless it is `nil`; an empty slot activates the
-getter, which `push_step` gives the same `slot_base`.
+instance initializer skips lazy slots. Both instructions address the
+field at the activation's slot base plus the slot's `own_index`, the base
+being the own `own_slot_base` of the activation's `current_class`
+(`Heap::activation_slot_base`) -- for the getter its defining class, for
+an initializer the level it initializes -- so no activation carries a
+base of its own. Every read of a lazy slot therefore activates its
+getter, filled or not. A `MethodFastPath::LazySlot` answered a filled one
+without an activation, but its arm, inlined into every send site of
+`vm::run`, slowed every method send; the getter gave it up
+([execution.md](execution.md), "What the platform module cost").
 
 #### The module table and the boot (plan 1)
 
@@ -1720,16 +1727,16 @@ platform module cost"): start-up is unchanged, +0.2%, inside the
 measurement's own spread — the platform's classes moved out of `Kernel.ns`
 rather than being added on top of it, so there is ten lines more for
 bootstrap to compile, not a second module's worth. The bench fixtures split:
-`bench_loop.ns`, which sends no method in its timed loop, is level; **`bench_block.ns`
-is 2.6% slower, reproducibly**, and `bench_send.ns` agrees where one outlier
-round does not obscure it, both because `interpreter/resolve.rs`'s
-`act_with_base` — inlined into `vm::run` on every method send — grew one
-arm for `MethodFastPath::LazySlot`, and `vm::run` grew with it: 6,561
-instructions at `7c6bdbf` to 6,750 at the head, 2.9% more, on the path a
-method send or a block activation runs through and `bench_loop.ns`'s inlined
-`IntegerBinary` does not. `bench_megamorphic.ns`'s send is megamorphic
-already, so the same growth is a smaller share of its larger cost and does
-not show.
+`bench_loop.ns`, which sends no method in its timed loop, was level;
+`bench_block.ns` was 2.6% slower and `bench_send.ns` 4.6%, because
+`interpreter/resolve.rs`'s `act_with_base` — inlined into `vm::run` at every
+send site — grew one arm for the lazy getter's `MethodFastPath::LazySlot`.
+Moving the arm's body out of line did not recover it, nor did taking the
+slot base off the activation as well; dropping the fast path did, the
+getter answering a filled slot from its own activation
+(`ReturnSlotIfFilled`, "The mechanism" above). **Re-measured 2026-09-27
+with the fast path gone, all four fixtures are level with `7c6bdbf`**
+(-0.7% to +0.4%, every comparison overlapping).
 
 ### What this step did not break
 

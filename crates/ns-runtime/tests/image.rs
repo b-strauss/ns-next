@@ -516,6 +516,7 @@ fn every_instruction_once() -> CompiledCode {
                 source: 9,
                 own_index: 3,
             },
+            Instruction::ReturnSlotIfFilled { own_index: 2 },
             Instruction::Return { register: 0 },
             Instruction::ImplicitReturn { register: 1 },
             Instruction::NonLocalReturn { register: 2 },
@@ -953,14 +954,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(34); // ... one past the last real tag
+    writer.write_u8(35); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 34
+            tag: 35
         })
     );
 }
@@ -3462,9 +3463,9 @@ fn trace_of(interpreter: &mut Interpreter, holder: &Root) -> String {
 /// initializer on its first read after the load, and the filled one answers
 /// its value without evaluating it again. `Holder` sits over `Base`, whose
 /// two slots put the lazy slot at a non-zero `own_slot_base`: a slot decoded
-/// as eager would answer `nil` for the empty one, and a getter decoded
-/// without its `LazySlot` fast path would be activated with a slot base of
-/// 0 and write `Base`'s first field instead.
+/// as eager would answer `nil` for the empty one, and a getter run with a
+/// slot base of 0 rather than its defining class's would read and write
+/// `Base`'s first field instead.
 #[test]
 fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
     let source = indoc! {"
@@ -6267,11 +6268,12 @@ fn getter_shape(selector: u32, access: AccessModifier) -> MethodShape {
     }
 }
 
-/// A lazy slot decodes as one, with no accessor getter, and its getter --
-/// one of the row's methods -- gets back the `LazySlot` fast path at the
-/// slot's own position.
+/// A lazy slot decodes as one, with no accessor getter: its getter is one
+/// of the row's methods, a unary method of the slot's name that runs the
+/// body the row names -- whose `ReturnSlotIfFilled` answers the filled slot
+/// -- and carries no fast path, as no decoded method does.
 #[test]
-fn a_decoded_lazy_slot_restores_its_getters_fast_path() {
+fn a_decoded_lazy_slot_keeps_its_getter() {
     let decoded = decode_one_row_with_method_shapes(
         &["X", "eager", "later"],
         &[
@@ -6286,10 +6288,8 @@ fn a_decoded_lazy_slot_restores_its_getters_fast_path() {
     let getter = root
         .compiled_method(Symbol::intern("later"))
         .expect("the getter is a compiled method");
-    assert_eq!(
-        getter.fast_path,
-        Some(ns_runtime::mixin::MethodFastPath::LazySlot { own_index: 1 })
-    );
+    assert_eq!(getter.argument_count, 0);
+    assert_eq!(getter.fast_path, None);
 }
 
 /// Two lazy slots of one name would share the one getter the row carries
@@ -6316,7 +6316,7 @@ fn a_row_declaring_one_lazy_slot_twice_is_refused() {
 /// A lazy slot's getter takes no argument and has the slot's accessibility
 /// (`MixinMethod::lazy_slot_getter`). A method of the slot's name that
 /// differs in either is not its getter, and the row is refused rather than
-/// given a `LazySlot` fast path on a method that is none.
+/// decoded into a slot without one.
 #[test]
 fn a_lazy_slot_whose_method_is_not_its_getter_is_refused() {
     let taking_an_argument = MethodShape {
@@ -7300,7 +7300,6 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
                 receiver: Value::Nil,
                 current_class: None,
                 kind: FrameKind::TopLevel,
-                slot_base: 0,
                 feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
                 code: code_with(
                     CodeKind::Method,
@@ -7357,7 +7356,6 @@ fn a_frames_sender_survives_a_round_trip() {
                     current_class: Some(class),
                     kind: FrameKind::TopLevel,
                     uncontinuable: true,
-                    slot_base: 0,
                 };
                 let sender = mutator.heap_mut().allocate_frame(frame_running(7, None));
                 let frame = mutator

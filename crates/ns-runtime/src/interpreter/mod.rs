@@ -1082,21 +1082,11 @@ impl<'gc> Mutator<'gc> {
                     feedback_base
                 };
                 let temporaries = (code.register_count - code.argument_count) as usize;
-                // Only a lazy slot's getter contains `InitializeSlot`, and it
-                // writes its defining application's field.
-                let slot_base = match method.fast_path {
-                    Some(crate::mixin::MethodFastPath::LazySlot { .. }) => self
-                        .heap
-                        .class_own_slot_base(defining_class)
-                        .expect("internal: a method's defining class is a class object"),
-                    _ => 0,
-                };
                 self.push(
                     ActivationHeader {
                         receiver,
                         current_class: Some(defining_class),
                         kind: FrameKind::Method(method),
-                        slot_base,
                         code,
                         then: Continuation::Deliver,
                         counted: true,
@@ -1153,7 +1143,6 @@ impl<'gc> Mutator<'gc> {
                         receiver,
                         current_class,
                         kind: FrameKind::Closure(closure),
-                        slot_base: 0, // a closure body never contains InitializeSlot
                         code,
                         then,
                         counted,
@@ -1201,7 +1190,6 @@ impl<'gc> Mutator<'gc> {
                         receiver: then.instance,
                         current_class: Some(level),
                         kind,
-                        slot_base: 0, // a clause message never contains InitializeSlot
                         code,
                         then: Continuation::Instantiate(then),
                         counted: true,
@@ -1221,7 +1209,6 @@ impl<'gc> Mutator<'gc> {
                         receiver: Value::Object(enclosing),
                         current_class: Some(creation.declaring_class),
                         kind: FrameKind::SuperclassClause(creation.declaring_class),
-                        slot_base: 0, // a clause never contains InitializeSlot
                         code,
                         then: Continuation::NestedClass(creation),
                         counted: true,
@@ -1251,7 +1238,7 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
         then: Continuation<'gc>,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        let (code, slot_base) = self.initializer_body(level);
+        let code = self.initializer_body(level);
         let feedback_base = self.caches.base_for(&code);
         let temporaries = (code.register_count - code.argument_count) as usize;
         self.push(
@@ -1259,7 +1246,6 @@ impl<'gc> Mutator<'gc> {
                 receiver,
                 current_class: Some(level),
                 kind: FrameKind::Initializer(level),
-                slot_base,
                 code,
                 then,
                 counted: true,

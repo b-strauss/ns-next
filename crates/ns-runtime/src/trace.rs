@@ -119,7 +119,6 @@ impl Trace for Frame<'_> {
             current_class,
             kind,
             uncontinuable: _,
-            slot_base: _,
         } = self;
         tracer.value(receiver);
         trace_values(arguments, tracer);

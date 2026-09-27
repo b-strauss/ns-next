@@ -27,7 +27,7 @@
 // retired at 11 and reassigned to 29 for the same reason: closure
 // conversion gave it a list of copied registers, so its old bytes describe
 // a different instruction.
-// Next free number: 34.
+// Next free number: 35.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -48,7 +48,7 @@ pub const OPCODE_STORE_OUTER_LOCAL: u8 = 6;
 /// expression.
 pub const OPCODE_MAKE_ARRAY: u8 = 12;
 /// Writes the initial value of one of the running mixin's own slots into
-/// `self`; emitted only in instance initializers.
+/// `self`; emitted in instance initializers and lazy slots' getters.
 pub const OPCODE_INITIALIZE_SLOT: u8 = 13;
 /// Returns a register's value from the running method or initializer, a `^`
 /// outside a block.
@@ -95,6 +95,9 @@ pub const OPCODE_LOAD_VECTOR: u8 = 31;
 pub const OPCODE_STORE_VECTOR: u8 = 32;
 /// An integer leaf's inlined fast path (`Instruction::IntegerBinary`).
 pub const OPCODE_INTEGER_BINARY: u8 = 33;
+/// A lazy slot's getter's return of its filled field
+/// (`Instruction::ReturnSlotIfFilled`).
+pub const OPCODE_RETURN_SLOT_IF_FILLED: u8 = 34;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction

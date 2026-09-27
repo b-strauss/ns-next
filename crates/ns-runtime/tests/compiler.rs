@@ -126,7 +126,7 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
         initializer.instructions,
         vec![
             // `p = a.` -- `a` is register 0, written straight into own
-            // slot 0 (the VM adds the frame's `slot_base` at run
+            // slot 0 (the VM adds the activation's slot base at run
             // time to get the absolute field index).
             Instruction::InitializeSlot {
                 source: 0,
@@ -246,4 +246,52 @@ fn every_mixin_in_the_tree_gets_its_bodies() {
     // compiled initializer.
     assert!(inner.initializer_code.is_some());
     assert!(class_side.initializer_code.is_some());
+}
+
+/// A lazy slot's getter (§6.3.3) answers a filled slot from inside its own
+/// activation: under both lowerings its body opens with
+/// `ReturnSlotIfFilled` at the slot's own index, before the initializer,
+/// and the method carries no fast path -- an arm for one would be inlined
+/// into every send site of the run loop (`docs/design/execution.md`, "What
+/// the platform module cost").
+#[test]
+fn a_lazy_slots_getter_opens_with_its_filled_test_and_has_no_fast_path() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | eager = 1. |
+        ) (
+          lazy later = 2.
+        ) : ()
+    "};
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let mixin = root_mixin(&mut interpreter, &class);
+        let getter = mixin
+            .compiled_method(Symbol::intern("later"))
+            .unwrap_or_else(|| panic!("the lazy slot's getter is a compiled method"));
+        assert_eq!(getter.fast_path, None);
+        assert_eq!(
+            getter.code.instructions.first(),
+            Some(&Instruction::ReturnSlotIfFilled { own_index: 1 })
+        );
+        assert!(
+            getter.code.instructions[1..]
+                .iter()
+                .all(|instruction| !matches!(instruction, Instruction::ReturnSlotIfFilled { .. })),
+            "the test runs once, first"
+        );
+    }
 }

@@ -147,10 +147,11 @@ pub(super) fn fill_mixin_application_messages(
 /// index, because this one compiled body runs for every application of
 /// `mixin` (it lives on the mixin, not on a class object, per §6.2), and
 /// different applications can legitimately disagree about where the mixin's
-/// own slots start. The VM adds the executing frame's `slot_base` --
-/// set per level, at run time, from that level's own real
-/// `MixinApplication.own_slot_base` -- to turn `own_index` into the
-/// absolute index the instance array actually needs.
+/// own slots start. The VM adds the executing activation's slot base --
+/// its `current_class`'s, the level it initializes, so that level's own
+/// real `MixinApplication.own_slot_base` (`Heap::activation_slot_base`) --
+/// to turn `own_index` into the absolute index the instance array actually
+/// needs.
 fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>>) -> CompiledCode {
     let argument_count = factory_argument_count(mixin);
     // The same expressions, in the same order, this function lowers below:
@@ -202,9 +203,10 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
     lowerer.finish(source.unwrap_or(Span::new(0, 0)))
 }
 
-/// A lazy slot's getter (§6.3.3), a zero-argument method whose body is the
-/// slot's initializer, stored with `InitializeSlot` at `own_index` and
-/// answered. The resolver scoped `initializer` as a unary method's body --
+/// A lazy slot's getter (§6.3.3), a zero-argument method that answers the
+/// slot at `own_index` once it is filled (`ReturnSlotIfFilled`) and
+/// otherwise evaluates the slot's initializer, stores it with
+/// `InitializeSlot` at `own_index` and answers it. The resolver scoped `initializer` as a unary method's body --
 /// no factory parameter is in scope (§6: they are "in scope in the instance
 /// initializer but not in the rest of the class body") -- so it lowers as
 /// one. `span` is the slot declaration's.

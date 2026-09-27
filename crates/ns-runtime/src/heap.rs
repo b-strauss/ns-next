@@ -260,8 +260,6 @@ pub struct ActivationHeader<'gc> {
     /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6).
     pub current_class: Option<ClassReference<'gc>>,
     pub kind: FrameKind<'gc>,
-    /// See `Frame::slot_base`.
-    pub slot_base: usize,
     /// Where the activation's code family starts in the heap's cache table
     /// (`interpreter::inline_cache::InlineCaches`), found or assigned by
     /// `Mutator::push_step` before the header is built.
@@ -377,7 +375,6 @@ struct StackEntry<'gc> {
     base: u32,
     argument_count: u32,
     program_counter: usize,
-    slot_base: usize,
     /// See `ActivationHeader::feedback_base`.
     feedback_base: FeedbackBase,
     code: std::rc::Rc<crate::bytecode::CompiledCode>,
@@ -717,7 +714,6 @@ impl crate::trace::Trace for StackEntry<'_> {
             base: _,
             argument_count: _,
             program_counter: _,
-            slot_base: _,
             feedback_base: _, // not a handle
             code: _,
             then,
@@ -1638,8 +1634,8 @@ impl<'gc> Heap<'gc> {
     /// Where `class`'s own slots start in an instance's fields
     /// (`MixinApplication::own_slot_base`), copied out; `None` for an
     /// object that is not a class object. Read without cloning the
-    /// application's `Rc`, because a lazy slot's getter asks it on every
-    /// send (`interpreter::resolve`'s `LazySlot` arm).
+    /// application's `Rc`, because every `InitializeSlot` and
+    /// `ReturnSlotIfFilled` asks it (`Heap::activation_slot_base`).
     pub fn class_own_slot_base(&self, class: ClassReference<'gc>) -> Option<usize> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -2309,7 +2305,6 @@ impl<'gc> Heap<'gc> {
             base,
             argument_count,
             program_counter: 0,
-            slot_base: header.slot_base,
             feedback_base: header.feedback_base,
             code: header.code,
             then: header.then,
@@ -2402,7 +2397,6 @@ impl<'gc> Heap<'gc> {
             current_class: entry.current_class,
             kind: entry.kind.clone(),
             uncontinuable: false,
-            slot_base: entry.slot_base,
         };
         let handle = self.allocate_frame(frame);
         if self.frames.len() >= self.next_frame_collection {
@@ -2477,10 +2471,24 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].current_class
     }
 
-    /// See `Frame::slot_base`.
+    /// The absolute field index a compiled `InitializeSlot`'s mixin-relative
+    /// `own_index` is offset by: `MixinApplication.own_slot_base` of the
+    /// activation's `current_class`. The two bodies that contain
+    /// `InitializeSlot` run with exactly the class whose slots they write
+    /// there -- an instance initializer with the level it initializes, one
+    /// activation per level of the chain, and a lazy slot's getter (§6.3.3)
+    /// with its defining class -- so the base is derived here rather than
+    /// carried on the activation: carrying it made every push store a field,
+    /// and every method push ask whether its method is a lazy getter, for the
+    /// one instruction that reads it (`docs/design/execution.md`, "What the
+    /// platform module cost"). An activation with no class, which no compiled
+    /// `InitializeSlot` runs in, answers 0.
     pub fn activation_slot_base(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].slot_base
+        self.stack.entries[activation.index as usize]
+            .current_class
+            .and_then(|class| self.class_own_slot_base(class))
+            .unwrap_or(0)
     }
 
     /// Where `activation`'s code family starts in the heap's cache table.
@@ -3041,7 +3049,6 @@ mod tests {
             current_class: None,
             kind: FrameKind::TopLevel,
             uncontinuable: false,
-            slot_base: 0,
         }
     }
 
@@ -3207,7 +3214,6 @@ mod tests {
             current_class: None,
             kind: FrameKind::TopLevel,
             uncontinuable: false,
-            slot_base: 0,
         }
     }
 
@@ -3340,7 +3346,6 @@ mod tests {
             receiver: Value::Nil,
             current_class: None,
             kind: FrameKind::TopLevel,
-            slot_base: 0,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,
@@ -3701,7 +3706,6 @@ mod tests {
             receiver: Value::Nil,
             current_class: None,
             kind: FrameKind::Closure(closure),
-            slot_base: 0,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,

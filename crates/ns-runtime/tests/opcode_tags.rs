@@ -45,6 +45,7 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_LOAD_VECTOR, 31);
     assert_eq!(OPCODE_STORE_VECTOR, 32);
     assert_eq!(OPCODE_INTEGER_BINARY, 33);
+    assert_eq!(OPCODE_RETURN_SLOT_IF_FILLED, 34);
 }
 
 #[test]
@@ -99,6 +100,7 @@ fn no_two_tags_share_a_number() {
         OPCODE_BRANCH_IF_FALSE,
         OPCODE_BRANCH_IF_TRUE,
         OPCODE_INTEGER_BINARY,
+        OPCODE_RETURN_SLOT_IF_FILLED,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -165,6 +167,7 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_BRANCH_IF_FALSE,
         OPCODE_BRANCH_IF_TRUE,
         OPCODE_INTEGER_BINARY,
+        OPCODE_RETURN_SLOT_IF_FILLED,
     ];
     for retired in RETIRED_OPCODES {
         assert!(!live.contains(&retired), "tag {retired} is retired");

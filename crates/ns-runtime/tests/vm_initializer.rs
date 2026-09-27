@@ -336,7 +336,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
 /// superclass clause.
 ///
 /// Until the clause's message was evaluated per level, no test ran two compiled
-/// `InitializeSlot` bodies in one chain, so the per-level `slot_base` a
+/// `InitializeSlot` bodies in one chain, so the per-level slot base a
 /// mixin-relative `own_index` is offset by was only ever proven by inspection.
 /// Here `Base`'s slots must land at 0-1, `Middle`'s at 2-3 and `Leaf`'s at 4-5
 /// of the *same* instance: a level running with another level's base overwrites

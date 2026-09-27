@@ -334,7 +334,9 @@ constant, receiver or argument, `MethodFastPath::Constant`, `Receiver`, `Paramet
 `ValueOfParameter` and `CullParameter`, whose argument `act` checks for a closure on
 every send) on every send, hit or
 miss, never from anything the entry decided (`docs/design/dispatch.md`, "Primitive
-methods"). Add such a read and its per-send
+methods"). A lazy slot's getter has no fast path: every variant's arm is inlined
+into each send site of `vm::run` and taxes every method send, so the getter answers
+a filled slot from its own activation (`Instruction::ReturnSlotIfFilled`). Add such a read and its per-send
 re-check goes with it. The reference lowering runs every send uncached, so it
 is the oracle a cache defect shows against (`docs/design/dispatch.md`, "3b — The
 caches").

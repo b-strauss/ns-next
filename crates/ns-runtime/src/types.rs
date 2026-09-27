@@ -680,22 +680,6 @@ pub struct Frame<'gc> {
     /// construction whatever this flag says; the flag itself is what an image
     /// records.
     pub uncontinuable: bool,
-    /// The absolute field index a compiled `InitializeSlot`'s mixin-relative
-    /// `own_index` is offset by -- `MixinApplication.own_slot_base` for the
-    /// class level the activation initializes. The value `InitializeSlot` reads
-    /// while the body runs is the live activation's own `slot_base`
-    /// (`Heap::activation_slot_base`), one activation per initializing level
-    /// of the superclass chain, pushed with the slot base
-    /// `Mutator::initializer_body` finds; a
-    /// frame carries a copy only if that activation was reified. The image
-    /// does not record it -- a decoded frame has 0, since nothing re-activates
-    /// one. Set once, where the activation is pushed, and never changed.
-    /// A lazy slot's getter (§6.3.3) is the one method activation that has
-    /// one: its defining application's `own_slot_base`, set by
-    /// `Mutator::push_step`. Irrelevant (left at 0) for every other kind: any
-    /// other method, a block, a clause or a top-level body never contains
-    /// `InitializeSlot`.
-    pub slot_base: usize,
 }
 
 // ---------- Errors ----------
@@ -796,7 +780,6 @@ mod tests {
             current_class: None,
             kind: FrameKind::TopLevel,
             uncontinuable: false,
-            slot_base: 0,
         };
         assert!(frame.current_class.is_none());
     }

@@ -95,8 +95,12 @@ identity".
 - `MakeArray { destination, element_registers }`.
 - `InitializeSlot { source, own_index }` — writes one of `self`'s own instance slots.
   Emitted **only** by initializer compilation, for a slot's own initializer
-  expression. The one layout-dependent instruction in the set; see "One body
-  per mixin".
+  expression, and by a lazy slot's getter (§6.3.3). One of the two
+  layout-dependent instructions in the set; see "One body per mixin".
+- `ReturnSlotIfFilled { own_index }` — a lazy slot's getter's first
+  instruction: returns `self`'s own slot at `own_index` from the method when it
+  holds anything but `nil`, and falls through to the initializer otherwise.
+  Addressed as `InitializeSlot` is; the other layout-dependent instruction.
 
 **Leaving a body**
 
@@ -195,8 +199,10 @@ the same body per enclosing instance, since a class object is per-instance.
 **`InitializeSlot`'s `own_index` is therefore mixin-relative.** An absolute field index
 baked into shared code would be wrong the moment a second application inserts
 different inherited slots ahead of it. The VM resolves `own_index` against the
-executing activation's `slot_base` — the application's `own_slot_base` for that
-level — at run time.
+executing activation's slot base — the own `own_slot_base` of its
+`current_class`, which for an initializer is the level it initializes and for a
+lazy slot's getter its defining class (`Heap::activation_slot_base`) — at run
+time.
 
 A bug here is silent wrong output under one application and correct output under
 another. `crates/ns-runtime/tests/vm_initializer.rs` applies one mixin to two

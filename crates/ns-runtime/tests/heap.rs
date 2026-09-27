@@ -400,7 +400,6 @@ fn activation_header<'gc>() -> ActivationHeader<'gc> {
         receiver: Value::Nil,
         current_class: None,
         kind: FrameKind::TopLevel,
-        slot_base: 0,
         feedback_base: FeedbackBase::NOT_ASSIGNED,
         code: trivial_code(),
         then: Continuation::Deliver,

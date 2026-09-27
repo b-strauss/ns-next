@@ -21,8 +21,8 @@ use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
-    load_vector, read_local, read_outer_local, store_instance_field, store_vector, write_local,
-    write_outer_local,
+    filled_own_slot, load_vector, read_local, read_outer_local, store_instance_field, store_vector,
+    write_local, write_outer_local,
 };
 use crate::interpreter::unwind::UnwindOutcome;
 use crate::interpreter::{
@@ -429,8 +429,8 @@ fn execute<'gc>(
         },
         Instruction::InitializeSlot { source, own_index } => {
             // `own_index` is relative to the executing mixin's own slots; the
-            // activation's `slot_base`, set when this level's activation was
-            // pushed, turns it into this instance's absolute field index.
+            // activation's slot base, its `current_class`'s own, turns it into
+            // this instance's absolute field index.
             let value = read_local(&mutator.heap, activation, *source);
             let receiver = mutator.heap.activation_receiver(activation);
             let base = mutator.heap.activation_slot_base(activation);
@@ -447,6 +447,15 @@ fn execute<'gc>(
                     Flow::Next
                 }
                 Err(signal) => unwind(mutator, signal, floor),
+            }
+        }
+        // A lazy slot's getter answers its field once it is filled; the
+        // field's address is `InitializeSlot`'s, and reading it is a
+        // `locals` helper's.
+        Instruction::ReturnSlotIfFilled { own_index } => {
+            match filled_own_slot(&mutator.heap, activation, *own_index) {
+                Some(value) => finish(mutator, activation, value, floor),
+                None => Flow::Next,
             }
         }
         Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
