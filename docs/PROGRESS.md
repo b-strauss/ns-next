@@ -19,8 +19,8 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 [ns-next-platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md);
 [core-library.md](design/core-library.md), "Planned: the platform and
 collections as core-library modules"): §6.3.3's lazy slots — a lazy getter
-is a compiled method with `MethodFastPath::LazySlot`, and a value's `=` and
-`hash` skip them; the table of shipped modules
+is a compiled method that opens with `ReturnSlotIfFilled` (instruction tag
+34), and a value's `=` and `hash` skip them; the table of shipped modules
 (`interpreter/core_library.rs`'s `SHIPPED_MODULES`) and a shipped
 `Platform.ns`, holding `Platform`, `Transcript` and `KernelNamespace`,
 booted with `usingVmMirror:kernel:` beside `Kernel.ns` (`Collections` moved
@@ -30,9 +30,11 @@ platform paths in the image (`VALUE_PLATFORM_PATH`, `CLASS_PLATFORM_PATH`,
 nested-class accessor before the rest of a graph decodes. `Platform`'s root
 class is uninstantiable by a program
 (`InstantiationRefusal::CoreLibraryModule`,
-`goldens/kernel/a_program_cannot_instantiate_the_platform`); builtin class
-tags 13, 18, 19 and 29 (`Platform`, `Transcript`, `KernelNamespace`,
-`Collections`) are retired.
+`goldens/kernel/a_program_cannot_instantiate_the_platform`), and that
+refusal is recorded behind every other, so a shipped root with a defect of
+its own is refused to the bootstrap too; builtin class tags 13, 18, 19 and
+29 (`Platform`, `Transcript`, `Collections`, `KernelNamespace`) are
+retired.
 `goldens/kernel/the_platform_and_its_parts_are_values` compares the
 collections namespace against a fresh one instead of the platform itself,
 now that only the runtime can make one; new goldens pin the lazy-slot
@@ -44,16 +46,17 @@ recorded `stdout` now holds, since a lazy slot is initialized on first use
 rather than at instantiation. **Measured** ([execution.md](design/execution.md),
 "What the platform module cost"): start-up is unchanged, +0.2%, inside the
 protocol's own spread — the platform's classes moved out of `Kernel.ns`
-rather than being added on top of it. Two of the four `goldens/bench/`
-fixtures are reproducibly slower: `bench_block.ns` +2.6%, `bench_send.ns`
-+4.6% (one outlier round aside) — both send a method or activate a block
-in their timed loop, through `vm::run`, which grew 2.9% (6,561 to 6,750
-instructions, `dumpbin -disasm`) for the one `MethodFastPath::LazySlot` arm
-`act_with_base` added, inlined into `vm::run` on every send whether or not
-it ever reaches a lazy slot; `bench_loop.ns`, which never leaves
-`IntegerBinary`'s inlined fast path, is level, and `bench_megamorphic.ns`'s
-already-megamorphic send absorbs the same growth as a smaller share of a
-bigger cost.
+rather than being added on top of it. The lazy getter's first mechanism, a
+`MethodFastPath::LazySlot` arm in `act_with_base`, inlined into every send
+site of `vm::run`, cost `bench_send.ns` 4.6% and `bench_block.ns` 2.6%;
+moving the arm out of line, and then taking the slot base off the
+activation, did not recover it, and dropping the fast path did: a getter
+answers a filled slot from its own activation, and the activation derives
+its slot base from its `current_class`. **All four `goldens/bench/`
+fixtures are level with `7c6bdbf`** (pooled over three builds a side and
+two sittings, -0.7% to +0.4%, every comparison overlapping); `vm::run` is
+6,691 instructions against 6,561, the difference an arm no ordinary send
+runs.
 
 **The next piece of work is the collections module** (plan 2 of
 [core-library.md](design/core-library.md), "Planned: the platform and

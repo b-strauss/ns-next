@@ -142,7 +142,12 @@ from Rust -- plus a reserve of 1,000 held only while an error raised near the
 limit is being signalled, past which the run ends (see
 `docs/design/execution.md`, "The depth limit"). A mutated binary that decodes
 cleanly can still abort while executing -- a native indexing `arguments` it was not
-given, for one -- and that is not a decoder defect.
+given, for one -- and that is not a decoder defect. Loading a stateful image runs
+shipped code before its graph decodes: each platform path it lists (at most 4,096
+of at most 32 members) is followed by unary sends, each step a public slot getter
+or nested-class accessor of `Platform.ns`, which can run a lazy member's
+initializer or a nested class's superclass clause -- shipped code, never the
+image's.
 
 **A wire tag is assigned once and never renumbered or reused.** Every instruction,
 literal and graph-section tag is declared in `crates/ns-runtime/src/image/opcodes.rs`

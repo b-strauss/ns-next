@@ -426,8 +426,12 @@ sequence. A string or an array is no shipped instance even when its class is a
 builtin: it carries its own data, and the image writes it as a record. Only the
 paths the graph **uses** are written, in the order the graph first reaches
 them, numbered densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
-`MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the kernel-built
-platform's public slots name `transcript`, `collections` and `kernel`.
+`MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the platform is the
+instance of the shipped `Platform.ns` ([core-library.md](core-library.md),
+"The platform"): its public slots are the lazy `transcript`, `collections` and
+`kernel`, and, once their accessors have run, the cache slots of its public
+nested classes `Transcript`, `Collections` and `KernelNamespace` name those
+classes too.
 
 An object a path names is referenced as `VALUE_PLATFORM_PATH` (value tag 8), a
 class a path names as `CLASS_PLATFORM_PATH` (class tag 5), each followed by the
