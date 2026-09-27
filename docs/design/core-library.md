@@ -1299,11 +1299,18 @@ the search, from a handled exception's `signal` to its handler
 (`Context>>findNextHandlerOrSignalingContext`); that would need a marker on
 `Exception>>signal`, a leaf to answer the exception from that activation and
 a way to read another exception's private slot, which §5.9 allows only
-through a lexical send. The cost of the choice made instead: the search
-collects every enabled `on:do:` it passes into an `OrderedCollection`, and
-invoking the handler walks that collection twice more, to disable and to
+through a lexical send. The cost of the choice made instead: `invokeNextHandler`
+walks the senders twice. The first walk only counts the enabled `on:do:`
+activations it passes, stopping at the one that handles the exception; the
+second walk covers the same range again and fills an `Array new: count`
+with them, the handler last, since every handler the first walk passed is
+still enabled when the second one runs — `isHandledAt:` disables only the
+candidate it tests, and re-enables it in an `ensure:` before the walk moves
+on. Invoking the handler then walks that array twice more, to disable and to
 enable — the same order as the search itself, so signalling stays linear in
-the depth it searches, but one allocation per handler invocation.
+the depth it searches, but one small array allocated per handler invocation,
+in place of the growable `OrderedCollection` an in-order walk once needed to
+collect while it searched.
 `goldens/exceptions/a_handlers_exception_is_looked_for_outside_its_on_do`
 and `a_resumed_handler_is_enabled_again` pin it. The candidate `on:do:` is
 likewise disabled, under an `ensure:`, while its class's `handles:` runs, so
@@ -1540,9 +1547,10 @@ and caught twenty activations up costs about 6.4 µs.
 built (2026-09-26): lazy slots, the table of shipped modules and the
 platform's boot, and platform paths in the image ("The platform" above
 describes what exists). Plan 2, the collections module, is under way:
-`Array new: size` is built ("The collections module (plan 2)" below); the
-rest -- `moduleNamed:`, `CollectionsFactory.ns` with a Newspeak `List`, the
-handler search and the `OrderedCollection` removal -- is the next piece of
+`Array new: size` and the handler search that keeps no `OrderedCollection`
+are built ("The collections module (plan 2)" below); the rest --
+`moduleNamed:`, `CollectionsFactory.ns` with a Newspeak `List`, and the
+`OrderedCollection` removal -- is the next piece of
 work.** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
@@ -1831,9 +1839,9 @@ its class. That needs its own decision when the first such module arrives.
   path `Collections` would vanish from images. Plan 2 must decide how that
   class is named -- a path through the collections module instance, a
   wider recognition, or no path at all.
-- **The handler search keeps no `OrderedCollection`.** `invokeNextHandler`
+- **The handler search keeps no `OrderedCollection`, built.** `invokeNextHandler`
   counts the enabled `on:do:` activations it passes, and
-  `invokeHandlerAt:` fills an `Array new: count` by walking the same range
+  `invokeHandlerAt:disabling:` fills an `Array new: count` by walking the same range
   again, then disables and re-enables them as it does today. A walk that
   kept nothing cannot replace it: once disabled, the handlers this search
   passed look like the ones that were disabled before it. Marking each
