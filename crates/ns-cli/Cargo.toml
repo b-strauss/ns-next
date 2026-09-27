@@ -19,8 +19,15 @@ serde = { version = "1", features = ["derive"] }
 [dev-dependencies]
 indoc.workspace = true
 insta.workspace = true
+libtest-mimic.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml.workspace = true
+
+# One test per golden (`libtest-mimic`): libtest's own harness fixes its tests
+# at compile time, and goldens are discovered by walking `goldens/`.
+[[test]]
+name = "run_goldens"
+harness = false
 
 [lints]
 workspace = true

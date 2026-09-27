@@ -1,4 +1,7 @@
+use std::path::Path;
 use std::process::Command;
+
+use libtest_mimic::{Arguments, Failed, Trial};
 
 mod common;
 
@@ -16,55 +19,145 @@ fn normalize_newlines(text: &str) -> String {
 /// reference lowering"). Each must produce the recorded answer.
 const LOWERINGS: [&str; 2] = ["optimized", "reference"];
 
-/// Every golden's exit status, stdout and stderr match its recorded
+/// One test per golden, named by its path below `goldens/`, so that `cargo
+/// test` reports each golden on a line of its own, every failure rather than
+/// the first, and runs one or a family by name (`cargo test -p ns-cli --test
+/// run_goldens lazy`). libtest's own harness cannot make a test per file it
+/// finds at run time, which is why this binary is `harness = false`
+/// (`libtest-mimic`). Each golden is a separate process run, so the trials
+/// run in parallel like any other tests.
+fn main() {
+    let arguments = Arguments::from_args();
+    let mut trials = vec![
+        Trial::test(
+            "the_guards_on_skipped_refuse_what_they_promise_to",
+            the_guards_on_skipped_refuse_what_they_promise_to,
+        ),
+        Trial::test(
+            "every_golden_is_a_complete_pair",
+            every_golden_is_a_complete_pair,
+        ),
+    ];
+    for source in common::golden_sources() {
+        let name = golden_name(&source);
+        let expectation = common::expectation_of(&source);
+        // A skipped golden is a recorded intention, not a failure: it is
+        // listed as ignored, and `cargo test -- --ignored` runs it to see
+        // whether the gap it records has closed.
+        let skipped = expectation.skipped().is_some();
+        let checked = source.clone();
+        trials.push(
+            Trial::test(format!("golden::{name}"), move || {
+                matches_under_both_lowerings(&checked)
+            })
+            .with_ignored_flag(skipped),
+        );
+        if cfg!(debug_assertions) {
+            trials.push(
+                Trial::test(
+                    format!("golden_with_a_two_entry_global_cache::{name}"),
+                    move || matches_with_a_two_entry_global_cache(&source),
+                )
+                .with_ignored_flag(skipped),
+            );
+        }
+    }
+    libtest_mimic::run(&arguments, trials).exit();
+}
+
+/// `<category>/<name>`, the golden's path below `goldens/` without its
+/// extension -- the name `common::golden` takes, so a failing trial names the
+/// golden the same way a test that wants it does.
+fn golden_name(source: &Path) -> String {
+    let category = source
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let name = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    format!("{category}/{name}")
+}
+
+/// A golden's exit status, stdout and stderr match its recorded
 /// `Expectation` exactly -- every byte, the final newline included -- under
 /// both lowerings.
-#[test]
-fn every_golden_matches_its_recorded_expectation() {
-    let mut ran = 0;
-    let mut skipped: Vec<String> = Vec::new();
-    for source in common::golden_sources() {
-        let expectation = common::expectation_of(&source);
-        if let Some(reason) = expectation.skipped() {
-            skipped.push(format!("{} -- {reason}", source.display()));
-            continue;
-        }
-        ran += 1;
-        for lowering in LOWERINGS {
-            let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-                .arg("run")
-                .arg(&source)
-                .arg("--lowering")
-                .arg(lowering)
-                .output()
-                .expect("run ns-next");
-            assert_eq!(
-                output.status.code(),
-                Some(expectation.status),
-                "{} exit status under the {lowering} lowering",
-                source.display()
-            );
-            assert_eq!(
-                normalize_newlines(&String::from_utf8_lossy(&output.stdout)),
-                expectation.stdout,
-                "{} stdout under the {lowering} lowering",
-                source.display()
-            );
-            assert_eq!(
-                normalize_newlines(&String::from_utf8_lossy(&output.stderr)),
-                expectation.stderr,
-                "{} stderr under the {lowering} lowering",
-                source.display()
-            );
-        }
+fn matches_under_both_lowerings(source: &Path) -> Result<(), Failed> {
+    let expectation = common::expectation_of(source);
+    for lowering in LOWERINGS {
+        let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+            .arg("run")
+            .arg(source)
+            .arg("--lowering")
+            .arg(lowering)
+            .output()
+            .map_err(|error| format!("run ns-next: {error}"))?;
+        compare(
+            &output,
+            &expectation,
+            &format!("under the {lowering} lowering"),
+        )?;
     }
-    // Printed rather than asserted: a skipped golden is a recorded
-    // intention, not a failure. `cargo test -- --nocapture` is where
-    // this line surfaces, since the harness keeps a passing test quiet.
-    println!("{ran} goldens ran, {} skipped", skipped.len());
-    for entry in &skipped {
-        println!("  skipped: {entry}");
+    Ok(())
+}
+
+/// A golden answers alike when the global cache is one two-slot group, so
+/// that every insert contends for the same group
+/// (`NS_NEXT_GLOBAL_CACHE_ENTRIES`, read by debug builds only).
+fn matches_with_a_two_entry_global_cache(source: &Path) -> Result<(), Failed> {
+    let expectation = common::expectation_of(source);
+    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("run")
+        .arg(source)
+        .env("NS_NEXT_GLOBAL_CACHE_ENTRIES", "2")
+        .output()
+        .map_err(|error| format!("run ns-next: {error}"))?;
+    compare(&output, &expectation, "with a two-entry global cache")
+}
+
+/// The one comparison both runs make, reporting which of the three parts
+/// differs and how.
+fn compare(
+    output: &std::process::Output,
+    expectation: &common::Expectation,
+    condition: &str,
+) -> Result<(), Failed> {
+    if output.status.code() != Some(expectation.status) {
+        return Err(format!(
+            "exit status {condition}: expected {}, got {:?}
+stderr:
+{}",
+            expectation.status,
+            output.status.code(),
+            normalize_newlines(&String::from_utf8_lossy(&output.stderr))
+        )
+        .into());
     }
+    let stdout = normalize_newlines(&String::from_utf8_lossy(&output.stdout));
+    if stdout != expectation.stdout {
+        return Err(format!(
+            "stdout {condition}:
+--- expected
+{}--- got
+{stdout}",
+            expectation.stdout
+        )
+        .into());
+    }
+    let stderr = normalize_newlines(&String::from_utf8_lossy(&output.stderr));
+    if stderr != expectation.stderr {
+        return Err(format!(
+            "stderr {condition}:
+--- expected
+{}--- got
+{stderr}",
+            expectation.stderr
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// The two guards on `skipped` itself, which nothing else exercises. Either
@@ -72,8 +165,7 @@ fn every_golden_matches_its_recorded_expectation() {
 /// left blank in a hurry leaves nothing behind that says what would switch
 /// the golden back on, and a misspelled key would be ignored rather than
 /// refused, so an expectation would quietly stop being checked.
-#[test]
-fn the_guards_on_skipped_refuse_what_they_promise_to() {
+fn the_guards_on_skipped_refuse_what_they_promise_to() -> Result<(), Failed> {
     let refused = toml::from_str::<common::Expectation>(
         "statuss = 1
 ",
@@ -99,6 +191,7 @@ fn the_guards_on_skipped_refuse_what_they_promise_to() {
     let refused = std::panic::catch_unwind(|| common::expectation_of(&source));
     std::panic::set_hook(hook);
     assert!(refused.is_err(), "a blank `skipped` must be refused");
+    Ok(())
 }
 
 /// Every golden is a pair, checked in both directions. The floor this
@@ -106,8 +199,7 @@ fn the_guards_on_skipped_refuse_what_they_promise_to() {
 /// was there to detect: a golden that stops being discovered because it was
 /// renamed, moved or given another extension. An orphan on either side is
 /// exactly that event, and it fails here.
-#[test]
-fn every_golden_is_a_complete_pair() {
+fn every_golden_is_a_complete_pair() -> Result<(), Failed> {
     let mut missing_expectation = Vec::new();
     for source in common::golden_sources() {
         let expectation = source.with_extension("toml");
@@ -121,47 +213,12 @@ fn every_golden_is_a_complete_pair() {
             orphaned_expectation.push(path.display().to_string());
         }
     }
-    assert!(
-        missing_expectation.is_empty() && orphaned_expectation.is_empty(),
+    if missing_expectation.is_empty() && orphaned_expectation.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
         "goldens without an expectation: {missing_expectation:?}; \
          expectations without a golden: {orphaned_expectation:?}"
-    );
-}
-
-/// Every golden answers alike when the global cache is one two-slot group,
-/// so that every insert contends for the same group
-/// (`NS_NEXT_GLOBAL_CACHE_ENTRIES`, read by debug builds only).
-#[cfg(debug_assertions)]
-#[test]
-fn every_golden_answers_alike_with_a_two_entry_global_cache() {
-    for source in common::golden_sources() {
-        let expectation = common::expectation_of(&source);
-        if expectation.skipped().is_some() {
-            continue;
-        }
-        let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-            .arg("run")
-            .arg(&source)
-            .env("NS_NEXT_GLOBAL_CACHE_ENTRIES", "2")
-            .output()
-            .expect("run ns-next");
-        assert_eq!(
-            output.status.code(),
-            Some(expectation.status),
-            "{} exit status with a two-entry global cache",
-            source.display()
-        );
-        assert_eq!(
-            normalize_newlines(&String::from_utf8_lossy(&output.stdout)),
-            expectation.stdout,
-            "{} stdout with a two-entry global cache",
-            source.display()
-        );
-        assert_eq!(
-            normalize_newlines(&String::from_utf8_lossy(&output.stderr)),
-            expectation.stderr,
-            "{} stderr with a two-entry global cache",
-            source.display()
-        );
-    }
+    )
+    .into())
 }

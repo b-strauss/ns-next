@@ -129,6 +129,13 @@ and a `.toml` beside it holding the outcome that program must produce:
 empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
 for byte and exit status included (`crates/ns-cli/tests/run_goldens.rs`).
+That runner is a `harness = false` binary on `libtest-mimic`, one test per
+golden named by its path -- `golden::<category>/<name>`, and in a debug
+build `golden_with_a_two_entry_global_cache::<category>/<name>` as well --
+so `cargo test` lists each golden, reports every failure with the expected
+and actual stream, runs them in parallel, and runs one or a family by name
+(`cargo test -p ns-cli --test run_goldens lazy`); a skipped golden is listed
+as ignored, and `-- --ignored` runs it.
 Every golden that is not skipped, the ones recorded as raising included, also
 goes through the snapshot and the build/load round trip, which hold an image's
 and a binary's three streams against what `run` answers on the source.

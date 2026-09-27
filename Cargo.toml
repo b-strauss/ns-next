@@ -16,6 +16,12 @@ toml = "0.8"
 # `indoc!` strips the indentation at compile time, so the string the test sees is
 # unchanged and a `const` can still hold one.
 indoc = "2"
+# Tests only: the golden runner makes one test per golden, which libtest's
+# own harness cannot -- its tests are fixed at compile time -- so
+# `crates/ns-cli/tests/run_goldens.rs` is a `harness = false` binary built on
+# this, and `cargo test` names each golden, reports every failure rather than
+# the first, and filters by name. It reuses `clap`, already a dependency.
+libtest-mimic = "0.8"
 
 # Link-time optimization across crate boundaries, and a single codegen unit so the
 # optimizer sees the whole picture. Both usually help runtime speed as well as size --
