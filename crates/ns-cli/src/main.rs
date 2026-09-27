@@ -43,11 +43,7 @@ enum Command {
         ast: bool,
     },
     /// Parse every .ns file under a directory.
-    ParseCorpus {
-        directory: PathBuf,
-        #[arg(long)]
-        blacklist: Option<PathBuf>,
-    },
+    ParseCorpus { directory: PathBuf },
     /// Run every whitelisted .ns file under a directory, from source and as
     /// a built binary, and check each against its recorded expected output.
     RunCorpus {
@@ -211,10 +207,7 @@ fn main() -> ExitCode {
 fn execute(command: Command) -> ExitCode {
     match command {
         Command::Parse { file, ast } => commands::parse::execute(&file, ast),
-        Command::ParseCorpus {
-            directory,
-            blacklist,
-        } => commands::parse_corpus::execute(&directory, blacklist.as_deref()),
+        Command::ParseCorpus { directory } => commands::parse_corpus::execute(&directory),
         Command::RunCorpus {
             directory,
             whitelist,

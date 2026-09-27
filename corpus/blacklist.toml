@@ -1,8 +1,0 @@
-# Corpus files that are expected to fail parsing, with a reason.
-# Format:
-#   [[entry]]
-#   file = "SomeModule.ns"
-#   reason = "why this file cannot yet be parsed"
-#
-# The corpus test fails if a file here parses successfully (stale entry)
-# or if a file NOT here fails to parse (regression).

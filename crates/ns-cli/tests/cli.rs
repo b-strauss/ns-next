@@ -89,18 +89,39 @@ fn parse_corpus_reports_counts() {
         "},
     )
     .unwrap();
-    let blacklist = directory.join("blacklist.toml");
-    std::fs::write(
-        &blacklist,
-        "[[entry]]\nfile = \"Bad.ns\"\nreason = \"deliberately malformed for the test\"\n",
-    )
-    .unwrap();
-
     let out = ns_next()
         .arg("parse-corpus")
         .arg(&modules)
-        .arg("--blacklist")
-        .arg(&blacklist)
+        .output()
+        .unwrap();
+    // `Bad.ns` does not parse, so the run fails and names it.
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("parsed 2, failed 1"), "{stdout}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("FAIL Bad.ns"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn parse_corpus_succeeds_when_every_file_parses() {
+    let directory = ScratchDirectory::new("corpus-clean");
+    let modules = directory.join("modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::fs::write(
+        modules.join("Good.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class C = () ()
+        "},
+    )
+    .unwrap();
+    let out = ns_next()
+        .arg("parse-corpus")
+        .arg(&modules)
         .output()
         .unwrap();
     assert!(
@@ -108,78 +129,7 @@ fn parse_corpus_reports_counts() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("parsed 2"), "{stdout}");
-    assert!(stdout.contains("failed 0"), "{stdout}");
-    assert!(stdout.contains("expected-fail 1"), "{stdout}");
-}
-
-#[test]
-fn parse_corpus_stale_blacklist_entry_fails() {
-    let directory = ScratchDirectory::new("corpus-stale");
-    let modules = directory.join("modules");
-    std::fs::create_dir_all(&modules).unwrap();
-    std::fs::write(
-        modules.join("Good.ns"),
-        indoc! {"
-            Newspeak3
-            'X'
-            class C = () ()
-        "},
-    )
-    .unwrap();
-    let blacklist = directory.join("blacklist.toml");
-    // Names a file that actually parses now -> stale.
-    std::fs::write(
-        &blacklist,
-        "[[entry]]\nfile = \"Good.ns\"\nreason = \"no longer fails\"\n",
-    )
-    .unwrap();
-
-    let out = ns_next()
-        .arg("parse-corpus")
-        .arg(&modules)
-        .arg("--blacklist")
-        .arg(&blacklist)
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .to_lowercase()
-            .contains("stale"),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn parse_corpus_malformed_blacklist_fails_with_error() {
-    let directory = ScratchDirectory::new("corpus-malformed");
-    let modules = directory.join("modules");
-    std::fs::create_dir_all(&modules).unwrap();
-    std::fs::write(
-        modules.join("Good.ns"),
-        indoc! {"
-            Newspeak3
-            'X'
-            class C = () ()
-        "},
-    )
-    .unwrap();
-    let blacklist = directory.join("blacklist.toml");
-    std::fs::write(&blacklist, "this is not valid toml :::\n[[entry\n").unwrap();
-
-    let out = ns_next()
-        .arg("parse-corpus")
-        .arg(&modules)
-        .arg("--blacklist")
-        .arg(&blacklist)
-        .output()
-        .unwrap();
-    assert_ne!(out.status.code(), Some(0));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("blacklist"), "stderr: {stderr}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("parsed 1, failed 0"));
 }
 
 /// A module whose entry method writes to the transcript, so a synthetic

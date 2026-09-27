@@ -15,7 +15,9 @@ grammar this parser follows.
 1. Clone upstream at the new commit.
 2. Replace `corpus/modules/*.ns` and `corpus/reference/NewspeakGrammar.ns`.
 3. Update the commit hash and date above.
-4. Run `cargo test -p ns-syntax --test corpus` and reconcile `corpus/blacklist.toml`.
+4. Run `cargo test -p ns-syntax --test corpus`: every module must parse, and
+   one that does not is a parser defect or a program the specification
+   refuses, to be decided before the refresh lands.
 
 ## Renamed files
 

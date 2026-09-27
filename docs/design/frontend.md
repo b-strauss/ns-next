@@ -375,13 +375,13 @@ upstream commit, recorded with its URL in `corpus/PROVENANCE.md`. It is a manual
 snapshot rather than a submodule or subtree: refreshing it is a deliberate,
 reviewed action, and the upstream license travels with the files.
 
-`ns-next parse-corpus corpus/modules` must report **parsed 211, failed 0,
-expected-fail 0, stale 0**. A file that legitimately cannot parse yet belongs in
-`corpus/blacklist.toml` with a stated reason, and the `stale` count is what
-keeps that list from accumulating entries that have quietly started working.
-The list is empty: the last entry, `NewspeakColorizationForSqueak.ns`, wrote
-`sd start -1` for `sd start - 1`, which the grammar reads as a subtraction
-("Negative numbers" below) and an earlier lexer rule did not.
+`ns-next parse-corpus corpus/modules` must report **parsed 211, failed 0**,
+and `crates/ns-syntax/tests/corpus.rs` holds every module to the same. There
+is no list of exceptions (removed 2026-09-27 with its last entry, decided
+with the user): the corpus is real Newspeak and the parser follows the
+specification's grammar, so a module that fails to parse is either a parser
+defect or a program the specification refuses, and either way a decision to
+take and record here, not a file to set aside.
 
 ## Errors
 

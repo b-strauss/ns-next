@@ -383,7 +383,7 @@ cargo clippy --workspace --all-targets
 # language server has its own group below
 cargo nextest run --workspace --exclude ns-lsp
 cargo test --workspace --exclude ns-lsp --doc
-# non-regression gate: must report "parsed 211, failed 0, expected-fail 0, stale 0"
+# non-regression gate: must report "parsed 211, failed 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
 
 # --- before every commit that touches crates/ns-lsp or crates/ns-syntax ---
@@ -448,7 +448,7 @@ with `dumpbin /disasm` (from the Visual Studio Build Tools, not on `PATH`) on a 
 build with debug information that no `vm::run::closure` became a function of its own
 (`docs/design/execution.md`, "What the inline caches moved").
 
-A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
+Every corpus module must parse; there is no list of exceptions. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
 to send and the output it produces; `run-corpus` runs every listed module from source
 and as a built binary, under both lowerings, and fails if any of the four differs from

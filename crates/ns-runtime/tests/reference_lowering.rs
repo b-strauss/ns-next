@@ -231,8 +231,9 @@ fn every_resolvable_corpus_module_compiles_under_both_lowerings() {
     let mut compiled = 0;
     for path in &files {
         let source = std::fs::read_to_string(path).expect("read module");
+        // Every corpus module parses (`crates/ns-syntax/tests/corpus.rs`).
         let Ok(module) = ns_syntax::parse(&source) else {
-            continue; // the blacklisted file
+            panic!("{} does not parse", path.display());
         };
         let Ok(resolved) = ns_runtime::resolve(
             module,

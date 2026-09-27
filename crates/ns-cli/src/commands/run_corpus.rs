@@ -19,8 +19,8 @@ struct RunnableEntry {
     send: String,
     expected_status: i32,
     expected_stdout: String,
-    /// Why this module is on the list. Required, like the blacklist's own
-    /// `reason`: the list is meant to grow one deliberate row at a time.
+    /// Why this module is on the list. Required: the list is meant to grow
+    /// one deliberate row at a time.
     #[allow(dead_code)]
     reason: String,
 }
@@ -269,9 +269,9 @@ fn run_one_binary(
     })
 }
 
-/// `ns-next run-corpus`: the mirror image of `parse-corpus`. `parse-corpus`
-/// works off a blacklist because parsing the corpus is expected to succeed
-/// everywhere; running it is not, so this works off a whitelist -- a module
+/// `ns-next run-corpus`: the counterpart of `parse-corpus`, which requires
+/// every module to parse; running one is not expected everywhere, so this
+/// works off a whitelist -- a module
 /// counts as running only once someone has recorded what running it
 /// produces. Growth is therefore deliberate and a regression is loud.
 ///
