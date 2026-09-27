@@ -30,21 +30,27 @@ Not built yet, and the limits worth knowing before trying it on real code:
 
 ## Requirements
 
-Rust 1.98.0, pinned by `rust-toolchain.toml` — `rustup` picks it up automatically. No
-other tooling is needed; the project has no external runtime dependencies.
+Rust 1.98.0, pinned by `rust-toolchain.toml` — `rustup` picks it up automatically.
+The test suites run under `cargo-nextest`, installed once per machine with
+`cargo install cargo-nextest --locked`. The project has no external runtime
+dependencies.
 
 ## Build and test
 
 ```bash
 # build every crate; the ns-next binary lands in target/debug
 cargo build --workspace
-# the full suite, including every golden under both lowerings
-cargo test --workspace
-# the goldens alone; --nocapture prints "N goldens ran, M skipped" and names
-# each skipped one with the reason it is not run yet. --nocapture rather than
-# --show-output, which does the same but which an IDE's test button often
-# already passes -- and libtest refuses that option twice
-cargo test -p ns-cli --test run_goldens -- --nocapture
+# the full suite, including every golden under both lowerings, each golden a
+# test of its own; nextest runs the tests of every binary in parallel
+cargo nextest run --workspace
+# the doctests, which nextest does not run
+cargo test --workspace --doc
+# the goldens alone, or the ones whose name contains a word
+cargo nextest run -p ns-cli --test run_goldens
+cargo nextest run -p ns-cli --test run_goldens lazy
+# the skipped goldens, each named -- the reason it is not run yet is the
+# `skipped` line of its .toml
+cargo nextest list -p ns-cli --test run_goldens --run-ignored only
 # formatting
 cargo fmt --all
 # lints, must be warning-free
