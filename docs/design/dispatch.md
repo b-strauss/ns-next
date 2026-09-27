@@ -606,7 +606,8 @@ variants:
   ([core-library.md](core-library.md), "`True` and `False` are quick
   methods", "The nil protocol").
 
-Only a `Kernel.ns` method carries one. Every other method -- a lazy slot's
+Only a method of shipped core-library source carries one -- `Kernel.ns`'s,
+and `Platform.ns`'s `Transcript` forwarders to the mirror. Every other method -- a lazy slot's
 getter included ("Slot accessors" above) -- and every method decoded from
 an image has `None`. Each variant is an arm inlined into every send site of
 the run loop, so a new one is paid for by every method send, whether or
