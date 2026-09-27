@@ -1,0 +1,8 @@
+stdout = '''
+42
+'text'
+text
+#symbol
+nil
+1true
+'''

@@ -82,17 +82,13 @@ now runs `newPlatform` and `Platform`'s superclass clause, so a freshly
 bootstrapped interpreter's caches are no longer empty (four sites, three
 global entries, pinned by a test); no send path changed.
 
-**A small step comes first: the transcript's `show:` and `print:`**
-(decided with the user on 2026-09-27). The transcript leaf no longer checks
-its receiver and never declines, so `Transcript>>show:`'s failure block is
-dead and `show: 42` silently writes nothing. `show:` is to take a string
-only, its leaf declining anything else so that the failure block reports a
-proper error, and `print: anObject = ( ^self show: anObject printString )`
-is added in Newspeak beside it, as canonical Newspeak's transcript has both
-(`prior-art/newspeak/RuntimeForJS.ns`) — added now, with a golden pinning
-it, rather than on a corpus module's demand. `show:` does not send
-`printString` itself: a `String`'s `printString` quotes it, which would
-change every program's output.
+**The transcript's `show:` and `print:` are done** (2026-09-27, decided
+with the user; [core-library.md](design/core-library.md), "The platform"):
+`show:` writes a string and refuses anything else as an ordinary error,
+where `show: 42` used to write nothing; `print:` writes any object's
+`printString`, in Newspeak, as canonical Newspeak's transcript does.
+`goldens/kernel/the_transcript_prints_any_object` and
+`goldens/errors/show_of_something_that_is_no_string_is_an_error` pin both.
 
 **The next piece of work is the collections module** (plan 2 of
 [core-library.md](design/core-library.md), "Planned: the platform and

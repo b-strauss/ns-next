@@ -464,6 +464,19 @@ working `show:` (`tests/platform.rs`,
 `a_subclass_of_the_transcript_class_writes_too`), and so does a subclass of
 the platform's class (`a_subclass_of_the_platform_class_writes_too`).
 
+**`show:` writes a string; `print:` writes any object** (decided with the
+user on 2026-09-27). The leaf refuses an argument that is no `String` as an
+ordinary Newspeak error ("show: requires a String, got 42"), catchable like
+any other, where it used to write nothing and answer the transcript; it
+never declines, so both forwarders' failure blocks are `[nil]`, as the
+kernel's `terminate:` forwarder's is. `print: object = ( ^self show: object
+printString )` is Newspeak beside it, as canonical Newspeak's transcript has
+both (`prior-art/newspeak/RuntimeForJS.ns`); it was added with a golden
+rather than on a corpus module's demand. `show:` does not send
+`printString` itself, since a `String`'s `printString` quotes it
+(`goldens/kernel/the_transcript_prints_any_object`,
+`goldens/errors/show_of_something_that_is_no_string_is_an_error`).
+
 **The namespace members are ordinary methods.** `Collections>>List` answers
 `OrderedCollection` through `Object`'s accessor, and `KernelNamespace`'s
 five answer the kernel instance's nested classes. The class-accessor fast

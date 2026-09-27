@@ -54,9 +54,14 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public Collections = ( ^outer PlatformFactory Collections )
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
     )
+    (* `show:` writes a string as it is and refuses anything else, as an
+       ordinary error; `print:` writes any object's `printString`, as
+       canonical Newspeak's transcript does. The leaf never declines, so
+       the failure blocks never run. *)
     private class Transcript = Value new () (
-        public show: text = ( ^vmMirror transcript: self show: text ifFail: [^super show: text] )
-        public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [^super newLine] )
+        public show: text = ( ^vmMirror transcript: self show: text ifFail: [nil] )
+        public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [nil] )
+        public print: object = ( ^self show: object printString )
     )
     (* The Core Library's `collections` namespace, whose one member is the
        one a whitelisted corpus module asks for (`docs/design/core-library.md`,

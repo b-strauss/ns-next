@@ -1185,11 +1185,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The number of fields in `object`'s `ObjectData::Instance`, mirroring
-    /// `array_length`. `platform::execute` is the only caller: it
-    /// tells the platform singleton, its stream and its `collections`
-    /// namespace apart by field count rather than a builtin variant of
-    /// their own (see `platform.rs`'s module doc), so the dispatcher needs
-    /// the count itself, not any one field's value.
+    /// `array_length`; `None` for any other shape.
     pub fn instance_field_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {

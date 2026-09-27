@@ -1,0 +1,8 @@
+status = 1
+stdout = '''
+before
+caught
+'''
+stderr = '''
+Uncaught Newspeak error: show: requires a String, got 42
+'''
