@@ -21,7 +21,7 @@ const LOWERINGS: [&str; 2] = ["optimized", "reference"];
 
 /// One test per golden, named by its path below `goldens/`, so that `cargo
 /// test` reports each golden on a line of its own, every failure rather than
-/// the first, and runs one or a family by name (`cargo test -p ns-cli --test
+/// the first, and runs one or a family by name (`cargo nextest run -p ns-cli --test
 /// run_goldens lazy`). libtest's own harness cannot make a test per file it
 /// finds at run time, which is why this binary is `harness = false`
 /// (`libtest-mimic`). Each golden is a separate process run, so the trials
@@ -42,7 +42,7 @@ fn main() {
         let name = common::golden_name(&source);
         let expectation = common::expectation_of(&source);
         // A skipped golden is a recorded intention, not a failure: it is
-        // listed as ignored, and `cargo test -- --ignored` runs it to see
+        // listed as ignored, and `cargo nextest run --run-ignored all` runs it to see
         // whether the gap it records has closed.
         let skipped = expectation.skipped().is_some();
         let checked = source.clone();

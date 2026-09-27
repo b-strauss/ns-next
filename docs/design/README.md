@@ -132,10 +132,12 @@ for byte and exit status included (`crates/ns-cli/tests/run_goldens.rs`).
 That runner is a `harness = false` binary on `libtest-mimic`, one test per
 golden named by its path -- `golden::<category>/<name>`, and in a debug
 build `golden_with_a_two_entry_global_cache::<category>/<name>` as well --
-so `cargo test` lists each golden, reports every failure with the expected
+so the suite lists each golden, reports every failure with the expected
 and actual stream, runs them in parallel, and runs one or a family by name
-(`cargo test -p ns-cli --test run_goldens lazy`); a skipped golden is listed
-as ignored, and `-- --ignored` runs it.
+(`cargo nextest run -p ns-cli --test run_goldens lazy`); a skipped golden is
+listed as skipped, and `--run-ignored all` runs it. The snapshot and
+build/load round trips are the same, one test per golden
+(`crates/ns-cli/tests/golden_round_trips.rs`).
 Every golden that is not skipped, the ones recorded as raising included, also
 goes through the snapshot and the build/load round trip, which hold an image's
 and a binary's three streams against what `run` answers on the source.
@@ -149,8 +151,8 @@ cannot switch a half-written golden past discovery. The other three keys
 still record what the program *should* answer, which is the point: a gap
 gets its golden the day it is found, stating the whole expectation, and
 closing the gap is deleting one line. A reason is required, and a blank
-one fails. `cargo test -- --nocapture` prints the count and the list,
-since the harness keeps a passing test quiet.
+one fails. A skipped golden is an ignored test, counted in the suite's
+summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 
 | Directory | What belongs in it |
 |---|---|
@@ -188,11 +190,12 @@ These are non-regression gates, not suggestions. Each has caught a real
 regression.
 
 ```bash
-cargo test --workspace --exclude ns-lsp   # includes every golden, under both lowerings
-NS_NEXT_STRESS_MOVES=1 cargo test --workspace --exclude ns-lsp   # the same, moving everything at the run loop's safepoints
-NS_NEXT_STRESS_CACHES=1 cargo test --workspace --exclude ns-lsp  # the same, vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo test --workspace --exclude ns-lsp # the same, collecting at every safepoint
-cargo test -p ns-lsp             # the editor's language server: never starts the VM, so excluded above
+cargo nextest run --workspace --exclude ns-lsp   # includes every golden, under both lowerings
+cargo test --workspace --exclude ns-lsp --doc    # the doctests, which nextest does not run
+NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-lsp   # the same, moving everything at the run loop's safepoints
+NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-lsp  # the same, vacating every inline cache at every safepoint
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-lsp # the same, collecting at every safepoint
+cargo nextest run -p ns-lsp             # the editor's language server: never starts the VM, so excluded above
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0

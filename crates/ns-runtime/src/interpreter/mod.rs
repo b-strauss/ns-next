@@ -2387,7 +2387,7 @@ mod tests {
     /// hottest path there is: 8 bytes more measured about 6% on deep sends
     /// and returns (`Signal::Terminate` says why it is boxed). Pinned in a
     /// release build, where a handle carries no origin or epoch -- so it runs
-    /// only there, under `cargo test --release`, which the measurement
+    /// only there, under `cargo nextest run --release`, which the measurement
     /// protocol's builds are, and under no gate that runs a debug build.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]

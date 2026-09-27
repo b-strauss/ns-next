@@ -205,7 +205,7 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 
 ### Testing
 
-`cargo test -p ns-lsp`:
+`cargo nextest run -p ns-lsp`:
 
 - positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
   (surrogate pairs), at line ends and at the end of the file;
@@ -428,9 +428,9 @@ The server's own tests are described under its section, above ("Testing").
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification.
 
-**Gates.** The runtime's per-commit suite is `cargo test --workspace
+**Gates.** The runtime's per-commit suite is `cargo nextest run --workspace
 --exclude ns-lsp`, so runtime work does not pay for the editor's corpus-wide
-tests, with `cargo test -p ns-lsp` its own per-commit gate for a change that
+tests, with `cargo nextest run -p ns-lsp` its own per-commit gate for a change that
 touches `crates/ns-lsp/` or `crates/ns-syntax/`; `cargo clippy --workspace
 --all-targets` still compiles `ns-lsp` on every commit, so a resolver or
 `ns-syntax` change that breaks its API fails at the commit even when its tests

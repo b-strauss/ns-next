@@ -19,7 +19,7 @@ indoc = "2"
 # Tests only: the golden runner makes one test per golden, which libtest's
 # own harness cannot -- its tests are fixed at compile time -- so
 # `crates/ns-cli/tests/run_goldens.rs` is a `harness = false` binary built on
-# this, and `cargo test` names each golden, reports every failure rather than
+# this, and the suite names each golden, reports every failure rather than
 # the first, and filters by name. It reuses `clap`, already a dependency.
 libtest-mimic = "0.8"
 

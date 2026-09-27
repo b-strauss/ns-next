@@ -3,7 +3,7 @@
 //! `snapshot` then `load` must reproduce what `run` prints. Each is a test of
 //! its own (`libtest-mimic`, `harness = false`), as in `run_goldens.rs`, so
 //! the sweeps run in parallel, report every golden that differs, and filter
-//! by name (`cargo test -p ns-cli --test golden_round_trips lazy`); run as one
+//! by name (`cargo nextest run -p ns-cli --test golden_round_trips lazy`); run as one
 //! loop each, they were most of the suite's time, and almost all of it under
 //! the stress modes.
 
