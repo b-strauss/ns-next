@@ -409,7 +409,7 @@ const RICH: &str = indoc! {"
     ) (
       find: t in: c = ( c do: [:e | e = t ifTrue: [^e]]. ^nil )
       loop = ( | n | n:: 0. [n < 3] whileTrue: [n:: n + 1]. ^n )
-      arr = ( ^{ 1. #(2 3). 'four' } )
+      arr = ( ^{ 1. { 2. 3 }. 'four' } )
     ) : ()
 "};
 
@@ -434,16 +434,7 @@ fn every_instruction_once() -> CompiledCode {
         instructions: vec![
             Instruction::LoadLiteral {
                 destination: 0,
-                literal: Literal::Array(vec![
-                    Literal::Nil,
-                    Literal::Boolean(true),
-                    Literal::SmallInteger(-5),
-                    Literal::Float(1.5),
-                    Literal::String("s".into()),
-                    Literal::Symbol(Symbol::intern("y")),
-                    Literal::MalformedInteger("16r1.8".into()),
-                    Literal::UnresolvedIdentifier("super".into()),
-                ]),
+                literal: Literal::Nil,
             },
             Instruction::LoadSelf { destination: 1 },
             Instruction::Move {
@@ -540,10 +531,44 @@ fn every_instruction_once() -> CompiledCode {
                 right: 2,
                 target: 3,
             },
+            Instruction::LoadEnclosingObject {
+                destination: 5,
+                depth: 1,
+            },
+            // Every other literal once, after the jumps so their targets
+            // stay put.
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::Boolean(true),
+            },
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::SmallInteger(-5),
+            },
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::Float(1.5),
+            },
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::String("s".into()),
+            },
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::Symbol(Symbol::intern("y")),
+            },
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::MalformedInteger("16r1.8".into()),
+            },
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::UnresolvedIdentifier("Object".into()),
+            },
         ],
         argument_count: 2,
         register_count: 12,
-        statement_program_counter: vec![(0, 0..3), (1, 3..25)],
+        statement_program_counter: vec![(0, 0..3), (1, 3..33)],
         // One past the highest number among its own sends (0..=3, in
         // emission order -- what `number_call_site_families` assigns on the
         // decoded side too) and the block's `family_size` (0): the same
@@ -954,14 +979,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(35); // ... one past the last real tag
+    writer.write_u8(36); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 35
+            tag: 36
         })
     );
 }
@@ -1355,84 +1380,11 @@ fn a_huge_code_table_count_does_not_reserve_gigabytes() {
 }
 
 // ---------------------------------------------------------------------------
-// Depths the code table controls: a literal array nests as deep as the
-// image says, so decoding one has to be bounded.
+// The depth the code table controls: blocks nest as deep as the image
+// says, so decoding them has to be bounded.
 // ---------------------------------------------------------------------------
 
-/// A one-entry code table whose single instruction loads a literal array
-/// nested `depth` levels deep. Each level costs five bytes in the stream
-/// (`u8` tag + `u32` element count), which is what makes unbounded
-/// recursion here cheap to weaponize.
-fn code_table_with_nested_literal_array(depth: usize) -> Vec<u8> {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1); // one code entry
-    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
-    writer.write_u16(0); // argument_count
-    writer.write_u16(1); // register_count
-    writer.write_u16(0); // copied_count
-    writer.write_u32(0); // source.start
-    writer.write_u32(0); // source.end
-    writer.write_u32(0); // no statement_program_counter entries
-    writer.write_boolean(false); // not compiled uncached
-    writer.write_u32(1); // one instruction ...
-    writer.write_u8(OPCODE_LOAD_LITERAL); // ... a LoadLiteral
-    writer.write_u16(0); // destination
-    for _ in 0..depth {
-        writer.write_u8(LITERAL_ARRAY); // Literal::Array ...
-        writer.write_u32(1); // ... of exactly one element
-    }
-    writer.write_u8(LITERAL_NIL); // Literal::Nil at the bottom
-    writer.write_u32(0); // no mixin sections
-    writer.into_bytes()
-}
-
-#[test]
-fn a_deeply_nested_literal_array_is_a_decode_error_not_a_stack_overflow() {
-    // Comfortably past the depth that overflows the stack -- and aborts the
-    // process outright, uncatchably -- without the ceiling.
-    let bytes = code_table_with_nested_literal_array(2_000);
-    assert!(
-        bytes.len() < 16 * 1024,
-        "the whole attack is a few kilobytes"
-    );
-    let mut reader = decode::Reader::new(&bytes);
-    assert_eq!(
-        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
-        Err(decode::DecodeError::NestingTooDeep {
-            what: "literal array",
-            limit: 128
-        })
-    );
-    assert_eq!(
-        decode::DecodeError::NestingTooDeep {
-            what: "literal array",
-            limit: 128
-        }
-        .to_string(),
-        "literal array in image nests deeper than 128 levels"
-    );
-}
-
-#[test]
-fn a_literal_array_within_the_nesting_limit_still_decodes() {
-    // The ceiling must reach at least the parser's own `MAX_DEPTH` of 128 --
-    // see `the_deepest_literal_array_the_parser_accepts_survives_a_round_trip`
-    // for the end-to-end version of that claim.
-    let bytes = code_table_with_nested_literal_array(128);
-    let mut reader = decode::Reader::new(&bytes);
-    let table = decode::decode_code_table(&mut reader, &symbols::Table::empty())
-        .expect("128 levels is within the limit");
-    assert_eq!(table.codes.len(), 1);
-    assert!(matches!(
-        table.codes[0].instructions[0],
-        Instruction::LoadLiteral {
-            literal: Literal::Array(_),
-            ..
-        }
-    ));
-}
-
-/// The code table's other depth: blocks nested `levels` deep in one method.
+/// Blocks nested `levels` deep in one method.
 /// Body 0 is the innermost block, each later body creates the one before it,
 /// and the last is the method -- the order the encoder writes, every block
 /// before the code that creates it. The innermost block sits `levels`
@@ -1556,90 +1508,6 @@ fn a_mixin_table_with_no_root_row_is_a_decode_error() {
 // just wrote.
 // ---------------------------------------------------------------------------
 
-/// A module whose one method returns a literal array nested `levels` deep:
-/// `#(` opens the first level and each further `(` opens another.
-fn source_with_nested_literal_array(levels: usize) -> String {
-    let open = "(".repeat(levels);
-    let close = ")".repeat(levels);
-    formatdoc! {"
-        Newspeak3
-        'T'
-        class X = Object new (
-        ) (
-          arr = ( ^#{open}0{close} )
-        ) : ()
-    "}
-}
-
-/// The deepest literal-array nesting `ns-syntax`'s parser actually accepts,
-/// discovered at run time rather than restated, so this test tracks the
-/// parser's private `MAX_DEPTH` instead of assuming a number.
-fn deepest_literal_array_the_parser_accepts() -> usize {
-    let mut deepest = 0;
-    for levels in 1..1024 {
-        if ns_syntax::parse(&source_with_nested_literal_array(levels)).is_ok() {
-            deepest = levels;
-        } else {
-            break;
-        }
-    }
-    assert!(
-        deepest > 0,
-        "the parser accepts at least one level of nesting"
-    );
-    deepest
-}
-
-/// The deepest `Literal::Array` nesting any `LoadLiteral` in `code` carries.
-fn literal_array_depth(code: &CompiledCode) -> usize {
-    fn depth(literal: &Literal) -> usize {
-        match literal {
-            Literal::Array(elements) => 1 + elements.iter().map(depth).max().unwrap_or(0),
-            _ => 0,
-        }
-    }
-    code.instructions
-        .iter()
-        .filter_map(|instruction| match instruction {
-            Instruction::LoadLiteral { literal, .. } => Some(depth(literal)),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0)
-}
-
-#[test]
-fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
-    // The regression this pins: a decoder ceiling below the parser's bound
-    // makes the image unable to read back a program the compiler just wrote
-    // into it -- a clean `NestingTooDeep` on a perfectly legal source file.
-    let levels = deepest_literal_array_the_parser_accepts();
-    assert!(
-        levels > 64,
-        "the parser accepts deeper nesting than 64 levels ({levels}), which is why \
-         MAX_LITERAL_DEPTH cannot be 64"
-    );
-    let (mut interpreter, class) = load(&source_with_nested_literal_array(levels));
-    interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let original = method_code(mutator.heap(), class, "arr");
-        assert_eq!(
-            literal_array_depth(&original),
-            levels,
-            "the compiler lowered the whole nest"
-        );
-        let (table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
-        let (_, id) = decoded_mixins.code[0]
-            .methods
-            .iter()
-            .find(|(selector, _)| selector.as_str() == "arr")
-            .expect("arr is in the root list");
-        let decoded = &table.codes[*id as usize];
-        assert_eq!(**decoded, *original);
-        assert_eq!(literal_array_depth(decoded), levels);
-    });
-}
-
 /// A module whose one method nests `levels` blocks, each sending `value` to
 /// the next one in, the innermost empty: `[[[] value] value] value`. An empty
 /// block costs the parser no further level, so this is the deepest block
@@ -1660,7 +1528,8 @@ fn source_with_nested_blocks(levels: usize) -> String {
 }
 
 /// The deepest block nesting `ns-syntax`'s parser accepts, probed rather than
-/// restated, for the reason `deepest_literal_array_the_parser_accepts` is.
+/// restated, so that the parser's limit and the decoder's cannot drift apart
+/// silently.
 fn deepest_block_nesting_the_parser_accepts() -> usize {
     let mut deepest = 0;
     for levels in 1..1024 {

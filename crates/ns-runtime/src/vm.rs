@@ -176,6 +176,11 @@ fn execute<'gc>(
             write_local(&mut mutator.heap, activation, *destination, value);
             Flow::Next
         }
+        Instruction::LoadEnclosingObject { destination, depth } => {
+            let value = crate::interpreter::sends::enclosing_object(mutator, activation, *depth);
+            write_local(&mut mutator.heap, activation, *destination, value);
+            Flow::Next
+        }
         Instruction::Move {
             destination,
             source,
@@ -789,13 +794,6 @@ fn make_value<'gc>(
         Literal::Float(float) => Value::Float(*float),
         Literal::String(string) => Value::Object(mutator.new_string(string.clone())),
         Literal::Symbol(symbol) => mutator.new_symbol(*symbol),
-        Literal::Array(elements) => {
-            let mut values = Vec::with_capacity(elements.len());
-            for element in elements {
-                values.push(make_value(mutator, activation, element)?);
-            }
-            Value::Object(mutator.new_array(values))
-        }
         Literal::MalformedInteger(text) => match parse_integer_literal(text) {
             Ok(integer) => Value::SmallInteger(integer),
             Err(message) => return Err(malformed_integer_error(message)),

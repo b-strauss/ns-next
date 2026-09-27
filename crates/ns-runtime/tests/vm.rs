@@ -314,7 +314,7 @@ fn a_block_writes_an_enclosing_temporary_through_store_outer_local() {
         'T'
         class X = Object new (
         ) (
-          public sum = ( | n | n:: 0. #(1 2 3) do: [:e | n:: n + e]. ^n )
+          public sum = ( | n | n:: 0. {1. 2. 3} do: [:e | n:: n + e]. ^n )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

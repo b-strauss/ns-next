@@ -27,11 +27,12 @@ pub enum TokenKind {
     Colon,
     Equals,
     ColonColonEquals,
-    Pound,
     LessThan,
     GreaterThan,
     /// `<:`, the mixin application operator (`newspeak-spec.pdf` §6.2).
     MixinOperator,
+    /// `<-:`, the asynchronous send token (`newspeak-spec.pdf` §5.6).
+    EventualSendOperator,
     // Literals
     Number,
     String,

@@ -7,6 +7,6 @@ Newspeak3
    exists (`docs/design/execution.md`, "No re-entry from Rust"). *)
 class DoDeep usingPlatform: platform = Object new (
 ) (
-    d: n = ( #(1) do: [:e | d: n + 1] )
+    d: n = ( {1} do: [:e | d: n + 1] )
     public main: p args: a = ( d: 0 )
 ) : ()

@@ -59,7 +59,7 @@ const EVERY_CONTINUATION: &str = indoc! {"
       public run = (
         | sum n cond body |
         sum:: 0.
-        #(1 2 3 4) do: [:e | sum:: sum + e].
+        {1. 2. 3. 4} do: [:e | sum:: sum + e].
         n:: 0.
         cond:: [n < 3].
         body:: [n:: n + 1. sum:: sum + n].

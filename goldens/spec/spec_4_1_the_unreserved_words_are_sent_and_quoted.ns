@@ -3,8 +3,8 @@ Newspeak3
 (* newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
    nil, so class, public, protected, private and lazy are unary selectors
    like any identifier: sent to an explicit receiver, in a cascade, and as
-   the keyword parts' stems. A bare one inside a literal array is a symbol,
-   as any bare identifier there is. *)
+   the keyword parts' stems, and 4.2's sym makes each a symbol after a
+   pound. *)
 class Spec41TheUnreservedWordsAreSentAndQuoted usingPlatform: p = Object new (| t = p transcript. |) (
     class Holder = Object new (| public trace ::= ''. |) (
         public public = ( trace:: trace, 'public ' )
@@ -19,7 +19,7 @@ class Spec41TheUnreservedWordsAreSentAndQuoted usingPlatform: p = Object new (| 
         holder public.
         holder protected; private; lazy; class: 'x'.
         t show: holder trace; newLine.
-        words:: #(class public protected private lazy).
+        words:: {#class. #public. #protected. #private. #lazy}.
         t show: (words at: 1) printString; newLine.
         t show: ((words at: 2) == #public) printString; newLine.
         t show: words size printString; newLine

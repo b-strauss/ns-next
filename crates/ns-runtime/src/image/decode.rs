@@ -967,8 +967,7 @@ pub fn decode_code_table(
 
 /// `ns-syntax`'s own nesting ceiling, which bounds how deeply a program's
 /// blocks nest: `parser::MAX_DEPTH` in `crates/ns-syntax/src/parser/mod.rs`,
-/// 128, private to that crate and so restated here, as `MAX_LITERAL_DEPTH`
-/// restates it. Every block literal is one `parse_primary`, one level of
+/// 128, private to that crate and so restated here. Every block literal is one `parse_primary`, one level of
 /// that count, and neither lowering compiles a block into anything but one
 /// `MakeClosure` of one body -- the optimized lowering only inlines some away
 /// -- so no program the parser accepts nests deeper than this in a code
@@ -1434,9 +1433,9 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
 /// bounds it against that one.
 fn own_registers(instruction: &Instruction) -> Vec<u16> {
     match instruction {
-        Instruction::LoadLiteral { destination, .. } | Instruction::LoadSelf { destination } => {
-            vec![*destination]
-        }
+        Instruction::LoadLiteral { destination, .. }
+        | Instruction::LoadSelf { destination }
+        | Instruction::LoadEnclosingObject { destination, .. } => vec![*destination],
         // The copied registers are read out of the *executing* frame, like
         // a send's arguments, so they are bounded here and not by
         // `verify_outer_locals`.
@@ -1554,6 +1553,7 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         Instruction::SendMirror { failure, .. } => Some(*failure),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
+        | Instruction::LoadEnclosingObject { .. }
         | Instruction::Move { .. }
         | Instruction::StoreLocal { .. }
         | Instruction::LoadOuterLocal { .. }
@@ -1751,12 +1751,19 @@ fn decode_instruction(
             let destination = reader.read_u16()?;
             Instruction::LoadLiteral {
                 destination,
-                literal: decode_literal(reader, 0, symbols)?,
+                literal: decode_literal(reader, symbols)?,
             }
         }
         OPCODE_LOAD_SELF => Instruction::LoadSelf {
             destination: reader.read_u16()?,
         },
+        OPCODE_LOAD_ENCLOSING_OBJECT => {
+            let destination = reader.read_u16()?;
+            Instruction::LoadEnclosingObject {
+                destination,
+                depth: reader.read_u16()?,
+            }
+        }
         OPCODE_MOVE => {
             let destination = reader.read_u16()?;
             Instruction::Move {
@@ -1955,42 +1962,7 @@ fn decode_instruction(
     })
 }
 
-/// How deeply a `Literal::Array` may nest before decoding refuses. Each
-/// level costs only five bytes in the stream (`u8` tag + `u32` length), so
-/// without a ceiling a few kilobytes of crafted image would recurse until
-/// the stack overflows -- which aborts the process outright and cannot be
-/// caught, let alone reported as a `DecodeError`.
-///
-/// The value is bracketed from both sides. Below, by what the encoder can
-/// legitimately produce: `ns-syntax`'s parser accepts literal-array nesting
-/// up to its own `parser::MAX_DEPTH` (128, shared across every guarded
-/// production, and spent on nested arrays by `parse_array_element`), and
-/// `compiler::lower::lower_literal` lowers all of it to nested
-/// `Literal::Array`s with no further limit. So this ceiling must be *at
-/// least* `MAX_DEPTH`, or an image would fail to read back a program the
-/// compiler had just written into it. Above, by the stack: decoding was
-/// measured to survive 700 levels and to overflow at 2000 in a debug build,
-/// so 128 keeps a wide margin.
-///
-/// `parser::MAX_DEPTH` is private to `ns-syntax`, and runtime work leaves
-/// that crate untouched, so the number is restated here rather than
-/// imported -- it must track `crates/ns-syntax/src/parser/mod.rs`'s
-/// `MAX_DEPTH`. `the_deepest_literal_array_the_parser_accepts_survives_a_round_trip`
-/// in `tests/image.rs` discovers the parser's real bound at run time instead
-/// of assuming it, so the two cannot drift apart silently.
-const MAX_LITERAL_DEPTH: usize = 128;
-
-fn decode_literal(
-    reader: &mut Reader,
-    depth: usize,
-    symbols: &symbols::Table,
-) -> Result<Literal, DecodeError> {
-    if depth > MAX_LITERAL_DEPTH {
-        return Err(DecodeError::NestingTooDeep {
-            what: "literal array",
-            limit: MAX_LITERAL_DEPTH,
-        });
-    }
+fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Literal, DecodeError> {
     Ok(match reader.read_u8()? {
         LITERAL_NIL => Literal::Nil,
         LITERAL_BOOLEAN => Literal::Boolean(reader.read_boolean()?),
@@ -1998,14 +1970,6 @@ fn decode_literal(
         LITERAL_FLOAT => Literal::Float(reader.read_f64()?),
         LITERAL_STRING => Literal::String(reader.read_str()?),
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
-        LITERAL_ARRAY => {
-            let count = reader.read_u32()? as usize;
-            let mut elements = reserve_for(count, reader);
-            for _ in 0..count {
-                elements.push(decode_literal(reader, depth + 1, symbols)?);
-            }
-            Literal::Array(elements)
-        }
         LITERAL_MALFORMED_INTEGER => Literal::MalformedInteger(reader.read_str()?),
         LITERAL_UNRESOLVED_IDENTIFIER => Literal::UnresolvedIdentifier(reader.read_str()?),
         tag => {
@@ -3044,9 +3008,7 @@ fn check_class_references<'gc>(
 ///
 /// Every pass is a flat loop over the two tables, and every reference
 /// between records is an id into them, never an inline nested record -- so
-/// no part of this decoder recurses on a depth the image controls. The one
-/// depth-bounded structure in the format, `Literal::Array`, lives in the
-/// code table (`decode_literal`'s `MAX_LITERAL_DEPTH`).
+/// no part of this decoder recurses on a depth the image controls.
 pub fn decode_graph_section<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,

@@ -6,7 +6,3 @@
 #
 # The corpus test fails if a file here parses successfully (stale entry)
 # or if a file NOT here fails to parse (regression).
-
-[[entry]]
-file = "NewspeakColorizationForSqueak.ns"
-reason = "writes `sd start -1` for `sd start - 1`; the Milestone 1 lexer's documented negative-literal disambiguation (`a -42` lexes as a negative literal, lexer.rs:358-368) tokenizes the ` -1` as a dangling numeric literal. Deferred to Milestone 2."

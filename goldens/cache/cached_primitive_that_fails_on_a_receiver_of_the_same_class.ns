@@ -30,7 +30,7 @@ class CacheFailingPrimitive usingPlatform: thePlatform = Object <: Value () (
             transcript show: (each = each) printString; show: ' '; show: each printString; newLine].
         {platform transcript. platform. platform transcript} do: [:each |
             transcript show: (each = each) printString; newLine].
-        {'abc'. #(1 2)} do: [:each | transcript show: each size printString; newLine].
+        {'abc'. {1. 2}} do: [:each | transcript show: each size printString; newLine].
         {platform transcript. platform transcript. platform} do: [:each | each show: 'shown'. each newLine].
     )
 ) : ()

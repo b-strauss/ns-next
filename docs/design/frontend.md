@@ -33,60 +33,124 @@ expressions), the instance side, and — after `) : (` — the class side.
 
 ## Grammar
 
-The productions are transcribed from `NewspeakGrammar.ns`, a combinator grammar
-in the official repository, vendored into `corpus/reference/` so the parser can
-be checked against it. The load-bearing ones:
+**The syntax is `newspeak-spec.pdf`'s grammar, strictly** (decided with the
+user on 2026-09-27): every production of §4.2 to §8.1 is accepted as written,
+and what it does not derive is refused. The canonical combinator grammar,
+`NewspeakGrammar.ns`, vendored into `corpus/reference/`, is the reference
+for what the specification leaves open or gets wrong, and nothing more.
+`parser::declaration`'s `specification_tests` pin one rule each, with the
+forms it accepts and those it refuses; the goldens named `spec_4_2_*`,
+`spec_5_*`, `spec_6_*` and `spec_8_1_*` run the accepted ones.
 
-- `compilationUnit = languageId , classCategory , classDecl , eoi`. The
-  category string is optional in the grammar (`corpus/reference/NewspeakGrammar.ns`
-  line 202, `classCategory = string opt.`) and in §8.1
-  (`classCategory → [string]`); the parser requires one and refuses a file
-  without it with "expected a category string". An over-rejection, and a
-  loud one: every corpus module and every golden carries a category, so
-  nothing exercises the optional form.
-- `classHeader = accessModifier? , classReservedWord , classId ,
-  messagePattern? , '=' , superclassClause? , '(' , classComment? ,
-  slotDecls? , initExprs , ')'`
-- `superclassClause = superclassPrefix? , unaryMsg , message?`, where
-  `superclassPrefix` is `outer <id>` | `self` | `super`
+**How the grammar is read.** §4.2 calls it "a PEG (Parser Expression Grammar)
+with no distinction between scanning and parsing", and the specification
+writes `classDeclaration` as two spelled-out alternatives precisely because an
+optional part, once matched, is never retried as absent. The parser reads it
+that way -- of several alternatives the first that matches in full wins, and
+an optional part is taken whenever it matches -- over the lexer's tokens, not
+over characters. Tokens are what a reader sees, and reading characters would
+make spacing matter where nobody means it to; the one place that shows is
+recorded as a deviation ("Words that are not reserved"). Where a rule is
+ambiguous between a token and a production, the parser tries the production in
+full and restores the cursor when it fails (`Parser::checkpoint`/`restore`),
+as `at_lazy_slot`, `at_binary_equals_factory` and `parse_slot_declarations` do.
+
+**Where the specification contradicts itself or cannot be meant literally**,
+its own prose decides, and otherwise the canonical grammar:
+
+- `expression → [setterKeyword] sendExpression` allows one setter keyword,
+  but §5.4.3's rationale is "to enable chaining of setter sends, e.g.,
+  `w::x::y`", and the canonical grammar has `setterKeyword star`: a chain is
+  accepted.
+- `slotDecls → seqSlotDecls | simSlotDecls` tries the sequential clause
+  first, which read over characters matches every `||` as an empty clause and
+  leaves the simultaneous one unreachable, though §6.3.2 defines it. The
+  canonical grammar tries `simSlotDecls` first; so does the parser, falling
+  back to the empty sequential clause when no simultaneous one matches
+  (`[:x | || x + 1]`).
+- `comma → ""` and the quoting inside `specialCharacter`, `twoDblQuotes` and
+  `wildcardPattern` are transcription damage; the lexer reads them as a comma,
+  a backslash, a doubled quote and an underscore.
+
+The productions, and what the parser does with each:
+
+- `compilationUnit → languageId toplevelClass`, `toplevelClass →
+  classCategory classDeclaration`, `classCategory → [string]` (§8.1): the
+  category is optional, and the module's class takes no access modifier --
+  only `nestedClassDecl → [accessModifier] classDeclaration` has one.
+- `classDeclaration` (§6): `class`, a name, an optional `typeParameterDecl`
+  (`<[K, V]>`, dropped, "What is parsed and dropped"), then the factory's
+  `messagePattern` and `=`, or `=` alone -- tried in that order, so
+  `class Pair = other = Object new () ()` has the binary factory `=`.
+- `inheritanceClause → [inheritancePrefix] unarySelector [message]` (§6.1):
+  a prefix (`outer N`, `self` or `super`), the receiver, and at most one
+  message -- unary, binary or keyword, whose arguments may be any binary or
+  unary expressions. `Object new foo` is refused.
 - §6.2's mixin application follows an explicit superclass clause:
-  `mixinAppSuffix = (mixinOperator inheritanceClause)+ (dot | classBody)`,
+  `mixinAppSuffix → (mixinOperator inheritanceClause)+ (dot | classBody)`,
   so `class C = S ms <: M1 m1 <: M2 m2 ( … )`, or the same ending in `.`
   with no body at all. `mixinOperator` is `<:`, one lexer token; each clause
   is parsed by the superclass clause's own `parse_superclass_clause` and kept,
   in written order, in `ClassDeclaration::mixin_applications`. What the
   runtime builds from it is [object-model.md](object-model.md), "Mixin
   application". Inside a `<...>` type body or a `where { ... }` clause `<:`
-  is the bound operator (`<Foo <: Bar>`) and is dropped with it. No corpus
-  module writes `<:` in a superclass clause, so `parse-corpus` does not
-  exercise the form; `goldens/mixin/` does.
-- `slotDecls = '|' slotDef* '|'` (sequential) or `'||' slotDef* '||'`
-  (simultaneous). A `slotDef` is
-  `accessModifier? slotDecl ((('=' | '::=') expression '.') | '.'?)` — `=` is
-  an immutable slot, `::=` a mutable one, and neither means an uninitialized
-  mutable slot; the dot is mandatory after an initializer (§6.3.2) and
-  refused without one. A lazy slot declaration on the instance side
+  is the bound operator (`<Foo <: Bar>`) and is dropped with it.
+- `classBody → classHeader sideDecl [classSideDecl]` (§6.3): the instance
+  side is required, however empty -- `class C = () ()` -- and the class side
+  optional. `classHeader → lparen [classComment] [slotDecls] initExprs
+  rparen`, `initExprs → [expression (dot expression)* [dot]]`: initializer
+  expressions separated by single dots. `sideDecl → lparen (nestedClassDecl |
+  lazySlotDecl | methodDecl)* rparen` and `classSideDecl → colon lparen
+  methodDecl* rparen` have no separator: a dot between members is refused.
+- `slotDecls → '|' slotDef* '|'` (sequential) or `'||' slotDef* '||'`
+  (simultaneous), in a class header and as a code body's temporaries alike.
+  `slotDef → [accessModifier] slotDecl [((= | ::=) expression dot) | dot]`:
+  `=` is an immutable slot, `::=` a mutable one, and neither an uninitialized
+  mutable one; the dot is mandatory after an initializer. A lazy slot
   (`lazy m ::= e.`, §6.3.3) parses into a `SlotDeclaration` whose `lazy` is
   set; its dot is mandatory too. The runtime initializes it on first read
   (`docs/design/core-library.md`, "Lazy slots first").
-- `sideDecl = '(' (nestedClassDecl | lazySlotDecl | methodDecl)* ')'`, tried
-  in that order, each in full before the next ("Words that are not reserved"
-  below).
-- `messagePattern = unarySelector | (binarySelector slotDecl) |
-  (keyword slotDecl)+`
-- `methodDecl = accessModifier? , messagePattern , '=' , '(' , codeBody , ')'`
-- `block = '[' , blockParameters? , codeBody , ']'`;
-  `blockParameters = (':' slotDecl)+ '|'`
-- `literal = pattern | number | symbolConstant | string | tuple` — the
-  grammar's `characterConstant` is gone ("Lexer" below); `tuple = '{' (expression sepOrTermBy '.') '}'`
-- comments are `(* ... *)` and nest; `(* :literalmessage: ... *)` is a
-  literal-message comment
-
-**Where the grammar and the language specification disagree, the grammar wins
-for syntax and `newspeak-spec.pdf` wins for semantics.** The specification is
-explicitly a draft and says so in its own front matter. Where the vendored
-corpus's actual behaviour and the specification text disagree, prefer the
-corpus and note the discrepancy.
+- `methodDecl → [accessModifier] messagePattern equalSign lparen codeBody
+  rparen` (§6.3.4), with `messagePattern` a unary selector, any binary
+  selector and a parameter (`||`, `=`, `<` and `->` included), or keywords and
+  parameters -- keywords only, never a setter keyword.
+- `codeBody → [temporaries] statements` (§5.1.8), `statements →
+  returnStatement | statementSequence | empty`, `statementSequence →
+  expression [dot statements]`, `returnStatement → hat expression [dot]`
+  (§7.2): statements separated by single dots, a trailing one allowed,
+  nothing after a return, and no dot that ends no statement.
+- `block → lbracket [blockParameters] codeBody rbracket`,
+  `blockParameters → (colon slotDecl)+ vbar` (§5.1.8).
+- Expressions, §5.4.3 and §5.4.4: `expression → setterKeyword*
+  sendExpression` (a setter keyword stands at an expression's head and
+  nowhere else), `sendExpression → implicitKeywordSend |
+  cascadedMessageExpression`, `cascadedMessageExpression → primary
+  [msgCascade]`, `msgCascade → nonEmptyMessages cascadeMsg*`: a cascade
+  follows a primary and at least one message to it, never an implicit-receiver
+  keyword send and never a parenthesized send alone, and each `;` part is a
+  unary, binary or keyword message. Unary binds tighter than binary, binary
+  than keyword, and `=`, `<`, `>`, `|` and `||` are binary selectors wherever
+  a message can stand, since §4.2's `specialCharacter` includes them. Like the
+  PEG's `binaryMsg*`, a selector with no operand after it is not taken, so a
+  slot section's closing `|` stays one.
+- `primary → unarySelector | literal | block | parenthesizedExpression`, and
+  `literal → pattern | number | symbol | characterConstant | string | tuple`
+  (§5.1): the character constant is a one-character string ("Lexer"), and
+  `tuple → lcurly [expression (dot expression)* [dot]] rcurly` is the array
+  literal. Smalltalk's literal array `#( ... )` is not Newspeak and the lexer
+  refuses it by name.
+- `pattern → "<" patternLiteral ">"` (§5.1.9): `_`, a number, symbol, string
+  or tuple, or keywords each with an optional value -- `_`, a literal,
+  `?name` or a nested pattern (`<x: <y: 1>>`, whose closing `>>` the parser
+  splits). Parsed in full and kept as its text; what it evaluates to is a
+  deviation ("What is parsed and dropped").
+- `super` is followed by a message (§5.10) and `outer` by a class's name
+  (§5.9), both at the parser. `outer N` with no message after it is the
+  enclosing object ([dispatch.md](dispatch.md), "Shapes the resolver must
+  recognize"). A bare `super`, which the parser accepted and the runtime
+  raised on only when it ran, is a syntax error.
+- comments are `(* ... *)` and nest; `(* :literalmessage: ... *)` and
+  `(*:id: ... *)` metadata comments are comments.
 
 ## Lexer
 
@@ -109,6 +173,35 @@ doubling, `""""`, would have lexed those as an unterminated string. `""""`
 therefore reads as `"""` followed by the start of another string, and appears
 in the corpus only inside comments.
 
+**Numbers, selectors and symbols follow §4.2's lexical grammar.**
+
+- *Negative numbers.* `decimalNum → ["-"] digits ...` has a sign, and
+  `binSel → (specialCharacter | "-") specialCharacter*` makes `-` a binary
+  selector: which one a `-` before a digit is depends on where it stands,
+  which only the parser knows. The lexer always reads `-` against a digit as a
+  negative number, and the parser splits it into `-` and the number where the
+  grammar has a binary message (`Parser::split_negative_number`): `3 -4`,
+  `3-4` and `x -1` subtract, `foo: -4` and `{-4}` hold a negative number,
+  `3 - -4` is seven. An earlier rule decided by the whitespace before the `-`
+  instead, and read the corpus's `sd start -1` as a dangling literal.
+- *Binary selectors.* `-` starts a selector and continues none, since it is
+  not a `specialCharacter`: `+-4` is `+` and a negative four, `->` one
+  selector. §5.6's asynchronous send token `<-:` is one token of its own,
+  `EventualSendOperator`; `<:` is §6.2's `MixinOperator`.
+- *Radix numbers.* Each optional part is taken only when it is complete: `16r`
+  is `16` followed by the name `r`, a fraction needs a digit after its dot,
+  and only `decimalNum` has a leading sign, so `-16rFF` is `-16` and `rFF`
+  while `16r-1F` is -31. Extended digits are uppercase.
+- *Symbols.* `sym → str | kws | binSel | id`, `kws → kw+`: every keyword of a
+  symbol ends in its colon, so `#at:put:` is one symbol and `#at:put` is
+  `#at:` followed by `put`.
+- *No literal arrays.* `#( ... )` is refused by name
+  (`` `#( ... )` is not Newspeak syntax; a tuple is written `{ element. element }` ``):
+  neither the specification nor the canonical grammar has Smalltalk's literal
+  array, and the tuple is §5.1.7's array literal (decided with the user on
+  2026-09-27). Its image literal tag, 7, is retired
+  ([image-format.md](image-format.md)).
+
 Comments are retained as tokens for tooling and skipped by the parser.
 
 ## AST
@@ -130,14 +223,23 @@ Typed-Newspeak declaration syntax parses and is discarded, because there is no
 type AST: `<Type>` annotations on parameters and slots, `^<Type>` return
 annotations, `[T]` type parameters on class names and selectors and type
 arguments on a superclass or `<:` clause's receiver (`<: Collection[E]`), and
-`where { ... }` constraint clauses. The eventual-send operator `<-:` is likewise
+`where { ... }` constraint clauses. §4.3 acknowledges this "built-in optional
+type annotation syntax based on the Strongtalk type system" without giving it
+a grammar, so the canonical grammar's is followed, and §6's own
+`typeParameterDecl`, `class Map <[K, V]> new: capacity <Integer>`, is
+accepted beside the canonical `class List[E]` (decided with the user on
+2026-09-27). The eventual-send operator `<-:` is likewise
 accepted and dropped, which makes an asynchronous send (§5.6) run as an
 ordinary synchronous one and answer the value where the specification gives a
 promise. Nothing in the runtime implements actors, so there is no promise to
 answer with; the alternative would be to refuse the operator outright.
 
-Two of the things dropped here change what a correct program answers, rather
-than only what an incorrect one is allowed to say. Each has a row in
+A pattern literal (§5.1.9) is parsed in full and kept as its source text,
+but lowers to **nil**: the section makes `<_>` `Pattern wildcard` and `<l>`
+`Pattern literal: l`, and there is no `Pattern` class for either to reach.
+
+Three of the things dropped here change what a correct program answers,
+rather than only what an incorrect one is allowed to say. Each has a row in
 [README.md](README.md)'s deviations table; this section is what those rows
 point at.
 
@@ -165,7 +267,10 @@ identifiers, as the canonical grammar does (`identifier = tokenFor: id`):
 `true`, `false` and `nil` are recognized as literals, and `self`, `super` and
 `outer` contextually by name at the parser and resolver level. Expression-level
 `outer N foo` parses correctly, checked against
-`corpus/modules/AccessModifierTesting.ns`, which uses it heavily.
+`corpus/modules/AccessModifierTesting.ns`, which uses it heavily. `super` is
+followed by a message and `outer` by a class's name, or the parser refuses
+them (§5.10, §5.9; decided with the user on 2026-09-27); a bare `super`, which
+the runtime once raised on only when it ran, never reaches it.
 
 **The parser refuses every other use** (decided with the user on
 2026-09-25): a reserved word naming a parameter, a block parameter, a slot or
@@ -221,9 +326,32 @@ alike, both refused. [README.md](README.md)'s deviations table records it.
 `parser::declaration`'s `unreserved_word_tests` pin every position, the
 refused forms included; `goldens/spec/spec_4_1_the_unreserved_words_*` and
 `spec_6_3_3_the_unreserved_words_name_lazy_slots` run each accepted one.
-The resolver took §5.9's `outer N` only for an `N` starting with an
-uppercase letter; it now takes any identifier, and one naming no enclosing
+§5.9's `outer N` takes any identifier for `N`, and one naming no enclosing
 class is the compile-time error §5.9 makes it ([dispatch.md](dispatch.md)).
+
+## Possible future extensions
+
+Two constructs the specification describes and itself marks
+*Unimplemented* are not parsed, by decision (2026-09-27), and would each be
+a design of its own rather than a conformance fix:
+
+- **Chains** (§5.4.4), `e :| μ`, equivalent to `(e) μ`: `label: "foo" :|
+  color: Color red` is `(label: "foo") color: Color red`, sugar for sending
+  to the previous result without parentheses, "cascades for functional
+  programming". The section gives no grammar, leaves open what `μ` may be
+  and how a chain meets a setter send or a cascade, and ends "It's an open
+  question if chains stay in the language". No prior art implements them.
+  The parser would resolve them into ordinary sends; `:|` would be a new
+  token in both lexers.
+- **Object literals** (§5.1.10), `objectLiteral → [identifier [keywordMsg]]
+  classBody`: an anonymous class declaration that evaluates to a new object,
+  a new class per evaluation over one shared mixin, whose enclosing object is
+  the current *activation* -- so it sees the method's locals, which no
+  enclosing object in this runtime does today. The production is reachable
+  from no other, so the specification does not say where one may stand, and
+  it is ambiguous with a parenthesized expression and a keyword send; SOMns,
+  the one prior art that implements it, prefixes it with its own keyword,
+  `objL()( ... )`, for exactly that reason.
 
 ## `:=` is refused
 
@@ -247,14 +375,13 @@ upstream commit, recorded with its URL in `corpus/PROVENANCE.md`. It is a manual
 snapshot rather than a submodule or subtree: refreshing it is a deliberate,
 reviewed action, and the upstream license travels with the files.
 
-`ns-next parse-corpus corpus/modules` must report **parsed 210, failed 0,
-expected-fail 1, stale 0**. A file that legitimately cannot parse yet belongs in
+`ns-next parse-corpus corpus/modules` must report **parsed 211, failed 0,
+expected-fail 0, stale 0**. A file that legitimately cannot parse yet belongs in
 `corpus/blacklist.toml` with a stated reason, and the `stale` count is what
 keeps that list from accumulating entries that have quietly started working.
-
-The one blacklisted file is a lexer ambiguity rather than a missing construct:
-source that writes `expression -1` meaning `expression - 1`, where the lexer's rule makes
-`-1` a negative literal. One file, `NewspeakColorizationForSqueak.ns`.
+The list is empty: the last entry, `NewspeakColorizationForSqueak.ns`, wrote
+`sd start -1` for `sd start - 1`, which the grammar reads as a subtraction
+("Negative numbers" below) and an earlier lexer rule did not.
 
 ## Errors
 

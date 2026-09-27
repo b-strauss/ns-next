@@ -55,7 +55,7 @@ cargo nextest list -p ns-cli --test run_goldens --run-ignored only
 cargo fmt --all
 # lints, must be warning-free
 cargo clippy --workspace --all-targets
-# parser corpus gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
+# parser corpus gate: must report "parsed 211, failed 0, expected-fail 0, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
 # runnable corpus gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules

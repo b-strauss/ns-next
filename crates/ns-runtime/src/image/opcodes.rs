@@ -98,6 +98,9 @@ pub const OPCODE_INTEGER_BINARY: u8 = 33;
 /// A lazy slot's getter's return of its filled field
 /// (`Instruction::ReturnSlotIfFilled`).
 pub const OPCODE_RETURN_SLOT_IF_FILLED: u8 = 34;
+/// `outer N` as a value, the kth enclosing object
+/// (`Instruction::LoadEnclosingObject`).
+pub const OPCODE_LOAD_ENCLOSING_OBJECT: u8 = 35;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction
@@ -115,7 +118,7 @@ pub const OPCODE_RETURN_SLOT_IF_FILLED: u8 = 34;
 /// whatever instruction takes the next free number instead.
 pub const RETIRED_OPCODES: [u8; 10] = [2, 7, 8, 9, 10, 11, 21, 22, 23, 24];
 
-// Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
+// Literals, carried by `OPCODE_LOAD_LITERAL`.
 // Next free number: 10.
 
 /// `nil`.
@@ -130,22 +133,24 @@ pub const LITERAL_FLOAT: u8 = 3;
 pub const LITERAL_STRING: u8 = 4;
 /// A symbol literal, `#name`.
 pub const LITERAL_SYMBOL: u8 = 5;
-/// A literal array, `#( ... )`, whose elements are literals themselves.
-pub const LITERAL_ARRAY: u8 = 7;
 /// An integer the lexer accepted and the parser rejects. Carried as its
 /// original text because the error it raises is produced at execution time, by
 /// `interpreter::literals::malformed_integer_error`.
 pub const LITERAL_MALFORMED_INTEGER: u8 = 8;
-/// An identifier that names nothing, such as a bare `super`; it raises its
-/// error when it runs.
+/// An identifier that names nothing, a module root's clause receiver; it
+/// raises its error when it runs.
 pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
 
 /// Literal tags that no longer name anything and are never reused: 6 was the
 /// character literal, retired 2026-09-25 when `"c"` became a one-character
 /// string (§5.1.4 announces character literals going away, §5.1.5 makes
 /// `"σ"` a string). A stale artifact's tag-6 literal meets an unknown tag
-/// instead of decoding as whatever literal takes the next free number.
-pub const RETIRED_LITERALS: [u8; 1] = [6];
+/// instead of decoding as whatever literal takes the next free number. 7 was
+/// the literal array, `#( ... )`, retired 2026-09-27 with the syntax, which
+/// neither the specification nor the canonical grammar has (a tuple,
+/// `{ ... }`, is §5.1.7's array); its elements nested, so a stale artifact's
+/// tag-7 bytes would otherwise decode as whatever literal took the number.
+pub const RETIRED_LITERALS: [u8; 2] = [6, 7];
 
 // ---------------------------------------------------------------------------
 // Graph-section tags. Same rule as above: assigned once, never renumbered.

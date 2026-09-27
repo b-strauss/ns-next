@@ -29,7 +29,7 @@ const PROBE: &str = indoc! {"
     'Test'
     class Probe = Object new () (
         public probe = ( ^self absent )
-        public outOfRange = ( ^#(1 2) at: 5 )
+        public outOfRange = ( ^{1. 2} at: 5 )
     ) : ()
 "};
 
@@ -141,7 +141,7 @@ const DEEP: &str = indoc! {"
         public probe: n = ( deepest:: n. ^self probe: n + 1 )
         reserveProbe: n = ( reserveDeepest:: n. ^self reserveProbe: n + 1 )
         public descend: n to: bottom = (
-            n = bottom ifTrue: [^#(1) at: 5].
+            n = bottom ifTrue: [^{1} at: 5].
             ^self descend: n + 1 to: bottom
         )
         public notUnderstood: n to: bottom = (
@@ -149,7 +149,7 @@ const DEEP: &str = indoc! {"
             ^self notUnderstood: n + 1 to: bottom
         )
         descendPassing: n to: bottom = (
-            n = bottom ifTrue: [^[#(1) at: 5] on: Error do: [:e | passes:: passes + 1. e pass]].
+            n = bottom ifTrue: [^[{1} at: 5] on: Error do: [:e | passes:: passes + 1. e pass]].
             ^self descendPassing: n + 1 to: bottom
         )
         public passInTheReserveAt: bottom = (

@@ -680,7 +680,6 @@ fn literal_span(literal: &ast::Literal) -> Span {
         | ast::Literal::Symbol { span, .. }
         | ast::Literal::Boolean { span, .. }
         | ast::Literal::Nil { span }
-        | ast::Literal::Array { span, .. }
         | ast::Literal::Pattern { span, .. } => *span,
     }
 }

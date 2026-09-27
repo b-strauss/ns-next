@@ -9,7 +9,7 @@ use crate::token::{Token, TokenKind};
 
 /// Maximum nesting depth for the recursive parser productions guarded by
 /// [`Parser::enter`] / [`Parser::leave`] (`parse_primary`,
-/// `parse_array_element`, `parse_class_declaration`). The deepest real corpus
+/// `parse_class_declaration`). The deepest real corpus
 /// program nests in the single digits; 128 is far past any genuine program
 /// and well short of the (uncatchable) debug-build stack-overflow point at
 /// roughly 250 frames.
@@ -135,8 +135,20 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `identifier`, refused if it is a reserved word (`refuse_reserved_word`).
+    /// `identifier`, refused if it is a reserved word (`refuse_reserved_word`)
+    /// or no name at all -- then nothing is consumed, and the name is empty.
     fn declared_identifier(&mut self, role: &str) -> Identifier {
+        if !self.at_name() {
+            let token = self.current();
+            self.push_error(
+                token.span,
+                &format!("expected a name to {role}, found {:?}", token.kind),
+            );
+            return Identifier {
+                name: String::new(),
+                span: token.span,
+            };
+        }
         let identifier = self.identifier();
         self.refuse_reserved_word(&identifier.name, identifier.span, role);
         identifier
@@ -526,13 +538,16 @@ mod tests {
     }
 
     #[test]
-    fn setter_keyword_after_receiver_is_keyword_send() {
-        // `receiver x:: v` stays a keyword send, not an assignment.
-        let expression = parse_expression("obj foo:: 5");
-        let Expression::Send(send) = expression else {
-            panic!("{expression:?}")
-        };
-        assert_eq!(send.message.selector, Selector::Keyword("foo:".into()));
+    fn a_setter_keyword_after_a_receiver_is_refused() {
+        // §5.4.3: `keywordMsg` takes a keyword, never a setter keyword, so
+        // `receiver x:: v` is no message at all.
+        let (_, diagnostics) = parse_with_diagnostics("obj foo:: 5");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("stands only at the start")),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -582,17 +597,6 @@ mod tests {
             panic!()
         };
         assert_eq!(elements.len(), 3);
-    }
-
-    #[test]
-    fn literal_array() {
-        let expression = parse_expression("#(1 2 foo #bar (3 4))");
-        let Expression::Literal(Literal::Array { elements, .. }) = expression else {
-            panic!()
-        };
-        assert_eq!(elements.len(), 5);
-        assert!(matches!(elements[2], Literal::Symbol { .. })); // bare `foo`
-        assert!(matches!(elements[4], Literal::Array { .. }));
     }
 
     #[test]

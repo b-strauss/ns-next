@@ -12,7 +12,15 @@ pub struct Lexer<'a> {
     diagnostics: Vec<Diagnostic>,
 }
 
-const SPECIAL: &[u8] = b"+-*/\\~<>=&|@%,?!";
+/// §4.2's `specialCharacter`. `-` is not one: `binSel → (specialCharacter |
+/// "-") specialCharacter*` lets it start a binary selector and nothing
+/// more, so `+-` is `+` followed by `-`, and `x +-1` adds a negative one.
+const SPECIAL: &[u8] = b"+*/\\~<>=&|@%,?!";
+
+/// Whether `byte` can start a binary selector.
+fn starts_binary_selector(byte: u8) -> bool {
+    byte == b'-' || SPECIAL.contains(&byte)
+}
 
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Lexer<'a> {
@@ -101,7 +109,17 @@ impl<'a> Lexer<'a> {
             b'^' => self.single(TokenKind::Caret),
             b'.' => self.single(TokenKind::Dot),
             b';' => self.single(TokenKind::Semicolon),
-            b'#' if self.peek_at(1) == Some(b'(') => self.single(TokenKind::Pound),
+            // Smalltalk's literal array. Newspeak has none -- neither the
+            // specification's `literal` (§5.1) nor the canonical grammar --
+            // and writes a tuple, `{ 1. 2 }`, instead (§5.1.7). Named here,
+            // because a bare `#` would surface as an unrelated error.
+            b'#' if self.peek_at(1) == Some(b'(') => {
+                self.position += 1;
+                self.diagnostics.push(Diagnostic::error(
+                    Span::new(start as u32, self.position as u32),
+                    "`#( ... )` is not Newspeak syntax; a tuple is written `{ element. element }`",
+                ));
+            }
             b'#' => self.lex_symbol(),
             b'|' => {
                 if self.peek_at(1) == Some(b'|') {
@@ -142,15 +160,19 @@ impl<'a> Lexer<'a> {
             _ if byte.is_ascii_digit() => self.lex_number(),
             b'\'' => self.lex_string(),
             b'"' => self.lex_double_quoted_string(),
+            // §4.2's `decimalNum → ["-"] digits ...`: a `-` against a digit is
+            // a negative literal's sign wherever a literal can stand. Where a
+            // binary message can, the PEG takes it as the selector instead
+            // (`3 -4` subtracts), which only the parser knows, so the parser
+            // splits it there (`Parser::split_negative_number`).
             _ if byte == b'-'
                 && self
                     .peek_at(1)
-                    .is_some_and(|next_byte| next_byte.is_ascii_digit())
-                && (!self.previous_ends_value() || self.preceded_by_whitespace()) =>
+                    .is_some_and(|next_byte| next_byte.is_ascii_digit()) =>
             {
                 self.lex_number()
             }
-            _ if SPECIAL.contains(&byte) => self.lex_operator(),
+            _ if starts_binary_selector(byte) => self.lex_operator(),
             _ => {
                 // Decode the real UTF-8 character at `self.position` rather than
                 // Latin-1-decoding a single byte: `byte as char` mangles a
@@ -233,6 +255,14 @@ impl<'a> Lexer<'a> {
             self.push(TokenKind::MixinOperator, start, self.position);
             return;
         }
+        // §5.6's asynchronous send token. No binary selector is spelled `<-`,
+        // since `-` cannot continue one, so the three characters are
+        // unambiguous.
+        if byte == b'<' && next == Some(b'-') && self.peek_at(2) == Some(b':') {
+            self.position += 3;
+            self.push(TokenKind::EventualSendOperator, start, self.position);
+            return;
+        }
         let is_run_of_two_plus = next.is_some_and(|next_byte| SPECIAL.contains(&next_byte));
         if !is_run_of_two_plus {
             match byte {
@@ -242,32 +272,39 @@ impl<'a> Lexer<'a> {
                 _ => {}
             }
         }
-        // `::=` / `:=` are handled in `lex_one`'s `:` arm before we get here; a run
-        // starting with a special character is a binary selector.
+        // `::=` / `:=` are handled in `lex_one`'s `:` arm before we get here; a
+        // binary selector is its first character and the special characters
+        // after it.
+        self.position += 1;
         while matches!(self.peek(), Some(next_byte) if SPECIAL.contains(&next_byte)) {
             self.position += 1;
         }
         self.push(TokenKind::BinarySelector, start, self.position);
     }
 
+    /// §4.2's `num → radixNum | decimalNum`. Each optional part is taken only
+    /// when it is complete -- a radix `r` with an extended digit after it, a
+    /// fraction's `.` with a digit -- so `16r` is `16` followed by `r`, and
+    /// `1.foo` a `1` and a statement's end. Only `decimalNum` has a leading
+    /// `-`, so `-16rFF` is `-16` followed by the name `rFF`.
     fn lex_number(&mut self) {
         let start = self.position;
-        if self.peek() == Some(b'-') {
+        let negative = self.peek() == Some(b'-');
+        if negative {
             self.position += 1;
         }
         self.eat_digits();
-        // radix?
-        if self.peek() == Some(b'r') {
-            self.position += 1;
+        let extended_digit_at = |offset: usize| self.peek_at(offset).is_some_and(is_extended_digit);
+        let radix = !negative
+            && self.peek() == Some(b'r')
+            && (extended_digit_at(1) || (self.peek_at(1) == Some(b'-') && extended_digit_at(2)));
+        if radix {
+            self.position += 1; // `r`
             if self.peek() == Some(b'-') {
                 self.position += 1;
             }
             self.eat_extended_digits();
-            if self.peek() == Some(b'.')
-                && self
-                    .peek_at(1)
-                    .is_some_and(|byte| byte.is_ascii_alphanumeric())
-            {
+            if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(is_extended_digit) {
                 self.position += 1;
                 self.eat_extended_digits();
             }
@@ -303,8 +340,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn eat_extended_digits(&mut self) {
-        while matches!(self.peek(), Some(byte) if byte.is_ascii_digit() || byte.is_ascii_uppercase())
-        {
+        while self.peek().is_some_and(is_extended_digit) {
             self.position += 1;
         }
     }
@@ -343,21 +379,27 @@ impl<'a> Lexer<'a> {
                 self.lex_string();
                 self.tokens.pop(); // replace String token with Symbol span
             }
+            // §4.2's `sym → str | kws | binSel | id`: an identifier, or a run
+            // of keywords each ending in its colon (`#at:put:`). A word after
+            // the last colon belongs to the symbol only when its own colon
+            // follows, so `#at:put` is `#at:` followed by `put`.
             Some(byte) if byte == b'_' || byte.is_ascii_alphabetic() => {
-                // identifier, possibly a run of keywords `at:put:`
-                while matches!(self.peek(), Some(next_byte) if next_byte == b'_' || next_byte.is_ascii_alphanumeric())
-                {
-                    self.position += 1;
-                }
+                self.eat_word();
                 while self.peek() == Some(b':') {
                     self.position += 1;
-                    while matches!(self.peek(), Some(next_byte) if next_byte == b'_' || next_byte.is_ascii_alphanumeric())
-                    {
-                        self.position += 1;
+                    let after_colon = self.position;
+                    self.eat_word();
+                    if self.position == after_colon {
+                        break;
+                    }
+                    if self.peek() != Some(b':') {
+                        self.position = after_colon;
+                        break;
                     }
                 }
             }
-            Some(byte) if SPECIAL.contains(&byte) => {
+            Some(byte) if starts_binary_selector(byte) => {
+                self.position += 1;
                 while matches!(self.peek(), Some(next_byte) if SPECIAL.contains(&next_byte)) {
                     self.position += 1;
                 }
@@ -403,34 +445,16 @@ impl<'a> Lexer<'a> {
         self.push(TokenKind::String, start, self.position);
     }
 
-    /// True when the byte immediately before the current position is ASCII
-    /// whitespace, or we are at the start of input. Used to let `-42` lex as a
-    /// negative literal even after a value token when a space separates them
-    /// (`a -42`), while `a-42` and `a - 42` stay subtraction.
-    ///
-    /// NOTE: Comments are not considered whitespace here. This is deliberate:
-    /// a comment is trivia but does NOT count as preceding whitespace for the
-    /// purposes of distinguishing negative literals from subtraction. So `x (*c*)-42`
-    /// stays subtraction; `x (*c*) -42` is a negative literal (the real space after
-    /// the comment counts).
-    fn preceded_by_whitespace(&self) -> bool {
-        self.position == 0 || self.bytes[self.position - 1].is_ascii_whitespace()
+    fn eat_word(&mut self) {
+        while matches!(self.peek(), Some(byte) if byte == b'_' || byte.is_ascii_alphanumeric()) {
+            self.position += 1;
+        }
     }
+}
 
-    fn previous_ends_value(&self) -> bool {
-        matches!(
-            self.tokens.last().map(|token| token.kind),
-            Some(
-                TokenKind::Identifier
-                    | TokenKind::Number
-                    | TokenKind::String
-                    | TokenKind::Symbol
-                    | TokenKind::RightParenthesis
-                    | TokenKind::RightBracket
-                    | TokenKind::RightBrace
-            )
-        )
-    }
+/// §4.2's `extendedDigits`: a digit or an uppercase letter.
+fn is_extended_digit(byte: u8) -> bool {
+    byte.is_ascii_digit() || byte.is_ascii_uppercase()
 }
 
 #[cfg(test)]
@@ -594,6 +618,67 @@ mod tests {
         assert_eq!(kinds("a -42"), vec![Identifier, Number, EndOfInput]);
     }
 
+    /// A `-` against a digit is a negative number wherever it stands; the
+    /// parser splits it where the grammar has a binary message.
+    #[test]
+    fn a_minus_against_a_digit_is_a_negative_number() {
+        assert_eq!(kinds("a-42"), vec![Identifier, Number, EndOfInput]);
+        assert_eq!(kinds("x (*c*)-42"), vec![Identifier, Number, EndOfInput]);
+    }
+
+    /// §4.2's `binSel → (specialCharacter | "-") specialCharacter*`.
+    #[test]
+    fn a_minus_only_starts_a_binary_selector() {
+        let source = "a +-1 -> b --c";
+        let (tokens, diagnostics) = Lexer::new(source).run();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let texts: Vec<&str> = tokens.iter().map(|token| token.span.text(source)).collect();
+        assert_eq!(texts, vec!["a", "+", "-1", "->", "b", "-", "-", "c", ""]);
+    }
+
+    /// §5.6's asynchronous send token.
+    #[test]
+    fn an_eventual_send_is_one_token() {
+        assert_eq!(
+            kinds("a <-: b"),
+            vec![Identifier, EventualSendOperator, Identifier, EndOfInput]
+        );
+    }
+
+    /// §4.2's `num`: a radix needs an extended digit after its `r`, only an
+    /// unsigned number has one, and a fraction needs a digit after its dot.
+    #[test]
+    fn each_part_of_a_number_is_taken_only_when_complete() {
+        let texts = |source: &'static str| -> Vec<&'static str> {
+            let (tokens, diagnostics) = Lexer::new(source).run();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            tokens.iter().map(|token| token.span.text(source)).collect()
+        };
+        assert_eq!(texts("16r"), vec!["16", "r", ""]);
+        assert_eq!(texts("-16rFF"), vec!["-16", "rFF", ""]);
+        assert_eq!(
+            texts("16r-1F 2r1.1 16rff"),
+            vec!["16r-1F", "2r1.1", "16", "rff", ""]
+        );
+        assert_eq!(texts("16r1.a"), vec!["16r1", ".", "a", ""]);
+        assert_eq!(
+            texts("1.5e-3 1e 2.x"),
+            vec!["1.5e-3", "1", "e", "2", ".", "x", ""]
+        );
+    }
+
+    /// §4.2's `sym → str | kws | binSel | id`, `kws → kw+`.
+    #[test]
+    fn a_symbols_keywords_each_end_in_a_colon() {
+        let texts = |source: &'static str| -> Vec<&'static str> {
+            let (tokens, _) = Lexer::new(source).run();
+            tokens.iter().map(|token| token.span.text(source)).collect()
+        };
+        assert_eq!(texts("#at:put"), vec!["#at:", "put", ""]);
+        assert_eq!(texts("#at:put:"), vec!["#at:put:", ""]);
+        assert_eq!(texts("#-> #+-"), vec!["#->", "#+", "-", ""]);
+    }
+
     #[test]
     fn strings_with_escaped_quote() {
         let (tokens, diagnostics) = Lexer::new("'it''s'").run();
@@ -611,10 +696,15 @@ mod tests {
     }
 
     #[test]
-    fn hash_parenthesis_is_pound_then_left_parenthesis() {
-        assert_eq!(
-            kinds("#(1)"),
-            vec![Pound, LeftParenthesis, Number, RightParenthesis, EndOfInput]
+    fn a_literal_array_is_refused_by_name() {
+        let (_, diagnostics) = Lexer::new("#(1)").run();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(
+            diagnostics[0]
+                .message
+                .starts_with("`#( ... )` is not Newspeak syntax"),
+            "{}",
+            diagnostics[0].message
         );
     }
 

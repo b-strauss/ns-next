@@ -9,8 +9,8 @@ class AnArrayIndexErrorIsCaught usingPlatform: thePlatform = Object new (
       private Error = thePlatform kernel Error. |
 ) (
     public main: platform args: arguments = (
-        transcript show: ([#(1 2) at: 5] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([#(1 2) at: 5] on: Error do: [:e | e class name]); newLine.
-        transcript show: ([#(1 2) at: 2] on: Error do: [:e | 0]) printString; newLine.
+        transcript show: ([{1. 2} at: 5] on: Error do: [:e | e messageText]); newLine.
+        transcript show: ([{1. 2} at: 5] on: Error do: [:e | e class name]); newLine.
+        transcript show: ([{1. 2} at: 2] on: Error do: [:e | 0]) printString; newLine.
     )
 ) : ()

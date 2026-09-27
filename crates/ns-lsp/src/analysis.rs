@@ -145,14 +145,15 @@ mod tests {
     fn a_parser_error_is_reported() {
         let text = indoc::indoc! {"
             Newspeak3
-            class Module = Object new () () : ()
+            'Test'
+            class Module = Object new ()
         "};
         let found = messages(text);
         // Recovery may add further errors after the first; the first one is
-        // the parser's own message for the missing category.
+        // the parser's own message for the missing instance side.
         assert_eq!(
             found.first().map(String::as_str),
-            Some("expected a category string"),
+            Some("expected the instance side's `( ... )` after the class header (§6.3)"),
             "{found:?}"
         );
     }

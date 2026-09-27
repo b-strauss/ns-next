@@ -1,0 +1,7 @@
+stdout = '''
+#name
+#at:put:
+#->
+#two words
+true
+'''

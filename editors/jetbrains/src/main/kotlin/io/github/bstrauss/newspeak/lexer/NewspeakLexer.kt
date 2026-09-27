@@ -18,20 +18,17 @@ class NewspeakLexer : LexerBase() {
     private var tokenStart = 0
     private var tokenEnd = 0
     private var currentType: IElementType? = null
-    private var stateAtTokenStart = INITIAL
-    /** Whether the previous significant token ends a value: the Rust lexer's `previous_ends_value`. */
-    private var previousEndsValue = false
     private var position = 0
 
     override fun start(buffer: CharSequence, startOffset: Int, endOffset: Int, initialState: Int) {
         this.buffer = buffer
         bufferEnd = endOffset
         tokenEnd = startOffset
-        previousEndsValue = initialState == PREVIOUS_ENDS_VALUE
         advance()
     }
 
-    override fun getState(): Int = stateAtTokenStart
+    /** Every token boundary is a restart point: the lexer carries no state across tokens. */
+    override fun getState(): Int = INITIAL
     override fun getTokenType(): IElementType? = currentType
     override fun getTokenStart(): Int = tokenStart
     override fun getTokenEnd(): Int = tokenEnd
@@ -40,7 +37,6 @@ class NewspeakLexer : LexerBase() {
 
     override fun advance() {
         tokenStart = tokenEnd
-        stateAtTokenStart = if (previousEndsValue) PREVIOUS_ENDS_VALUE else INITIAL
         if (tokenStart >= bufferEnd) {
             currentType = null
             return
@@ -49,9 +45,6 @@ class NewspeakLexer : LexerBase() {
         val type = lexOne()
         currentType = type
         tokenEnd = position
-        if (type != TokenType.WHITE_SPACE && type != Types.COMMENT && type != TokenType.BAD_CHARACTER) {
-            previousEndsValue = type in ENDS_VALUE
-        }
     }
 
     private fun peek(offset: Int = 0): Char? {
@@ -90,7 +83,9 @@ class NewspeakLexer : LexerBase() {
             character == '^' -> single(Types.CARET)
             character == '.' -> single(Types.DOT)
             character == ';' -> single(Types.SEMICOLON)
-            character == '#' && peek(1) == '(' -> single(Types.POUND)
+            // `#(`: the Rust lexer reports Smalltalk's literal array and steps
+            // over the `#`, emitting no token.
+            character == '#' && peek(1) == '(' -> single(TokenType.BAD_CHARACTER)
             character == '#' -> lexSymbol()
             character == '|' -> when {
                 peek(1) == '|' -> {
@@ -116,10 +111,8 @@ class NewspeakLexer : LexerBase() {
             isAsciiDigit(character) -> lexNumber()
             character == '\'' -> lexString()
             character == '"' -> lexDoubleQuotedString()
-            character == '-' &&
-                peek(1)?.let { next -> isAsciiDigit(next) } == true &&
-                (!previousEndsValue || precededByWhitespace()) -> lexNumber()
-            character in SPECIAL -> lexOperator()
+            character == '-' && peek(1)?.let { next -> isAsciiDigit(next) } == true -> lexNumber()
+            startsBinarySelector(character) -> lexOperator()
             else -> {
                 // A character that starts no token: the Rust lexer reports it
                 // and steps over one code point, emitting no token.
@@ -185,6 +178,10 @@ class NewspeakLexer : LexerBase() {
             position += 2
             return Types.MIXIN_OPERATOR
         }
+        if (character == '<' && next == '-' && peek(2) == ':') {
+            position += 3
+            return Types.EVENTUAL_SEND_OPERATOR
+        }
         val runOfTwoPlus = next != null && next in SPECIAL
         if (!runOfTwoPlus) {
             when (character) {
@@ -193,18 +190,22 @@ class NewspeakLexer : LexerBase() {
                 '>' -> return single(Types.GREATER_THAN)
             }
         }
+        position += 1
         while (peek()?.let { following -> following in SPECIAL } == true) position += 1
         return Types.BINARY_SELECTOR
     }
 
     private fun lexNumber(): IElementType {
-        if (peek() == '-') position += 1
+        val negative = peek() == '-'
+        if (negative) position += 1
         eatDigits()
-        if (peek() == 'r') {
+        val radix = !negative && peek() == 'r' &&
+            (isExtendedDigit(peek(1)) || (peek(1) == '-' && isExtendedDigit(peek(2))))
+        if (radix) {
             position += 1
             if (peek() == '-') position += 1
             eatExtendedDigits()
-            if (peek() == '.' && peek(1)?.let { next -> isAsciiLetterOrDigit(next) } == true) {
+            if (peek() == '.' && isExtendedDigit(peek(1))) {
                 position += 1
                 eatExtendedDigits()
             }
@@ -231,7 +232,7 @@ class NewspeakLexer : LexerBase() {
     }
 
     private fun eatExtendedDigits() {
-        while (peek()?.let { next -> isAsciiDigit(next) || next in 'A'..'Z' } == true) position += 1
+        while (isExtendedDigit(peek())) position += 1
     }
 
     /** A single-quoted string, `''` inside it a quote; unterminated, it runs to the end. */
@@ -258,13 +259,20 @@ class NewspeakLexer : LexerBase() {
         when {
             next == '\'' -> lexString()
             next != null && (next == '_' || isAsciiLetter(next)) -> {
-                while (peek()?.let { following -> isWordCharacter(following) } == true) position += 1
+                eatWord()
                 while (peek() == ':') {
                     position += 1
-                    while (peek()?.let { following -> isWordCharacter(following) } == true) position += 1
+                    val afterColon = position
+                    eatWord()
+                    if (position == afterColon) break
+                    if (peek() != ':') {
+                        position = afterColon
+                        break
+                    }
                 }
             }
-            next != null && next in SPECIAL -> {
+            next != null && startsBinarySelector(next) -> {
+                position += 1
                 while (peek()?.let { following -> following in SPECIAL } == true) position += 1
             }
             // A `#` followed by nothing a symbol can be: the Rust lexer reports
@@ -291,20 +299,21 @@ class NewspeakLexer : LexerBase() {
         return Types.STRING
     }
 
-    /** The Rust lexer's `preceded_by_whitespace`: a comment does not count. */
-    private fun precededByWhitespace(): Boolean = position == 0 || isAsciiWhitespace(buffer[position - 1])
+    private fun eatWord() {
+        while (peek()?.let { next -> isWordCharacter(next) } == true) position += 1
+    }
 
     companion object {
         const val INITIAL = 0
-        const val PREVIOUS_ENDS_VALUE = 1
 
-        /** The Rust lexer's `SPECIAL`. */
-        private const val SPECIAL = "+-*/\\~<>=&|@%,?!"
+        /** The Rust lexer's `SPECIAL`, §4.2's `specialCharacter`: `-` only starts a binary selector. */
+        private const val SPECIAL = "+*/\\~<>=&|@%,?!"
 
-        private val ENDS_VALUE: Set<IElementType> = setOf(
-            Types.IDENTIFIER, Types.RESERVED_WORD, Types.NUMBER, Types.STRING, Types.SYMBOL,
-            Types.RIGHT_PARENTHESIS, Types.RIGHT_BRACKET, Types.RIGHT_BRACE,
-        )
+        private fun startsBinarySelector(character: Char) = character == '-' || character in SPECIAL
+
+        /** §4.2's `extendedDigits`: a digit or an uppercase letter. */
+        private fun isExtendedDigit(character: Char?) =
+            character != null && (isAsciiDigit(character) || character in 'A'..'Z')
 
         /** Rust's `u8::is_ascii_whitespace`: no vertical tab, and nothing beyond ASCII. */
         private fun isAsciiWhitespace(character: Char) =

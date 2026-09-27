@@ -25,7 +25,7 @@ use crate::types::Binding;
 pub(crate) fn is_ordinary_send(bindings: &HashMap<Span, Binding>, send: &ast::Send) -> bool {
     !matches!(
         bindings.get(&send.span),
-        Some(Binding::SuperSend) | Some(Binding::LexicalSend { .. })
+        Some(Binding::SuperSend | Binding::LexicalSend { .. } | Binding::EnclosingObject { .. })
     )
 }
 

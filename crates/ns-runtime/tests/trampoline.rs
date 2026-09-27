@@ -662,7 +662,7 @@ ns_runtime::for_each_lowering! {
             'T'
             class DoDeep = Object new (
             ) (
-                public d: n = ( n = 0 ifTrue: [^0]. #(1) do: [:e | ^d: n - 1]. ^1 )
+                public d: n = ( n = 0 ifTrue: [^0]. {1} do: [:e | ^d: n - 1]. ^1 )
             ) : ()
         "};
         let (mut interpreter, class) = load(source, lowering);

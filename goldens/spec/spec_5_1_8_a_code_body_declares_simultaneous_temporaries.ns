@@ -1,0 +1,14 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 5.1.8: a code body's temporaries are slotDecls, which
+   6.3.2 makes either a sequential | ... | or a simultaneous || ... || clause,
+   and an empty sequential one may be written || -- inside a method as in a
+   class header. (Simultaneous clauses still initialize in order here, a
+   recorded deviation, so these initializers do not refer to each other.) *)
+class Spec518ACodeBodyDeclaresSimultaneousTemporaries usingPlatform: p = Object new (| t = p transcript. |) (
+    public main: platform args: arguments = (
+        || first = 3. second = 4. ||
+        t show: (first + second) printString; newLine.
+        t show: ([:x | || x + 1] value: 1) printString; newLine
+    )
+) : ()

@@ -36,6 +36,9 @@ that lowering is mostly a transliteration rather than a translation.
   than at each execution. The last two are the deferred cases; see "Compilation
   cannot fail".
 - `LoadSelf { destination }`.
+- `LoadEnclosingObject { destination, depth }` — `outer N` with no message
+  after it, `Binding::EnclosingObject`: the kth enclosing object, found as a
+  `SendLexical` finds its receiver, with no send.
 - `Move { destination, source }`.
 - `StoreLocal { source, slot }` — a `Binding::Local` **write**. A read needs no
   instruction at all: **the local's register *is* its value.** That is the fact
@@ -677,9 +680,8 @@ it, so a method that is never run never fails. Two literals carry that deferral:
   instruction executes and raises its error text, and only if execution actually
   reaches it.
 - `Literal::UnresolvedIdentifier` — an identifier the resolver left unbound:
-  bare `super`, which the lexer does not reserve and the language rejects
-  only when it is evaluated, and a module root's clause receiver, which the
-  root rule decides and which never runs ([object-model.md](object-model.md),
+  a module root's clause receiver, which the root rule decides and which
+  never runs ([object-model.md](object-model.md),
   "The root rule"). Every other name is bound, a predefined class name
   included.
 

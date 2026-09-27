@@ -43,6 +43,19 @@ pub(crate) fn decide_lexical_send<'gc>(
     mutator.act(resolved, enclosing, selector, arguments)
 }
 
+/// `outer N` as a value: the object `outer N m` sends `m` to, found the same
+/// way `decide_lexical_send` finds it.
+pub(crate) fn enclosing_object<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    depth: u16,
+) -> Value<'gc> {
+    let (self_value, defining_class) = mutator
+        .heap
+        .activation_receiver_and_current_class(activation);
+    dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth)
+}
+
 /// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current
 /// activation's* `current_class`, not `self`'s own class. "If a public or
 /// protected method f named s is defined for (3.5) S, the value of the send

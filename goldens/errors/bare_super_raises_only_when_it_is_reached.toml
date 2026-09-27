@@ -1,7 +1,0 @@
-status = 1
-stdout = '''
-before
-'''
-stderr = '''
-Uncaught Newspeak error: internal: unresolved identifier `super`
-'''

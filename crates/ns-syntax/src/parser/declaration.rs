@@ -5,9 +5,12 @@ use crate::ast::*;
 use crate::token::TokenKind;
 
 impl<'a> Parser<'a> {
-    /// Optional `| temporaries |` then `Dot`-separated statements, where the
-    /// last statement may be `^ expression`. A trailing `Dot` is allowed. Stops
-    /// at `RightBracket` / `RightParenthesis` / `EndOfInput`.
+    /// `codeBody → [temporaries] statements` (§5.1.8, and §7.2 for the return), where
+    /// `statements → returnStatement | statementSequence | empty`,
+    /// `statementSequence → expression [dot statements]` and
+    /// `returnStatement → hat expression [dot]`: statements separated by
+    /// single dots, a trailing one allowed, nothing after a return, and no
+    /// dot that ends no statement. Stops at `]`, `)` or the end of input.
     pub(crate) fn parse_code_body(&mut self) -> CodeBody {
         let start = self.current().span;
         let temporaries = self.parse_temporaries();
@@ -25,7 +28,8 @@ impl<'a> Parser<'a> {
                     break; // nothing after a return
                 }
                 TokenKind::Dot => {
-                    self.bump(); // stray dot
+                    let dot = self.bump();
+                    self.push_error(dot.span, "a `.` ends a statement, and none is here");
                 }
                 _ => {
                     let expression = self.parse_expression();
@@ -56,16 +60,7 @@ impl<'a> Parser<'a> {
     /// legitimately starts with a binary `|` send (there is no left operand),
     /// so a leading `Bar` / `DoubleBar` is unambiguously a temporary section.
     fn parse_temporaries(&mut self) -> Vec<SlotDeclaration> {
-        // The lexer emits `||` as one `DoubleBar` token. In code-body position
-        // that lone token is the degenerate empty simultaneous temporary list —
-        // short-circuit it before the `parse_slot_declarations` handoff, which
-        // would otherwise consume `||` and then scan the rest of the body
-        // hunting a closing `||` that never comes.
-        if self.at(TokenKind::DoubleBar) {
-            self.bump();
-            return Vec::new();
-        }
-        if !self.at(TokenKind::Bar) {
+        if !self.at(TokenKind::Bar) && !self.at(TokenKind::DoubleBar) {
             return Vec::new();
         }
         self.parse_slot_declarations()
@@ -104,6 +99,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::LessThan
                 | TokenKind::GreaterThan
                 | TokenKind::Bar
+                | TokenKind::DoubleBar
         ) && super::is_name(self.peek2())
     }
 
@@ -121,9 +117,11 @@ impl<'a> Parser<'a> {
             }
         } else {
             match self.peek() {
-                TokenKind::Keyword | TokenKind::SetterKeyword => {
+                // `keywordMsgPattern → (keyword slotDecl)+` (§6.3.4): a setter
+                // keyword `name::` is not a keyword.
+                TokenKind::Keyword => {
                     let mut parts = Vec::new();
-                    while self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
+                    while self.at(TokenKind::Keyword) {
                         let keyword = self.bump();
                         let key = Identifier {
                             name: self.text(keyword).trim_end_matches(':').to_string(),
@@ -149,6 +147,19 @@ impl<'a> Parser<'a> {
         self.skip_return_type_annotation();
         self.skip_where_clause();
         pattern
+    }
+
+    /// Whether the cursor is at a binary factory pattern whose selector is
+    /// `=`, followed by the header's own `=`.
+    fn at_binary_equals_factory(&mut self) -> bool {
+        if !self.at_binary_selector_pattern() {
+            return false;
+        }
+        let checkpoint = self.checkpoint();
+        let _ = self.parse_message_pattern();
+        let matched = self.at(TokenKind::Equals);
+        self.restore(checkpoint);
+        matched
     }
 
     /// A method/slot return type `^ <Type>` (grammar's `returnType`, e.g.
@@ -179,13 +190,30 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `slotDecls → seqSlotDecls | simSlotDecls` (§6.3.2), `| slotDef* |` or
+    /// `|| slotDef* ||`. The lexer emits `||` as one token, and `||` is also
+    /// an empty sequential section, `| |` without its space. The canonical
+    /// grammar tries `simSlotDecls` first and falls back to the sequential
+    /// reading when it does not match -- `[:x | || x + 1]` is an empty
+    /// section and a statement -- and so does this. (The specification lists
+    /// `seqSlotDecls` first, which would read every `||` as the empty
+    /// section and leave `simSlotDecls` unreachable.)
     pub(crate) fn parse_slot_declarations(&mut self) -> Vec<SlotDeclaration> {
-        let simultaneous = self.at(TokenKind::DoubleBar);
-        let close = if simultaneous {
-            TokenKind::DoubleBar
-        } else {
-            TokenKind::Bar
-        };
+        if self.at(TokenKind::DoubleBar) {
+            let checkpoint = self.checkpoint();
+            let slots = self.parse_slot_section(TokenKind::DoubleBar);
+            if self.diagnostics.len() == checkpoint.1 {
+                return slots;
+            }
+            self.restore(checkpoint);
+            self.bump(); // the empty sequential section
+            return Vec::new();
+        }
+        self.parse_slot_section(TokenKind::Bar)
+    }
+
+    /// One section, between two `close` tokens.
+    fn parse_slot_section(&mut self, close: TokenKind) -> Vec<SlotDeclaration> {
         if !self.eat(close) {
             return Vec::new();
         }
@@ -278,17 +306,24 @@ impl<'a> Parser<'a> {
             );
             String::new()
         };
-        // DEVIATION (grammar line 202: `classCategory = string opt`): the
-        // grammar makes the category string optional; we require it and emit a
-        // diagnostic when it is absent. Every corpus module carries one;
-        // revisit in Milestone 2.
+        // §8.1's `toplevelClass → classCategory classDeclaration`, with
+        // `classCategory → [string]`: the category is optional, and a module's
+        // class, which nothing encloses, takes no access modifier.
         let category = if self.at(TokenKind::String) {
             let token = self.bump();
             string_lexeme_body(self.text(token))
         } else {
-            self.push_error(self.current().span, "expected a category string");
             String::new()
         };
+        if matches!(
+            self.peek(),
+            TokenKind::Public | TokenKind::Protected | TokenKind::Private
+        ) {
+            self.push_error(
+                self.current().span,
+                "a module's class takes no access modifier; only a nested class does (§8.1)",
+            );
+        }
         let root_class = self.parse_class_declaration();
         let end = self.current().span;
         if !self.at(TokenKind::EndOfInput) {
@@ -335,10 +370,18 @@ impl<'a> Parser<'a> {
         let access = self.parse_access_modifier();
         self.expect(TokenKind::Class);
         let name = self.declared_identifier("name a class");
-        // `class List[E] ...` — generic type-parameter declaration
-        // (`NewspeakGrammar.ns:465`); dropped in Milestone 1.
+        // A generic class's type parameters, dropped: §6's
+        // `typeParameterDecl`, `class Map <[K, V]> ...`, and the canonical
+        // grammar's `class List[E] ...` (`NewspeakGrammar.ns:465`).
+        if self.at(TokenKind::LessThan) && self.peek2() == TokenKind::LeftBracket {
+            self.skip_type_annotation();
+        }
         self.skip_type_arguments();
-        let factory = if self.at(TokenKind::Equals) {
+        // §6's two alternatives, `messagePattern equalSign ...` before
+        // `empty equalSign ...`: an `=` here is the factory's binary selector
+        // when a parameter and another `=` follow it (`class Pair = other =
+        // Object new () ()`), and otherwise the one that ends the header.
+        let factory = if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
             None
         } else {
             Some(self.parse_message_pattern())
@@ -400,8 +443,8 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::RightParenthesis);
 
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
-        // Corpus always has G2; being lenient when it is absent keeps a
-        // degenerate `class C = ()` parseable.
+        // §6.3's `classBody → classHeader sideDecl [classSideDecl]`: the
+        // instance side is not optional, however empty.
         let (lazy_slots, methods, nested_classes, g2_end) = if self.at(TokenKind::LeftParenthesis) {
             self.bump(); // `(`
             let (lazy, methods, nested) = self.parse_side_body();
@@ -409,6 +452,10 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightParenthesis);
             (lazy, methods, nested, end)
         } else {
+            self.push_error(
+                self.current().span,
+                "expected the instance side's `( ... )` after the class header (§6.3)",
+            );
             (Vec::new(), Vec::new(), Vec::new(), g1_end)
         };
 
@@ -508,18 +555,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// unary*, then binary*, then an optional keyword send — the grammar's
-    /// `message`, seeded by an already-parsed receiver.
+    /// The clause's `[message]` (§6.1's `inheritanceClause → [inheritancePrefix]
+    /// unarySelector [message]`, `message → keywordMsg | unarySelector |
+    /// binaryMsg`): at most one message to the class the receiver names, whose
+    /// arguments may be any binary or unary expressions.
     fn parse_trailing_sends(&mut self, out: &mut Vec<MessageSend>) {
-        while self.at_name() && !self.is_reserved_identifier(self.current()) {
+        if self.at_name() && !self.is_reserved_identifier(self.current()) {
             let selector_token = self.bump();
             out.push(MessageSend {
                 selector: Selector::Unary(self.text(selector_token).to_string()),
                 arguments: Vec::new(),
                 span: selector_token.span,
             });
-        }
-        while self.at(TokenKind::BinarySelector) {
+        } else if self.at_binary_operator() {
+            if self.at(TokenKind::Number) {
+                self.split_negative_number();
+            }
             let operator = self.bump();
             let argument = self.parse_unary_message();
             out.push(MessageSend {
@@ -529,8 +580,7 @@ impl<'a> Parser<'a> {
                     .merge(super::expression::expression_span(&argument)),
                 arguments: vec![argument],
             });
-        }
-        if self.at(TokenKind::Keyword) {
+        } else if self.at(TokenKind::Keyword) {
             let mut selector = String::new();
             let mut arguments = Vec::new();
             let start = self.current().span;
@@ -548,6 +598,12 @@ impl<'a> Parser<'a> {
                 arguments,
                 span: start.merge(end),
             });
+        }
+        if self.at_name() || self.at_binary_operator() || self.at(TokenKind::Keyword) {
+            self.push_error(
+                self.current().span,
+                "a superclass clause sends at most one message to the class it names (§6.1)",
+            );
         }
     }
 
@@ -569,13 +625,28 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek() {
                 TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
+                // `initExprs → [expression (dot expression)* [dot]]`.
                 TokenKind::Dot => {
-                    self.bump();
+                    let dot = self.bump();
+                    self.push_error(
+                        dot.span,
+                        "a `.` ends an initializer expression, and none is here",
+                    );
                 }
                 _ => {
                     let before = self.position;
                     let expression = self.parse_expression();
-                    self.eat(TokenKind::Dot);
+                    if !self.eat(TokenKind::Dot)
+                        && !matches!(
+                            self.peek(),
+                            TokenKind::RightParenthesis | TokenKind::EndOfInput
+                        )
+                    {
+                        self.push_error(
+                            self.current().span,
+                            "expected `.` between initializer expressions (§6.3)",
+                        );
+                    }
                     if self.position == before {
                         // `parse_expression` can return a recovery node without
                         // consuming a token (a stray `^ ; + = ]` etc). Force
@@ -614,8 +685,11 @@ impl<'a> Parser<'a> {
             }
             let before = self.position;
             match self.peek() {
+                // `sideDecl → lparen (nestedClassDecl | lazySlotDecl |
+                // methodDecl)* rparen` has no separator.
                 TokenKind::Dot => {
-                    self.bump();
+                    let dot = self.bump();
+                    self.push_error(dot.span, "no `.` stands between a class's members (§6.3)");
                 }
                 // A `| parameter ... = (...)` binary-operator method named `|`
                 // is valid here; only a genuine `|...|` slot section is not.
@@ -690,7 +764,11 @@ impl<'a> Parser<'a> {
             let before = self.position;
             match self.peek() {
                 TokenKind::Dot => {
-                    self.bump();
+                    let dot = self.bump();
+                    self.push_error(
+                        dot.span,
+                        "no `.` stands between a class side's methods (§6.3)",
+                    );
                 }
                 _ if self.looks_like_method() => {
                     methods.push(self.parse_method_declaration());
@@ -859,8 +937,8 @@ impl<'a> Parser<'a> {
             Some(())
         } else {
             match self.peek() {
-                TokenKind::Keyword | TokenKind::SetterKeyword => {
-                    while self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
+                TokenKind::Keyword => {
+                    while self.at(TokenKind::Keyword) {
                         self.bump();
                         if self.at_name() {
                             self.bump();
@@ -1823,7 +1901,7 @@ mod unreserved_word_tests {
                 format!("cascade = ( ^3 printString; {word} )"),
                 format!("keyword = ( ^3 {word}: 4 )"),
                 format!("argument = ( ^3 + {word} )"),
-                format!("symbols = ( ^#({word} #{word}) )"),
+                format!("symbol = ( ^#{word} )"),
                 format!("receiver = ( ^{word} {word} )"),
             ] {
                 assert_accepted(&member);
@@ -1994,5 +2072,290 @@ mod unreserved_word_tests {
             );
         }
         assert_accepted("class Box = Object new ( | held. other | ) ()");
+    }
+}
+
+/// Each rule of the specification's grammar the parser holds a program to,
+/// with the forms it accepts and the ones it refuses (`docs/design/frontend.md`,
+/// "Grammar").
+#[cfg(test)]
+mod specification_tests {
+    use super::*;
+    use indoc::formatdoc;
+
+    fn parse_member(member: &str) -> Result<Module, Vec<String>> {
+        parse_module_source(&formatdoc! {"
+            Newspeak3
+            'T'
+            class Root = Object new () (
+              {member}
+            ) : ()
+        "})
+    }
+
+    fn parse_module_source(source: &str) -> Result<Module, Vec<String>> {
+        crate::parse(source).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect()
+        })
+    }
+
+    fn accepted(member: &str) {
+        if let Err(errors) = parse_member(member) {
+            panic!("{member}: {errors:?}");
+        }
+    }
+
+    fn refused(member: &str) {
+        assert!(parse_member(member).is_err(), "{member} parsed");
+    }
+
+    fn expression(source: &str) -> Expression {
+        let module = parse_member(&format!("probe = ( ^{source} )"))
+            .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
+        let method = &module.root_class.instance_side.methods[0];
+        match &method.body.statements[0] {
+            Statement::Return(expression) => expression.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// §4.2's `decimalNum → ["-"] digits ...` stands where a literal can, and
+    /// `binaryMsg → binarySelector unaryExpression` where a binary message
+    /// can: `3 -4` subtracts, `foo: -4` passes a negative number.
+    #[test]
+    fn a_negative_number_is_one_only_where_a_literal_stands() {
+        for source in ["3 -4", "3-4", "3 - 4"] {
+            let Expression::Send(send) = expression(source) else {
+                panic!("{source}")
+            };
+            assert_eq!(
+                send.message.selector,
+                Selector::Binary("-".into()),
+                "{source}"
+            );
+            assert!(
+                matches!(&send.message.arguments[0], Expression::Literal(Literal::Integer { text, .. }) if text == "4"),
+                "{source}"
+            );
+        }
+        let Expression::Send(send) = expression("3 at: -4") else {
+            panic!()
+        };
+        assert!(matches!(
+            &send.message.arguments[0],
+            Expression::Literal(Literal::Integer { text, .. }) if text == "-4"
+        ));
+        let Expression::Send(send) = expression("3 +-4") else {
+            panic!()
+        };
+        assert_eq!(send.message.selector, Selector::Binary("+".into()));
+        accepted("probe = ( ^3 - -4 )");
+        accepted("probe = ( ^Object new; -4 )");
+    }
+
+    /// §5.4.3: a setter keyword begins an expression -- chained, as the
+    /// section's rationale gives `w::x::y` -- and nowhere else.
+    #[test]
+    fn a_setter_keyword_begins_an_expression_and_nothing_else() {
+        accepted("probe = ( | a b | a:: b:: 3 )");
+        refused("probe = ( ^self foo:: 3 )");
+        refused("probe = ( ^self foo; bar:: 3 )");
+        refused("foo:: value = ( ^value )");
+    }
+
+    /// §5.4.4: `cascadedMessageExpression → primary [msgCascade]`,
+    /// `msgCascade → nonEmptyMessages cascadeMsg*`.
+    #[test]
+    fn a_cascade_follows_a_primary_and_a_message_to_it() {
+        accepted("probe = ( ^self foo; bar; + 1; = 2; at: 3 )");
+        accepted("probe = ( ^(self) foo; bar )");
+        refused("probe = ( ^self; foo )");
+        refused("probe = ( ^(self foo); bar )");
+        refused("probe = ( foo: 1; bar: 2 )");
+    }
+
+    /// §5.9 and §5.10: `super` is followed by a message, `outer` by a class's
+    /// name -- and `outer N` alone is the enclosing object, decided with the
+    /// user on 2026-09-27.
+    #[test]
+    fn super_takes_a_message_and_outer_a_name() {
+        accepted("probe = ( ^super foo )");
+        accepted("probe = ( ^super + 1 )");
+        accepted("probe = ( ^super at: 1 )");
+        refused("probe = ( ^super )");
+        refused("probe = ( ^(super) foo )");
+        accepted("probe = ( ^outer Root foo )");
+        accepted("probe = ( ^outer Root )");
+        refused("probe = ( ^outer )");
+        refused("probe = ( ^outer foo: 3 )");
+    }
+
+    /// §5.6: `<-:` stands before a message sent to an explicit receiver.
+    #[test]
+    fn an_eventual_send_stands_before_a_message() {
+        accepted("probe = ( ^self <-: foo )");
+        accepted("probe = ( ^self <-: + 1 )");
+        accepted("probe = ( ^self <-: at: 1 )");
+        accepted("probe = ( ^self foo; <-: bar )");
+        refused("probe = ( ^<-: foo )");
+        refused("probe = ( ^self <-: )");
+    }
+
+    /// §5.1.9's pattern literal.
+    #[test]
+    fn a_pattern_literal_follows_its_grammar() {
+        for pattern in [
+            "<_>",
+            "<3>",
+            "<-3>",
+            "<#foo>",
+            "<'s'>",
+            "<{1. 2}>",
+            "<x:>",
+            "<x: _ y: ?z>",
+            "<x: <y: 1>>",
+            "<x: <y: <z: 1>>>",
+        ] {
+            accepted(&format!("probe = ( ^{pattern} )"));
+        }
+        for pattern in ["<>", "<foo>", "<x: foo>", "<x: 1"] {
+            refused(&format!("probe = ( ^{pattern} )"));
+        }
+    }
+
+    /// §5.1.8's `statements → returnStatement | statementSequence | empty`,
+    /// `statementSequence → expression [dot statements]`,
+    /// `returnStatement → hat expression [dot]`.
+    #[test]
+    fn a_dot_ends_a_statement_and_nothing_else() {
+        accepted("probe = ( self foo. self bar. )");
+        accepted("probe = ( self foo. ^self bar. )");
+        accepted("probe = ( )");
+        refused("probe = ( . self foo )");
+        refused("probe = ( self foo.. self bar )");
+        refused("probe = ( ^self foo. self bar )");
+        refused("probe = ( [:each | . each] )");
+    }
+
+    /// §6.3's `initExprs → [expression (dot expression)* [dot]]`, and
+    /// `sideDecl` and `classSideDecl`, which have no separator at all.
+    #[test]
+    fn dots_in_a_class_stand_between_initializer_expressions_only() {
+        accepted("class Box = Object new ( self foo. self bar. ) ()");
+        refused("class Box = Object new ( . self foo ) ()");
+        refused("class Box = Object new ( self foo.. self bar ) ()");
+        refused("class Box = Object new ( self foo self bar ) ()");
+        refused("first = ( ^1 ). second = ( ^2 )");
+        assert!(parse_module_source(indoc::indoc! {"
+            Newspeak3
+            'T'
+            class Root = () () : ( first = ( ^1 ). )
+        "})
+        .is_err());
+    }
+
+    /// §6.1's `inheritanceClause → [inheritancePrefix] unarySelector [message]`.
+    #[test]
+    fn a_superclass_clause_sends_one_message() {
+        accepted("class Box = Object new () ()");
+        accepted("class Box = Object + 1 () ()");
+        accepted("class Box = Object new: 1 + 2 with: 3 foo () ()");
+        accepted("class Box = self Object new () ()");
+        refused("class Box = Object new foo () ()");
+        refused("class Box = Object new + 1 () ()");
+    }
+
+    /// §6.3's `classBody → classHeader sideDecl [classSideDecl]`, and §6.2's
+    /// `mixinAppSuffix → (mixinOperator inheritanceClause)+ (dot | classBody)`.
+    #[test]
+    fn a_class_has_an_instance_side_and_may_have_a_class_side() {
+        accepted("class Box = Object new () ()");
+        accepted("class Box = Object new () () : ()");
+        accepted("class Box = Object new <: Object.");
+        refused("class Box = Object new ()");
+    }
+
+    /// §8.1's `compilationUnit → languageId toplevelClass`,
+    /// `toplevelClass → classCategory classDeclaration`, `classCategory → [string]`.
+    #[test]
+    fn a_module_has_an_optional_category_and_no_access_modifier() {
+        assert!(parse_module_source("Newspeak3\nclass Root = () ()\n").is_ok());
+        assert!(parse_module_source("Newspeak3\n'T'\nclass Root = () ()\n").is_ok());
+        assert!(parse_module_source("Newspeak3\n'T'\npublic class Root = () ()\n").is_err());
+    }
+
+    /// A name is expected where the grammar has an `identifier`.
+    #[test]
+    fn a_declaration_names_what_it_declares() {
+        assert!(parse_module_source("Newspeak3\n'T'\nclass 3 = () ()\n").is_err());
+        refused("foo: 3 = ( ^1 )");
+        refused("+ 3 = ( ^1 )");
+        refused("probe = ( ^[:3 | 1] )");
+    }
+
+    /// §6.3.4's `binaryMsgPattern → binarySelector slotDecl`, any binary
+    /// selector, `||` and a negative-looking `-` included.
+    #[test]
+    fn every_binary_selector_declares_a_binary_method() {
+        for selector in ["+", "=", "<", ">", "|", "||", "->", "-", "<=", "\\\\"] {
+            accepted(&format!("{selector} other = ( ^other )"));
+        }
+    }
+
+    /// §6's `classDeclaration` tries `messagePattern equalSign` before
+    /// `empty equalSign`, so an `=` with a parameter and another `=` after it
+    /// is a binary factory, not the end of the header.
+    #[test]
+    fn a_binary_factory_may_be_named_equals() {
+        let module = parse_module_source("Newspeak3\n'T'\nclass Pair = other = Object new () ()\n")
+            .unwrap_or_else(|errors| panic!("{errors:?}"));
+        let class = &module.root_class;
+        assert!(
+            matches!(
+                &class.factory,
+                Some(MessagePattern::Binary { selector, parameter })
+                    if selector.name == "=" && parameter.name == "other"
+            ),
+            "{:?}",
+            class.factory
+        );
+        assert_eq!(
+            class
+                .superclass
+                .as_ref()
+                .map(|clause| clause.receiver.name.as_str()),
+            Some("Object")
+        );
+    }
+
+    /// §6.3.2's `slotDecls → seqSlotDecls | simSlotDecls` in a class header
+    /// and in a code body (§5.1.8's `temporaries → slotDecls`) alike: an
+    /// empty sequential section may be written `||`, and a simultaneous one
+    /// declares slots between `||` and `||`.
+    #[test]
+    fn a_slot_section_is_sequential_or_simultaneous_everywhere() {
+        accepted("class Box = Object new ( || ) ( probe = ( || ^1 ) )");
+        accepted("class Box = Object new ( | | ) ( probe = ( | | ^1 ) )");
+        accepted("class Box = Object new ( || a = 1. b = 2. || ) ()");
+        let module = parse_member("probe = ( || c = 3. d = 4. || ^c + d )")
+            .unwrap_or_else(|errors| panic!("{errors:?}"));
+        assert_eq!(
+            module.root_class.instance_side.methods[0]
+                .body
+                .temporaries
+                .len(),
+            2
+        );
+    }
+
+    /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
+    /// identifier)* rbracket rangleBracket`, dropped like every type.
+    #[test]
+    fn a_class_declares_its_type_parameters_as_the_specification_writes_them() {
+        accepted("class Map <[K, V]> new: capacity <Integer> = Object new () ()");
+        accepted("class List[E] = Object new () ()");
     }
 }

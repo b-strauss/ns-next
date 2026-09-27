@@ -6,11 +6,10 @@ use crate::Symbol;
 
 use super::Signal;
 
-/// The program-level error a bare identifier raises when it has no binding
-/// -- reachable only for a bare `super`, which
-/// `resolver::resolve_identifier` deliberately leaves unbound and which the
-/// lexer deliberately does not reserve. A module root's clause receivers are
-/// unbound too, but the root rule decides them and they never run.
+/// The program-level error a bare identifier raises when it has no binding.
+/// Only a module root's clause receivers are unbound, and the root rule
+/// decides them and they never run; a bare `super`, the other unbound name
+/// once, is a syntax error (§5.10, `docs/design/frontend.md`).
 ///
 /// Raised by `vm::make_value` for `bytecode::Literal::UnresolvedIdentifier`.
 pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>) -> Signal<'gc> {

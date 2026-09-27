@@ -389,8 +389,9 @@ impl<'a> Body<'a> {
             // (`docs/design/compiler.md`, "Compilation cannot fail") -- bare
             // `super`, and a module root's clause receivers, which the
             // resolver leaves unbound for the root rule and which never run.
-            // `MirrorSend` marks a send, never an identifier.
-            Some(Binding::MirrorSend) | None => {
+            // `MirrorSend` and `EnclosingObject` mark a send, never an
+            // identifier.
+            Some(Binding::MirrorSend | Binding::EnclosingObject { .. }) | None => {
                 let destination = self.fresh();
                 self.emit(Instruction::LoadLiteral {
                     destination,
@@ -420,7 +421,8 @@ impl<'a> Body<'a> {
                     call_site,
                 });
             }
-            Some(Binding::SuperSend | Binding::MirrorSend) | None => panic!(
+            Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
+            | None => panic!(
                 "internal: unresolved assignment target `{}` (the resolver should have rejected this)",
                 target.name
             ),
@@ -431,6 +433,11 @@ impl<'a> Body<'a> {
     fn send(&mut self, send: &ast::Send) -> u16 {
         let selector = selector_of(&send.message);
         match self.binding(send.span) {
+            Some(Binding::EnclosingObject { depth }) => {
+                let destination = self.fresh();
+                self.emit(Instruction::LoadEnclosingObject { destination, depth });
+                destination
+            }
             Some(Binding::SuperSend) => {
                 let argument_registers = self.values(&send.message.arguments);
                 self.emit_send(|destination, call_site| Instruction::SendSuper {
@@ -677,6 +684,7 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
             .collect(),
         Instruction::LoadLiteral { .. }
         | Instruction::LoadSelf { .. }
+        | Instruction::LoadEnclosingObject { .. }
         | Instruction::LoadOuterLocal { .. }
         | Instruction::MakeClosure { .. }
         | Instruction::MakeVector { .. }
@@ -691,6 +699,7 @@ fn destination(instruction: &Instruction) -> Option<u16> {
     match instruction {
         Instruction::LoadLiteral { destination, .. }
         | Instruction::LoadSelf { destination }
+        | Instruction::LoadEnclosingObject { destination, .. }
         | Instruction::Move { destination, .. }
         | Instruction::LoadOuterLocal { destination, .. }
         | Instruction::SendLexical { destination, .. }

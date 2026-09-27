@@ -811,7 +811,10 @@ impl<'a> Lowerer<'a> {
         let (depth, index) = match self.bindings.get(&target.span)? {
             Binding::Local(index) => (0, *index),
             Binding::OuterLocal { depth, index } => (*depth, *index),
-            Binding::LexicalSend { .. } | Binding::SuperSend | Binding::MirrorSend => return None,
+            Binding::LexicalSend { .. }
+            | Binding::EnclosingObject { .. }
+            | Binding::SuperSend
+            | Binding::MirrorSend => return None,
         };
         // The inlining gate admits no block with temporaries or parameters,
         // so a binding inside an inlined block never names that block's own
@@ -1152,7 +1155,8 @@ impl<'a> Lowerer<'a> {
                     call_site,
                 })
             }
-            // `MirrorSend` marks a send, never an identifier.
+            // `MirrorSend` and `EnclosingObject` mark a send, never an
+            // identifier.
             //
             // Not a compiler-invariant violation: `resolve_identifier`
             // deliberately records no binding for `super`, and the lexer
@@ -1163,7 +1167,7 @@ impl<'a> Lowerer<'a> {
             // cannot raise a `NewspeakError`, so the error is deferred
             // exactly like `MalformedInteger`: the VM raises `literals`' own
             // error when the instruction executes.
-            Some(Binding::MirrorSend) | None => {
+            Some(Binding::MirrorSend | Binding::EnclosingObject { .. }) | None => {
                 let destination = self.allocate_scratch();
                 self.emit(Instruction::LoadLiteral {
                     destination,
@@ -1242,7 +1246,8 @@ impl<'a> Lowerer<'a> {
                 let setter = crate::Symbol::intern(&format!("{}:", target.name));
                 self.emit_lexical_send(depth, setter, vec![value_register]);
             }
-            Some(Binding::SuperSend | Binding::MirrorSend) | None => panic!(
+            Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
+            | None => panic!(
                 "internal: unresolved setter target `{}` (the resolver should have rejected this)",
                 target.name
             ),
@@ -1373,11 +1378,20 @@ impl<'a> Lowerer<'a> {
         self.emit_ordinary_send_with_receiver(receiver_register, &send.message)
     }
 
-    /// The two sends `is_ordinary_send` rejects: neither has a receiver
-    /// expression, and neither is ever inlined.
+    /// The sends `is_ordinary_send` rejects: none has a receiver expression,
+    /// and none is ever inlined. `outer N` alone is no send at all but the
+    /// object `outer N m` would send to, loaded without running any code.
     fn lower_super_or_lexical_send(&mut self, send: &ast::Send) -> u16 {
         let selector = selector_of(&send.message);
         match self.bindings.get(&send.span) {
+            Some(Binding::EnclosingObject { depth }) => {
+                let destination = self.allocate_scratch();
+                self.emit(Instruction::LoadEnclosingObject {
+                    destination,
+                    depth: *depth,
+                });
+                destination
+            }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
                 let argument_registers = self.lower_arguments(&send.message);
@@ -1854,9 +1868,6 @@ pub(super) fn lower_literal(literal: &ast::Literal) -> BytecodeLiteral {
         ast::Literal::Symbol { value, .. } => BytecodeLiteral::Symbol(crate::Symbol::intern(value)),
         ast::Literal::Boolean { value, .. } => BytecodeLiteral::Boolean(*value),
         ast::Literal::Nil { .. } => BytecodeLiteral::Nil,
-        ast::Literal::Array { elements, .. } => {
-            BytecodeLiteral::Array(elements.iter().map(lower_literal).collect())
-        }
         ast::Literal::Pattern { .. } => BytecodeLiteral::Nil, // patterns are not implemented (no typechecker)
     }
 }
@@ -2338,34 +2349,6 @@ mod tests {
             receiver, copy,
             "the `+` send reads the copy of `t`: {:?}",
             block.instructions
-        );
-    }
-
-    /// A bare `super` is a program-level error the language raises at
-    /// evaluation time, not a compiler-invariant violation, so it must lower
-    /// to the deferred literal rather than panic.
-    #[test]
-    fn a_bare_super_lowers_to_a_deferred_error_literal_not_a_panic() {
-        let (method, bindings) = resolve_method(
-            indoc! {"
-                Newspeak3
-                'T'
-                class X = Object new (
-                ) (
-                  foo = ( ^super )
-                ) : ()
-            "},
-            0,
-        );
-        let mut lowerer = method_lowerer(&method, &bindings);
-        lowerer.lower_expression(return_expression(&method));
-        let code = lowerer.finish(method.span);
-        assert_eq!(
-            code.instructions,
-            vec![Instruction::LoadLiteral {
-                destination: 0,
-                literal: BytecodeLiteral::UnresolvedIdentifier("super".to_string()),
-            }]
         );
     }
 

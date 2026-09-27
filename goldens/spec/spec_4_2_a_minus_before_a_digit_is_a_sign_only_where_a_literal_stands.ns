@@ -1,0 +1,22 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 4.2: decimalNum is ["-"] digits ..., and binSel is
+   (specialCharacter | "-") specialCharacter*, in a PEG. Where a binary
+   message can stand, the "-" is its selector, so 3 -4 and 3-4 subtract; where
+   a literal stands -- after another selector, as a tuple's element -- it is
+   the sign. A "-" starts a selector and continues none, so +-4 is "+" and -4.
+   Only decimalNum has a sign; radixNum has one after its "r". *)
+class Spec42AMinusBeforeADigitIsASignOnlyWhereALiteralStands usingPlatform: p = Object new (| t = p transcript. |) (
+    public main: platform args: arguments = (
+        | three numbers |
+        three:: 3.
+        t show: (three -4) printString; newLine.
+        t show: (three-4) printString; newLine.
+        t show: (three +-4) printString; newLine.
+        t show: (three - -4) printString; newLine.
+        numbers:: {-4. 16r-1F. 2r1010}.
+        t show: (numbers at: 1) printString; newLine.
+        t show: (numbers at: 2) printString; newLine.
+        t show: (numbers at: 3) printString; newLine
+    )
+) : ()

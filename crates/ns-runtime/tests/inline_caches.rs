@@ -628,7 +628,7 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
           public used = (
             | sum |
             sum:: 0.
-            #(1 2) do: [:each | sum:: sum + each].
+            {1. 2} do: [:each | sum:: sum + each].
             ^sum
           )
           public unused = ( ^1 + 2 + 3 )

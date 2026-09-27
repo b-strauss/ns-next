@@ -938,9 +938,8 @@ stack. Nothing re-enters the run loop from Rust ("No re-entry from Rust"
 below), so that is the front end and the compiler, whose depth the parser's
 nesting ceiling bounds. The suite runs the deepest nesting the parser accepts
 through every stage on libtest's default 2 MiB threads in a debug build —
-`the_deepest_module_the_parser_accepts_round_trips`,
-`the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` and
-`the_deepest_literal_array_the_parser_accepts_survives_a_round_trip` in
+`the_deepest_module_the_parser_accepts_round_trips` and
+`the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` in
 `crates/ns-runtime/tests/image.rs` — and the thread gets four times that.
 
 The suite (`cargo test --workspace`, debug build, test binaries already built)
@@ -1065,7 +1064,7 @@ throwaway sources exercise the paths that changed and no fixture does, each
 printing the sum it accumulates:
 
 - `bench_do.ns`: 50,000 block activations through `do:` — a 5,000-iteration
-  `whileTrue:` loop over `#(1 2 3 4 5 6 7 8 9 10) do: [:e | sum:: sum + e]`.
+  `whileTrue:` loop over `{1. 2. 3. 4. 5. 6. 7. 8. 9. 10} do: [:e | sum:: sum + e]`.
 - `bench_new.ns`: 20,000 instantiations of
   `class Cell = Object new ( | v ::= 1. | )`, each followed by `v`.
 - `bench_new2.ns`: the same with two levels of slots,
@@ -1596,7 +1595,7 @@ class BenchDo usingPlatform: platform = Object new (
 	public main: p args: a = (
 		| n |
 		n:: 0.
-		[n < 5000] whileTrue: [#(1 2 3 4 5 6 7 8 9 10) do: [:e | sum:: sum + e]. n:: n + 1].
+		[n < 5000] whileTrue: [{1. 2. 3. 4. 5. 6. 7. 8. 9. 10} do: [:e | sum:: sum + e]. n:: n + 1].
 		p transcript show: sum printString; newLine
 	)
 ) : ()

@@ -155,6 +155,8 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
 - `SuperSend` — a `super m` send (§5.10). Not depth-based; resolved at run time
   against the current activation's `current_class`, which need not be `self`'s
   own class.
+- `EnclosingObject { depth }` — `outer N` with no message after it: the kth
+  enclosing object itself, no send ("Shapes the resolver must recognize").
 
 There is deliberately **no separate "class value" binding**. A nested or
 enclosing class name is referenced through the ordinary `LexicalSend` mechanism
@@ -182,10 +184,10 @@ object's ordinary lookup — class side, `Class`, `Behavior`, `Object`
 declares no accessor for `Top`, the VM mirror's class or `Platform`, so
 `self Top`, like a bare `Top`, ends in `doesNotUnderstand:`
 (`goldens/errors/top_is_not_a_name.ns`,
-`goldens/errors/the_mirrors_class_is_not_a_name.ns`). Only two names stay
-unbound: a module root's clause receivers, which the root rule decides and
-which never run, and bare `super`; both lower to the deferred
-`UnresolvedIdentifier` literal, so compiling stays total. The accessor itself
+`goldens/errors/the_mirrors_class_is_not_a_name.ns`). Only a module root's
+clause receivers stay unbound, which the root rule decides and which never
+run; they lower to the deferred `UnresolvedIdentifier` literal, so compiling
+stays total. A bare `super` is a syntax error (§5.10). The accessor itself
 runs without an activation ("Primitive methods" below).
 
 **A `super`-prefixed clause receiver is a super send.** For
@@ -259,6 +261,13 @@ The parser normalizes several forms, and the resolver keys off those shapes:
   dispatches the inner "send `N` to `outer`" step as a real message. `N` is any
   identifier, lowercase or one of the words §4.1 leaves unreserved
   (`outer public s`); nothing about its spelling decides the shape.
+- **`outer N`** with no message after it is the object `outer N m` would send
+  to, as in canonical Newspeak; §5.9 defines `outer N` only as a receiver
+  (decided with the user on 2026-09-27). The resolver records
+  `Binding::EnclosingObject { depth }` on it, both lowerings emit
+  `LoadEnclosingObject`, and the VM answers `dispatch::kth_enclosing_object`
+  through `interpreter::sends::enclosing_object` -- a load, no send, so no
+  code runs (`goldens/spec/spec_5_9_outer_n_alone_is_the_enclosing_object`).
 - **`super m`** always has a real span; the grammar has no implicit form.
 
 ## The three lookup algorithms

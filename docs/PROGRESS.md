@@ -4610,3 +4610,41 @@ a keyword and a send named like one of these words as a send.
 `parse-corpus` stays at 210/0/1/0 and `run-corpus` at 6/0/205. Six new
 goldens under `goldens/spec/` run every accepted form, and
 `unreserved_word_tests` in `parser::declaration` pins the refused ones.
+
+## The syntax is the specification's grammar (2026-09-27)
+
+Every production of `newspeak-spec.pdf` §4.2 to §8.1 was checked against the
+lexer and the parser, and the parser now accepts exactly what the grammar
+derives, read as a PEG over tokens ([frontend.md](design/frontend.md),
+"Grammar"). Where the specification contradicts itself its prose decides --
+setter sends chain, a simultaneous slot clause is tried before an empty
+sequential one -- and otherwise the canonical grammar.
+
+What changed, each decided with the user where it was a choice:
+
+- A `-` before a digit is a sign only where a literal stands (`3 -4`
+  subtracts), a `-` continues no binary selector, a radix or fraction is
+  taken only when complete, a symbol's keywords each end in their colon, and
+  `<-:` is one token. `NewspeakColorizationForSqueak.ns`, blacklisted for
+  `sd start -1`, parses: `parse-corpus` is at 211/0/0/0 and the blacklist is
+  empty.
+- `#( ... )` is gone -- neither the specification nor the canonical grammar
+  has it -- with its AST, bytecode and VM paths, and image literal tag 7 is
+  retired; six goldens now write tuples, their outputs unchanged.
+- Refused now: a setter keyword after a receiver or in a message pattern, a
+  cascade after an implicit-receiver keyword send or a primary alone, a dot
+  that ends no statement or stands between members, a second message in a
+  superclass clause, a class without its instance side, an access modifier on
+  a module's class, a bare `super` (its two goldens became parser tests) and
+  an `outer` with no class name after it, a name position holding no name.
+- Accepted now: a module without a category, `class Map <[K, V]> ...`, a
+  binary factory named `=`, `||` as an empty section and simultaneous
+  temporaries in a code body, every binary selector in a cascade and in a
+  method pattern, pattern literals by their grammar.
+- `outer N` with no message answers the enclosing object, as in canonical
+  Newspeak, through `Binding::EnclosingObject` and the new instruction
+  `LoadEnclosingObject`, tag 35.
+
+A pattern literal still evaluates to `nil`, now a row in the deviations
+table; chains and object literals, which the specification marks
+unimplemented, are recorded as possible future extensions.

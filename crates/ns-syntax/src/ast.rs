@@ -200,12 +200,7 @@ pub enum Literal {
     Nil {
         span: Span,
     },
-    /// `#( ... )` and `{ ... }` literal-array forms that contain only literals
-    Array {
-        elements: Vec<Literal>,
-        span: Span,
-    },
-    /// `<...>` annotation/pattern literal — kept raw in Milestone 1
+    /// §5.1.9's pattern literal, `<...>`, kept as its source text
     Pattern {
         text: String,
         span: Span,

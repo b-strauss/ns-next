@@ -32,7 +32,7 @@ that cannot name its code is describing an intention, and should say so.
 
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
-| Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
+| Lexer, parser, AST | [frontend.md](frontend.md) | Built: the syntax is the specification's grammar (§4.2 to §8.1), strictly, read as a PEG over tokens, every rule pinned by a parser test and every accepted form by a golden; where the specification contradicts itself its prose decides, and one deviation is recorded (a modifier needs no whitespace after it) | Chains (`:\|`) and object literals, both marked *Unimplemented* in the specification |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built, §6.2's mixin application included: each `<:` clause adds an ordinary class level, so lookup, `super`, `outer` and the caches need nothing new. §3.2's class hierarchy is reified: every class object's class is its metaclass, over `Class`, and every metaclass's class is `Metaclass`. All four of §3.1.1's value conditions are enforced, refused where an instance is made, and a module's root may name only `Object` or `Value`, or write `Object <: Value` | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) — since step 6 on the VM mirror's class alone, with kernel primitive methods run in `act` without an activation — per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c); step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | — |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
@@ -201,7 +201,7 @@ NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-lsp # the sa
 cargo nextest run -p ns-lsp             # the editor's language server: never starts the VM, so excluded above
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
-cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
+cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 211, failed 0, expected-fail 0, stale 0
 cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report
@@ -232,11 +232,12 @@ Places where the implementation differs from
 rather than an oversight -- and, where a row says so, to keep a defect nobody
 has had time to fix from being a surprise.
 
-Most rows only under-reject or narrow what can be expressed. Three do worse:
-the sequential simultaneous slot clauses, the binary float behind a
-non-integral literal and the synchronous asynchronous send each answer a
-**correct** program **wrongly, at exit status 0**. Read all three before
-trusting a program's output.
+Most rows only under-reject, over-accept or narrow what can be expressed.
+Four do worse: the sequential simultaneous slot clauses, the binary float
+behind a non-integral literal, the synchronous asynchronous send and the
+pattern literal that evaluates to **nil** each answer a **correct** program
+**wrongly, at exit status 0**. Read all four before trusting a program's
+output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
@@ -247,7 +248,8 @@ trusting a program's output.
 | Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | An access modifier or `lazy` needs no whitespace after it, where the grammar's `accessModifier` and `lazyModifier` end in `whitespace`: `\| public= 1. \|` is refused like `\| public = 1. \|` rather than declaring a slot named `public` | §6.3.3, §6.3.4 | [frontend.md](frontend.md) |
-| The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
+| A pattern literal parses as §5.1.9's grammar says but evaluates to **nil**, where the section makes `<_>` `Pattern wildcard` and `<l>` `Pattern literal: l`; there is no `Pattern` class | §5.1.9 | [frontend.md](frontend.md) |
+| `outer N` with no message after it answers the enclosing object `outer N m` would send to, as canonical Newspeak does, where the section defines `outer N` only as a send's receiver | §5.9 | [dispatch.md](dispatch.md) |
 | `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 
 One of these has a golden under `goldens/spec/`, recorded as `skipped`:

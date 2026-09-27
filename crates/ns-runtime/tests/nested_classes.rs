@@ -352,7 +352,7 @@ const SUPER_PREFIXED_CLAUSE_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
-        public class Inner = super Object ()
+        public class Inner = super Object () ()
         public innerClass = ( ^Inner )
     )
 "};
@@ -385,7 +385,7 @@ const CYCLIC_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
-        public class Inner = Inner new ()
+        public class Inner = Inner new () ()
         public innerClass = ( ^Inner )
     )
 "};

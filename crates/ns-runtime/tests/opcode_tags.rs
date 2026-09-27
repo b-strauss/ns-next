@@ -46,6 +46,7 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_STORE_VECTOR, 32);
     assert_eq!(OPCODE_INTEGER_BINARY, 33);
     assert_eq!(OPCODE_RETURN_SLOT_IF_FILLED, 34);
+    assert_eq!(OPCODE_LOAD_ENCLOSING_OBJECT, 35);
 }
 
 #[test]
@@ -64,7 +65,6 @@ fn literal_tags_are_fixed() {
     assert_eq!(LITERAL_FLOAT, 3);
     assert_eq!(LITERAL_STRING, 4);
     assert_eq!(LITERAL_SYMBOL, 5);
-    assert_eq!(LITERAL_ARRAY, 7);
     assert_eq!(LITERAL_MALFORMED_INTEGER, 8);
     assert_eq!(LITERAL_UNRESOLVED_IDENTIFIER, 9);
 }
@@ -101,6 +101,7 @@ fn no_two_tags_share_a_number() {
         OPCODE_BRANCH_IF_TRUE,
         OPCODE_INTEGER_BINARY,
         OPCODE_RETURN_SLOT_IF_FILLED,
+        OPCODE_LOAD_ENCLOSING_OBJECT,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -119,7 +120,6 @@ fn no_two_tags_share_a_number() {
         LITERAL_FLOAT,
         LITERAL_STRING,
         LITERAL_SYMBOL,
-        LITERAL_ARRAY,
         LITERAL_MALFORMED_INTEGER,
         LITERAL_UNRESOLVED_IDENTIFIER,
     ];
@@ -128,7 +128,7 @@ fn no_two_tags_share_a_number() {
     let mut deduplicated = sorted.to_vec();
     deduplicated.dedup();
     assert_eq!(deduplicated.len(), literals.len(), "duplicate literal tag");
-    assert_eq!(RETIRED_LITERALS, [6]);
+    assert_eq!(RETIRED_LITERALS, [6, 7]);
     for retired in RETIRED_LITERALS {
         assert!(
             !literals.contains(&retired),
@@ -168,6 +168,7 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_BRANCH_IF_TRUE,
         OPCODE_INTEGER_BINARY,
         OPCODE_RETURN_SLOT_IF_FILLED,
+        OPCODE_LOAD_ENCLOSING_OBJECT,
     ];
     for retired in RETIRED_OPCODES {
         assert!(!live.contains(&retired), "tag {retired} is retired");

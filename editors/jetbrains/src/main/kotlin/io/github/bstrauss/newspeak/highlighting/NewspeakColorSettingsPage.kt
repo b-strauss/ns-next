@@ -23,7 +23,7 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
         AttributesDescriptor("Selectors//Setter (name::)", NewspeakColors.SETTER_KEYWORD),
         AttributesDescriptor("Selectors//Binary selector", NewspeakColors.BINARY_SELECTOR),
         AttributesDescriptor("Selectors//Angle brackets (< and >)", NewspeakColors.ANGLE_BRACKET),
-        AttributesDescriptor("Operators//Assignment and mixin application (=, ::=, <:)", NewspeakColors.ASSIGNMENT),
+        AttributesDescriptor("Operators//Assignment, mixin application and eventual send (=, ::=, <:, <-:)", NewspeakColors.ASSIGNMENT),
         AttributesDescriptor("Literals//Number", NewspeakColors.NUMBER),
         AttributesDescriptor("Literals//String", NewspeakColors.STRING),
         AttributesDescriptor("Literals//Symbol", NewspeakColors.SYMBOL),

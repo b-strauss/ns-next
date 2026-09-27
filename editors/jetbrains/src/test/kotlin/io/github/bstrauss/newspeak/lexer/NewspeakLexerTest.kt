@@ -11,6 +11,7 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.COMMENT
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.DOT
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.DOUBLE_BAR
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.EQUALS
+import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.EVENTUAL_SEND_OPERATOR
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.GREATER_THAN
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.IDENTIFIER
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.KEYWORD
@@ -18,7 +19,6 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.LEFT_PARENTHESIS
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.LESS_THAN
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.MIXIN_OPERATOR
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.NUMBER
-import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.POUND
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.PRIVATE
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.PUBLIC
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.RESERVED_WORD
@@ -89,24 +89,46 @@ class NewspeakLexerTest {
 
     @Test fun radixNumbers() = assertEquals(listOf(NUMBER, NUMBER), kinds("16rFF 2r1010"))
 
-    @Test fun negativeNumberVersusSubtraction() {
+    /**
+     * A `-` against a digit is a negative number wherever it stands; the
+     * parser splits it into a selector where the grammar has a binary message
+     * (`a -42` subtracts), as the Rust lexer leaves it to.
+     */
+    @Test fun aMinusAgainstADigitIsANegativeNumber() {
         assertEquals(listOf(NUMBER), kinds("-42"))
         assertEquals(listOf(IDENTIFIER, BINARY_SELECTOR, NUMBER), kinds("a - 42"))
         assertEquals(listOf(IDENTIFIER, NUMBER), kinds("a -42"))
-        assertEquals(listOf(IDENTIFIER, BINARY_SELECTOR, NUMBER), kinds("a-42"))
+        assertEquals(listOf(IDENTIFIER, NUMBER), kinds("a-42"))
+        assertEquals(listOf(IDENTIFIER, COMMENT, NUMBER), kinds("x (*c*)-42"))
     }
 
-    @Test fun aCommentIsNotWhitespaceForTheNegativeLiteralRule() {
-        assertEquals(listOf(IDENTIFIER, COMMENT, BINARY_SELECTOR, NUMBER), kinds("x (*c*)-42"))
-        assertEquals(listOf(IDENTIFIER, COMMENT, NUMBER), kinds("x (*c*) -42"))
+    /** §4.2's `binSel`: `-` starts a binary selector and continues none. */
+    @Test fun aMinusOnlyStartsABinarySelector() {
+        assertEquals(listOf(IDENTIFIER, BINARY_SELECTOR, NUMBER), kinds("a +-1"))
+        assertEquals(listOf(IDENTIFIER, BINARY_SELECTOR, IDENTIFIER), kinds("a -> b"))
     }
+
+    @Test fun anEventualSendIsOneToken() =
+        assertEquals(listOf(IDENTIFIER, EVENTUAL_SEND_OPERATOR, IDENTIFIER), kinds("a <-: b"))
+
+    /** A radix is taken only with a digit after the `r`, and never after a `-`. */
+    @Test fun aRadixNeedsItsDigits() {
+        assertEquals(listOf(NUMBER, IDENTIFIER), kinds("16r"))
+        assertEquals(listOf(NUMBER, IDENTIFIER), kinds("-16rFF"))
+        assertEquals(listOf(NUMBER), kinds("16r-1F"))
+    }
+
+    /** §4.2's `kws`: every keyword of a symbol ends in its colon. */
+    @Test fun aSymbolsKeywordsEachEndInAColon() =
+        assertEquals(listOf(SYMBOL to "#at:", IDENTIFIER to "put"), lexAll("#at:put"))
 
     @Test fun stringsWithEscapedQuote() = assertEquals(listOf(STRING to "'it''s'"), lexAll("'it''s'"))
 
     @Test fun symbols() = assertEquals(List(4) { SYMBOL }, kinds("#foo #at:put: #+ #'hi there'"))
 
-    @Test fun hashParenthesisIsPoundThenLeftParenthesis() =
-        assertEquals(listOf(POUND, LEFT_PARENTHESIS, NUMBER, RIGHT_PARENTHESIS), kinds("#(1)"))
+    /** Smalltalk's literal array is no Newspeak syntax: the Rust lexer reports its `#`. */
+    @Test fun aLiteralArraysHashIsABadCharacter() =
+        assertEquals(listOf(TokenType.BAD_CHARACTER, LEFT_PARENTHESIS, NUMBER, RIGHT_PARENTHESIS), kinds("#(1)"))
 
     @Test fun aLoneHashIsASymbol() = assertEquals(listOf(SYMBOL to "#"), lexAll("#"))
 

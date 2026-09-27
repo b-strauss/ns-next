@@ -368,6 +368,13 @@ pub enum Binding {
     /// §5.7-5.9). Covers method calls, slot reads/writes, and nested-class
     /// references alike.
     LexicalSend { depth: u16 },
+    /// `outer N` with no message after it: the kth enclosing object itself,
+    /// the object `outer N m` sends `m` to (`newspeak-spec.pdf` §5.9). The
+    /// specification defines `outer N` only as a send's receiver; canonical
+    /// Newspeak also answers it as a value, and so does this runtime (decided
+    /// with the user on 2026-09-27, `docs/design/frontend.md`, "Words that
+    /// are not reserved").
+    EnclosingObject { depth: u16 },
     /// A `super m` send (`newspeak-spec.pdf` §5.10) -- resolved at runtime
     /// against the current activation's `current_class`, not by depth.
     SuperSend,

@@ -398,6 +398,22 @@ impl Resolver {
             self.resolve_message_send(&send.message, scope, chain);
             return;
         }
+        if let Some(class_name) = sends::bare_outer_class_name(send) {
+            let name = Symbol::intern(class_name);
+            match sends::depth_of_named_outer(chain, name) {
+                Some(depth) => {
+                    self.bindings
+                        .insert(send.span, Binding::EnclosingObject { depth });
+                }
+                None => self.errors.push(ResolveError {
+                    span: send.span,
+                    message: format!(
+                        "`outer {class_name}` does not name a lexically enclosing class"
+                    ),
+                }),
+            }
+            return;
+        }
         if let Some(class_name) = sends::outer_class_name(&send.receiver) {
             let name = Symbol::intern(class_name);
             match sends::depth_of_named_outer(chain, name) {

@@ -27,7 +27,7 @@ fn parse_ok_file() {
         indoc! {"
             Newspeak3
             'X'
-            class C = ()
+            class C = () ()
         "},
     )
     .unwrap();
@@ -67,7 +67,7 @@ fn parse_corpus_reports_counts() {
         indoc! {"
             Newspeak3
             'X'
-            class C = ()
+            class C = () ()
         "},
     )
     .unwrap();
@@ -76,7 +76,7 @@ fn parse_corpus_reports_counts() {
         indoc! {"
             Newspeak3
             'X'
-            class D = ()
+            class D = () ()
         "},
     )
     .unwrap();
@@ -124,7 +124,7 @@ fn parse_corpus_stale_blacklist_entry_fails() {
         indoc! {"
             Newspeak3
             'X'
-            class C = ()
+            class C = () ()
         "},
     )
     .unwrap();
@@ -163,7 +163,7 @@ fn parse_corpus_malformed_blacklist_fails_with_error() {
         indoc! {"
             Newspeak3
             'X'
-            class C = ()
+            class C = () ()
         "},
     )
     .unwrap();

@@ -22,7 +22,7 @@ class SentToIsAPublicSend usingPlatform: thePlatform = Object new (
         transcript show: ((Message new selector: #open; arguments: {}) sentTo: holder); newLine.
         transcript show: ([(Message new selector: #secret; arguments: {}) sentTo: holder] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([(Message new selector: #guarded; arguments: {}) sentTo: holder] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ((Message new selector: #at:; arguments: {2}) sentTo: #(7 8)) printString; newLine.
+        transcript show: ((Message new selector: #at:; arguments: {2}) sentTo: {7. 8}) printString; newLine.
         transcript show: ((Message new selector: #open) sentTo: holder); newLine.
         transcript show: ([(Message new selector: 'open'; arguments: {}) sentTo: holder] on: Error do: [:e | e messageText]); newLine.
     )

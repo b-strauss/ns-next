@@ -518,6 +518,11 @@ fn encode_instruction(
             writer.write_u8(OPCODE_LOAD_SELF);
             writer.write_u16(*destination);
         }
+        Instruction::LoadEnclosingObject { destination, depth } => {
+            writer.write_u8(OPCODE_LOAD_ENCLOSING_OBJECT);
+            writer.write_u16(*destination);
+            writer.write_u16(*depth);
+        }
         Instruction::Move {
             destination,
             source,
@@ -745,13 +750,6 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
         Literal::Symbol(symbol) => {
             writer.write_u8(LITERAL_SYMBOL);
             writer.write_u32(symbols.intern(symbol.as_str()));
-        }
-        Literal::Array(elements) => {
-            writer.write_u8(LITERAL_ARRAY);
-            writer.write_u32(u32_field("literal array length", elements.len()));
-            for element in elements {
-                encode_literal(writer, element, symbols);
-            }
         }
         Literal::MalformedInteger(text) => {
             writer.write_u8(LITERAL_MALFORMED_INTEGER);

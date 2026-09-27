@@ -26,9 +26,8 @@ use crate::Symbol;
 ///
 /// `UnresolvedIdentifier` is the same deferral for the other program-level
 /// error a *resolved* module can still carry: an identifier with no binding
-/// -- a bare `super`, which `resolver::resolve_identifier` leaves unbound and
-/// the lexer does not reserve, or a module root's clause receiver, which the
-/// root rule decides and which never runs (see
+/// -- a module root's clause receiver, which the root rule decides and
+/// which never runs (see
 /// `interpreter::literals::unresolved_identifier_error`). Neither variant is a
 /// lowered `ast::Literal`; both are payloads of a `LoadLiteral` that raises
 /// instead of producing a value.
@@ -40,8 +39,6 @@ pub enum Literal {
     Float(f64),
     String(String),
     Symbol(Symbol),
-    /// Element literals, recursively -- mirrors `ast::Literal::Array`.
-    Array(Vec<Literal>),
     MalformedInteger(String),
     UnresolvedIdentifier(String),
 }
@@ -88,6 +85,13 @@ pub enum Instruction {
     },
     LoadSelf {
         destination: u16,
+    },
+    /// `Binding::EnclosingObject`: `outer N` with no message after it, the
+    /// kth enclosing object (`dispatch::kth_enclosing_object`), `depth` out
+    /// from the running method's defining class.
+    LoadEnclosingObject {
+        destination: u16,
+        depth: u16,
     },
     Move {
         destination: u16,
@@ -567,6 +571,9 @@ fn format_instruction(instruction: &Instruction) -> String {
             format!("LoadLiteral r{destination}, {}", format_literal(literal))
         }
         Instruction::LoadSelf { destination } => format!("LoadSelf r{destination}"),
+        Instruction::LoadEnclosingObject { destination, depth } => {
+            format!("LoadEnclosingObject r{destination}, depth {depth}")
+        }
         Instruction::Move {
             destination,
             source,
@@ -742,14 +749,6 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Float(float) => format!("{float:?}"),
         Literal::String(string) => format!("'{string}'"),
         Literal::Symbol(symbol) => format!("#{symbol}"),
-        Literal::Array(elements) => format!(
-            "#({})",
-            elements
-                .iter()
-                .map(format_literal)
-                .collect::<Vec<_>>()
-                .join(" ")
-        ),
         Literal::MalformedInteger(text) => format!("malformed-int '{text}'"),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
     }
@@ -1034,7 +1033,6 @@ method foo: (args 1, registers 4)
             Literal::Float(2.5),
             Literal::String("s".to_string()),
             Literal::Symbol(Symbol::intern("sym")),
-            Literal::Array(vec![Literal::SmallInteger(1), Literal::Nil]),
             Literal::MalformedInteger("16r1.8".to_string()),
         ];
         let rendered: Vec<String> = literals.iter().map(format_literal).collect();
@@ -1047,7 +1045,6 @@ method foo: (args 1, registers 4)
                 "2.5",
                 "'s'",
                 "#sym",
-                "#(1 nil)",
                 "malformed-int '16r1.8'"
             ]
         );

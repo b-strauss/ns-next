@@ -76,6 +76,24 @@ pub(super) fn is_explicit_super(receiver: &Expression) -> bool {
     matches!(receiver, Expression::Identifier(id) if id.name == "super")
 }
 
+/// Recognizes `outer N` itself -- a `Send` of the unary `N` to
+/// `Identifier("outer")` -- where it is not a further send's receiver: the
+/// resolver reaches a send's receiver only through `outer_class_name`, which
+/// takes the whole `outer N m`, so a `send` of this shape that reaches the
+/// resolver on its own is the enclosing object as a value.
+pub(crate) fn bare_outer_class_name(send: &ns_syntax::ast::Send) -> Option<&str> {
+    let Expression::Identifier(outer_identifier) = &send.receiver else {
+        return None;
+    };
+    if outer_identifier.name != "outer" {
+        return None;
+    }
+    match &send.message.selector {
+        Selector::Unary(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
 /// Recognizes the `outer N m` two-hop shape: `receiver` is itself a `Send`
 /// whose own receiver is `Identifier("outer")` and whose message is a unary
 /// send. Returns that selector's name if so. §5.9 takes any identifier for

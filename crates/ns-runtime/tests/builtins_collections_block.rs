@@ -302,21 +302,21 @@ fn do_checks_its_block_arity_at_each_element() {
         'T'
         class Foo = Object new (
         ) (
-          public empty = ( ^#() do: [:a :b | a] )
-          public full = ( ^#(1) do: [:a :b | a] )
+          public empty = ( ^{} do: [:a :b | a] )
+          public full = ( ^{1} do: [:a :b | a] )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     expect_ok(
         interpreter.send(&receiver, Symbol::intern("empty"), &[]),
-        "#() do: with a two-argument block",
+        "{} do: with a two-argument block",
     );
     let result = interpreter.send(&receiver, Symbol::intern("full"), &[]);
     let error = expect_error(
         &mut interpreter,
         result,
-        "#(1) do: with a two-argument block",
+        "{1} do: with a two-argument block",
     );
     assert!(
         error.message.contains("wrong number of block arguments"),

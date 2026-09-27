@@ -171,9 +171,8 @@ In memory an instruction is a Rust enum; on the wire it is **a tag byte followed
 by a fixed operand layout** for that tag. Registers are `u16`, jump targets are
 instruction indices, a send's call site is its `u32` number within its code
 family, selectors and names are symbol-table ids, and a literal
-carries its own tag byte from a second table. `LoadLiteral` is the only
-instruction whose operands nest, and the nesting depth of a literal array is
-input-controlled and therefore bounded.
+carries its own tag byte from a second table. No instruction's operands
+nest.
 
 **A tag is assigned once and never changes.** A new instruction takes the next
 free number; a removed one retires its number rather than freeing it for reuse.
@@ -264,8 +263,12 @@ Instructions:
   (§6.3.3), its `own_index` a `u32`: returns `self`'s own slot at that index,
   addressed as `InitializeSlot` addresses it, when it holds anything but
   `nil`, and otherwise falls through to the initializer.
+- 35 `LoadEnclosingObject`: `outer N` with no message after it
+  ([dispatch.md](dispatch.md), "Shapes the resolver must recognize"),
+  `destination` and `depth`, both `u16`: loads the kth enclosing object of the
+  running method's defining class, the object `outer N m` sends to.
 
-The next free instruction number is 35. A send's `CallSite` -- its number
+The next free instruction number is 36. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see
@@ -282,12 +285,14 @@ Literals:
 - 6: retired. It was `Character`, the character literal, until `"c"` became
   a one-character string (2026-09-25, [frontend.md](frontend.md), "Lexer");
   a stale artifact's tag-6 literal meets an unknown tag (`RETIRED_LITERALS`).
-- 7 `Array`: a literal array, `#( ... )`, whose elements are literals
-  themselves.
+- 7: retired. It was `Array`, the literal array `#( ... )`, whose elements
+  nested, until the syntax went (2026-09-27, [frontend.md](frontend.md)):
+  neither the specification nor the canonical grammar has it, and a tuple,
+  `{ ... }`, is the array literal (§5.1.7).
 - 8 `MalformedInteger`: an integer literal the lexer accepts and the parser
   rejects, out of range or a fractional radix; it raises its error when it runs.
-- 9 `UnresolvedIdentifier`: an identifier that names nothing, such as a bare
-  `super`; it raises its error when it runs.
+- 9 `UnresolvedIdentifier`: an identifier that names nothing, a module
+  root's clause receiver; it raises its error when it runs.
 
 **A call-site number is a property of the code, never a byte on the wire.**
 It is feedback-table bookkeeping, not program meaning: the decoder assigns

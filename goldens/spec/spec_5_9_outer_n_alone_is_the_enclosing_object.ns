@@ -1,0 +1,27 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 5.9 defines outer N only as a send's receiver, the object
+   the send goes to; canonical Newspeak also answers outer N alone as that
+   object, and so does this runtime (decided with the user on 2026-09-27). N
+   is any identifier naming a lexically enclosing class, a lowercase one
+   included. *)
+class Spec59OuterNAloneIsTheEnclosingObject usingPlatform: p = Object new (| t = p transcript. |) (
+    class Inner = Object new () (
+        public enclosing = ( ^outer Spec59OuterNAloneIsTheEnclosingObject )
+    ) : ()
+    public class holder = Object new () (
+        public class Deep = Object new () (
+            public up = ( ^outer holder )
+            public upName = ( ^outer holder name )
+        ) : ()
+        public name = ( ^'holder' )
+    ) : ()
+    public main: platform args: arguments = (
+        | h |
+        t show: (Inner new enclosing == self) printString; newLine.
+        h:: holder new.
+        t show: (h Deep new up == h) printString; newLine.
+        t show: h Deep new up name; newLine.
+        t show: h Deep new upName; newLine
+    )
+) : ()

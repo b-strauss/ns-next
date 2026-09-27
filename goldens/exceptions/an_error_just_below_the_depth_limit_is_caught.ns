@@ -12,7 +12,7 @@ class AnErrorJustBelowTheDepthLimitIsCaught usingPlatform: thePlatform = Object 
 ) (
     probe: n = ( deepest:: n. ^self probe: n + 1 )
     descend: n to: bottom = (
-        n = bottom ifTrue: [^#(1) at: 5].
+        n = bottom ifTrue: [^{1} at: 5].
         ^self descend: n + 1 to: bottom
     )
     public main: platform args: arguments = (

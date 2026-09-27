@@ -383,7 +383,7 @@ cargo clippy --workspace --all-targets
 # language server has its own group below
 cargo nextest run --workspace --exclude ns-lsp
 cargo test --workspace --exclude ns-lsp --doc
-# non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
+# non-regression gate: must report "parsed 211, failed 0, expected-fail 0, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
 
 # --- before every commit that touches crates/ns-lsp or crates/ns-syntax ---
