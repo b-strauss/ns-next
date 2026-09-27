@@ -136,9 +136,9 @@ answers the question step 7 (below) has to settle first.
 **Editor support — the language server and the JetBrains plugin — reached
 Built on 2026-09-26** ("Editor support: the language server and the
 JetBrains plugin" below); it runs beside the runtime milestones above rather
-than as one of them. Trying it by hand surfaced a runtime deviation from
-§5.9 still to be scheduled: the resolver recognizes `outer N m` only for an
-uppercase `N` (described at the end of that entry).
+than as one of them. The runtime deviation from §5.9 that trying it by hand
+surfaced -- `outer N m` recognized only for an uppercase `N` -- is fixed
+("The unreserved words are names" below).
 
 **Exceptions are done** (2026-09-25 to 2026-09-26;
 [ns-next-exceptions](superpowers/plans/2026-09-25-2244-ns-next-exceptions.md);
