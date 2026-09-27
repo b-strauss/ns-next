@@ -17,6 +17,7 @@ class NewspeakSemanticTokensTest {
         assertEquals(NewspeakColors.CLASS_NAME, semanticAttributesFor("class", emptyList()))
         assertEquals(NewspeakColors.METHOD_DECLARATION, semanticAttributesFor("method", listOf("declaration")))
         assertEquals(NewspeakColors.SEND, semanticAttributesFor("method", emptyList()))
+        assertEquals(NewspeakColors.KEYWORD, semanticAttributesFor("keyword", emptyList()))
     }
 
     @Test fun anUnknownTypeKeepsTheLexersColour() {

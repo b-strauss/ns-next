@@ -15,7 +15,7 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
     override fun getColorDescriptors(): Array<ColorDescriptor> = ColorDescriptor.EMPTY_ARRAY
 
     override fun getAttributeDescriptors(): Array<AttributesDescriptor> = arrayOf(
-        AttributesDescriptor("Keywords//class and access modifiers", NewspeakColors.KEYWORD),
+        AttributesDescriptor("Keywords//class, access modifiers and lazy", NewspeakColors.KEYWORD),
         AttributesDescriptor("Keywords//Reserved words (self, super, outer, true, false, nil)", NewspeakColors.RESERVED_WORD),
         AttributesDescriptor("Keywords//Return (^)", NewspeakColors.RETURN),
         AttributesDescriptor("Identifier", NewspeakColors.IDENTIFIER),
@@ -52,6 +52,7 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
         "class" to NewspeakColors.CLASS_NAME,
         "declaration" to NewspeakColors.METHOD_DECLARATION,
         "send" to NewspeakColors.SEND,
+        "lazy" to NewspeakColors.KEYWORD,
     )
 
     override fun getDemoText(): String = """
@@ -68,6 +69,8 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
             <slot>count::</slot> <local>next</local>.
             ^self <send>report:</send> #counted <send>with:</send> 'done' <send>and:</send> "!"
           )
+          <lazy>lazy</lazy> public <immutable>total</immutable> = <slot>count</slot> <send>*</send> 2.
+          private <lazy>lazy</lazy> <slot>cache</slot> ::= <immutable>limit</immutable> <send>printString</send>.
           public <declaration>report:</declaration> <parameter>what</parameter> with: <parameter>text</parameter> and: <parameter>mark</parameter> = ( ^{ <parameter>what</parameter>. <parameter>text</parameter>. <parameter>mark</parameter> } )
         ) : ()
     """.trimIndent()

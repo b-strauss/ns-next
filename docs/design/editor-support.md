@@ -154,15 +154,24 @@ never whether anything is an error — pinned by
 ### Classification
 
 Legend: token types `parameter`, `variable` (a local), `property` (a slot),
-`class`, `method`; modifiers `declaration` and `readonly` (a slot or local
-declared with `=`). There is no `keyword` type: the reserved words (§4.1:
-`self`, `super`, `outer`, `true`, `false`, `nil`) are coloured by the plugin's
-lexer, which knows them from their text, so the server adds nothing for them.
+`class`, `method`, `keyword`; modifiers `declaration` and `readonly` (a slot or
+local declared with `=`). The reserved words (§4.1: `self`, `super`, `outer`,
+`true`, `false`, `nil`), `class` and the access modifiers are coloured by the
+plugin's lexer, which knows them from their text, so the server adds nothing
+for them. `keyword` is for the one word the lexer cannot know: §6.3.3's
+`lazy`, which both lexers answer as an identifier and only the parser
+recognizes, by its position before or after an access modifier. The server
+finds it among the tokens between a lazy slot's start and its name, where it
+is the only identifier; a slot or method that is merely named `lazy` stays a
+slot or a send. Until the server answers, `lazy` shows the neutral identifier
+colour, never a wrong one.
 A keyword message's span starts at its receiver, so the receiver's span is
 excluded when the selector's tokens are found.
 
 - **Declarations** come from the AST: class names, slots, message patterns,
-  parameters, temporaries.
+  parameters, temporaries. A lazy slot is a slot like any other, `readonly`
+  when declared with `=`; its initializer is walked without the factory's
+  parameters in scope, as the resolver resolves it (§6).
 - **Uses** come from the bindings. `Local` and `OuterLocal` are a parameter or
   a local according to the declaration they bind to. The resolver records a
   slot read as a `LexicalSend { depth }`, as the specification makes it a send
@@ -213,7 +222,8 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
   error, checking range and message;
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
-  a receiver inside a keyword message's span), each expected category asserted
+  a receiver inside a keyword message's span, a lazy slot in both
+  modifier orders and both forms), each expected category asserted
   directly rather than through an `insta` snapshot, so every expectation is
   stated and reviewed rather than accepted;
 - the resolver entry — for every module in `corpus/modules`, `goldens/` and

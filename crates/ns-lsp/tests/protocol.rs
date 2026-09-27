@@ -75,7 +75,14 @@ fn an_editor_session() {
     );
     assert_eq!(
         capabilities["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"],
-        json!(["parameter", "variable", "property", "class", "method"])
+        json!([
+            "parameter",
+            "variable",
+            "property",
+            "class",
+            "method",
+            "keyword"
+        ])
     );
     notify(&client, "initialized", json!({}));
 

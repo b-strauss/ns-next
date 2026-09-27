@@ -12,6 +12,8 @@ fun semanticAttributesFor(tokenType: String, modifiers: List<String>): TextAttri
     "property" -> if ("readonly" in modifiers) NewspeakColors.IMMUTABLE_SLOT else NewspeakColors.SLOT
     "class" -> NewspeakColors.CLASS_NAME
     "method" -> if ("declaration" in modifiers) NewspeakColors.METHOD_DECLARATION else NewspeakColors.SEND
+    // `lazy`, which the lexer can only see as an identifier.
+    "keyword" -> NewspeakColors.KEYWORD
     else -> null
 }
 

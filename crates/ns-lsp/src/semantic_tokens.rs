@@ -17,6 +17,7 @@ pub enum TokenCategory {
     Property,
     Class,
     Method,
+    Keyword,
 }
 
 /// One classified name: where it is, what it is, and whether this is its
@@ -37,6 +38,7 @@ impl TokenCategory {
             TokenCategory::Property => 2,
             TokenCategory::Class => 3,
             TokenCategory::Method => 4,
+            TokenCategory::Keyword => 5,
         }
     }
 }
@@ -54,6 +56,7 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::PROPERTY,
             SemanticTokenType::CLASS,
             SemanticTokenType::METHOD,
+            SemanticTokenType::KEYWORD,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
@@ -263,7 +266,12 @@ impl Classifier<'_> {
             .map(pattern_parameters)
             .unwrap_or_default();
         self.enter_scope(&factory_parameters, &[]);
-        for slot in &declaration.instance_side.slots {
+        for slot in declaration
+            .instance_side
+            .slots
+            .iter()
+            .filter(|slot| !slot.lazy)
+        {
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
             self.emit(slot.name.span, TokenCategory::Property, true, readonly);
             if let Some(initializer) = &slot.initializer {
@@ -288,6 +296,27 @@ impl Classifier<'_> {
             }
         }
         self.scopes.pop();
+
+        // §6: the factory's parameters are not in scope in the class body,
+        // where a lazy slot is declared; the resolver resolves its
+        // initializer as a unary method's body, and so does this walk.
+        for slot in declaration
+            .instance_side
+            .slots
+            .iter()
+            .filter(|slot| slot.lazy)
+        {
+            if let Some(modifier) = self.lazy_modifier(slot) {
+                self.emit(modifier, TokenCategory::Keyword, false, false);
+            }
+            let readonly = slot.mutability == ast::SlotMutability::Immutable;
+            self.emit(slot.name.span, TokenCategory::Property, true, readonly);
+            if let Some(initializer) = &slot.initializer {
+                self.enter_scope(&[], &[]);
+                self.expression(initializer, &chain);
+                self.scopes.pop();
+            }
+        }
 
         if let Some(class_side) = &declaration.class_side {
             for slot in &class_side.slots {
@@ -443,6 +472,23 @@ impl Classifier<'_> {
             }
             _ => {}
         }
+    }
+
+    /// The `lazy` of a lazy slot declaration. The lexer has no token of its
+    /// own for it -- it is an identifier the parser recognizes by its text
+    /// and position (`at_lazy_slot`) -- so the plugin's lexer, which mirrors
+    /// the Rust one token by token, cannot colour it either. Before the name
+    /// there is only `lazy` and at most one access modifier, in either
+    /// order, so the one identifier there is the modifier.
+    fn lazy_modifier(&self, slot: &ast::SlotDeclaration) -> Option<Span> {
+        let first = self
+            .tokens
+            .partition_point(|token| token.span.start < slot.span.start);
+        self.tokens[first..]
+            .iter()
+            .take_while(|token| token.span.start < slot.name.span.start)
+            .find(|token| token.kind == TokenKind::Identifier)
+            .map(|token| token.span)
     }
 
     /// The `name::` token that starts where `name` does, or `name`'s own span
@@ -897,6 +943,93 @@ mod tests {
     }
 
     #[test]
+    fn both_modifier_orders_and_both_forms_of_a_lazy_slot() {
+        // §6.3.3: `lazy` may stand before or after the access modifier, and
+        // a lazy slot may be declared with `=` or `::=`.
+        let text = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Holder usingPlatform: platform = Object new () (
+              lazy public first = platform.
+              public lazy second = first.
+              lazy private third ::= 3.
+              protected lazy fourth ::= third.
+              lazy fifth = 5.
+            ) : ()
+        "};
+        let analysis = crate::analysis::analyze(text);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let classified_at = |needle: &str, occurrence: usize| {
+            let start = text
+                .match_indices(needle)
+                .nth(occurrence)
+                .unwrap_or_else(|| panic!("`{needle}` #{occurrence} is not in the module"))
+                .0 as u32;
+            analysis
+                .classified
+                .iter()
+                .find(|classified| classified.span.start == start)
+                .map(|classified| {
+                    (
+                        classified.span.end - start,
+                        classified.category,
+                        classified.declaration,
+                        classified.readonly,
+                    )
+                })
+        };
+        use TokenCategory::Keyword;
+        for occurrence in 0..5 {
+            assert_eq!(
+                classified_at("lazy", occurrence),
+                Some((4, Keyword, false, false)),
+                "`lazy` #{occurrence} is a keyword"
+            );
+        }
+        assert_eq!(classified_at("public", 0), None, "the lexer colours it");
+        assert_eq!(classified_at("first", 0), Some((5, Property, true, true)));
+        assert_eq!(classified_at("second", 0), Some((6, Property, true, true)));
+        assert_eq!(classified_at("third", 0), Some((5, Property, true, false)));
+        assert_eq!(classified_at("fourth", 0), Some((6, Property, true, false)));
+        assert_eq!(classified_at("fifth", 0), Some((5, Property, true, true)));
+        // The initializers are walked: a slot read there is a slot.
+        assert_eq!(classified_at("first", 1), Some((5, Property, false, true)));
+        assert_eq!(classified_at("third", 1), Some((5, Property, false, false)));
+        // §6: the factory's parameters are not in scope in a lazy slot's
+        // initializer, so `platform` there is a send, not the parameter.
+        assert_eq!(
+            classified_at("platform", 1),
+            Some((8, Method, false, false))
+        );
+    }
+
+    #[test]
+    fn a_slot_or_method_named_lazy_is_not_a_keyword() {
+        let text = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Holder = Object new (
+              | lazy = 1. |
+            ) (
+              public read = ( ^lazy )
+            ) : ()
+        "};
+        let analysis = crate::analysis::analyze(text);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let categories: Vec<TokenCategory> = text
+            .match_indices("lazy")
+            .filter_map(|(start, _)| {
+                analysis
+                    .classified
+                    .iter()
+                    .find(|classified| classified.span.start == start as u32)
+                    .map(|classified| classified.category)
+            })
+            .collect();
+        assert_eq!(categories, vec![Property, Property]);
+    }
+
+    #[test]
     fn encoding_is_relative_and_in_utf16() {
         let text = "'ä' ab\n  cd";
         let line_index = crate::documents::LineIndex::new(text);
@@ -969,7 +1102,14 @@ mod tests {
             .collect();
         assert_eq!(
             types,
-            vec!["parameter", "variable", "property", "class", "method"]
+            vec![
+                "parameter",
+                "variable",
+                "property",
+                "class",
+                "method",
+                "keyword"
+            ]
         );
         let modifiers: Vec<&str> = legend
             .token_modifiers
