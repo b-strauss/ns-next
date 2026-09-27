@@ -184,6 +184,13 @@ impl Resolver {
             .as_ref()
             .map(pattern_parameter_names)
             .unwrap_or_default();
+        if let Some(factory) = &declaration.factory {
+            self.check_activation_names(
+                &pattern_parameters(factory),
+                &[],
+                &format!("the factory of class `{name}`"),
+            );
+        }
         let mut scope = ScopeStack::new();
         scope.push(LocalScope::new(&factory_parameters, &[]));
         for slot in &declaration.instance_side.slots {
@@ -256,12 +263,54 @@ impl Resolver {
     }
 
     fn resolve_method(&mut self, method: &ast::MethodDeclaration, class_chain: &[EnclosingClass]) {
+        self.check_activation_names(
+            &pattern_parameters(&method.pattern),
+            &method.body.temporaries,
+            &format!("method `{}`", selector_of_pattern(&method.pattern)),
+        );
         let parameter_names: Vec<Symbol> = pattern_parameter_names(&method.pattern);
         let mut scope = ScopeStack::new();
         scope.push(LocalScope::new(&parameter_names, &method.body.temporaries));
         self.resolve_local_initializers(&method.body.temporaries, &mut scope, class_chain);
         for statement in &method.body.statements {
             self.resolve_statement(statement, &mut scope, class_chain);
+        }
+    }
+
+    /// §3.6: "It is a compile-time error to define a method or closure that
+    /// has a parameter and a local with the same name." An activation has
+    /// one parameter slot per formal parameter and one local slot per
+    /// declaration, and a name must pick one of them, so two parameters or
+    /// two locals of one name are the same error as a parameter and a local
+    /// -- the rule's reason, applied to every pair (no prior art checks any
+    /// of them: Primordial Soup's compiler checks a class's members only).
+    /// Each repeated name is reported once, at its second declaration.
+    fn check_activation_names(
+        &mut self,
+        parameters: &[&ast::Identifier],
+        temporaries: &[ast::SlotDeclaration],
+        owner: &str,
+    ) {
+        let mut seen: Vec<(&str, &'static str)> = Vec::new();
+        let declarations = parameters
+            .iter()
+            .map(|parameter| (*parameter, "a parameter"))
+            .chain(
+                temporaries
+                    .iter()
+                    .map(|temporary| (&temporary.name, "a local")),
+            );
+        for (identifier, kind) in declarations {
+            match seen.iter().find(|(name, _)| *name == identifier.name) {
+                Some((_, first_kind)) => self.errors.push(ResolveError {
+                    span: identifier.span,
+                    message: format!(
+                        "{owner} declares `{}` twice, as {first_kind} and as {kind} (§3.6)",
+                        identifier.name
+                    ),
+                }),
+                None => seen.push((&identifier.name, kind)),
+            }
         }
     }
 
@@ -315,6 +364,8 @@ impl Resolver {
                 self.resolve_expression(value, scope, chain);
             }
             Expression::Block(block) => {
+                let parameters: Vec<&ast::Identifier> = block.parameters.iter().collect();
+                self.check_activation_names(&parameters, &block.body.temporaries, "a block");
                 let parameter_names: Vec<Symbol> = block
                     .parameters
                     .iter()
@@ -549,6 +600,29 @@ fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[Enclos
     scope.resolve(name).is_none()
         && sends::find_member_depth(chain, name)
             .is_some_and(|depth| usize::from(depth) + 1 == chain.len())
+}
+
+fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
+    match pattern {
+        ast::MessagePattern::Unary { .. } => vec![],
+        ast::MessagePattern::Binary { parameter, .. } => vec![parameter],
+        ast::MessagePattern::Keyword { parts } => {
+            parts.iter().map(|(_, parameter)| parameter).collect()
+        }
+    }
+}
+
+/// A pattern's full selector, `at:put:` for a keyword pattern.
+fn selector_of_pattern(pattern: &ast::MessagePattern) -> String {
+    match pattern {
+        ast::MessagePattern::Unary { selector } | ast::MessagePattern::Binary { selector, .. } => {
+            selector.name.clone()
+        }
+        ast::MessagePattern::Keyword { parts } => parts
+            .iter()
+            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .collect(),
+    }
 }
 
 fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {

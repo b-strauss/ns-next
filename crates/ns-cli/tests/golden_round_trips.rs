@@ -104,6 +104,27 @@ fn a_binary_runs_as_its_source_does(path: &Path, lowering: &str) -> Result<(), F
             }
             return Ok(());
         }
+        // A golden the resolver refuses -- a compile-time error the
+        // specification names, such as §3.6's -- is refused by `build` and
+        // `run` alike, before anything runs: the same report, word for word.
+        if build_error.contains("resolve error:") {
+            let (run_ok, _, run_error) = ns_next(&[
+                "run".as_ref(),
+                path.as_os_str(),
+                "--lowering".as_ref(),
+                lowering.as_ref(),
+            ]);
+            if run_ok || run_error != build_error {
+                return Err(format!(
+                    "run must refuse what the build refused:
+--- build
+{build_error}--- run
+{run_error}"
+                )
+                .into());
+            }
+            return Ok(());
+        }
         // A golden whose root class declares no `main:args:` and needs an
         // explicit entry is not a failure of this property. Anything else
         // is, so the reason is checked rather than assumed.

@@ -191,7 +191,14 @@ in the corpus only inside comments.
 - *Radix numbers.* Each optional part is taken only when it is complete: `16r`
   is `16` followed by the name `r`, a fraction needs a digit after its dot,
   and only `decimalNum` has a leading sign, so `-16rFF` is `-16` and `rFF`
-  while `16r-1F` is -31. Extended digits are uppercase.
+  while `16r-1F` is -31. Extended digits are uppercase. §5.1.1 gives a value
+  only to a radix between 2 and 36 and digits below it; the parser refuses
+  the rest (`2r12`, `37r1`), as the canonical parser does while it parses.
+  A fraction or an exponent makes any number non-integral, a radix one
+  included: `16r1.8` is 1.5 and `2r1e3` is 1000, its digits in its radix
+  times ten to its exponent -- the canonical parser's reading, since the
+  section gives an exponent no base
+  (`goldens/spec/spec_5_1_1_a_radix_number_may_have_a_fraction_and_an_exponent`).
 - *Symbols.* `sym → str | kws | binSel | id`, `kws → kw+`: every keyword of a
   symbol ends in its colon, so `#at:put:` is one symbol and `#at:put` is
   `#at:` followed by `put`.

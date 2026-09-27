@@ -4648,3 +4648,21 @@ What changed, each decided with the user where it was a choice:
 A pattern literal still evaluates to `nil`, now a row in the deviations
 table; chains and object literals, which the specification marks
 unimplemented, are recorded as possible future extensions.
+
+## The compile-time errors the specification names (2026-09-28)
+
+§3.6's one compile-time error the resolver did not report is reported now:
+an activation -- a method, a block or a factory -- declares each name once
+among its parameters and locals (`Resolver::check_activation_names`), and
+`goldens/spec/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error`,
+skipped since it was written, holds. §5.9's other one, `outer N` naming no
+enclosing class, was already a resolver error.
+
+A radix number is checked while it parses: a radix outside 2 to 36 or a digit
+at or above it is a parse error, as in the canonical parser, not an error the
+program raised when it ran. A radix number with a fraction or an exponent is a
+float with the canonical value (`16r1.8` is 1.5, `2r1e3` is 1000); `16r1Fe2`
+had read `e2` as hex digits and answered 8162 at exit status 0. A superclass
+clause's receiver and `outer`'s class must be names, and §6's
+`typeParameterDecl` is checked rather than skipped. The one literal still
+deferred to execution is an integer beyond `i64`.

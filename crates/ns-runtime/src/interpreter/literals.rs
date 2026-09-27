@@ -42,10 +42,10 @@ pub(crate) fn malformed_integer_error<'gc>(message: String) -> Signal<'gc> {
 /// alone would reject every radix literal with a misleading "out of i64
 /// range".
 ///
-/// A gap kept explicit: the lexer also accepts a *fractional*
-/// radix literal (`16r1.8`), which the parser still classifies as an `Integer`.
-/// That needs radix-aware float construction; it is rejected here with a
-/// message that says so rather than silently truncating.
+/// The parser classifies a number with a fraction or an exponent as a
+/// float (`parse_float_literal`) and refuses a radix or digit that denotes
+/// nothing, so for a parsed program only an integer beyond `i64` fails here;
+/// the other checks stand for an image's literal text, which no parser saw.
 ///
 /// Returns the `NewspeakError` message on failure (never panics -- this is a
 /// Newspeak-program-input path).
@@ -69,11 +69,6 @@ pub(crate) fn parse_integer_literal(text: &str) -> Result<i64, String> {
             "radix {radix} out of range in integer literal `{text}`: must be 2..36"
         ));
     }
-    if digits.contains('.') {
-        return Err(format!(
-            "fractional radix literals are not supported in Milestone 1: `{text}`"
-        ));
-    }
     let value = i64::from_str_radix(digits, radix).map_err(|_| {
         format!("malformed or out-of-i64-range radix integer literal `{text}` (radix {radix})")
     })?;
@@ -86,9 +81,67 @@ pub(crate) fn parse_integer_literal(text: &str) -> Result<i64, String> {
     }
 }
 
+/// A non-integral number literal's value (§5.1.1), as the one `f64` this
+/// runtime represents it with (a recorded deviation: the section names an
+/// exact `FixedPointNumber`). A decimal one is Rust's own float syntax. A
+/// radix one, `16r1.8` or `2r1e3`, is its integer and fraction digits in
+/// its radix, times ten to its exponent -- the canonical parser's reading
+/// (`NewspeakParsing.ns`, `radixNum`), since the section gives an exponent
+/// no base. The parser has checked every digit against the radix, so this
+/// never fails on a parsed program; an unparseable text is NaN.
+pub(crate) fn parse_float_literal(text: &str) -> f64 {
+    let Some((radix_text, rest)) = text.split_once('r') else {
+        return text.parse().unwrap_or(f64::NAN);
+    };
+    let Ok(radix) = radix_text.parse::<u32>() else {
+        return f64::NAN;
+    };
+    let (mantissa, exponent) = match rest.split_once('e') {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().unwrap_or(0)),
+        None => (rest, 0),
+    };
+    let (negative, unsigned) = match mantissa.strip_prefix('-') {
+        Some(unsigned) => (true, unsigned),
+        None => (false, mantissa),
+    };
+    let (integer_digits, fraction_digits) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let base = f64::from(radix);
+    let mut value = 0.0;
+    for digit in integer_digits.chars() {
+        let Some(digit) = digit.to_digit(radix) else {
+            return f64::NAN;
+        };
+        value = value * base + f64::from(digit);
+    }
+    let mut scale = 1.0 / base;
+    for digit in fraction_digits.chars() {
+        let Some(digit) = digit.to_digit(radix) else {
+            return f64::NAN;
+        };
+        value += f64::from(digit) * scale;
+        scale /= base;
+    }
+    let value = value * 10f64.powi(exponent);
+    if negative {
+        -value
+    } else {
+        value
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_integer_literal;
+    use super::{parse_float_literal, parse_integer_literal};
+
+    #[test]
+    fn a_radix_float_is_its_digits_in_its_radix_times_ten_to_its_exponent() {
+        assert_eq!(parse_float_literal("16r1.8"), 1.5);
+        assert_eq!(parse_float_literal("2r1e3"), 1000.0);
+        assert_eq!(parse_float_literal("16r1Fe2"), 3100.0);
+        assert_eq!(parse_float_literal("16r-1.8"), -1.5);
+        assert_eq!(parse_float_literal("2r0.01"), 0.25);
+        assert_eq!(parse_float_literal("1.5e-3"), 0.0015);
+    }
 
     #[test]
     fn plain_decimal_literals_still_parse() {
@@ -126,14 +179,5 @@ mod tests {
     fn a_digit_outside_the_radix_is_rejected() {
         let error = parse_integer_literal("2r1012").expect_err("digit 2 is not base-2");
         assert!(error.contains("malformed"), "got: {error}");
-    }
-
-    #[test]
-    fn a_fractional_radix_literal_says_it_is_unsupported() {
-        let error = parse_integer_literal("16r1.8").expect_err("fractional radix");
-        assert!(
-            error.contains("fractional radix literals are not supported"),
-            "got: {error}"
-        );
     }
 }

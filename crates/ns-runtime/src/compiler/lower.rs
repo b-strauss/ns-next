@@ -16,7 +16,7 @@ use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
     CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal as BytecodeLiteral,
 };
-use crate::interpreter::literals::parse_integer_literal;
+use crate::interpreter::literals::{parse_float_literal, parse_integer_literal};
 use crate::types::Binding;
 
 /// One entry of the compile-time scope stack. The resolver counts every
@@ -1861,9 +1861,7 @@ pub(super) fn lower_literal(literal: &ast::Literal) -> BytecodeLiteral {
             Ok(integer) => BytecodeLiteral::SmallInteger(integer),
             Err(_) => BytecodeLiteral::MalformedInteger(text.clone()),
         },
-        ast::Literal::Float { text, .. } => {
-            BytecodeLiteral::Float(text.parse().unwrap_or(f64::NAN))
-        }
+        ast::Literal::Float { text, .. } => BytecodeLiteral::Float(parse_float_literal(text)),
         ast::Literal::String { value, .. } => BytecodeLiteral::String(value.clone()),
         ast::Literal::Symbol { value, .. } => BytecodeLiteral::Symbol(crate::Symbol::intern(value)),
         ast::Literal::Boolean { value, .. } => BytecodeLiteral::Boolean(*value),

@@ -290,7 +290,7 @@ Literals:
   neither the specification nor the canonical grammar has it, and a tuple,
   `{ ... }`, is the array literal (§5.1.7).
 - 8 `MalformedInteger`: an integer literal the lexer accepts and the parser
-  rejects, out of range or a fractional radix; it raises its error when it runs.
+  rejects, out of `i64` range; it raises its error when it runs.
 - 9 `UnresolvedIdentifier`: an identifier that names nothing, a module
   root's clause receiver; it raises its error when it runs.
 

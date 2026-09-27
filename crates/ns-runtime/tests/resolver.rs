@@ -172,6 +172,50 @@ fn a_lowercase_outer_class_name_is_an_outer_send() {
     );
 }
 
+/// §3.6: an activation declares each name once among its parameters and
+/// locals, a method's, a block's and a factory's alike. A block's own
+/// parameter may still share a name with the enclosing method's, since it
+/// is another activation's slot.
+#[test]
+fn an_activation_declares_each_name_once() {
+    let errors = |member: &str| {
+        resolve_errors(&formatdoc! {"
+            Newspeak3
+            'T'
+            class Foo = Object new () (
+              {member}
+            ) : ()
+        "})
+    };
+    assert_eq!(
+        errors("bar: a = ( | a | ^a )"),
+        vec!["method `bar:` declares `a` twice, as a parameter and as a local (§3.6)".to_string()]
+    );
+    assert_eq!(
+        errors("bar: a with: a = ( ^a )"),
+        vec![
+            "method `bar:with:` declares `a` twice, as a parameter and as a parameter (§3.6)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        errors("bar = ( | a a | ^a )"),
+        vec!["method `bar` declares `a` twice, as a local and as a local (§3.6)".to_string()]
+    );
+    assert_eq!(
+        errors("bar = ( ^[:a | | a | a] )"),
+        vec!["a block declares `a` twice, as a parameter and as a local (§3.6)".to_string()]
+    );
+    assert_eq!(
+        errors("class Box x: a y: a = Object new () ()"),
+        vec![
+            "the factory of class `Box` declares `a` twice, as a parameter and as a parameter (§3.6)"
+                .to_string()
+        ]
+    );
+    assert_eq!(errors("bar: a = ( ^[:a | a] )"), Vec::<String>::new());
+}
+
 /// The resolve errors `source` produces, as messages; empty when it resolves.
 fn resolve_errors(source: &str) -> Vec<String> {
     let module = ns_syntax::parse(source).expect("parse");

@@ -6,20 +6,9 @@ Newspeak3
    gives it "zero or more parameter slots, one for each formal parameter"
    and "zero or more local slots, one for each slot declaration in the body"
    -- so shadow: defines value twice, and the program is not to be
-   compiled at all.
-
-   The resolver has no such check: it gives the local its own register, the
-   method runs and answers 5 at exit status 0, so which of the two `value`
-   means is decided silently.
-
-   The check does not exist, so neither does its wording. The recorded
-   stderr is the resolver's existing duplicate-definition message
-   (crates/ns-runtime/src/resolver/mod.rs, "class `{name}` has multiple
-   definitions of `{duplicate}`", printed as `resolve error: ...` at exit
-   status 1 by crates/ns-cli/src/source.rs) with the construct named as the
-   method rather than the class. It is a proposal, not a derivation: what
-   3.6 fixes is that the program is refused before it runs, and whoever
-   implements the check settles the text. Skipped until it exists. *)
+   compiled at all: the resolver refuses it before anything runs
+   (`Resolver::check_activation_names`), which two parameters or two locals
+   of one name are too. *)
 class Spec36ParameterAndLocalClash usingPlatform: p = Object new (| t = p transcript. |) (
     shadow: value = ( | value | value:: 5. ^value )
     public main: platform args: arguments = (

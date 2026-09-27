@@ -261,11 +261,6 @@ asynchronous send has none: §5.6 says the result is "a promise that is
 immediately returned to the sender", and with no promise to observe there
 is no answer to record that would not be invented.
 
-A `skipped` golden is not always a row here. `goldens/spec/` also records
-rules the runtime simply does not implement yet, rather than places where a
-decision was taken to differ: a parameter and a local of the same name
-compile (§3.6). It carries its own `skipped` reason.
-
 ## What lives elsewhere
 
 - **`CLAUDE.md`** — the invariants that are easy to break, each of which has

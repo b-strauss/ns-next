@@ -1,5 +1,4 @@
-skipped = "not implemented yet: the resolver has no parameter/local clash check, so the program compiles and runs; the recorded wording is a proposal shaped on the resolver's existing duplicate-definition message, and whoever implements the check settles it"
 status = 1
 stderr = '''
-resolve error: method `shadow:` has multiple definitions of `value`
+resolve error: method `shadow:` declares `value` twice, as a parameter and as a local (§3.6)
 '''

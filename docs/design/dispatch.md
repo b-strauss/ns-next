@@ -84,6 +84,16 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    immutable slot `x` beside a method `x:` is not a collision: §6.3.2,
    "defining a setter will not impact such an initialization".
 
+   Inside one activation, a name is declared once among its parameters and
+   locals -- a method's, a block's and a factory's alike -- or the resolver
+   refuses it: §3.6, "It is a compile-time error to define a method or
+   closure that has a parameter and a local with the same name", applied to
+   every pair, since two parameters or two locals of one name leave the same
+   ambiguity (`Resolver::check_activation_names`,
+   `goldens/spec/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error`).
+   A block's own parameter may share a name with its method's: it is another
+   activation's slot.
+
    The member set also holds the declaration's **primary factory selector** —
    the one its own message pattern spells out, or `new` when it writes none.
    §6.3 makes the factory a member of the metaclass mixin the class side

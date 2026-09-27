@@ -674,8 +674,10 @@ A program-level error the language raises at evaluation time is therefore
 **deferred to execution**: it is reported when, and only if, execution reaches
 it, so a method that is never run never fails. Two literals carry that deferral:
 
-- `Literal::MalformedInteger` — an integer the lexer accepted but the parser rejects,
-  such as one out of `i64` range or a fractional radix literal. The compiler
+- `Literal::MalformedInteger` — an integer literal out of `i64` range, the one
+  kind of number the parser accepts and the runtime cannot represent (a radix
+  or digit that denotes nothing is a parse error, and a fraction or exponent
+  makes a float). The compiler
   lowers it to `MalformedInteger`; the VM re-runs `parse_integer_literal` when the
   instruction executes and raises its error text, and only if execution actually
   reaches it.

@@ -133,9 +133,14 @@ impl<'a> Parser<'a> {
         let raw = self.text(token).to_string();
         match token.kind {
             TokenKind::Number => {
-                let is_radix = raw.contains('r');
-                let looks_float = !is_radix && (raw.contains('.') || raw.contains('e'));
-                if looks_float {
+                self.check_radix_number(&raw, token.span);
+                // §5.1.1: "A number that includes neither a fraction nor an
+                // exponent denotes an object that obeys the protocol of class
+                // Integer"; the others are non-integral. A radix number's
+                // extended digits are uppercase, so an `e` in one is its
+                // exponent, as in a decimal one.
+                let non_integral = raw.contains('.') || raw.contains('e');
+                if non_integral {
                     Literal::Float {
                         text: raw,
                         span: token.span,
@@ -156,6 +161,40 @@ impl<'a> Parser<'a> {
                 span: token.span,
             },
             _ => unreachable!("parse_literal called on {:?}", token.kind),
+        }
+    }
+
+    /// A radix number whose radix or digits denote no number: §4.2's grammar
+    /// derives `radix → digits "r"` and `extendedDigits → (digit |
+    /// uppercaseLetter)+` for any radix and any such digit, but §5.1.1
+    /// gives a value only to digits below the radix. The canonical parser
+    /// refuses the rest while it parses ("Malformed number: digit exceeds
+    /// radix", `NewspeakParsing.ns`), and so does this one; a radix is
+    /// between 2 and 36, the most that ten digits and 26 letters can spell.
+    fn check_radix_number(&mut self, text: &str, span: crate::span::Span) {
+        let Some((radix_text, rest)) = text.split_once('r') else {
+            return;
+        };
+        let radix = match radix_text.parse::<u32>() {
+            Ok(radix) if (2..=36).contains(&radix) => radix,
+            _ => {
+                self.push_error(
+                    span,
+                    &format!("the radix of `{text}` is not between 2 and 36 (§5.1.1)"),
+                );
+                return;
+            }
+        };
+        let mantissa = rest.split('e').next().unwrap_or(rest);
+        if let Some(digit) = mantissa
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .find(|character| character.to_digit(36).is_none_or(|value| value >= radix))
+        {
+            self.push_error(
+                span,
+                &format!("`{digit}` is not a digit of radix {radix} in `{text}` (§5.1.1)"),
+            );
         }
     }
 

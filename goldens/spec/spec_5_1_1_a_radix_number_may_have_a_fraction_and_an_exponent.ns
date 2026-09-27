@@ -1,0 +1,20 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 4.2: radixNum is radix ["-"] extendedDigits
+   [extendedFraction] [exponent], and 5.1.1 makes a number with a fraction or
+   an exponent non-integral. Its value is its digits in its radix -- the
+   fraction's too -- times ten to its exponent, as the canonical parser
+   computes it (NewspeakParsing.ns, radixNum), since the section gives the
+   exponent no base. Non-integral numbers are binary floats here (a recorded
+   deviation), which print without a fractional part when they have none. *)
+class Spec511ARadixNumberMayHaveAFractionAndAnExponent usingPlatform: p = Object new (| t = p transcript. |) (
+    public main: platform args: arguments = (
+        t show: 16r1.8 printString; newLine.
+        t show: 2r1e3 printString; newLine.
+        t show: 16r1Fe2 printString; newLine.
+        t show: 16r-1.8 printString; newLine.
+        t show: 2r0.01 printString; newLine.
+        t show: 16r1F printString; newLine.
+        t show: 36rZ printString; newLine
+    )
+) : ()

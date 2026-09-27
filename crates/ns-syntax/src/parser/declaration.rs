@@ -149,6 +149,23 @@ impl<'a> Parser<'a> {
         pattern
     }
 
+    /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
+    /// identifier)* rbracket rangleBracket`, the cursor at its `<`: the names
+    /// are checked and dropped, since there is no type AST.
+    fn parse_type_parameter_declaration(&mut self) {
+        self.bump(); // `<`
+        self.bump(); // `[`
+        loop {
+            let _ = self.declared_identifier("name a type parameter");
+            if !(self.at(TokenKind::BinarySelector) && self.text(self.current()) == ",") {
+                break;
+            }
+            self.bump(); // `,`
+        }
+        self.expect(TokenKind::RightBracket);
+        self.expect(TokenKind::GreaterThan);
+    }
+
     /// Whether the cursor is at a binary factory pattern whose selector is
     /// `=`, followed by the header's own `=`.
     fn at_binary_equals_factory(&mut self) -> bool {
@@ -374,7 +391,7 @@ impl<'a> Parser<'a> {
         // `typeParameterDecl`, `class Map <[K, V]> ...`, and the canonical
         // grammar's `class List[E] ...` (`NewspeakGrammar.ns:465`).
         if self.at(TokenKind::LessThan) && self.peek2() == TokenKind::LeftBracket {
-            self.skip_type_annotation();
+            self.parse_type_parameter_declaration();
         }
         self.skip_type_arguments();
         // §6's two alternatives, `messagePattern equalSign ...` before
@@ -515,9 +532,9 @@ impl<'a> Parser<'a> {
         Some(inner.to_string())
     }
 
-    /// `superclassPrefix? Identifier message?` — the receiver identifier
-    /// followed by zero or more unary/binary/keyword sends (`Object new`,
-    /// `platform collections List`, `superclass subclassMixin: m`).
+    /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
+    /// name and at most one message to it (`Object new`, `superclass
+    /// subclassMixin: m`).
     pub(crate) fn parse_superclass_clause(&mut self) -> SuperclassClause {
         let start = self.current().span;
         let prefix = match self.peek() {
@@ -532,13 +549,18 @@ impl<'a> Parser<'a> {
                 }
                 "outer" => {
                     self.bump();
-                    Some(SuperclassPrefix::Outer(self.identifier()))
+                    Some(SuperclassPrefix::Outer(
+                        self.declared_identifier("name an enclosing class"),
+                    ))
                 }
                 _ => None,
             },
             _ => None,
         };
-        let receiver = self.identifier();
+        // §6.1's `inheritanceClause → [inheritancePrefix] unarySelector
+        // [message]`: the receiver is a unary selector, an identifier, never
+        // a literal or a reserved word.
+        let receiver = self.declared_identifier("name a superclass");
         // `Collection[E] new` — type arguments on the superclass receiver.
         self.skip_type_arguments();
         let mut messages = Vec::new();
@@ -2266,6 +2288,11 @@ mod specification_tests {
         accepted("class Box = self Object new () ()");
         refused("class Box = Object new foo () ()");
         refused("class Box = Object new + 1 () ()");
+        // The receiver is a unary selector: a name, never a literal or a
+        // reserved word, and `outer`'s class is a name too.
+        refused("class Box = 3 new () ()");
+        refused("class Box = nil new () ()");
+        refused("class Box = outer 3 Object new () ()");
     }
 
     /// §6.3's `classBody → classHeader sideDecl [classSideDecl]`, and §6.2's
@@ -2302,6 +2329,32 @@ mod specification_tests {
     fn every_binary_selector_declares_a_binary_method() {
         for selector in ["+", "=", "<", ">", "|", "||", "->", "-", "<=", "\\\\"] {
             accepted(&format!("{selector} other = ( ^other )"));
+        }
+    }
+
+    /// §5.1.1 gives a radix number a value only when its radix is between 2
+    /// and 36 and every digit is below it; the canonical parser refuses the
+    /// rest while it parses, and so does this one. A fraction or an exponent
+    /// makes a number non-integral, a radix one included.
+    #[test]
+    fn a_radix_number_denotes_a_number() {
+        for number in ["2r1010", "36rZ", "16r1.8", "2r1e3", "16r-1F", "8r7.7e-2"] {
+            accepted(&format!("probe = ( ^{number} )"));
+        }
+        for number in ["2r12", "16rG", "2r1.2", "1r0", "37r1", "0r0"] {
+            refused(&format!("probe = ( ^{number} )"));
+        }
+        for (number, non_integral) in [
+            ("16r1F", false),
+            ("16r1.8", true),
+            ("2r1e3", true),
+            ("1e3", true),
+        ] {
+            let integral = matches!(
+                expression(number),
+                Expression::Literal(Literal::Integer { .. })
+            );
+            assert_eq!(integral, !non_integral, "{number}");
         }
     }
 
@@ -2356,6 +2409,11 @@ mod specification_tests {
     #[test]
     fn a_class_declares_its_type_parameters_as_the_specification_writes_them() {
         accepted("class Map <[K, V]> new: capacity <Integer> = Object new () ()");
+        accepted("class Set <[E]> = Object new () ()");
         accepted("class List[E] = Object new () ()");
+        refused("class Map <[3]> = Object new () ()");
+        refused("class Map <[K V]> = Object new () ()");
+        refused("class Map <[K,]> = Object new () ()");
+        refused("class Map <[]> = Object new () ()");
     }
 }
