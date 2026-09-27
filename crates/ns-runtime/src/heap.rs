@@ -822,6 +822,15 @@ impl<'gc> Heap<'gc> {
         hash
     }
 
+    /// The number the next identity hash will be, for a caller that must
+    /// show nothing drew one meanwhile: `image::load` resolves platform
+    /// paths, which runs shipped code, before it restores the hashes an
+    /// image recorded, and debug-asserts that the counter stood still.
+    #[cfg(debug_assertions)]
+    pub(crate) fn next_identity_hash(&self) -> u32 {
+        self.next_identity_hash
+    }
+
     /// Moves the counter past everything an image brought with it. Never
     /// moves it backwards -- a lower maximum from a second load would
     /// otherwise let a fresh allocation collide with a decoded object.

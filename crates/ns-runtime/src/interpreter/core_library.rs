@@ -87,9 +87,12 @@ impl crate::interpreter::Interpreter {
     /// kernel instance -- a run like the kernel's own, entered from the
     /// outside, so the stress modes see it -- and kept as the platform every
     /// program is handed. Its members are lazy slots, so nothing past the
-    /// factory runs here. Nothing in the factory assigns an identity hash
-    /// either, which `image::load` relies on: it resolves platform paths
-    /// before it restores the image's hashes.
+    /// factory runs here. `image::load` relies on more than the factory,
+    /// though: it resolves an image's platform paths -- running each
+    /// member's lazy initializer, and each nested class's accessor and
+    /// superclass clause, that a path names -- before it restores the
+    /// image's identity hashes, so none of that code may assign an identity
+    /// hash either. None does; a debug build asserts it at every load.
     pub(crate) fn install_platform(&mut self) {
         let resolved = resolved_shipped_module("Platform");
         let platform_class = self.load_module(&resolved);

@@ -397,10 +397,16 @@ bootstrap or in `image::load`, runs no Newspeak. The kernel instance is the
 second parameter, as in Primordial Soup (`Platform internalKernel: ik`),
 rather than a mirror leaf answering the kernel (SOMns's
 `vmMirror kernelObject: nil`): handing over an object needs no Rust, and
-the dependency stands in the factory's signature. Nothing the factory or a
-member's initializer runs assigns an identity hash, which `image::load`
-relies on: it resolves the image's platform paths before it restores the
-hashes the image recorded.
+the dependency stands in the factory's signature. `image::load` depends on
+what `Platform.ns` runs at load: it resolves the image's platform paths --
+each step a unary send that runs a lazy member's initializer the first time,
+or a nested class's accessor and, on its first use, the class's superclass
+clause -- before it restores the identity hashes the image recorded, so a
+hash drawn on the way could equal one the graph hands back. Nothing the
+factory, a member's initializer or a path's sends run assigns one; a debug
+build asserts that the counter stood still across path resolution, and a
+member whose initializer hashes something -- a hashed collection built
+eagerly, say -- would have to be kept off every path or the order changed.
 
 **The transcript leaf does not check its receiver.** `Transcript`'s `show:`
 and `newLine` are mirror forwarders like the kernel's — `Platform.ns` is

@@ -355,7 +355,25 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             paths,
         })
     })?;
+    // Following a path runs shipped code -- a platform member's lazy
+    // initializer, a nested class's accessor and superclass clause -- before
+    // the graph restores the identity hashes the image recorded, and
+    // `advance_identity_hash_past` moves the counter past them only
+    // afterwards. A hash drawn now could therefore equal one the graph hands
+    // back to a decoded object. Nothing `Platform.ns` runs on these paths
+    // draws one today; this is what notices the day something does.
+    #[cfg(debug_assertions)]
+    let hash_before_paths = interpreter.enter(|mutator| mutator.heap().next_identity_hash());
     let resolved = resolve_platform_paths(&mut interpreter, &described.paths)?;
+    #[cfg(debug_assertions)]
+    {
+        let hash_after_paths = interpreter.enter(|mutator| mutator.heap().next_identity_hash());
+        debug_assert_eq!(
+            hash_before_paths, hash_after_paths,
+            "internal: following the image's platform paths drew an identity hash before the \
+             image's own hashes were restored"
+        );
+    }
     let Described {
         symbols,
         table,
