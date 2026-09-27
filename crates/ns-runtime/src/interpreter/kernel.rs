@@ -1269,12 +1269,11 @@ mod tests {
         ),
     ];
 
-    /// `Block>>on:do:`, `ensure:` and `ifCurtailed:` carry the markers
-    /// `UNWIND_MARKERS` says, under both lowerings, and no other kernel
-    /// method's code carries one: the unwinder would run a block for it.
-    #[test]
-    fn only_the_three_block_methods_carry_an_unwind_marker() {
-        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+    crate::for_each_lowering! {
+        /// `Block>>on:do:`, `ensure:` and `ifCurtailed:` carry the markers
+        /// `UNWIND_MARKERS` says, under both lowerings, and no other kernel
+        /// method's code carries one: the unwinder would run a block for it.
+        fn only_the_three_block_methods_carry_an_unwind_marker(lowering) {
             let mut interpreter = Interpreter::bootstrap_with(lowering);
             interpreter.enter(|mutator| {
                 for kind in BuiltinClass::ALL {
@@ -1322,40 +1321,39 @@ mod tests {
         }
     }
 
-    /// Only `Kernel.ns`'s own `Block` may carry unwind markers: a class of
-    /// that name in another shipped module, with the same bodies, gets none,
-    /// since the unwinder trusts a marked method's registers. Other shipped
-    /// modules are resolved with `resolve_kernel` too, so the mark cannot
-    /// rest on that alone.
-    #[test]
-    fn a_block_class_in_another_shipped_module_carries_no_unwind_marker() {
-        let source = indoc::indoc! {"
-            Newspeak3
-            'Shipped'
-            class Shipped = Object new () (
-                public class Block = Object new () (
-                    public on: exceptionClass do: handler = (
-                        | handlerActive ::= true. |
-                        ^self value
+    crate::for_each_lowering! {
+        /// Only `Kernel.ns`'s own `Block` may carry unwind markers: a class of
+        /// that name in another shipped module, with the same bodies, gets none,
+        /// since the unwinder trusts a marked method's registers. Other shipped
+        /// modules are resolved with `resolve_kernel` too, so the mark cannot
+        /// rest on that alone.
+        fn a_block_class_in_another_shipped_module_carries_no_unwind_marker(lowering) {
+            let source = indoc::indoc! {"
+                Newspeak3
+                'Shipped'
+                class Shipped = Object new () (
+                    public class Block = Object new () (
+                        public on: exceptionClass do: handler = (
+                            | handlerActive ::= true. |
+                            ^self value
+                        )
+                        public ensure: onUnwind = (
+                            | complete ::= nil. result |
+                            result:: self value.
+                            complete isNil ifTrue: [complete:: true. onUnwind value].
+                            ^result
+                        )
                     )
-                    public ensure: onUnwind = (
-                        | complete ::= nil. result |
-                        result:: self value.
-                        complete isNil ifTrue: [complete:: true. onUnwind value].
-                        ^result
-                    )
-                )
-            ) : ()
-        "};
-        let module = ns_syntax::parse(source).expect("parse");
-        let Ok(resolved) = crate::resolver::resolve_kernel(
-            module,
-            std::rc::Rc::from(source),
-            crate::types::SourceOrigin::File(std::path::PathBuf::from("Shipped.ns")),
-        ) else {
-            panic!("the module resolves");
-        };
-        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+                ) : ()
+            "};
+            let module = ns_syntax::parse(source).expect("parse");
+            let Ok(resolved) = crate::resolver::resolve_kernel(
+                module,
+                std::rc::Rc::from(source),
+                crate::types::SourceOrigin::File(std::path::PathBuf::from("Shipped.ns")),
+            ) else {
+                panic!("the module resolves");
+            };
             let mut interpreter = Interpreter::bootstrap_with(lowering);
             let class = interpreter.load_module(&resolved);
             interpreter.enter(|mutator| {

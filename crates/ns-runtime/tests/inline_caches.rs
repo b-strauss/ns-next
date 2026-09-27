@@ -702,41 +702,40 @@ const TWO_FACTORIES: &str = indoc! {"
     ) : ()
 "};
 
-/// A `Factory` entry records the chain and nothing else, because
-/// `newspeak-spec.pdf` §6.3 instantiates the *receiver*; a hit reads the
-/// class out of the send's key rather than out of the entry.
-///
-/// The case that says so is **one guard, two receivers**, which two
-/// declarations could never give: a nested class has one class object per
-/// enclosing instance (§6) and they all share one application, so the second
-/// and third sends here are monomorphic *hits* on the entry the first filled.
-/// Each `Item`'s `describe` reads its own enclosing `Holder`'s slot, so the
-/// answer is 121 when each hit instantiates the class object it was sent to
-/// and 111 if a hit ever handed back the class object the entry was recorded
-/// for. The site stays monomorphic, which is what proves the two later sends
-/// were hits and not misses that re-ran the lookup.
-#[test]
-fn a_cached_factory_instantiates_the_receiver_it_is_sent_to() {
-    let source = indoc! {"
-        Newspeak3
-        'T'
-        class Subject = Object new () (
-          class Holder seed: value = Object new (| seed = value. |) (
-            class Item = Object new () ( public describe = ( ^seed ) )
-            public item = ( ^Item )
-          )
-          public run = (
-            | first second sum |
-            first:: Holder seed: 1.
-            second:: Holder seed: 2.
-            sum:: 0.
-            {first item. second item. first item}
-              do: [:each | sum:: sum * 10 + each new describe].
-            ^sum
-          )
-        ) : ()
-    "};
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// A `Factory` entry records the chain and nothing else, because
+    /// `newspeak-spec.pdf` §6.3 instantiates the *receiver*; a hit reads the
+    /// class out of the send's key rather than out of the entry.
+    ///
+    /// The case that says so is **one guard, two receivers**, which two
+    /// declarations could never give: a nested class has one class object per
+    /// enclosing instance (§6) and they all share one application, so the second
+    /// and third sends here are monomorphic *hits* on the entry the first filled.
+    /// Each `Item`'s `describe` reads its own enclosing `Holder`'s slot, so the
+    /// answer is 121 when each hit instantiates the class object it was sent to
+    /// and 111 if a hit ever handed back the class object the entry was recorded
+    /// for. The site stays monomorphic, which is what proves the two later sends
+    /// were hits and not misses that re-ran the lookup.
+    fn a_cached_factory_instantiates_the_receiver_it_is_sent_to(lowering) {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class Subject = Object new () (
+              class Holder seed: value = Object new (| seed = value. |) (
+                class Item = Object new () ( public describe = ( ^seed ) )
+                public item = ( ^Item )
+              )
+              public run = (
+                | first second sum |
+                first:: Holder seed: 1.
+                second:: Holder seed: 2.
+                sum:: 0.
+                {first item. second item. first item}
+                  do: [:each | sum:: sum * 10 + each new describe].
+                ^sum
+              )
+            ) : ()
+        "};
         let (mut interpreter, class) = load_with(source, lowering);
         let instance = instantiate(&mut interpreter, &class);
         let answer = send(&mut interpreter, &instance, "run", &[]);
@@ -756,15 +755,14 @@ fn a_cached_factory_instantiates_the_receiver_it_is_sent_to() {
     }
 }
 
-/// The guard is the receiver's metaclass's instances id -- a class object's
-/// dispatch id is its metaclass's, since its class is its metaclass -- so a
-/// `Factory` entry recorded for a class whose factory selector is `new`
-/// cannot answer for `Beta`, whose factory is `with:`. §3.2's flat metaclass
-/// is what makes the entry safe without a re-check: `new` is not a member of
-/// `Beta`'s metaclass, and no class side is inherited for it to come from.
-#[test]
-fn a_cached_factory_does_not_answer_a_class_with_another_factory_selector() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// The guard is the receiver's metaclass's instances id -- a class object's
+    /// dispatch id is its metaclass's, since its class is its metaclass -- so a
+    /// `Factory` entry recorded for a class whose factory selector is `new`
+    /// cannot answer for `Beta`, whose factory is `with:`. §3.2's flat metaclass
+    /// is what makes the entry safe without a re-check: `new` is not a member of
+    /// `Beta`'s metaclass, and no class side is inherited for it to come from.
+    fn a_cached_factory_does_not_answer_a_class_with_another_factory_selector(lowering) {
         let (mut interpreter, class) = load_with(TWO_FACTORIES, lowering);
         let instance = instantiate(&mut interpreter, &class);
         match interpreter.send(&instance, Symbol::intern("alphaThenBeta"), &[]) {

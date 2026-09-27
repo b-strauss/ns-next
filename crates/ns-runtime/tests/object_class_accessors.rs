@@ -4,7 +4,7 @@
 
 use indoc::indoc;
 
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Lowering, Root, Symbol, Value};
+use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
 fn load(source: &str) -> (Interpreter, Root, ns_runtime::ResolvedModule) {
     let module = ns_syntax::parse(source).expect("parse");
@@ -120,22 +120,21 @@ fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
     }
 }
 
-/// A bare builtin name in a user method is `self String`, answered by
-/// `Object`'s accessor, and the kernel's own methods -- which reach a
-/// predefined class through the kernel's nested class, found lexically --
-/// keep running: `3 printString` answers `'3'`, and a bare `String` is the
-/// class of a string literal, under both lowerings.
-#[test]
-fn a_bare_builtin_name_and_the_kernel_answer_alike_under_both_lowerings() {
-    let source = indoc! {"
-        Newspeak3
-        'Test'
-        class Probe = Object new () (
-            public printed = ( ^3 printString )
-            public same = ( ^String == 'text' class )
-        ) : ()
-    "};
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// A bare builtin name in a user method is `self String`, answered by
+    /// `Object`'s accessor, and the kernel's own methods -- which reach a
+    /// predefined class through the kernel's nested class, found lexically --
+    /// keep running: `3 printString` answers `'3'`, and a bare `String` is the
+    /// class of a string literal, under both lowerings.
+    fn a_bare_builtin_name_and_the_kernel_answer_alike_under_both_lowerings(lowering) {
+        let source = indoc! {"
+            Newspeak3
+            'Test'
+            class Probe = Object new () (
+                public printed = ( ^3 printString )
+                public same = ( ^String == 'text' class )
+            ) : ()
+        "};
         let module = ns_syntax::parse(source).expect("parse");
         let resolved = ns_runtime::resolve(
             module,

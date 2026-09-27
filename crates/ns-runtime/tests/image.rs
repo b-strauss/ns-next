@@ -1686,19 +1686,15 @@ fn block_nesting(code: &CompiledCode) -> usize {
         .unwrap_or(0)
 }
 
-/// The decoder's block-nesting ceiling (`BlockNestingTooDeep`) must admit
-/// everything the parser does, under either lowering, or a legal program
-/// would build into a binary that cannot be loaded. `[...] value` is not a
-/// control-flow send, so neither lowering inlines a level away: the code
-/// table nests exactly as deep as the source.
-#[test]
-fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
-    let levels = deepest_block_nesting_the_parser_accepts();
-    let source = source_with_nested_blocks(levels);
-    for lowering in [
-        ns_runtime::Lowering::Optimized,
-        ns_runtime::Lowering::Reference,
-    ] {
+ns_runtime::for_each_lowering! {
+    /// The decoder's block-nesting ceiling (`BlockNestingTooDeep`) must admit
+    /// everything the parser does, under either lowering, or a legal program
+    /// would build into a binary that cannot be loaded. `[...] value` is not a
+    /// control-flow send, so neither lowering inlines a level away: the code
+    /// table nests exactly as deep as the source.
+    fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs(lowering) {
+        let levels = deepest_block_nesting_the_parser_accepts();
+        let source = source_with_nested_blocks(levels);
         let module = ns_syntax::parse(&source).expect("parse");
         let resolved = ns_runtime::resolve(
             module,

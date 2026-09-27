@@ -130,9 +130,11 @@ empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
 for byte and exit status included (`crates/ns-cli/tests/run_goldens.rs`).
 That runner is a `harness = false` binary on `libtest-mimic`, one test per
-golden named by its path -- `golden::<category>/<name>`, and in a debug
-build `golden_with_a_two_entry_global_cache::<category>/<name>` as well --
-so the suite lists each golden, reports every failure with the expected
+golden per lowering named by its path -- `golden::optimized::<category>/<name>`
+and `golden::reference::<category>/<name>`, so nextest runs the two lowerings
+of a golden in parallel rather than one trial running both in sequence -- and
+in a debug build `golden_with_a_two_entry_global_cache::<category>/<name>` as
+well -- so the suite lists each golden, reports every failure with the expected
 and actual stream, runs them in parallel, and runs one or a family by name
 (`cargo nextest run -p ns-cli --test run_goldens lazy`); a skipped golden is
 listed as skipped, and `--run-ignored all` runs it. The snapshot and

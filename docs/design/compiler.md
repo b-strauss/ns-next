@@ -861,7 +861,14 @@ covered by handing the switch to the same `source::bootstrap` call.
 Running every program under both lowerings took the suite (`cargo test
 --workspace`, debug build) from 6.43 s to 9.09 s: every fixture, golden outcome
 and build/load pair runs twice, and `run-corpus`'s rows four ways instead of
-two — more process spawns and compiles, not a slower lowering.
+two — more process spawns and compiles, not a slower lowering. Since the suite
+runs under `cargo nextest run`, a test whose two lowering iterations are
+independent -- each builds its own interpreter and asserts on its own result --
+is written once with `ns_runtime::for_each_lowering!`, which expands the body
+into an `optimized` and a `reference` `#[test]` so nextest runs the two in
+parallel instead of one test running both in sequence; `run_goldens.rs` splits
+its per-golden trial the same way, by hand, since `libtest-mimic` builds its
+trials at run time rather than from a macro.
 
 While every program the suites run has a recorded answer, "both produce the
 recorded answer" is the comparison. Comparing the two runs directly with each

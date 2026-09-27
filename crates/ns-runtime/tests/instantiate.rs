@@ -410,51 +410,50 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
     );
 }
 
-/// `new` answers the instance its initializers ran on -- under both
-/// lowerings, from a host and from Newspeak, for a class with code at its
-/// own level only (`One`), at two levels (`Two`), and at its superclass's
-/// only (`Bare`). Each initializer notes the `self` it ran on.
-///
-/// The last initializer an instantiation runs hands its own value to the
-/// send, with no step after it to answer the instance
-/// (`Mutator::descend_levels`): that relies on the compiler ending every
-/// initializer by answering `self`. An initializer that answered anything
-/// else -- its last statement's value, say, or `nil` -- would fail here.
-#[test]
-fn new_answers_the_instance_its_initializers_ran_on() {
-    let source = indoc! {"
-        Newspeak3
-        'T'
-        class Kinds = Object new (
-            | seen ::= nil. |
-        ) (
-            public class One = Object new (
-                | aValue = 1. |
-                note: self.
+ns_runtime::for_each_lowering! {
+    /// `new` answers the instance its initializers ran on -- under both
+    /// lowerings, from a host and from Newspeak, for a class with code at its
+    /// own level only (`One`), at two levels (`Two`), and at its superclass's
+    /// only (`Bare`). Each initializer notes the `self` it ran on.
+    ///
+    /// The last initializer an instantiation runs hands its own value to the
+    /// send, with no step after it to answer the instance
+    /// (`Mutator::descend_levels`): that relies on the compiler ending every
+    /// initializer by answering `self`. An initializer that answered anything
+    /// else -- its last statement's value, say, or `nil` -- would fail here.
+    fn new_answers_the_instance_its_initializers_ran_on(lowering) {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class Kinds = Object new (
+                | seen ::= nil. |
             ) (
-                public a = ( ^aValue )
-            )
-            public class Base = Object new (
-                | bValue = 2. |
-                note: self.
-            ) (
-                public b = ( ^bValue )
-            )
-            public class Two = Base new (
-                | cValue = 3. |
-                note: self.
-            ) (
-                public c = ( ^cValue )
-            )
-            public class Bare = Base new (
-            ) (
-            )
-            note: o = ( seen:: o )
-            public lastSeen = ( ^seen )
-            public make: c = ( ^c new )
-        ) : ()
-    "};
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+                public class One = Object new (
+                    | aValue = 1. |
+                    note: self.
+                ) (
+                    public a = ( ^aValue )
+                )
+                public class Base = Object new (
+                    | bValue = 2. |
+                    note: self.
+                ) (
+                    public b = ( ^bValue )
+                )
+                public class Two = Base new (
+                    | cValue = 3. |
+                    note: self.
+                ) (
+                    public c = ( ^cValue )
+                )
+                public class Bare = Base new (
+                ) (
+                )
+                note: o = ( seen:: o )
+                public lastSeen = ( ^seen )
+                public make: c = ( ^c new )
+            ) : ()
+        "};
         let (mut interpreter, class) = load_with(source, lowering);
         let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Kinds");
         let cases: [(&str, &[(&str, i64)]); 3] = [
@@ -774,14 +773,13 @@ const APPLICATION_ORDER_SOURCE: &str = indoc! {"
     ) : ()
 "};
 
-/// §6.2: `class C = S ms <: M mm` initializes as `S`'s initializer with
-/// `ms`'s arguments, then `M`'s with `mm`'s, then `C`'s own -- both messages
-/// evaluated with `C`'s factory arguments, since both are written in `C`'s
-/// declaration. With `x = 3` and `y = 4`: `Root` gets `(3 + 1) * 3 = 12`,
-/// `Base` `4`, `Mixed` `8` and `Applied` `34`.
-#[test]
-fn an_applied_level_initializes_with_its_own_clause_message() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// §6.2: `class C = S ms <: M mm` initializes as `S`'s initializer with
+    /// `ms`'s arguments, then `M`'s with `mm`'s, then `C`'s own -- both messages
+    /// evaluated with `C`'s factory arguments, since both are written in `C`'s
+    /// declaration. With `x = 3` and `y = 4`: `Root` gets `(3 + 1) * 3 = 12`,
+    /// `Base` `4`, `Mixed` `8` and `Applied` `34`.
+    fn an_applied_level_initializes_with_its_own_clause_message(lowering) {
         let (mut interpreter, class) = load_with(APPLICATION_ORDER_SOURCE, lowering);
         let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Order");
         let log = expect_ok(
@@ -798,15 +796,14 @@ fn an_applied_level_initializes_with_its_own_clause_message() {
     }
 }
 
-/// Several clauses stack left to right: `S ms <: M1 m1 <: M2 m2` is
-/// `(S ms <: M1 m1) <: M2 m2`, so the message into the upper level is `m2`,
-/// the message from it into the lower level is `m1`, and the one from the
-/// lower level into `S` is `ms` -- every one evaluated with the applying
-/// class's arguments. `Root` 12, `Base` 4, `Mixed` 8, `Other` 7, `Stacked`
-/// 34; `Other`'s own superclass clause is not evaluated at all.
-#[test]
-fn stacked_applied_levels_each_initialize_with_their_own_clause_message() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// Several clauses stack left to right: `S ms <: M1 m1 <: M2 m2` is
+    /// `(S ms <: M1 m1) <: M2 m2`, so the message into the upper level is `m2`,
+    /// the message from it into the lower level is `m1`, and the one from the
+    /// lower level into `S` is `ms` -- every one evaluated with the applying
+    /// class's arguments. `Root` 12, `Base` 4, `Mixed` 8, `Other` 7, `Stacked`
+    /// 34; `Other`'s own superclass clause is not evaluated at all.
+    fn stacked_applied_levels_each_initialize_with_their_own_clause_message(lowering) {
         let (mut interpreter, class) = load_with(APPLICATION_ORDER_SOURCE, lowering);
         let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Order");
         let log = expect_ok(
@@ -823,13 +820,12 @@ fn stacked_applied_levels_each_initialize_with_their_own_clause_message() {
     }
 }
 
-/// §6.2 gives the applied level the primary factory selector of its clause's
-/// message, and the named class's initializer must accept that message's
-/// arguments, so a clause whose message is not the named class's primary
-/// factory is §6.1's run time error, as a superclass clause's is.
-#[test]
-fn a_mixin_clause_message_must_name_the_primary_factory() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// §6.2 gives the applied level the primary factory selector of its clause's
+    /// message, and the named class's initializer must accept that message's
+    /// arguments, so a clause whose message is not the named class's primary
+    /// factory is §6.1's run time error, as a superclass clause's is.
+    fn a_mixin_clause_message_must_name_the_primary_factory(lowering) {
         let (mut interpreter, class) = load_with(APPLICATION_ORDER_SOURCE, lowering);
         let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Order");
         let error = expect_error(
@@ -880,24 +876,23 @@ const EVALUATION_ORDER_SOURCE: &str = indoc! {"
     ) : ()
 "};
 
-/// §6.2's instance initializer for `I` "evaluates ms to μs … invokes the
-/// instance initializer of S on o with the arguments of μs. Then, m is
-/// evaluated to μm": a `<:` clause's message is evaluated after the
-/// superclass's initializer has run and just before its own mixin's, never
-/// on the way up with the superclass clause's. Each case runs under both
-/// lowerings; the log reads two digits per note.
-#[test]
-fn an_applied_level_evaluates_its_message_just_before_its_initializer() {
-    let cases: [(&str, i64); 3] = [
-        // ms 1, Base 1, m 2, Mixed 2, Applied 3.
-        ("applied", 1_01_02_02_03),
-        // ms 1, Base 1, m1 2, Mixed 2, m2 4, Other has no initializer,
-        // Stacked 3.
-        ("stacked", 1_01_02_02_04_03),
-        // m 6, and no initializer anywhere.
-        ("quiet", 6),
-    ];
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// §6.2's instance initializer for `I` "evaluates ms to μs … invokes the
+    /// instance initializer of S on o with the arguments of μs. Then, m is
+    /// evaluated to μm": a `<:` clause's message is evaluated after the
+    /// superclass's initializer has run and just before its own mixin's, never
+    /// on the way up with the superclass clause's. Each case runs under both
+    /// lowerings; the log reads two digits per note.
+    fn an_applied_level_evaluates_its_message_just_before_its_initializer(lowering) {
+        let cases: [(&str, i64); 3] = [
+            // ms 1, Base 1, m 2, Mixed 2, Applied 3.
+            ("applied", 1_01_02_02_03),
+            // ms 1, Base 1, m1 2, Mixed 2, m2 4, Other has no initializer,
+            // Stacked 3.
+            ("stacked", 1_01_02_02_04_03),
+            // m 6, and no initializer anywhere.
+            ("quiet", 6),
+        ];
         let (mut interpreter, class) = load_with(EVALUATION_ORDER_SOURCE, lowering);
         let module = expect_ok(
             interpreter.instantiate(&class, &[]),

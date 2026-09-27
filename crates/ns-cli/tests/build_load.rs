@@ -105,44 +105,55 @@ fn a_built_binary_runs_exactly_as_its_source_does() {
     assert_eq!(load_error, run_error, "stderr differs");
 }
 
-/// A module applying mixins (`newspeak-spec.pdf` §6.2) built into a binary
-/// answers exactly what its source answers: the binary carries each
-/// declaration's `<:` clauses -- their selectors and compiled messages -- so
-/// the loaded world builds every applied level itself and initializes it
-/// with its own clause's message, evaluated with the applying class's
-/// factory argument.
-#[test]
-fn a_built_binary_applying_mixins_runs_exactly_as_its_source_does() {
-    let directory = ScratchDirectory::new("mixin-application");
-    let source = directory.join("applying.ns");
-    std::fs::write(
-        &source,
-        indoc! {"
-            Newspeak3
-            'Test'
-            class Applying usingPlatform: p = Object new (| t = p transcript. |) (
-                class Base withBase: b = Object new (| base = b. |) (
-                    public chain = ( ^'Base ', base printString )
-                )
-                class Marker withMark: m = Object new (| mark = m. |) (
-                    public chain = ( ^'Marker ', mark printString, ' ', super chain )
-                )
-                class Stamp = Object new () (
-                    public chain = ( ^'Stamp ', super chain )
-                )
-                class Applied from: x = Base withBase: x + 1 <: Marker withMark: x * 10 <: Stamp (
-                ) (
-                    public chain = ( ^'Applied ', super chain )
-                )
-                public main: platform args: arguments = (
-                    t show: (Applied from: 4) chain; newLine.
-                    t show: (Applied from: 2) chain; newLine.
-                )
-            ) : ()
-        "},
-    )
-    .expect("write the module");
-    for lowering in ["optimized", "reference"] {
+/// The CLI's `--lowering` flag value for `lowering`: `build_load.rs` drives
+/// the `ns-next` binary as a subprocess, so `for_each_lowering!`'s
+/// `ns_runtime::Lowering` value must be translated to the flag's own
+/// spelling rather than used directly.
+fn cli_lowering_flag(lowering: ns_runtime::Lowering) -> &'static str {
+    match lowering {
+        ns_runtime::Lowering::Optimized => "optimized",
+        ns_runtime::Lowering::Reference => "reference",
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A module applying mixins (`newspeak-spec.pdf` §6.2) built into a binary
+    /// answers exactly what its source answers: the binary carries each
+    /// declaration's `<:` clauses -- their selectors and compiled messages -- so
+    /// the loaded world builds every applied level itself and initializes it
+    /// with its own clause's message, evaluated with the applying class's
+    /// factory argument.
+    fn a_built_binary_applying_mixins_runs_exactly_as_its_source_does(lowering) {
+        let lowering = cli_lowering_flag(lowering);
+        let directory = ScratchDirectory::new("mixin-application");
+        let source = directory.join("applying.ns");
+        std::fs::write(
+            &source,
+            indoc! {"
+                Newspeak3
+                'Test'
+                class Applying usingPlatform: p = Object new (| t = p transcript. |) (
+                    class Base withBase: b = Object new (| base = b. |) (
+                        public chain = ( ^'Base ', base printString )
+                    )
+                    class Marker withMark: m = Object new (| mark = m. |) (
+                        public chain = ( ^'Marker ', mark printString, ' ', super chain )
+                    )
+                    class Stamp = Object new () (
+                        public chain = ( ^'Stamp ', super chain )
+                    )
+                    class Applied from: x = Base withBase: x + 1 <: Marker withMark: x * 10 <: Stamp (
+                    ) (
+                        public chain = ( ^'Applied ', super chain )
+                    )
+                    public main: platform args: arguments = (
+                        t show: (Applied from: 4) chain; newLine.
+                        t show: (Applied from: 2) chain; newLine.
+                    )
+                ) : ()
+            "},
+        )
+        .expect("write the module");
         let out = directory.join(&format!("applying.{lowering}.nsb"));
         let (built, _, build_error) = ns_next(&[
             "build".as_ref(),

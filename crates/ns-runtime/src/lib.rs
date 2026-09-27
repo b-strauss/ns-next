@@ -25,6 +25,43 @@ pub mod types;
 pub mod vm;
 
 pub use compiler::Lowering;
+
+/// Test helper: turns one test body into a module holding an `optimized` and
+/// a `reference` test, each binding `lowering` to that `Lowering` variant and
+/// running the body. A loop over both lowerings whose iterations are
+/// independent -- each builds its own interpreter and asserts on its own
+/// result -- makes one test run twice in sequence; expanding it into two
+/// tests instead lets `cargo nextest run` run them in parallel
+/// (`docs/design/compiler.md`, "The harness"). Outer attributes (doc
+/// comments, `#[cfg(...)]`, `#[ignore]`, `#[should_panic]`) are attached to
+/// both generated tests, and `use super::*;` inside the generated module
+/// reaches whatever the enclosing test file or module brought into scope.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! for_each_lowering {
+    (
+        $(#[$attribute:meta])*
+        fn $name:ident($lowering:ident) $body:block
+    ) => {
+        mod $name {
+            use super::*;
+
+            $(#[$attribute])*
+            #[test]
+            fn optimized() {
+                let $lowering = $crate::Lowering::Optimized;
+                $body
+            }
+
+            $(#[$attribute])*
+            #[test]
+            fn reference() {
+                let $lowering = $crate::Lowering::Reference;
+                $body
+            }
+        }
+    };
+}
 pub use heap::{
     ActivationHeader, ActivationReference, ClassReference, CollectorStatistics, FrameReference,
     Heap, HeapStatistics, ObjectReference, Root,

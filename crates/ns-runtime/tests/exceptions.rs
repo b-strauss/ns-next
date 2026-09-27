@@ -48,16 +48,15 @@ fn a_probe(lowering: Lowering) -> (Interpreter, Root) {
     (interpreter, probe)
 }
 
-/// Squeak's `doesNotUnderstand:`: when the default handler resumed the
-/// `MessageNotUnderstood` -- the debugger, once the missing method exists --
-/// the message is sent again. Here the method still does not exist, so the
-/// re-send fails again, and with the hook spent that second failure ends
-/// the run with the error the first would have ended it with. The hook's
-/// count reaching zero is what shows the first one was resumed and the
-/// message sent again, rather than the run ending at the first.
-#[test]
-fn an_unhandled_message_not_understood_is_resent_when_resumed() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// Squeak's `doesNotUnderstand:`: when the default handler resumed the
+    /// `MessageNotUnderstood` -- the debugger, once the missing method exists --
+    /// the message is sent again. Here the method still does not exist, so the
+    /// re-send fails again, and with the hook spent that second failure ends
+    /// the run with the error the first would have ended it with. The hook's
+    /// count reaching zero is what shows the first one was resumed and the
+    /// message sent again, rather than the run ending at the first.
+    fn an_unhandled_message_not_understood_is_resent_when_resumed(lowering) {
         let (mut interpreter, probe) = a_probe(lowering);
         interpreter.resume_unhandled_exceptions(1);
         let error = expect_error(
@@ -77,11 +76,10 @@ fn an_unhandled_message_not_understood_is_resent_when_resumed() {
     }
 }
 
-/// Without the hook, the first `doesNotUnderstand:` ends the run: nothing
-/// is sent again.
-#[test]
-fn an_unhandled_message_not_understood_ends_the_run() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// Without the hook, the first `doesNotUnderstand:` ends the run: nothing
+    /// is sent again.
+    fn an_unhandled_message_not_understood_ends_the_run(lowering) {
         let (mut interpreter, probe) = a_probe(lowering);
         let error = expect_error(
             interpreter.send(&probe, Symbol::intern("probe"), &[]),
@@ -106,13 +104,12 @@ fn an_unhandled_message_not_understood_ends_the_run() {
     }
 }
 
-/// A VM error becomes an `Error`, which is not resumable: when the
-/// default handler resumes it anyway, `signal` returns into the
-/// continuation the VM pushed it with, and the run ends with the error as
-/// it would have.
-#[test]
-fn a_resumed_vm_error_still_ends_the_run() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// A VM error becomes an `Error`, which is not resumable: when the
+    /// default handler resumes it anyway, `signal` returns into the
+    /// continuation the VM pushed it with, and the run ends with the error as
+    /// it would have.
+    fn a_resumed_vm_error_still_ends_the_run(lowering) {
         let (mut interpreter, probe) = a_probe(lowering);
         interpreter.resume_unhandled_exceptions(1);
         let error = expect_error(
@@ -215,15 +212,14 @@ fn integer_slot(interpreter: &mut Interpreter, receiver: &Root, selector: &str) 
 const INDEX_ERROR: &str = "index 5 out of range: valid indices are 1..1 (size 1)";
 const DEPTH_ERROR: &str = "stack overflow: recursion too deep";
 
-/// An error raised a few activations below the depth limit, or at it, ends
-/// the run as itself when nothing handles it: its `signal`, the handler
-/// search and the default action run in the reserve above the limit, so
-/// none of them meets the limit and replaces the error with the limit's.
-/// `descend:to:` reaches the depth `probe:` measured, level for level; one
-/// level further it is the limit that fails.
-#[test]
-fn an_unhandled_error_just_below_the_depth_limit_ends_the_run_as_itself() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// An error raised a few activations below the depth limit, or at it, ends
+    /// the run as itself when nothing handles it: its `signal`, the handler
+    /// search and the default action run in the reserve above the limit, so
+    /// none of them meets the limit and replaces the error with the limit's.
+    /// `descend:to:` reaches the depth `probe:` measured, level for level; one
+    /// level further it is the limit that fails.
+    fn an_unhandled_error_just_below_the_depth_limit_ends_the_run_as_itself(lowering) {
         let (mut interpreter, deep) = a_deep(lowering);
         let error = expect_error(
             send_integers(&mut interpreter, &deep, "probe:", &[1]),
@@ -254,16 +250,15 @@ fn an_unhandled_error_just_below_the_depth_limit_ends_the_run_as_itself() {
     }
 }
 
-/// While the reserve is held, an error raised by a handler is signalled in
-/// what is left of it. With room, it is looked for outside the handler's
-/// `on:do:` and caught there. So near the reserve's end that its own
-/// `signal` or handler search cannot run, the run ends with that error --
-/// the one being signalled -- and not with the depth limit its signalling
-/// met; a handler that itself recurses past the reserve ends the run with
-/// the depth limit's error.
-#[test]
-fn an_error_whose_signalling_overruns_the_reserve_ends_the_run_as_itself() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// While the reserve is held, an error raised by a handler is signalled in
+    /// what is left of it. With room, it is looked for outside the handler's
+    /// `on:do:` and caught there. So near the reserve's end that its own
+    /// `signal` or handler search cannot run, the run ends with that error --
+    /// the one being signalled -- and not with the depth limit its signalling
+    /// met; a handler that itself recurses past the reserve ends the run with
+    /// the depth limit's error.
+    fn an_error_whose_signalling_overruns_the_reserve_ends_the_run_as_itself(lowering) {
         let (mut interpreter, deep) = a_deep(lowering);
         let error = expect_error(
             interpreter.send(&deep, Symbol::intern("measureTheReserve"), &[]),
@@ -305,13 +300,12 @@ fn an_error_whose_signalling_overruns_the_reserve_ends_the_run_as_itself() {
     }
 }
 
-/// §5.5 makes a message nothing understood the VM's error, so it takes the
-/// reserve as any VM error does: raised a few levels below the depth limit,
-/// or at it, and unhandled, it ends the run as itself, with the selector and
-/// receiver of the send nothing understood.
-#[test]
-fn an_unhandled_does_not_understand_just_below_the_depth_limit_ends_the_run_as_itself() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// §5.5 makes a message nothing understood the VM's error, so it takes the
+    /// reserve as any VM error does: raised a few levels below the depth limit,
+    /// or at it, and unhandled, it ends the run as itself, with the selector and
+    /// receiver of the send nothing understood.
+    fn an_unhandled_does_not_understand_just_below_the_depth_limit_ends_the_run_as_itself(lowering) {
         let (mut interpreter, deep) = a_deep(lowering);
         let error = expect_error(
             send_integers(&mut interpreter, &deep, "probe:", &[1]),
@@ -342,14 +336,13 @@ fn an_unhandled_does_not_understand_just_below_the_depth_limit_ends_the_run_as_i
     }
 }
 
-/// The search a `pass` starts is the kernel's, as the first one is: an
-/// overrun of the reserve during it ends the run with the error being
-/// passed, not the depth limit. Near the reserve's end the passing
-/// handler runs (`passes` counts it) and its `pass` cannot finish; at some
-/// such depth the run must end with the index error the handler passed.
-#[test]
-fn a_pass_that_overruns_the_reserve_ends_the_run_with_the_passed_error() {
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// The search a `pass` starts is the kernel's, as the first one is: an
+    /// overrun of the reserve during it ends the run with the error being
+    /// passed, not the depth limit. Near the reserve's end the passing
+    /// handler runs (`passes` counts it) and its `pass` cannot finish; at some
+    /// such depth the run must end with the index error the handler passed.
+    fn a_pass_that_overruns_the_reserve_ends_the_run_with_the_passed_error(lowering) {
         let (mut interpreter, deep) = a_deep(lowering);
         let error = expect_error(
             interpreter.send(&deep, Symbol::intern("measureTheReserve"), &[]),

@@ -444,33 +444,32 @@ fn a_superclasss_factory_selector_is_not_understood() {
     expect_ok(interpreter.send(&simple, Symbol::NEW, &[]), "Simple new");
 }
 
-/// A class-side `super new` is not an instantiation. §5.10 starts the lookup
-/// at S, the superclass of the running activation's `current_class`, which
-/// for a class-side method is the metaclass; §6 makes that `Class`, and
-/// neither `Class` nor anything above it declares a factory, so the send
-/// reaches `doesNotUnderstand:`.
-///
-/// It did instantiate until §6.3's factory became an entry of the metaclass
-/// mixin: a class side was inherited then, so an inherited class-side
-/// method's `super new` could be the only way to reach the receiver's own
-/// factory, and §5.10's failure path checked for it before running any
-/// handler. The fixture that pinned the old answer was re-cut when
-/// metaclasses went flat, so this pins the answer that replaced it.
-#[test]
-fn a_class_side_super_new_does_not_instantiate() {
-    let source = indoc! {"
-        Newspeak3
-        'Test'
-        class SuperFactory = Object new () (
-            class Simple = Object new () (
-                public label = ( ^'a simple' )
-            ) : (
-                public build = ( ^super new )
-            )
-            public simple = ( ^Simple )
-        ) : ()
-    "};
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// A class-side `super new` is not an instantiation. §5.10 starts the lookup
+    /// at S, the superclass of the running activation's `current_class`, which
+    /// for a class-side method is the metaclass; §6 makes that `Class`, and
+    /// neither `Class` nor anything above it declares a factory, so the send
+    /// reaches `doesNotUnderstand:`.
+    ///
+    /// It did instantiate until §6.3's factory became an entry of the metaclass
+    /// mixin: a class side was inherited then, so an inherited class-side
+    /// method's `super new` could be the only way to reach the receiver's own
+    /// factory, and §5.10's failure path checked for it before running any
+    /// handler. The fixture that pinned the old answer was re-cut when
+    /// metaclasses went flat, so this pins the answer that replaced it.
+    fn a_class_side_super_new_does_not_instantiate(lowering) {
+        let source = indoc! {"
+            Newspeak3
+            'Test'
+            class SuperFactory = Object new () (
+                class Simple = Object new () (
+                    public label = ( ^'a simple' )
+                ) : (
+                    public build = ( ^super new )
+                )
+                public simple = ( ^Simple )
+            ) : ()
+        "};
         let (mut interpreter, class) = load_with(source, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let simple = expect_ok(

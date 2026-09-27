@@ -951,17 +951,13 @@ const APPLIED_ENCLOSING_SOURCE: &str = indoc! {"
     )
 "};
 
-/// §6.2: "The enclosing object of *I* is the enclosing object of *C*." A
-/// method of the applied mixin running on an instance of the applying class
-/// resolves `outer` from where `Marker` is declared, not from where `Applied`
-/// is: taking `Applied`'s enclosing object would answer `'inner'`, and
-/// taking its declaring class would stop the second hop at a `Library`.
-#[test]
-fn an_applied_level_encloses_where_the_applied_class_is_declared() {
-    for lowering in [
-        ns_runtime::Lowering::Optimized,
-        ns_runtime::Lowering::Reference,
-    ] {
+ns_runtime::for_each_lowering! {
+    /// §6.2: "The enclosing object of *I* is the enclosing object of *C*." A
+    /// method of the applied mixin running on an instance of the applying class
+    /// resolves `outer` from where `Marker` is declared, not from where `Applied`
+    /// is: taking `Applied`'s enclosing object would answer `'inner'`, and
+    /// taking its declaring class would stop the second hop at a `Library`.
+    fn an_applied_level_encloses_where_the_applied_class_is_declared(lowering) {
         let module = ns_syntax::parse(APPLIED_ENCLOSING_SOURCE).expect("parse");
         let resolved = ns_runtime::resolve(
             module,
@@ -998,23 +994,19 @@ fn an_applied_level_encloses_where_the_applied_class_is_declared() {
     }
 }
 
-/// §6.2 builds a `<:` clause from §6.1's `inheritanceClause`, so §6.1's run
-/// time error holds for it too: a receiver that is no class object is an
-/// ordinary Newspeak error, and it names the clause.
-#[test]
-fn a_mixin_clause_that_is_not_a_class_is_a_program_error() {
-    let source = indoc! {"
-        Newspeak3
-        'Test'
-        class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
-            public class Applied = Object new <: notAClass () ()
-            public appliedClass = ( ^Applied )
-        )
-    "};
-    for lowering in [
-        ns_runtime::Lowering::Optimized,
-        ns_runtime::Lowering::Reference,
-    ] {
+ns_runtime::for_each_lowering! {
+    /// §6.2 builds a `<:` clause from §6.1's `inheritanceClause`, so §6.1's run
+    /// time error holds for it too: a receiver that is no class object is an
+    /// ordinary Newspeak error, and it names the clause.
+    fn a_mixin_clause_that_is_not_a_class_is_a_program_error(lowering) {
+        let source = indoc! {"
+            Newspeak3
+            'Test'
+            class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
+                public class Applied = Object new <: notAClass () ()
+                public appliedClass = ( ^Applied )
+            )
+        "};
         let (mut interpreter, class) = load_with(source, lowering);
         let platform = interpreter.platform();
         let outer = expect_ok(
@@ -1032,19 +1024,15 @@ fn a_mixin_clause_that_is_not_a_class_is_a_program_error() {
     }
 }
 
-/// CLAUDE.md's "the application cache is keyed by the superclass's
-/// *application*": an applied level's class object is per enclosing
-/// instance, like any nested class's, but its behaviour is not. Two `Host`s
-/// give two `Library`s, so two `Marker` class objects and two levels -- and
-/// one `MixinApplication` for both levels, and one for both levels'
-/// declaring classes. Keyed by class object instead, every instance would
-/// mint its own and no call site through a level would ever be monomorphic.
-#[test]
-fn applied_levels_of_two_enclosing_instances_share_their_applications() {
-    for lowering in [
-        ns_runtime::Lowering::Optimized,
-        ns_runtime::Lowering::Reference,
-    ] {
+ns_runtime::for_each_lowering! {
+    /// CLAUDE.md's "the application cache is keyed by the superclass's
+    /// *application*": an applied level's class object is per enclosing
+    /// instance, like any nested class's, but its behaviour is not. Two `Host`s
+    /// give two `Library`s, so two `Marker` class objects and two levels -- and
+    /// one `MixinApplication` for both levels, and one for both levels'
+    /// declaring classes. Keyed by class object instead, every instance would
+    /// mint its own and no call site through a level would ever be monomorphic.
+    fn applied_levels_of_two_enclosing_instances_share_their_applications(lowering) {
         let (mut interpreter, class) = load_with(APPLIED_ENCLOSING_SOURCE, lowering);
         let applied_classes: Vec<Root> = (0..2)
             .map(|_| {

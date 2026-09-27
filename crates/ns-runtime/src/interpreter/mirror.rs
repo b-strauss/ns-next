@@ -437,14 +437,13 @@ mod tests {
         })
     }
 
-    /// A kernel-shaped module's mirror send, run end to end: under the
-    /// optimized lowering its failure block is inlined (`SendMirror`), under
-    /// the reference lowering it is a real closure sent to the mirror
-    /// (`SendInlinable`), and both answer the leaf's value when the leaf
-    /// recognizes its subject and the block's `^` when it does not.
-    #[test]
-    fn an_inlined_mirror_send_runs_its_leaf_and_its_failure_block() {
-        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+    crate::for_each_lowering! {
+        /// A kernel-shaped module's mirror send, run end to end: under the
+        /// optimized lowering its failure block is inlined (`SendMirror`), under
+        /// the reference lowering it is a real closure sent to the mirror
+        /// (`SendInlinable`), and both answer the leaf's value when the leaf
+        /// recognizes its subject and the block's `^` when it does not.
+        fn an_inlined_mirror_send_runs_its_leaf_and_its_failure_block(lowering) {
             let (mut interpreter, probe) = a_probe(lowering, true);
             let text = interpreter.enter(|mutator| {
                 let string = mutator.new_string("abc".to_string());
@@ -472,12 +471,11 @@ mod tests {
         }
     }
 
-    /// A primitive method answers from its leaf when the leaf accepts the
-    /// receiver, and through its activated body -- the failure block --
-    /// when it does not, alike under both lowerings.
-    #[test]
-    fn a_primitive_method_runs_its_leaf_and_its_body_only_when_the_leaf_declines() {
-        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+    crate::for_each_lowering! {
+        /// A primitive method answers from its leaf when the leaf accepts the
+        /// receiver, and through its activated body -- the failure block --
+        /// when it does not, alike under both lowerings.
+        fn a_primitive_method_runs_its_leaf_and_its_body_only_when_the_leaf_declines(lowering) {
             let (mut interpreter, probe) = a_probe(lowering, true);
             for selector in ["same:", "size"] {
                 let method = probe_method(&mut interpreter, &probe, selector);
@@ -562,12 +560,11 @@ mod tests {
         });
     }
 
-    /// The same forwarders in a module plain `resolve` resolved are ordinary
-    /// methods: only a shipped module's `vmMirror` is known to hold the
-    /// mirror.
-    #[test]
-    fn forwarders_outside_the_kernel_are_ordinary_methods() {
-        for lowering in [crate::Lowering::Optimized, crate::Lowering::Reference] {
+    crate::for_each_lowering! {
+        /// The same forwarders in a module plain `resolve` resolved are ordinary
+        /// methods: only a shipped module's `vmMirror` is known to hold the
+        /// mirror.
+        fn forwarders_outside_the_kernel_are_ordinary_methods(lowering) {
             let (mut interpreter, probe) = a_probe(lowering, false);
             for selector in ["same:", "size"] {
                 let method = probe_method(&mut interpreter, &probe, selector);

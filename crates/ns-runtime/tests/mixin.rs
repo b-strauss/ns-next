@@ -404,11 +404,6 @@ fn load_with(source: &str, lowering: ns_runtime::Lowering) -> (Interpreter, Root
     (interpreter, class)
 }
 
-const LOWERINGS: [ns_runtime::Lowering; 2] = [
-    ns_runtime::Lowering::Optimized,
-    ns_runtime::Lowering::Reference,
-];
-
 /// A string result, read inside the entry that fetched it.
 fn string_of(interpreter: &mut Interpreter, root: &Root) -> String {
     interpreter.enter(|mutator| {
@@ -435,14 +430,13 @@ const APPLIED_SOURCE: &str = indoc! {"
     )
 "};
 
-/// §6.2: "The result of a mixin application expression is a class *I* with
-/// mixin *M* and superclass *S*", and the declaration's own class has *I* for
-/// its superclass. So `Applied`'s superclass is a level of its own, carrying
-/// `Marker`'s mixin over `Object`, and a method only `Marker` declares
-/// answers on an `Applied`.
-#[test]
-fn an_applied_level_sits_between_the_class_and_its_superclass() {
-    for lowering in LOWERINGS {
+ns_runtime::for_each_lowering! {
+    /// §6.2: "The result of a mixin application expression is a class *I* with
+    /// mixin *M* and superclass *S*", and the declaration's own class has *I* for
+    /// its superclass. So `Applied`'s superclass is a level of its own, carrying
+    /// `Marker`'s mixin over `Object`, and a method only `Marker` declares
+    /// answers on an `Applied`.
+    fn an_applied_level_sits_between_the_class_and_its_superclass(lowering) {
         let (mut interpreter, class) = load_with(APPLIED_SOURCE, lowering);
         let platform = interpreter.platform();
         let host = expect_ok(
@@ -513,13 +507,12 @@ const SUPER_SOURCE: &str = indoc! {"
     )
 "};
 
-/// The applied level is a superclass like any other: an instance of the
-/// declaration is still an instance of the declaration's own class, and
-/// `super` from one of its methods starts at the applied level -- `Object`
-/// declares no `level`, so reaching it instead would not understand.
-#[test]
-fn super_from_the_applying_class_reaches_the_applied_level() {
-    for lowering in LOWERINGS {
+ns_runtime::for_each_lowering! {
+    /// The applied level is a superclass like any other: an instance of the
+    /// declaration is still an instance of the declaration's own class, and
+    /// `super` from one of its methods starts at the applied level -- `Object`
+    /// declares no `level`, so reaching it instead would not understand.
+    fn super_from_the_applying_class_reaches_the_applied_level(lowering) {
         let (mut interpreter, class) = load_with(SUPER_SOURCE, lowering);
         let platform = interpreter.platform();
         let host = expect_ok(
@@ -560,15 +553,14 @@ const TWO_CLAUSES_SOURCE: &str = indoc! {"
     )
 "};
 
-/// With several `<:` clauses the levels stack in written order, the first
-/// clause's lowest, and each carries its own clause: the selector its message
-/// names (`new` when it names none, as §6.1 defaults a superclass clause's)
-/// and that message's arguments compiled against the applying declaration's
-/// own factory parameters -- `count` is `Applied`'s, so it must compile to
-/// the argument register, not to a name nothing resolved.
-#[test]
-fn each_applied_level_carries_its_own_clause_message() {
-    for lowering in LOWERINGS {
+ns_runtime::for_each_lowering! {
+    /// With several `<:` clauses the levels stack in written order, the first
+    /// clause's lowest, and each carries its own clause: the selector its message
+    /// names (`new` when it names none, as §6.1 defaults a superclass clause's)
+    /// and that message's arguments compiled against the applying declaration's
+    /// own factory parameters -- `count` is `Applied`'s, so it must compile to
+    /// the argument register, not to a name nothing resolved.
+    fn each_applied_level_carries_its_own_clause_message(lowering) {
         let (mut interpreter, class) = load_with(TWO_CLAUSES_SOURCE, lowering);
         let platform = interpreter.platform();
         let host = expect_ok(
@@ -639,19 +631,18 @@ fn each_applied_level_carries_its_own_clause_message() {
     }
 }
 
-/// A module's root class builds its levels too, through the same function a
-/// nested class does. It has no enclosing object to evaluate a receiver in,
-/// so the clause names a builtin -- the only kind of class it can name.
-#[test]
-fn a_root_class_builds_its_applied_levels() {
-    let source = indoc! {"
-        Newspeak3
-        'T'
-        class Root = Object new <: Value (
-        ) (
-        )
-    "};
-    for lowering in LOWERINGS {
+ns_runtime::for_each_lowering! {
+    /// A module's root class builds its levels too, through the same function a
+    /// nested class does. It has no enclosing object to evaluate a receiver in,
+    /// so the clause names a builtin -- the only kind of class it can name.
+    fn a_root_class_builds_its_applied_levels(lowering) {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class Root = Object new <: Value (
+            ) (
+            )
+        "};
         let (mut interpreter, class) = load_with(source, lowering);
         interpreter.enter(|mutator| {
             let heap = mutator.heap();

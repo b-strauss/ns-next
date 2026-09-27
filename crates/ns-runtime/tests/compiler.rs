@@ -248,27 +248,23 @@ fn every_mixin_in_the_tree_gets_its_bodies() {
     assert!(class_side.initializer_code.is_some());
 }
 
-/// A lazy slot's getter (§6.3.3) answers a filled slot from inside its own
-/// activation: under both lowerings its body opens with
-/// `ReturnSlotIfFilled` at the slot's own index, before the initializer,
-/// and the method carries no fast path -- an arm for one would be inlined
-/// into every send site of the run loop (`docs/design/execution.md`, "What
-/// the platform module cost").
-#[test]
-fn a_lazy_slots_getter_opens_with_its_filled_test_and_has_no_fast_path() {
-    let source = indoc! {"
-        Newspeak3
-        'T'
-        class X = Object new (
-          | eager = 1. |
-        ) (
-          lazy later = 2.
-        ) : ()
-    "};
-    for lowering in [
-        ns_runtime::Lowering::Optimized,
-        ns_runtime::Lowering::Reference,
-    ] {
+ns_runtime::for_each_lowering! {
+    /// A lazy slot's getter (§6.3.3) answers a filled slot from inside its own
+    /// activation: under both lowerings its body opens with
+    /// `ReturnSlotIfFilled` at the slot's own index, before the initializer,
+    /// and the method carries no fast path -- an arm for one would be inlined
+    /// into every send site of the run loop (`docs/design/execution.md`, "What
+    /// the platform module cost").
+    fn a_lazy_slots_getter_opens_with_its_filled_test_and_has_no_fast_path(lowering) {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | eager = 1. |
+            ) (
+              lazy later = 2.
+            ) : ()
+        "};
         let module = ns_syntax::parse(source).expect("parse");
         let resolved = ns_runtime::resolve(
             module,

@@ -57,21 +57,20 @@ const PROGRAMS: &str = indoc! {"
     ) : ()
 "};
 
-/// Each answer is worked out by hand from the program, not recorded from a
-/// run: 10!, 1 + ... + 10, the `^` out of `do:` at the element 2, a true
-/// conjunction, 3 + 7, 1 + 2 + 3, 5 + 5.
-#[test]
-fn every_program_answers_the_same_under_both_lowerings() {
-    let expected = [
-        ("factorial", 3_628_800),
-        ("loop", 55),
-        ("early", 200),
-        ("logic", 1),
-        ("slots", 10),
-        ("cascade", 6),
-        ("chained", 10),
-    ];
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
+ns_runtime::for_each_lowering! {
+    /// Each answer is worked out by hand from the program, not recorded from a
+    /// run: 10!, 1 + ... + 10, the `^` out of `do:` at the element 2, a true
+    /// conjunction, 3 + 7, 1 + 2 + 3, 5 + 5.
+    fn every_program_answers_the_same_under_both_lowerings(lowering) {
+        let expected = [
+            ("factorial", 3_628_800),
+            ("loop", 55),
+            ("early", 200),
+            ("logic", 1),
+            ("slots", 10),
+            ("cascade", 6),
+            ("chained", 10),
+        ];
         let (mut interpreter, class) = load(PROGRAMS, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         for (selector, answer) in expected {

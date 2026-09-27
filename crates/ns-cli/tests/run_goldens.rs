@@ -45,13 +45,17 @@ fn main() {
         // listed as ignored, and `cargo nextest run --run-ignored all` runs it to see
         // whether the gap it records has closed.
         let skipped = expectation.skipped().is_some();
-        let checked = source.clone();
-        trials.push(
-            Trial::test(format!("golden::{name}"), move || {
-                matches_under_both_lowerings(&checked)
-            })
-            .with_ignored_flag(skipped),
-        );
+        // One trial per lowering, so nextest runs the two in parallel instead
+        // of one trial running both in sequence.
+        for lowering in LOWERINGS {
+            let checked = source.clone();
+            trials.push(
+                Trial::test(format!("golden::{lowering}::{name}"), move || {
+                    matches_under_one_lowering(&checked, lowering)
+                })
+                .with_ignored_flag(skipped),
+            );
+        }
         if cfg!(debug_assertions) {
             trials.push(
                 Trial::test(
@@ -67,24 +71,21 @@ fn main() {
 
 /// A golden's exit status, stdout and stderr match its recorded
 /// `Expectation` exactly -- every byte, the final newline included -- under
-/// both lowerings.
-fn matches_under_both_lowerings(source: &Path) -> Result<(), Failed> {
+/// `lowering`.
+fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Failed> {
     let expectation = common::expectation_of(source);
-    for lowering in LOWERINGS {
-        let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-            .arg("run")
-            .arg(source)
-            .arg("--lowering")
-            .arg(lowering)
-            .output()
-            .map_err(|error| format!("run ns-next: {error}"))?;
-        compare(
-            &output,
-            &expectation,
-            &format!("under the {lowering} lowering"),
-        )?;
-    }
-    Ok(())
+    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("run")
+        .arg(source)
+        .arg("--lowering")
+        .arg(lowering)
+        .output()
+        .map_err(|error| format!("run ns-next: {error}"))?;
+    compare(
+        &output,
+        &expectation,
+        &format!("under the {lowering} lowering"),
+    )
 }
 
 /// A golden answers alike when the global cache is one two-slot group, so
