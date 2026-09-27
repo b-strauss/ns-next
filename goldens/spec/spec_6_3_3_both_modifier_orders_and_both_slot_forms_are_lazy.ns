@@ -1,0 +1,31 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.3: "The token `lazy` may optionally be preceded or
+   followed by an access modifier; both `lazy public m = e.` and `public lazy
+   m = e.` are accepted, with identical meaning", and a lazy slot may be
+   declared with `=` or `::=`. Every one of these starts nil and evaluates
+   its initializer on its first read only. A mutable one has a setter: set
+   back to nil it is evaluated again on the next read, set to a value it
+   answers that value without evaluating anything. *)
+class Spec633LazyForms usingPlatform: p = Object new () (
+    class Holder = Object new (| public trace ::= ''. |) (
+        lazy public first = mark: 'a'.
+        public lazy second = mark: 'b'.
+        lazy public third ::= mark: 'c'.
+        public lazy fourth ::= mark: 'd'.
+        mark: tag = ( trace:: trace, tag. ^tag )
+    ) : ()
+    public main: platform args: arguments = (
+        | holder t |
+        t:: platform transcript.
+        holder:: Holder new.
+        t show: 'before: ', holder trace; newLine.
+        t show: holder first, holder second, holder third, holder fourth; newLine.
+        t show: holder first, holder second, holder third, holder fourth; newLine.
+        t show: 'after: ', holder trace; newLine.
+        holder third: nil.
+        t show: holder third; show: ' '; show: holder trace; newLine.
+        holder fourth: 'x'.
+        t show: holder fourth; show: ' '; show: holder trace; newLine
+    )
+) : ()
