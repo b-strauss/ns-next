@@ -2,9 +2,9 @@
 //! The platform is an instance of the shipped `PlatformFactory.ns` module's
 //! nested `Platform` (`docs/design/core-library.md`, "The platform"): its
 //! members are lazy slots holding values of the module's nested classes,
-//! and `Collections>>List`
-//! answers its class without a leaf. What is left here is `show:` and
-//! `newLine`, the forwarders of `Transcript`'s two methods.
+//! and `Collections>>List` answers its class without a leaf. What is left
+//! here is `show:` and `newLine`, the forwarders of `Transcript`'s two
+//! methods.
 //!
 //! The leaf reads nothing off its receiver, only the string argument. The
 //! capability is the VM mirror the forwarder sends to, which only shipped

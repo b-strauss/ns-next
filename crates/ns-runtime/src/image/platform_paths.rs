@@ -240,17 +240,10 @@ fn class_accessor_target<'gc>(
     if heap.class_enclosing(root_class).is_some() || !is_shipped_object(heap, root) {
         return None;
     }
-    // `outer <Root> <Nested>` is a lexical send (§5.9): the root's own
-    // private member first, then lookupProtected on the root instance's
-    // class.
-    let private = dispatch::kth_lexical_class(heap, Some(defining_class), accessor.depth)
-        .map_or(Lookup::NotFound, |lexical_class| {
-            dispatch::private_member(heap, lexical_class, accessor.class_name)
-        });
-    let found = match private {
-        Lookup::NotFound => dispatch::lookup_protected(heap, root_class, accessor.class_name),
-        found => found,
-    };
+    // `outer <Root> <Nested>` is a lexical send (§5.9), looked up as
+    // `Mutator::resolve_lexical` looks one up.
+    let lexical_class = dispatch::kth_lexical_class(heap, Some(defining_class), accessor.depth);
+    let found = dispatch::lexical_member(heap, lexical_class, root_class, accessor.class_name);
     let Lookup::NestedClass(nested, _) = found else {
         return None;
     };
@@ -363,4 +356,126 @@ pub fn describe(path: &[Symbol]) -> String {
         .map(|member| member.as_str().to_string())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{HostResult, HostSignal, Interpreter, Root};
+
+    fn expect_ok(result: HostResult, what: &str) -> Root {
+        match result {
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// A module whose class `Inner`, two levels below the root, declares the
+    /// class accessor `Other`, and an instance of `Inner` after `Other` has
+    /// run once -- resolved with `resolve_kernel` when `shipped`, so that the
+    /// accessor is recognized, and with plain `resolve` otherwise.
+    fn an_inner_instance(shipped: bool) -> (Interpreter, Root) {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'T'
+            class Shipped = Object new () (
+              public class Middle = Object new () (
+                public class Inner = Object new () (
+                  public Other = ( ^outer Shipped Other )
+                )
+                public makeInner = ( ^Inner new )
+              )
+              public class Other = Object new () ()
+              public makeMiddle = ( ^Middle new )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let origin = crate::SourceOrigin::File(std::path::PathBuf::from("t.ns"));
+        let resolved = if shipped {
+            crate::resolver::resolve_kernel(module, std::rc::Rc::from(source), origin)
+        } else {
+            crate::resolve(module, std::rc::Rc::from(source), origin)
+        };
+        let Ok(resolved) = resolved else {
+            panic!("the module resolves");
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let root = expect_ok(interpreter.instantiate(&class, &[]), "Shipped new");
+        let middle = expect_ok(
+            interpreter.send(&root, Symbol::intern("makeMiddle"), &[]),
+            "makeMiddle",
+        );
+        let inner = expect_ok(
+            interpreter.send(&middle, Symbol::intern("makeInner"), &[]),
+            "makeInner",
+        );
+        expect_ok(
+            interpreter.send(&inner, Symbol::intern("Other"), &[]),
+            "Other",
+        );
+        (interpreter, inner)
+    }
+
+    fn other_method<'gc>(
+        heap: &Heap<'gc>,
+        inner: ObjectReference<'gc>,
+    ) -> Rc<crate::mixin::MixinMethod> {
+        let application = heap
+            .class_application(heap.class_of_object(inner))
+            .expect("Inner has an application");
+        application
+            .mixin
+            .compiled_method(Symbol::intern("Other"))
+            .expect("Inner declares Other")
+            .clone()
+    }
+
+    /// A class accessor two levels below its root is recognized at the
+    /// depth `outer Shipped` resolved to, and a path steps through it to the
+    /// root instance's `Other`, the class the send answered.
+    #[test]
+    fn a_class_accessor_two_levels_down_is_a_path_step() {
+        let (mut interpreter, inner) = an_inner_instance(true);
+        interpreter.enter(|mutator| {
+            let Value::Object(inner) = mutator.fetch(&inner) else {
+                panic!("Inner new is an object");
+            };
+            let heap = mutator.heap();
+            assert_eq!(
+                other_method(heap, inner).class_accessor,
+                Some(crate::mixin::ClassAccessor {
+                    depth: 2,
+                    class_name: Symbol::intern("Other"),
+                })
+            );
+            assert!(is_path_step(heap, inner, Symbol::intern("Other")));
+            let members = class_accessor_members(heap, inner);
+            let [(name, Value::Object(other))] = members.as_slice() else {
+                panic!("one class accessor member, holding a class");
+            };
+            assert_eq!(name.as_str(), "Other");
+            assert_eq!(heap.class_display_name(*other), "Other");
+        });
+    }
+
+    /// The same text in a module plain `resolve` resolved is an ordinary
+    /// method: only shipped source is recognized, and a user module's
+    /// objects are never a path step anyway.
+    #[test]
+    fn a_user_modules_class_accessor_is_unmarked() {
+        let (mut interpreter, inner) = an_inner_instance(false);
+        interpreter.enter(|mutator| {
+            let Value::Object(inner) = mutator.fetch(&inner) else {
+                panic!("Inner new is an object");
+            };
+            let heap = mutator.heap();
+            assert_eq!(other_method(heap, inner).class_accessor, None);
+            assert!(class_accessor_members(heap, inner).is_empty());
+            assert!(!is_path_step(heap, inner, Symbol::intern("Other")));
+        });
+    }
 }

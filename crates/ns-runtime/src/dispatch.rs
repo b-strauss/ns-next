@@ -203,6 +203,31 @@ pub fn private_member<'gc>(
     }
 }
 
+/// §5.9's lookup for a lexical send `outer N s` to `o`: N's own private
+/// member first (`private_member`; `lexical_class` is N, `None` when the
+/// chain is shorter than the send's depth), then lookupProtected on
+/// `enclosing_class`, the class of `o`. `NotFound` means the send is an
+/// ordinary one to `o`. The one statement of the order for a reader that
+/// only needs what the lookup finds -- `image::platform_paths`, deciding a
+/// class accessor's step without running it. `Mutator::resolve_lexical`
+/// takes the same two steps inline, because it also tells a private find
+/// from a protected one, and is documented against this function; the two
+/// change together.
+pub fn lexical_member<'gc>(
+    heap: &Heap<'gc>,
+    lexical_class: Option<ClassReference<'gc>>,
+    enclosing_class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
+    if let Some(lexical_class) = lexical_class {
+        match private_member(heap, lexical_class, selector) {
+            Lookup::NotFound => {}
+            found => return found,
+        }
+    }
+    lookup_protected(heap, enclosing_class, selector)
+}
+
 /// §5.5, ordinary (explicit-receiver) sends: lookupPublic(n, C) is "m, if the
 /// mixin of C defines a method m with selector n and public access.
 /// Undefined, if the mixin of C defines a method m with selector n and

@@ -132,7 +132,11 @@ impl<'gc> Mutator<'gc> {
     /// §5.7-§5.9, the lexical send's lookup:
     /// N's private member first (`lexical_class` is N, `None` when the
     /// chain is shorter than the depth), then lookupProtected on `o`'s
-    /// class; nothing found is an ordinary send to `o`.
+    /// class; nothing found is an ordinary send to `o`. This is the order
+    /// `dispatch::lexical_member` states, taken inline here because a
+    /// resolution also records which of the two steps found the member
+    /// (`Chain::Private`, `Chain::Protected`); a change to one is a change
+    /// to both.
     ///
     /// When `o` is a class object -- a send written inside a class-side
     /// method with no explicit receiver -- `o`'s class is its metaclass
@@ -744,6 +748,56 @@ mod tests {
                 _ => panic!("an unhandled selector must resolve to Object's doesNotUnderstand:"),
             }
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
+        });
+    }
+
+    /// `resolve_lexical` takes `dispatch::lexical_member`'s two steps
+    /// inline; both find the same method for a private member of N, for a
+    /// protected one found on `o`'s class, and neither finds a selector
+    /// nothing declares (the send then falls to an ordinary send).
+    #[test]
+    fn a_lexical_resolution_finds_what_lexical_member_finds() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class Subject = Object new (
+            ) (
+              private helper = ( ^1 )
+              protected other = ( ^2 )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load(source);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        interpreter.enter(|mutator| {
+            let receiver = mutator.fetch(&instance);
+            let Value::Object(class) = mutator.fetch(&class) else {
+                panic!("load_module answers a class object");
+            };
+            for (name, expected_chain) in [("helper", Chain::Private), ("other", Chain::Protected)]
+            {
+                let selector = Symbol::intern(name);
+                let Lookup::Method(found, _) =
+                    dispatch::lexical_member(mutator.heap(), Some(class), class, selector)
+                else {
+                    panic!("lexical_member finds {name}");
+                };
+                match mutator.resolve_lexical(receiver, Some(class), selector) {
+                    Resolved::Method { method, chain, .. } => {
+                        assert!(Rc::ptr_eq(&method, &found), "{name}: the same method");
+                        assert_eq!(chain, expected_chain, "{name}");
+                    }
+                    _ => panic!("resolve_lexical finds {name}"),
+                }
+            }
+            assert!(matches!(
+                dispatch::lexical_member(
+                    mutator.heap(),
+                    Some(class),
+                    class,
+                    Symbol::intern("zork")
+                ),
+                Lookup::NotFound
+            ));
         });
     }
 
