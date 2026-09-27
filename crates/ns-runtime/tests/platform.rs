@@ -398,3 +398,89 @@ fn a_subclass_of_the_platform_class_writes_too() {
         "a second platform shows",
     );
 }
+
+/// The module instance behind the platform: the enclosing object of the
+/// platform's class, which no program can name. Only a host test reaches it,
+/// through the heap.
+fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
+    let platform = interpreter.platform();
+    interpreter.enter(|mutator| {
+        let Value::Object(platform) = mutator.fetch(&platform) else {
+            panic!("the platform is an object");
+        };
+        let heap = mutator.heap();
+        let factory = heap
+            .class_enclosing(heap.class_of_object(platform))
+            .expect("the platform's class is a nested class");
+        mutator.stash(Value::Object(factory))
+    })
+}
+
+/// `PlatformFactory`'s nested classes are private, and its one public
+/// member is `newPlatform`: a public send of a class's name to the factory
+/// instance finds nothing, even for a host that holds it, while `newPlatform`
+/// makes a platform. A second line of defence behind the factory instance
+/// being unreachable.
+#[test]
+fn the_platform_factory_answers_only_new_platform() {
+    let mut interpreter = Interpreter::bootstrap();
+    let factory = the_platform_factory(&mut interpreter);
+    for name in ["Platform", "Transcript", "Collections", "KernelNamespace"] {
+        let message = refusal(
+            interpreter.send(&factory, Symbol::intern(name), &[]),
+            &format!("factory {name}"),
+        );
+        assert!(
+            message.contains("does not understand"),
+            "factory {name}: {message}"
+        );
+    }
+    let platform = expect_ok(
+        interpreter.send(&factory, Symbol::intern("newPlatform"), &[]),
+        "factory newPlatform",
+    );
+    let transcript = expect_ok(
+        interpreter.send(&platform, Symbol::intern("transcript"), &[]),
+        "newPlatform transcript",
+    );
+    let text = interpreter.enter(|mutator| {
+        let text = Value::Object(mutator.new_string(String::new()));
+        mutator.stash(text)
+    });
+    expect_ok(
+        interpreter.send(&transcript, Symbol::intern("show:"), &[text]),
+        "newPlatform transcript show: ''",
+    );
+}
+
+/// The platform's class accessors reach the module's private classes by a
+/// lexical send (§5.9), so each still answers a class a program can use,
+/// and each is still a platform path step.
+#[test]
+fn the_platforms_class_accessors_reach_the_private_classes() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    for name in ["Platform", "Transcript", "Collections", "KernelNamespace"] {
+        let class = expect_ok(
+            interpreter.send(&platform, Symbol::intern(name), &[]),
+            &format!("platform {name}"),
+        );
+        expect_ok(
+            interpreter.send(&class, Symbol::NEW, &[]),
+            &format!("platform {name} new"),
+        );
+        interpreter.enter(|mutator| {
+            let Value::Object(platform) = mutator.fetch(&platform) else {
+                panic!("the platform is an object");
+            };
+            assert!(
+                ns_runtime::image::platform_paths::is_path_step(
+                    mutator.heap(),
+                    platform,
+                    Symbol::intern(name)
+                ),
+                "{name} is a platform path step"
+            );
+        });
+    }
+}

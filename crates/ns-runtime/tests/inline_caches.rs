@@ -779,21 +779,23 @@ fn a_cached_factory_does_not_answer_a_class_with_another_factory_selector() {
     }
 }
 
-/// What the bootstrap leaves in the caches: the platform's boot runs
-/// `PlatformFactory`'s `Platform` superclass clause, `Value new`, whose
-/// family takes two sites and whose lexical `Value` fills one global entry.
-/// Pinned so that the boot growing -- more shipped code run at every start
-/// -- is noticed rather than absorbed by the tests that count from it. The
-/// cache stress mode vacates the caches at the boot's safepoints, which may
-/// empty the global entry, so that is counted only without it; the sites
-/// stay either way.
+/// What the bootstrap leaves in the caches: the platform's boot sends
+/// `PlatformFactory`'s `newPlatform`, `^Platform new`, whose family takes
+/// two sites and fills two global entries (the lexical `Platform`, and `new`
+/// to the class), and `Platform`'s superclass clause, `Value new`, whose
+/// family takes two more and whose lexical `Value` fills a third. Pinned so
+/// that the boot growing -- more shipped code run at every start -- is
+/// noticed rather than absorbed by the tests that count from it. The cache
+/// stress mode vacates the caches at the boot's safepoints, which may empty
+/// the global entries, so those are counted only without it; the sites stay
+/// either way.
 #[test]
-fn a_fresh_bootstrap_leaves_two_sites_and_one_global_entry() {
+fn a_fresh_bootstrap_leaves_four_sites_and_three_global_entries() {
     let mut interpreter = Interpreter::bootstrap();
     let statistics = interpreter.cache_statistics();
-    assert_eq!(statistics.site_entries, 2);
+    assert_eq!(statistics.site_entries, 4);
     let stress_caches = std::env::var("NS_NEXT_STRESS_CACHES").is_ok_and(|value| value == "1");
     if !stress_caches {
-        assert_eq!(statistics.filled_global_entries, 1);
+        assert_eq!(statistics.filled_global_entries, 3);
     }
 }

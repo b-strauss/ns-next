@@ -63,9 +63,11 @@ with the user; [core-library.md](design/core-library.md), "The platform"):
 `core-library/Platform.ns` became `PlatformFactory.ns`, whose root holds the
 mirror and the kernel and is never handed out; the host instantiates it
 through the ordinary `Interpreter::instantiate`, checks its `vmMirror`, and
-hands every program `PlatformFactory Platform new`, whose factory is `new`
-and whose class accessors (`public Transcript = ( ^outer PlatformFactory
-Transcript )`) hand out the module's classes. That replaces the runtime
+hands every program what the factory's one public member, `newPlatform`,
+answers: an instance of the private nested `Platform`, whose factory is
+`new` and whose class accessors (`public Transcript = ( ^outer PlatformFactory
+Transcript )`, lexical sends that reach the root's private classes) hand
+out the module's classes. That replaces the runtime
 refusal with plain Newspeak: `InstantiationRefusal::CoreLibraryModule`,
 `Mixin::core_library_module`, `instantiate_core_library_module` and
 `goldens/kernel/a_program_cannot_instantiate_the_platform` are gone. A
@@ -76,8 +78,9 @@ the class the path `Platform` names.
 `goldens/kernel/the_platform_and_its_parts_are_values` has its original
 `platform = platform class new` checks back, and
 `goldens/kernel/a_second_platform_writes_like_the_first` is new. The boot
-now runs `Platform`'s superclass clause, so a freshly bootstrapped
-interpreter's cache table is no longer empty; no send path changed.
+now runs `newPlatform` and `Platform`'s superclass clause, so a freshly
+bootstrapped interpreter's caches are no longer empty (four sites, three
+global entries, pinned by a test); no send path changed.
 
 **The next piece of work is the collections module** (plan 2 of
 [core-library.md](design/core-library.md), "Planned: the platform and

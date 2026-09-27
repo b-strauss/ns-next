@@ -309,7 +309,9 @@ resolved with it; a user module goes through `resolve`; the bootstrap checks tha
 module's root instance or root class, so none can make a second one over something else --
 the platform handed to every program is an instance of `PlatformFactory`'s nested
 `Platform`, whose factory is `new` and whose classes reach the mirror lexically, and
-nothing a program can name answers either root (the factory pattern,
+nothing a program can name answers either root; behind that, `PlatformFactory`'s nested
+classes are private and its one public member is `newPlatform`, so even a holder of the
+root could only make another platform (the factory pattern,
 `docs/design/core-library.md`); the platform is never written to an image field by
 field: the encoder names it, and every shipped instance or class it reaches, by its
 platform path (`image/platform_paths.rs`), and refuses a shipped module instance or class

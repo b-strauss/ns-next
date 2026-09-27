@@ -369,7 +369,7 @@ core-library module beside `Kernel.ns` (decided with the user on
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
     | private vmMirror = theMirror. private kernelModule = theKernel. |
 ) (
-    public class Platform = Value new () (
+    private class Platform = Value new () (
         lazy public transcript = Transcript new.
         lazy public collections = Collections new.
         lazy public kernel = KernelNamespace new.
@@ -378,9 +378,10 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public Collections = ( ^outer PlatformFactory Collections )
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
     )
-    public class Transcript = Value new () ( show: and newLine, through vmMirror )
-    public class Collections = Value new () ( public List = ( ^OrderedCollection ) )
-    public class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
+    private class Transcript = Value new () ( show: and newLine, through vmMirror )
+    private class Collections = Value new () ( public List = ( ^OrderedCollection ) )
+    private class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
+    public newPlatform = ( ^Platform new )
 ) : ()
 ```
 
@@ -388,8 +389,8 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
 `XFactory` root holds what is privileged -- here the VM mirror and the
 kernel instance, in private slots, since neither a lazy slot nor a method
 may name a factory parameter (§6) -- and is never handed to anyone. What a
-program receives, and may instantiate, are the root's public nested
-classes, its facets. Each reaches the privileged state lexically, as a
+program receives, and may instantiate, are the root's nested classes, its
+facets. Each reaches the privileged state lexically, as a
 member of the root, never through a slot of its own, so the facets keep
 `new` and hold no privileged state in slots of their own -- `Transcript`,
 `Collections` and `KernelNamespace` declare none, and `Platform`'s three
@@ -399,7 +400,19 @@ like the first
 (`goldens/kernel/a_second_platform_writes_like_the_first`). The platform
 hands out instances of the facets by lazy slots and their classes by class
 accessors, methods whose whole body is `^outer PlatformFactory <Name>`.
-Plan 2's `CollectionsFactory.ns` follows the same pattern.
+
+**The factory's nested classes are private, and its one public member
+makes the facet.** A class accessor and a lazy slot's initializer reach a
+private class of the root by a lexical send, which may find a private
+member (§5.9), so a program still gets every class it is meant to have,
+through the facet; but a public send to the root instance finds nothing
+but `newPlatform`, `^Platform new`, which the host sends at boot. That is
+a second line of defence behind the root instance being unreachable ("No
+program reaches a shipped module's root" below): even a holder of the
+root could make only another platform from it, never name a class that
+reaches the mirror (`tests/platform.rs`,
+`the_platform_factory_answers_only_new_platform`,
+`the_platforms_class_accessors_reach_the_private_classes`). Plan 2's `CollectionsFactory.ns` follows the same pattern.
 
 **The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
 built on its first use, so a program pays only for the members it asks for,
@@ -412,15 +425,16 @@ found" below), instantiates it with `usingVmMirror: mirror kernel: kernel`
 through the ordinary `Interpreter::instantiate`, checks that its `vmMirror`
 is an immutable, eager slot holding the mirror
 (`interpreter::core_library`'s `check_factory_holds_the_mirror`, as
-`interpreter::kernel` checks the kernel's), then sends it `Platform` and
-`new` as ordinary host sends and keeps the answer as the platform
+`interpreter::kernel` checks the kernel's), then sends it `newPlatform`
+as an ordinary host send and keeps the answer as the platform
 (`Mutator::platform_singleton`, traced like every root). Each step is a run
 entered from the outside, as the kernel's instantiation is, so the stress
 modes see it. `Mutator::platform_value` only reads the platform, so asking
 for it, at bootstrap or in `image::load`, runs no Newspeak. The boot does
-run a little shipped code -- `Platform`'s superclass clause `Value new`,
-whose sends take room in the inline caches -- so a freshly bootstrapped
-interpreter no longer starts with an empty cache table. The kernel instance
+run a little shipped code -- `newPlatform` and `Platform`'s superclass
+clause `Value new`, whose sends take room in the inline caches -- so a
+freshly bootstrapped interpreter no longer starts with an empty cache
+table (`tests/inline_caches.rs` pins what it leaves). The kernel instance
 is the second parameter, as in Primordial Soup (`Platform internalKernel:
 ik`), rather than a mirror leaf answering the kernel (SOMns's
 `vmMirror kernelObject: nil`): handing over an object needs no Rust, and
@@ -498,8 +512,9 @@ must never become the answer to anything a program sees, and the one place
 the runtime hands a receiver to a program is a `MessageNotUnderstood`,
 whose `receiver` slot is public. So no code whose receiver is the factory
 instance may ever send it a message it does not understand -- today the
-only sends to it are the class accessors' `outer PlatformFactory <Name>`,
-each naming a nested class it declares, and the nested classes' superclass
+only sends to it are the host's `newPlatform` at boot, `newPlatform`'s own
+`Platform`, the class accessors' `outer PlatformFactory <Name>`, each
+naming a nested class it declares, and the nested classes' superclass
 clauses, run with it as receiver. Whoever edits `PlatformFactory.ns` (or
 writes another `XFactory` root) keeps it that way: a send to the root that
 can miss, or a method of the root that sends to `self` something it may
@@ -1639,8 +1654,8 @@ the mirror's `moduleNamed:` with `CollectionsFactory.ns`. The design as decided:
   table and instantiates it with `usingVmMirror: mirror kernel: kernel` — an
   ordinary run, as the kernel's instantiation is, so the stress modes see
   it — and keeps the result as a root. Since 2026-09-27 it takes
-  `PlatformFactory`, instantiates that, and keeps `PlatformFactory Platform
-  new` instead ("The platform" above). `Mutator::platform_value` reads that
+  `PlatformFactory`, instantiates that, and keeps what its `newPlatform`
+  answers instead ("The platform" above). `Mutator::platform_value` reads that
   root instead of building the platform in Rust. The second parameter is
   Primordial Soup's (`Platform internalKernel: ik`), chosen over a mirror
   leaf answering the kernel (SOMns's `vmMirror kernelObject: nil`): handing
@@ -1769,9 +1784,9 @@ its class. That needs its own decision when the first such module arrives.
 - **`CollectionsFactory.ns`**, in the factory pattern ("The platform"
   above): `class CollectionsFactory usingKernel: kernelModule = Object <:
   Value`, a root that holds the kernel and is never handed out, with the
-  public nested classes a program may reach -- the `Collections` namespace
-  and `List` -- as SOMns's and Primordial Soup's collections modules are
-  values; it needs no mirror. `List`
+  private nested classes a program reaches through the platform -- the
+  `Collections` namespace and `List` -- as SOMns's and Primordial Soup's
+  collections modules are values; it needs no mirror. `List`
   is Primordial Soup's `List` in this runtime's Newspeak: `protected size_`,
   `protected data`, grown by copying into a larger `Array`. Its protocol
   follows the on-demand rule: `new`, `add:`, `at:`, `at:put:`, `do:` and

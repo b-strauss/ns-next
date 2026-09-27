@@ -10480,7 +10480,9 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
         'T'
         class Holder usingPlatform: platform = Object new (
             | public transcriptClass = platform Transcript.
-              public platformClass = platform class. |
+              public platformClass = platform class.
+              public collectionsClass = platform Collections.
+              public kernelNamespaceClass = platform KernelNamespace. |
         ) (
         ) : ()
     "};
@@ -10488,7 +10490,12 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.platform_paths,
-        vec!["Transcript".to_string(), "Platform".to_string()],
+        vec![
+            "Transcript".to_string(),
+            "Platform".to_string(),
+            "Collections".to_string(),
+            "KernelNamespace".to_string()
+        ],
         "the paths the graph uses, in the order it first reaches them"
     );
     let mut loaded = image::load(&bytes).expect("load");
@@ -10497,6 +10504,8 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     for (member, accessor) in [
         ("transcriptClass", "Transcript"),
         ("platformClass", "Platform"),
+        ("collectionsClass", "Collections"),
+        ("kernelNamespaceClass", "KernelNamespace"),
     ] {
         let stored = send_to(&mut loaded, &instance, member);
         let fresh = send_to(&mut loaded, &platform, accessor);

@@ -88,13 +88,14 @@ impl crate::interpreter::Interpreter {
     /// (`docs/design/core-library.md`, "The factory pattern"):
     /// `PlatformFactory` from the table, instantiated with the VM mirror and
     /// the kernel instance through the ordinary `instantiate`, then sent
-    /// `Platform` and `new` as ordinary host sends -- runs like the kernel's
-    /// own, entered from the outside, so the stress modes see them -- and
-    /// the answer kept as the platform every program is handed. The factory
-    /// instance is kept by nothing but the platform's class, whose enclosing
-    /// object it is: no program is handed it, and nothing a program can name
-    /// answers it. The platform's members are lazy slots, so nothing past
-    /// `new` runs here. `image::load` relies on more than the boot, though:
+    /// `newPlatform`, its one public member, as an ordinary host send --
+    /// runs like the kernel's own, entered from the outside, so the stress
+    /// modes see them -- and the answer kept as the platform every program
+    /// is handed. The factory's nested classes are private, so this is the
+    /// one send it answers. The factory instance is kept by nothing but the
+    /// platform's class, whose enclosing object it is: no program is handed
+    /// it, and nothing a program can name answers it. The platform's
+    /// members are lazy slots, so nothing past `Platform new` runs here. `image::load` relies on more than the boot, though:
     /// it resolves an image's platform paths -- running each member's lazy
     /// initializer, each class accessor, and each nested class's superclass
     /// clause, that a path names -- before it restores the image's identity
@@ -118,13 +119,9 @@ impl crate::interpreter::Interpreter {
             let factory = mutator.fetch(&factory);
             check_factory_holds_the_mirror(mutator, factory);
         });
-        let platform_class = booted(
-            self.send(&factory, Symbol::intern("Platform"), &[]),
-            "PlatformFactory Platform",
-        );
         let platform = booted(
-            self.send(&platform_class, Symbol::NEW, &[]),
-            "PlatformFactory Platform new",
+            self.send(&factory, Symbol::intern("newPlatform"), &[]),
+            "PlatformFactory newPlatform",
         );
         self.enter(|mutator| {
             let platform = mutator.fetch(&platform);

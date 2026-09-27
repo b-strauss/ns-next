@@ -443,6 +443,10 @@ instance of the nested class `Platform` of the shipped `PlatformFactory.ns`
 the lazy `transcript`, `collections` and `kernel`, and its class accessors
 `Platform`, `Transcript`, `Collections` and `KernelNamespace` name those
 classes of the module, once the module root's accessor for each has run.
+The four classes are private to the root: a class accessor reaches them
+by a lexical send (§5.9), and `discover` looks the class up the same way
+(`dispatch::lexical_member`), so a private nested class is named by its
+accessor's path like a public one.
 The root instance itself is named by no path, and never written: nothing a
 program can name answers it. A second platform a program made with
 `platform class new` is an ordinary instance record of the class the path
