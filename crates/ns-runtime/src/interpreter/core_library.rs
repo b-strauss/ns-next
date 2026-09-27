@@ -95,7 +95,8 @@ impl crate::interpreter::Interpreter {
     /// one send it answers. The factory instance is kept by nothing but the
     /// platform's class, whose enclosing object it is: no program is handed
     /// it, and nothing a program can name answers it. The platform's
-    /// members are lazy slots, so nothing past `Platform new` runs here. `image::load` relies on more than the boot, though:
+    /// members are lazy slots, so nothing past `Platform new` runs here.
+    /// `image::load` relies on more than the boot, though:
     /// it resolves an image's platform paths -- running each member's lazy
     /// initializer, each class accessor, and each nested class's superclass
     /// clause, that a path names -- before it restores the image's identity

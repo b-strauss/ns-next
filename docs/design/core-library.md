@@ -412,7 +412,8 @@ program reaches a shipped module's root" below): even a holder of the
 root could make only another platform from it, never name a class that
 reaches the mirror (`tests/platform.rs`,
 `the_platform_factory_answers_only_new_platform`,
-`the_platforms_class_accessors_reach_the_private_classes`). Plan 2's `CollectionsFactory.ns` follows the same pattern.
+`the_platforms_class_accessors_reach_the_private_classes`). Plan 2's
+`CollectionsFactory.ns` follows the same pattern.
 
 **The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
 built on its first use, so a program pays only for the members it asks for,
