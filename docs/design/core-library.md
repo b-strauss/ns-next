@@ -466,6 +466,36 @@ platform's `vmMirror` is an immutable, eager slot holding the mirror
 (`interpreter::core_library`'s `check_platform_holds_the_mirror`), as it
 checks the kernel's.
 
+**The authority to run a leaf lies with an object, not with code.**
+Weighed with the user on 2026-09-27: making the two paths agree the other
+way -- a mirror send that never evaluates its receiver, so that shipped
+code runs its leaves whatever `vmMirror` holds -- would move that authority
+from the mirror object to the shipped code. That is harmless for `Platform`
+today, since a second platform can do nothing the program's own `platform`
+cannot, but not for a module a program is only handed a facet of, as
+Primordial Soup hands out its `internalKernel` only through `Kernel
+wrapping:`. Any instance of that module's classes a program reaches gives it
+the class through `class`, and a receiver-blind mirror send would let it
+build its own instance with every leaf the module uses, without ever holding
+the mirror. The refusal keeps the object-capability rule Newspeak is built
+on: every instance of a shipped module's root holds the real mirror by
+construction, so the fast path's assumption that `vmMirror` is the mirror is
+true rather than trusted. Hiding the class instead (`class` answering `nil`)
+was rejected too: the class stays reachable through mirrors and the
+debugger, and `Value`'s fallback equality, `printString` and the tools read
+`class`.
+
+**A facet module keeps its full-authority classes private.** The refusal
+covers a shipped module's root only. A nested class of a module stays
+instantiable -- `t class new` makes a transcript -- and its instances reach
+the mirror through their *real* enclosing module instance, which is ordinary
+Newspeak: a class object carries its enclosing object's authority. So a
+shipped module that programs receive only as a restricted facet -- the I/O,
+network and debugger modules still to come -- must not make a nested class
+with the module's full authority publicly reachable, through an accessor or
+through the class of any object it hands out; the facet's own classes are
+what a program may reach.
+
 **An image names the platform and what it reaches by path.** The platform
 holds the mirror, so it is never written field by field: the encoder names
 it, and every shipped module instance or class it reaches, by its path of
