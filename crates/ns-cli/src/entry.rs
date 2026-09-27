@@ -173,27 +173,36 @@ fn selector_arity(selector: &str) -> usize {
 /// outright; sizing the list to the selector here is what keeps a
 /// legitimate `--send` from tripping that refusal.
 ///
-/// The template is the Core Library's `main: platform args: arguments`
-/// convention truncated to the selector's arity: a unary entry point takes
-/// nothing, a one-parameter one takes the platform, a two-parameter one
-/// takes the platform and `Nil` for the environment-arguments list -- there is
-/// still no command-line-argument passthrough into Newspeak. Beyond two
-/// the CLI has nothing to offer, and says so rather than padding.
+/// The template is §8.4's `main: platform args: arguments` truncated to the
+/// selector's arity: a unary entry point takes nothing, a one-parameter one
+/// takes the platform, a two-parameter one takes the platform and "a list of
+/// any environment-specific (e.g., command line) arguments" -- the program's
+/// arguments, the words after `--`, as an `Array` of `String`s, the list a
+/// tuple literal makes, and empty when there are none. Beyond two the CLI has
+/// nothing to offer, and says so rather than padding.
 pub(crate) fn entry_arguments(
-    interpreter: &ns_runtime::Interpreter,
+    interpreter: &mut ns_runtime::Interpreter,
     selector: &str,
     platform: &ns_runtime::Root,
+    program_arguments: &[String],
 ) -> Result<Vec<ns_runtime::Root>, String> {
     match selector_arity(selector) {
         0 => Ok(vec![]),
         1 => Ok(vec![platform.clone()]),
-        2 => Ok(vec![
-            platform.clone(),
-            interpreter.stash(ns_runtime::Value::Nil),
-        ]),
+        2 => {
+            let arguments = interpreter.enter(|mutator| {
+                let strings = program_arguments
+                    .iter()
+                    .map(|argument| ns_runtime::Value::Object(mutator.new_string(argument.clone())))
+                    .collect();
+                let array = mutator.new_array(strings);
+                mutator.stash(ns_runtime::Value::Object(array))
+            });
+            Ok(vec![platform.clone(), arguments])
+        }
         arity => Err(format!(
             "cannot send `{selector}`: it takes {arity} argument(s), and this CLI only knows how \
-             to supply the platform and a `nil` argument list"
+             to supply the platform and the program's arguments"
         )),
     }
 }

@@ -144,6 +144,12 @@ Every golden that is not skipped, the ones recorded as raising included, also
 goes through the snapshot and the build/load round trip, which hold an image's
 and a binary's three streams against what `run` answers on the source.
 
+A fifth key, `arguments`, lists the program's arguments, which every runner
+passes after `--` to each command that sends the entry -- `run`, and `load` in
+both round trips -- so `main:args:` receives them (§8.4,
+`goldens/spec/spec_8_4_main_args_receives_the_program_arguments`); most
+goldens have none and receive an empty list.
+
 A fourth key, `skipped`, carries why the runtime does not answer this one
 yet -- `skipped = "not implemented yet: simultaneous slot clauses initialize
 sequentially, so second is nil when first is computed"`. The sweeps pass it
@@ -250,7 +256,6 @@ output.
 | An access modifier or `lazy` needs no whitespace after it, where the grammar's `accessModifier` and `lazyModifier` end in `whitespace`: `\| public= 1. \|` is refused like `\| public = 1. \|` rather than declaring a slot named `public` | §6.3.3, §6.3.4 | [frontend.md](frontend.md) |
 | A pattern literal parses as §5.1.9's grammar says but evaluates to **nil**, where the section makes `<_>` `Pattern wildcard` and `<l>` `Pattern literal: l`; there is no `Pattern` class | §5.1.9 | [frontend.md](frontend.md) |
 | `outer N` with no message after it answers the enclosing object `outer N m` would send to, as canonical Newspeak does, where the section defines `outer N` only as a send's receiver | §5.9 | [dispatch.md](dispatch.md) |
-| `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
 
 One of these has a golden under `goldens/spec/`, recorded as `skipped`:
 the sequential simultaneous slot clauses. It states what the specification

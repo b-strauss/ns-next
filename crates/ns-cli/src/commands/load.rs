@@ -21,7 +21,12 @@ use std::process::ExitCode;
 /// and the same `report_entry_send` as `run`, so `load` of an artifact prints
 /// exactly what `run` of its source prints and nothing else. A malformed
 /// artifact is a message, never a stack trace.
-pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
+pub(crate) fn execute(
+    image: &Path,
+    send: Option<&str>,
+    print_source: bool,
+    program_arguments: &[String],
+) -> ExitCode {
     let bytes = match std::fs::read(image) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -112,7 +117,12 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         }
     };
     let platform = interpreter.platform();
-    let arguments = match crate::entry::entry_arguments(&interpreter, selector, &platform) {
+    let arguments = match crate::entry::entry_arguments(
+        &mut interpreter,
+        selector,
+        &platform,
+        program_arguments,
+    ) {
         Ok(arguments) => arguments,
         Err(message) => {
             eprintln!("error: {message}");

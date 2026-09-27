@@ -4666,3 +4666,15 @@ had read `e2` as hex digits and answered 8162 at exit status 0. A superclass
 clause's receiver and `outer`'s class must be names, and §6's
 `typeParameterDecl` is checked rather than skipped. The one literal still
 deferred to execution is an integer beyond `i64`.
+
+## `main:args:` receives the program's arguments (2026-09-28)
+
+§8.4's second argument to `main:args:` is "a list of any
+environment-specific (e.g., command line) arguments"; the CLI passed `nil`.
+`run`, `load`, `snapshot` and `bench` now take the program's arguments after
+`--` and pass them as an `Array` of `String`s, empty when there are none
+(`entry::entry_arguments`), and the deviations-table row is gone. A golden's
+`.toml` may list `arguments`, which the runners pass to `run` and to `load`
+in both round trips
+(`goldens/spec/spec_8_4_main_args_receives_the_program_arguments`,
+`spec_8_4_main_args_without_arguments_is_an_empty_list`).

@@ -88,6 +88,9 @@ cargo run -p ns-cli -- run goldens/language/hello.ns
 ```
 
 The entry selector defaults to `main:args:`; `--send <selector>` picks another one.
+The program's arguments follow `--` (`run app.ns -- first second`) and reach
+`main:args:` as an `Array` of `String`s; `load`, `snapshot` and `bench` take them
+the same way.
 `--lowering reference` compiles with the naive reference lowering instead of the
 optimized one; `run`, `snapshot`, `build` and `disasm` take it.
 

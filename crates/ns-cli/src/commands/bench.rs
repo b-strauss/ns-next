@@ -70,6 +70,7 @@ fn benchmark_entry(
     iterations: u32,
     cache_statistics: bool,
     collector_statistics: bool,
+    program_arguments: &[String],
 ) -> Result<BenchmarkStatistics, String> {
     let (mut interpreter, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
     let platform = interpreter.platform();
@@ -80,7 +81,8 @@ fn benchmark_entry(
             &platform,
         )
     })?;
-    let entry_arguments_list = entry::entry_arguments(&interpreter, send, &platform)?;
+    let entry_arguments_list =
+        entry::entry_arguments(&mut interpreter, send, &platform, program_arguments)?;
     let selector = ns_runtime::Symbol::intern(send);
 
     // Warm-up: discarded. It exercises the same allocation and lookup
@@ -139,6 +141,7 @@ pub(crate) fn execute(
     iterations: u32,
     cache_statistics: bool,
     collector_statistics: bool,
+    program_arguments: &[String],
 ) -> ExitCode {
     if cfg!(debug_assertions) {
         eprintln!(
@@ -165,6 +168,7 @@ pub(crate) fn execute(
         iterations,
         cache_statistics,
         collector_statistics,
+        program_arguments,
     ) {
         Ok(statistics) => {
             println!(

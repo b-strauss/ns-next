@@ -104,7 +104,7 @@ pub(crate) fn execute(
     };
 
     let platform = interpreter.platform();
-    if let Err(message) = crate::entry::entry_arguments(&interpreter, &entry, &platform) {
+    if let Err(message) = crate::entry::entry_arguments(&mut interpreter, &entry, &platform, &[]) {
         eprintln!("error: cannot use `{entry}` as an entry point: {message}");
         return ExitCode::FAILURE;
     }

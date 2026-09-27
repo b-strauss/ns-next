@@ -132,7 +132,7 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
         "},
     )
     .expect("write source");
-    let (ok, out, error) = assert_snapshot_load_matches_run("raises", &source);
+    let (ok, out, error) = assert_snapshot_load_matches_run("raises", &source, &[]);
     assert!(!ok, "the program raises, so `run` exits non-zero");
     assert_eq!(out, "", "it prints nothing before raising");
     assert!(

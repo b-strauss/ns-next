@@ -15,6 +15,7 @@ pub(crate) fn execute(
     send: Option<&str>,
     debug_source: bool,
     lowering: ns_runtime::Lowering,
+    program_arguments: &[String],
 ) -> ExitCode {
     let loaded = match source::load_source(file) {
         Ok(loaded) => loaded,
@@ -28,7 +29,12 @@ pub(crate) fn execute(
     let platform = interpreter.platform();
     let mut roots: Vec<ns_runtime::Root> = vec![instance.clone()];
     if let Some(selector) = send {
-        let arguments = match entry::entry_arguments(&interpreter, selector, &platform) {
+        let arguments = match entry::entry_arguments(
+            &mut interpreter,
+            selector,
+            &platform,
+            program_arguments,
+        ) {
             Ok(arguments) => arguments,
             Err(message) => {
                 eprintln!("error: {message}");

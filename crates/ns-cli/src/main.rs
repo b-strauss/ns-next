@@ -67,6 +67,10 @@ enum Command {
         /// Print the inline caches' sizes to stderr after the run.
         #[arg(long)]
         cache_statistics: bool,
+        /// The program's arguments, after `--`: `main:args:` receives them
+        /// as its second argument, an `Array` of `String`s (§8.4).
+        #[arg(last = true)]
+        arguments: Vec<String>,
     },
     /// Run a file, then serialize the resulting (quiesced) world to an
     /// image file.
@@ -86,6 +90,10 @@ enum Command {
         /// The lowering to compile the source with.
         #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
         lowering: LoweringArgument,
+        /// The program's arguments, after `--`: `main:args:` receives them
+        /// as its second argument, an `Array` of `String`s (§8.4).
+        #[arg(last = true)]
+        arguments: Vec<String>,
     },
     /// Deserialize an artifact and start it. An image already holds its
     /// instance; a stateless binary is instantiated here and sent the entry
@@ -100,6 +108,10 @@ enum Command {
         /// which by design has none.
         #[arg(long)]
         print_source: bool,
+        /// The program's arguments, after `--`: `main:args:` receives them
+        /// as its second argument, an `Array` of `String`s (§8.4).
+        #[arg(last = true)]
+        arguments: Vec<String>,
     },
     /// Time the entry send: bootstrap, load and compile once, then discard
     /// a warm-up run and time `--iterations` further runs, reporting the
@@ -128,6 +140,10 @@ enum Command {
         /// timed runs.
         #[arg(long)]
         collector_statistics: bool,
+        /// The program's arguments, after `--`: `main:args:` receives them
+        /// as its second argument, an `Array` of `String`s (§8.4).
+        #[arg(last = true)]
+        arguments: Vec<String>,
     },
     /// Print one compiled body: a method, or with --initializer the target
     /// class's instance initializer. Takes either a .ns file, which is
@@ -217,33 +233,43 @@ fn execute(command: Command) -> ExitCode {
             send,
             lowering,
             cache_statistics,
-        } => commands::run::execute(&file, &send, lowering.into(), cache_statistics),
+            arguments,
+        } => commands::run::execute(&file, &send, lowering.into(), cache_statistics, &arguments),
         Command::Snapshot {
             file,
             out,
             send,
             debug_source,
             lowering,
-        } => {
-            commands::snapshot::execute(&file, &out, send.as_deref(), debug_source, lowering.into())
-        }
+            arguments,
+        } => commands::snapshot::execute(
+            &file,
+            &out,
+            send.as_deref(),
+            debug_source,
+            lowering.into(),
+            &arguments,
+        ),
         Command::Load {
             image,
             send,
             print_source,
-        } => commands::load::execute(&image, send.as_deref(), print_source),
+            arguments,
+        } => commands::load::execute(&image, send.as_deref(), print_source, &arguments),
         Command::Bench {
             file,
             send,
             iterations,
             cache_statistics,
             collector_statistics,
+            arguments,
         } => commands::bench::execute(
             &file,
             &send,
             iterations,
             cache_statistics,
             collector_statistics,
+            &arguments,
         ),
         Command::Disasm {
             file,

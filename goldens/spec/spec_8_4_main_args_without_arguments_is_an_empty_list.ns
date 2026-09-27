@@ -1,0 +1,9 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 8.4: main:args:'s second argument is a list of the
+   environment's arguments; with none given it is an empty list, never nil. *)
+class Spec84MainArgsWithoutArgumentsIsAnEmptyList usingPlatform: p = Object new () (
+    public main: platform args: arguments = (
+        platform transcript show: arguments size printString; newLine
+    )
+) : ()

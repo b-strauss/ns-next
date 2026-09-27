@@ -79,6 +79,7 @@ fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Faile
         .arg(source)
         .arg("--lowering")
         .arg(lowering)
+        .args(common::program_arguments(source))
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;
     compare(
@@ -96,6 +97,7 @@ fn matches_with_a_two_entry_global_cache(source: &Path) -> Result<(), Failed> {
     let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(source)
+        .args(common::program_arguments(source))
         .env("NS_NEXT_GLOBAL_CACHE_ENTRIES", "2")
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;

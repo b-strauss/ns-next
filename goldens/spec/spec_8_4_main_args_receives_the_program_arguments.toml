@@ -1,0 +1,8 @@
+arguments = ["first", "second word", "-x"]
+stdout = '''
+3
+first
+second word
+-x
+true
+'''

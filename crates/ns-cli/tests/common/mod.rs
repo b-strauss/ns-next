@@ -131,6 +131,10 @@ pub struct Expectation {
     pub stderr: String,
     #[serde(default)]
     pub skipped: Option<String>,
+    /// The program's arguments, passed after `--` to every command that
+    /// sends the entry: what `main:args:` receives (§8.4). Empty for most.
+    #[serde(default)]
+    pub arguments: Vec<String>,
 }
 
 impl Expectation {
@@ -181,7 +185,20 @@ pub fn expectation_of(source: &Path) -> Expectation {
         stdout: recorded.stdout.replace("\r\n", "\n"),
         stderr: recorded.stderr.replace("\r\n", "\n"),
         skipped: recorded.skipped,
+        arguments: recorded.arguments,
     }
+}
+
+/// The `-- argument ...` a command that sends `source`'s entry is given: its
+/// golden's recorded `arguments`, or nothing when it records none.
+pub fn program_arguments(source: &Path) -> Vec<std::ffi::OsString> {
+    let arguments = expectation_of(source).arguments;
+    if arguments.is_empty() {
+        return Vec::new();
+    }
+    std::iter::once("--".into())
+        .chain(arguments.into_iter().map(Into::into))
+        .collect()
 }
 
 /// A temporary directory that removes itself, under the repository's own
@@ -259,19 +276,27 @@ pub fn ns_next(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
 /// produces while snapshotting plus what the entry send produces after a
 /// load. Returns the three `run` outputs so a caller can assert what the
 /// program itself did.
-pub fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String, String) {
+pub fn assert_snapshot_load_matches_run(
+    name: &str,
+    source: &Path,
+    program_arguments: &[std::ffi::OsString],
+) -> (bool, String, String) {
     let directory = ScratchDirectory::new(name);
     let image = directory.join("world.img");
-    let (run_ok, run_out, run_error) = ns_next(&["run".as_ref(), source.as_os_str()]);
+    let mut run_arguments: Vec<&std::ffi::OsStr> = vec!["run".as_ref(), source.as_os_str()];
+    run_arguments.extend(program_arguments.iter().map(std::ffi::OsString::as_os_str));
+    let (run_ok, run_out, run_error) = ns_next(&run_arguments);
     let (snapshot_ok, snapshot_out, snapshot_error) =
         ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     let (load_ok, load_out, load_error) = if snapshot_ok {
-        ns_next(&[
+        let mut load_arguments: Vec<&std::ffi::OsStr> = vec![
             "load".as_ref(),
             image.as_os_str(),
             "--send".as_ref(),
             "main:args:".as_ref(),
-        ])
+        ];
+        load_arguments.extend(program_arguments.iter().map(std::ffi::OsString::as_os_str));
+        ns_next(&load_arguments)
     } else {
         // `snapshot` sends no entry, so it fails only where `run` already
         // failed before its own entry send -- while instantiating the root

@@ -133,13 +133,18 @@ fn a_binary_runs_as_its_source_does(path: &Path, lowering: &str) -> Result<(), F
         }
         return Err(format!("build failed: {build_error}").into());
     }
-    let (run_ok, run_out, run_error) = ns_next(&[
+    let program_arguments = common::program_arguments(path);
+    let mut run_arguments: Vec<&std::ffi::OsStr> = vec![
         "run".as_ref(),
         path.as_os_str(),
         "--lowering".as_ref(),
         lowering.as_ref(),
-    ]);
-    let (load_ok, load_out, load_error) = ns_next(&["load".as_ref(), out.as_os_str()]);
+    ];
+    run_arguments.extend(program_arguments.iter().map(std::ffi::OsString::as_os_str));
+    let (run_ok, run_out, run_error) = ns_next(&run_arguments);
+    let mut load_arguments: Vec<&std::ffi::OsStr> = vec!["load".as_ref(), out.as_os_str()];
+    load_arguments.extend(program_arguments.iter().map(std::ffi::OsString::as_os_str));
+    let (load_ok, load_out, load_error) = ns_next(&load_arguments);
     if load_ok != run_ok {
         return Err(format!("exit status differs: load {load_ok}, run {run_ok}").into());
     }
@@ -175,7 +180,8 @@ fn a_binary_runs_as_its_source_does(path: &Path, lowering: &str) -> Result<(), F
 /// image's own code is pinned to report the uncaught error exactly as `run`
 /// does.
 fn a_snapshot_reproduces_what_run_prints(name: &str, source: &Path) -> Result<(), Failed> {
-    let (ok, _out, error) = assert_snapshot_load_matches_run(name, source);
+    let (ok, _out, error) =
+        assert_snapshot_load_matches_run(name, source, &common::program_arguments(source));
     // Not "the run succeeded" -- a golden recorded as failing is swept too,
     // and the recorded answer is what says which it is.
     if ok != common::expectation_of(source).succeeds() {
