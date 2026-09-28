@@ -747,25 +747,29 @@ until the program has made one.
   `doesNotUnderstand:`. The inlined conditionals fall back to a real send
   on a receiver that is no Boolean, and `IntegerBinary` on anything but two
   small integers; the compiler inlines neither `==` nor `isNil`.
-- *As a leaf's argument or subject*, `builtins::execute`, the one function
-  every leaf runs through (sent, `SendMirror`, primitive method), looks for a
-  future only on its failure path — the leaf (`execute_leaf`) declined or
-  raised — and only once `futures_made` is set; the search itself is out of
-  line (`see_through_after`). A resolved one is replaced by its value and
+- *As a leaf's argument or subject*, a future is looked for only on the
+  failure path of the three ways a leaf runs — `mirror::execute_sent` (a
+  send to the mirror), `send_inlined` (`SendMirror`) and `execute_method` (a
+  primitive method): the leaf declined or raised — and only once
+  `futures_made` is set, in a cold function
+  (`future::after_a_failed_leaf`); `builtins::execute` itself is the plain
+  dispatch to the leaf. A resolved one is replaced by its value and
   the leaf runs again, in Rust. An unresolved one cannot be forced in Rust,
   since nothing re-enters the loop: the answer is a step that activates the
   future's block under `Continuation::Future` with `AfterForcing::Reexecute`,
   which records that activation's value and runs the caller's instruction
   again instead of the next one (`vm::reexecute`); the second time the
-  future is resolved. This rests on an invariant written into
+  future is resolved. This rests on an invariant written on
   `builtins::execute` and checked leaf by leaf: **a leaf that declines or
   raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives").
 - *The leaves that answer "no" rather than declining* — identity and the
   equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`,
-  `Symbol` and `Behavior`, and `inheritsMixinOf:` — look for a future only on
-  that path, and then do the same; `Primitive::answers_false_to_a_stranger`
-  names them, matching every leaf by name so that a new one does not compile
-  until someone decides. `==` is symmetric, unlike Primordial Soup's.
+  `Symbol` and `Behavior`, and `inheritsMixinOf:` — decline instead when
+  that answer is "no" and an operand is a future
+  (`future::declines_for_a_future`, behind the same flag), so the failure
+  path does the same; `Primitive::answers_false_to_a_stranger` names them,
+  matching every leaf by name so that a new one does not compile until
+  someone decides. `==` is symmetric, unlike Primordial Soup's.
 - *The leaves that keep or render an operand* and would take a future for a
   value of its own — `do:`'s block, `whileTrue:`'s and `whileFalse:`'s body,
   and the selector and description an unhandled exception's termination
@@ -810,7 +814,9 @@ arrays after the clause) and `spec_6_3_2_a_data_cycle_survives_an_image`;
 `spec_6_3_2_a_captured_sibling_is_read_after_the_clause`;
 `spec_6_3_2_a_future_is_an_argument_like_its_value`,
 `spec_6_3_2_a_future_is_a_block_argument_like_its_value` and
-`spec_6_3_2_a_future_is_equal_and_identical_to_its_value`, from either side;
+`spec_6_3_2_a_future_is_equal_and_identical_to_its_value`, from either side,
+and `spec_6_3_2_every_equality_sees_a_future_as_its_value` (`Float`'s and a
+value's `=`, and `on:do:`'s handler class);
 `spec_6_3_2_ill_founded_recursion_is_an_error`;
 `spec_6_3_2_a_value_class_initializes_simultaneously`, accepted, and refused
 for a slot that is no value; `spec_6_3_2_a_future_passed_into_a_value_is_forced`;
@@ -823,9 +829,10 @@ cover the parser's flag (`ns-syntax`'s declaration tests); forcing, chains,
 abandonment, the host's two cases and the collector's replacement
 (`tests/future.rs`); the four instructions driven by hand (`tests/vm.rs`);
 the image's two cases and its refusals (`tests/image.rs`); and the wire tags
-(`tests/opcode_tags.rs`). The four `goldens/bench/` fixtures measured 1–2%
-slower on the three that send, not level ([execution.md](execution.md),
-"What simultaneous slots cost").
+(`tests/opcode_tags.rs`). Three of the four `goldens/bench/` fixtures are
+level; `bench_megamorphic.ns` measured about 4% slower, a layout effect of
+the dispatch arm the four instructions add, still open
+([execution.md](execution.md), "What simultaneous slots cost").
 
 ## Mixin application
 

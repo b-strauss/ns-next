@@ -2214,10 +2214,11 @@ value with `Message>>sentTo:`; its state is the two slots `computation` and
 no accessor for it, and builtin class tag 30 names it only where the image
 must (an unresolved future's record). It has no class side of its own: the
 instructions `MakeFuture` and `ResolveFuture` make and resolve the futures
-of a simultaneous slot clause. `builtins::execute` wraps every leaf and,
-once a program has made a future, looks for one among the operands on the
-leaf's failure path, and for identity and the equality leaves on their "no"
-path (`Primitive::answers_false_to_a_stranger`). The design is
+of a simultaneous slot clause. Once a program has made a future, the
+callers of a leaf look for one among its operands on the leaf's failure
+path (`future::after_a_failed_leaf`), and identity and the equality leaves
+decline for one where they would answer "no"
+(`Primitive::answers_false_to_a_stranger`). The design is
 [object-model.md](object-model.md), "Simultaneous slots".
 
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers

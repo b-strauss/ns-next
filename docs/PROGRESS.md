@@ -35,18 +35,24 @@ clause's end (instruction tags 36 to 39); `Kernel.ns`'s private `Future`
 `doesNotUnderstand:`; forcing is a trampoline step under
 `Continuation::Future`, and an instruction or a leaf that meets an
 unresolved future forces it and runs again (`vm::reexecute`), which rests
-on a leaf that declines or raises having changed nothing; ill-founded
+on a leaf that declines or raises having changed nothing, and a leaf's
+callers look for a future only on its failure path; ill-founded
 recursion is an ordinary error; an abandoned clause leaves its futures
 unresolved, to be computed on the next touch; an image writes a resolved
-future as its value and an unresolved one as a record. Thirteen new
+future as its value and an unresolved one as a record. Fourteen new
 goldens under `goldens/spec/` pin it, and the one that was `skipped` answers
 `3`. **Measured** ([execution.md](design/execution.md), "What simultaneous
-slots cost"), three builds a side against `0b1f474`: **not level** --
-`bench_loop.ns` is, and the three fixtures that send are 1–2% slower
-(`bench_send.ns` +1.3%, `bench_block.ns` +1.9%, `bench_megamorphic.ns`
-+2.3%, medians), traced to the four new arms in `vm::run` and the wrapper
-every leaf now runs through; no experiment recovered all four, and it is
-left open below.
+slots cost"), three builds a side against `0b1f474`, two sittings:
+`bench_loop.ns`, `bench_send.ns` and `bench_block.ns` are level (+0.86%,
+-0.27%, +0.23%, medians); **`bench_megamorphic.ns` is 4.2% slower**,
+separated in both sittings. A first version, which wrapped every leaf and
+inlined the four arms, cost all three sending fixtures 1–2%; the leaf
+search moved to the callers' failure paths and the arms out of line
+recovered two. The rest is bisected to the one calling arm the four
+instructions add to `vm::run`'s dispatch: a build whose arm calls nothing is
+level on all four, and one whose arm calls and discards the answer is not;
+aligning every jump target does not help; it reorders every block of
+`vm::run` and the `Flow` test after a send with it. Left open below.
 
 **The syntax is the specification's grammar** (2026-09-27 to 2026-09-28,
 decided with the user; [frontend.md](design/frontend.md), "Grammar"): every
@@ -68,10 +74,10 @@ semantic deviation that answers a correct program wrongly at exit status 0
 -- the synchronous `<-:`, set aside by the user until there are actors --
 as the first candidate of a section-by-section semantic audit of the
 specification, like the syntax one. Unbounded integers were set aside by the
-user (2026-09-28). Recovering the 1–3% the sending `goldens/bench/`
-fixtures lost to simultaneous slots, starting from the experiments
-[execution.md](design/execution.md)'s "What simultaneous slots cost"
-records.
+user (2026-09-28). Recovering the 4% `bench_megamorphic.ns` lost to
+the dispatch arm simultaneous slots add to `vm::run`, starting from the
+bisection [execution.md](design/execution.md)'s "What simultaneous slots
+cost" records.
 
 **The collections module is done** (2026-09-28;
 [ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md);

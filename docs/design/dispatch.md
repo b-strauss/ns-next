@@ -560,18 +560,19 @@ failure block, the `[^super …]` every kernel method writes:
 **A leaf that declines or raises has changed nothing.** Each one checks its
 operands before it writes anything — a register, a slot, an array element,
 the transcript — so running it again, or running again the instruction that
-sent it, is running it once. `builtins::execute` rests on this: it wraps
-every leaf (`execute_leaf`), and once a program has made one of §6.3.2's
-futures it looks for a future among the operands on exactly the paths where
-the leaf could not answer — it declined, raised, or, for identity and the
-equality leaves, answered `false` — and runs the leaf again on the values, or
-forces the future and runs the sending instruction again
-([object-model.md](object-model.md), "Where Rust sees a future"). A program
-that never made a future searches for none: it pays a test of the leaf's
-answer and, on those paths only, of one flag — and, today, the wrapper's
-own call around the leaf ([execution.md](execution.md), "What simultaneous
-slots cost"). A new leaf that writes before its last check breaks this
-silently.
+sent it, is running it once. The search for §6.3.2's futures rests on
+this: once a program has made one, the three ways a leaf runs —
+`mirror::execute_sent`, `send_inlined` and `execute_method` — look for a
+future among the operands on the path where the leaf could not answer, it
+declined or raised (`future::after_a_failed_leaf`), and run the leaf again
+on the values, or force the future and run the sending instruction again
+([object-model.md](object-model.md), "Where Rust sees a future"). Identity
+and the equality leaves, which answer `false` to a stranger, decline instead
+when that answer is `false` and an operand is a future, so the same path
+sees through it. A leaf that answers pays nothing, and a program that never
+made a future pays one flag test on those paths ([execution.md](execution.md),
+"What simultaneous slots cost"). A new leaf that writes before its last
+check breaks this silently.
 
 So a failure is Newspeak code, as in Cog, where a failing primitive falls
 into its method's body — whose code often sends the message on to `super`,

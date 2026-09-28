@@ -4311,18 +4311,30 @@ build-to-build outlier kind the pooling is for.
 ### What simultaneous slots cost
 
 Simultaneous slots ([object-model.md](object-model.md), "Simultaneous
-slots") added four instructions and their arms in `vm::run`, a
-`Continuation::Future` arm in `vm::finish`, a refusal path to
-`InitializeSlot`, and a wrapper around every leaf: `builtins::execute` now
-runs the leaf (`execute_leaf`), then tests the answer and
-`Mutator::futures_made` before handing it back, the search for a future out
-of line and cold (`see_through_after`). None of the four fixtures makes a
-future, so none runs any of that past the flag test; what they can pay is
-the shape of the code around it.
+slots") put three things on or beside the paths every program runs: four
+instructions in `vm::run`'s dispatch and a refusal branch in
+`InitializeSlot`'s arm; a `Continuation::Future` arm in `vm::finish`; and
+the search for a future among a leaf's operands. None of the four fixtures
+makes a future, so none runs any of it past a flag test. What they can pay
+is the shape of the code around it.
 
-**Measured 2026-09-28, `36ad885` against `0b1f474`** (the plan commit
-before Task 1; `36ad885`'s code is Task 8's `383f758` plus test-only and
-comment changes), by the protocol of "What removing the re-entries moved":
+**How it is built, after a first version measured 1–3% slower.** The
+first version wrapped every leaf: `builtins::execute` ran the leaf, then
+tested its answer and the flag before handing it back, which put a call and
+a 56-byte copy on every leaf. The search is now on the callers' failure
+paths only -- `mirror::execute_sent` and `send_inlined` before the failure
+block, `execute_method` before the method is activated -- behind
+`futures_made`, in a cold function (`future::after_a_failed_leaf`); the
+leaves that answer `false` to a stranger decline instead when an operand is
+a future (`future::declines_for_a_future`), so the same path sees through
+it. The four instructions share one arm of `vm::run` that makes one
+out-of-line call (`simultaneous_clause_instruction`), and `InitializeSlot`'s
+refusal is one call too (`initialize_slot_refused`); each reads its
+instruction back rather than passing its operands. Neither is marked
+`#[cold]`: that measured slower (below).
+
+**Measured 2026-09-28, `b0edda5` against `0b1f474`** (the plan commit
+before Task 1), by the protocol of "What removing the re-entries moved":
 three release builds of each with the pinned `RUSTFLAGS`, the second and
 third adding `-C metadata=buildb` and `-C metadata=buildc`, each in its own
 `--target-dir`; the base tree exported with `git archive` under the
@@ -4335,19 +4347,19 @@ Sitting 1:
 
 | Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
-| `bench_loop.ns` | 5.0525 | 5.0335 | 5.0314 | 5.1288 | 5.0638 | 5.2711 |
-| `bench_send.ns` | 6.4443 | 6.4309 | 6.4348 | 6.4734 | 6.5591 | 6.5254 |
-| `bench_block.ns` | 13.8554 | 13.9750 | 13.8622 | 14.2976 | 14.1897 | 14.3638 |
-| `bench_megamorphic.ns` | 9.2508 | 9.2752 | 9.0622 | 9.2670 | 9.5507 | 9.3081 |
+| `bench_loop.ns` | 5.2492 | 5.0058 | 5.2723 | 5.0955 | 5.0963 | 5.0526 |
+| `bench_send.ns` | 6.4715 | 6.5001 | 6.4662 | 6.4657 | 6.4646 | 6.6394 |
+| `bench_block.ns` | 13.9962 | 13.9744 | 14.0102 | 14.0767 | 14.0102 | 14.1150 |
+| `bench_megamorphic.ns` | 9.1590 | 9.1069 | 9.2045 | 9.5094 | 9.5205 | 9.6675 |
 
 Sitting 2:
 
 | Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
-| `bench_loop.ns` | 5.0813 | 5.0003 | 5.0027 | 5.0561 | 5.0999 | 4.9880 |
-| `bench_send.ns` | 6.4367 | 6.4028 | 6.3918 | 6.5474 | 6.5368 | 6.5518 |
-| `bench_block.ns` | 13.8643 | 13.9859 | 13.9960 | 14.1854 | 14.1717 | 14.1879 |
-| `bench_megamorphic.ns` | 9.0978 | 9.1068 | 9.0741 | 9.3432 | 9.2688 | 9.3583 |
+| `bench_loop.ns` | 5.0241 | 5.0530 | 5.0411 | 5.0489 | 5.0393 | 5.0936 |
+| `bench_send.ns` | 6.4690 | 6.5186 | 6.4848 | 6.5131 | 6.4569 | 6.4525 |
+| `bench_block.ns` | 14.0660 | 14.1051 | 14.0209 | 14.0611 | 14.1068 | 14.0048 |
+| `bench_megamorphic.ns` | 9.1352 | 9.1699 | 9.1412 | 9.5171 | 9.5157 | 9.5463 |
 
 Both sittings pooled (n = 30 rounds a side), in ms, and whether every
 round of the head lies outside every round of `0b1f474`'s, sitting by
@@ -4355,66 +4367,54 @@ sitting:
 
 | Source | Head mean | `0b1f474` mean | Change | Head median | `0b1f474` median | Change | Sitting 1 | Sitting 2 |
 |---|---|---|---|---|---|---|---|---|
-| `bench_loop.ns` | 5.1013 | 5.0336 | +1.34% | 5.0221 | 5.0211 | +0.02% | overlapping | overlapping |
-| `bench_send.ns` | 6.5323 | 6.4236 | +1.69% | 6.4997 | 6.4186 | +1.26% | overlapping | overlapping |
-| `bench_block.ns` | 14.2327 | 13.9231 | +2.22% | 14.1972 | 13.9292 | +1.92% | overlapping | overlapping |
-| `bench_megamorphic.ns` | 9.3494 | 9.1445 | +2.24% | 9.2958 | 9.0900 | +2.26% | overlapping | separated |
+| `bench_loop.ns` | 5.0710 | 5.1076 | -0.72% | 5.0818 | 5.0386 | +0.86% | overlapping | overlapping |
+| `bench_send.ns` | 6.4987 | 6.4850 | +0.21% | 6.4640 | 6.4813 | -0.27% | overlapping | overlapping |
+| `bench_block.ns` | 14.0624 | 14.0288 | +0.24% | 14.0692 | 14.0374 | +0.23% | overlapping | overlapping |
+| `bench_megamorphic.ns` | 9.5461 | 9.1528 | +4.30% | 9.5400 | 9.1528 | +4.23% | separated | separated |
 
-**Not level: the three fixtures that send are 1–2% slower.**
-`bench_loop.ns`, which sends nothing in its loop, is level -- its mean
-carries one head round of 6.28, its median has not moved. The other three
-are not, though every sitting but one overlaps: every head build's mean lies
-above every `0b1f474` build's for `bench_send.ns` (6.51–6.55 against
-6.41–6.44), `bench_block.ns` (14.18–14.28 against 13.86–13.98) and
-`bench_megamorphic.ns` (9.31–9.41 against 9.07–9.19), and the three
-sittings of the experiments below, which ran both trees again beside their
-own builds, put the head above `0b1f474` for those three fixtures each time
-(`bench_block.ns` +1.6% to +2.1%, `bench_megamorphic.ns` +2.2% to +3.3%).
-
+**Three fixtures are level; `bench_megamorphic.ns` is about 4% slower.**
 `dumpbin /disasm` of a release build with debug information
 (`CARGO_PROFILE_RELEASE_DEBUG=limited`, the same pinned flags): one
-`ns_runtime::vm::run` label, no `vm::run::closure`; **7,666 instructions
-against 6,983** at `0b1f474`, the four new arms and `InitializeSlot`'s
-refusal path inlined into it. `vm::finish` grew from 679 to 1,047.
-`builtins::execute`, 5,964 instructions at `0b1f474`, is now an 86-instruction
-wrapper -- eight callee-saved registers pushed, the leaf's 56-byte answer
-copied back -- around `execute_leaf` (6,093), and the flag test sits after
-the leaf's answer, as intended: a leaf that answers never reaches
-`see_through_after`. Every leaf a fixture runs (`at:` in
-`bench_megamorphic.ns`, `value` in `bench_block.ns`) now pays that call;
-where the wrapper is inlined, into `inline_cache::global_hit`, the function
-grew from 4,273 to 4,724 bytes.
+`ns_runtime::vm::run` label, no `vm::run::closure`; **7,083 instructions
+against 6,983** at `0b1f474`. `builtins::execute` is one function again,
+6,240 instructions against 5,964 (the equality leaves' decline test);
+`vm::finish` 1,047 against 679.
 
-Where it came from, by a single build of every commit of the plan (one
-sitting, five rounds, beside `0b1f474` and the head): `bench_loop.ns` stays
-within 1% throughout, and the other three step up at `29bbf9e`, the commit
-that added the four instructions' arms to `vm::run` (`bench_megamorphic.ns`
-+3.2%, `bench_send.ns` +1.5%, `bench_block.ns` +1.3%), and
-`bench_block.ns` again at `7aecd06`, the leaf wrapper (+2.6%). No fixture
-runs one of the new arms: their cost is the larger loop's register
-allocation and layout, the kind of shift a one-build comparison can
-exaggerate, which is why these numbers only locate it.
+**What the remaining 4% is.** Each variant below is three builds by the
+same protocol, measured in one sitting beside `0b1f474`'s three (means
+against it; the head's own sittings above are the reference):
 
-Three experiments, three builds each, each in one sitting beside both trees
-(means against `0b1f474`'s):
-
-| Experiment | loop | send | block | megamorphic |
+| Variant | loop | send | block | megamorphic |
 |---|---|---|---|---|
-| `Continuation::Future`'s arm moved out of `vm::finish` into a cold function | +0.57% | +0.52% | +1.99% | +3.64% |
-| the arms of `MakeFuture` and `ResolveFuture` and `InitializeSlot`'s refusal path moved out of line (`#[inline(never)]`) | -0.06% | +0.67% | +1.22% | +3.82% |
-| the leaf wrapper forced inline (`#[inline(always)]`) | +0.10% | +0.53% | +1.32% | +2.88% |
-| both of the last two | -2.40% | -1.17% | +0.47% | +3.38% |
+| the four arms and the refusal each out of line, marked `#[cold]` | +1.70% | +0.88% | +2.13% | +5.97% |
+| the same, not marked `#[cold]` | -1.49% | +1.42% | +0.28% | +3.78% |
+| the head, but the one arm answering `Flow::Next` and calling nothing (not a working build) | +0.30% | -0.89% | -0.82% | +1.56% |
+| the same, in four more sittings | -0.79% to +0.37% | -1.93% to +0.39% | -0.88% to +1.42% | -0.19% to +1.11% |
+| the head, its arm calling and discarding the answer (not a working build) | -0.58% | +1.24% | +1.08% | +3.04% |
+| the head with every jump target aligned to 64 bytes (`-align-all-nofallthru-blocks=6` on both sides) | +1.85% | +0.38% | -0.54% | +4.23% |
+| `InitializeSlot` and the four instructions in one arm, one call | +2.48% | +1.57% | +2.61% | +5.71% |
+| `0b1f474` with an unused function added to `vm.rs` | +0.55% | -0.56% | +0.30% | -0.16% |
 
-In those sittings the head measured -0.42% to +1.11% (loop), +0.60% to
-+4.38% (send, its top one outlier round of 7.59), +1.63% to +2.12% (block)
-and +2.20% to +3.31% (megamorphic). Moving `finish`'s arm out changed
-nothing. The last row brings `bench_loop.ns`, `bench_send.ns` and
-`bench_block.ns` back level, and leaves `bench_megamorphic.ns` about 3%
-slower -- the one fixture whose every iteration goes through the global
-cache's hit (`global_hit`) and a leaf -- so none of these was kept: none
-recovers all four, and the remaining cost is not located. **Open: recover
-the 1–3% on the sending fixtures**, starting from the last row and from
-what `global_hit` inlines of the leaf wrapper.
+Every other part of the change -- the leaves, the callers' failure paths,
+`InitializeSlot`'s refusal call, `vm::finish` -- is present in the
+"calling nothing" build, and it is level on all four. What costs
+`bench_megamorphic.ns` 3–5% is the one arm of `vm::run`'s dispatch that
+calls anything at all, whatever it calls and wherever it stands in the
+match. It is not alignment -- aligning every jump target leaves it -- and
+not the function's size. The jump table shows why it is so sensitive:
+the arm reorders LLVM's placement of every block of `vm::run` (the offsets
+of `SendLexical`'s and `SendPublic`'s arms move from 0x3e3 and 0x51d to
+0xc66 and 0x12a3), and the register assignment with it. An `xperf` profile
+(0.12 ms sampling, 300 runs of the fixture a binary) puts the difference
+inside `vm::run` (19,022 samples against 18,362 for the "calling nothing"
+build and 18,258 for `0b1f474`) and in `decide_slot_accessor` (775 against
+516 and 652). In the slower build the block that tests the `Flow` a send
+answered -- read back from the stack, where every send writes it -- is a
+chain of compares that tests `Next` last, where the faster one tests
+`Switch` and branches away; every send of this fixture's loop answers
+`Next`. Why one more calling arm moves that block, and how to keep it in
+place -- a `Flow` answered in registers, for one -- is **open**, and the
+fixture stays about 4% slower until it is found.
 
 ## The trampoline
 
