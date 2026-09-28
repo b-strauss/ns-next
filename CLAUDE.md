@@ -341,7 +341,7 @@ handle — a guard id, `Rc`s and numbers; the defining class is recomputed per h
 it survives a move and cannot reach another heap. Anything the key does not cover is
 read afresh in `act` on every send, never trusted from the entry; today that is
 `ClassData.builtin`, which `instantiate::decide_factory` reads off the receiver to
-tell `Array` and `OrderedCollection` from an ordinary instance, a primitive's
+tell `Array` from an ordinary instance, a primitive's
 payload check, which `builtins::execute` re-runs. A class object's own `class`
 field is no such read: it is its metaclass, whose instances id is the guard, so
 the key covers it. A kernel method's fast path is decided the same way:
