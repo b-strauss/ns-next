@@ -224,7 +224,9 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 literal,
             } => match make_value(mutator, activation, literal) {
                 Ok(value) => {
-                    write_local(&mut mutator.heap, activation, *destination, value);
+                    mutator
+                        .heap
+                        .set_register(register_base, *destination, value);
                     program_counter += 1;
                     continue;
                 }
@@ -232,14 +234,18 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             },
             Instruction::LoadSelf { destination } => {
                 let value = mutator.heap.activation_receiver(activation);
-                write_local(&mut mutator.heap, activation, *destination, value);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
                 program_counter += 1;
                 continue;
             }
             Instruction::LoadEnclosingObject { destination, depth } => {
                 let value =
                     crate::interpreter::sends::enclosing_object(mutator, activation, *depth);
-                write_local(&mut mutator.heap, activation, *destination, value);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
                 program_counter += 1;
                 continue;
             }
@@ -251,8 +257,10 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 source,
                 slot: destination,
             } => {
-                let value = read_local(&mutator.heap, activation, *source);
-                write_local(&mut mutator.heap, activation, *destination, value);
+                let value = mutator.heap.register(register_base, *source);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
                 program_counter += 1;
                 continue;
             }
@@ -262,7 +270,9 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 index,
             } => {
                 let value = read_outer_local(&mutator.heap, activation, *depth, *index);
-                write_local(&mut mutator.heap, activation, *destination, value);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
                 program_counter += 1;
                 continue;
             }
@@ -271,7 +281,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 depth,
                 index,
             } => {
-                let value = read_local(&mutator.heap, activation, *source);
+                let value = mutator.heap.register(register_base, *source);
                 write_outer_local(&mut mutator.heap, activation, *depth, *index, value);
                 program_counter += 1;
                 continue;
@@ -283,11 +293,12 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 destination,
                 call_site,
             } => {
-                let receiver = read_local(&mutator.heap, activation, *receiver_register);
+                let receiver = mutator.heap.register(register_base, *receiver_register);
                 let family_size = code.family_size;
                 send(
                     mutator,
                     activation,
+                    register_base,
                     program_counter,
                     argument_registers,
                     *destination,
@@ -318,10 +329,11 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 destination,
                 ..
             } => {
-                let receiver = read_local(&mutator.heap, activation, *receiver_register);
+                let receiver = mutator.heap.register(register_base, *receiver_register);
                 send(
                     mutator,
                     activation,
+                    register_base,
                     program_counter,
                     argument_registers,
                     *destination,
@@ -343,13 +355,13 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 destination,
                 failure,
             } => {
-                let mirror = read_local(&mutator.heap, activation, *mirror_register);
-                let subject = read_local(&mutator.heap, activation, *subject_register);
+                let mirror = mutator.heap.register(register_base, *mirror_register);
+                let subject = mutator.heap.register(register_base, *subject_register);
                 let mut arguments = mutator.take_argument_buffer();
                 arguments.extend(
                     argument_registers
                         .iter()
-                        .map(|register| read_local(&mutator.heap, activation, *register)),
+                        .map(|register| mutator.heap.register(register_base, *register)),
                 );
                 mutator
                     .heap
@@ -363,6 +375,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     deliver(
                         mutator,
                         activation,
+                        register_base,
                         decided,
                         &arguments,
                         *destination,
@@ -388,6 +401,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 send(
                     mutator,
                     activation,
+                    register_base,
                     program_counter,
                     argument_registers,
                     *destination,
@@ -418,6 +432,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 send(
                     mutator,
                     activation,
+                    register_base,
                     program_counter,
                     argument_registers,
                     *destination,
@@ -457,7 +472,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 }
                 let copied_values = copied
                     .iter()
-                    .map(|register| read_local(&mutator.heap, activation, *register))
+                    .map(|register| mutator.heap.register(register_base, *register))
                     .collect();
                 let value = Value::Object(mutator.new_closure(ClosureData {
                     code: block.clone(),
@@ -468,7 +483,9 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     // this costs no extra load.
                     feedback_base,
                 }));
-                write_local(&mut mutator.heap, activation, *destination, value);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
                 program_counter += 1;
                 continue;
             }
@@ -478,16 +495,20 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             } => {
                 let values = element_registers
                     .iter()
-                    .map(|register| read_local(&mutator.heap, activation, *register))
+                    .map(|register| mutator.heap.register(register_base, *register))
                     .collect();
                 let value = Value::Object(mutator.new_array(values));
-                write_local(&mut mutator.heap, activation, *destination, value);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
                 program_counter += 1;
                 continue;
             }
             Instruction::MakeVector { destination, size } => {
                 let value = Value::Object(mutator.new_array(vec![Value::Nil; *size as usize]));
-                write_local(&mut mutator.heap, activation, *destination, value);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
                 program_counter += 1;
                 continue;
             }
@@ -497,7 +518,9 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 index,
             } => match load_vector(&mutator.heap, activation, *vector, *index) {
                 Ok(value) => {
-                    write_local(&mut mutator.heap, activation, *destination, value);
+                    mutator
+                        .heap
+                        .set_register(register_base, *destination, value);
                     program_counter += 1;
                     continue;
                 }
@@ -518,7 +541,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 // `own_index` is relative to the executing mixin's own slots; the
                 // activation's slot base, its `current_class`'s own, turns it into
                 // this instance's absolute field index.
-                let value = read_local(&mutator.heap, activation, *source);
+                let value = mutator.heap.register(register_base, *source);
                 let receiver = mutator.heap.activation_receiver(activation);
                 let base = mutator.heap.activation_slot_base(activation);
                 // §3.1.1's rule about what a value's slot may hold is decided in
@@ -577,11 +600,11 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 &mut handoff,
             ),
             Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
-                let value = read_local(&mutator.heap, activation, *register);
+                let value = mutator.heap.register(register_base, *register);
                 finish(mutator, activation, value, floor, &mut handoff)
             }
             Instruction::NonLocalReturn { register } => {
-                let value = read_local(&mutator.heap, activation, *register);
+                let value = mutator.heap.register(register_base, *register);
                 mutator
                     .heap
                     .set_activation_program_counter(activation, program_counter);
@@ -591,7 +614,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             Instruction::Jump { target } => jump_to!(*target),
             Instruction::JumpIfNotBoolean { register, target } => {
                 if matches!(
-                    read_local(&mutator.heap, activation, *register),
+                    mutator.heap.register(register_base, *register),
                     Value::Boolean(_)
                 ) {
                     program_counter += 1;
@@ -601,7 +624,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             }
             Instruction::BranchIfFalse { register, target } => {
                 if matches!(
-                    read_local(&mutator.heap, activation, *register),
+                    mutator.heap.register(register_base, *register),
                     Value::Boolean(false)
                 ) {
                     jump_to!(*target)
@@ -611,7 +634,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             }
             Instruction::BranchIfTrue { register, target } => {
                 if matches!(
-                    read_local(&mutator.heap, activation, *register),
+                    mutator.heap.register(register_base, *register),
                     Value::Boolean(true)
                 ) {
                     jump_to!(*target)
@@ -633,8 +656,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 right,
                 target,
             } => {
-                let left_value = read_local(&mutator.heap, activation, *left);
-                let right_value = read_local(&mutator.heap, activation, *right);
+                let left_value = mutator.heap.register(register_base, *left);
+                let right_value = mutator.heap.register(register_base, *right);
                 let (Value::SmallInteger(left_integer), Value::SmallInteger(right_integer)) =
                     (left_value, right_value)
                 else {
@@ -670,7 +693,9 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 };
                 match result {
                     Some(value) => {
-                        write_local(&mut mutator.heap, activation, *destination, value);
+                        mutator
+                            .heap
+                            .set_register(register_base, *destination, value);
                         program_counter += 1;
                         continue;
                     }
@@ -726,6 +751,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
 fn send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    register_base: RegisterBase,
     program_counter: usize,
     argument_registers: &[u16],
     destination: u16,
@@ -738,7 +764,7 @@ fn send<'gc>(
     arguments.extend(
         argument_registers
             .iter()
-            .map(|register| read_local(&mutator.heap, activation, *register)),
+            .map(|register| mutator.heap.register(register_base, *register)),
     );
     mutator
         .heap
@@ -747,6 +773,7 @@ fn send<'gc>(
     let transfer = deliver(
         mutator,
         activation,
+        register_base,
         decided,
         &arguments,
         destination,
@@ -767,6 +794,7 @@ fn send<'gc>(
 fn deliver<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    register_base: RegisterBase,
     decided: Result<Step<'gc>, Signal<'gc>>,
     send_arguments: &[Value<'gc>],
     destination: u16,
@@ -776,7 +804,7 @@ fn deliver<'gc>(
 ) -> Transfer {
     match decided {
         Ok(Step::Value(value)) => {
-            write_local(&mut mutator.heap, activation, destination, value);
+            mutator.heap.set_register(register_base, destination, value);
             Transfer::Next
         }
         Ok(step) => match mutator.push_step(step, send_arguments, Some(activation), inlinable) {
