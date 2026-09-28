@@ -136,6 +136,48 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     });
 }
 
+/// `do:` walks the elements it read when it started, not the live payload:
+/// a write inside the block through `at:put:` is not seen by a later step of
+/// the same walk, even though the live array holds it once the walk ends.
+/// Pins `builtins/collections.rs`'s `do_step`, which reads
+/// `Heap::array_elements` once, before the first element's activation, and
+/// stores the clone in `DoLoop` -- the walk never re-reads the receiver.
+/// `goldens/collections/do_visits_the_elements_a_list_held_when_it_started`
+/// pins the same invariant for `List>>do:`, a Newspeak loop that never
+/// reaches this leaf, so it cannot stand in for this test.
+#[test]
+fn do_walks_a_snapshot_of_its_receiver() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = (
+            | a sum |
+            a:: {1. 2. 3}.
+            sum:: 0.
+            a do: [:x | a at: 3 put: 99. sum:: sum + x].
+            ^sum * 1000 + (a at: 3)
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
+    let result = expect_ok(
+        result,
+        "do: over an array the block mutates through at:put:",
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&result) {
+        // 6099 = (1 + 2 + 3) * 1000 + 99: the walk summed the three original
+        // elements, unaffected by the `at:put:` inside it, and the live
+        // array's third slot holds 99 afterward -- the write took effect,
+        // the walk just never saw it.
+        Value::SmallInteger(6099) => {}
+        other => panic!("expected 6099, got {}", mutator.heap().describe(&other)),
+    });
+}
+
 #[test]
 fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     // `not_an_integer`'s message must not `{:?}`-format the argument: a

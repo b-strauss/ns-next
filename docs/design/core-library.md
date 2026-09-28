@@ -846,7 +846,7 @@ and loosening any one of them lets a program claim every primitive:
   declares exactly one slot, the immutable `vmMirror`, and that after
   instantiation it holds the mirror (`interpreter::kernel`), and that
   `PlatformFactory`'s `vmMirror` is an immutable, eager slot holding it
-  (`interpreter::core_library`); and no program reaches either module's
+  (`interpreter::core_library`); and no program reaches any shipped module's
   root instance or root class (the factory pattern, "The platform" above),
   so no program can make another root instance, and every object whose
   code sends to `vmMirror` reaches the one the bootstrap checked.
