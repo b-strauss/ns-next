@@ -442,3 +442,34 @@ fn a_chain(interpreter: &mut Interpreter, holder: &Root, last: &str) -> Root {
     }
     next
 }
+
+ns_runtime::for_each_lowering! {
+    /// A collection replaces a resolved future with its value in every
+    /// object field (`docs/design/memory.md`, "A resolved future is traced
+    /// as its value"), so an array a future escaped into holds the value
+    /// itself afterwards -- and the future, reachable from nothing else, is
+    /// collected. Debug builds only: `collect_now` is a test hook of theirs.
+    #[cfg(debug_assertions)]
+    fn a_collection_replaces_a_resolved_future_in_an_array(lowering) {
+        let (mut interpreter, holder) = a_holder(lowering);
+        let future = a_future(&mut interpreter, &holder, "three");
+        let four = interpreter.stash(Value::SmallInteger(4));
+        let _ = expect_ok(interpreter.send(&future, Symbol::intern("+"), &[four]), "force it");
+        let array = interpreter.enter(|mutator| {
+            let future = mutator.fetch(&future);
+            let array = mutator.new_array(vec![future]);
+            mutator.stash(Value::Object(array))
+        });
+        drop(future);
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            let Value::Object(array) = mutator.fetch(&array) else {
+                panic!("an array");
+            };
+            assert!(matches!(
+                mutator.heap().array_at(array, 0),
+                Some(Value::SmallInteger(3))
+            ));
+        });
+    }
+}

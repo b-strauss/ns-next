@@ -269,6 +269,16 @@ impl<'gc> Mutator<'gc> {
     }
 }
 
+/// Replaces every resolved future an object field holds with its value, for
+/// a collection about to mark (`World::collect`). `Heap::replace_resolved_futures`
+/// says why registers and host roots keep theirs. Answers the count.
+pub(crate) fn replace_resolved_futures(mutator: &mut Mutator<'_>) -> usize {
+    let future_class = mutator.builtin_class(BuiltinClass::Future);
+    mutator
+        .heap
+        .replace_resolved_futures(future_class, COMPUTATION_FIELD, STATE_FIELD, RESOLVED)
+}
+
 /// Forces `future`: its value when it is resolved, its block's activation
 /// under `Continuation::Future` when it is not, and §6.3.2's error when it
 /// is already being computed.

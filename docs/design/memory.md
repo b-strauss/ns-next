@@ -649,11 +649,32 @@ rest of the object. Its four bytes are paid for by boxing a class object's
 data (`ObjectData::Class(Box<ClassData>)`), so an `Object` is still 56 bytes
 in a release build and the amplification figures below did not move there.
 
-**Planned: a resolved future is traced as its value.** Would change: the
-tracer replaces a reference to a resolved future of a simultaneous slot
-clause with its value in every object field, never in a register or a host
-root, so a resolved future lives at most until the next collection
-([object-model.md](object-model.md), "Planned: simultaneous slots").
+**A resolved future is traced as its value.** Before it marks, a collection
+(`World::collect`) rewrites every object field that holds a resolved future
+of a simultaneous slot clause to hold its value instead
+(`Heap::replace_resolved_futures`, called through
+`interpreter::future::replace_resolved_futures`): an instance's and an
+array's fields -- an indirection vector is an `Array` -- and a closure's
+copied values. A class object holds no `Value` a future could stand in, a
+string or symbol none at all, and an `Activation` object only a frame. The
+marker then finds a future that only object fields reached unreachable, and
+the compaction reclaims it. A resolved future's value is never itself a
+future (`Mutator::future_computed` follows a future of a future before it
+records one), so one pass leaves none behind.
+
+Registers and host roots are exempt -- a reified frame's, the activation
+stack's, and every `Root`. The `Future`'s own `doesNotUnderstand:`, whose
+activation forced it and is still returning its answer, runs with the
+future as `self` -- a register that must keep naming an instance of the
+class whose method runs -- and a host that holds the future holds that
+object and may ask for its state; rewriting either would change what they
+read. A future held there
+survives the collection and is replaced by the first one after it lets go,
+so a resolved future lives at most until then. The walk is gated on
+`Mutator::futures_made`, so a program that never made a future pays nothing
+for it, and the move stress mode (`World::move_everything`) does not
+replace: moving is not collecting ([object-model.md](object-model.md),
+"Planned: simultaneous slots").
 
 ### The move stress mode
 
