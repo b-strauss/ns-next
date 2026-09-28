@@ -755,9 +755,11 @@ until the program has made one.
   failure path of the three ways a leaf runs — `mirror::execute_sent` (a
   send to the mirror), `send_inlined` (`SendMirror`) and `execute_method` (a
   primitive method): the leaf declined or raised — and only once
-  `futures_made` is set, in a cold function
-  (`future::after_a_failed_leaf`); `builtins::execute` itself is the plain
-  dispatch to the leaf. A resolved one is replaced by its value and
+  `futures_made` is set: `future::after_a_failed_leaf`, inlined into each
+  caller, is that flag test and nothing more, and the search itself is the
+  cold `see_through_a_failed_leaf` behind it (`send_inlined` tests the flag
+  itself and goes to the cold `mirror::see_through_a_failed_row`);
+  `builtins::execute` itself is the plain dispatch to the leaf. A resolved one is replaced by its value and
   the leaf runs again, in Rust. An unresolved one cannot be forced in Rust,
   since nothing re-enters the loop: the answer is a step that activates the
   future's block under `Continuation::Future` with `AfterForcing::Reexecute`,

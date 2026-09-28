@@ -4324,10 +4324,13 @@ tested its answer and the flag before handing it back, which put a call and
 a 56-byte copy on every leaf. The search is now on the callers' failure
 paths only -- `mirror::execute_sent` and `send_inlined` before the failure
 block, `execute_method` before the method is activated -- behind
-`futures_made`, in a cold function (`future::after_a_failed_leaf`); the
-leaves that answer `false` to a stranger decline instead when an operand is
-a future (`future::declines_for_a_future`), so the same path sees through
-it. The four instructions share one arm of `vm::run` that makes one
+`futures_made`: `future::after_a_failed_leaf`, inlined into each caller,
+is the flag test, and the search is the cold function behind it
+(`see_through_a_failed_leaf`; `send_inlined` tests the flag itself and goes
+to the cold `mirror::see_through_a_failed_row`); the leaves that answer
+`false` to a stranger decline instead when an operand is a future
+(`future::declines_for_a_future`), so the same path sees through it. The
+four instructions share one arm of `vm::run` that makes one
 out-of-line call (`simultaneous_clause_instruction`), and `InitializeSlot`'s
 refusal is one call too (`initialize_slot_refused`); each reads its
 instruction back rather than passing its operands. Neither is marked

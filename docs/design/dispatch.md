@@ -569,9 +569,10 @@ on the values, or force the future and run the sending instruction again
 ([object-model.md](object-model.md), "Where Rust sees a future"). Identity
 and the equality leaves, which answer `false` to a stranger, decline instead
 when that answer is `false` and an operand is a future, so the same path
-sees through it. A leaf that answers pays nothing, and a program that never
-made a future pays one flag test on those paths ([execution.md](execution.md),
-"What simultaneous slots cost"). A new leaf that writes before its last
+sees through it. A leaf that answers pays nothing — but for those equality
+leaves, which pay one flag test when they answer `false` — and a program
+that never made a future pays one flag test on those paths
+([execution.md](execution.md), "What simultaneous slots cost"). A new leaf that writes before its last
 check breaks this silently.
 
 So a failure is Newspeak code, as in Cog, where a failing primitive falls
