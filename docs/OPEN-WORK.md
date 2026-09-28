@@ -242,10 +242,12 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 ## Open design questions
 
-- **`become:` on a value object.** §3.1.1 gives a value no identity, so
-  `become:` on one would make identity observable, yet a MirrorBuilder
-  migrating a value class's instances needs something in its place: refuse,
-  or treat values as `become:`'s reflective exception. Not decided.
+- **A program's own `become:` on a value object.** §3.1.1 gives a value no
+  identity and lets it be copied freely, across actors too, so a program's
+  `become:` on one would reach only the references in its own heap and leave
+  copies elsewhere unchanged. Editing a value class is not affected: its
+  instances migrate inside the VM, which no program can observe. Refuse, or
+  admit values as `become:`'s reflective exception: not decided.
   [object-model.md](design/object-model.md), "Open: `become:` on a value
   object".
 
@@ -388,7 +390,9 @@ reachable only from a crafted artifact.
   safe output, accepted; it stays safe because every access is bounds-checked
   per object, today per `Vec` and in the planned object space against the
   object's own word count ([memory.md](design/memory.md), "Planned: the
-  object space"). [image-format.md](design/image-format.md).
+  object space"). The register-less pairing disappears with road step 3,
+where every reified frame carries its full register file on the wire.
+[image-format.md](design/image-format.md).
 - **The memory bound under a crafted artifact** is proportional but large,
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.

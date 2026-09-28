@@ -1480,7 +1480,9 @@ its variable part in a separate Rust allocation, and becomes a run of words
 in one space -- a header word, a class word, then its fields -- addressed by
 its byte offset. Road step 3; the space, its
 allocation and its collector are [memory.md](memory.md), "Planned: the
-object space". Decided with the user on 2026-09-29.
+object space". The header word plus class word (option A), frames as heap
+objects and strings in two widths were decided with the user on 2026-09-29;
+the rest is derived.
 
 ```
 [header word][class word][field 1][field 2] ...     8-byte aligned, at least 16 bytes
@@ -1514,9 +1516,10 @@ verbatim").
 
 **Application ids are 22 bits wide** as well. Running out keeps today's
 rule: an application without an id runs uncached ([dispatch.md](dispatch.md),
-"The dispatch id"). An application id is reclaimed once no class object, no
-inline-cache entry and no application-cache key names it, and a mixin id
-once no application and no application-cache key names it; the collector can
+"The dispatch id"). An application id is reclaimed once no class object, no inline-cache or
+global-cache entry (its guard, or a `Lexical` key's application id) and no
+application-cache entry, key or value, names it, and a mixin id once no
+application and no application-cache entry, key or value, names it; the collector can
 tell both, so reusing an id is safe.
 
 **The class word** is an ordinary value naming the object's class object.
@@ -1589,7 +1592,7 @@ registers into it stays decided per activation from the block's
 debugger and edit-and-continue find room for the registers in every reified
 frame; edit-and-continue adding locals makes a new frame object and
 re-marries the activation, the VM rewriting references to the old frame
-itself rather than through `become:`. The cost is a few more words per
+itself, by a walk of the whole heap, since frames are never forwarded. The cost is a few more words per
 reified frame, and `bench_block.ns`, which reifies a frame per iteration, is
 the workload that shows it.
 While a frame is married its registers live on the stack and the trace skips
@@ -1642,44 +1645,77 @@ forwarders. Road step 5.
 `become:` turns the old object into a forwarder: the forwarded format, the
 target in its class word, and a reserved application id -- one of the 22-bit
 ids -- that is never any send's guard, so every send to a forwarder misses
-its inline cache. The miss
-path, in `interpreter/`, follows the forwarder and cleans up the receiver,
-the stack and the registers, as Spur's `handleForwardedSendFaultForTag:`
-does; the scavenger and the compaction rewrite every reference they meet to
-the target, and the forwarder is garbage afterwards. The scavenger tells its
-own mark from `become:`'s: a forwarded object in from-space is one it has
-already copied, while a `become:` forwarder it meets is followed to its
-target, which it scavenges in turn; marking likewise follows a forwarder to
-its target. A forwarder can also be
-met without a send: `==` follows forwarders when its two handles differ, and
-a leaf that meets one in an argument fails and is retried after following it,
-as Spur's primitives unforward their arguments on failure. An immediate has
-no object to forward, and `become:` refuses one, as Spur does. It also
-refuses the objects the VM reads structurally rather than through sends --
-class objects, whose fields lookup and `outer` read, closures, whose captured
-frame the VM reads, and frame objects, whose sender and home the unwinder
-reads -- so only instances, arrays, strings and the like are ever forwarded,
-and those structural reads need no check. After a `become:` the VM follows
-forwarders eagerly in the activation stack's registers and receivers, as
-Spur's post-become action does; what is left to meet one lazily is a field
-read, handled by the send miss path, `==` and the leaves as above.
-Edit-and-continue does not use `become:` to grow a live activation's frame
-("Planned: the object layout" above). Both one-way and
-two-way `become:`, each with the choice whether the identity hash moves with
-the identity (Spur's `become:with:twoWay:copyHash:`). The eager
-alternative walks the whole heap on every `become:`: Primordial Soup's
-one-way `Heap::BecomeForward` (`prior-art/primordialsoup/vm/heap.cc:1072`)
-and Strongtalk's two-way `oopPrimitives::become`, which also deoptimizes
-every process first (`prior-art/strongtalk/vm/prims/oop_prims.cpp:60-77`). It is reached as a leaf on the VM mirror, which is what the
-MirrorBuilder in [liveness-and-reflection.md](liveness-and-reflection.md)
-needs to add or remove slots of a class with live instances: allocate the
-new-shape instances, copy the fields, forward the old ones.
+its inline cache. The send path follows a forwarded receiver in the shared
+lookup (`interpreter/resolve.rs`, the `decide_*` entries), which both the
+inline caches' miss path and the reference lowering call, so the two
+lowerings cannot diverge; it cleans up the receiver, the stack and the
+registers, as Spur's `handleForwardedSendFaultForTag:` does. The scavenger
+and the compaction rewrite every reference they meet to the target, and the
+forwarder is garbage afterwards.
 
-**Open: `become:` on a value object.** §3.1.1 gives a value no identity, so
-`become:` on one would make identity observable where the specification says
-there is none, yet a MirrorBuilder migrating a value class's instances needs
-something in its place. Whether `become:` refuses value objects or treats
-them as its reflective exception is not decided.
+**One forwarding rule for both causes.** A reference to a forwarded object is
+followed along the whole chain, whatever made each link -- `become:` or the
+scavenger -- and the object at its end is copied unless it already lies in
+the survivor space being filled, as Spur's `scavengeReferentsOf:` does
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:43278`: "a forwarding
+pointer could be because of become: or scavenging"). Marking likewise
+follows a forwarder to its target.
+
+**Where a forwarder can be met.** Every heap accessor reads the object's
+header anyway, for the per-object bounds check; a forwarder's format sends
+it down a cold path that follows the forwarder, so every structural read --
+a class word read by the value-condition check, the derived equality and
+hash walks, the image encoder, `Heap::describe`, a host root -- sees the
+target. After a `become:` the VM also follows forwarders eagerly in the
+activation stack's registers and receivers, in the host roots and in the
+values `Mutator` holds, as Spur's post-become action does. `==` follows
+forwarders when its two handles differ, and a leaf that meets one in an
+argument fails and is retried after following it -- inside
+`interpreter::mirror::send_inlined` and `builtins::execute`, before a
+`SendMirror`'s failure block is taken -- as Spur's primitives unforward
+their arguments on failure.
+
+**What `become:` refuses.** An immediate has no object to forward, and
+`become:` refuses one, as Spur does. It also refuses the objects the VM reads
+structurally on its hottest paths -- class objects, whose fields lookup and
+`outer` read, closures, whose captured frame the VM reads, and frame
+objects, whose sender and home the unwinder reads -- and symbols, whose
+canonicity §5.1.6 requires and which the weak symbol table reads. So only
+instances and arrays are ever forwarded, and value objects (strings, large
+integers, boxed floats) only if the open question below admits them.
+
+**Everything stays editable.** The refusal is of a program's own `become:`,
+not of editing. A class object keeps its identity when its class is edited:
+the VM writes its fields -- a new application id when methods or slots
+change, a new superclass, a new value refusal -- and every reference to it
+stays valid; when the slots change, its instances migrate by allocating the
+new shape, copying the fields and forwarding the old instances with
+`become:`, which instances admit. A live frame gains locals through a new
+frame object with the new register count, the activation re-married to it,
+and a whole-heap walk by the VM rewriting every reference to the old frame,
+since frames are never forwarded ("Planned: the object layout" above).
+Closures keep their old code, as in Smalltalk, and new ones get the new code.
+Editing a value class migrates its instances the same way, inside the VM,
+which no program can observe, since a value has no identity.
+
+Both one-way and two-way `become:`, each with the choice whether the
+identity hash moves with the identity (Spur's
+`become:with:twoWay:copyHash:`). The eager alternative walks the whole heap
+on every `become:`: Primordial Soup's one-way `Heap::BecomeForward`
+(`prior-art/primordialsoup/vm/heap.cc:1072`) and Strongtalk's two-way
+`oopPrimitives::become`, which also deoptimizes every process first
+(`prior-art/strongtalk/vm/prims/oop_prims.cpp:60-77`). It is reached as a
+leaf on the VM mirror, which is what the MirrorBuilder in
+[liveness-and-reflection.md](liveness-and-reflection.md) needs to add or
+remove slots of a class with live instances.
+
+**Open: `become:` on a value object.** §3.1.1 gives a value no identity and
+lets it be copied freely, across actors too, so a program's own `become:` on
+one would reach only the references in its own heap and leave copies
+elsewhere unchanged, making the value differ from itself. The VM-internal
+migration of a value class's instances is part of the design above; whether
+a program's own `become:` refuses value objects or admits them is not
+decided.
 
 ## Decisions
 
@@ -1751,9 +1787,10 @@ them as its reflective exception is not decided.
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
-- **The value will be one tagged 64-bit word, with Spur's tags, unbounded
-  integers and immediate floats in Spur's range** (planned; first noted with
-  the user on 2026-09-28, decided on 2026-09-29; "Planned: an eight-byte value" above).
+- **The value will be one tagged 64-bit word with unbounded integers through
+  `LargeInteger`** (planned; first noted with the user on 2026-09-28, decided
+  on 2026-09-29; "Planned: an eight-byte value" above). Spur's tags and the
+  immediate floats in Spur's range are derived.
   It lands on today's arena, before the object layout, so each step is
   checked against the goldens on its own.
 - **An object will be a header word, a class word and its fields** (planned;
@@ -1765,6 +1802,7 @@ them as its reflective exception is not decided.
 - **Strings will store code points in one of two widths**, Latin-1 or 32
   bits, with UTF-8 only at the boundaries (planned; decided with the user on
   2026-09-29; "Planned: the object layout" above).
-- **Reified frames, closures and class objects will become heap objects** in
-  the same space, and the frame arena will go (planned; decided with the user
-  on 2026-09-29).
+- **Reified frames will become heap objects** in the same space, and the
+  frame arena will go (planned; decided with the user on 2026-09-29).
+  Closures and class objects follow them there, a derived part of the same
+  layout.

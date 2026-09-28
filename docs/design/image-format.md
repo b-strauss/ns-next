@@ -635,7 +635,10 @@ register-less frame; the reads then answer `nil` and the writes are dropped
 Tightening the check is not available: nothing on the wire distinguishes a
 legitimately register-less frame from a crafted one. It is the same class as
 the `own_index` gap below — wrong but safe output from a mutated program,
-never a panic.
+never a panic. Under the planned object layout the gap closes: every reified frame has
+room for its registers and the encoder writes its full register file, so a
+frame record's register file must match its body and `verify_graph` can
+refuse one that does not ("Planned: the image under the new representation" below).
 
 **`Instruction::InitializeSlot`'s and `ReturnSlotIfFilled`'s `own_index` is not
 one of the counts these passes bound.** `verify_mixins` checks a body's kind and
@@ -1157,7 +1160,10 @@ which is old space's bytes relocated on load, is the model this does not take.
   answers a SmallInteger when the value fits 61 bits and a `LargeInteger`
   otherwise. An integer beyond the `i64` range, as a value and as a literal,
   takes a new value tag and a new literal tag, each the next free number when
-  it lands, carrying a sign and its 64-bit digits. Since every integer
+  it lands, carrying a sign and its 64-bit digits. The decoder refuses a
+  `LargeInteger` that is not normalized -- one that fits 61 bits, one with a
+  zero top digit, a negative zero -- so every integer keeps exactly one
+  representation. Since every integer
   literal is then representable, the malformed-integer literal tag 8
   (`Literal::MalformedInteger`) retires.
 - **Floats** stay `VALUE_FLOAT`, an `f64` on the wire, and the decoder answers
@@ -1172,7 +1178,11 @@ which is old space's bytes relocated on load, is the model this does not take.
   record becomes an object id. `OBJECT_ACTIVATION` (9), whose body is one
   frame id, retires into the new frame object tag, since a kernel-private
   `Activation` is then the frame object itself. The frame's kind stays a field
-  of the frame object and keeps its `FRAME_*` kind tags.
+  of the frame object and keeps its `FRAME_*` kind tags. The encoder writes
+  every frame's full register file, `nil` where no value was copied, since
+  every reified frame has room for its registers, so a frame record's count
+  is its size like any other record's and the register-less frame record of
+  today goes.
 - **The decoder learns each record's size before it allocates.** A placeholder
   per record, allocated before any record is read, assumes a fixed size; in a
   space of variably sized objects the first pass parses each record's body,

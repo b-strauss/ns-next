@@ -1001,7 +1001,7 @@ monomorphic site or a block already holds — possible only when that entry
 could not be rebuilt for this receiver, which only a crafted image causes —
 replaces that entry rather than taking a second slot. That is Strongtalk's
 and V8's shape, with V8's width. Beyond the speed of a polymorphic hit, a
-site's entries are the receiver-type profile the optimizing tiers of M5–M6
+site's entries are the receiver-type profile the optimizing JIT (road step 9)
 will read, which is what Strongtalk's interpreter caches are for. Two kinds
 of site go polymorphic only when a mixin is applied more than once: a `super`
 send, whose target depends only on the running method's application, and a
@@ -1478,9 +1478,10 @@ from a table indexed by its tag, and for the constant tag by the constant,
 since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the ids can run
 out where today's `u32` counter practically cannot; running out keeps
 today's rule, an application without an id running uncached (`NONE`, "The
-dispatch id" above). An application id is reclaimed once no class object, no
-inline-cache entry and no application-cache key names it, and a mixin id
-once no application and no application-cache key names it, which the
+dispatch id" above). An application id is reclaimed once no class object, no inline-cache or
+global-cache entry (its guard, or a `Lexical` key's application id) and no
+application-cache entry, key or value, names it, and a mixin id once no
+application and no application-cache entry, key or value, names it, which the
 collector can tell.
 
 ### Considered and rejected

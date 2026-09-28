@@ -88,12 +88,13 @@ it outside that mode and the tests yet, since nothing mutates a method table
 at run time. Scoping an invalidation to
 the applications a change affects comes with the first mutation that needs
 it. The dispatch id a cache guards on is a copy in the object header
-([dispatch.md](dispatch.md), "The dispatch id"), so `become:` must exchange
-it along with the class, and a class change must restamp it, as
+([dispatch.md](dispatch.md), "The dispatch id"), so `become:` must not let a stale guard hit, and a class change must
+restamp it, as
 `Heap::set_class_application` already does when a class's application
 changes; otherwise a cache hit would run the old class's method on the
-object. The planned `become:` meets that by construction: a forwarder
-carries a reserved id that no guard holds, so every send to one misses
+object. The planned forwarder meets the first by construction: it carries a
+reserved id that no guard holds, so every send to one misses, and the target
+keeps its own id
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders", road step 5).
 

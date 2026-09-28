@@ -5643,28 +5643,27 @@ stack themselves and answer only whether they succeeded
 (`Primitives::Invoke`); Cog's primitives do the same through `pop:thenPush:`
 (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:72079`). Neither hands a result object back to the loop.
 
-**The sink.** `interpreter/` gains a trait, `DecisionSink`, with three
-methods: `value(mutator, value)`, `step(step)` and `signal(signal)`.
-`act_with_base`, `decide_send`, the three cache paths (`send_public`,
-`send_lexical`, `send_super`, with `cached` and `miss`) and
-`mirror::execute_method` become generic over it: every place that answers
-`Ok(Step::Value(value))` today calls `sink.value` instead, a `Step` goes to
-`sink.step`, an error to `sink.signal`. The logic stays in one place --
-the invariant that one place decides -- and each sink gets its own inlined
-copy. `miss` stays out of line and is handed the sink, so a miss delivers
-its value itself instead of through an out-pointer joined with the hit
-paths.
+**The sink, as designed.** `interpreter/` would have gained a trait,
+`DecisionSink`, with three methods: `value(mutator, value)`, `step(step)` and
+`signal(signal)`. `act_with_base`, `decide_send`, the three cache paths
+(`send_public`, `send_lexical`, `send_super`, with `cached` and `miss`) and
+`mirror::execute_method` would have become generic over it: every place that
+answers `Ok(Step::Value(value))` would call `sink.value` instead, a `Step`
+would go to `sink.step`, an error to `sink.signal`. The logic would have
+stayed in one place -- the invariant that one place decides -- with an
+inlined copy per sink, and `miss` would have stayed out of line and been
+handed the sink, delivering its value itself instead of through an
+out-pointer joined with the hit paths.
 
-**Two sinks.** `vm.rs`'s `RegisterSink` writes a value into the
-destination register (`Heap::set_register`) and records in one byte what
-happened -- delivered, activate, raised -- keeping a rare `Step` or
-`Signal` in an out slot, as `Handoff` keeps the next frame. `StepSink`
-collects the decision as the `Result<Step, Signal>` it is today, and the
-functions every other caller uses -- the host's send, the unwinder,
-`Message>>sentTo:`, the block leaves -- stay as thin wrappers over it, so
-none of those callers changes. `vm.rs` still decides nothing: the sink
-carries out what was decided, as `deliver` does today. A cache still
-records what the lookup decided and never decides.
+**Two sinks, as designed.** `vm.rs`'s `RegisterSink` would have written a
+value into the destination register (`Heap::set_register`) and recorded in
+one byte what happened -- delivered, activate, raised -- keeping a rare
+`Step` or `Signal` in an out slot, as `Handoff` keeps the next frame.
+`StepSink` would have collected the decision as the `Result<Step, Signal>`
+it is, with the functions every other caller uses -- the host's send, the
+unwinder, `Message>>sentTo:`, the block leaves -- as thin wrappers over it,
+so none of those callers would change and `vm.rs` would still decide
+nothing.
 
 **Gated by an experiment, and halted.** The plan's first task
 ([its plan](../superpowers/plans/2026-09-28-2106-ns-next-decision-sink.md))
@@ -5755,7 +5754,7 @@ tiers are the last three steps of the road to a high-performance VM (decided
 with the user on 2026-09-29; the whole order is in
 [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM"). They
 build on the representation steps before them -- the memory layer, the
-eight-byte value, the object space with its one-word header and inline
+eight-byte value, the object space with its header word, class word and inline
 fields, generations and inline allocation ([memory.md](memory.md),
 [object-model.md](object-model.md)) -- which give generated code fixed field
 offsets, a guard read in one load, a cheap write barrier and a bump

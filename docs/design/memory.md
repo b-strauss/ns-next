@@ -1174,10 +1174,10 @@ and the object layout (road step 3) gives mixins and applications ids
 ([object-model.md](object-model.md), "Planned: the object layout"). The same
 per-mixin id is wanted by dispatch's open option of guarding a private
 lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What
-makes the weak cache sound is the reuse rule: an application id is reclaimed
-once no class object, no inline-cache entry and no application-cache key
-names it, and a mixin id once no application and no application-cache key
-names it. The cache's unbounded growth under live editing
+makes the weak cache sound is the reuse rule: an application id is reclaimed once no class object, no inline-cache or global-cache entry
+(its guard, or a `Lexical` key's application id) and no application-cache
+entry, key or value, names it, and a mixin id once no application and no
+application-cache entry, key or value, names it. The cache's unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with it.
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
@@ -1363,8 +1363,8 @@ owning it makes possible, none of which the measurement covers:
 
 So the question is not where payloads live but whether they are separate at
 all, and a payload region beside the arena would keep both the second load
-and the per-object free. The plan puts the fields inline after a one-word
-header, in memory the heap owns ("Planned: the memory layer", "Planned: the
+and the per-object free. The plan puts the fields inline after a header word and a class word,
+in memory the heap owns ("Planned: the memory layer", "Planned: the
 object space" below).
 
 **A payload is size-stable on every hot path.** Both reference runtimes
@@ -1424,8 +1424,9 @@ high-performance VM".
 - **Two implementations behind one interface, from the start**: Windows
   (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, through `windows-sys`) and
   POSIX (`mmap` with `PROT_NONE` to reserve, `mprotect` to commit and protect,
-  `mprotect` to `PROT_NONE` followed by `madvise(MADV_DONTNEED)` to decommit,
-  since `mprotect` alone gives no memory back, and `munmap`, through `libc`). Both crates are declarations only, with no
+  a re-mapping of the range with `mmap(MAP_FIXED | MAP_PRIVATE | MAP_ANON |
+  MAP_NORESERVE, PROT_NONE)` to decommit, which gives the memory back on Linux
+  and macOS alike where `madvise(MADV_DONTNEED)` does not on macOS, and `munmap`, through `libc`). Both crates are declarations only, with no
   run-time code of their own. Primordial Soup has the same split behind the
   same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
   `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits
@@ -1554,8 +1555,12 @@ Road step 4.
   age reaches a threshold that adapts to how full the survivor space is,
   Strongtalk's age table (`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`).
   A copied object's old copy becomes a forwarder -- the forwarded format, its
-  class word naming the new location -- the same mechanism `become:` uses
-  ([object-model.md](object-model.md), "Planned: the object layout").
+  class word naming the new location -- the same mechanism `become:` uses. A
+  reference to a forwarder is followed along the whole chain, whatever made
+  each link, and the object at its end is copied unless it already lies in
+  the survivor space being filled, as Spur's `scavengeReferentsOf:` does
+  (`cointerp.c:43278`; [object-model.md](object-model.md), "Planned:
+  `become:` through forwarders").
 - **Before a scavenge starts it commits old space for the worst case** -- the
   occupancy of eden and the survivor space -- so a promotion never meets a
   commit failure halfway through; a commit the operating system refuses is
@@ -1574,12 +1579,16 @@ Road step 4.
   reference lowering and a JIT share one rule. Every store into a heap object
   goes through them: fields and elements, the class word, a frame object's
   registers written on divorce and by `StoreOuterLocal`, a closure's copied
-  values, and a forwarder's target. The collector's own rewrites -- the
+  values, and a forwarder's target. In a debug build
+  every store accessor first checks the stored Rust-side value's heap id and
+  move epoch, before reducing it to a word, so a stale value cannot be
+  laundered into a field and come back out looking current. The collector's own rewrites -- the
   scavenge, the compaction, the replacement of resolved futures -- keep the
   remembered set themselves. The running activation stack's registers are
   roots and take no barrier.
-- **A remembered set past its limit forces a scavenge that tenures
-  everything**, as Soup's `kRememberedSetOverflowSize` does
+- **A remembered set past its limit requests a scavenge that tenures
+  everything**, at the next safepoint, and keeps growing until then, as Soup's
+  `kRememberedSetOverflowSize` raises an interrupt
   (`prior-art/primordialsoup/vm/heap.cc:279-283`).
 - **Large objects are allocated old**, as Soup does from 32 KB
   (`kLargeAllocationSize`), since copying them buys nothing.
@@ -1588,17 +1597,23 @@ Road step 4.
   barrier; therefore every old-space allocation outside the decoder -- a large
   object, or an allocation that found eden's reserve spent ("Planned: inline
   allocation") -- is born remembered, and the next scavenge scans it.
-- **A full collection** is the mark-compact over both generations; the image
+- **A full collection** is the mark-compact over both generations. The image
   decoder allocates everything old, the boxed floats and large integers it
-  creates included, since a decoded graph is long-lived and an old-to-old
-  store needs no barrier.
+  creates included, since a decoded graph is long-lived. A stateful load runs
+  the bootstrap and the platform paths before the graph decodes, which leaves
+  young objects the graph may reference, so the load tenures everything -- a
+  scavenge -- before the graph pass; the decoder's old-to-old stores then
+  need no barrier.
 - **The weak symbol table is pruned at every scavenge** as well as at every
   full collection, since a young symbol can die in either. At a scavenge a
   young entry whose symbol was not copied becomes `None`, a copied one is
   rewritten to its new location, and an old entry is left alone; the table
   is not a strong root.
 - **A fourth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
-  safepoint, which is what finds a store that missed the barrier.
+  safepoint, which is what finds a store that missed the barrier. So that a
+  stale young word into eden faults as well as one into a survivor space, a
+  debug build under it alternates eden between two regions and protects the
+  vacated one.
 
 ## Planned: inline allocation
 
@@ -1607,7 +1622,8 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
 `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
 (`cogitX64SysV.c:16464`, `:19026`).
 
-- **What bumps**: `new` of a class of fixed size, `MakeClosure`, a boxed
+- **What bumps**: `new` of a class whose instances fall below the
+  large-object threshold, `MakeClosure`, a boxed
   `Float`, and `Array new:` below the large-object threshold; a larger
   `Array new:` allocates old, as every large object does ("Planned:
   generations").
