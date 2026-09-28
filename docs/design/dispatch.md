@@ -1457,10 +1457,12 @@ header's first 22 bits and the class object in a word of its own, precisely
 so that this guard stays a per-application id -- a class-index guard as in
 Spur and Primordial Soup would make every site that sees nested-class
 instances from two enclosing objects polymorphic. Two things follow for the
-caches. The application cache (`Mutator.applications`) is keyed by an
-application id rather than by `Rc::as_ptr`, since a class object holds its
-application's id in a field and the `MixinApplication`s live in a Rust-side
-table indexed by it; that makes the cache free to become weak
+caches. The application cache (`Mutator.applications`) is keyed by the
+mixin's id and the superclass application's id rather than by two
+`Rc::as_ptr` addresses, since a class object holds its application's id in a
+field and the mixins and `MixinApplication`s live in Rust-side tables indexed
+by their ids; with ids that are never reused while a key can name them, the
+cache is free to become weak
 ([memory.md](memory.md), "Weak references"). And a forwarder
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders", step 5) carries a reserved application id that is never a

@@ -673,13 +673,17 @@ moves the overflow boundary in the first place. The deviation above goes
 with it, and the goldens recording an overflow error change to record the
 promoted result.
 
-`LargeInteger` is a kernel class, below `Integer`. Its instances hold a sign
-and 64-bit digits, least significant first, in a 64-bit-indexed object
-([object-model.md](object-model.md), "Planned: the object layout") -- on
-today's arena in an `Array`-like payload, then inline in the object space.
-Its arithmetic is leaves on the VM mirror, as `SmallInteger`'s is, with
-`Integer>>+` and the rest trying the `SmallInteger` fast path first and
-falling back to them. Every reference engine writes this itself -- Primordial
+`LargeInteger` is a kernel class, a subclass of `Integer`, which stays the
+class of the immediate integers: §5.1.1 asks only that an integer "obeys the
+protocol of class `Integer`", so `3 class` keeps answering `Integer`. A
+`LargeInteger` holds a sign and 64-bit digits, least significant first -- on
+today's arena in a digit payload of its own, then inline in a
+64-bit-indexed object of the object space ([object-model.md](object-model.md),
+"Planned: the object layout"). Its arithmetic is leaves on the VM mirror, as
+`Integer`'s is: `Integer`'s methods keep their immediate fast path, and the
+inlined `IntegerBinary`, and answer a `LargeInteger` where an immediate
+result would overflow; `LargeInteger` overrides them with leaves of its own,
+and each result that fits again is answered as an immediate `Integer`. Every reference engine writes this itself -- Primordial
 Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
 subtraction, multiplication, division and modulo, the bitwise operations,
 shifts, comparison, `printString` and conversion to and from `double` -- and

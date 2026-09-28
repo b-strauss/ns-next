@@ -1177,7 +1177,9 @@ which is old space's bytes relocated on load, is the model this does not take.
   question still open", where the figures are, and `CLAUDE.md`'s paragraph on untrusted images), and
   `bounded_count` keeps bounding every pre-allocation by the bytes remaining.
 - **Identity hashes** are preserved as they are today, per record and in the
-  tag-named table; only where the hash is stored changes, into the header word.
+  tag-named table; only where the hash is stored changes, into the header
+  word's 22 bits, so a hash wider than that is refused like any other
+  malformed hash.
 
 ## Planned: suspend and resume
 

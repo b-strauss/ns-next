@@ -1174,7 +1174,10 @@ That is a change in its own right, and it belongs with the live-editing work
 ([liveness-and-reflection.md](liveness-and-reflection.md)), which is also where
 the cache's unbounded growth belongs. The same per-mixin id is wanted
 independently by dispatch's open option of guarding a private lexical site on
-N's mixin ([dispatch.md](dispatch.md), "Decisions").
+N's mixin ([dispatch.md](dispatch.md), "Decisions"). The object layout gives
+mixins and applications such ids ([object-model.md](object-model.md),
+"Planned: the object layout"); an id that is never reused while a key can
+still name it is what makes the weak cache sound.
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
 value — so it is neither a root nor a forwarding target.
@@ -1396,7 +1399,7 @@ memory the object space lives in; it is the only crate in the workspace with
 step 1 of the road in [OPEN-WORK.md](../OPEN-WORK.md), "The road to a
 high-performance VM".
 
-- **One contiguous reservation per space**, reserved once at a size chosen at
+- **One contiguous reservation per heap**, holding the nursery and the old space alike, reserved once at a size chosen at
   start-up with a generous default, since reserved address space costs
   nothing, and committed as the space grows. A handle is an offset from the
   reservation's base, so the base must be fixed and the reservation
@@ -1640,7 +1643,9 @@ road, and the groundwork the JIT tiers take over, as Cogit's
   `Rc::as_ptr` as a key needs the strong reference to keep it unique; weakly, a
   recycled address would answer an old entry with a different, perfectly valid
   application. It becomes decidable once a mixin carries an id, which the
-  live-editing work wants anyway.
+  live-editing work wants anyway. The object layout gives mixins and applications
+  ids ("Planned: the object space"; [object-model.md](object-model.md),
+  "Planned: the object layout").
 - **A collection is requested by comparing an arena's length against a limit**,
   reset to `max(4096, live * 2)` after each collection, rather than by counting
   allocations: the length is already in hand where an allocation happens, so the
@@ -1658,7 +1663,7 @@ road, and the groundwork the JIT tiers take over, as Cogit's
   would not give. The memory layer, the eight-byte value, the object space,
   generations, `become:` and inline allocation are steps 1 to 6 of the road in
   [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM".
-- **A reservation per space, contiguous and committed as it grows** (decided
+- **One reservation per heap, contiguous and committed as it grows** (decided
   with the user on 2026-09-29), for Windows and POSIX from the start: a handle
   is an offset from a fixed base, so the base cannot move and the space cannot
   be scattered.

@@ -1426,11 +1426,13 @@ therefore stays exact where the mistake it catches can be made, with the
 brand checking the rest at compile time.
 
 **What changes.** Every pattern on `Value::…` -- about 1,050 sites, some 550
-in `ns-runtime`'s sources and the rest in its tests -- goes through
+in the crates' sources and the rest in their tests -- goes through
 constructors and accessors; `heap.rs`'s handle code, `trace.rs`, the image
 codec and the leaves change with it. The image gains wire tags for a
-`LargeInteger` record and a boxed `Float`, each the next free number; a float
-stays an `f64` on the wire, and the decoder decides whether it is immediate.
+`LargeInteger`, each the next free number; a float, boxed or not, stays an
+`f64` on the wire and carries no record, since it has no identity, and the
+decoder decides whether it is immediate ([image-format.md](image-format.md),
+"Planned: the image under the new representation").
 
 ## Planned: the object layout
 
@@ -1453,9 +1455,9 @@ the lock bits into one 64-bit word:
 | Bits | Holds |
 |---|---|
 | 22 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id") |
-| 22 | the identity hash, drawn lazily from the counter; 0 means none yet |
+| 22 | the identity hash, drawn lazily from the counter, which wraps within 22 bits as Strongtalk's does within 20 (`markOop.cpp`); 0 means none yet, and an image's hash wider than 22 bits is refused |
 | 5 | the format |
-| 8 | the object's size in words; 255 means the real count is in an overflow word *before* the header, as in Spur |
+| 8 | the number of words after the header -- the class word and the fields; 255 means the real count is in an overflow word *before* the header, as in Spur |
 | 1 | the mark bit |
 | 6 | spare, for the generations' remembered bit and age and for the forwarder |
 
@@ -1501,8 +1503,9 @@ their low bits, as Spur's do, so an exact length needs no length field.
 fields -- its enclosing object, declaring class, superclass and, for a
 metaclass, the class it describes -- plus its application id as a
 `SmallInteger`, which indexes a Rust-side table of `MixinApplication`s; the
-behaviour stays Rust. The application cache is keyed by that id rather than
-by an `Rc` address, which lets it become weak ([memory.md](memory.md), "Weak
+behaviour stays Rust. The application cache is keyed by the mixin's id and
+the superclass application's id rather than by `Rc` addresses, which lets it
+become weak ([memory.md](memory.md), "Weak
 references"). A closure keeps its code id, captured frame and feedback base
 in fixed fields and its copied values inline. A reified frame keeps its
 sender, home, receiver, current class, program counter, code id and kind in
