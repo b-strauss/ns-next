@@ -742,14 +742,26 @@ clause is done therefore meets §3.1.1 exactly as strictly as today.
   raises has changed nothing.**
 - *The leaves that answer "no" rather than declining* — identity and the
   equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`,
-  `Symbol` and `Behavior` — look for a future only on that path and only for
-  an object argument, and then do the same. `==` is symmetric, unlike
-  Primordial Soup's.
+  `Symbol` and `Behavior`, and `inheritsMixinOf:` — look for a future only on
+  that path, and then do the same; `Primitive::answers_false_to_a_stranger`
+  names them, matching every leaf by name so that a new one does not compile
+  until someone decides. `==` is symmetric, unlike Primordial Soup's.
+- *The leaves that keep or render an operand* and would take a future for a
+  value of its own — `do:`'s block, `whileTrue:`'s and `whileFalse:`'s body,
+  and the selector and description an unhandled exception's termination
+  reports — decline for a future, so the failure path sees through it. Every
+  other leaf that answers for any operand stores or forwards it
+  (`at:put:`'s element, `value:`'s arguments, `sentTo:`'s receiver,
+  `returnValue:`'s value), and a future there is the value it stands for to
+  whoever reads it later.
 - *`InitializeSlot` into a value* looks for a future only on its refusal
   path (`check_value_slot`), and forces it through the same `Reexecute`.
 - *A host* that passes a future straight to `Interpreter::send` has no
-  instruction to run again, and the leaf declines as it does today; a host
-  holds a future only if a program handed it one during a clause.
+  instruction to run again: a resolved one is seen through in Rust as
+  anywhere else, and an unresolved one is forced, after which the run ends
+  with an error saying so (`vm::reexecute`,
+  `interpreter::future::host_passed_a_future`); a host holds a future only if
+  a program handed it one during a clause.
 
 **The collector** replaces a reference to a resolved future with its value in
 object fields — slots, array elements, closure copies, indirection vectors —

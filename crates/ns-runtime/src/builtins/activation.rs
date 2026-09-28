@@ -37,6 +37,22 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::InheritsMixinOf => {
             inherits_mixin_of(mutator, subject, arguments).map(|answer| Ok(Step::Value(answer)))
         }
+        // It reads its selector and renders its description, so a future in
+        // either would be reported as a future rather than as the value it
+        // stands for. Declining -- before the test hook below counts
+        // anything -- hands it to `builtins::execute`, which sees through
+        // it; the failure block never runs, since a future is there. The
+        // receiver is reported as it is, never read: it is often the very
+        // future whose divergent forcing raised the error, and seeing
+        // through it would raise that error again, forever.
+        ActivationPrimitive::Terminate
+            if [arguments.first(), arguments.get(2)]
+                .into_iter()
+                .flatten()
+                .any(|argument| mutator.as_future(*argument).is_some()) =>
+        {
+            None
+        }
         // The test hook standing in for the debugger
         // (`Interpreter::resume_unhandled_exceptions`) resumes instead:
         // `defaultAction` answers `nil`, and so does the `signal` that

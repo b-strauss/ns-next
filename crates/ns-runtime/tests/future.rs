@@ -318,6 +318,45 @@ fn only_a_future_is_a_future() {
 }
 
 ns_runtime::for_each_lowering! {
+    /// A host's send has no instruction to run again, so an unresolved future
+    /// it passes straight to a leaf ends the run with an error rather than
+    /// answering wrongly (`docs/design/object-model.md`, "Where Rust sees a
+    /// future").
+    fn a_host_passing_an_unresolved_future_to_a_leaf_is_an_error(lowering) {
+        let (mut interpreter, holder) = a_holder(lowering);
+        let future = a_future(&mut interpreter, &holder, "three");
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let message = expect_error_message(
+            interpreter.send(&one, Symbol::intern("+"), &[future]),
+            "1 + an unresolved future from the host",
+        );
+        assert!(message.contains("host"), "{message}");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A resolved future needs no instruction run again: the leaf sees its
+    /// value in Rust, so even a host's send is answered.
+    fn a_host_passing_a_resolved_future_to_a_leaf_is_answered_by_its_value(lowering) {
+        let (mut interpreter, holder) = a_holder(lowering);
+        let future = a_future(&mut interpreter, &holder, "three");
+        let four = interpreter.stash(Value::SmallInteger(4));
+        expect_ok(
+            interpreter.send(&future, Symbol::intern("+"), &[four]),
+            "future + 4, which resolves it",
+        );
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let sum = expect_ok(
+            interpreter.send(&one, Symbol::intern("+"), &[future]),
+            "1 + a resolved future",
+        );
+        interpreter.enter(|mutator| {
+            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(4)));
+        });
+    }
+}
+
+ns_runtime::for_each_lowering! {
     /// No program names `Future`: `Object` declares no accessor for it, so a
     /// bare `Future` is a message nothing understands, and neither does
     /// `platform kernel`, which hands out only the exception classes and

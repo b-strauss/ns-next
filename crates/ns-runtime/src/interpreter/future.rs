@@ -6,6 +6,7 @@
 //! forced it, or run the instruction that met the future again -- is
 //! `AfterForcing`.
 
+use crate::builtins::primitive::Primitive;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -315,6 +316,62 @@ pub(crate) fn host_passed_a_future<'gc>() -> Signal<'gc> {
                   run again"
             .to_string(),
     })
+}
+
+/// What `see_through` found among a leaf's operands.
+pub(crate) enum SeeThrough<'gc> {
+    /// No operand is a future: the leaf's own answer stands.
+    NoFuture,
+    /// What stands in its place: the leaf run again on the resolved
+    /// operands -- declining again (`None`) or raising again is then the
+    /// leaf's own verdict on the values -- or a forcing under `Reexecute`.
+    Answer(Option<Result<Step<'gc>, Signal<'gc>>>),
+}
+
+/// A leaf could not answer, and a future among its operands may be why
+/// (`builtins::execute`). Resolved ones are replaced by their values and the
+/// leaf runs again; the first unresolved one is forced under `Reexecute`,
+/// after which the instruction that sent the leaf runs again -- which the
+/// leaf's having changed nothing makes safe; one being computed is §6.3.2's
+/// ill-founded recursion.
+///
+/// `future_computed` follows a future of a future, so a resolved future's
+/// value is never a future, and running the leaf once more on the resolved
+/// operands cannot come back here with another.
+pub(crate) fn see_through<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: Primitive,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> SeeThrough<'gc> {
+    let operands = || std::iter::once(receiver).chain(arguments.iter().copied());
+    // Looked for before anything is built: an equality that answers `false`
+    // takes this path on every send once a program has made a future, and
+    // almost never because of one.
+    if operands().all(|operand| mutator.as_future(operand).is_none()) {
+        return SeeThrough::NoFuture;
+    }
+    let mut resolved = Vec::with_capacity(arguments.len() + 1);
+    for operand in operands() {
+        let Some(future) = mutator.as_future(operand) else {
+            resolved.push(operand);
+            continue;
+        };
+        match mutator.future_state(future) {
+            FutureState::Resolved(value) => resolved.push(value),
+            FutureState::Resolving => return SeeThrough::Answer(Some(Err(divergent(operand)))),
+            FutureState::Unresolved(_) => {
+                return SeeThrough::Answer(Some(force(mutator, future, AfterForcing::Reexecute)));
+            }
+        }
+    }
+    let Some((receiver, arguments)) = resolved.split_first() else {
+        unreachable!("internal: the receiver is an operand");
+    };
+    SeeThrough::Answer(crate::builtins::execute_leaf(
+        mutator, primitive, *receiver, selector, arguments,
+    ))
 }
 
 /// What an instruction that must not hold a future -- `ResolveFuture`, and

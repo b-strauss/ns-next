@@ -34,6 +34,114 @@ pub enum Primitive {
     Mirror(MirrorPrimitive),
 }
 
+impl Primitive {
+    /// Whether this leaf answers `false` for an operand of the wrong kind
+    /// instead of declining: identity and the equality leaves. On that
+    /// answer `builtins::execute` looks for a future among the operands,
+    /// since a future answers here for its value (`docs/design/
+    /// object-model.md`, "Where Rust sees a future"). Every variant is
+    /// named, so a new leaf does not compile until someone decides.
+    ///
+    /// Every leaf marked `false` either declines or raises on an operand of
+    /// the wrong kind -- which the failure path covers -- or never needs to
+    /// see through one: it has no operand but its own subject, or it stores,
+    /// forwards or ignores the operand (`ElementAtPut`'s element, `Block`'s
+    /// `Value` arguments, `Message`'s `SendTo` receiver, `ReturnValue`'s
+    /// value). The three that take a block, or a text they render, and would
+    /// otherwise answer as though a future were a value of its own --
+    /// `Enumerate`'s and the loops' block, `Terminate`'s arguments --
+    /// decline for a future instead.
+    pub(crate) fn answers_false_to_a_stranger(self) -> bool {
+        match self {
+            Primitive::Object(ObjectPrimitive::Identical | ObjectPrimitive::Equal) => true,
+            Primitive::Object(
+                ObjectPrimitive::Class | ObjectPrimitive::Hash | ObjectPrimitive::PrintString,
+            ) => false,
+            Primitive::Value(ValuePrimitive::SameAs) => true,
+            Primitive::Value(
+                ValuePrimitive::Hash | ValuePrimitive::SlotCount | ValuePrimitive::SlotAt,
+            ) => false,
+            Primitive::Behavior(BehaviorPrimitive::SharesApplication) => true,
+            Primitive::Behavior(
+                BehaviorPrimitive::Name
+                | BehaviorPrimitive::ThisClass
+                | BehaviorPrimitive::Enclosing
+                | BehaviorPrimitive::Superclass,
+            ) => false,
+            Primitive::Integer(IntegerPrimitive::Equal) => true,
+            Primitive::Integer(
+                IntegerPrimitive::Add
+                | IntegerPrimitive::Subtract
+                | IntegerPrimitive::Multiply
+                | IntegerPrimitive::FloorDivide
+                | IntegerPrimitive::Less
+                | IntegerPrimitive::Greater
+                | IntegerPrimitive::LessOrEqual
+                | IntegerPrimitive::GreaterOrEqual
+                | IntegerPrimitive::Negated
+                | IntegerPrimitive::Absolute
+                | IntegerPrimitive::PrintString,
+            ) => false,
+            Primitive::Float(FloatPrimitive::Equal) => true,
+            Primitive::Float(
+                FloatPrimitive::Add
+                | FloatPrimitive::Subtract
+                | FloatPrimitive::Multiply
+                | FloatPrimitive::Divide
+                | FloatPrimitive::Less
+                | FloatPrimitive::Greater
+                | FloatPrimitive::Hash
+                | FloatPrimitive::PrintString,
+            ) => false,
+            Primitive::String(StringPrimitive::Equal) => true,
+            Primitive::String(
+                StringPrimitive::Size
+                | StringPrimitive::Concatenate
+                | StringPrimitive::Hash
+                | StringPrimitive::AsSymbol
+                | StringPrimitive::PrintString,
+            ) => false,
+            Primitive::Symbol(SymbolPrimitive::Equal) => true,
+            Primitive::Symbol(
+                SymbolPrimitive::AsString | SymbolPrimitive::Hash | SymbolPrimitive::PrintString,
+            ) => false,
+            Primitive::Collection(
+                CollectionPrimitive::Enumerate
+                | CollectionPrimitive::Size
+                | CollectionPrimitive::ElementAt
+                | CollectionPrimitive::ElementAtPut
+                | CollectionPrimitive::Allocate,
+            ) => false,
+            Primitive::Block(
+                BlockPrimitive::Value
+                | BlockPrimitive::ArgumentCount
+                | BlockPrimitive::WhileTrue
+                | BlockPrimitive::WhileFalse,
+            ) => false,
+            Primitive::Platform(PlatformPrimitive::Show | PlatformPrimitive::NewLine) => false,
+            Primitive::Activation(ActivationPrimitive::InheritsMixinOf) => true,
+            Primitive::Activation(
+                ActivationPrimitive::Current
+                | ActivationPrimitive::Sender
+                | ActivationPrimitive::IsActiveHandler
+                | ActivationPrimitive::HandlerClass
+                | ActivationPrimitive::HandlerBlock
+                | ActivationPrimitive::SetHandlerActive
+                | ActivationPrimitive::ReturnValue
+                | ActivationPrimitive::Restart
+                | ActivationPrimitive::Terminate,
+            ) => false,
+            Primitive::Message(MessagePrimitive::SendTo) => false,
+            Primitive::Module(ModulePrimitive::Named) => false,
+            Primitive::Future(FuturePrimitive::Value) => false,
+            // It reaches its own primitive's row through `execute_sent`,
+            // which runs `builtins::execute` again, so that row has already
+            // looked for a future by the time this one answers.
+            Primitive::Mirror(_) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectPrimitive {
     Class,

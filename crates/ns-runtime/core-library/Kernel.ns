@@ -219,8 +219,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* No handler: the run ends through the leaf, once the pending
            `ensure:` blocks have run. The one place the debugger will
            replace. The leaf takes any selector, receiver and description
-           and never declines, so the failure block never runs and an
-           unhandled exception cannot carry on. *)
+           and declines only for a future, which the VM sees through before
+           any failure block could run, so the failure block never runs and
+           an unhandled exception cannot carry on. *)
         public defaultAction = (
             | selector receiver |
             selector:: self hostSelector.

@@ -557,6 +557,19 @@ failure block, the `[^super …]` every kernel method writes:
   whose mirror send declines again and runs the failure block
   ("Primitive methods" below).
 
+**A leaf that declines or raises has changed nothing.** Each one checks its
+operands before it writes anything — a register, a slot, an array element,
+the transcript — so running it again, or running again the instruction that
+sent it, is running it once. `builtins::execute` rests on this: it wraps
+every leaf (`execute_leaf`), and once a program has made one of §6.3.2's
+futures it looks for a future among the operands on exactly the paths where
+the leaf could not answer — it declined, raised, or, for identity and the
+equality leaves, answered `false` — and runs the leaf again on the values, or
+forces the future and runs the sending instruction again
+([object-model.md](object-model.md), "Where Rust sees a future"). A program
+that never made a future pays one flag test, on those paths only. A new leaf
+that writes before its last check breaks this silently.
+
 So a failure is Newspeak code, as in Cog, where a failing primitive falls
 into its method's body — whose code often sends the message on to `super`,
 as every kernel method's does. `execute_sent` never answers `None`, so a

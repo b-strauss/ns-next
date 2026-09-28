@@ -17,6 +17,16 @@ pub(crate) fn execute<'gc>(
         return None;
     };
     let parameters = mutator.heap().closure_parameter_count(closure)?;
+    // A loop keeps its body and takes a non-block for a value of its own,
+    // which a future is not: it stands for its value, which may well be a
+    // block. Declining hands it to `builtins::execute`, which sees through
+    // it before the loop keeps anything. Behind the flag, so that a program
+    // that never made a future pays one test per loop and nothing more.
+    if let BlockPrimitive::WhileTrue | BlockPrimitive::WhileFalse = primitive {
+        if mutator.futures_made && mutator.as_future(*arguments.first()?).is_some() {
+            return None;
+        }
+    }
     Some(Ok(match primitive {
         BlockPrimitive::Value => Step::Block {
             closure,
