@@ -1371,19 +1371,23 @@ a 32-bit arena index already fits the word.
 | Low bits | Meaning |
 |---|---|
 | `000` | an object handle: today the arena index, from step 3 the object's byte offset in the space, so that the space's base plus the word is its address |
-| `xx1` | a `SmallInteger` of 61 bits |
+| `001` | a `SmallInteger` of 61 bits |
 | `010` | a constant -- `nil`, `true`, `false`, with room for more |
 | `100` | a `SmallFloat64` |
 | `110` | free |
+| `011`, `101`, `111` | never produced; kept so that bit 0 alone tells a `SmallInteger` |
 
-The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4 in
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c`), with Spur's
-`Character` tag taken for the constants: ns-next has no characters, and
+The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4, three tag bits,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779`, `:2836`): Spur
+writes a `SmallInteger` as `(value << 3) + 1` (`integerObjectOf`,
+`:41159`) and tests it by bit 0 alone. Spur's `Character` tag, `010`, is
+taken for the constants: ns-next has no characters, and
 `nil`, `true` and `false` stay immediates as they are today rather than
 becoming heap singletons as in Spur and Soup. A `SmallFloat64` is Spur's
 encoding (`floatObjectOf:`, `smallFloatValueOf:`): an eight-bit subset of
-the exponent -- IEEE exponents 897 to 1151, about 2^-126 to 2^128, plus
-±0.0 -- with the sign rotated down beside the tag. Every other float -- NaN,
+the exponent -- IEEE exponents 897 to 1151, about 2^-126 to 2^128, and 896
+with a non-zero mantissa, plus ±0.0 (`isSmallFloatValueBits`, `:41232`) --
+with the sign rotated down beside the tag. Every other float -- NaN,
 the infinities, denormals and magnitudes outside that range -- is a boxed
 `Float` object. Soup boxes every float, which costs an allocation per
 floating-point result; Spur's split keeps the common range immediate.
@@ -1436,7 +1440,8 @@ decoder decides whether it is immediate ([image-format.md](image-format.md),
 
 ## Planned: the object layout
 
-Would change: an object stops being a 56-byte slot in an index arena with
+Would change: an object stops being a slot in an index arena (56 bytes in a
+release build) with
 its variable part in a separate Rust allocation, and becomes a run of words
 in one space -- a header word, a class word, then its fields -- addressed by
 its byte offset. Step 3 of the representation ahead; the space, its
@@ -1477,7 +1482,8 @@ implicit send to an enclosing scope -- read it, and a JIT cannot fold it to a
 constant when it differs per instance. A one-word alternative was weighed: a
 22-bit application id and a 32-bit class index sharing the header, the
 identity hash moved out and appended when a hashed object first moves, as
-HotSpot plans for four-byte headers. It saves 8 bytes an object and costs
+Project Lilliput explores for four-byte headers beyond the eight-byte ones
+JEP 519 ships. It saves 8 bytes an object and costs
 `class` and `outer` a second load, through the class table, plus the most new
 mechanism. Speed on a hot path went first; the accessors in `heap.rs` keep
 either layout open.
@@ -1554,9 +1560,11 @@ the stack and the registers, as Spur's `handleForwardedSendFaultForTag:`
 does; the scavenger and the compaction rewrite every reference they meet to
 the target, and the forwarder is garbage afterwards. Both one-way and
 two-way `become:`, each with the choice whether the identity hash moves with
-the identity (Spur's `become:with:twoWay:copyHash:`). Primordial Soup's
-eager alternative walks the whole heap on every `become:`; Strongtalk has
-none. It is reached as a leaf on the VM mirror, which is what the
+the identity (Spur's `become:with:twoWay:copyHash:`). The eager
+alternative walks the whole heap on every `become:`: Primordial Soup's
+one-way `Heap::BecomeForward` (`prior-art/primordialsoup/vm/heap.cc:1072`)
+and Strongtalk's two-way `oopPrimitives::become`, which also deoptimizes
+every process first (`prior-art/strongtalk/vm/prims/oop_prims.cpp:60-77`). It is reached as a leaf on the VM mirror, which is what the
 MirrorBuilder in [liveness-and-reflection.md](liveness-and-reflection.md)
 needs to add or remove slots of a class with live instances: allocate the
 new-shape instances, copy the fields, forward the old ones.

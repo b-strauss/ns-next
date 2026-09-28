@@ -1427,7 +1427,8 @@ high-performance VM".
   memory.
 - **In a debug build a vacated range is protected as no-access**, as Soup does
   around its scavenges and mark-sweeps
-  (`prior-art/primordialsoup/vm/heap.cc:321-323`), so a read through a stale
+  (`from_.NoAccess()`, `prior-art/primordialsoup/vm/heap.cc:341-344`,
+  `:653-655`), so a read through a stale
   offset faults at once rather than reading whatever was compacted there.
 - **Executable memory for the JIT tiers** comes to the same crate when they
   do, with its `unsafe` entry into generated code.
@@ -1663,7 +1664,7 @@ road, and the groundwork the JIT tiers take over, as Cogit's
   would not give. The memory layer, the eight-byte value, the object space,
   generations, `become:` and inline allocation are steps 1 to 6 of the road in
   [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM".
-- **One reservation per heap, contiguous and committed as it grows** (decided
-  with the user on 2026-09-29), for Windows and POSIX from the start: a handle
-  is an offset from a fixed base, so the base cannot move and the space cannot
-  be scattered.
+- **One reservation per heap, contiguous and committed as it grows**, because
+  a handle is an offset from a fixed base, so the base cannot move and the
+  space cannot be scattered; for Windows and POSIX from the start (decided
+  with the user on 2026-09-29).

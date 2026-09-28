@@ -1165,8 +1165,10 @@ which is old space's bytes relocated on load, is the model this does not take.
   one-byte or the four-byte form from the code points it reads.
 - **Frames become object records.** A reified frame is an object of the frame
   format ([object-model.md](object-model.md), "Planned: the object layout"), so
-  its record joins the object table under a new object tag and the separate
-  frame count and frame table retire their tags.
+  its record joins the object table under a new object tag. The separate frame
+  count and frame table go; the frame's kind stays a field of the frame object
+  and keeps its `FRAME_*` tags, and the frame record tags the object record
+  replaces retire.
 - **The decoder learns each record's size before it allocates.** A placeholder
   per record, allocated before any record is read, assumes a fixed size; in a
   space of variably sized objects the first pass reads each record's size from

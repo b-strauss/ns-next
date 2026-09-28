@@ -5705,7 +5705,8 @@ the JIT, as Cog's does. Its inputs are the dispatch findings of "Where the 3%
 goes" above: every dispatch decodes `Instruction`'s discriminant through a
 niche before its jump, and `vm::run` is large enough that `program_counter`
 and the code pointer are spilled to its stack frame. The design starts from
-how Primordial Soup, SOMns, Strongtalk and Cog encode their instructions.
+how Primordial Soup, Strongtalk and Cog encode their instructions; SOMns,
+an AST interpreter on Truffle, has no instruction encoding to compare.
 Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
 and a removed one retires its number.
 
@@ -5780,9 +5781,11 @@ Each step gets its own design when it comes up.
   they are not inlined -- slot accessors, `outer` sends, kernel methods that
   forward to the VM mirror -- and deoptimizing when a speculation fails. Its
   target is measured against Java with the Are We Fast Yet benchmarks, whose
-  Newspeak versions SOMns carries (`prior-art/somns/core-lib/Benchmarks`),
-  and with `prior-art/newspeak-benchmarks`, which holds the same programs in
-  Newspeak and Java.
+  Newspeak versions SOMns carries (`prior-art/somns/core-lib/Benchmarks`)
+  and whose Java versions are in that suite's own repository, and with
+  `prior-art/newspeak-benchmarks`, a separate suite -- DeltaBlue, Richards,
+  Splay, parser combinators and micro-benchmarks -- with Java versions of
+  six of its programs.
 
 Steps 1 to 6 of the road give a very good interpreter on a modern object
 representation; step 8 reaches Cog's class, and step 9 Strongtalk's and

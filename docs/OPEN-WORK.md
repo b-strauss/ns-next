@@ -24,7 +24,7 @@ memory layer".
 
 Decided with the user on 2026-09-29, in this order: nine numbered steps,
 with the compact instruction encoding after step 2 and real Newspeak bodies
-for the control-flow loops before step 8. Steps 1 to 6 give a very good
+for the control-flow loops between steps 7 and 8. Steps 1 to 6 give a very good
 interpreter on a modern object representation; step 8 reaches Cog's class,
 step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
 Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`)
@@ -65,15 +65,15 @@ and `prior-art/newspeak-benchmarks`.
   closures, boxed floats and `Array new:`, with headroom past the scavenge
   threshold so that collection stays at safepoints.
   [memory.md](design/memory.md), "Planned: inline allocation".
-- **Before step 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
+- **Step 7, an execution model for compiled code**: frames interpreted and
+  compiled code share, a calling convention, GC maps for compiled frames, and
+  deoptimization metadata, which the debugger needs as much as the optimizer.
+- **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
   `do:`.** Making them Newspeak loops re-settles three semantics: `do:`
   iterates over a copy, `do:` with a non-block is a no-op, and `whileTrue:`
   with a non-block body re-runs the condition.
   [core-library.md](design/core-library.md), "Planned: real bodies for
   control flow and `do:`, before the JIT tiers".
-- **Step 7, an execution model for compiled code**: frames interpreted and
-  compiled code share, a calling convention, GC maps for compiled frames, and
-  deoptimization metadata, which the debugger needs as much as the optimizer.
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
@@ -98,7 +98,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   takes a one-element `StepArguments::Owned(vec![item])`
   (`builtins/collections.rs:267`); a one-value variant changes `Step`'s
   layout, which measured as a 4–8% risk. Moot once `do:` is Newspeak
-  (before step 8 of the road).
+  (between steps 7 and 8 of the road).
 - **`Mutator.builtin_classes` as a fixed-size array** instead of a `Vec`
   (`interpreter/mod.rs:255`). `builtin_class(kind)` carries a bounds check, and
   the fast-path arm puts it and its cold panic block at every site `act` is
@@ -265,6 +265,25 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 ## Unexplained measurements and unmeasured decisions
 
+- **About 1 ms per round of `bench_block.ns`'s collector cost is
+  unexplained.** The pause accounts for about 1.4 ms of the 2.46 ms the
+  collector added per round; on the four other collecting sources the pause
+  *exceeds* the measured difference, on `bench_block.ns` it falls 1.05 ms
+  short. What sets `bench_block.ns` apart: 269 collections against 26 to 107
+  at a similar live count, and the only populated frame arena. Three cheap
+  experiments, none run: a fixture whose blocks capture nothing (separates
+  the frame arena from everything else); varying `COLLECTION_FLOOR`
+  (separates a cost that tracks the collection count from one that tracks
+  the pause); and `COLLECTION_FLOOR` raised above the whole allocation, so it
+  never collects but still pays the trigger's comparison. Not run either:
+  pre-sizing the arenas with `with_capacity`, and whether the max-over-median
+  latency gap persists under the collector. The allocator measurement puts
+  16.9% of `bench_block.ns`'s samples in the Windows heap and measures it
+  15.6% faster under mimalloc ([memory.md](design/memory.md), "Payloads
+  belong to the Rust allocator, and what that costs"), but whether that is
+  this residual was not isolated. The object space (step 3 of the road)
+  removes both the frame arena and the per-payload frees, so its collector is
+  measured afresh.
 - **`bench_block.ns` 4.4% slower since the value conditions.** Not isolated.
   Hypothesis (a), the seeded symbol, is refuted; (b), the extra `Value`-level
   class object, and (c), hardware counters, are to run.

@@ -683,22 +683,27 @@ today's arena in a digit payload of its own, then inline in a
 `Integer`'s is: `Integer`'s methods keep their immediate fast path, and the
 inlined `IntegerBinary`, and answer a `LargeInteger` where an immediate
 result would overflow; `LargeInteger` overrides them with leaves of its own,
-and each result that fits again is answered as an immediate `Integer`. Every reference engine writes this itself -- Primordial
-Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
+and each result that fits again is answered as an immediate `Integer`. The Smalltalk-family engines write this themselves --
+Primordial Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
 subtraction, multiplication, division and modulo, the bitwise operations,
 shifts, comparison, `printString` and conversion to and from `double` -- and
 ns-next does too, because a crate's numbers live in its own `Vec` in the
 Rust heap, which is the payload split the object space removes, and every
-operation would copy between the two.
+operation would copy between the two. SOMns delegates to
+`java.math.BigInteger` (`prior-art/somns/src/som/primitives/arithmetic/AdditionPrim.java`),
+which lives in the same JVM heap as its other objects; a Rust crate's heap
+is not ours.
 
 **The algorithms are taken from `num-bigint` and `num-integer`**, both MIT OR
 Apache-2.0, so their code may be adapted into ns-next's MIT tree provided the
 copyright notice and licence text travel with it: a header in each file that
-carries adapted code and an entry in the repository's third-party notices.
+carries adapted code and an entry in a
+third-party notices file the repository gains with it.
 What is taken is the arithmetic over digit slices -- 64-bit digits with
 128-bit intermediates, schoolbook multiplication below `num-bigint`'s
 thresholds and Karatsuba and Toom-3 above them, Knuth's algorithm D for
-division, the fast conversion to decimal text -- and `num-integer`'s floor
+division, and the conversion to decimal text by repeated division by the
+largest power of ten a digit holds -- and `num-integer`'s floor
 division and modulo, which `//` and `\\` need for negative operands and
 across the `SmallInteger`/`LargeInteger` boundary. It works on `&[u64]` and
 `&mut [u64]`, which is what the object space lends. `num-bigint`'s own
@@ -2293,8 +2298,9 @@ opaque: nothing can inline its block or compile the loop as a unit. Rewriting
 them must happen **before the JIT tiers** — they are what the tiers need to
 see through — and pays off **only with one**: before a JIT a Newspeak loop is
 more sends and activations than the leaf it replaces, and costs. Its place is
-therefore after inline allocation and before the baseline JIT, step 8 of the
-representation ahead ([object-model.md](object-model.md), "The
+therefore as late as it can come: after the execution model for compiled
+code, step 7, and before the baseline JIT, step 8, of the representation
+ahead ([object-model.md](object-model.md), "The
 representation ahead"; [execution.md](execution.md), "Planned: JIT tiers").
 
 The step owns three semantic decisions, each of which the leaves settle
