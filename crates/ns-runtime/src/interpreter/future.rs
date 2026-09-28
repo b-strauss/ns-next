@@ -440,7 +440,7 @@ pub(crate) fn see_through<'gc>(
 }
 
 /// What an instruction that must not hold a future -- `ResolveFuture`, and
-/// `InitializeSlot` into a value (Task 6) -- makes of a value it read.
+/// `InitializeSlot` into a value -- makes of a value it read.
 pub(crate) enum Resolution<'gc> {
     Value(Value<'gc>),
     /// Push this step; once it returns the instruction that asked runs
@@ -449,7 +449,7 @@ pub(crate) enum Resolution<'gc> {
 }
 
 /// What an instruction that must not hold a future -- `ResolveFuture`, and
-/// `InitializeSlot` into a value (Task 6) -- makes of `value`: itself when
+/// `InitializeSlot` into a value -- makes of `value`: itself when
 /// it is not a future, a resolved future's value, and an unresolved one
 /// forced first (`AfterForcing::Reexecute`).
 pub(crate) fn resolve_for_instruction<'gc>(
