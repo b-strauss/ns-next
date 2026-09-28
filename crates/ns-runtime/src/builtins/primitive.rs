@@ -64,9 +64,13 @@ impl Primitive {
             Primitive::Value(
                 ValuePrimitive::Hash | ValuePrimitive::SlotCount | ValuePrimitive::SlotAt,
             ) => false,
-            Primitive::Behavior(BehaviorPrimitive::SharesApplication) => true,
             Primitive::Behavior(
-                BehaviorPrimitive::Name
+                // Declines, rather than answering `false`, for an argument
+                // that is no class object -- a future among them -- and for
+                // a receiver that is none, so the failure path already sees
+                // through a future and it needs no `declines_for_a_future`.
+                BehaviorPrimitive::SharesApplication
+                | BehaviorPrimitive::Name
                 | BehaviorPrimitive::ThisClass
                 | BehaviorPrimitive::Enclosing
                 | BehaviorPrimitive::Superclass,

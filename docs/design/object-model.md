@@ -767,13 +767,16 @@ until the program has made one.
   `builtins::execute` and checked leaf by leaf: **a leaf that declines or
   raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives").
 - *The leaves that answer "no" rather than declining* — identity and the
-  equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`,
-  `Symbol` and `Behavior`, and `inheritsMixinOf:` — decline instead when
-  that answer is "no" and an operand is a future
-  (`future::declines_for_a_future`, behind the same flag), so the failure
-  path does the same; `Primitive::answers_false_to_a_stranger` names them,
-  matching every leaf by name so that a new one does not compile until
-  someone decides. `==` is symmetric, unlike Primordial Soup's.
+  equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`
+  and `Symbol`, and `inheritsMixinOf:` — decline instead when that answer
+  is "no" and an operand is a future (`future::declines_for_a_future`,
+  behind the same flag), so the failure path does the same;
+  `Primitive::answers_false_to_a_stranger` names them, matching every leaf
+  by name so that a new one does not compile until someone decides.
+  `Behavior`'s equality leaf, `behavior:sharesApplicationWith:ifFail:`, is
+  not among them: it declines for an operand that is no class object, a
+  future among them, so the failure path sees through one without it. `==`
+  is symmetric, unlike Primordial Soup's.
 - *The leaves that keep or render an operand* and would take a future for a
   value of its own — `do:`'s block, `whileTrue:`'s and `whileFalse:`'s body,
   and the selector and description an unhandled exception's termination
