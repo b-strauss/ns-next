@@ -42,9 +42,14 @@ pub(crate) fn execute<'gc>(
         // stands for. Declining -- before the test hook below counts
         // anything -- hands it to `builtins::execute`, which sees through
         // it; the failure block never runs, since a future is there. The
-        // receiver is reported as it is, never read: it is often the very
-        // future whose divergent forcing raised the error, and seeing
-        // through it would raise that error again, forever.
+        // receiver alone does not make it decline: it is often the very
+        // future whose divergent forcing raised the error, and declining for
+        // it would raise that error again on every termination, forever.
+        // Once the selector or the description is a future, `see_through`
+        // walks every operand, the receiver included, so a receiver still
+        // being computed then raises the divergent error once -- which,
+        // unhandled, ends the run through a termination whose arguments hold
+        // no future.
         ActivationPrimitive::Terminate
             if [arguments.first(), arguments.get(2)]
                 .into_iter()

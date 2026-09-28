@@ -753,7 +753,10 @@ clause is done therefore meets §3.1.1 exactly as strictly as today.
   other leaf that answers for any operand stores or forwards it
   (`at:put:`'s element, `value:`'s arguments, `sentTo:`'s receiver,
   `returnValue:`'s value), and a future there is the value it stands for to
-  whoever reads it later.
+  whoever reads it later. On a leaf's failure path, though, every future
+  operand is seen through: an unresolved one the leaf would only have stored
+  is forced first, and one still being computed raises the
+  divergent-evaluation error in place of the leaf's own error.
 - *`InitializeSlot` into a value* looks for a future only on its refusal
   path (`check_value_slot`), and forces it through the same `Reexecute`.
 - *A host* that passes a future straight to `Interpreter::send` has no

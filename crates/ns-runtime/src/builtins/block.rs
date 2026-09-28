@@ -20,11 +20,15 @@ pub(crate) fn execute<'gc>(
     // A loop keeps its body and takes a non-block for a value of its own,
     // which a future is not: it stands for its value, which may well be a
     // block. Declining hands it to `builtins::execute`, which sees through
-    // it before the loop keeps anything. Behind the flag, so that a program
-    // that never made a future pays one test per loop and nothing more.
+    // it before the loop keeps anything. Asked only of a body that is no
+    // block, as `do:` asks it, so a block body pays nothing for it.
     if let BlockPrimitive::WhileTrue | BlockPrimitive::WhileFalse = primitive {
-        if mutator.futures_made && mutator.as_future(*arguments.first()?).is_some() {
-            return None;
+        if let Some(Value::Object(body)) = arguments.first() {
+            if !mutator.heap().is_closure(*body)
+                && mutator.as_future(Value::Object(*body)).is_some()
+            {
+                return None;
+            }
         }
     }
     Some(Ok(match primitive {
