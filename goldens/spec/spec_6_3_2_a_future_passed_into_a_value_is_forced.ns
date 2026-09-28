@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+(* A future about to be stored in a value's slot is forced first, and its
+   value is stored and checked (docs/design/object-model.md, "Simultaneous
+   slots", rule 4): `pair`'s initializer builds a Pair around `third`'s
+   future, and the Pair holds 3. *)
+class Spec632AFuturePassedIntoAValue usingPlatform: p = Object <: Value (
+) (
+    class Pair first: firstValue second: secondValue = Value new (
+        | public first = firstValue. public second = secondValue. |
+    ) () : ()
+    class Probe = Object new (|| public pair = Pair first: third second: 1. public third = 3. ||) () : ()
+    public main: platform args: arguments = (
+        | t = platform transcript. pair = Probe new pair. |
+        t show: pair first printString; newLine.
+        t show: (pair = (Pair first: 3 second: 1)) printString; newLine
+    )
+) : ()

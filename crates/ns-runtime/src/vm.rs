@@ -16,7 +16,7 @@ use std::rc::Rc;
 use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::ActivationReference;
 use crate::interpreter::future::{
-    not_a_closure, resolve_for_instruction, FutureOutcome, Resolution,
+    not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
@@ -69,10 +69,11 @@ enum Flow {
 /// resumes it from that `program_counter`), `MakeClosure` (it reifies the
 /// activation, so the frame starts from the `program_counter` stored just
 /// before), `NonLocalReturn` (control leaves with a signal), and
-/// `ResolveFuture` when it meets an unresolved future (`force_and_reexecute`
-/// pushes the forcing above it, and the loop must come back to this same
-/// instruction once the future resolves). Nothing reads `program_counter`
-/// while a straight-line instruction executes.
+/// `ResolveFuture` and `InitializeSlot` when either meets an unresolved
+/// future (`force_and_reexecute` pushes the forcing above it, and the loop
+/// must come back to this same instruction once the future resolves).
+/// Nothing reads `program_counter` while a straight-line instruction
+/// executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
     let (floor, mut code, mut feedback_base) = interpreter.enter(|mutator| {
         (
@@ -457,7 +458,41 @@ fn execute<'gc>(
                     );
                     Flow::Next
                 }
-                Err(signal) => unwind(mutator, signal, floor),
+                // A future can reach a value's slot from outside any
+                // simultaneous clause's own resolution -- passed in as an
+                // ordinary argument, since a future is indistinguishable from
+                // its value (§6.3.2, rule 3). What belongs in the slot is
+                // what it stands for: forced first if it is not resolved yet
+                // (`value_for_a_value_slot`), then checked again with the
+                // same accepted path above. A refusal that is not about a
+                // future stands.
+                Err(signal) => match value_for_a_value_slot(mutator, value) {
+                    None => unwind(mutator, signal, floor),
+                    Some(Ok(Resolution::Value(resolved))) => {
+                        match check_value_slot(
+                            mutator,
+                            activation,
+                            receiver,
+                            *own_index as usize,
+                            resolved,
+                        ) {
+                            Ok(()) => {
+                                store_instance_field(
+                                    &mut mutator.heap,
+                                    &receiver,
+                                    base + *own_index as usize,
+                                    resolved,
+                                );
+                                Flow::Next
+                            }
+                            Err(signal) => unwind(mutator, signal, floor),
+                        }
+                    }
+                    Some(Ok(Resolution::Force(step))) => {
+                        force_and_reexecute(mutator, activation, program_counter, step, floor)
+                    }
+                    Some(Err(signal)) => unwind(mutator, signal, floor),
+                },
             }
         }
         // A lazy slot's getter answers its field once it is filled; the

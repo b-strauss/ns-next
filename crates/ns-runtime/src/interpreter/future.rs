@@ -400,6 +400,18 @@ pub(crate) fn resolve_for_instruction<'gc>(
     }
 }
 
+/// `InitializeSlot` refused `value` for a value's slot: if it is a future,
+/// the value it stands for is what belongs there -- stored and checked
+/// again, or forced first. `None` when it is no future, and the refusal
+/// stands.
+pub(crate) fn value_for_a_value_slot<'gc>(
+    mutator: &mut Mutator<'gc>,
+    value: Value<'gc>,
+) -> Option<Result<Resolution<'gc>, Signal<'gc>>> {
+    mutator.as_future(value)?;
+    Some(resolve_for_instruction(mutator, value))
+}
+
 /// `MakeFuture`'s operand held something other than a closure: a crafted
 /// image can put anything in that register, and an image must never panic
 /// (`CLAUDE.md`, "An image is untrusted input"), so this is an ordinary,
