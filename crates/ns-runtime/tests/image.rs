@@ -10518,6 +10518,18 @@ fn a_second_collections_facet_is_a_record_of_its_path_named_class() {
         same_object(&mut loaded, &list, &fresh_list),
         "the loaded facet hands out the loading platform's List"
     );
+    let equal = expect_ok(
+        loaded
+            .interpreter
+            .send(&facet, Symbol::intern("="), &[collections]),
+        "facet = platform collections",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            matches!(mutator.fetch(&equal), Value::Boolean(true)),
+            "the loaded facet equals the loading platform's facet"
+        );
+    });
 }
 
 #[test]
