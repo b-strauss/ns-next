@@ -1447,10 +1447,10 @@ fn a_stretch_leaves_for_a_requested_safepoint_and_resumes_where_it_stood() {
     let safepoints = interpreter.stress_safepoints();
     interpreter.set_stress_moves(false);
     interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&answer)), 42));
-    assert!(
-        safepoints >= 2,
-        "the push of callee and the return to caller: {safepoints}"
-    );
+    // 2 switches: the push of callee, and the return to caller. No jump in
+    // either method's body, forward or backward, so a safepoint wrongly
+    // taken on a forward jump would show up here as a count above 2.
+    assert_eq!(safepoints, 2);
 }
 
 /// A loop that sends nothing -- the optimized lowering inlines
@@ -1476,5 +1476,9 @@ fn a_loop_that_sends_nothing_still_reaches_a_safepoint() {
     let safepoints = interpreter.stress_safepoints();
     interpreter.set_stress_moves(false);
     interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&answer)), 1000));
-    assert!(safepoints >= 1000, "one per backward jump: {safepoints}");
+    // 1000 backward jumps, one per iteration, and no switches: the whole
+    // loop is inlined, so nothing here ever sends. The loop's exit is a
+    // forward jump; a safepoint wrongly taken there too would show up as a
+    // count above 1000.
+    assert_eq!(safepoints, 1000);
 }
