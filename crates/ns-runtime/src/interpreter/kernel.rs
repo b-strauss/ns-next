@@ -1126,15 +1126,17 @@ mod tests {
         });
     }
 
-    /// `PlatformFactory.ns`'s namespace members are ordinary methods. The class
-    /// accessor recognizer reads only the form `^outer Kernel <Name>`, which
-    /// a module other than the kernel cannot write, so `Collections>>List`
-    /// -- a class accessor of `CollectionsFactory.ns`, which only the image
-    /// code reads -- gets no `MethodFastPath::BuiltinClass`, and neither do
-    /// `KernelNamespace`'s five, which send to the kernel instance the
-    /// platform was handed. Each costs one activation more than it did as a
-    /// kernel accessor; a namespace member is asked for once, typically in
-    /// a slot initializer, not in a loop. `Transcript`'s two are mirror
+    /// No class accessor outside the kernel carries a fast path. The one
+    /// that does, `MethodFastPath::BuiltinClass`, is recognized only in the
+    /// form `^outer Kernel <Name>`, which no module but the kernel can write.
+    /// Every other shipped module's pure class accessors, such as
+    /// `Collections>>List`, are recognized too, as `MixinMethod::class_accessor`,
+    /// but only the image code reads that recognition, to step a platform
+    /// path through the accessor; a send runs the method like any other.
+    /// `KernelNamespace`'s five send to the kernel instance the platform was
+    /// handed, so they are neither. Each costs one activation more than a
+    /// kernel accessor; a namespace member is asked for once, typically in a
+    /// slot initializer, not in a loop. `Transcript`'s two are mirror
     /// forwarders like the kernel's: `PlatformFactory.ns` is resolved with
     /// `resolve_kernel`.
     #[test]
