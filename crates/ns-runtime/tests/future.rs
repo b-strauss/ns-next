@@ -460,8 +460,17 @@ ns_runtime::for_each_lowering! {
             let array = mutator.new_array(vec![future]);
             mutator.stash(Value::Object(array))
         });
+        // A first collection, with the future still rooted, gives back
+        // whatever else the setup left behind, so the second one's count
+        // falls only by what dropping the future's root released.
+        interpreter.collect_now();
+        let while_rooted = interpreter.collector_statistics().live_objects;
         drop(future);
         interpreter.collect_now();
+        assert!(
+            interpreter.collector_statistics().live_objects < while_rooted,
+            "the future, reachable from nothing once its root is dropped, is collected"
+        );
         interpreter.enter(|mutator| {
             let Value::Object(array) = mutator.fetch(&array) else {
                 panic!("an array");

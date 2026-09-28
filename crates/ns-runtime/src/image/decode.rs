@@ -880,10 +880,11 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// header of an activation record, which `decode_object_header` reads.
 /// `Future`: §6.3.2's pull future is kernel-private as `Activation` is, and
 /// no program names its class -- except as the header of an unresolved
-/// future's record, which `decode_object_header` reads too. `Object` declares an accessor for none of the
-/// four, for the same reasons, which is what
-/// keeps source and artifact agreed on the names a program has. Only the
-/// closing hash table names them, by tag, as it names every builtin.
+/// future's record, which `decode_object_header` reads too. `Object`
+/// declares an accessor for none of the four, for the same reasons, which
+/// is what keeps source and artifact agreed on the names a program has.
+/// Only the closing hash table names them, by tag, as it names every
+/// builtin.
 pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     referenced_builtin_class(read_builtin_class(reader)?)
 }

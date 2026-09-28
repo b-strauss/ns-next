@@ -305,10 +305,12 @@ pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'g
 }
 
 /// The fields an image writes for an unresolved or resolving `future`: its
-/// closure and the state 0. A resolving future is met only by a snapshot
-/// taken while its block runs, and a load starts no block, so it is written
-/// as what `future_abandoned` would make of it -- its closure is still in
-/// `computation`, kept there for exactly that.
+/// closure and the state 0. A future is resolving only while its block
+/// runs, and `image::snapshot` refuses a world with a running activation,
+/// so no snapshot meets one today; the case is defensive. Should one be
+/// met, it is written as what `future_abandoned` would make of it -- its
+/// closure is still in `computation`, kept there for exactly that -- since a
+/// load starts no block, so nothing could finish resolving it.
 pub(crate) fn fields_for_an_image<'gc>(fields: &[Value<'gc>]) -> Vec<Value<'gc>> {
     let mut written = fields.to_vec();
     if let Some(state) = written.get_mut(STATE_FIELD) {

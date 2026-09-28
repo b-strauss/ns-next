@@ -776,11 +776,11 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
 // ---------------------------------------------------------------------------
 // §6.3.2's simultaneous slots' four instructions (`MakeFuture`,
 // `ResolveFuture`, `LoadOwnSlot`, `InitializeSlotProvisionally`). Hand-built,
-// like the indirection vector's above: Task 4's lowering does not exist yet,
-// so no source expresses a simultaneous clause, and this is the only way to
-// drive `ResolveFuture`'s forcing path (`vm::force_and_reexecute`, the
+// like the indirection vector's above, so each instruction is driven on its
+// own -- `ResolveFuture`'s forcing path (`vm::force_and_reexecute`, the
 // `Reexecute` branch of `interpreter::future::resolve_for_instruction`)
-// before it does.
+// included -- apart from the lowering of a simultaneous clause that emits
+// them together.
 // ---------------------------------------------------------------------------
 
 /// A block whose body answers `value` and nothing else -- the future's
@@ -878,10 +878,10 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
         99
     );
     // `n` still holds the future `InitializeSlotProvisionally` stored --
-    // replacing it with the value through a checked `InitializeSlot` is
-    // Task 6 -- but forcing left it resolved, not stuck resolving: the
-    // `Reexecute` this test's `ResolveFuture` triggered ran the block
-    // exactly once and recorded its answer.
+    // nothing in this body replaces it with its value through a checked
+    // `InitializeSlot`, as a clause's end does -- but forcing left it
+    // resolved, not stuck resolving: the `Reexecute` this test's
+    // `ResolveFuture` triggered ran the block and recorded its answer.
     interpreter.enter(|mutator| {
         let Value::Object(receiver) = mutator.fetch(&instance) else {
             panic!("expected an instance");
@@ -1027,7 +1027,7 @@ fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
             ],
             argument_count: 0,
             register_count: 2,
-            statement_program_counter: vec![(0, 0..2)],
+            statement_program_counter: vec![(0, 0..3)],
             family_size: 0,
             copied_count: 0,
             outer_reach: 0,
