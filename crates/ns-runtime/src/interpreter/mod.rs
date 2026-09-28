@@ -5,6 +5,7 @@
 //! bootstrap and class instantiation are in `instantiate.rs`.
 
 pub(crate) mod core_library;
+pub mod future;
 pub(crate) mod inline_cache;
 pub mod instantiate;
 pub(crate) mod kernel;
@@ -367,6 +368,10 @@ pub struct Mutator<'gc> {
     /// takes the reserve: the one moment the reserve is held with nothing
     /// above its activation yet.
     pub(crate) taking_depth_reserve: bool,
+    /// Whether this heap has made a future (`Mutator::new_future`): set
+    /// once the first one is made, never cleared. A number, not a handle,
+    /// so nothing traces it.
+    pub(crate) futures_made: bool,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -946,15 +951,24 @@ impl<'gc> Mutator<'gc> {
         // The push that makes a freshly taken reserve held is asked about
         // first: `depth_reserve_held` would find nothing above its activation
         // yet, and forget it.
-        if !self.pushes_the_reserves_does_not_understand(&header) && !self.depth_reserve_held() {
-            return Err(recursion_too_deep(&header));
-        }
-        if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
+        let refusal = if !self.pushes_the_reserves_does_not_understand(&header)
+            && !self.depth_reserve_held()
+        {
+            recursion_too_deep(&header)
+        } else if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
             return Ok(self.heap.push_activation(header, arguments, temporaries));
+        } else {
+            Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
+        };
+        // A refused activation never runs, so a future it was to compute is
+        // unresolved again, as `abandon` leaves one whose activation an
+        // unwind pops. Only a forcing is undone here: every other
+        // continuation that has begun something -- a nested class's
+        // creation -- begins it once its push has succeeded.
+        if let Continuation::Future(forcing) = header.then {
+            self.future_abandoned(*forcing);
         }
-        Err(Signal::Terminate(Box::new(
-            self.overrun_of_the_reserve(&header),
-        )))
+        Err(refusal)
     }
 
     /// Whether the depth limit's reserve is held: its activation is still
@@ -1108,7 +1122,15 @@ impl<'gc> Mutator<'gc> {
                     .heap
                     .closure_activation(closure)
                     .expect("internal: a block step is decided only for a closure object");
-                check_block_arity(&self.heap, parameter_count, captured_frame, arguments.len())?;
+                if let Err(signal) =
+                    check_block_arity(&self.heap, parameter_count, captured_frame, arguments.len())
+                {
+                    // The block never runs, so its continuation is thrown
+                    // away as a popped one's is: a future being forced is
+                    // unresolved again rather than left resolving.
+                    self.abandon(then);
+                    return Err(signal);
+                }
                 // A closure's range is minted once, the first time it is
                 // activated: every closure `MakeClosure` creates already
                 // carries its method's family's base (below), so
@@ -1288,19 +1310,26 @@ impl<'gc> Mutator<'gc> {
             // stopped at -- now the top of the stack again.
             Continuation::Unwind(pending) => Err(unwind::signal_of(*pending)),
             Continuation::VmErrorSignalled(error) => Err(Signal::Terminate(error)),
+            Continuation::Future(_) => {
+                unreachable!("internal: vm::finish handles a future's continuation itself")
+            }
         }
     }
 
     /// What a continuation undoes when its activation is thrown away rather
     /// than returned from: the counterpart of `resume`, which `unwind::unwind`
-    /// calls for every activation it pops. Only a nested class's creation has
-    /// begun anything -- its cache slot is marked as in progress -- so only it
-    /// has anything to undo; every other continuation is simply dropped, a
+    /// calls for every activation it pops, and `push_step` for a block
+    /// activation it refuses. Only a nested class's creation and a future's
+    /// forcing have begun anything -- the creation's cache slot is marked as
+    /// in progress, the future as resolving -- so only they have anything to
+    /// undo; every other continuation is simply dropped, a
     /// `Continuation::Unwind` included: a newer unwind, or an error, has
     /// replaced the one it would have carried on.
     pub(crate) fn abandon(&mut self, then: Continuation<'gc>) {
-        if let Continuation::NestedClass(creation) = then {
-            nested::end_creation(self, &creation);
+        match then {
+            Continuation::NestedClass(creation) => nested::end_creation(self, &creation),
+            Continuation::Future(forcing) => self.future_abandoned(*forcing),
+            _ => {}
         }
     }
 

@@ -1,0 +1,20 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.2's futures, when an initializer raises: that
+   abandons its clause, and a future that had escaped stays unresolved
+   (docs/design/object-model.md, "A clause abandoned by an exception").
+   `escaped` receives `second`'s future before `first`'s initializer
+   raises, so `second`'s initializer has never run; the first message sent
+   to the future after the clause is abandoned forces it, which runs that
+   initializer then and answers its value. *)
+class Spec632AnAbandonedClause usingPlatform: p = Object new (
+    | t = p transcript. private Error = p kernel Error. public escaped. |
+) (
+    class Probe keep: holder = Object new (
+        || public first = {holder escaped: second. nil zork}. public second = 2 + 1. ||
+    ) () : ()
+    public main: platform args: arguments = (
+        t show: ([Probe keep: self. 'no error'] on: Error do: [:error | error class name]); newLine.
+        t show: (escaped + 1) printString; newLine
+    )
+) : ()

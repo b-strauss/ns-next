@@ -1,0 +1,13 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.2: a code body's temporaries are slot declarations
+   (5.1.8), so a simultaneous clause of them initializes through futures as
+   a class's does: `first` reads `second`, declared after it, and after the
+   clause both hold their values. *)
+class Spec632SimultaneousTemporaries usingPlatform: p = Object new (| t = p transcript. |) (
+    public main: platform args: arguments = (
+        || first = second + 1. second = 2. ||
+        t show: first printString; newLine.
+        t show: second printString; newLine
+    )
+) : ()

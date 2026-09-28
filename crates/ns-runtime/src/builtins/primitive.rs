@@ -27,8 +27,126 @@ pub enum Primitive {
     Message(MessagePrimitive),
     /// `moduleNamed:`: a shipped module's root class (`builtins::module`).
     Module(ModulePrimitive),
+    /// §6.3.2's pull future, forced by its `doesNotUnderstand:`
+    /// (`builtins::future`).
+    Future(FuturePrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
+}
+
+impl Primitive {
+    /// Whether this leaf answers `false` for an operand of the wrong kind
+    /// instead of declining: identity and the equality leaves. Each of them
+    /// declines instead when that answer is `false` and an operand is a
+    /// future (`interpreter::future::declines_for_a_future`, which checks
+    /// in a debug build that its caller is one of these), so its caller's
+    /// failure path sees through it, since a future answers here for its
+    /// value (`docs/design/object-model.md`, "Where Rust sees a future").
+    /// Every variant is named, so a new leaf does not compile until someone
+    /// decides.
+    ///
+    /// Every leaf marked `false` either declines or raises on an operand of
+    /// the wrong kind -- which the failure path covers -- or never needs to
+    /// see through one: it has no operand but its own subject, or it stores,
+    /// forwards or ignores the operand (`ElementAtPut`'s element, `Block`'s
+    /// `Value` arguments, `Message`'s `SendTo` receiver, `ReturnValue`'s
+    /// value). The three that take a block, or a text they render, and would
+    /// otherwise answer as though a future were a value of its own --
+    /// `Enumerate`'s and the loops' block, `Terminate`'s arguments --
+    /// decline for a future instead.
+    pub(crate) fn answers_false_to_a_stranger(self) -> bool {
+        match self {
+            Primitive::Object(ObjectPrimitive::Identical | ObjectPrimitive::Equal) => true,
+            Primitive::Object(
+                ObjectPrimitive::Class | ObjectPrimitive::Hash | ObjectPrimitive::PrintString,
+            ) => false,
+            Primitive::Value(ValuePrimitive::SameAs) => true,
+            Primitive::Value(
+                ValuePrimitive::Hash | ValuePrimitive::SlotCount | ValuePrimitive::SlotAt,
+            ) => false,
+            Primitive::Behavior(
+                // Declines, rather than answering `false`, for an argument
+                // that is no class object -- a future among them -- and for
+                // a receiver that is none, so the failure path already sees
+                // through a future and it needs no `declines_for_a_future`.
+                BehaviorPrimitive::SharesApplication
+                | BehaviorPrimitive::Name
+                | BehaviorPrimitive::ThisClass
+                | BehaviorPrimitive::Enclosing
+                | BehaviorPrimitive::Superclass,
+            ) => false,
+            Primitive::Integer(IntegerPrimitive::Equal) => true,
+            Primitive::Integer(
+                IntegerPrimitive::Add
+                | IntegerPrimitive::Subtract
+                | IntegerPrimitive::Multiply
+                | IntegerPrimitive::FloorDivide
+                | IntegerPrimitive::Less
+                | IntegerPrimitive::Greater
+                | IntegerPrimitive::LessOrEqual
+                | IntegerPrimitive::GreaterOrEqual
+                | IntegerPrimitive::Negated
+                | IntegerPrimitive::Absolute
+                | IntegerPrimitive::PrintString,
+            ) => false,
+            Primitive::Float(FloatPrimitive::Equal) => true,
+            Primitive::Float(
+                FloatPrimitive::Add
+                | FloatPrimitive::Subtract
+                | FloatPrimitive::Multiply
+                | FloatPrimitive::Divide
+                | FloatPrimitive::Less
+                | FloatPrimitive::Greater
+                | FloatPrimitive::Hash
+                | FloatPrimitive::PrintString,
+            ) => false,
+            Primitive::String(StringPrimitive::Equal) => true,
+            Primitive::String(
+                StringPrimitive::Size
+                | StringPrimitive::Concatenate
+                | StringPrimitive::Hash
+                | StringPrimitive::AsSymbol
+                | StringPrimitive::PrintString,
+            ) => false,
+            Primitive::Symbol(SymbolPrimitive::Equal) => true,
+            Primitive::Symbol(
+                SymbolPrimitive::AsString | SymbolPrimitive::Hash | SymbolPrimitive::PrintString,
+            ) => false,
+            Primitive::Collection(
+                CollectionPrimitive::Enumerate
+                | CollectionPrimitive::Size
+                | CollectionPrimitive::ElementAt
+                | CollectionPrimitive::ElementAtPut
+                | CollectionPrimitive::Allocate,
+            ) => false,
+            Primitive::Block(
+                BlockPrimitive::Value
+                | BlockPrimitive::ArgumentCount
+                | BlockPrimitive::WhileTrue
+                | BlockPrimitive::WhileFalse,
+            ) => false,
+            Primitive::Platform(PlatformPrimitive::Show | PlatformPrimitive::NewLine) => false,
+            Primitive::Activation(ActivationPrimitive::InheritsMixinOf) => true,
+            Primitive::Activation(
+                ActivationPrimitive::Current
+                | ActivationPrimitive::Sender
+                | ActivationPrimitive::IsActiveHandler
+                | ActivationPrimitive::HandlerClass
+                | ActivationPrimitive::HandlerBlock
+                | ActivationPrimitive::SetHandlerActive
+                | ActivationPrimitive::ReturnValue
+                | ActivationPrimitive::Restart
+                | ActivationPrimitive::Terminate,
+            ) => false,
+            Primitive::Message(MessagePrimitive::SendTo) => false,
+            Primitive::Module(ModulePrimitive::Named) => false,
+            Primitive::Future(FuturePrimitive::Value) => false,
+            // It reaches its own primitive's row through `execute_sent`,
+            // whose failure path looks for a future among that row's
+            // operands.
+            Primitive::Mirror(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +289,14 @@ pub enum MessagePrimitive {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulePrimitive {
     Named,
+}
+
+/// The one leaf of `Kernel.ns`'s `Future` (`docs/design/object-model.md`,
+/// "Simultaneous slots").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuturePrimitive {
+    /// The future's value, forcing it first when it is unresolved.
+    Value,
 }
 
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
@@ -619,6 +745,12 @@ pub const MIRROR: &[MirrorEntry] = &[
         // Unary: the module's name is the row's subject.
         "moduleNamed",
         Primitive::Module(ModulePrimitive::Named),
+    ),
+    mirror(
+        "futureValue:ifFail:",
+        // Unary: the future is the row's subject.
+        "value",
+        Primitive::Future(FuturePrimitive::Value),
     ),
 ];
 

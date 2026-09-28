@@ -156,6 +156,26 @@ pub(crate) fn filled_own_slot<'gc>(
         .filter(|value| !matches!(value, Value::Nil))
 }
 
+/// The value of the running activation's receiver's own slot `own_index`,
+/// addressed as `InitializeSlot` addresses it -- for `LoadOwnSlot`, a
+/// simultaneous clause's end reading each slot back without a getter send,
+/// which a subclass could override. The same address `filled_own_slot`
+/// computes, but without its "not yet computed" filter: `nil` is answered
+/// for a receiver or index with no such field, exactly as `filled_own_slot`
+/// treats those, but an actual `nil` field is simply what it holds here.
+pub(crate) fn load_own_slot<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    own_index: u32,
+) -> Value<'gc> {
+    let Value::Object(object) = heap.activation_receiver(activation) else {
+        return Value::Nil;
+    };
+    let base = heap.activation_slot_base(activation);
+    heap.instance_field(object, base + own_index as usize)
+        .unwrap_or(Value::Nil)
+}
+
 /// Writes `value` into instance field `index` on `instance`'s
 /// `ObjectData::Instance` fields -- silently skipped when `instance` is not an
 /// object, or is an object with some other `ObjectData` shape, or `index` is

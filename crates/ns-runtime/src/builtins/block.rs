@@ -17,6 +17,20 @@ pub(crate) fn execute<'gc>(
         return None;
     };
     let parameters = mutator.heap().closure_parameter_count(closure)?;
+    // A loop keeps its body and takes a non-block for a value of its own,
+    // which a future is not: it stands for its value, which may well be a
+    // block. Declining hands it to its caller's failure path, which sees through
+    // it before the loop keeps anything. Asked only of a body that is no
+    // block, as `do:` asks it, so a block body pays nothing for it.
+    if let BlockPrimitive::WhileTrue | BlockPrimitive::WhileFalse = primitive {
+        if let Some(Value::Object(body)) = arguments.first() {
+            if !mutator.heap().is_closure(*body)
+                && mutator.as_future(Value::Object(*body)).is_some()
+            {
+                return None;
+            }
+        }
+    }
     Some(Ok(match primitive {
         BlockPrimitive::Value => Step::Block {
             closure,

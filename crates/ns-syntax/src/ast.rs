@@ -68,6 +68,11 @@ pub struct SlotDeclaration {
     /// of its getter, not by the instance initializer. Never set on a header
     /// slot or a temporary, which the grammar gives no `lazy` form.
     pub lazy: bool,
+    /// §6.3.2: declared in a simultaneous slot clause, `|| ... ||`, whose
+    /// initializers run as futures resolved at the clause's end
+    /// (`docs/design/object-model.md`, "Simultaneous slots"). Never set on a
+    /// lazy slot, which stands in no clause.
+    pub simultaneous: bool,
     pub span: Span,
 }
 

@@ -1,0 +1,17 @@
+Newspeak3
+'Test'
+(* A value class may declare a simultaneous clause: its slots hold futures
+   only during the clause, provisionally, and the clause's end stores each
+   value through 3.1.1's check (docs/design/object-model.md, "The
+   lowering"). A slot whose value is no value is still refused. *)
+class Spec632AValueClassInitializesSimultaneously usingPlatform: p = Object <: Value (
+) (
+    class Pair = Value new (|| public first = second - 1. public second = 3. ||) () : ()
+    class Holder = Value new (|| public list = {1}. ||) () : ()
+    public main: platform args: arguments = (
+        | t = platform transcript. Error = platform kernel Error. |
+        t show: Pair new first printString; newLine.
+        t show: (Pair new = Pair new) printString; newLine.
+        t show: ([Holder new. 'accepted'] on: Error do: [:error | 'refused']); newLine
+    )
+) : ()

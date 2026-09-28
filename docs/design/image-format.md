@@ -803,7 +803,7 @@ an image whose graph reaches the mirror object is not written at all, since
 it would hand the capability to whatever loaded it
 (`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
 and neither is one whose graph reaches the mirror's class, `Top`,
-`Activation` or the metaclass of one of them (`encode::unnameable_class`),
+`Activation`, `Future` or the metaclass of one of them (`encode::unnameable_class`),
 which the decoder would refuse.
 Neither can happen to a program built from source, which cannot obtain the
 mirror; both are there for the day something could.
@@ -863,6 +863,59 @@ tags **24** to **28**, in that order, after `Activation`'s 23
 through `platform kernel` and may subclass them, so an image may name any
 of the five wherever it names a class: an exception a program made is an
 ordinary instance record.
+
+**Futures in a graph: a resolved future is its value, an unresolved one a
+record under tag 30.** `Future` carries builtin tag **30**, the
+kernel-private pull future of §6.3.2's simultaneous slots
+([object-model.md](object-model.md), "Simultaneous slots"). No
+program names it, so `read_referenced_builtin_class` refuses tag 30 wherever
+the graph names a class — as a value, a superclass, a `<:` clause's builtin
+and behind `CLASS_METACLASS` — and the encoder refuses a graph that reaches
+the class or its metaclass (`encode::unnameable_class`), exactly as for
+`Activation`'s 23. A future *object* is written two ways. A resolved one is
+never a record: the graph walk and the value encoder both see through it
+(`future::seen_through`), so every reference to it is written as a reference
+to its value, and a load gives back one object where the program saw one —
+the value a collection would have put in its place anyway
+([memory.md](memory.md)). An unresolved one is an ordinary instance record
+(`OBJECT_INSTANCE`) whose header is `CLASS_BUILTIN` followed by tag 30, the
+one other header besides an activation record's that names a
+kernel-private class; the walk does not visit that header as a reference, as
+it does not an activation's. Its two fields are its closure and the state 0.
+A future is *resolving* only while its block runs, and `image::snapshot`
+refuses a world with a running activation, so no snapshot meets one; the
+encoder handles the case defensively all the same, writing it as
+unresolved, its closure still in the first field
+(`future::fields_for_an_image`), which is what an abandonment would make of
+it — a load starts no block, so nothing could finish resolving it.
+
+The decoder accepts tag 30 in an object's header alone
+(`decode_object_header`) and holds the record to what the encoder writes: an
+instance body of exactly two fields whose second is the state 0 and whose
+first, once every record is read, is a closure. Anything else under that
+header — another body, another field count, the state 1 or 2 or one that is
+none of the three, a computation that is no closure — is `FutureRecord`,
+refused rather than decoded, so no image hands the runtime a future whose
+fields are no future's, and no resolved future stands apart from the value
+every other reference was written as. Crafted code can still store into a
+future's slots once it holds one -- a decoded frame may carry any receiver,
+and `InitializeSlot` stores into `self` unchecked -- so
+`Mutator::future_state` reads the fields as untrusted: a state that is none
+of the three, an unresolved future without a closure, or a resolved one
+whose value is a future is `FutureState::Malformed`, which forcing raises as
+an ordinary error, the collector leaves in place, and the encoder refuses to
+write (`forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic`,
+`tests/vm.rs`; `a_future_with_corrupted_fields_is_refused_by_the_encoder`,
+`tests/image.rs`). A graph that decodes a future sets the
+loading world's `futures_made`, as `Mutator::new_future` does, so the leaves
+see through it and every check that stays off a program's paths until a
+future exists runs in the loaded world
+(`a_resolved_future_is_written_as_its_value`,
+`an_unresolved_future_round_trips_and_computes_after_load`,
+`a_future_record_that_is_not_an_unresolved_future_is_refused`,
+`a_graph_naming_future_as_a_class_is_refused`, `tests/image.rs`;
+`goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose snapshot
+round trip carries a data cycle through resolved futures).
 
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
@@ -1087,14 +1140,6 @@ row's `send` is the build's `--entry`; and mutation and truncation tests cover
 the new flag, the entry field and the trailing-byte check
 (`crates/ns-runtime/tests/image.rs`).
 
-## Planned: futures in a graph
-
-Would change: the encoder writes a resolved future of a simultaneous slot
-clause as its value; an unresolved one is an ordinary record of the
-kernel-private future class, which takes the next free builtin class tag
-and which the decoder refuses wherever a graph names a class, as it
-refuses `Top`'s ([object-model.md](object-model.md), "Planned: simultaneous slots").
-
 ## Planned: suspend and resume
 
 An image cannot be taken mid-execution, and the obstacle is control flow rather
@@ -1110,8 +1155,9 @@ what each stack entry's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
 instantiation's `Instantiation`, the unwind an `ensure:` block's return
 carries on (`Unwind`, holding a `PendingUnwind`: its target frame and whether
-it returns a value, restarts or terminates) and the end of the run a VM
-error's `signal` returns into (`VmErrorSignalled`). An image records none of
+it returns a value, restarts or terminates), the end of the run a VM
+error's `signal` returns into (`VmErrorSignalled`) and a future's forcing
+(`Future`, holding a `FutureForcing`). An image records none of
 them today, and a suspended activation without its continuation would resume
 without the rest of the loop, the class creation, the walk or the unwind it
 belongs to. The depth limit's reserve (`Mutator.depth_reserve`), a frame

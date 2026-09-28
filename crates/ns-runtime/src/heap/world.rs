@@ -45,6 +45,7 @@ impl World {
                 unhandled_exceptions_to_resume: 0,
                 depth_reserve: None,
                 taking_depth_reserve: false,
+                futures_made: false,
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());
@@ -180,6 +181,13 @@ impl World {
     pub(crate) fn collect(&mut self) {
         let start = std::time::Instant::now();
         self.check_quiescent_state();
+        // Before marking, so that a resolved future nothing but object
+        // fields reached is garbage by the time the marker looks; a program
+        // that never made a future pays nothing for it. `move_everything`
+        // does not replace: moving is not collecting.
+        if self.mutator.futures_made {
+            crate::interpreter::future::replace_resolved_futures(&mut self.mutator);
+        }
         let marker = self.mark_everything_reachable();
         // Between marking and compacting: after compaction the mark bits no
         // longer line up with the arena, and before marking finishes an

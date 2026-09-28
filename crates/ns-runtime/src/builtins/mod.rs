@@ -4,8 +4,9 @@
 //! what §3.2's `Class` and `Metaclass` forward to, then `numbers`, `text`,
 //! `collections` and `block`, `activation` for the exceptions
 //! `Kernel.ns` builds over the running activations, `message` for
-//! `Message>>sentTo:`, and `module` for `moduleNamed:`, through which
-//! shipped source reaches another shipped module. `primitive` names every
+//! `Message>>sentTo:`, `module` for `moduleNamed:`, through which
+//! shipped source reaches another shipped module, and `future` for the
+//! forcing of §6.3.2's pull future. `primitive` names every
 //! one of them as a `Primitive` and lists them as the rows of the VM
 //! mirror, the one builtin
 //! whose method table holds primitive entries (`dispatch::Lookup::Primitive`);
@@ -15,6 +16,7 @@ pub mod activation;
 pub mod behavior;
 pub mod block;
 pub mod collections;
+pub mod future;
 pub mod message;
 pub mod module;
 pub mod numbers;
@@ -37,6 +39,13 @@ use crate::{platform, Mutator, Symbol};
 /// methods"). `selector` is the send's, for the error texts
 /// that name it. No primitive calls a block: the control-flow ones, `value`
 /// and `do:` answer a `Step` (`docs/design/execution.md`, "The trampoline").
+///
+/// A leaf that declines or raises has changed nothing -- it checks its
+/// operands before it writes anything -- so running it again, or running
+/// again the instruction that sent it, is running it once. The callers'
+/// failure paths rest on that when they see through a future among the
+/// operands (`interpreter::future::after_a_failed_leaf`,
+/// `docs/design/dispatch.md`, "Primitives").
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: Primitive,
@@ -80,6 +89,7 @@ pub(crate) fn execute<'gc>(
         Primitive::Module(primitive) => {
             module::execute(mutator, primitive, receiver).map(wrap_error)
         }
+        Primitive::Future(primitive) => future::execute(mutator, primitive, receiver),
         // Always `Some`: a leaf that declines here runs the failure block
         // the send carries, so a mirror row never answers `None`.
         Primitive::Mirror(row) => Some(crate::interpreter::mirror::execute_sent(

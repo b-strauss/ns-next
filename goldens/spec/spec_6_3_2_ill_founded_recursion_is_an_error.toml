@@ -1,0 +1,3 @@
+stdout = '''
+divergent evaluation of a simultaneous slot's initializer
+'''

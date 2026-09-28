@@ -16,6 +16,7 @@ use ns_syntax::ast::{self, Expression, Statement};
 use ns_syntax::Span;
 
 use super::control_flow::{self, InlineForm};
+use super::simultaneous;
 use crate::types::Binding;
 
 /// A body of one code family: its root, or a block literal named by its span.
@@ -167,13 +168,14 @@ struct Walker<'a> {
 impl<'a> Walker<'a> {
     fn declare(&mut self, key: BodyKey, argument_count: u16, temporaries: &[ast::SlotDeclaration]) {
         // A parameter is immutable (§3.6), and so is a local slot declared
-        // with `=`; only those can ever need the vector.
+        // with `=`; only those can never need the vector. A simultaneous
+        // temporary (§6.3.2) is written twice whatever its declaration says
+        // -- its future, then its value at the clause's end -- and a
+        // sibling's future block may have read it in between.
         let mutable = std::iter::repeat_n(false, argument_count as usize)
-            .chain(
-                temporaries
-                    .iter()
-                    .map(|temporary| temporary.mutability != ast::SlotMutability::Immutable),
-            )
+            .chain(temporaries.iter().map(|temporary| {
+                temporary.mutability != ast::SlotMutability::Immutable || temporary.simultaneous
+            }))
             .collect();
         self.locals.insert(key, mutable);
         self.needs.insert(key, Vec::new());
@@ -339,8 +341,22 @@ impl<'a> Walker<'a> {
             let Some(initializer) = &temporary.initializer else {
                 continue;
             };
-            self.expression(initializer);
+            // A simultaneous initializer is its future's block, walked as the
+            // real block the lowering makes of it, so what it reads is
+            // captured there (`simultaneous::future_block`).
+            match simultaneous::future_block(temporary) {
+                Some(block) => self.expression(&block),
+                None => self.expression(initializer),
+            }
             self.write(key, argument_count + offset as u16, frame_position);
+        }
+        // The clause's end: each simultaneous temporary written again with
+        // its resolved value, in declaration order, after every future's
+        // block was created.
+        for (offset, temporary) in temporaries.iter().enumerate() {
+            if temporary.simultaneous && temporary.initializer.is_some() {
+                self.write(key, argument_count + offset as u16, frame_position);
+            }
         }
     }
 
@@ -605,6 +621,19 @@ mod tests {
             vec![Captured::Vector {
                 body: BodyKey::Root
             }]
+        );
+    }
+
+    /// A simultaneous temporary is written twice -- its future, then its
+    /// value at the clause's end -- so a sibling's future block that reads it
+    /// must share it through the vector, not copy the nil its register held.
+    #[test]
+    fn a_simultaneous_temporary_a_sibling_reads_goes_into_the_vector() {
+        let captures = analyze_method("|| first = [second]. second = 2. || ^first");
+        assert_eq!(
+            place(&captures, 1),
+            Place::Vector(0),
+            "second is read by first's future block and written at the clause's end"
         );
     }
 

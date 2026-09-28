@@ -1,0 +1,20 @@
+Newspeak3
+'Test'
+(* A leaf that stores or activates a block argument must not take a
+   sibling's future for a non-block (docs/design/object-model.md, "Where
+   Rust sees a future"): `do:` and `whileTrue:` receive `printer`'s and
+   `step`'s futures during the clause, and run the blocks they stand for
+   rather than treating each as a value of its own. *)
+class Spec632AFutureIsABlockArgument usingPlatform: p = Object new (| t = p transcript. |) (
+    class Probe = Object new (||
+        public count ::= 0.
+        public shown = {1. 2. 3} do: printer.
+        public looped = [count: count + 1. count < 3] whileTrue: step.
+        public printer = [:each | t show: each printString].
+        public step = [t show: 'step']. ||) () : ()
+    public main: platform args: arguments = (
+        | probe = Probe new. |
+        t newLine.
+        t show: probe count printString; newLine
+    )
+) : ()

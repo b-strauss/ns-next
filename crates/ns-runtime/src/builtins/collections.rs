@@ -230,6 +230,12 @@ fn do_step<'gc>(
         return Some(Ok(Step::Value(receiver)));
     };
     if !mutator.heap.is_closure(block) {
+        // A future stands for its value, which may well be a block: taking
+        // it for a non-block would skip every element. Declining hands it
+        // to its caller's failure path, which sees through it.
+        if mutator.as_future(Value::Object(block)).is_some() {
+            return None;
+        }
         return Some(Ok(Step::Value(receiver)));
     }
     Some(Ok(element_step(Box::new(DoLoop {

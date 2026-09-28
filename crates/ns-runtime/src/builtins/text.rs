@@ -1,6 +1,6 @@
 //! `String` and `Symbol` native methods.
 
-use crate::builtins::primitive::{StringPrimitive, SymbolPrimitive};
+use crate::builtins::primitive::{Primitive, StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -131,12 +131,17 @@ pub(crate) fn execute_string<'gc>(
                 }),
             })
         }
-        StringPrimitive::Equal => Some(Ok(Value::Boolean(text_equals(
-            &mutator.heap,
-            *object,
-            &string,
-            arguments.first(),
-        )))),
+        StringPrimitive::Equal => {
+            let equal = text_equals(&mutator.heap, *object, &string, arguments.first());
+            crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::String(primitive),
+                equal,
+                receiver,
+                arguments,
+            )
+            .map(|answer| Ok(Value::Boolean(answer)))
+        }
         StringPrimitive::Hash => Some(Ok(Value::SmallInteger(string_hash(&string)))),
         StringPrimitive::AsSymbol => Some(Ok(mutator.new_symbol(Symbol::intern(&string)))),
         StringPrimitive::PrintString => {
@@ -159,12 +164,17 @@ pub(crate) fn execute_symbol<'gc>(
         SymbolPrimitive::AsString => Some(Ok(Value::Object(
             mutator.new_string(symbol.as_str().to_string()),
         ))),
-        SymbolPrimitive::Equal => Some(Ok(Value::Boolean(symbol_equals(
-            &mutator.heap,
-            *object,
-            symbol,
-            arguments.first(),
-        )))),
+        SymbolPrimitive::Equal => {
+            let equal = symbol_equals(&mutator.heap, *object, symbol, arguments.first());
+            crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::Symbol(primitive),
+                equal,
+                receiver,
+                arguments,
+            )
+            .map(|answer| Ok(Value::Boolean(answer)))
+        }
         SymbolPrimitive::Hash => Some(Ok(Value::SmallInteger(symbol_hash(symbol)))),
         SymbolPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(format!("#{}", symbol.as_str())),

@@ -16,7 +16,8 @@
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path, the indirection vector's reads and writes in
 > `interpreter/locals.rs`, and the unwinder and the depth limit's reserve in
-> `interpreter/unwind.rs`), `compiler/capture.rs` (the capture analysis) and
+> `interpreter/unwind.rs`, and forcing a future in `interpreter/future.rs`),
+> `compiler/capture.rs` (the capture analysis) and
 > `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
@@ -355,7 +356,12 @@ activations from its callers'.
   activation — a native loop's next block, `do:`'s block for the next element,
   an instantiation's next body, or the method a non-Boolean condition's
   `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
-  in the popped activation's place ("The trampoline" below).
+  in the popped activation's place ("The trampoline" below). A future's
+  forcing, `Continuation::Future`, is the one `finish` does not hand to
+  `resume`: `Mutator::future_computed` records the value, and the loop
+  delivers it, forces the next future of a chain, or runs the caller's
+  stopped instruction again ("Running an instruction again after forcing a
+  future" below).
 - **A signal** — a Newspeak error, a non-local return, or an exception's
   `return:`, `retry` or termination — goes to `vm::unwind`, which hands it
   to the one unwinder, `interpreter::unwind`, and carries out what it
@@ -4302,6 +4308,117 @@ sends a collection message in its timed loop, and nothing on a send's path
 changed. `bench_block.ns`'s largest round, 14.80 for one head build, is the
 build-to-build outlier kind the pooling is for.
 
+### What simultaneous slots cost
+
+Simultaneous slots ([object-model.md](object-model.md), "Simultaneous
+slots") put three things on or beside the paths every program runs: four
+instructions in `vm::run`'s dispatch and a refusal branch in
+`InitializeSlot`'s arm; a `Continuation::Future` arm in `vm::finish`; and
+the search for a future among a leaf's operands. None of the four fixtures
+makes a future, so none runs any of it past a flag test. What they can pay
+is the shape of the code around it.
+
+**How it is built, after a first version measured 1–3% slower.** The
+first version wrapped every leaf: `builtins::execute` ran the leaf, then
+tested its answer and the flag before handing it back, which put a call and
+a 56-byte copy on every leaf. The search is now on the callers' failure
+paths only -- `mirror::execute_sent` and `send_inlined` before the failure
+block, `execute_method` before the method is activated -- behind
+`futures_made`: `future::after_a_failed_leaf`, inlined into each caller,
+is the flag test, and the search is the cold function behind it
+(`see_through_a_failed_leaf`; `send_inlined` tests the flag itself and goes
+to the cold `mirror::see_through_a_failed_row`); the leaves that answer
+`false` to a stranger decline instead when an operand is a future
+(`future::declines_for_a_future`), so the same path sees through it. The
+four instructions share one arm of `vm::run` that makes one
+out-of-line call (`simultaneous_clause_instruction`), and `InitializeSlot`'s
+refusal is one call too (`initialize_slot_refused`); each reads its
+instruction back rather than passing its operands. Neither is marked
+`#[cold]`: that measured slower (below).
+
+**Measured 2026-09-28, `b0edda5` against `0b1f474`** (the plan commit
+before Task 1), by the protocol of "What removing the re-entries moved":
+three release builds of each with the pinned `RUSTFLAGS`, the second and
+third adding `-C metadata=buildb` and `-C metadata=buildc`, each in its own
+`--target-dir`; the base tree exported with `git archive` under the
+git-ignored `.temp/`. `ns-next bench <source> --iterations 30`, five rounds
+a sitting, the six binaries rotating by one position from round to round,
+two sittings; each printed every fixture's recorded answer. Means of the
+five rounds' medians, in ms:
+
+Sitting 1:
+
+| Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.2492 | 5.0058 | 5.2723 | 5.0955 | 5.0963 | 5.0526 |
+| `bench_send.ns` | 6.4715 | 6.5001 | 6.4662 | 6.4657 | 6.4646 | 6.6394 |
+| `bench_block.ns` | 13.9962 | 13.9744 | 14.0102 | 14.0767 | 14.0102 | 14.1150 |
+| `bench_megamorphic.ns` | 9.1590 | 9.1069 | 9.2045 | 9.5094 | 9.5205 | 9.6675 |
+
+Sitting 2:
+
+| Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.0241 | 5.0530 | 5.0411 | 5.0489 | 5.0393 | 5.0936 |
+| `bench_send.ns` | 6.4690 | 6.5186 | 6.4848 | 6.5131 | 6.4569 | 6.4525 |
+| `bench_block.ns` | 14.0660 | 14.1051 | 14.0209 | 14.0611 | 14.1068 | 14.0048 |
+| `bench_megamorphic.ns` | 9.1352 | 9.1699 | 9.1412 | 9.5171 | 9.5157 | 9.5463 |
+
+Both sittings pooled (n = 30 rounds a side), in ms, and whether every
+round of the head lies outside every round of `0b1f474`'s, sitting by
+sitting:
+
+| Source | Head mean | `0b1f474` mean | Change | Head median | `0b1f474` median | Change | Sitting 1 | Sitting 2 |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.0710 | 5.1076 | -0.72% | 5.0818 | 5.0386 | +0.86% | overlapping | overlapping |
+| `bench_send.ns` | 6.4987 | 6.4850 | +0.21% | 6.4640 | 6.4813 | -0.27% | overlapping | overlapping |
+| `bench_block.ns` | 14.0624 | 14.0288 | +0.24% | 14.0692 | 14.0374 | +0.23% | overlapping | overlapping |
+| `bench_megamorphic.ns` | 9.5461 | 9.1528 | +4.30% | 9.5400 | 9.1528 | +4.23% | separated | separated |
+
+**Three fixtures are level; `bench_megamorphic.ns` is about 4% slower.**
+`dumpbin /disasm` of a release build with debug information
+(`CARGO_PROFILE_RELEASE_DEBUG=limited`, the same pinned flags): one
+`ns_runtime::vm::run` label, no `vm::run::closure`; **7,083 instructions
+against 6,983** at `0b1f474`. `builtins::execute` is one function again,
+6,240 instructions against 5,964 (the equality leaves' decline test);
+`vm::finish` 1,047 against 679.
+
+**What the remaining 4% is.** Each variant below is three builds by the
+same protocol, measured in one sitting beside `0b1f474`'s three (means
+against it; the head's own sittings above are the reference):
+
+| Variant | loop | send | block | megamorphic |
+|---|---|---|---|---|
+| the four arms and the refusal each out of line, marked `#[cold]` | +1.70% | +0.88% | +2.13% | +5.97% |
+| the same, not marked `#[cold]` | -1.49% | +1.42% | +0.28% | +3.78% |
+| the head, but the one arm answering `Flow::Next` and calling nothing (not a working build) | +0.30% | -0.89% | -0.82% | +1.56% |
+| the same, in four more sittings | -0.79% to +0.37% | -1.93% to +0.39% | -0.88% to +1.42% | -0.19% to +1.11% |
+| the head, its arm calling and discarding the answer (not a working build) | -0.58% | +1.24% | +1.08% | +3.04% |
+| the head with every jump target aligned to 64 bytes (`-align-all-nofallthru-blocks=6` on both sides) | +1.85% | +0.38% | -0.54% | +4.23% |
+| `InitializeSlot` and the four instructions in one arm, one call | +2.48% | +1.57% | +2.61% | +5.71% |
+| `0b1f474` with an unused function added to `vm.rs` | +0.55% | -0.56% | +0.30% | -0.16% |
+
+Every other part of the change -- the leaves, the callers' failure paths,
+`InitializeSlot`'s refusal call, `vm::finish` -- is present in the
+"calling nothing" build, and it is level on all four. What costs
+`bench_megamorphic.ns` 3–5% is the one arm of `vm::run`'s dispatch that
+calls anything at all, whatever it calls and wherever it stands in the
+match. It is not alignment -- aligning every jump target leaves it -- and
+not the function's size. The jump table shows why it is so sensitive:
+the arm reorders LLVM's placement of every block of `vm::run` (the offsets
+of `SendLexical`'s and `SendPublic`'s arms move from 0x3e3 and 0x51d to
+0xc66 and 0x12a3), and the register assignment with it. An `xperf` profile
+(0.12 ms sampling, 300 runs of the fixture a binary) puts the difference
+inside `vm::run` (19,022 samples against 18,362 for the "calling nothing"
+build and 18,258 for `0b1f474`) and in `decide_slot_accessor` (775 against
+516 and 652). In the slower build the block that tests the `Flow` a send
+answered -- read back from the stack, where every send writes it -- is a
+chain of compares that tests `Next` last, where the faster one tests
+`Switch` and branches away; every send of this fixture's loop answers
+`Next`. Why one more calling arm moves that block, and how to keep it in
+place -- a `Flow` answered in registers, for one -- is **open**, and the
+fixture stays about 4% slower until it is found.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -5216,15 +5333,40 @@ second did not. "What closure conversion moved", in the measurements section
 above, is the measurement, with the reasoning for why the memory moved the way
 it did and how far that reasoning is evidence.
 
-## Planned: running an instruction again after forcing a future
+## Running an instruction again after forcing a future
 
-Would change: a new continuation, `Reexecute`, discards its activation's
-value and runs the caller's instruction again instead of the next one. A
-leaf, an equality leaf's "no" path or `InitializeSlot` that meets an
-unresolved future of a simultaneous slot clause answers a step that forces
-it under this continuation, since nothing forces it in Rust without
-re-entering the loop. It rests on a leaf that declines or raises having
-changed nothing. The design is [object-model.md](object-model.md), "Planned: simultaneous slots".
+An instruction that meets an unresolved future of a simultaneous slot clause
+where it needs the value -- `ResolveFuture`, `InitializeSlot` into a value's
+slot, and a send whose leaf declined, raised or answered "no" because an
+operand is a future -- cannot force it in Rust, since nothing re-enters the
+loop. It answers a step instead: the future's block, activated under
+`Continuation::Future`, whose `FutureForcing` carries
+`AfterForcing::Reexecute`. For `ResolveFuture` and `InitializeSlot`,
+`vm::force_and_reexecute` stores the instruction's `program_counter` -- `run`'s
+doc comment lists the instructions that must -- and pushes that step; a send
+has stored its `program_counter` already, and pushes a leaf's step as it
+pushes any. When the block returns, `vm::finish` hands its value
+to `Mutator::future_computed`, which records it and answers a
+`FutureOutcome`: `Reexecute`, and `vm::reexecute` switches back to the
+caller at the stored `program_counter`, so the same instruction runs again
+and finds the future resolved; `Deliver`, for a forcing a message to the
+future started (`futureValue:ifFail:`, `AfterForcing::Deliver`), and the
+value goes to that send as any return's does; or `Force`, when the block
+answered another unresolved future, whose forcing is pushed in the popped
+activation's place with this one chained behind it. Every other
+continuation still goes through `Mutator::resume`.
+
+Running an instruction twice is safe because the first run wrote nothing:
+`ResolveFuture` and `InitializeSlot` force before they write, and **a leaf
+that declines or raises has changed nothing** ([dispatch.md](dispatch.md),
+"Primitives"), so running again the send that ran it is running it once.
+A forcing whose activation an unwind pops, or which `push_step` refuses --
+the depth limit, or a block's arity -- is thrown away through
+`Mutator::abandon`, which leaves its future, and every future chained behind
+it, unresolved again. A host's send has no instruction to run again: a
+forcing that was to run one and finds the run's floor below it ends the run
+with an error (`interpreter::future::host_passed_a_future`). The design is
+[object-model.md](object-model.md), "Simultaneous slots".
 
 ## Planned: tail calls, skipped but kept
 

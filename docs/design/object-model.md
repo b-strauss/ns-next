@@ -6,7 +6,9 @@
 > `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
 > nested-class accessor and `build_applied_levels`, §6.2's levels),
 > `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`),
-> `interpreter/value_class.rs` (§3.1.1's conditions on a value class).
+> `interpreter/value_class.rs` (§3.1.1's conditions on a value class),
+> `interpreter/future.rs` and `compiler/simultaneous.rs` (§6.3.2's
+> simultaneous slots).
 
 ## Values and objects
 
@@ -593,15 +595,19 @@ that slot at `List` rather than `String`, so the class it
 instantiates is no value class in an ordinary module; its recorded outcome
 did not change.
 
-## Planned: simultaneous slots
+## Simultaneous slots
 
-Would change: a `|| ... ||` slot clause (§6.3.2), in a class header or as a
-code body's temporaries, initializes its slots simultaneously through pull
-futures, so well-founded mutual recursion between them resolves, instead of
-in declaration order as a `| ... |` clause does today
-([frontend.md](frontend.md), "Deviation: simultaneous slot clauses initialize
-sequentially"). Designed with the user on 2026-09-28; every decision below
-was taken with them unless it says otherwise.
+A `|| ... ||` slot clause (§6.3.2), in a class header or as a code body's
+temporaries, initializes its slots simultaneously through pull futures, so
+well-founded mutual recursion between them resolves, where a `| ... |`
+clause initializes them in declaration order. The code is
+`compiler/simultaneous.rs` (the desugaring both lowerings share),
+`interpreter/future.rs` (what a future is, and forcing it), `Kernel.ns`'s
+private `Future`, and four instructions, `MakeFuture`, `ResolveFuture`,
+`LoadOwnSlot` and `InitializeSlotProvisionally` (wire tags 36 to 39).
+Designed with the user on 2026-09-28; every decision below was taken with
+them unless it says otherwise
+([the plan](../superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md)).
 
 **What §6.3.2 says, and all it says.** A simultaneous slot declaration with
 a right-hand side *e* "initializes the slot to the value of *p*
@@ -664,105 +670,178 @@ event loop. SOMns parses `|| ... ||` and does not support it.
    exception, and only for the first write ("The lowering" below).
 
 A future still being computed is observable, as §6.3.2 intends: touching one
-forces it, and forcing one that is already being computed signals an
-ordinary `Error`, "Divergent evaluation". **A clause abandoned by an
-exception** — an initializer raises and a handler outside the instantiation
-takes it — leaves the futures it had not resolved as they are, wherever
-they escaped to: the next message forces one, runs its initializer again and,
-for the same cause, raises the same error. Nothing answers wrongly, and it
-costs nothing; marking them broken would put an `ifCurtailed:` around every
-simultaneous clause.
+forces it, and forcing one that is already being computed — ill-founded
+recursion — raises an ordinary, catchable `Error`, "divergent evaluation of
+a simultaneous slot's initializer". **A clause abandoned by an exception** —
+an initializer raises and a handler outside the instantiation takes it —
+leaves the futures it had not resolved as they are, wherever they escaped
+to: the next message forces one and runs its initializer then, and one
+whose initializer raised raises again for the same cause. A forcing whose
+activation an unwind pops, or which the run loop refuses to push, leaves its
+future unresolved again rather than stuck resolving (`Mutator::abandon`).
+Nothing answers wrongly, and it costs nothing; marking them broken would put
+an `ifCurtailed:` around every simultaneous clause.
 
-**The future.** `Kernel.ns` gains a private class, which no program can name
-(as `Activation`), after Primordial Soup's `Proxy`: every public member of
-`Object` — `class`, `==`, `=`, `hash`, `printString`, the nil protocol, and
-any added later — is overridden as protected, and `doesNotUnderstand:`
-forwards the message to the forced value with `Message>>sentTo:`. It holds
-its block or its value and a state, unresolved, resolving or resolved. Its
-class side answers `computing:`, the factory, and `valueOf:`, which forces
-its argument when it is a future and answers anything else unchanged; no
-instance-side message forces it, since a public `resolve` would tell an
-escaped future from its value. It carries a builtin class tag, the next free
-number, because the collector, the leaves and the image must recognize it.
-Its name is proposed as `Future`, §6.3.2's; `Deferred`, which Squeak's own
-comment suggests to keep it apart from the actors' promise, was offered and
-not yet decided.
+**The future.** `Kernel.ns`'s private `Future`, which no program can name
+(as `Activation`), follows Primordial Soup's `Proxy`: every public member of
+`Object` — `class`, `==`, `=`, `hash`, `printString`, the nil protocol — is
+overridden as protected, and `doesNotUnderstand:` forces the future through
+the mirror row `futureValue:ifFail:` (`builtins/future.rs`) and forwards the
+message to the value with `Message>>sentTo:`. A member added to `Object`
+without its override fails
+`future_overrides_every_public_member_of_object_as_protected`. Its state is
+two private slots, `computation` — its block until it is resolved, then its
+value — and `state`, 0 unresolved, 1 resolving, 2 resolved, which only
+`interpreter/future.rs` reads and writes. It reads them as untrusted, since
+crafted code can store into them once it holds a future: any other state,
+an unresolved future without a closure, or a resolved one whose value is a
+future is `FutureState::Malformed`, and forcing it is an ordinary error
+([image-format.md](image-format.md), "Futures in a graph"). Forcing is a trampoline step that
+activates the future's block under `Continuation::Future`, never a call
+back into Newspeak; once the block returns, `vm::finish` hands its value to
+`Mutator::future_computed`, which records it and either delivers it to the
+send that forced the future (`AfterForcing::Deliver`) or runs the
+instruction that met the future again (`AfterForcing::Reexecute`;
+[execution.md](execution.md), "Running an instruction again after forcing
+a future"). A block that answers another unresolved future forces that one
+next, the waiting forcing chained behind it, so both resolve to its value —
+§6.3.2's pipelined promise, as Primordial Soup's `resolve` loops. Nothing
+bounds that chain's length, so every walk of it loops rather than recursing
+once per link. No message a program sends forces a future, since a public
+`resolve` would tell an escaped future from its value, and there is no
+class-side factory: the runtime makes every instance (`Mutator::new_future`,
+which `MakeFuture` calls). It carries builtin class tag 30 because the
+collector, the leaves and the image must recognize it. The first future a
+heap makes sets `Mutator::futures_made`, which is never cleared, and the
+two checks that would otherwise run for every program — the leaves' search
+among their operands and the collector's replacement — stay behind that
+flag.
 
-**The lowering.** The parser keeps the `simultaneous` flag it computes today
-and discards, on a class's slot clause and on a code body's temporaries
-alike. One desugaring before both lowerings, so the reference lowering stays
-an oracle for it, turns
+**The lowering.** The parser keeps the `simultaneous` flag on each slot
+declaration, of a class's slot clause and of a code body's temporaries
+alike. One desugaring before both lowerings (`compiler/simultaneous.rs`;
+[compiler.md](compiler.md), "The simultaneous slot clause"), so the
+reference lowering stays an oracle for it, turns
 
 ```
 || a = e1. b ::= e2. c. ||
 ```
 
-into the writes `a := ⟨Future⟩ computing: [e1]` and
-`b := ⟨Future⟩ computing: [e2]` in declaration order, then
-`a := ⟨Future⟩ valueOf: a` and `b := ⟨Future⟩ valueOf: b`, where
-`⟨Future⟩` is a fixed reference to the kernel class, not the implicit send
-`Future` a program could shadow. The future's blocks capture siblings that
-the clause's end writes again, so the capture analysis puts them in their
-scope's indirection vector by itself ([execution.md](execution.md), "Closure
-conversion"). In a value class, the first write — the future — is a
-*provisional* initialization that skips §3.1.1's slot check (an
-`InitializeSlot` flag or instruction under the next free wire tag); the
-write at the clause's end is an ordinary one and is checked. A value whose
-clause is done therefore meets §3.1.1 exactly as strictly as today.
+into the writes `a := ⟨future of [e1]⟩` and `b := ⟨future of [e2]⟩` in
+declaration order, then `a := ⟨resolved a⟩` and `b := ⟨resolved b⟩`: the
+futures are made by the instruction `MakeFuture` and resolved by
+`ResolveFuture`, which forces its operand when it is a future and answers
+anything else unchanged — instructions, not sends, so no program can shadow
+them. A class's clause end reads each slot back with `LoadOwnSlot`, which
+addresses it as `InitializeSlot` does, not through a getter a subclass
+could override. The resolver scopes each initializer as its future's
+block's body (`resolve_simultaneous_initializer`), and the blocks capture
+siblings that the clause's end writes again, so the capture analysis puts
+them in their scope's indirection vector by itself
+([execution.md](execution.md), "Closure conversion"). In a value class, the
+first write — the future — is `InitializeSlotProvisionally`, which skips
+§3.1.1's slot check; the write at the clause's end is an ordinary
+`InitializeSlot` and is checked. A value whose clause is done therefore
+meets §3.1.1 exactly as strictly as one whose clause is sequential.
 
-**Where Rust sees a future.** Nothing on a hot path pays for it.
+**Where Rust sees a future.** Nothing on a program's paths looks for one
+until the program has made one.
 
 - *As a receiver* it needs nothing: every send reaches its
   `doesNotUnderstand:`. The inlined conditionals fall back to a real send
   on a receiver that is no Boolean, and `IntegerBinary` on anything but two
   small integers; the compiler inlines neither `==` nor `isNil`.
-- *As a leaf's argument or subject*, `builtins::execute`, the one function
-  every leaf runs through (sent, `SendMirror`, primitive method), looks for a
-  future only on its failure path — the leaf declined or raised. A resolved
-  one is replaced by its value and the leaf runs again, in Rust. An
-  unresolved one cannot be forced in Rust, since nothing re-enters the loop:
-  the answer is a step that activates the future's private forcing method
-  under a new continuation, `Reexecute`, which discards that activation's
-  value and runs the caller's instruction again instead of the next one; the
-  second time the future is resolved. This rests on an invariant written into
+- *As a leaf's argument or subject*, a future is looked for only on the
+  failure path of the three ways a leaf runs — `mirror::execute_sent` (a
+  send to the mirror), `send_inlined` (`SendMirror`) and `execute_method` (a
+  primitive method): the leaf declined or raised — and only once
+  `futures_made` is set: `future::after_a_failed_leaf`, inlined into each
+  caller, is that flag test and nothing more, and the search itself is the
+  cold `see_through_a_failed_leaf` behind it (`send_inlined` tests the flag
+  itself and goes to the cold `mirror::see_through_a_failed_row`);
+  `builtins::execute` itself is the plain dispatch to the leaf. A resolved one is replaced by its value and
+  the leaf runs again, in Rust. An unresolved one cannot be forced in Rust,
+  since nothing re-enters the loop: the answer is a step that activates the
+  future's block under `Continuation::Future` with `AfterForcing::Reexecute`,
+  which records that activation's value and runs the caller's instruction
+  again instead of the next one (`vm::reexecute`); the second time the
+  future is resolved. This rests on an invariant written on
   `builtins::execute` and checked leaf by leaf: **a leaf that declines or
-  raises has changed nothing.**
+  raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives").
 - *The leaves that answer "no" rather than declining* — identity and the
-  equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`,
-  `Symbol` and `Behavior` — look for a future only on that path and only for
-  an object argument, and then do the same. `==` is symmetric, unlike
-  Primordial Soup's.
+  equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`
+  and `Symbol`, and `inheritsMixinOf:` — decline instead when that answer
+  is "no" and an operand is a future (`future::declines_for_a_future`,
+  behind the same flag), so the failure path does the same;
+  `Primitive::answers_false_to_a_stranger` names them, matching every leaf
+  by name so that a new one does not compile until someone decides.
+  `Behavior`'s equality leaf, `behavior:sharesApplicationWith:ifFail:`, is
+  not among them: it declines for an operand that is no class object, a
+  future among them, so the failure path sees through one without it. `==`
+  is symmetric, unlike Primordial Soup's.
+- *The leaves that keep or render an operand* and would take a future for a
+  value of its own — `do:`'s block, `whileTrue:`'s and `whileFalse:`'s body,
+  and the selector and description an unhandled exception's termination
+  reports — decline for a future, so the failure path sees through it. Every
+  other leaf that answers for any operand stores or forwards it
+  (`at:put:`'s element, `value:`'s arguments, `sentTo:`'s receiver,
+  `returnValue:`'s value), and a future there is the value it stands for to
+  whoever reads it later. On a leaf's failure path, though, every future
+  operand is seen through: an unresolved one the leaf would only have stored
+  is forced first, and one still being computed raises the
+  divergent-evaluation error in place of the leaf's own error.
 - *`InitializeSlot` into a value* looks for a future only on its refusal
-  path (`check_value_slot`), and forces it through the same `Reexecute`.
+  path (`check_value_slot`, then `future::value_for_a_value_slot`): it
+  stores and checks a resolved one's value, and forces an unresolved one
+  through the same `Reexecute` (`vm::force_and_reexecute`).
 - *A host* that passes a future straight to `Interpreter::send` has no
-  instruction to run again, and the leaf declines as it does today; a host
-  holds a future only if a program handed it one during a clause.
+  instruction to run again: a resolved one is seen through in Rust as
+  anywhere else, and an unresolved one is forced, after which the run ends
+  with an error saying so (`vm::reexecute`,
+  `interpreter::future::host_passed_a_future`); a host holds a future only if
+  a program handed it one during a clause.
 
 **The collector** replaces a reference to a resolved future with its value in
 object fields — slots, array elements, closure copies, indirection vectors —
 and never in registers or host roots: a forcing activation that is returning
 has the future as `self`, and would otherwise read its own slots from the
-value ([memory.md](memory.md)).
+value ([memory.md](memory.md), "A resolved future is traced as its value").
 
 **The image** never holds a resolved future: the encoder writes its value in
-its place. An unresolved one, which exists only after an abandoned clause or
-in a snapshot taken during one, is an ordinary record of its class with its
-closure, and the decoder refuses the class's tag wherever a graph names a
-class, as it refuses `Top`'s ([image-format.md](image-format.md)).
+its place. An unresolved one, which outlives its clause only when the clause
+was abandoned, is an ordinary record of its class with its closure, and the
+decoder refuses the class's tag wherever a graph names a class, as it
+refuses `Activation`'s ([image-format.md](image-format.md), "Futures in a
+graph").
 
-**What pins it.** `goldens/spec/spec_6_3_2_simultaneous_slots_resolve_mutual_recursion`
-unskipped, answering `3`, and new goldens for: the data cycle
-`|| a = {b}. b = {a}. ||` with `==` true in both directions; a code body's
-simultaneous temporaries, with a block capturing a sibling; a future as a
-leaf's argument (`1 + second`, `3 = second`, `show: second`); divergence;
-a value class with a simultaneous clause, accepted, and refused for a slot
-that is no value; a future passed into another value; a mutable slot a
-sibling assigns; and an abandoned clause. Every golden runs under both
-lowerings and through the image round trip. Unit tests cover the parser's
-flag, the image's two cases and its refusal, the collector's replacement,
-`Reexecute` under both lowerings and all four entries, and the new wire tag
-in `opcode_tags.rs`. The four `goldens/bench/` fixtures must stay level under
-the measurement protocol ([execution.md](execution.md)).
+**What pins it.** Under `goldens/spec/`:
+`spec_6_3_2_simultaneous_slots_resolve_mutual_recursion` and
+`spec_6_3_2_simultaneous_temporaries_resolve_mutual_recursion`, a class's
+clause and a code body's; `spec_6_3_2_a_data_cycle_resolves`
+(`|| first = {second}. second = {first}. ||`, the elements identical to the
+arrays after the clause) and `spec_6_3_2_a_data_cycle_survives_an_image`;
+`spec_6_3_2_a_captured_sibling_is_read_after_the_clause`;
+`spec_6_3_2_a_future_is_an_argument_like_its_value`,
+`spec_6_3_2_a_future_is_a_block_argument_like_its_value` and
+`spec_6_3_2_a_future_is_equal_and_identical_to_its_value`, from either side,
+and `spec_6_3_2_every_equality_sees_a_future_as_its_value` (`Float`'s and a
+value's `=`, and `on:do:`'s handler class);
+`spec_6_3_2_ill_founded_recursion_is_an_error`;
+`spec_6_3_2_a_value_class_initializes_simultaneously`, accepted, and refused
+for a slot that is no value; `spec_6_3_2_a_future_passed_into_a_value_is_forced`;
+`spec_6_3_2_a_mutable_slot_a_sibling_assigns`;
+`spec_6_3_2_an_abandoned_clause_recomputes_on_the_next_touch`;
+`spec_6_3_2_an_unhandled_error_is_described_by_a_futures_value`; and
+`spec_5_1_8_a_code_body_declares_simultaneous_temporaries`. Every golden
+runs under both lowerings and through the image round trip. Unit tests
+cover the parser's flag (`ns-syntax`'s declaration tests); forcing, chains,
+abandonment, the host's two cases and the collector's replacement
+(`tests/future.rs`); the four instructions driven by hand (`tests/vm.rs`);
+the image's two cases and its refusals (`tests/image.rs`); and the wire tags
+(`tests/opcode_tags.rs`). Three of the four `goldens/bench/` fixtures are
+level; `bench_megamorphic.ns` measured about 4% slower, a layout effect of
+the dispatch arm the four instructions add, still open
+([execution.md](execution.md), "What simultaneous slots cost").
 
 ## Mixin application
 
@@ -1318,6 +1397,18 @@ stays blocked on that, not on the collector.
   so it costs no activation; and the hash of a value class object is taken
   from its mixin's name, not from a dispatch id, which is minted afresh on
   load.
+- **§6.3.2's simultaneous slots are initialized through pull futures**
+  (decided with the user on 2026-09-28,
+  [its plan](../superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);
+  "Simultaneous slots" above). A clause's end writes each slot's value back,
+  so no slot of a finished clause holds a future; a future that escaped is
+  observable by no program once it is resolved — messages are forwarded,
+  and identity, equality and every leaf see through it — and the collector
+  replaces it with its value in object fields; a value never holds one. The
+  future is a kernel-private class after Primordial Soup's `Proxy`, forced
+  as a trampoline step, and an instruction or a leaf that meets an
+  unresolved one forces it and runs again, which rests on a leaf that
+  declines or raises having changed nothing.
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.

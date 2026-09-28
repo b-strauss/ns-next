@@ -1053,13 +1053,42 @@ invariant"). What "How the limit counts" needs — `SendInlinable` and the depth
 counter that is its only consumer — arrived with the
 [trampoline](../superpowers/plans/2026-09-12-1619-ns-next-trampoline.md).
 
-## Planned: the simultaneous slot clause's desugaring
+## The simultaneous slot clause
 
-Would change: a `|| ... ||` clause is desugared once, before both
-lowerings, into its futures' writes and, at its end, their forcing
-writes, with a provisional `InitializeSlot` for the first write in a value
-class under the next free wire tag. The design is
-[object-model.md](object-model.md), "Planned: simultaneous slots".
+A `|| ... ||` clause (§6.3.2) is desugared once, before both lowerings and
+the capture analysis, by `compiler/simultaneous.rs`: `future_block` turns a
+simultaneous declaration's initializer into the block literal
+`[initializer]`, whose span is the declaration's own. The capture analysis
+and the optimized lowering key a block by its span
+(`capture::BodyKey::Block`), and no block literal can share a declaration's
+span, since that also covers its name. The resolver scoped the initializer
+as that block's body -- `resolve_simultaneous_initializer` pushes one scope
+of its own around it -- so a sibling or a factory parameter it reads is
+already an outer local, and the capture walker and both lowerings enter the
+block in the same order the resolver did.
+
+Each simultaneous initializer lowers to its block, `MakeFuture` of the
+closure, and the first write: `InitializeSlotProvisionally` for a class's
+slot, which skips a value's slot check, and a plain store for a temporary.
+After the last declaration, the clause's end reads back each simultaneous
+declaration that has an initializer, in declaration order, resolves it with
+`ResolveFuture` and writes it again: `LoadOwnSlot`, `ResolveFuture` and an
+ordinary, checked `InitializeSlot` for a slot, and a read of the local,
+`ResolveFuture` and a store for a temporary. Every one of these writes is a
+statement of its own. The reference lowering emits the same shape in its own
+idiom, every read a fresh register.
+
+A simultaneous temporary is written twice whatever its declaration says, so
+it is never read-only: the capture analysis counts it mutable, and the
+clause's end is a second write after every future's block was created, so a
+sibling's block that reads it shares it through the indirection vector
+rather than copying the **nil** its register held
+(`goldens/spec/spec_6_3_2_a_captured_sibling_is_read_after_the_clause`); the
+optimized lowering's writable table agrees. `ResolveFuture` runs user code
+-- the future's block -- as a send does, and runs again once the block has
+answered, reading its source afresh, so its source is protected across it
+as an operand is across a send. The design is
+[object-model.md](object-model.md), "Simultaneous slots".
 
 ## Follow-up: entry points that reach a class object only to find its mixin
 

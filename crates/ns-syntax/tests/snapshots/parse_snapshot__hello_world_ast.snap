@@ -83,6 +83,7 @@ Module {
                         ),
                     ),
                     lazy: false,
+                    simultaneous: false,
                     span: Span {
                         start: 67,
                         end: 108,

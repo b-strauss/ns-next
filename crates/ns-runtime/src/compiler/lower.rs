@@ -12,6 +12,7 @@ use ns_syntax::Span;
 
 use super::capture::{BodyKey, Captured, Captures, Place};
 use super::control_flow::{self, InlineForm};
+use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
     CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal as BytecodeLiteral,
@@ -351,11 +352,14 @@ impl<'a> Lowerer<'a> {
         // initialization writes them (§3.6); a copied register because the
         // analysis puts every variable anything writes after capture into a
         // vector; the vector register because only `MakeVector` writes it;
-        // and a vector variable's own register because it stays nil.
+        // and a vector variable's own register because it stays nil. A
+        // simultaneous temporary (§6.3.2) is written twice whatever its
+        // declaration says: its future, then its value at the clause's end.
         let mut read_only_locals = vec![true; base as usize];
         for (offset, temporary) in temporaries.iter().enumerate() {
             let index = argument_count + offset as u16;
-            let writable = temporary.mutability != ast::SlotMutability::Immutable
+            let writable = (temporary.mutability != ast::SlotMutability::Immutable
+                || temporary.simultaneous)
                 && layout.places[index as usize] == Place::Register;
             read_only_locals[layout.local_register(index) as usize] = !writable;
         }
@@ -468,6 +472,63 @@ impl<'a> Lowerer<'a> {
         let start = self.instructions.len();
         let source = self.lower_expression_for(initializer, ValueUse::Read);
         self.emit(Instruction::InitializeSlot { source, own_index });
+        self.record_statement(start);
+    }
+
+    /// A simultaneous slot's first write (§6.3.2): `block`, its initializer's
+    /// future block (`simultaneous::future_block`), made into a closure and
+    /// then a future, stored with `InitializeSlotProvisionally`, which skips
+    /// a value's slot check -- the clause's end stores the checked value
+    /// (`lower_simultaneous_slot_end`). One statement.
+    pub(crate) fn lower_simultaneous_slot_initializer(
+        &mut self,
+        block: &Expression,
+        own_index: u32,
+    ) {
+        self.next_scratch = self.base;
+        let start = self.instructions.len();
+        let closure = self.lower_expression_for(block, ValueUse::Read);
+        let future = self.allocate_scratch();
+        self.emit(Instruction::MakeFuture {
+            destination: future,
+            closure,
+        });
+        self.emit(Instruction::InitializeSlotProvisionally {
+            source: future,
+            own_index,
+        });
+        self.record_statement(start);
+    }
+
+    /// A simultaneous slot's second write, at its clause's end (§6.3.2):
+    /// the slot read back without a getter send, which a subclass could
+    /// override, resolved, and stored with an ordinary `InitializeSlot`.
+    /// `ResolveFuture` runs user code -- the future's block -- exactly as a
+    /// send does, so it counts as one for the value-register invariant; the
+    /// only register live across it is this statement's own scratch
+    /// register, which no send can write. One statement.
+    pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
+        self.next_scratch = self.base;
+        let start = self.instructions.len();
+        let register = self.allocate_scratch();
+        self.emit(Instruction::LoadOwnSlot {
+            destination: register,
+            own_index,
+        });
+        self.emit(Instruction::ResolveFuture {
+            destination: register,
+            source: register,
+        });
+        self.emit(Instruction::InitializeSlot {
+            source: register,
+            own_index,
+        });
+        self.record_statement(start);
+    }
+
+    /// Records the statement that began at instruction `start` and ends
+    /// here, and moves on to the next statement index.
+    fn record_statement(&mut self, start: usize) {
         let end = self.instructions.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
@@ -504,6 +565,12 @@ impl<'a> Lowerer<'a> {
     /// initializer's run through its slot initializers before its
     /// `initExprs`. They leave `last_expression_register` alone: a body's
     /// value is its last *statement's*, and a body with none answers nil.
+    ///
+    /// A simultaneous clause (§6.3.2) stores each initializer's future
+    /// instead -- `MakeFuture` of its future block
+    /// (`simultaneous::future_block`) -- and then, at the clause's end, reads
+    /// each of those temporaries back and stores it resolved, one statement
+    /// apiece, in declaration order.
     pub(crate) fn lower_local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
         for (position, temporary) in temporaries.iter().enumerate() {
             let Some(initializer) = &temporary.initializer else {
@@ -511,16 +578,47 @@ impl<'a> Lowerer<'a> {
             };
             self.next_scratch = self.base;
             let start = self.instructions.len();
-            let source = self.lower_expression_for(initializer, ValueUse::Read);
+            let source = match simultaneous::future_block(temporary) {
+                Some(block) => {
+                    let closure = self.lower_expression_for(&block, ValueUse::Read);
+                    let future = self.allocate_scratch();
+                    self.emit(Instruction::MakeFuture {
+                        destination: future,
+                        closure,
+                    });
+                    future
+                }
+                None => self.lower_expression_for(initializer, ValueUse::Read),
+            };
             // Through the same `Access` as an assignment: a captured-and-
             // written local's initializer writes its scope's vector, not a
             // register (`docs/design/execution.md`, "Converted representation").
             let access = self.resolve_variable(0, self.argument_count + position as u16);
             self.emit_store(access, source);
-            let end = self.instructions.len();
-            self.statement_program_counter
-                .push((self.statement_index, start..end));
-            self.statement_index += 1;
+            self.record_statement(start);
+        }
+        for (position, temporary) in temporaries.iter().enumerate() {
+            if !temporary.simultaneous || temporary.initializer.is_none() {
+                continue;
+            }
+            self.next_scratch = self.base;
+            let start = self.instructions.len();
+            let access = self.resolve_variable(0, self.argument_count + position as u16);
+            let read = self.emit_read(access);
+            // `ResolveFuture` runs user code -- the future's block -- exactly
+            // as a send does, and runs again once that block has answered
+            // (`AfterForcing::Reexecute`), reading its source afresh. So its
+            // source is protected as an operand across a send is: copied out
+            // of a named local's register that a send can write.
+            let source = self.materialize(read, self.a_send_can_write(read));
+            let resolved = self.allocate_scratch();
+            self.emit(Instruction::ResolveFuture {
+                destination: resolved,
+                source,
+            });
+            self.check_writable(access);
+            self.emit_store(access, resolved);
+            self.record_statement(start);
         }
     }
 

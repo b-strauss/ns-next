@@ -46,7 +46,18 @@ pub(crate) fn execute_sent<'gc>(
     if rest.len() != entry.leaf_arity() {
         return Err(arity_error(entry, arguments.len()));
     }
-    match run_leaf(mutator, row, *subject, rest) {
+    let answer = match run_leaf(mutator, row, *subject, rest) {
+        Some(Ok(step)) => return Ok(owning_its_arguments(step, rest)),
+        failed => crate::interpreter::future::after_a_failed_leaf(
+            mutator,
+            entry.primitive,
+            *subject,
+            reported_selector(row),
+            rest,
+            failed,
+        ),
+    };
+    match answer {
         Some(result) => result.map(|step| owning_its_arguments(step, rest)),
         None => Ok(failure_step(mutator, *block)),
     }
@@ -69,7 +80,35 @@ pub(crate) fn send_inlined<'gc>(
     if !mutator.is_vm_mirror(mirror) {
         return Some(Err(not_the_mirror(primitive, mirror)));
     }
-    run_leaf(mutator, primitive, subject, leaf_arguments)
+    match run_leaf(mutator, primitive, subject, leaf_arguments) {
+        Some(Ok(step)) => Some(Ok(step)),
+        failed if mutator.futures_made => {
+            see_through_a_failed_row(mutator, primitive, subject, leaf_arguments, failed)
+        }
+        failed => failed,
+    }
+}
+
+/// `send_inlined`'s failure path once a future exists: out of line, with
+/// the row's leaf and reported selector looked up here, so that the
+/// `SendMirror` arm `vm::run` inlines carries nothing of it.
+#[cold]
+#[inline(never)]
+fn see_through_a_failed_row<'gc>(
+    mutator: &mut Mutator<'gc>,
+    row: MirrorPrimitive,
+    subject: Value<'gc>,
+    leaf_arguments: &[Value<'gc>],
+    failed: Option<Result<Step<'gc>, Signal<'gc>>>,
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    crate::interpreter::future::after_a_failed_leaf(
+        mutator,
+        mirror_entry(row).primitive,
+        subject,
+        reported_selector(row),
+        leaf_arguments,
+        failed,
+    )
 }
 
 /// Only shipped core-library source -- `Kernel.ns` and
@@ -124,13 +163,13 @@ pub(crate) fn execute_method<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    crate::builtins::execute(
-        mutator,
-        mirror_entry(primitive).primitive,
-        receiver,
-        selector,
-        arguments,
-    )
+    let leaf = mirror_entry(primitive).primitive;
+    match crate::builtins::execute(mutator, leaf, receiver, selector, arguments) {
+        Some(Ok(step)) => Some(Ok(step)),
+        failed => crate::interpreter::future::after_a_failed_leaf(
+            mutator, leaf, receiver, selector, arguments, failed,
+        ),
+    }
 }
 
 /// A leaf that activates a block with "the send's own arguments" means the

@@ -15,6 +15,7 @@ use ns_syntax::Span;
 
 use super::control_flow;
 use super::lower::{lower_literal, selector_of};
+use super::simultaneous;
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral};
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -47,7 +48,10 @@ pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
 /// Each own slot's initializer followed by `InitializeSlot`, one statement
 /// apiece, then the `initExprs`, then `self`. `InitializeSlot`'s index is the
 /// slot's position among the mixin's own slots, never an absolute field index
-/// (`docs/design/compiler.md`, "One body per mixin").
+/// (`docs/design/compiler.md`, "One body per mixin"). A simultaneous slot
+/// (§6.3.2) stores its initializer's future provisionally instead, and the
+/// clause's end reads each such slot back and stores it resolved, in
+/// declaration order.
 fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
     let mut body = Body::new(
         CodeKind::Initializer,
@@ -68,13 +72,53 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
             continue;
         };
         let start = body.instructions.len();
-        let source = body.value(initializer);
+        match simultaneous::future_block(declaration) {
+            Some(block) => {
+                let closure = body.value(&block);
+                let future = body.fresh();
+                body.emit(Instruction::MakeFuture {
+                    destination: future,
+                    closure,
+                });
+                body.emit(Instruction::InitializeSlotProvisionally {
+                    source: future,
+                    own_index: own_index as u32,
+                });
+            }
+            None => {
+                let source = body.value(initializer);
+                body.emit(Instruction::InitializeSlot {
+                    source,
+                    own_index: own_index as u32,
+                });
+            }
+        }
+        body.record_statement(start);
+        source_span = Some(super::merge_span(source_span, declaration.span));
+    }
+    for (own_index, slot) in mixin.slots.iter().enumerate() {
+        let simultaneous_with_initializer = slot.declaration.as_ref().is_some_and(|declaration| {
+            declaration.simultaneous && declaration.initializer.is_some()
+        });
+        if slot.lazy || !simultaneous_with_initializer {
+            continue;
+        }
+        let start = body.instructions.len();
+        let slot_value = body.fresh();
+        body.emit(Instruction::LoadOwnSlot {
+            destination: slot_value,
+            own_index: own_index as u32,
+        });
+        let resolved = body.fresh();
+        body.emit(Instruction::ResolveFuture {
+            destination: resolved,
+            source: slot_value,
+        });
         body.emit(Instruction::InitializeSlot {
-            source,
+            source: resolved,
             own_index: own_index as u32,
         });
         body.record_statement(start);
-        source_span = Some(super::merge_span(source_span, declaration.span));
     }
     for statement in &mixin.initializer_expressions {
         source_span = Some(super::merge_span(
@@ -216,16 +260,51 @@ impl<'a> Body<'a> {
     /// statement: its expression, then a `StoreLocal` into the slot's own
     /// register, which follows the parameters (§3.6) -- the same shape
     /// `lower.rs`'s `lower_local_initializers` emits, in this module's own
-    /// idiom.
+    /// idiom. A simultaneous temporary (§6.3.2) stores its initializer's
+    /// future instead, and the clause's end reads each one back and stores
+    /// it resolved, in declaration order.
     fn local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
         for (position, temporary) in temporaries.iter().enumerate() {
             let Some(initializer) = &temporary.initializer else {
                 continue;
             };
             let start = self.instructions.len();
-            let source = self.value(initializer);
+            let source = match simultaneous::future_block(temporary) {
+                Some(block) => {
+                    let closure = self.value(&block);
+                    let future = self.fresh();
+                    self.emit(Instruction::MakeFuture {
+                        destination: future,
+                        closure,
+                    });
+                    future
+                }
+                None => self.value(initializer),
+            };
             let slot = self.argument_count + position as u16;
             self.emit(Instruction::StoreLocal { source, slot });
+            self.record_statement(start);
+        }
+        for (position, temporary) in temporaries.iter().enumerate() {
+            if !temporary.simultaneous || temporary.initializer.is_none() {
+                continue;
+            }
+            let start = self.instructions.len();
+            let slot = self.argument_count + position as u16;
+            let copy = self.fresh();
+            self.emit(Instruction::Move {
+                destination: copy,
+                source: slot,
+            });
+            let resolved = self.fresh();
+            self.emit(Instruction::ResolveFuture {
+                destination: resolved,
+                source: copy,
+            });
+            self.emit(Instruction::StoreLocal {
+                source: resolved,
+                slot,
+            });
             self.record_statement(start);
         }
     }
@@ -631,7 +710,10 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         Instruction::Move { source, .. }
         | Instruction::StoreLocal { source, .. }
         | Instruction::StoreOuterLocal { source, .. }
-        | Instruction::InitializeSlot { source, .. } => vec![*source],
+        | Instruction::InitializeSlot { source, .. }
+        | Instruction::InitializeSlotProvisionally { source, .. } => vec![*source],
+        Instruction::MakeFuture { closure, .. } => vec![*closure],
+        Instruction::ResolveFuture { source, .. } => vec![*source],
         Instruction::Return { register }
         | Instruction::ImplicitReturn { register }
         | Instruction::NonLocalReturn { register }
@@ -689,6 +771,7 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         | Instruction::MakeClosure { .. }
         | Instruction::MakeVector { .. }
         | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::LoadOwnSlot { .. }
         | Instruction::Jump { .. } => vec![],
     }
 }
@@ -711,12 +794,16 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::MakeVector { destination, .. }
         | Instruction::LoadVector { destination, .. }
         | Instruction::IntegerBinary { destination, .. }
-        | Instruction::SendMirror { destination, .. } => Some(*destination),
+        | Instruction::SendMirror { destination, .. }
+        | Instruction::MakeFuture { destination, .. }
+        | Instruction::ResolveFuture { destination, .. }
+        | Instruction::LoadOwnSlot { destination, .. } => Some(*destination),
         Instruction::StoreLocal { .. }
         | Instruction::StoreOuterLocal { .. }
         | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
         | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. }

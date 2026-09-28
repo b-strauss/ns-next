@@ -104,6 +104,9 @@ The productions, and what the parser does with each:
   methodDecl* rparen` have no separator: a dot between members is refused.
 - `slotDecls → '|' slotDef* '|'` (sequential) or `'||' slotDef* '||'`
   (simultaneous), in a class header and as a code body's temporaries alike.
+  A simultaneous clause's declarations carry `simultaneous`, which the
+  resolver and the compiler act on ([object-model.md](object-model.md),
+  "Simultaneous slots").
   `slotDef → [accessModifier] slotDecl [((= | ::=) expression dot) | dot]`:
   `=` is an immutable slot, `::=` a mutable one, and neither an uninitialized
   mutable one; the dot is mandatory after an initializer. A lazy slot
@@ -259,27 +262,16 @@ provides one, a clean `doesNotUnderstand: #Pattern` instead of a silent
 corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
 Closing it retires the deviations-table row.
 
-Three of the things dropped here change what a correct program answers,
-rather than only what an incorrect one is allowed to say. Each has a row in
-[README.md](README.md)'s deviations table; this section is what those rows
-point at.
+Two of the things dropped here -- the asynchronous send and the pattern
+literal -- change what a correct program answers, rather than only what an
+incorrect one is allowed to say. Each has a row in [README.md](README.md)'s
+deviations table; this section is what those rows point at.
 
 A code body's temporary list has the full slot-declaration form
 (`corpus/reference/NewspeakGrammar.ns:148-150`, `temporaries = slotDecls`), so
 `| x = expression. |` and `| x ::= expression. |` inside a method or block body
 declare initialized local slots, and `CodeBody.temporaries` keeps the full
 declaration -- name, mutability and initializer -- not just the name.
-
-## Deviation: simultaneous slot clauses initialize sequentially
-
-§6.3.2's `|| ... ||` declares slot clauses that are evaluated simultaneously,
-resolving well-founded mutual recursion between them. The parser computes the
-`simultaneous` flag only to choose the closing delimiter and then discards it,
-so the clauses initialize in declaration order like ordinary ones: in
-`|| first = second + 1. second = 2. ||`, `second` is still **nil** when `first`
-is computed. Where the expressions do not raise, this too is silent wrong
-output at exit status 0. Closing it is planned, through pull futures and a
-flag the parser keeps ([object-model.md](object-model.md), "Planned: simultaneous slots").
 
 ## The six reserved words
 

@@ -557,6 +557,24 @@ failure block, the `[^super …]` every kernel method writes:
   whose mirror send declines again and runs the failure block
   ("Primitive methods" below).
 
+**A leaf that declines or raises has changed nothing.** Each one checks its
+operands before it writes anything — a register, a slot, an array element,
+the transcript — so running it again, or running again the instruction that
+sent it, is running it once. The search for §6.3.2's futures rests on
+this: once a program has made one, the three ways a leaf runs —
+`mirror::execute_sent`, `send_inlined` and `execute_method` — look for a
+future among the operands on the path where the leaf could not answer, it
+declined or raised (`future::after_a_failed_leaf`), and run the leaf again
+on the values, or force the future and run the sending instruction again
+([object-model.md](object-model.md), "Where Rust sees a future"). Identity
+and the equality leaves, which answer `false` to a stranger, decline instead
+when that answer is `false` and an operand is a future, so the same path
+sees through it. A leaf that answers pays nothing — but for those equality
+leaves, which pay one flag test when they answer `false` — and a program
+that never made a future pays one flag test on those paths
+([execution.md](execution.md), "What simultaneous slots cost"). A new leaf that writes before its last
+check breaks this silently.
+
 So a failure is Newspeak code, as in Cog, where a failing primitive falls
 into its method's body — whose code often sends the message on to `super`,
 as every kernel method's does. `execute_sent` never answers `None`, so a

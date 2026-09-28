@@ -1,0 +1,14 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.2 resolves "any well founded mutual recursion";
+   `first` and `second` each need the other's value, which is not, and
+   forcing a future while its own block runs is an ordinary error, caught
+   here like any other. *)
+class Spec632IllFoundedRecursion usingPlatform: p = Object new (
+    | t = p transcript. private Error = p kernel Error. |
+) (
+    class Probe = Object new (|| public first = second + 1. public second = first + 1. ||) () : ()
+    public main: platform args: arguments = (
+        t show: ([Probe new. 'no error'] on: Error do: [:error | error messageText]); newLine
+    )
+) : ()

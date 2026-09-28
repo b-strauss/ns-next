@@ -2935,6 +2935,100 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Rewrites every object field that holds a resolved future to hold its
+    /// value instead (`docs/design/memory.md`, "A resolved future is traced
+    /// as its value"): instance and array fields -- an indirection vector is
+    /// an `Array` -- and a closure's copied values. Never a register or a
+    /// host root: the `Future`'s `doesNotUnderstand:` that forced it may
+    /// still be returning, with the future as `self`, and a host holding the
+    /// future holds that object, so a future still held there survives this
+    /// collection and is replaced by the first one after it lets go. Runs before
+    /// marking, so a future nothing else reaches is garbage by the time the
+    /// marker looks. Answers how many references it replaced.
+    ///
+    /// A future is an `Instance` of `future_class` whose field `state_index`
+    /// is `SmallInteger(resolved)`; its value is then field
+    /// `computation_index`. That value is never itself a future --
+    /// `Mutator::future_computed` follows a future of a future before it
+    /// records one, and one whose fields crafted code made so is malformed
+    /// and not replaced -- so one pass of replacement leaves no resolved
+    /// future behind in any field it rewrites.
+    pub(crate) fn replace_resolved_futures(
+        &mut self,
+        future_class: ClassReference<'gc>,
+        computation_index: usize,
+        state_index: usize,
+        resolved: i64,
+    ) -> usize {
+        // First pass: every resolved future's arena index and its value.
+        let mut values: std::collections::HashMap<u32, Value<'gc>> =
+            std::collections::HashMap::new();
+        for (index, object) in self.objects.iter().enumerate() {
+            if !object.class.same(future_class) {
+                continue;
+            }
+            let ObjectData::Instance(fields) = &object.data else {
+                continue;
+            };
+            if let (Some(Value::SmallInteger(state)), Some(value)) =
+                (fields.get(state_index), fields.get(computation_index))
+            {
+                // A "resolved" future whose value is a future is one crafted
+                // code corrupted (`FutureState::Malformed`): it is left in
+                // place, for a forcing to refuse.
+                let value_is_a_future = matches!(value, Value::Object(target)
+                    if self.class_of_object(*target).same(future_class));
+                if *state == resolved && !value_is_a_future {
+                    let index = u32::try_from(index)
+                        .expect("internal: an arena index fits the handle's u32");
+                    values.insert(index, *value);
+                }
+            }
+        }
+        if values.is_empty() {
+            return 0;
+        }
+        // Second pass: rewrite every field an object owns that names one.
+        let mut replaced = 0;
+        let mut replace = |fields: &mut [Value<'gc>]| {
+            for field in fields {
+                if let Value::Object(handle) = field {
+                    if let Some(value) = values.get(&handle.index) {
+                        *field = *value;
+                        replaced += 1;
+                    }
+                }
+            }
+        };
+        for object in &mut self.objects {
+            // `object.class` is a class object, never a future.
+            match &mut object.data {
+                ObjectData::Instance(fields) | ObjectData::Array(fields) => replace(fields),
+                ObjectData::Closure(closure) => {
+                    let ClosureData {
+                        code: _,
+                        // A frame's registers are exempt, as the stack's are.
+                        captured_frame: _,
+                        copied,
+                        feedback_base: _,
+                    } = closure;
+                    replace(copied);
+                }
+                // No `Value` field at all.
+                ObjectData::String(_) | ObjectData::Symbol(_) => {}
+                // Every handle a class object holds -- its enclosing object,
+                // its declaring class, its superclass, itself -- is an
+                // `ObjectReference`, not a `Value`: no future can stand in
+                // one, since a message to a future is answered by its value,
+                // so a nested class's enclosing object is never the future.
+                ObjectData::Class(_) => {}
+                // A reified frame: its registers are exempt.
+                ObjectData::Activation(_) => {}
+            }
+        }
+        replaced
+    }
+
     /// Marks the heap's own roots -- the activation stack's entries and its
     /// registers, and the host roots -- and answers the marker without
     /// draining it, so that the caller can add the step state's roots

@@ -33,7 +33,7 @@
 //! with a type-mismatch message of their own: reporting a mixed-type
 //! argument as an "Integer overflow" would be actively misleading.
 
-use crate::builtins::primitive::{FloatPrimitive, IntegerPrimitive};
+use crate::builtins::primitive::{FloatPrimitive, IntegerPrimitive, Primitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -161,10 +161,14 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::GreaterOrEqual => Some(compare(">=", |left, right| left >= right)),
         // Deliberately *not* an error on a type mismatch -- see the
         // module-level note.
-        IntegerPrimitive::Equal => Some(Ok(Value::Boolean(integer_equals(
-            receiver_integer,
-            arguments.first(),
-        )))),
+        IntegerPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
+            mutator,
+            Primitive::Integer(primitive),
+            integer_equals(receiver_integer, arguments.first()),
+            receiver,
+            arguments,
+        )
+        .map(|answer| Ok(Value::Boolean(answer))),
         IntegerPrimitive::Negated => Some(
             receiver_integer
                 .checked_neg()
@@ -224,10 +228,14 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::Less => Some(compare("<", |left, right| left < right)),
         FloatPrimitive::Greater => Some(compare(">", |left, right| left > right)),
         // Same exception as `Integer`'s `=`: never an error.
-        FloatPrimitive::Equal => Some(Ok(Value::Boolean(float_equals(
-            receiver_float,
-            arguments.first(),
-        )))),
+        FloatPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
+            mutator,
+            Primitive::Float(primitive),
+            float_equals(receiver_float, arguments.first()),
+            receiver,
+            arguments,
+        )
+        .map(|answer| Ok(Value::Boolean(answer))),
         FloatPrimitive::Hash => Some(Ok(Value::SmallInteger(float_hash(receiver_float)))),
         FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),

@@ -17,7 +17,8 @@
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
 > `builtins/activation.rs` and `builtins/message.rs` the exceptions',
-> `builtins/module.rs` `moduleNamed:`),
+> `builtins/module.rs` `moduleNamed:`, `builtins/future.rs` the pull
+> future's forcing),
 > `interpreter/unwind.rs` (the one unwinder, and a VM error signalled),
 > `compiler/primitive_method.rs`, `compiler/unwind_marker.rs`, `platform.rs`.
 
@@ -2201,15 +2202,24 @@ names `Array` and `OrderedCollection` every iteration, is 1.5% slower, about
 1.4 ns per accessor send against the constant load it replaces. `vm::run`
 grew from 6,507 to 6,626 instructions and is still one function.
 
-### Planned: the pull future
+### The pull future
 
-Would change: `Kernel.ns` gains a private future class after Primordial
-Soup's `Proxy`, overriding every public member of `Object` as protected and
-forwarding through `doesNotUnderstand:`, with a class-side `computing:` and
-`valueOf:` that only the desugaring of a simultaneous slot clause reaches.
-`builtins::execute` looks for a future on its failure path, and the
-equality and identity leaves on their "no" path. The design is
-[object-model.md](object-model.md), "Planned: simultaneous slots".
+`Kernel.ns`'s private `Future`, after Primordial Soup's `Proxy`, overrides
+every public member of `Object` as protected and forwards through
+`doesNotUnderstand:`, which forces the future through the mirror row
+`futureValue:ifFail:` (`builtins/future.rs`) and sends the message on to its
+value with `Message>>sentTo:`; its state is the two slots `computation` and
+`state`, and forcing is `interpreter/future.rs`'s, a trampoline step under
+`Continuation::Future`. Like `Activation`, it is private, `Object` declares
+no accessor for it, and builtin class tag 30 names it only where the image
+must (an unresolved future's record). It has no class side of its own: the
+instructions `MakeFuture` and `ResolveFuture` make and resolve the futures
+of a simultaneous slot clause. Once a program has made a future, the
+callers of a leaf look for one among its operands on the leaf's failure
+path (`future::after_a_failed_leaf`), and identity and the equality leaves
+decline for one where they would answer "no"
+(`Primitive::answers_false_to_a_stranger`). The design is
+[object-model.md](object-model.md), "Simultaneous slots".
 
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers
 

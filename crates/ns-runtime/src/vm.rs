@@ -15,14 +15,17 @@ use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::ActivationReference;
+use crate::interpreter::future::{
+    not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
+};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
-    filled_own_slot, load_vector, read_local, read_outer_local, store_instance_field, store_vector,
-    write_local, write_outer_local,
+    filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
+    store_instance_field, store_vector, write_local, write_outer_local,
 };
 use crate::interpreter::unwind::UnwindOutcome;
 use crate::interpreter::{
@@ -65,8 +68,12 @@ enum Flow {
 /// can hand it to an observer: every send (a callee runs above it, and the loop
 /// resumes it from that `program_counter`), `MakeClosure` (it reifies the
 /// activation, so the frame starts from the `program_counter` stored just
-/// before), and `NonLocalReturn` (control leaves with a signal). Nothing reads
-/// `program_counter` while a straight-line instruction executes.
+/// before), `NonLocalReturn` (control leaves with a signal), and
+/// `ResolveFuture` and `InitializeSlot` when either meets an unresolved
+/// future (`force_and_reexecute` pushes the forcing above it, and the loop
+/// must come back to this same instruction once the future resolves).
+/// Nothing reads `program_counter` while a straight-line instruction
+/// executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
     let (floor, mut code, mut feedback_base) = interpreter.enter(|mutator| {
         (
@@ -451,7 +458,17 @@ fn execute<'gc>(
                     );
                     Flow::Next
                 }
-                Err(signal) => unwind(mutator, signal, floor),
+                // A future can reach a value's slot from outside any
+                // simultaneous clause's own resolution -- passed in as an
+                // ordinary argument, since a future is indistinguishable from
+                // its value (§6.3.2, rule 3). What belongs in the slot is
+                // what it stands for: forced first if it is not resolved yet
+                // (`value_for_a_value_slot`), then checked again with the
+                // same accepted path above. A refusal that is not about a
+                // future stands.
+                Err(signal) => {
+                    initialize_slot_refused(mutator, activation, program_counter, signal, floor)
+                }
             }
         }
         // A lazy slot's getter answers its field once it is filled; the
@@ -462,6 +479,14 @@ fn execute<'gc>(
                 Some(value) => finish(mutator, activation, value, floor),
                 None => Flow::Next,
             }
+        }
+        // §6.3.2's simultaneous slot clauses: one arm and one call, out of
+        // line (`simultaneous_clause_instruction`).
+        Instruction::MakeFuture { .. }
+        | Instruction::ResolveFuture { .. }
+        | Instruction::LoadOwnSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. } => {
+            simultaneous_clause_instruction(mutator, activation, program_counter, floor)
         }
         Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
             let value = read_local(&mutator.heap, activation, *register);
@@ -646,7 +671,9 @@ fn deliver<'gc>(
 /// block, or a `mustBeBoolean` method -- which runs in the popped activation's
 /// place. `Mutator::resume` applies the continuation and
 /// `Mutator::push_continuation` pushes what it decided, depth count included;
-/// the loop only forwards the popped entry's flag.
+/// the loop only forwards the popped entry's flag. A future's forcing
+/// (`Mutator::future_computed`) may also run the caller's stopped
+/// instruction again (`reexecute`) rather than resume after it.
 fn finish<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -666,6 +693,24 @@ fn finish<'gc>(
             std::mem::forget(deliver);
             value
         }
+        // A future's block returned: what happens next is
+        // `interpreter::future`'s to decide, and the loop carries it out.
+        Continuation::Future(forcing) => match mutator.future_computed(*forcing, value) {
+            Ok(FutureOutcome::Deliver(value)) => value,
+            Ok(FutureOutcome::Reexecute) => return reexecute(mutator, floor),
+            Ok(FutureOutcome::Force(step)) => {
+                return match mutator.push_continuation(step, popped.counted) {
+                    Ok(next) => Flow::Switch {
+                        activation: next,
+                        code: mutator.heap.activation_code(next),
+                        program_counter: 0,
+                        feedback_base: mutator.heap.activation_feedback_base(next),
+                    },
+                    Err(signal) => unwind(mutator, signal, floor),
+                };
+            }
+            Err(signal) => return unwind(mutator, signal, floor),
+        },
         then => match mutator.resume(then, value) {
             Ok(Step::Value(value)) => value,
             Ok(step) => {
@@ -712,6 +757,229 @@ fn resume_caller<'gc>(
         code,
         program_counter: program_counter + 1,
         feedback_base: mutator.heap.activation_feedback_base(caller),
+    }
+}
+
+/// The instruction the popped activation's caller is stopped at, run again
+/// rather than resumed after: it met an unresolved future, which is now
+/// resolved (`interpreter::future`, `AfterForcing::Reexecute`). It wrote
+/// nothing before it forced the future, so running it again is running it
+/// once. A host's send has no instruction to run again; a future it passes
+/// in straight to a leaf ends the run.
+fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize) -> Flow {
+    if mutator.heap.activation_depth() == floor {
+        let error = crate::interpreter::future::host_passed_a_future();
+        return Flow::Exit(mutator.to_host(Err(error)));
+    }
+    let caller = mutator
+        .heap
+        .top_activation()
+        .expect("internal: an activation above the run's floor has a caller");
+    Flow::Switch {
+        activation: caller,
+        code: mutator.heap.activation_code(caller),
+        program_counter: mutator.heap.activation_program_counter(caller),
+        feedback_base: mutator.heap.activation_feedback_base(caller),
+    }
+}
+
+// The arms of §6.3.2's simultaneous slot clauses -- `InitializeSlot`'s
+// refusal branch and the four instructions only such a clause emits -- run
+// out of line, each arm a single call that passes no more than an unwind
+// does: inlined into `vm::run` they grew the loop every instruction runs
+// through. They are not marked `#[cold]`, which measured slower still on
+// the sending benchmarks (`docs/design/execution.md`, "What simultaneous
+// slots cost").
+
+/// `InitializeSlot` refused a value's slot: if the value is a future, what
+/// it stands for belongs there, stored and checked again, or forced first
+/// and the instruction run again (`future::value_for_a_value_slot`).
+#[inline(never)]
+fn initialize_slot_refused<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: usize,
+    signal: Signal<'gc>,
+    floor: usize,
+) -> Flow {
+    // Read back here rather than handed over, so that the arm `vm::run`
+    // inlines passes no more than an unwind would.
+    let code = mutator.heap.activation_code(activation);
+    let Instruction::InitializeSlot { source, own_index } = code.instructions[program_counter]
+    else {
+        unreachable!("internal: a refused InitializeSlot is an InitializeSlot");
+    };
+    let value = read_local(&mutator.heap, activation, source);
+    match value_for_a_value_slot(mutator, value) {
+        None => unwind(mutator, signal, floor),
+        Some(Ok(Resolution::Value(resolved))) => {
+            let receiver = mutator.heap.activation_receiver(activation);
+            let base = mutator.heap.activation_slot_base(activation);
+            match check_value_slot(mutator, activation, receiver, own_index as usize, resolved) {
+                Ok(()) => {
+                    store_instance_field(
+                        &mut mutator.heap,
+                        &receiver,
+                        base + own_index as usize,
+                        resolved,
+                    );
+                    Flow::Next
+                }
+                Err(signal) => unwind(mutator, signal, floor),
+            }
+        }
+        Some(Ok(Resolution::Force(step))) => {
+            force_and_reexecute(mutator, activation, program_counter, step, floor)
+        }
+        Some(Err(signal)) => unwind(mutator, signal, floor),
+    }
+}
+
+/// The four instructions only a simultaneous slot clause emits.
+#[inline(never)]
+fn simultaneous_clause_instruction<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: usize,
+    floor: usize,
+) -> Flow {
+    // Read back here rather than handed over, so that the arm `vm::run`
+    // inlines passes no more than `initialize_slot_refused`'s does.
+    let code = mutator.heap.activation_code(activation);
+    match code.instructions[program_counter] {
+        // A crafted image can put anything in `closure`'s register (an
+        // image must never panic, `CLAUDE.md`, "An image is untrusted
+        // input"), so an operand that is not a closure is an ordinary error,
+        // not the `unreachable!` a compiler-emitted `MakeFuture` -- whose
+        // operand is always the block `MakeClosure` just made -- would
+        // never trigger.
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => make_future(mutator, activation, destination, closure, floor),
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => resolve_future(
+            mutator,
+            activation,
+            program_counter,
+            destination,
+            source,
+            floor,
+        ),
+        Instruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => load_own_slot_into(mutator, activation, destination, own_index),
+        Instruction::InitializeSlotProvisionally { source, own_index } => {
+            initialize_slot_provisionally(mutator, activation, source, own_index)
+        }
+        _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
+    }
+}
+
+/// `MakeFuture`: a new unresolved future of the closure in `closure`.
+fn make_future<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    destination: u16,
+    closure: u16,
+    floor: usize,
+) -> Flow {
+    let operand = read_local(&mutator.heap, activation, closure);
+    let closure = match operand {
+        Value::Object(object) if mutator.heap.is_closure(object) => object,
+        _ => return unwind(mutator, not_a_closure(operand), floor),
+    };
+    let future = mutator.new_future(closure);
+    write_local(
+        &mut mutator.heap,
+        activation,
+        destination,
+        Value::Object(future),
+    );
+    Flow::Next
+}
+
+/// `ResolveFuture`: the value `source` holds, seen through a future --
+/// forced first, and the instruction run again, when it is unresolved.
+fn resolve_future<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: usize,
+    destination: u16,
+    source: u16,
+    floor: usize,
+) -> Flow {
+    let value = read_local(&mutator.heap, activation, source);
+    match resolve_for_instruction(mutator, value) {
+        Ok(Resolution::Value(value)) => {
+            write_local(&mut mutator.heap, activation, destination, value);
+            Flow::Next
+        }
+        Ok(Resolution::Force(step)) => {
+            force_and_reexecute(mutator, activation, program_counter, step, floor)
+        }
+        Err(signal) => unwind(mutator, signal, floor),
+    }
+}
+
+/// `LoadOwnSlot`: `self`'s field at the slot base plus `own_index`.
+fn load_own_slot_into<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    destination: u16,
+    own_index: u32,
+) -> Flow {
+    let value = load_own_slot(&mutator.heap, activation, own_index);
+    write_local(&mut mutator.heap, activation, destination, value);
+    Flow::Next
+}
+
+/// `InitializeSlotProvisionally`: `InitializeSlot` without §3.1.1's check.
+fn initialize_slot_provisionally<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    source: u16,
+    own_index: u32,
+) -> Flow {
+    let value = read_local(&mutator.heap, activation, source);
+    let receiver = mutator.heap.activation_receiver(activation);
+    let base = mutator.heap.activation_slot_base(activation);
+    store_instance_field(
+        &mut mutator.heap,
+        &receiver,
+        base + own_index as usize,
+        value,
+    );
+    Flow::Next
+}
+
+/// An instruction met an unresolved future: store where it stands, push the
+/// forcing, and switch to it; `Reexecute` brings the loop back to this same
+/// instruction once the future is resolved (`reexecute`). One of the
+/// instructions whose `program_counter` must be stored before it hands
+/// control elsewhere (`run`'s doc comment).
+#[inline(never)]
+fn force_and_reexecute<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: usize,
+    step: Step<'gc>,
+    floor: usize,
+) -> Flow {
+    mutator
+        .heap
+        .set_activation_program_counter(activation, program_counter);
+    match mutator.push_step(step, &[], Some(activation), false) {
+        Ok(callee) => Flow::Switch {
+            activation: callee,
+            code: mutator.heap.activation_code(callee),
+            program_counter: 0,
+            feedback_base: mutator.heap.activation_feedback_base(callee),
+        },
+        Err(signal) => unwind(mutator, signal, floor),
     }
 }
 

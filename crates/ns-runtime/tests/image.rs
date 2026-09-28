@@ -508,6 +508,22 @@ fn every_instruction_once() -> CompiledCode {
                 own_index: 3,
             },
             Instruction::ReturnSlotIfFilled { own_index: 2 },
+            Instruction::MakeFuture {
+                destination: 12,
+                closure: 8,
+            },
+            Instruction::ResolveFuture {
+                destination: 13,
+                source: 12,
+            },
+            Instruction::LoadOwnSlot {
+                destination: 14,
+                own_index: 5,
+            },
+            Instruction::InitializeSlotProvisionally {
+                source: 13,
+                own_index: 6,
+            },
             Instruction::Return { register: 0 },
             Instruction::ImplicitReturn { register: 1 },
             Instruction::NonLocalReturn { register: 2 },
@@ -567,8 +583,8 @@ fn every_instruction_once() -> CompiledCode {
             },
         ],
         argument_count: 2,
-        register_count: 12,
-        statement_program_counter: vec![(0, 0..3), (1, 3..33)],
+        register_count: 15,
+        statement_program_counter: vec![(0, 0..3), (1, 3..37)],
         // One past the highest number among its own sends (0..=3, in
         // emission order -- what `number_call_site_families` assigns on the
         // decoded side too) and the block's `family_size` (0): the same
@@ -979,14 +995,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(36); // ... one past the last real tag
+    writer.write_u8(40); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 36
+            tag: 40
         })
     );
 }
@@ -8610,6 +8626,10 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
         let activation_metaclass = mutator
             .metaclass_of(activation)
             .expect("Activation has a metaclass");
+        let future = mutator.builtin_class(BuiltinClass::Future);
+        let future_metaclass = mutator
+            .metaclass_of(future)
+            .expect("Future has a metaclass");
         for (unnameable, described) in [
             (top, "Top"),
             (mirror_class, "the VM mirror's class"),
@@ -8617,6 +8637,8 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
             (mirror_metaclass, "the VM mirror's class class"),
             (activation, "Activation"),
             (activation_metaclass, "Activation class"),
+            (future, "Future"),
+            (future_metaclass, "Future class"),
         ] {
             let refused = image::snapshot(
                 mutator,
@@ -9433,8 +9455,8 @@ fn a_builtin_levels_clause_is_checked_like_any_levels() {
     );
 }
 
-/// The VM mirror's class, `Top` and `Activation` are refused wherever a
-/// program names a class, and a level's builtin mixin is such a place: a
+/// The VM mirror's class, `Top`, `Activation` and `Future` are refused
+/// wherever a program names a class, and a level's builtin mixin is such a place: a
 /// level applying the mirror's mixin would hand its instances every
 /// primitive.
 #[test]
@@ -9445,6 +9467,7 @@ fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Activation,
+        BuiltinClass::Future,
     ] {
         let tag = encode::builtin_class_tag(kind);
         assert_eq!(
@@ -9604,6 +9627,396 @@ fn activation_named_anywhere_else_is_refused() {
         writer.write_u8(tag);
     });
     assert_eq!(GraphFixture::new().decode_error(&as_metaclass), refused);
+}
+
+/// Everywhere but a future record's header, `Future` is refused like
+/// `Activation`: as a value, and behind a metaclass reference. Its class is
+/// kernel-private, and no program names it (`unnameable_class`).
+#[test]
+fn a_graph_naming_future_as_a_class_is_refused() {
+    let tag = encode::builtin_class_tag(BuiltinClass::Future);
+    let refused = decode::DecodeError::InvalidTag {
+        what: "builtin class a program may name",
+        tag: 30,
+    };
+    let as_value = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(tag);
+    });
+    assert_eq!(GraphFixture::new().decode_error(&as_value), refused);
+    let as_metaclass = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(CLASS_BUILTIN);
+        writer.write_u8(tag);
+    });
+    assert_eq!(GraphFixture::new().decode_error(&as_metaclass), refused);
+}
+
+/// One record under the `Future` header, its body written by `body`, and no
+/// roots.
+fn future_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    class_records(1, |writer| {
+        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Future));
+        writer.write_u32(5); // identity hash
+        body(writer);
+    })
+}
+
+/// The encoder writes only an unresolved future -- two fields, its closure
+/// and state 0 -- so a record under the `Future` header that is anything
+/// else describes a future no encoder wrote: another body, another field
+/// count, a resolving or resolved state, a state that is none of the three,
+/// or a computation that is not a closure. Each is refused at decode rather
+/// than left for `future_state` to meet.
+#[test]
+fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
+    let array = future_record(|writer| {
+        writer.write_u8(OBJECT_ARRAY);
+        writer.write_u32(0); // no elements
+    });
+    let three_fields = future_record(|writer| {
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(3);
+        writer.write_u8(VALUE_NIL);
+        writer.write_u8(VALUE_SMALL_INTEGER);
+        writer.write_i64(0);
+        writer.write_u8(VALUE_NIL);
+    });
+    let with_state = |computation: fn(&mut encode::Writer), state: i64| {
+        future_record(move |writer| {
+            writer.write_u8(OBJECT_INSTANCE);
+            writer.write_u32(2);
+            computation(writer);
+            writer.write_u8(VALUE_SMALL_INTEGER);
+            writer.write_i64(state);
+        })
+    };
+    let nil: fn(&mut encode::Writer) = |writer| writer.write_u8(VALUE_NIL);
+    // The record itself, id 0: an object, but no closure.
+    let itself: fn(&mut encode::Writer) = |writer| {
+        writer.write_u8(VALUE_OBJECT_ID);
+        writer.write_u32(0);
+    };
+    for (bytes, described) in [
+        (array, "an array body"),
+        (three_fields, "three fields"),
+        (with_state(nil, 0), "an unresolved future of nil"),
+        (with_state(itself, 0), "an unresolved future of itself"),
+        (with_state(itself, 1), "a resolving future"),
+        (with_state(nil, 2), "a resolved future"),
+        (with_state(nil, 7), "state 7"),
+    ] {
+        let error = GraphFixture::new().decode_error(&bytes);
+        assert_eq!(error, decode::DecodeError::FutureRecord, "{described}");
+    }
+    assert_eq!(
+        decode::DecodeError::FutureRecord.to_string(),
+        "an object in the image is a Future without an unresolved future's record"
+    );
+}
+
+/// A module whose `probe` slot holds §6.3.2's data cycle: each of `Probe`'s
+/// arrays holds the other's future, resolved once the clause ends. `kept` is
+/// for a test to fill, and `second` answers a block to make a future of.
+const DATA_CYCLE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Holder = Object new (
+      | public probe = Probe new. public kept. |
+    ) (
+      class Probe = Object new (|| public first = {second}. public second = {first}. ||) () : ()
+      public second = ( ^[probe second] )
+    ) : ()
+"};
+
+/// Whether any object reachable from `value` through instance fields, array
+/// elements and closure values is a `Future`. A graph is only what its roots
+/// reach, so this covers every object an image decoded.
+fn reaches_a_future<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
+    let heap = mutator.heap();
+    let future_class = mutator.builtin_class(BuiltinClass::Future);
+    let mut seen: Vec<ns_runtime::ObjectReference<'gc>> = Vec::new();
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        let Value::Object(object) = value else {
+            continue;
+        };
+        if heap.is_class(object) || seen.iter().any(|visited| visited.same(object)) {
+            continue;
+        }
+        seen.push(object);
+        if heap.class_of_object(object).same(future_class) {
+            return true;
+        }
+        if let Some(elements) = heap.array_elements(object) {
+            pending.extend(elements);
+        }
+        if let Some(count) = heap.instance_field_count(object) {
+            pending.extend((0..count).filter_map(|index| heap.instance_field(object, index)));
+        }
+        if let Some(closure) = heap.closure_data(object) {
+            pending.extend(closure.copied.iter().copied());
+        }
+    }
+    false
+}
+
+/// An image never holds a resolved future, only its value
+/// (`docs/design/image-format.md`, "Futures in a graph"): the element of
+/// `first` is written as `second`'s array itself, and so is `kept`'s, so
+/// after a load they are one object and nothing in the loaded graph is a
+/// future.
+///
+/// `kept`'s future is made and forced from the host and stored after the
+/// last run, because a collection replaces every resolved future a field
+/// holds with its value (`World::collect`): under `NS_NEXT_STRESS_COLLECT`
+/// the clause's own futures are gone before the snapshot, and this one is
+/// what keeps the test from passing without meeting one.
+#[test]
+fn a_resolved_future_is_written_as_its_value() {
+    let (mut interpreter, class) = load(DATA_CYCLE);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+    let block = expect_ok(
+        interpreter.send(&holder, Symbol::intern("second"), &[]),
+        "second",
+    );
+    let future = interpreter.enter(|mutator| {
+        let closure = *object(&mutator.fetch(&block));
+        let future = mutator.new_future(closure);
+        mutator.stash(Value::Object(future))
+    });
+    // A message to the future forces it; a host root keeps the future itself.
+    expect_ok(
+        interpreter.send(&future, Symbol::intern("size"), &[]),
+        "future size",
+    );
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let holder = mutator.fetch(&holder);
+        let future = mutator.fetch(&future);
+        let resolved = mutator
+            .as_future(future)
+            .expect("the root holds the future");
+        assert!(
+            matches!(
+                mutator.future_state(resolved),
+                ns_runtime::interpreter::future::FutureState::Resolved(_)
+            ),
+            "the forced future is resolved"
+        );
+        let kept = mutator.new_array(vec![future]);
+        assert!(
+            mutator
+                .heap_mut()
+                .set_instance_field(*object(&holder), 1, Value::Object(kept)),
+            "the holder has its kept slot"
+        );
+        assert!(reaches_a_future(mutator, holder), "the premise");
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(DATA_CYCLE),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[holder],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let holder = loaded.roots[0].clone();
+    let send = |interpreter: &mut Interpreter, receiver: &Root, selector: &str| {
+        expect_ok(
+            interpreter.send(receiver, Symbol::intern(selector), &[]),
+            selector,
+        )
+    };
+    let probe = send(&mut loaded.interpreter, &holder, "probe");
+    let first = send(&mut loaded.interpreter, &probe, "first");
+    let second = send(&mut loaded.interpreter, &probe, "second");
+    let kept = send(&mut loaded.interpreter, &holder, "kept");
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            !reaches_a_future(mutator, mutator.fetch(&holder)),
+            "the loaded graph holds no future"
+        );
+        let heap = mutator.heap();
+        let first = *object(&mutator.fetch(&first));
+        let second = *object(&mutator.fetch(&second));
+        let kept = *object(&mutator.fetch(&kept));
+        let element = heap.array_at(first, 0).expect("first holds one element");
+        assert!(
+            object(&element).same(second),
+            "first's element is second's array itself"
+        );
+        let back = heap.array_at(second, 0).expect("second holds one element");
+        assert!(object(&back).same(first), "and second's is first's");
+        let kept_element = heap.array_at(kept, 0).expect("kept holds one element");
+        assert!(
+            object(&kept_element).same(second),
+            "kept's element is second's array itself"
+        );
+    });
+}
+
+/// An abandoned clause leaves `escaped` holding an unresolved future
+/// (`spec_6_3_2_an_abandoned_clause_recomputes_on_the_next_touch`). The
+/// image writes it as a record under the `Future` header, with its closure,
+/// and the loaded world forces it on the first touch, which runs the
+/// initializer again. The first touch is an argument to a leaf, which sees
+/// through it only once the loaded world knows it holds a future: the load
+/// sets `futures_made` as `Mutator::new_future` does.
+#[test]
+fn an_unresolved_future_round_trips_and_computes_after_load() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder = Object new (
+          | public escaped. |
+        ) (
+          class Probe keep: holder = Object new (
+            || public first = {holder escaped: second. nil zork}. public second = 2 + 1. ||
+          ) () : ()
+          public abandon = ( Probe keep: self )
+          public next = ( ^escaped + 1 )
+          public sum = ( ^1 + escaped )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+    let abandoned = interpreter.send(&holder, Symbol::intern("abandon"), &[]);
+    assert!(
+        matches!(abandoned, Err(HostSignal::Error(_))),
+        "first's initializer raises and abandons the clause"
+    );
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let holder = mutator.fetch(&holder);
+        let escaped = mutator
+            .heap()
+            .instance_field(*object(&holder), 0)
+            .expect("the holder has its slot");
+        let future = mutator
+            .as_future(escaped)
+            .expect("escaped holds second's future");
+        assert!(
+            matches!(
+                mutator.future_state(future),
+                ns_runtime::interpreter::future::FutureState::Unresolved(_)
+            ),
+            "the abandoned future is unresolved"
+        );
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[holder],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let holder = loaded.roots[0].clone();
+    loaded.interpreter.enter(|mutator| {
+        let escaped = mutator
+            .heap()
+            .instance_field(*object(&mutator.fetch(&holder)), 0)
+            .expect("the loaded holder has its slot");
+        assert!(
+            mutator.as_future(escaped).is_some(),
+            "the loaded slot holds the future, not a value"
+        );
+    });
+    let sum = expect_ok(
+        loaded.interpreter.send(&holder, Symbol::intern("sum"), &[]),
+        "sum",
+    );
+    let next = expect_ok(
+        loaded
+            .interpreter
+            .send(&holder, Symbol::intern("next"), &[]),
+        "next",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(4)));
+        assert!(matches!(mutator.fetch(&next), Value::SmallInteger(4)));
+    });
+}
+
+/// Crafted code can corrupt a future's slots once it holds one; the encoder
+/// refuses to write such a future rather than write a record the decoder
+/// would refuse (`future::fields_for_an_image`), and does not see through a
+/// "resolved" one whose value is another future.
+#[test]
+fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder = Object new (
+          | public held |
+        ) (
+          public block = ( ^[3] )
+        ) : ()
+    "};
+    for corruption in ["no closure", "state 7", "resolved to each other"] {
+        let (mut interpreter, class) = load(source);
+        let holder = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+        let block = expect_ok(
+            interpreter.send(&holder, Symbol::intern("block"), &[]),
+            "block",
+        );
+        let platform = interpreter.platform();
+        let refusal = interpreter.enter(|mutator| {
+            let Value::Object(closure) = mutator.fetch(&block) else {
+                panic!("block answers a block");
+            };
+            let holder = mutator.fetch(&holder);
+            let future = mutator.new_future(closure);
+            let other = mutator.new_future(closure);
+            let heap = mutator.heap_mut();
+            match corruption {
+                "no closure" => {
+                    heap.set_instance_field(future, 0, Value::SmallInteger(5));
+                }
+                "state 7" => {
+                    heap.set_instance_field(future, 1, Value::SmallInteger(7));
+                }
+                _ => {
+                    heap.set_instance_field(future, 0, Value::Object(other));
+                    heap.set_instance_field(future, 1, Value::SmallInteger(2));
+                    heap.set_instance_field(other, 0, Value::Object(future));
+                    heap.set_instance_field(other, 1, Value::SmallInteger(2));
+                }
+            }
+            heap.set_instance_field(*object(&holder), 0, Value::Object(future));
+            let class = class_reference(mutator, &class);
+            let platform = mutator.fetch(&platform);
+            match image::snapshot(
+                mutator,
+                Some(source),
+                &Origin::File(PathBuf::from("t.ns")),
+                class,
+                &platform,
+                &[holder],
+            ) {
+                Ok(_) => panic!("{corruption}: a malformed future was written"),
+                Err(message) => message,
+            }
+        });
+        assert_eq!(
+            refusal, "image encoding cannot serialize a malformed future",
+            "{corruption}"
+        );
+    }
 }
 
 /// Tag 5 was the class record before its mixin became a tagged reference;

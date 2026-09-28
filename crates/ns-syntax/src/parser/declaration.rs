@@ -282,6 +282,7 @@ impl<'a> Parser<'a> {
                 mutability,
                 initializer,
                 lazy: false,
+                simultaneous: close == TokenKind::DoubleBar,
                 span: start.merge(end),
             });
         }
@@ -931,6 +932,7 @@ impl<'a> Parser<'a> {
             mutability,
             initializer,
             lazy: true,
+            simultaneous: false,
             span: start.merge(end),
         }
     }
@@ -2402,6 +2404,57 @@ mod specification_tests {
                 .len(),
             2
         );
+    }
+
+    /// §6.3.2: a declaration remembers which clause it stood in, since a
+    /// simultaneous clause initializes differently. A lone `||` is still the
+    /// empty sequential section, and a lazy slot belongs to no clause.
+    #[test]
+    fn a_slot_declaration_records_whether_its_clause_is_simultaneous() {
+        let source = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Probe = Object new (|| first = second. second = 2. ||) (
+                lazy late = 3.
+                public sequential = ( | one = 1. | ^one )
+                public simultaneous = ( || one = two. two = 2. || ^one )
+                public empty = ( || ^nil )
+            ) : ()
+        "};
+        let module = crate::parse(source).expect("parse");
+        let body = &module.root_class.instance_side;
+        let header: Vec<bool> = body
+            .slots
+            .iter()
+            .filter(|slot| !slot.lazy)
+            .map(|slot| slot.simultaneous)
+            .collect();
+        assert_eq!(header, vec![true, true]);
+        assert!(body
+            .slots
+            .iter()
+            .filter(|slot| slot.lazy)
+            .all(|slot| !slot.simultaneous));
+        let temporaries = |selector_name: &str| -> Vec<bool> {
+            body.methods
+                .iter()
+                .find(|method| match &method.pattern {
+                    MessagePattern::Unary { selector } => selector.name == selector_name,
+                    _ => false,
+                })
+                .map(|method| {
+                    method
+                        .body
+                        .temporaries
+                        .iter()
+                        .map(|temporary| temporary.simultaneous)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(temporaries("sequential"), vec![false]);
+        assert_eq!(temporaries("simultaneous"), vec![true, true]);
+        assert_eq!(temporaries("empty"), Vec::<bool>::new());
     }
 
     /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
