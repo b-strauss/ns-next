@@ -131,6 +131,7 @@ mod tests {
             mutability,
             initializer: None,
             lazy: false,
+            simultaneous: false,
             span: Span::new(0, 0),
         }
     }

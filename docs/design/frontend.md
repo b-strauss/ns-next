@@ -273,9 +273,9 @@ declaration -- name, mutability and initializer -- not just the name.
 ## Deviation: simultaneous slot clauses initialize sequentially
 
 §6.3.2's `|| ... ||` declares slot clauses that are evaluated simultaneously,
-resolving well-founded mutual recursion between them. The parser computes the
-`simultaneous` flag only to choose the closing delimiter and then discards it,
-so the clauses initialize in declaration order like ordinary ones: in
+resolving well-founded mutual recursion between them. The parser records the
+flag on each declaration (`SlotDeclaration.simultaneous`), and nothing acts on
+it yet, so the clauses initialize in declaration order like ordinary ones: in
 `|| first = second + 1. second = 2. ||`, `second` is still **nil** when `first`
 is computed. Where the expressions do not raise, this too is silent wrong
 output at exit status 0. Closing it is planned, through pull futures and a
