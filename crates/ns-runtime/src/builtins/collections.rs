@@ -141,16 +141,25 @@ fn allocate<'gc>(
             ))))
         }
     };
-    let Ok(length) = usize::try_from(size) else {
+    if size < 0 {
         return Some(Err(refusal(format!(
             "{selector} requires a size of at least 0, got {size}"
         ))));
+    }
+    // A non-negative size that does not fit a `usize` -- above `u32::MAX` on
+    // a 32-bit target -- is refused as an allocation that cannot be made,
+    // like one `try_reserve_exact` refuses, not as a negative size.
+    let cannot_allocate = || {
+        refusal(format!(
+            "{selector} cannot allocate an Array of {size} elements"
+        ))
+    };
+    let Ok(length) = usize::try_from(size) else {
+        return Some(Err(cannot_allocate()));
     };
     let mut elements: Vec<Value<'gc>> = Vec::new();
     if elements.try_reserve_exact(length).is_err() {
-        return Some(Err(refusal(format!(
-            "{selector} cannot allocate an Array of {size} elements"
-        ))));
+        return Some(Err(cannot_allocate()));
     }
     elements.resize(length, Value::Nil);
     Some(Ok(Value::Object(mutator.new_array(elements))))
