@@ -40,6 +40,10 @@ const HOLDER: &str = indoc! {"
         public answeringHeld = ( ^[held] )
         public taking = ( ^[:argument | argument] )
         public answering: answer = ( ^[answer] )
+        public descend: depth forcing: future = (
+            depth = 0 ifTrue: [^future + 1].
+            ^descend: depth - 1 forcing: future
+        )
     ) : ()
 "};
 
@@ -304,6 +308,56 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+ns_runtime::for_each_lowering! {
+    /// The depth limit refuses a forcing's push as it refuses any other
+    /// (`Mutator::push_past_the_limit`), and abandons the forcing, so the
+    /// future is unresolved, not resolving with nothing computing it. The
+    /// forcing's push is the one refused when the error names a block's
+    /// `value`: `descend:forcing:` and the future's `doesNotUnderstand:` are
+    /// methods. Searched from the deepest recursion down, since the first
+    /// depth that fits the forcing resolves the future.
+    fn the_depth_limit_refusing_a_forcing_leaves_the_future_unresolved(lowering) {
+        let (mut interpreter, holder) = a_holder(lowering);
+        let future = a_future(&mut interpreter, &holder, "three");
+        let limit = i64::try_from(ns_runtime::interpreter::MAX_ACTIVATION_DEPTH)
+            .expect("the limit is a small integer");
+        let mut refused_forcing = false;
+        for depth in (limit - 10..limit).rev() {
+            let arguments = [
+                interpreter.stash(Value::SmallInteger(depth)),
+                future.clone(),
+            ];
+            let error = match interpreter.send(
+                &holder,
+                Symbol::intern("descend:forcing:"),
+                &arguments,
+            ) {
+                Err(HostSignal::Error(error)) => error,
+                Err(HostSignal::Return) => panic!("depth {depth}: a non-local return escaped"),
+                Ok(_) => break,
+            };
+            assert_eq!(error.message, "stack overflow: recursion too deep", "depth {depth}");
+            if error.selector == Symbol::intern("value") {
+                refused_forcing = true;
+                assert_eq!(state_of(&mut interpreter, &future), "unresolved", "depth {depth}");
+                assert_eq!(runs(&mut interpreter, &holder), 0, "depth {depth}: never ran");
+                break;
+            }
+        }
+        assert!(refused_forcing, "{lowering:?}: some depth refused the forcing's push");
+        // The next touch computes it.
+        let four = interpreter.stash(Value::SmallInteger(4));
+        let sum = expect_ok(
+            interpreter.send(&future, Symbol::intern("+"), &[four]),
+            "future + 4",
+        );
+        interpreter.enter(|mutator| {
+            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
+        });
+        assert_eq!(state_of(&mut interpreter, &future), "resolved");
+    }
+}
+
 /// Only an instance of the kernel's `Future` is a future.
 #[test]
 fn only_a_future_is_a_future() {
@@ -482,4 +536,104 @@ ns_runtime::for_each_lowering! {
             ));
         });
     }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same replacement in an instance's slot: `held` holds the value
+    /// itself once a collection has run.
+    #[cfg(debug_assertions)]
+    fn a_collection_replaces_a_resolved_future_in_an_instance_slot(lowering) {
+        let (mut interpreter, holder) = a_holder(lowering);
+        let future = a_future(&mut interpreter, &holder, "three");
+        let four = interpreter.stash(Value::SmallInteger(4));
+        let _ = expect_ok(interpreter.send(&future, Symbol::intern("+"), &[four]), "force it");
+        let _ = expect_ok(
+            interpreter.send(&holder, Symbol::intern("held:"), std::slice::from_ref(&future)),
+            "held:",
+        );
+        interpreter.enter(|mutator| {
+            let Value::Object(holder) = mutator.fetch(&holder) else {
+                panic!("an instance");
+            };
+            // Or the value already, where a stress mode collected since.
+            let held = mutator.heap().instance_field(holder, 1).expect("held");
+            assert!(
+                mutator.as_future(held).is_some() || matches!(held, Value::SmallInteger(3)),
+                "held holds the future first"
+            );
+        });
+        drop(future);
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            let Value::Object(holder) = mutator.fetch(&holder) else {
+                panic!("an instance");
+            };
+            // `held` is `Holder`'s second slot, after `runs`.
+            assert!(
+                matches!(
+                    mutator.heap().instance_field(holder, 1),
+                    Some(Value::SmallInteger(3))
+                ),
+                "held holds the value, not the future"
+            );
+        });
+    }
+}
+
+/// And in a closure's copied values: `answering:`'s block copies its
+/// argument under the optimized lowering, which is the lowering that copies
+/// -- the reference lowering reaches it through the captured frame, whose
+/// registers are exempt (`Heap::replace_resolved_futures`). Debug builds
+/// only, as above.
+#[cfg(debug_assertions)]
+#[test]
+fn a_collection_replaces_a_resolved_future_in_a_closures_copied_value() {
+    let (mut interpreter, holder) = a_holder(Lowering::Optimized);
+    let future = a_future(&mut interpreter, &holder, "three");
+    let four = interpreter.stash(Value::SmallInteger(4));
+    let _ = expect_ok(
+        interpreter.send(&future, Symbol::intern("+"), &[four]),
+        "force it",
+    );
+    let block = expect_ok(
+        interpreter.send(
+            &holder,
+            Symbol::intern("answering:"),
+            std::slice::from_ref(&future),
+        ),
+        "answering:",
+    );
+    let copied_first = |interpreter: &mut Interpreter| {
+        interpreter.enter(|mutator| {
+            let Value::Object(closure) = mutator.fetch(&block) else {
+                panic!("answering: answers a block");
+            };
+            let data = mutator.heap().closure_data(closure).expect("a closure");
+            match data.copied.first() {
+                Some(Value::SmallInteger(3)) => "the value",
+                Some(value) if mutator.as_future(*value).is_some() => "the future",
+                _ => "something else",
+            }
+        })
+    };
+    // Or the value already, where a stress mode collected since.
+    assert_ne!(
+        copied_first(&mut interpreter),
+        "something else",
+        "copied before a collection"
+    );
+    drop(future);
+    interpreter.collect_now();
+    assert_eq!(
+        copied_first(&mut interpreter),
+        "the value",
+        "copied after a collection"
+    );
+    let answer = expect_ok(
+        interpreter.send(&block, Symbol::intern("value"), &[]),
+        "block value",
+    );
+    interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&answer), Value::SmallInteger(3)));
+    });
 }
