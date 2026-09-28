@@ -210,6 +210,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::MessageNotUnderstood => 26,
         BuiltinClass::Message => 27,
         BuiltinClass::Halt => 28,
+        BuiltinClass::Future => 30,
     }
 }
 
@@ -332,15 +333,19 @@ pub fn root_levels<'gc>(
 /// name any of them.
 fn named_builtin(applied: &crate::mixin::AppliedClause) -> Result<BuiltinClass, String> {
     match applied.named_builtin {
-        Some(BuiltinClass::Top | BuiltinClass::VmMirror | BuiltinClass::Activation) | None => {
-            Err(format!(
-                "image encoding cannot serialize a level that `<:` clause {} of class `{}` added: \
+        Some(
+            BuiltinClass::Top
+            | BuiltinClass::VmMirror
+            | BuiltinClass::Activation
+            | BuiltinClass::Future,
+        )
+        | None => Err(format!(
+            "image encoding cannot serialize a level that `<:` clause {} of class `{}` added: \
              it applies a mixin that is neither part of the module's declaration tree nor a \
              builtin class a program can name",
-                applied.index + 1,
-                applied.declaration.name
-            ))
-        }
+            applied.index + 1,
+            applied.declaration.name
+        )),
         Some(kind) => Ok(kind),
     }
 }
@@ -848,6 +853,7 @@ fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Opti
         Some(BuiltinClass::Top) => Some(format!("Top{suffix}")),
         Some(BuiltinClass::VmMirror) => Some(format!("the VM mirror's class{suffix}")),
         Some(BuiltinClass::Activation) => Some(format!("Activation{suffix}")),
+        Some(BuiltinClass::Future) => Some(format!("Future{suffix}")),
         _ => None,
     }
 }
@@ -1783,7 +1789,10 @@ pub fn encode_tag_named_hashes<'gc>(
         .filter(|kind| {
             !matches!(
                 kind,
-                BuiltinClass::Top | BuiltinClass::VmMirror | BuiltinClass::Activation
+                BuiltinClass::Top
+                    | BuiltinClass::VmMirror
+                    | BuiltinClass::Activation
+                    | BuiltinClass::Future
             )
         })
         .map(|kind| {

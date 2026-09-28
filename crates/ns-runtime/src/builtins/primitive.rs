@@ -27,6 +27,9 @@ pub enum Primitive {
     Message(MessagePrimitive),
     /// `moduleNamed:`: a shipped module's root class (`builtins::module`).
     Module(ModulePrimitive),
+    /// §6.3.2's pull future, forced by its `doesNotUnderstand:`
+    /// (`builtins::future`).
+    Future(FuturePrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
 }
@@ -171,6 +174,14 @@ pub enum MessagePrimitive {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulePrimitive {
     Named,
+}
+
+/// The one leaf of `Kernel.ns`'s `Future` (`docs/design/object-model.md`,
+/// "Simultaneous slots").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuturePrimitive {
+    /// The future's value, forcing it first when it is unresolved.
+    Value,
 }
 
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
@@ -619,6 +630,12 @@ pub const MIRROR: &[MirrorEntry] = &[
         // Unary: the module's name is the row's subject.
         "moduleNamed",
         Primitive::Module(ModulePrimitive::Named),
+    ),
+    mirror(
+        "futureValue:ifFail:",
+        // Unary: the future is the row's subject.
+        "value",
+        Primitive::Future(FuturePrimitive::Value),
     ),
 ];
 

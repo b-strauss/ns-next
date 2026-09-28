@@ -839,6 +839,7 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         26 => BuiltinClass::MessageNotUnderstood,
         27 => BuiltinClass::Message,
         28 => BuiltinClass::Halt,
+        30 => BuiltinClass::Future,
         _ => return None,
     })
 }
@@ -853,7 +854,7 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 
 /// A builtin class referenced in the graph: a class reference recorded as a
 /// value (`CLASS_BUILTIN`), which from Task 4 on can hold `Metaclass` -- `3
-/// class class class` reaches it. Three tags are refused here, because no
+/// class class class` reaches it. Four tags are refused here, because no
 /// source module can produce them and an artifact that carried one would
 /// decode into a program the language does not admit. The VM mirror's class:
 /// there is exactly one mirror, and an artifact that could name its class
@@ -864,8 +865,10 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// frames and unwinds stacks, a capability Newspeak hands out only through
 /// mirrors, so no artifact may name its class either
 /// (`docs/design/core-library.md`, "Exceptions") -- except as the
-/// header of an activation record, which `decode_object_header` reads. `Object` declares
-/// an accessor for none of the three, for the same reasons, which is what
+/// header of an activation record, which `decode_object_header` reads.
+/// `Future`: §6.3.2's pull future is kernel-private as `Activation` is, and
+/// no program names its class. `Object` declares an accessor for none of the
+/// four, for the same reasons, which is what
 /// keeps source and artifact agreed on the names a program has. Only the
 /// closing hash table names them, by tag, as it names every builtin.
 pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
@@ -888,6 +891,10 @@ fn referenced_builtin_class(kind: BuiltinClass) -> Result<BuiltinClass, DecodeEr
         BuiltinClass::Activation => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
             tag: 23,
+        }),
+        BuiltinClass::Future => Err(DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: 30,
         }),
         kind => Ok(kind),
     }

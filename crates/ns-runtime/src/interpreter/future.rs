@@ -1,0 +1,276 @@
+//! §6.3.2's pull future (`docs/design/object-model.md`, "Simultaneous
+//! slots"): an instance of the kernel-private `Future`, whose two slots this
+//! module alone reads and writes. Forcing one runs its block as a trampoline
+//! step under `Continuation::Future`, never by calling back into Newspeak;
+//! what happens once the block returns -- deliver the value to the send that
+//! forced it, or run the instruction that met the future again -- is
+//! `AfterForcing`.
+
+use crate::interpreter::{Signal, Step, StepArguments};
+use crate::types::*;
+use crate::{Mutator, Symbol};
+
+/// The `state` slot's three values, as `Kernel.ns` documents them.
+const UNRESOLVED: i64 = 0;
+const RESOLVING: i64 = 1;
+const RESOLVED: i64 = 2;
+
+/// The position of each of `Future`'s two slots in its field vector: the
+/// declaration order in `Kernel.ns`, behind `Object`, which declares none.
+/// `a_futures_slots_are_where_this_module_reads_them` pins both.
+const COMPUTATION_FIELD: usize = 0;
+const STATE_FIELD: usize = 1;
+
+/// Where a future is in its life.
+pub enum FutureState<'gc> {
+    /// Not yet forced, or forced and abandoned: the closure that computes it.
+    Unresolved(ObjectReference<'gc>),
+    /// Its closure is running; forcing it again is §6.3.2's ill-founded
+    /// recursion.
+    Resolving,
+    Resolved(Value<'gc>),
+}
+
+/// What the activation that forced a future does once its block returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterForcing {
+    /// Answer the value to the send that forced it: `doesNotUnderstand:`'s
+    /// `futureValue:ifFail:`.
+    Deliver,
+    /// Discard it and run the instruction that met the future again, which
+    /// now finds it resolved (`docs/design/object-model.md`, "Where Rust sees
+    /// a future").
+    Reexecute,
+}
+
+/// A forcing in progress, boxed in the `Continuation::Future` of the
+/// activation running its future's block, and owned by exactly one stack
+/// entry.
+#[derive(Debug, Clone)]
+pub struct FutureForcing<'gc> {
+    /// The future being computed, `Resolving` while this forcing lasts.
+    pub(crate) future: ObjectReference<'gc>,
+    pub(crate) after: AfterForcing,
+    /// The forcing waiting on this one: a future whose block answered this
+    /// one's future, unresolved, and which this one's value resolves too.
+    /// Its own activation has returned already, so nothing but this link
+    /// keeps it -- which is why `future_abandoned` walks it.
+    pub(crate) then: Option<Box<FutureForcing<'gc>>>,
+}
+
+/// What `vm::finish` does once a forcing's activation has returned.
+pub(crate) enum FutureOutcome<'gc> {
+    /// Hand the value to the send that forced the future.
+    Deliver(Value<'gc>),
+    /// Run the caller's stopped instruction again.
+    Reexecute,
+    /// The block answered another future, still unresolved: force it next,
+    /// in the popped activation's place.
+    Force(Step<'gc>),
+}
+
+impl<'gc> Mutator<'gc> {
+    /// The future `value` is, if it is one. The class check is one compare:
+    /// no program can subclass the private `Future`.
+    pub fn as_future(&self, value: Value<'gc>) -> Option<ObjectReference<'gc>> {
+        let Value::Object(object) = value else {
+            return None;
+        };
+        self.heap
+            .class_of_object(object)
+            .same(self.builtin_class(BuiltinClass::Future))
+            .then_some(object)
+    }
+
+    /// Where `future` is in its life, read from its two slots.
+    pub fn future_state(&self, future: ObjectReference<'gc>) -> FutureState<'gc> {
+        let computation = self.future_field(future, COMPUTATION_FIELD);
+        match self.future_field(future, STATE_FIELD) {
+            Value::SmallInteger(RESOLVED) => FutureState::Resolved(computation),
+            Value::SmallInteger(RESOLVING) => FutureState::Resolving,
+            _ => match computation {
+                Value::Object(closure) => FutureState::Unresolved(closure),
+                _ => unreachable!("internal: an unresolved future holds its closure"),
+            },
+        }
+    }
+
+    /// A new unresolved future of `closure`. Marks the heap as having made
+    /// one, which is what will let every check for a future stay off the
+    /// paths of a program that never makes one.
+    pub fn new_future(&mut self, closure: ObjectReference<'gc>) -> ObjectReference<'gc> {
+        self.futures_made = true;
+        let class = self.builtin_class(BuiltinClass::Future);
+        let mut fields = vec![Value::Nil; 2];
+        fields[COMPUTATION_FIELD] = Value::Object(closure);
+        fields[STATE_FIELD] = Value::SmallInteger(UNRESOLVED);
+        self.heap
+            .allocate_object(class, ObjectData::Instance(fields))
+    }
+
+    fn future_field(&self, future: ObjectReference<'gc>, index: usize) -> Value<'gc> {
+        self.heap
+            .instance_field(future, index)
+            .expect("internal: a future has both of its slots")
+    }
+
+    fn set_future_fields(
+        &mut self,
+        future: ObjectReference<'gc>,
+        computation: Value<'gc>,
+        state: i64,
+    ) {
+        self.heap
+            .set_instance_field(future, COMPUTATION_FIELD, computation);
+        self.heap
+            .set_instance_field(future, STATE_FIELD, Value::SmallInteger(state));
+    }
+
+    /// Marks `future` resolving, its closure kept for an abandonment to
+    /// restore.
+    fn set_future_resolving(&mut self, future: ObjectReference<'gc>) {
+        self.heap
+            .set_instance_field(future, STATE_FIELD, Value::SmallInteger(RESOLVING));
+    }
+
+    /// `forcing`'s activation returned `value`: record it, unless it is
+    /// itself a future, which is followed first -- §6.3.2's pipelined
+    /// promise, as Primordial Soup's `resolve` loops. A forcing chained
+    /// behind this one (`FutureForcing::then`) is resolved to the same value.
+    /// An error leaves every future of the chain unresolved again, since no
+    /// activation is left to abandon them.
+    pub(crate) fn future_computed(
+        &mut self,
+        forcing: FutureForcing<'gc>,
+        value: Value<'gc>,
+    ) -> Result<FutureOutcome<'gc>, Signal<'gc>> {
+        if let Some(inner) = self.as_future(value) {
+            match self.future_state(inner) {
+                FutureState::Resolved(resolved) => return self.future_computed(forcing, resolved),
+                FutureState::Resolving => {
+                    self.future_abandoned(forcing);
+                    return Err(divergent(Value::Object(inner)));
+                }
+                FutureState::Unresolved(closure) => {
+                    // Force the inner one, then come back to this one, which
+                    // stays resolving meanwhile.
+                    self.set_future_resolving(inner);
+                    return Ok(FutureOutcome::Force(Step::Block {
+                        closure,
+                        arguments: StepArguments::Owned(Vec::new()),
+                        then: Continuation::Future(Box::new(FutureForcing {
+                            future: inner,
+                            after: forcing.after,
+                            then: Some(Box::new(forcing)),
+                        })),
+                    }));
+                }
+            }
+        }
+        self.set_future_fields(forcing.future, value, RESOLVED);
+        if let Some(waiting) = forcing.then {
+            return self.future_computed(*waiting, value);
+        }
+        Ok(match forcing.after {
+            AfterForcing::Deliver => FutureOutcome::Deliver(value),
+            AfterForcing::Reexecute => FutureOutcome::Reexecute,
+        })
+    }
+
+    /// The forcing activation was popped without returning -- its block
+    /// raised and an unwind passed it, or the run loop refused to push it:
+    /// the future is unresolved again, and so is every future chained
+    /// behind it, so the next touch computes it again rather than meeting a
+    /// stale "resolving" (`docs/design/object-model.md`, "A clause abandoned
+    /// by an exception").
+    pub(crate) fn future_abandoned(&mut self, forcing: FutureForcing<'gc>) {
+        let mut next = Some(Box::new(forcing));
+        while let Some(forcing) = next {
+            if let FutureState::Resolving = self.future_state(forcing.future) {
+                let computation = self.future_field(forcing.future, COMPUTATION_FIELD);
+                self.set_future_fields(forcing.future, computation, UNRESOLVED);
+            }
+            next = forcing.then;
+        }
+    }
+}
+
+/// Forces `future`: its value when it is resolved, its block's activation
+/// under `Continuation::Future` when it is not, and §6.3.2's error when it
+/// is already being computed.
+pub(crate) fn force<'gc>(
+    mutator: &mut Mutator<'gc>,
+    future: ObjectReference<'gc>,
+    after: AfterForcing,
+) -> Result<Step<'gc>, Signal<'gc>> {
+    match mutator.future_state(future) {
+        FutureState::Resolved(value) => Ok(Step::Value(value)),
+        FutureState::Resolving => Err(divergent(Value::Object(future))),
+        FutureState::Unresolved(closure) => {
+            mutator.set_future_resolving(future);
+            Ok(Step::Block {
+                closure,
+                arguments: StepArguments::Owned(Vec::new()),
+                then: Continuation::Future(Box::new(FutureForcing {
+                    future,
+                    after,
+                    then: None,
+                })),
+            })
+        }
+    }
+}
+
+/// §6.3.2 resolves only "well founded" recursion: a future forced while its
+/// own block runs is not, and says so as an ordinary, catchable error.
+fn divergent<'gc>(future: Value<'gc>) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern("value"),
+        receiver: future,
+        message: "divergent evaluation of a simultaneous slot's initializer".to_string(),
+    })
+}
+
+/// A forcing that was to run its caller's instruction again found no
+/// caller: a host's send handed the future straight to a leaf, and a host
+/// has no instruction to run again (`vm::reexecute`).
+pub(crate) fn host_passed_a_future<'gc>() -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern("value"),
+        receiver: Value::Nil,
+        message: "a future reached a native through a host's send, which has no instruction to \
+                  run again"
+            .to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BuiltinClass, Interpreter};
+
+    /// `future_state` and `set_future_fields` read and write by position:
+    /// the two agree with `Kernel.ns` only while it declares `computation`
+    /// first, and `Object` declares no slot ahead of them.
+    #[test]
+    fn a_futures_slots_are_where_this_module_reads_them() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let Some(application) = mutator
+                .heap()
+                .class_application(mutator.builtin_class(BuiltinClass::Future))
+            else {
+                panic!("Future is a class");
+            };
+            let names: Vec<&str> = application
+                .mixin
+                .slots
+                .iter()
+                .map(|slot| slot.name.as_str())
+                .collect();
+            assert_eq!(names, ["computation", "state"]);
+            assert_eq!(application.own_slot_base, 0, "Object declares no slot");
+            assert_eq!(super::COMPUTATION_FIELD, 0);
+            assert_eq!(super::STATE_FIELD, 1);
+        });
+    }
+}

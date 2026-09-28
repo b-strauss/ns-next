@@ -159,6 +159,29 @@ impl Trace for Continuation<'_> {
             Continuation::Instantiate(state) => state.trace(tracer),
             Continuation::Unwind(pending) => pending.trace(tracer),
             Continuation::VmErrorSignalled(error) => tracer.value(&mut error.receiver),
+            Continuation::Future(forcing) => forcing.trace(tracer),
+        }
+    }
+}
+
+/// The future of every forcing in the chain: each waiting one is held by
+/// nothing but the link from the forcing it waits on. A loop rather than a
+/// recursion, though a chain is as long as a run of futures each answering
+/// the next, which a program decides.
+impl Trace for crate::interpreter::future::FutureForcing<'_> {
+    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
+        let mut forcing = self;
+        loop {
+            let crate::interpreter::future::FutureForcing {
+                future,
+                after: _,
+                then,
+            } = forcing;
+            tracer.object(future);
+            match then {
+                Some(waiting) => forcing = waiting,
+                None => break,
+            }
         }
     }
 }

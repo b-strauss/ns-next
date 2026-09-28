@@ -356,6 +356,50 @@ class Kernel vmMirror: theMirror = Object <: Value (
        capability Newspeak hands out only through mirrors. *)
     private class Activation = Object new () (
     )
+    (* §6.3.2's pull future: what a simultaneous slot clause stores in a slot
+       until the clause's end resolves it (docs/design/object-model.md,
+       "Simultaneous slots"). Private, as `Activation` is, and no program
+       names it: every public member of `Object` is overridden as protected,
+       so §5.5's lookupPublic stops here for each of them, and every message
+       a program sends reaches `doesNotUnderstand:`, which forwards it to the
+       forced value -- §5.5's proxy, indistinguishable from its target.
+       Forcing is the runtime's (`interpreter/future.rs`), which alone reads
+       and writes the two slots: the computation, a block until it is
+       resolved and then the value, and the state, 0 unresolved, 1
+       resolving, 2 resolved. The runtime makes every instance; `new` is
+       never sent. *)
+    private class Future = Object new (
+        | private computation. private state ::= 0. |
+    ) (
+        protected class = ( ^super class )
+        protected == other = ( ^super == other )
+        protected = other = ( ^super = other )
+        protected hash = ( ^super hash )
+        protected printString = ( ^super printString )
+        protected Object = ( ^super Object )
+        protected Value = ( ^super Value )
+        protected Boolean = ( ^super Boolean )
+        protected True = ( ^super True )
+        protected False = ( ^super False )
+        protected Number = ( ^super Number )
+        protected Integer = ( ^super Integer )
+        protected Float = ( ^super Float )
+        protected String = ( ^super String )
+        protected Symbol = ( ^super Symbol )
+        protected UndefinedObject = ( ^super UndefinedObject )
+        protected Array = ( ^super Array )
+        protected Block = ( ^super Block )
+        protected isNil = ( ^super isNil )
+        protected notNil = ( ^super notNil )
+        protected ifNil: block = ( ^super ifNil: block )
+        protected ifNotNil: block = ( ^super ifNotNil: block )
+        protected ifNil: nilBlock ifNotNil: notNilBlock = ( ^super ifNil: nilBlock ifNotNil: notNilBlock )
+        protected ifNotNil: notNilBlock ifNil: nilBlock = ( ^super ifNotNil: notNilBlock ifNil: nilBlock )
+        protected halt = ( ^super halt )
+        protected doesNotUnderstand: message = (
+            ^message sentTo: (vmMirror futureValue: self ifFail: [^nil])
+        )
+    )
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
        class whose instances are values hangs below this one.

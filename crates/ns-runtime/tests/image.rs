@@ -8610,6 +8610,10 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
         let activation_metaclass = mutator
             .metaclass_of(activation)
             .expect("Activation has a metaclass");
+        let future = mutator.builtin_class(BuiltinClass::Future);
+        let future_metaclass = mutator
+            .metaclass_of(future)
+            .expect("Future has a metaclass");
         for (unnameable, described) in [
             (top, "Top"),
             (mirror_class, "the VM mirror's class"),
@@ -8617,6 +8621,8 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
             (mirror_metaclass, "the VM mirror's class class"),
             (activation, "Activation"),
             (activation_metaclass, "Activation class"),
+            (future, "Future"),
+            (future_metaclass, "Future class"),
         ] {
             let refused = image::snapshot(
                 mutator,
@@ -9433,8 +9439,8 @@ fn a_builtin_levels_clause_is_checked_like_any_levels() {
     );
 }
 
-/// The VM mirror's class, `Top` and `Activation` are refused wherever a
-/// program names a class, and a level's builtin mixin is such a place: a
+/// The VM mirror's class, `Top`, `Activation` and `Future` are refused
+/// wherever a program names a class, and a level's builtin mixin is such a place: a
 /// level applying the mirror's mixin would hand its instances every
 /// primitive.
 #[test]
@@ -9445,6 +9451,7 @@ fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Activation,
+        BuiltinClass::Future,
     ] {
         let tag = encode::builtin_class_tag(kind);
         assert_eq!(
@@ -9460,10 +9467,15 @@ fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
 /// An object's class field is a place a program names a class too, so
 /// `decode_class_tag`'s builtin arm refuses the VM mirror's class and `Top`
 /// there as well: an object recorded as an instance of the mirror's class
-/// would be a second mirror.
+/// would be a second mirror. `Future`'s tag is refused there too, until
+/// the image carries an unresolved future.
 #[test]
 fn an_objects_class_naming_the_mirrors_class_or_top_is_refused() {
-    for kind in [BuiltinClass::VmMirror, BuiltinClass::Top] {
+    for kind in [
+        BuiltinClass::VmMirror,
+        BuiltinClass::Top,
+        BuiltinClass::Future,
+    ] {
         let tag = encode::builtin_class_tag(kind);
         let bytes = class_records(1, |writer| {
             writer.write_u8(CLASS_BUILTIN); // class tag: builtin

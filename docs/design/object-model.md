@@ -677,16 +677,28 @@ simultaneous clause.
 (as `Activation`), after Primordial Soup's `Proxy`: every public member of
 `Object` — `class`, `==`, `=`, `hash`, `printString`, the nil protocol, and
 any added later — is overridden as protected, and `doesNotUnderstand:`
-forwards the message to the forced value with `Message>>sentTo:`. It holds
-its block or its value and a state, unresolved, resolving or resolved. Its
-class side answers `computing:`, the factory, and `valueOf:`, which forces
-its argument when it is a future and answers anything else unchanged; no
-instance-side message forces it, since a public `resolve` would tell an
-escaped future from its value. It carries a builtin class tag, the next free
-number, because the collector, the leaves and the image must recognize it.
-Its name is proposed as `Future`, §6.3.2's; `Deferred`, which Squeak's own
-comment suggests to keep it apart from the actors' promise, was offered and
-not yet decided.
+forwards the message to the forced value with `Message>>sentTo:`. That is
+all the Newspeak `Future` has (built): its protected overrides and a
+`doesNotUnderstand:` that forces it through the mirror row
+`futureValue:ifFail:` (`builtins/future.rs`) before forwarding. Its state is
+two private slots, `computation` -- its block until it is resolved, then
+its value -- and `state`, 0 unresolved, 1 resolving, 2 resolved, which only
+the runtime reads and writes. Forcing is `interpreter/future.rs`'s: a
+trampoline step that activates the future's block under
+`Continuation::Future`, never a call back into Newspeak; once the block
+returns, `vm::finish` hands its value to `Mutator::future_computed`, which
+records it and either delivers it to the send that forced the future or
+runs the instruction that met the future again (`AfterForcing::Reexecute`,
+`vm::reexecute`). A block that answers another unresolved future forces that
+one next, the waiting forcing chained behind it, so both resolve to its
+value; an activation an unwind pops, or one the run loop refuses to push,
+leaves every future of its chain unresolved again (`Mutator::abandon`). No
+message a program sends forces a future, since a public `resolve` would
+tell an escaped future from its value, and there is no class-side factory:
+the runtime makes every instance (`Mutator::new_future`). It carries builtin
+class tag 30 because the collector, the leaves and the image must recognize
+it; for now the image code refuses the tag everywhere, as it refuses
+`Activation`'s, so an image cannot hold a future yet.
 
 **The lowering.** The parser keeps the `simultaneous` flag it computes today
 and discards, on a class's slot clause and on a code body's temporaries
@@ -697,11 +709,12 @@ an oracle for it, turns
 || a = e1. b ::= e2. c. ||
 ```
 
-into the writes `a := ⟨Future⟩ computing: [e1]` and
-`b := ⟨Future⟩ computing: [e2]` in declaration order, then
-`a := ⟨Future⟩ valueOf: a` and `b := ⟨Future⟩ valueOf: b`, where
-`⟨Future⟩` is a fixed reference to the kernel class, not the implicit send
-`Future` a program could shadow. The future's blocks capture siblings that
+into the writes `a := ⟨future of [e1]⟩` and `b := ⟨future of [e2]⟩` in
+declaration order, then `a := ⟨resolved a⟩` and `b := ⟨resolved b⟩`: the
+futures are made by the instruction `MakeFuture` and resolved by
+`ResolveFuture`, which forces its operand when it is a future and answers
+anything else unchanged -- instructions, not sends, so no program can shadow
+them. The future's blocks capture siblings that
 the clause's end writes again, so the capture analysis puts them in their
 scope's indirection vector by itself ([execution.md](execution.md), "Closure
 conversion"). In a value class, the first write — the future — is a
@@ -721,10 +734,10 @@ clause is done therefore meets §3.1.1 exactly as strictly as today.
   future only on its failure path — the leaf declined or raised. A resolved
   one is replaced by its value and the leaf runs again, in Rust. An
   unresolved one cannot be forced in Rust, since nothing re-enters the loop:
-  the answer is a step that activates the future's private forcing method
-  under a new continuation, `Reexecute`, which discards that activation's
-  value and runs the caller's instruction again instead of the next one; the
-  second time the future is resolved. This rests on an invariant written into
+  the answer is a step that activates the future's block under
+  `Continuation::Future` with `AfterForcing::Reexecute`, which records that
+  activation's value and runs the caller's instruction again instead of the
+  next one (`vm::reexecute`); the second time the future is resolved. This rests on an invariant written into
   `builtins::execute` and checked leaf by leaf: **a leaf that declines or
   raises has changed nothing.**
 - *The leaves that answer "no" rather than declining* — identity and the

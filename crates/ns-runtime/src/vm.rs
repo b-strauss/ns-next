@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::ActivationReference;
+use crate::interpreter::future::FutureOutcome;
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{
@@ -646,7 +647,9 @@ fn deliver<'gc>(
 /// block, or a `mustBeBoolean` method -- which runs in the popped activation's
 /// place. `Mutator::resume` applies the continuation and
 /// `Mutator::push_continuation` pushes what it decided, depth count included;
-/// the loop only forwards the popped entry's flag.
+/// the loop only forwards the popped entry's flag. A future's forcing
+/// (`Mutator::future_computed`) may also run the caller's stopped
+/// instruction again (`reexecute`) rather than resume after it.
 fn finish<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -666,6 +669,24 @@ fn finish<'gc>(
             std::mem::forget(deliver);
             value
         }
+        // A future's block returned: what happens next is
+        // `interpreter::future`'s to decide, and the loop carries it out.
+        Continuation::Future(forcing) => match mutator.future_computed(*forcing, value) {
+            Ok(FutureOutcome::Deliver(value)) => value,
+            Ok(FutureOutcome::Reexecute) => return reexecute(mutator, floor),
+            Ok(FutureOutcome::Force(step)) => {
+                return match mutator.push_continuation(step, popped.counted) {
+                    Ok(next) => Flow::Switch {
+                        activation: next,
+                        code: mutator.heap.activation_code(next),
+                        program_counter: 0,
+                        feedback_base: mutator.heap.activation_feedback_base(next),
+                    },
+                    Err(signal) => unwind(mutator, signal, floor),
+                };
+            }
+            Err(signal) => return unwind(mutator, signal, floor),
+        },
         then => match mutator.resume(then, value) {
             Ok(Step::Value(value)) => value,
             Ok(step) => {
@@ -711,6 +732,29 @@ fn resume_caller<'gc>(
         activation: caller,
         code,
         program_counter: program_counter + 1,
+        feedback_base: mutator.heap.activation_feedback_base(caller),
+    }
+}
+
+/// The instruction the popped activation's caller is stopped at, run again
+/// rather than resumed after: it met an unresolved future, which is now
+/// resolved (`interpreter::future`, `AfterForcing::Reexecute`). It wrote
+/// nothing before it forced the future, so running it again is running it
+/// once. A host's send has no instruction to run again; a future it passes
+/// in straight to a leaf ends the run.
+fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize) -> Flow {
+    if mutator.heap.activation_depth() == floor {
+        let error = crate::interpreter::future::host_passed_a_future();
+        return Flow::Exit(mutator.to_host(Err(error)));
+    }
+    let caller = mutator
+        .heap
+        .top_activation()
+        .expect("internal: an activation above the run's floor has a caller");
+    Flow::Switch {
+        activation: caller,
+        code: mutator.heap.activation_code(caller),
+        program_counter: mutator.heap.activation_program_counter(caller),
         feedback_base: mutator.heap.activation_feedback_base(caller),
     }
 }

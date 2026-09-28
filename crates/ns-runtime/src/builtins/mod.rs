@@ -4,8 +4,9 @@
 //! what §3.2's `Class` and `Metaclass` forward to, then `numbers`, `text`,
 //! `collections` and `block`, `activation` for the exceptions
 //! `Kernel.ns` builds over the running activations, `message` for
-//! `Message>>sentTo:`, and `module` for `moduleNamed:`, through which
-//! shipped source reaches another shipped module. `primitive` names every
+//! `Message>>sentTo:`, `module` for `moduleNamed:`, through which
+//! shipped source reaches another shipped module, and `future` for the
+//! forcing of §6.3.2's pull future. `primitive` names every
 //! one of them as a `Primitive` and lists them as the rows of the VM
 //! mirror, the one builtin
 //! whose method table holds primitive entries (`dispatch::Lookup::Primitive`);
@@ -15,6 +16,7 @@ pub mod activation;
 pub mod behavior;
 pub mod block;
 pub mod collections;
+pub mod future;
 pub mod message;
 pub mod module;
 pub mod numbers;
@@ -80,6 +82,7 @@ pub(crate) fn execute<'gc>(
         Primitive::Module(primitive) => {
             module::execute(mutator, primitive, receiver).map(wrap_error)
         }
+        Primitive::Future(primitive) => future::execute(mutator, primitive, receiver),
         // Always `Some`: a leaf that declines here runs the failure block
         // the send carries, so a mirror row never answers `None`.
         Primitive::Mirror(row) => Some(crate::interpreter::mirror::execute_sent(

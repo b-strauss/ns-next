@@ -90,6 +90,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::MessageNotUnderstood => "MessageNotUnderstood",
         BuiltinClass::Message => "Message",
         BuiltinClass::Halt => "Halt",
+        BuiltinClass::Future => "Future",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -124,6 +125,41 @@ impl Interpreter {
             }
         };
         self.enter(|mutator| mutator.wire_kernel_in(&kernel_class, &kernel));
+    }
+}
+
+/// Test support: reading a kernel class's own method table, which no
+/// program can reflect on.
+impl<'gc> Mutator<'gc> {
+    /// Every selector the kernel class `kind`'s own mixin declares public.
+    #[doc(hidden)]
+    pub fn public_selectors_of(&self, kind: BuiltinClass) -> Vec<crate::Symbol> {
+        let Some(application) = self.heap.class_application(self.builtin_class(kind)) else {
+            return Vec::new();
+        };
+        application
+            .mixin
+            .methods
+            .iter()
+            .filter(|(_, entry)| entry.access() == ast::AccessModifier::Public)
+            .map(|(selector, _)| *selector)
+            .collect()
+    }
+
+    /// The access of `selector` in the kernel class `kind`'s own mixin, if
+    /// it declares one.
+    #[doc(hidden)]
+    pub fn access_of(
+        &self,
+        kind: BuiltinClass,
+        selector: crate::Symbol,
+    ) -> Option<ast::AccessModifier> {
+        let application = self.heap.class_application(self.builtin_class(kind))?;
+        application
+            .mixin
+            .methods
+            .get(&selector)
+            .map(|entry| entry.access())
     }
 }
 
@@ -455,6 +491,8 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         // field vector like any other class's (`docs/design/core-library.md`,
         // "Exceptions"). `Activation` declares no slots of its own: an
         // activation's state lives in the running activation it wraps.
+        // `Future`'s two slots are an ordinary field vector too, which
+        // `interpreter::future` allocates and alone reads and writes.
         assert!(
             nested.slots.is_empty()
                 || matches!(
@@ -464,6 +502,7 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
                         | BuiltinClass::MessageNotUnderstood
                         | BuiltinClass::Message
                         | BuiltinClass::Halt
+                        | BuiltinClass::Future
                 ),
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
         );
@@ -994,9 +1033,9 @@ mod tests {
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
-    /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation` and
-    /// the exception classes and `Message`, which a program reaches through
-    /// `platform kernel`.
+    /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
+    /// `Future` and the exception classes and `Message`, which a program
+    /// reaches through `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -1030,7 +1069,13 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             for kind in BuiltinClass::ALL {
-                if kind == BuiltinClass::VmMirror {
+                // `Future`'s methods forward nothing to a leaf: each is a
+                // protected override of one of `Object`'s public members,
+                // there only to stop §5.5's lookupPublic, and none is ever
+                // found by a send a program writes. `tests/future.rs`'s
+                // `future_overrides_every_public_member_of_object_as_protected`
+                // checks them instead.
+                if kind == BuiltinClass::VmMirror || kind == BuiltinClass::Future {
                     continue;
                 }
                 let class = mutator.builtin_class(kind);
@@ -1479,8 +1524,8 @@ mod tests {
     /// each recognized as a fast path answering its own class; `Top` and the
     /// mirror's class have none, which is one of the locks that keep the
     /// mirror a capability. Neither have the exception classes, which a
-    /// program reaches through `platform kernel`, nor `Activation`, which
-    /// it does not reach at all. `PlatformFactory.ns`'s class names are listed
+    /// program reaches through `platform kernel`, nor `Activation` and
+    /// `Future`, which it does not reach at all. `PlatformFactory.ns`'s class names are listed
     /// too: `Object` must never grow an accessor for one of them, since a
     /// program reaches them through the platform it is handed.
     #[test]
@@ -1520,6 +1565,7 @@ mod tests {
                 "Halt",
                 "Message",
                 "Activation",
+                "Future",
                 "KernelNamespace",
             ] {
                 assert!(
@@ -1537,10 +1583,11 @@ mod tests {
     /// nested class is unreachable from outside the module that declares it,
     /// so every kernel class has to say `public` for a program to name it --
     /// every one but `Top`, which §3.2 lets only `Object` name, and
-    /// `Activation`, which no program may reach at all
-    /// (`docs/design/core-library.md`, "Exceptions").
+    /// `Activation` and `Future`, which no program may reach at all
+    /// (`docs/design/core-library.md`, "Exceptions";
+    /// `docs/design/object-model.md`, "Simultaneous slots").
     #[test]
-    fn only_top_and_activation_are_private() {
+    fn only_top_activation_and_future_are_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(Value::Object(kernel)) = mutator.kernel else {
@@ -1554,9 +1601,10 @@ mod tests {
             );
             let top = super::kernel_class_name(BuiltinClass::Top);
             let activation = super::kernel_class_name(BuiltinClass::Activation);
+            let future = super::kernel_class_name(BuiltinClass::Future);
             for nested in &application.mixin.nested {
                 let name = nested.name.as_str();
-                let expected = if name == top || name == activation {
+                let expected = if name == top || name == activation || name == future {
                     ns_syntax::ast::AccessModifier::Private
                 } else {
                     ns_syntax::ast::AccessModifier::Public

@@ -575,8 +575,9 @@ time.
   to, and the state its continuation carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver, block and elements, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
-  with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries, and
-  a `VmErrorSignalled` error's receiver; and every register. `StackEntry`'s impl is
+  with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries,
+  a `VmErrorSignalled` error's receiver, and a `Future` forcing's future and
+  that of every forcing chained behind it; and every register. `StackEntry`'s impl is
   in `heap.rs`, where its fields are private.
 - Every arena record: an object's class and payload — an instance's or an
   array's fields, a closure's captured frame and its copied values, an

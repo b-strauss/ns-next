@@ -279,6 +279,9 @@ pub enum BuiltinClass {
     /// `message`.
     Message,
     Halt,
+    /// §6.3.2's pull future, kernel-private as `Activation` is; its
+    /// instances are made by the runtime (`interpreter/future.rs`).
+    Future,
 }
 
 impl BuiltinClass {
@@ -291,7 +294,7 @@ impl BuiltinClass {
     /// superclass-first order: the kernel phase sorts the kinds by their
     /// depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 24] = [
+    pub const ALL: [BuiltinClass; 25] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -316,6 +319,7 @@ impl BuiltinClass {
         BuiltinClass::MessageNotUnderstood,
         BuiltinClass::Message,
         BuiltinClass::Halt,
+        BuiltinClass::Future,
     ];
 }
 
@@ -502,6 +506,10 @@ pub enum Continuation<'gc> {
     /// exceptions. Boxed so that every other continuation stays as small as
     /// it was.
     VmErrorSignalled(Box<NewspeakError<'gc>>),
+    /// A future's block returned (`interpreter::future`): record its value,
+    /// then deliver it or run the instruction that forced it again. Boxed,
+    /// as every continuation that carries state is.
+    Future(Box<crate::interpreter::future::FutureForcing<'gc>>),
 }
 
 /// An unwind in progress (`interpreter::unwind`): where it is going and what

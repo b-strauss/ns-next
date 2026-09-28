@@ -803,7 +803,7 @@ an image whose graph reaches the mirror object is not written at all, since
 it would hand the capability to whatever loaded it
 (`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
 and neither is one whose graph reaches the mirror's class, `Top`,
-`Activation` or the metaclass of one of them (`encode::unnameable_class`),
+`Activation`, `Future` or the metaclass of one of them (`encode::unnameable_class`),
 which the decoder would refuse.
 Neither can happen to a program built from source, which cannot obtain the
 mirror; both are there for the day something could.
@@ -863,6 +863,13 @@ tags **24** to **28**, in that order, after `Activation`'s 23
 through `platform kernel` and may subclass them, so an image may name any
 of the five wherever it names a class: an exception a program made is an
 ordinary instance record.
+
+**`Future` carries tag 30**, the kernel-private pull future of §6.3.2's
+simultaneous slots ([object-model.md](object-model.md), "Planned:
+simultaneous slots"). No program names it, so `read_referenced_builtin_class`
+refuses tag 30 wherever the graph names a class, an object's header
+included, and the encoder refuses a graph that reaches the class or a
+future ("Planned: futures in a graph" below).
 
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
@@ -1091,9 +1098,9 @@ the new flag, the entry field and the trailing-byte check
 
 Would change: the encoder writes a resolved future of a simultaneous slot
 clause as its value; an unresolved one is an ordinary record of the
-kernel-private future class, which takes the next free builtin class tag
-and which the decoder refuses wherever a graph names a class, as it
-refuses `Top`'s ([object-model.md](object-model.md), "Planned: simultaneous slots").
+kernel-private `Future`, whose builtin class tag 30 the decoder then
+accepts in an object's header alone, refusing it wherever else a graph
+names a class, as it refuses `Top`'s ([object-model.md](object-model.md), "Planned: simultaneous slots").
 
 ## Planned: suspend and resume
 
@@ -1110,8 +1117,9 @@ what each stack entry's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
 instantiation's `Instantiation`, the unwind an `ensure:` block's return
 carries on (`Unwind`, holding a `PendingUnwind`: its target frame and whether
-it returns a value, restarts or terminates) and the end of the run a VM
-error's `signal` returns into (`VmErrorSignalled`). An image records none of
+it returns a value, restarts or terminates), the end of the run a VM
+error's `signal` returns into (`VmErrorSignalled`) and a future's forcing
+(`Future`, holding a `FutureForcing`). An image records none of
 them today, and a suspended activation without its continuation would resume
 without the rest of the loop, the class creation, the walk or the unwind it
 belongs to. The depth limit's reserve (`Mutator.depth_reserve`), a frame

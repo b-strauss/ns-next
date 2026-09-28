@@ -45,6 +45,7 @@ impl World {
                 unhandled_exceptions_to_resume: 0,
                 depth_reserve: None,
                 taking_depth_reserve: false,
+                futures_made: false,
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());

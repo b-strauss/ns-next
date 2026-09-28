@@ -2203,10 +2203,14 @@ grew from 6,507 to 6,626 instructions and is still one function.
 
 ### Planned: the pull future
 
-Would change: `Kernel.ns` gains a private future class after Primordial
-Soup's `Proxy`, overriding every public member of `Object` as protected and
-forwarding through `doesNotUnderstand:`, with a class-side `computing:` and
-`valueOf:` that only the desugaring of a simultaneous slot clause reaches.
+Built: `Kernel.ns`'s private `Future`, after Primordial Soup's `Proxy`,
+overrides every public member of `Object` as protected and forwards through
+`doesNotUnderstand:`, which forces the future through the mirror row
+`futureValue:ifFail:` (`builtins/future.rs`); its state is the two slots
+`computation` and `state`, and forcing is `interpreter/future.rs`'s, a
+trampoline step under `Continuation::Future`. It has no class side of its
+own: the instructions `MakeFuture` and `ResolveFuture` make and resolve the
+futures of a simultaneous slot clause. Would change:
 `builtins::execute` looks for a future on its failure path, and the
 equality and identity leaves on their "no" path. The design is
 [object-model.md](object-model.md), "Planned: simultaneous slots".
