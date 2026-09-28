@@ -1,6 +1,6 @@
-//! The run loop's safepoint (`Interpreter::safepoint`, which `vm::run`'s poll
-//! calls when the heap asks for it) and, in a debug build, the stress modes:
-//! a move of everything at the safepoints its schedule picks
+//! The run loop's safepoint (`Interpreter::safepoint`, which `vm::run` calls
+//! between two stretches when the heap asks for it) and, in a debug build,
+//! the stress modes: a move of everything at the safepoints its schedule picks
 //! (`docs/design/memory.md`, "The move stress mode"), and a full collection
 //! at the safepoints its own schedule picks (`docs/design/memory.md`, "The
 //! gates the collector needs") -- the mode that catches a root the marking

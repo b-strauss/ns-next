@@ -551,12 +551,6 @@ impl Interpreter {
         self.world.stash(value)
     }
 
-    /// Whether the run loop's next safepoint must take its slow path.
-    #[inline(always)]
-    pub(crate) fn safepoint_requested(&self) -> bool {
-        self.world.safepoint_requested()
-    }
-
     /// An ordinary (explicit-receiver) send from a host: `newspeak-spec.pdf`
     /// §5.5, decided as `decide_send` decides it and run from the outside
     /// (`run_from_host`). A `Send*` the VM issues never comes through here:

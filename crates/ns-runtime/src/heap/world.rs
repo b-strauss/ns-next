@@ -59,8 +59,9 @@ impl World {
     /// never assume the brand is `'static`, and so can neither let a branded
     /// value out (`R` is chosen outside the `for<'gc>`) nor keep one in a
     /// host's field. That is the whole guarantee, and no conversion of the
-    /// state is needed for it. The run loop makes one entry per instruction
-    /// and a host one per read, so this must inline away.
+    /// state is needed for it. The run loop makes one entry per stretch
+    /// between two safepoints and a host one per read, so this must inline
+    /// away.
     #[inline(always)]
     pub(crate) fn enter<R>(&mut self, body: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R {
         body(&mut self.mutator)
@@ -70,11 +71,6 @@ impl World {
     /// run leaves it where it found it.
     pub(crate) fn activation_depth(&self) -> usize {
         self.mutator.heap.activation_depth()
-    }
-
-    #[inline(always)]
-    pub(crate) fn safepoint_requested(&self) -> bool {
-        self.mutator.heap.safepoint_requested()
     }
 
     pub(crate) fn clear_safepoint_request(&mut self) {

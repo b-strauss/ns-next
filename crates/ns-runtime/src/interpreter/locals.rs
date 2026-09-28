@@ -141,7 +141,7 @@ fn vector_error<'gc>(vector: Value<'gc>) -> Signal<'gc> {
 /// activation's slot base (`Heap::activation_slot_base`) -- when it holds
 /// anything but `nil`. `None` for `nil`, a lazy slot not yet computed
 /// (§6.3.3), and for a receiver or index with no such field, both of which
-/// run the getter's initializer: `vm::execute`'s
+/// run the getter's initializer: `vm::run_stretch`'s
 /// `Instruction::ReturnSlotIfFilled` arm.
 pub(crate) fn filled_own_slot<'gc>(
     heap: &Heap<'gc>,
@@ -179,8 +179,8 @@ pub(crate) fn load_own_slot<'gc>(
 /// Writes `value` into instance field `index` on `instance`'s
 /// `ObjectData::Instance` fields -- silently skipped when `instance` is not an
 /// object, or is an object with some other `ObjectData` shape, or `index` is
-/// out of range. `vm::execute`'s `Instruction::InitializeSlot` arm writes a
-/// slot initializer's value through it.
+/// out of range. `vm::run_stretch`'s `Instruction::InitializeSlot` arm
+/// writes a slot initializer's value through it.
 pub(crate) fn store_instance_field<'gc>(
     heap: &mut Heap<'gc>,
     instance: &Value<'gc>,

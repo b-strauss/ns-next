@@ -64,7 +64,7 @@ macro_rules! for_each_lowering {
 }
 pub use heap::{
     ActivationHeader, ActivationReference, ClassReference, CollectorStatistics, FrameReference,
-    Heap, HeapStatistics, ObjectReference, Root,
+    Heap, HeapStatistics, ObjectReference, RegisterBase, Root,
 };
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,

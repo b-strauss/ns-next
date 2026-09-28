@@ -849,7 +849,7 @@ repository already holds:
 
 The cost is bookkeeping: a stack entry and a closure (`ClosureData`) carry a
 `feedback_base`, and so do `vm::run`, in a local beside the running code, and
-its `Flow::Switch`. This repository has measured layout effects of 4–8% from
+the `Handoff` a switch writes. This repository has measured layout effects of 4–8% from
 a single field on `Step`, so the field was measured on its own before
 anything read it, and came out level with its parent on all seven sources in
 two sittings ([execution.md](execution.md), "What the inline caches moved").
@@ -1356,21 +1356,23 @@ was not merged.
 
 #### A standing hazard
 
-The run loop's step sits near LLVM's inlining limit.
-Every cached send inlines its monomorphic hit into `vm::run`'s
-per-instruction step. On the design's own shape the step outgrew the
-inliner's threshold and became a function of its own, so that every
-instruction paid a call and a `Flow` returned through memory — the cliff
-splitting `resolve` from `act` first hit, at 6.6–13.6% on every source. So the
-step closure is `#[inline(always)]`, and `decide_super_send`, which only an
-uncached `super` send reaches, is `#[inline(never)]`. Forcing the step buys no
+The run loop's stretch sits near LLVM's inlining limit.
+Every cached send inlines its monomorphic hit into `vm::run`'s stretch
+(`run_stretch`). When each instruction was one entry, the per-instruction
+step outgrew the inliner's threshold on the design's own shape and became a
+function of its own, so that every instruction paid a call and a `Flow`
+returned through memory — the cliff splitting `resolve` from `act` first
+hit, at 6.6–13.6% on every source. So `run_stretch` and the closure that
+enters it are `#[inline(always)]`, and `decide_super_send`, which only an
+uncached `super` send reaches, is `#[inline(never)]`. Forcing it buys no
 speed of its own — on 3a's head it moved no source beyond noise — it keeps
 the caches' gain. Anything later added to a send's hit path lands in
-`vm::run`, and a change there checks that the step is still inline
-(`dumpbin /disasm`, [execution.md](execution.md), "What the inline caches
-moved") before timing anything. The structural answer, planned for later,
-is one `Interpreter::enter` per stretch between two safepoints rather than
-one per instruction ("Decisions" below).
+`vm::run`, and a change there checks that the stretch is still inline — no
+`vm::run::closure` and no `run_stretch` of its own (`dumpbin /disasm`,
+[execution.md](execution.md), "What the loop over locals moved") — before
+timing anything. Since the loop over locals, an entry is one stretch
+between two safepoints rather than one instruction
+([execution.md](execution.md), "The loop over locals").
 
 ### 3c — The dispatch id in the object header
 
@@ -1545,16 +1547,16 @@ dispatches on one.
     only on the application (a further load on every send). Since 3c a guard
     reads the id from the object header instead, and `ClassData`'s copy is
     what allocation and restamping read.
-  - **`vm::run`'s step is forced inline**, and `decide_super_send` kept out
-    of it: the caches' hit path pushes the step past LLVM's inlining
-    threshold, where every instruction pays a call. Rejected: keeping the
-    step small enough without the attribute (fragile against any change and
-    any LLVM version); profile-guided builds (the fragility moves into the
-    profiles). Planned for later ("A standing hazard" above): one
-    `Interpreter::enter` per stretch between two safepoints instead of one
-    per instruction, so that no per-instruction boundary exists at all — to
-    be looked at before a send's hit path grows further, and at the latest
-    with the JIT tiers.
+  - **`vm::run`'s stretch is forced inline**, and `decide_super_send` kept
+    out of it: the caches' hit path pushes it past LLVM's inlining
+    threshold, where the per-instruction step it replaced made every
+    instruction pay a call. Rejected: keeping it small enough without the
+    attribute (fragile against any change and any LLVM version);
+    profile-guided builds (the fragility moves into the profiles). Built
+    since (2026-09-28, [execution.md](execution.md), "The loop over
+    locals"): one `Interpreter::enter` per stretch between two safepoints
+    instead of one per instruction, so that no per-instruction boundary
+    exists at all.
 - **Decided by the user (2026-09-17, extended 2026-09-18), built before 3c
   (2026-09-18):** the factory, the name conflict it can raise and the flat
   metaclasses came out of one piece of design work on 2026-09-18, which §3.2

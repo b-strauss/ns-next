@@ -253,6 +253,21 @@ impl std::fmt::Debug for ActivationReference {
     }
 }
 
+/// Where a running activation's registers start in the activation stack's
+/// register file: Cog's `localFP`, held by the run loop so that a register
+/// access is one index (`docs/design/execution.md`, "The loop over locals").
+/// It is an index, not a pointer, so it survives the register file growing
+/// and a move, which touches no register window; it carries the danger an
+/// `ActivationReference` does -- once its activation is popped, the next one
+/// at that depth reuses the window -- and a debug build checks every access
+/// against its activation's generation, as `check_activation` does.
+#[derive(Clone, Copy)]
+pub struct RegisterBase {
+    index: u32,
+    #[cfg(debug_assertions)]
+    activation: ActivationReference,
+}
+
 /// Everything a new activation is apart from its registers, which
 /// `Heap::push_activation` takes separately.
 pub struct ActivationHeader<'gc> {
@@ -2429,6 +2444,39 @@ impl<'gc> Heap<'gc> {
         self.stack.values[self.register_slot(activation.index, index)]
     }
 
+    /// The register window of `activation`, computed once per switch to it.
+    pub fn register_base(&self, activation: ActivationReference) -> RegisterBase {
+        self.check_activation(activation);
+        RegisterBase {
+            index: self.stack.entries[activation.index as usize].base,
+            #[cfg(debug_assertions)]
+            activation,
+        }
+    }
+
+    /// Register `index` of the window `base` names: one index into the
+    /// register file. A debug build checks the base is still its
+    /// activation's and the register inside its window.
+    #[inline(always)]
+    pub fn register(&self, base: RegisterBase, index: u16) -> Value<'gc> {
+        #[cfg(debug_assertions)]
+        self.check_register(base, index);
+        self.stack.values[base.index as usize + index as usize]
+    }
+
+    #[inline(always)]
+    pub fn set_register(&mut self, base: RegisterBase, index: u16, value: Value<'gc>) {
+        #[cfg(debug_assertions)]
+        self.check_register(base, index);
+        self.stack.values[base.index as usize + index as usize] = value;
+    }
+
+    #[cfg(debug_assertions)]
+    fn check_register(&self, base: RegisterBase, index: u16) {
+        self.check_activation(base.activation);
+        let _ = self.register_slot(base.activation.index, index);
+    }
+
     pub fn activation_set_local(
         &mut self,
         activation: ActivationReference,
@@ -3644,6 +3692,58 @@ mod tests {
         heap.activation_set_local(second, 1, Value::SmallInteger(99));
         assert!(matches!(heap.frame_local(frame, 1), Value::SmallInteger(3)));
         heap.pop_activation(second);
+    }
+
+    /// A register base names a window by index, as an activation handle
+    /// does: reading through it reads the same register the activation
+    /// handle does.
+    #[test]
+    fn a_register_base_reads_and_writes_its_activations_registers() {
+        let mut heap = Heap::new();
+        let activation = heap.push_activation(header(), &[Value::SmallInteger(7)], 2);
+        let base = heap.register_base(activation);
+        assert!(matches!(heap.register(base, 0), Value::SmallInteger(7)));
+        heap.set_register(base, 2, Value::SmallInteger(9));
+        assert!(matches!(
+            heap.activation_local(activation, 2),
+            Value::SmallInteger(9)
+        ));
+        heap.pop_activation(activation);
+    }
+
+    /// A base kept past its activation's pop names whatever activation
+    /// reuses the window next -- a different, valid window, so a release
+    /// build would read the wrong register. Debug builds refuse it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale activation handle")]
+    fn reading_through_a_stale_register_base_panics() {
+        let mut heap = Heap::new();
+        let first = heap.push_activation(header(), &[], 1);
+        let base = heap.register_base(first);
+        heap.pop_activation(first);
+        let _second = heap.push_activation(header(), &[], 1);
+        let _ = heap.register(base, 0);
+    }
+
+    /// The window of a deeper activation starts after its caller's: a base
+    /// survives the register file growing, since it is an index.
+    #[test]
+    fn a_register_base_survives_a_deeper_push() {
+        let mut heap = Heap::new();
+        let caller = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
+        let base = heap.register_base(caller);
+        let callee = heap.push_activation(header(), &[], 4096);
+        assert!(matches!(heap.register(base, 0), Value::SmallInteger(1)));
+        heap.pop_activation(callee);
+        heap.pop_activation(caller);
+    }
+
+    /// In a release build a base is exactly its index.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn a_register_base_is_four_bytes_in_a_release_build() {
+        assert_eq!(std::mem::size_of::<RegisterBase>(), 4);
     }
 
     /// An `ActivationReference` kept past its pop names whatever activation

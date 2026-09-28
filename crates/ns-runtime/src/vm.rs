@@ -14,7 +14,7 @@
 use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::ActivationReference;
+use crate::heap::{ActivationReference, RegisterBase};
 use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
@@ -33,36 +33,100 @@ use crate::interpreter::{
 };
 use crate::types::*;
 
-/// What the loop does after one instruction.
-enum Flow {
+/// The running frame's state, which the loop holds in locals while it runs
+/// and in this struct between two stretches: nothing here is branded, so it
+/// survives the safepoint between them (`docs/design/execution.md`, "The
+/// loop over locals").
+struct FrameRegisters {
+    activation: ActivationReference,
+    code: Rc<CompiledCode>,
+    program_counter: usize,
+    feedback_base: FeedbackBase,
+    register_base: RegisterBase,
+}
+
+/// Why a stretch ended.
+enum Leave {
+    /// A safepoint is requested; the frame is written back.
+    Safepoint,
+    /// The run's base activation is done.
+    Exit(HostResult),
+}
+
+/// Where control goes after a send, a return, an unwind or a forcing: one
+/// byte, answered in a register. The frame a `Switched` names and the
+/// result an `Exited` carries are in the `Handoff`.
+#[derive(Clone, Copy)]
+enum Transfer {
+    /// Resume after the instruction: its value, if any, is written.
     Next,
-    Jump(usize),
-    /// Run another activation from `program_counter`: a callee a send pushed
-    /// (from 0), or a caller a return resumed (from the instruction after its
-    /// send).
-    Switch {
+    /// Run the frame the handoff names, from its program counter.
+    Switched,
+    /// The run is over; the handoff holds its result.
+    Exited,
+}
+
+/// What a `Transfer::Switched` or `Transfer::Exited` carries.
+struct Handoff {
+    activation: ActivationReference,
+    code: Option<Rc<CompiledCode>>,
+    program_counter: usize,
+    feedback_base: FeedbackBase,
+    exit: Option<HostResult>,
+}
+
+impl Handoff {
+    /// The frame of `activation`, from `program_counter`.
+    #[inline(always)]
+    fn switch_to(
+        &mut self,
+        mutator: &Mutator<'_>,
+        activation: ActivationReference,
+        program_counter: usize,
+    ) -> Transfer {
+        let code = mutator.heap.activation_code(activation);
+        self.switch_with_code(mutator, activation, code, program_counter)
+    }
+
+    /// `switch_to`, for a caller that already holds `activation`'s code.
+    #[inline(always)]
+    fn switch_with_code(
+        &mut self,
+        mutator: &Mutator<'_>,
         activation: ActivationReference,
         code: Rc<CompiledCode>,
         program_counter: usize,
-        feedback_base: FeedbackBase,
-    },
-    /// The activation `run` was given is done, and so is everything it
-    /// activated.
-    Exit(HostResult),
+    ) -> Transfer {
+        self.activation = activation;
+        self.code = Some(code);
+        self.program_counter = program_counter;
+        self.feedback_base = mutator.heap.activation_feedback_base(activation);
+        Transfer::Switched
+    }
+
+    fn exit(&mut self, result: HostResult) -> Transfer {
+        self.exit = Some(result);
+        Transfer::Exited
+    }
 }
 
 /// Runs `base` -- the top of the activation stack, pushed by the caller --
 /// and every activation it pushes, until `base` is done, and pops them all,
 /// `base` included, on every path out: a return, an error, or a non-local
 /// return aimed below `base`. The stack is exactly as deep afterwards as it
-/// was before `base` was pushed. Its safepoints (`poll`) are every switch to
-/// another activation and every backward jump.
+/// was before `base` was pushed.
 ///
-/// Each instruction is one entry (`Interpreter::enter`), and the safepoint is
-/// outside every one: what the loop carries from one instruction to the next is
-/// the running `ActivationReference`, its code and its `program_counter`, none
-/// of which a move changes, and a run ends inside its last entry, its answer
-/// rooted (`docs/design/memory.md`, "The brand").
+/// Its safepoints are every switch to another activation -- a push, or a
+/// caller resumed -- and every backward jump. Each stretch between two
+/// safepoints the loop takes is one entry (`Interpreter::enter`), and the
+/// safepoint is outside every one: what the loop carries from one stretch to
+/// the next is `FrameRegisters` -- the running `ActivationReference`, its
+/// code, its `program_counter`, its `FeedbackBase` and its `RegisterBase`,
+/// none of which a move changes -- so a collection may run there and nowhere
+/// else (`docs/design/memory.md`, "Where a collection can happen"), and a run
+/// ends inside its last entry, its answer rooted (`docs/design/memory.md`,
+/// "The brand"). Each safepoint is one compare of a flag the heap owns; what
+/// happens when it is set is `interpreter/`'s (`Interpreter::safepoint`).
 ///
 /// An activation's `program_counter` is stored only by the instructions that
 /// can hand it to an observer: every send (a callee runs above it, and the loop
@@ -75,520 +139,605 @@ enum Flow {
 /// Nothing reads `program_counter` while a straight-line instruction
 /// executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
-    let (floor, mut code, mut feedback_base) = interpreter.enter(|mutator| {
+    let (floor, mut frame) = interpreter.enter(|mutator| {
         (
             mutator.heap.activation_position(base),
-            mutator.heap.activation_code(base),
-            mutator.heap.activation_feedback_base(base),
+            FrameRegisters {
+                activation: base,
+                code: mutator.heap.activation_code(base),
+                program_counter: 0,
+                feedback_base: mutator.heap.activation_feedback_base(base),
+                register_base: mutator.heap.register_base(base),
+            },
         )
     });
-    let mut activation = base;
-    let mut program_counter = 0usize;
     loop {
-        // The step is forced into the loop rather than left to the
-        // inliner. It is called once, but it is large -- every cached send
-        // inlines its hit path -- and past LLVM's threshold it becomes a
-        // function of its own, so that every instruction, not only every
-        // send, pays a call and a `Flow` returned through memory: 6.6-13.6%
-        // on every benchmark when splitting resolve from act first did that.
-        // Forcing it buys no speed of its own: on the code before the caches,
-        // where the inliner took the step anyway, it moved no benchmark
-        // beyond noise (at most 2.1%). What it keeps is the caches' gain,
-        // 4.3-11.3% against that code, from being paid back in a call per
-        // instruction (`docs/design/execution.md`, "What the inline caches
-        // moved"). The step sits near the threshold: anything added to a
-        // send's hit path lands here.
+        // The stretch is forced into the loop rather than left to the
+        // inliner. It is large -- every cached send inlines its hit path --
+        // and past LLVM's threshold the step it holds became a function of
+        // its own when each instruction was one entry, so that every
+        // instruction, not only every send, paid a call and an answer
+        // returned through memory: 6.6-13.6% on every benchmark when
+        // splitting resolve from act first did that. Forcing it buys no speed
+        // of its own: on the code before the caches, where the inliner took
+        // the step anyway, it moved no benchmark beyond noise (at most 2.1%).
+        // What it keeps is the caches' gain, 4.3-11.3% against that code,
+        // from being paid back in a call per instruction
+        // (`docs/design/execution.md`, "What the inline caches moved"). The
+        // step sits near the threshold: anything added to a send's hit path
+        // lands here.
         match interpreter.enter(
             #[inline(always)]
-            |mutator| {
-                execute(
-                    mutator,
-                    activation,
-                    &code,
-                    program_counter,
-                    floor,
-                    feedback_base,
-                )
-            },
+            |mutator| run_stretch(mutator, &mut frame, floor),
         ) {
-            Flow::Next => {
-                program_counter += 1;
-                debug_assert!(
-                    program_counter < code.instructions.len(),
-                    "internal: program counter ran past the end of a CompiledCode with no terminating return"
-                );
+            Leave::Safepoint => interpreter.safepoint(),
+            Leave::Exit(result) => return result,
+        }
+    }
+}
+
+/// Instructions of the running frame and every frame it switches to, inside
+/// one entry, until a safepoint is requested at a switch or a backward jump,
+/// or the run's base activation is done. The frame's state lives in locals
+/// here -- Cog's `localIP`/`localFP` -- and is written back to `frame` only
+/// when the stretch leaves for a safepoint. Each arm advances the program
+/// counter itself; a send, a return, an unwind and a forcing answer a
+/// `Transfer`, the frame they switch to written into `handoff`.
+#[inline(always)]
+fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floor: usize) -> Leave {
+    let mut activation = frame.activation;
+    let mut code = Rc::clone(&frame.code);
+    let mut program_counter = frame.program_counter;
+    let mut feedback_base = frame.feedback_base;
+    let mut register_base = frame.register_base;
+    let mut handoff = Handoff {
+        activation,
+        code: None,
+        program_counter: 0,
+        feedback_base,
+        exit: None,
+    };
+    // A jump to `target`, from every instruction that jumps -- written once,
+    // so that the set of jumps that test the safepoint when they go backward
+    // is exactly the set of jumps. A backward jump closes a loop, so that a
+    // loop that makes no send still passes a safepoint. Leaving breaks out of
+    // the loop to the one write-back below it, which every safepoint shares.
+    macro_rules! jump_to {
+        ($target:expr) => {{
+            let target = $target as usize;
+            let backward = target <= program_counter;
+            program_counter = target;
+            if backward && mutator.heap.safepoint_requested() {
+                break;
             }
-            Flow::Jump(target) => {
-                // A backward jump closes a loop, so that a loop that makes no
-                // send still passes a safepoint.
-                if target <= program_counter {
-                    poll(interpreter);
+            continue;
+        }};
+    }
+    loop {
+        debug_assert!(
+            program_counter < code.instructions.len(),
+            "internal: program counter ran past the end of a CompiledCode with no terminating return"
+        );
+        let transfer = match &code.instructions[program_counter] {
+            Instruction::LoadLiteral {
+                destination,
+                literal,
+            } => match make_value(mutator, activation, literal) {
+                Ok(value) => {
+                    mutator
+                        .heap
+                        .set_register(register_base, *destination, value);
+                    program_counter += 1;
+                    continue;
                 }
-                program_counter = target;
+                Err(signal) => unwind(mutator, signal, floor, &mut handoff),
+            },
+            Instruction::LoadSelf { destination } => {
+                let value = mutator.heap.activation_receiver(activation);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
+                program_counter += 1;
+                continue;
             }
-            Flow::Switch {
-                activation: next,
-                code: next_code,
-                program_counter: next_program_counter,
-                feedback_base: next_feedback_base,
+            Instruction::LoadEnclosingObject { destination, depth } => {
+                let value =
+                    crate::interpreter::sends::enclosing_object(mutator, activation, *depth);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
+                program_counter += 1;
+                continue;
+            }
+            Instruction::Move {
+                destination,
+                source,
+            }
+            | Instruction::StoreLocal {
+                source,
+                slot: destination,
             } => {
-                activation = next;
-                code = next_code;
-                program_counter = next_program_counter;
-                feedback_base = next_feedback_base;
-                poll(interpreter);
+                let value = mutator.heap.register(register_base, *source);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
+                program_counter += 1;
+                continue;
             }
-            Flow::Exit(result) => return result,
-        }
-    }
-}
-
-/// The safepoint, reached at every switch to another activation -- a push, or a
-/// caller resumed -- and at every backward jump. Between two instructions the
-/// loop holds the running `ActivationReference`, its code and its
-/// `program_counter`, none of which a move changes, so a collection may run
-/// here and nowhere else (`docs/design/memory.md`, "Where a collection can
-/// happen"). One compare of a flag the heap owns; what happens when it is set
-/// is `interpreter/`'s.
-#[inline(always)]
-fn poll(interpreter: &mut Interpreter) {
-    if interpreter.safepoint_requested() {
-        interpreter.safepoint();
-    }
-}
-
-/// One instruction of `code`, running in `activation`.
-#[inline(always)]
-fn execute<'gc>(
-    mutator: &mut Mutator<'gc>,
-    activation: ActivationReference,
-    code: &CompiledCode,
-    program_counter: usize,
-    floor: usize,
-    feedback_base: FeedbackBase,
-) -> Flow {
-    match &code.instructions[program_counter] {
-        Instruction::LoadLiteral {
-            destination,
-            literal,
-        } => match make_value(mutator, activation, literal) {
-            Ok(value) => {
-                write_local(&mut mutator.heap, activation, *destination, value);
-                Flow::Next
+            Instruction::LoadOuterLocal {
+                destination,
+                depth,
+                index,
+            } => {
+                let value = read_outer_local(&mutator.heap, activation, *depth, *index);
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
+                program_counter += 1;
+                continue;
             }
-            Err(signal) => unwind(mutator, signal, floor),
-        },
-        Instruction::LoadSelf { destination } => {
-            let value = mutator.heap.activation_receiver(activation);
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
-        Instruction::LoadEnclosingObject { destination, depth } => {
-            let value = crate::interpreter::sends::enclosing_object(mutator, activation, *depth);
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
-        Instruction::Move {
-            destination,
-            source,
-        }
-        | Instruction::StoreLocal {
-            source,
-            slot: destination,
-        } => {
-            let value = read_local(&mutator.heap, activation, *source);
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
-        Instruction::LoadOuterLocal {
-            destination,
-            depth,
-            index,
-        } => {
-            let value = read_outer_local(&mutator.heap, activation, *depth, *index);
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
-        Instruction::StoreOuterLocal {
-            source,
-            depth,
-            index,
-        } => {
-            let value = read_local(&mutator.heap, activation, *source);
-            write_outer_local(&mut mutator.heap, activation, *depth, *index, value);
-            Flow::Next
-        }
-        Instruction::SendPublic {
-            selector,
-            receiver_register,
-            argument_registers,
-            destination,
-            call_site,
-        } => {
-            let receiver = read_local(&mutator.heap, activation, *receiver_register);
-            let family_size = code.family_size;
-            send(
-                mutator,
-                activation,
-                program_counter,
+            Instruction::StoreOuterLocal {
+                source,
+                depth,
+                index,
+            } => {
+                let value = mutator.heap.register(register_base, *source);
+                write_outer_local(&mut mutator.heap, activation, *depth, *index, value);
+                program_counter += 1;
+                continue;
+            }
+            Instruction::SendPublic {
+                selector,
+                receiver_register,
                 argument_registers,
-                *destination,
-                floor,
-                false,
-                |mutator, arguments| {
-                    send_public(
-                        mutator,
-                        feedback_base,
-                        family_size,
-                        *call_site,
-                        receiver,
-                        *selector,
-                        arguments,
-                    )
-                },
-            )
-        }
-        // Decided as `SendPublic` is, but uncached: only the reference
-        // lowering emits it. Only the depth count treats a control-flow
-        // step's block activated for it differently
-        // (`Mutator::push_step`).
-        Instruction::SendInlinable {
-            selector,
-            receiver_register,
-            argument_registers,
-            destination,
-            ..
-        } => {
-            let receiver = read_local(&mutator.heap, activation, *receiver_register);
-            send(
-                mutator,
-                activation,
-                program_counter,
-                argument_registers,
-                *destination,
-                floor,
-                true,
-                |mutator, arguments| mutator.decide_send(receiver, *selector, arguments),
-            )
-        }
-        // A send to the VM mirror with its failure block inline: the leaf
-        // runs, or declines and the block runs at `failure`. What the leaf
-        // decided is delivered as any send's decision is. Which leaf, and
-        // whether the receiver is the mirror, is `interpreter::mirror`'s.
-        Instruction::SendMirror {
-            primitive,
-            mirror_register,
-            subject_register,
-            argument_registers,
-            destination,
-            failure,
-        } => {
-            let mirror = read_local(&mutator.heap, activation, *mirror_register);
-            let subject = read_local(&mutator.heap, activation, *subject_register);
-            let mut arguments = mutator.take_argument_buffer();
-            arguments.extend(
-                argument_registers
-                    .iter()
-                    .map(|register| read_local(&mutator.heap, activation, *register)),
-            );
-            mutator
-                .heap
-                .set_activation_program_counter(activation, program_counter);
-            let flow = match crate::interpreter::mirror::send_inlined(
-                mutator, *primitive, mirror, subject, &arguments,
-            ) {
-                None => Flow::Jump(*failure as usize),
-                Some(decided) => deliver(
+                destination,
+                call_site,
+            } => {
+                let receiver = mutator.heap.register(register_base, *receiver_register);
+                let family_size = code.family_size;
+                send(
                     mutator,
                     activation,
-                    decided,
-                    &arguments,
+                    register_base,
+                    program_counter,
+                    argument_registers,
                     *destination,
                     floor,
                     false,
-                ),
-            };
-            mutator.return_argument_buffer(arguments);
-            flow
-        }
-        Instruction::SendLexical {
-            depth,
-            selector,
-            argument_registers,
-            destination,
-            call_site,
-        } => {
-            let family_size = code.family_size;
-            send(
-                mutator,
-                activation,
-                program_counter,
+                    &mut handoff,
+                    |mutator, arguments| {
+                        send_public(
+                            mutator,
+                            feedback_base,
+                            family_size,
+                            *call_site,
+                            receiver,
+                            *selector,
+                            arguments,
+                        )
+                    },
+                )
+            }
+            // Decided as `SendPublic` is, but uncached: only the reference
+            // lowering emits it. Only the depth count treats a control-flow
+            // step's block activated for it differently
+            // (`Mutator::push_step`).
+            Instruction::SendInlinable {
+                selector,
+                receiver_register,
                 argument_registers,
-                *destination,
-                floor,
-                false,
-                |mutator, arguments| {
-                    send_lexical(
+                destination,
+                ..
+            } => {
+                let receiver = mutator.heap.register(register_base, *receiver_register);
+                send(
+                    mutator,
+                    activation,
+                    register_base,
+                    program_counter,
+                    argument_registers,
+                    *destination,
+                    floor,
+                    true,
+                    &mut handoff,
+                    |mutator, arguments| mutator.decide_send(receiver, *selector, arguments),
+                )
+            }
+            // A send to the VM mirror with its failure block inline: the leaf
+            // runs, or declines and the block runs at `failure`. What the leaf
+            // decided is delivered as any send's decision is. Which leaf, and
+            // whether the receiver is the mirror, is `interpreter::mirror`'s.
+            Instruction::SendMirror {
+                primitive,
+                mirror_register,
+                subject_register,
+                argument_registers,
+                destination,
+                failure,
+            } => {
+                let mirror = mutator.heap.register(register_base, *mirror_register);
+                let subject = mutator.heap.register(register_base, *subject_register);
+                let mut arguments = mutator.take_argument_buffer();
+                arguments.extend(
+                    argument_registers
+                        .iter()
+                        .map(|register| mutator.heap.register(register_base, *register)),
+                );
+                mutator
+                    .heap
+                    .set_activation_program_counter(activation, program_counter);
+                // `None`, the leaf declined: the jump to `failure` waits
+                // until the buffer is handed back.
+                let transfer = crate::interpreter::mirror::send_inlined(
+                    mutator, *primitive, mirror, subject, &arguments,
+                )
+                .map(|decided| {
+                    deliver(
                         mutator,
                         activation,
-                        feedback_base,
-                        family_size,
-                        *call_site,
-                        *depth,
-                        *selector,
-                        arguments,
+                        register_base,
+                        decided,
+                        &arguments,
+                        *destination,
+                        floor,
+                        false,
+                        &mut handoff,
                     )
-                },
-            )
-        }
-        Instruction::SendSuper {
-            selector,
-            argument_registers,
-            destination,
-            call_site,
-        } => {
-            let family_size = code.family_size;
-            send(
-                mutator,
-                activation,
-                program_counter,
+                });
+                mutator.return_argument_buffer(arguments);
+                match transfer {
+                    Some(transfer) => transfer,
+                    None => jump_to!(*failure),
+                }
+            }
+            Instruction::SendLexical {
+                depth,
+                selector,
                 argument_registers,
-                *destination,
-                floor,
-                false,
-                |mutator, arguments| {
-                    send_super(
-                        mutator,
-                        activation,
-                        feedback_base,
-                        family_size,
-                        *call_site,
-                        *selector,
-                        arguments,
-                    )
-                },
-            )
-        }
-        Instruction::MakeClosure {
-            destination,
-            code: block,
-            copied,
-            ..
-        } => {
-            // Stored before reifying, so the frame `reify` builds starts
-            // from this program counter.
-            mutator
-                .heap
-                .set_activation_program_counter(activation, program_counter);
-            let captured_frame = mutator.heap.reify(activation);
-            // A closure that reads enclosing registers by reference -- the
-            // reference lowering's, and an optimized fallback closure -- is
-            // what makes this activation's registers outlive it.
-            if block.outer_reach > 0 {
-                mutator.heap.retain_registers(activation);
+                destination,
+                call_site,
+            } => {
+                let family_size = code.family_size;
+                send(
+                    mutator,
+                    activation,
+                    register_base,
+                    program_counter,
+                    argument_registers,
+                    *destination,
+                    floor,
+                    false,
+                    &mut handoff,
+                    |mutator, arguments| {
+                        send_lexical(
+                            mutator,
+                            activation,
+                            feedback_base,
+                            family_size,
+                            *call_site,
+                            *depth,
+                            *selector,
+                            arguments,
+                        )
+                    },
+                )
             }
-            let copied_values = copied
-                .iter()
-                .map(|register| read_local(&mutator.heap, activation, *register))
-                .collect();
-            let value = Value::Object(mutator.new_closure(ClosureData {
-                code: block.clone(),
-                captured_frame,
-                copied: copied_values,
-                // A block belongs to its enclosing method's family: the
-                // running activation's own base, already in hand here, so
-                // this costs no extra load.
-                feedback_base,
-            }));
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
-        Instruction::MakeArray {
-            destination,
-            element_registers,
-        } => {
-            let values = element_registers
-                .iter()
-                .map(|register| read_local(&mutator.heap, activation, *register))
-                .collect();
-            let value = Value::Object(mutator.new_array(values));
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
-        Instruction::MakeVector { destination, size } => {
-            let value = Value::Object(mutator.new_array(vec![Value::Nil; *size as usize]));
-            write_local(&mut mutator.heap, activation, *destination, value);
-            Flow::Next
-        }
-        Instruction::LoadVector {
-            destination,
-            vector,
-            index,
-        } => match load_vector(&mutator.heap, activation, *vector, *index) {
-            Ok(value) => {
-                write_local(&mut mutator.heap, activation, *destination, value);
-                Flow::Next
+            Instruction::SendSuper {
+                selector,
+                argument_registers,
+                destination,
+                call_site,
+            } => {
+                let family_size = code.family_size;
+                send(
+                    mutator,
+                    activation,
+                    register_base,
+                    program_counter,
+                    argument_registers,
+                    *destination,
+                    floor,
+                    false,
+                    &mut handoff,
+                    |mutator, arguments| {
+                        send_super(
+                            mutator,
+                            activation,
+                            feedback_base,
+                            family_size,
+                            *call_site,
+                            *selector,
+                            arguments,
+                        )
+                    },
+                )
             }
-            Err(signal) => unwind(mutator, signal, floor),
-        },
-        Instruction::StoreVector {
-            vector,
-            index,
-            source,
-        } => match store_vector(&mut mutator.heap, activation, *vector, *index, *source) {
-            Ok(()) => Flow::Next,
-            Err(signal) => unwind(mutator, signal, floor),
-        },
-        Instruction::InitializeSlot { source, own_index } => {
-            // `own_index` is relative to the executing mixin's own slots; the
-            // activation's slot base, its `current_class`'s own, turns it into
-            // this instance's absolute field index.
-            let value = read_local(&mutator.heap, activation, *source);
-            let receiver = mutator.heap.activation_receiver(activation);
-            let base = mutator.heap.activation_slot_base(activation);
-            // §3.1.1's rule about what a value's slot may hold is decided in
-            // `interpreter/`, as every error is; this only calls it.
-            match check_value_slot(mutator, activation, receiver, *own_index as usize, value) {
+            Instruction::MakeClosure {
+                destination,
+                code: block,
+                copied,
+                ..
+            } => {
+                // Stored before reifying, so the frame `reify` builds starts
+                // from this program counter.
+                mutator
+                    .heap
+                    .set_activation_program_counter(activation, program_counter);
+                let captured_frame = mutator.heap.reify(activation);
+                // A closure that reads enclosing registers by reference -- the
+                // reference lowering's, and an optimized fallback closure -- is
+                // what makes this activation's registers outlive it.
+                if block.outer_reach > 0 {
+                    mutator.heap.retain_registers(activation);
+                }
+                let copied_values = copied
+                    .iter()
+                    .map(|register| mutator.heap.register(register_base, *register))
+                    .collect();
+                let value = Value::Object(mutator.new_closure(ClosureData {
+                    code: block.clone(),
+                    captured_frame,
+                    copied: copied_values,
+                    // A block belongs to its enclosing method's family: the
+                    // running activation's own base, already in hand here, so
+                    // this costs no extra load.
+                    feedback_base,
+                }));
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
+                program_counter += 1;
+                continue;
+            }
+            Instruction::MakeArray {
+                destination,
+                element_registers,
+            } => {
+                let values = element_registers
+                    .iter()
+                    .map(|register| mutator.heap.register(register_base, *register))
+                    .collect();
+                let value = Value::Object(mutator.new_array(values));
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
+                program_counter += 1;
+                continue;
+            }
+            Instruction::MakeVector { destination, size } => {
+                let value = Value::Object(mutator.new_array(vec![Value::Nil; *size as usize]));
+                mutator
+                    .heap
+                    .set_register(register_base, *destination, value);
+                program_counter += 1;
+                continue;
+            }
+            Instruction::LoadVector {
+                destination,
+                vector,
+                index,
+            } => match load_vector(&mutator.heap, activation, *vector, *index) {
+                Ok(value) => {
+                    mutator
+                        .heap
+                        .set_register(register_base, *destination, value);
+                    program_counter += 1;
+                    continue;
+                }
+                Err(signal) => unwind(mutator, signal, floor, &mut handoff),
+            },
+            Instruction::StoreVector {
+                vector,
+                index,
+                source,
+            } => match store_vector(&mut mutator.heap, activation, *vector, *index, *source) {
                 Ok(()) => {
-                    store_instance_field(
-                        &mut mutator.heap,
-                        &receiver,
-                        base + *own_index as usize,
-                        value,
-                    );
-                    Flow::Next
+                    program_counter += 1;
+                    continue;
                 }
-                // A future can reach a value's slot from outside any
-                // simultaneous clause's own resolution -- passed in as an
-                // ordinary argument, since a future is indistinguishable from
-                // its value (§6.3.2, rule 3). What belongs in the slot is
-                // what it stands for: forced first if it is not resolved yet
-                // (`value_for_a_value_slot`), then checked again with the
-                // same accepted path above. A refusal that is not about a
-                // future stands.
-                Err(signal) => {
-                    initialize_slot_refused(mutator, activation, program_counter, signal, floor)
+                Err(signal) => unwind(mutator, signal, floor, &mut handoff),
+            },
+            Instruction::InitializeSlot { source, own_index } => {
+                // `own_index` is relative to the executing mixin's own slots; the
+                // activation's slot base, its `current_class`'s own, turns it into
+                // this instance's absolute field index.
+                let value = mutator.heap.register(register_base, *source);
+                let receiver = mutator.heap.activation_receiver(activation);
+                let base = mutator.heap.activation_slot_base(activation);
+                // §3.1.1's rule about what a value's slot may hold is decided in
+                // `interpreter/`, as every error is; this only calls it.
+                match check_value_slot(mutator, activation, receiver, *own_index as usize, value) {
+                    Ok(()) => {
+                        store_instance_field(
+                            &mut mutator.heap,
+                            &receiver,
+                            base + *own_index as usize,
+                            value,
+                        );
+                        program_counter += 1;
+                        continue;
+                    }
+                    // A future can reach a value's slot from outside any
+                    // simultaneous clause's own resolution -- passed in as an
+                    // ordinary argument, since a future is indistinguishable from
+                    // its value (§6.3.2, rule 3). What belongs in the slot is
+                    // what it stands for: forced first if it is not resolved yet
+                    // (`value_for_a_value_slot`), then checked again with the
+                    // same accepted path above. A refusal that is not about a
+                    // future stands.
+                    Err(signal) => initialize_slot_refused(
+                        mutator,
+                        activation,
+                        program_counter,
+                        signal,
+                        floor,
+                        &mut handoff,
+                    ),
                 }
             }
-        }
-        // A lazy slot's getter answers its field once it is filled; the
-        // field's address is `InitializeSlot`'s, and reading it is a
-        // `locals` helper's.
-        Instruction::ReturnSlotIfFilled { own_index } => {
-            match filled_own_slot(&mutator.heap, activation, *own_index) {
-                Some(value) => finish(mutator, activation, value, floor),
-                None => Flow::Next,
-            }
-        }
-        // §6.3.2's simultaneous slot clauses: one arm and one call, out of
-        // line (`simultaneous_clause_instruction`).
-        Instruction::MakeFuture { .. }
-        | Instruction::ResolveFuture { .. }
-        | Instruction::LoadOwnSlot { .. }
-        | Instruction::InitializeSlotProvisionally { .. } => {
-            simultaneous_clause_instruction(mutator, activation, program_counter, floor)
-        }
-        Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
-            let value = read_local(&mutator.heap, activation, *register);
-            finish(mutator, activation, value, floor)
-        }
-        Instruction::NonLocalReturn { register } => {
-            let value = read_local(&mutator.heap, activation, *register);
-            mutator
-                .heap
-                .set_activation_program_counter(activation, program_counter);
-            let signal = mutator.raise_return(activation, value);
-            unwind(mutator, signal, floor)
-        }
-        Instruction::Jump { target } => Flow::Jump(*target as usize),
-        Instruction::JumpIfNotBoolean { register, target } => {
-            if matches!(
-                read_local(&mutator.heap, activation, *register),
-                Value::Boolean(_)
-            ) {
-                Flow::Next
-            } else {
-                Flow::Jump(*target as usize)
-            }
-        }
-        Instruction::BranchIfFalse { register, target } => {
-            if matches!(
-                read_local(&mutator.heap, activation, *register),
-                Value::Boolean(false)
-            ) {
-                Flow::Jump(*target as usize)
-            } else {
-                Flow::Next
-            }
-        }
-        Instruction::BranchIfTrue { register, target } => {
-            if matches!(
-                read_local(&mutator.heap, activation, *register),
-                Value::Boolean(true)
-            ) {
-                Flow::Jump(*target as usize)
-            } else {
-                Flow::Next
-            }
-        }
-        // The inlined fast path for an integer leaf. Not dispatch: it either
-        // computes the one answer the primitive would have computed, or
-        // declines and jumps to the ordinary send standing at `target`. Every
-        // case it declines -- a non-integer operand, an overflow, a zero
-        // divisor -- is that send's primitive to decide, so no error and no
-        // error text is raised here. It cannot fail for any operand, which is
-        // what lets a decoded image reach it safely.
-        Instruction::IntegerBinary {
-            operation,
-            destination,
-            left,
-            right,
-            target,
-        } => {
-            let left_value = read_local(&mutator.heap, activation, *left);
-            let right_value = read_local(&mutator.heap, activation, *right);
-            let (Value::SmallInteger(left_integer), Value::SmallInteger(right_integer)) =
-                (left_value, right_value)
-            else {
-                return Flow::Jump(*target as usize);
-            };
-            let result = match operation {
-                IntegerOperation::Add => left_integer
-                    .checked_add(right_integer)
-                    .map(Value::SmallInteger),
-                IntegerOperation::Subtract => left_integer
-                    .checked_sub(right_integer)
-                    .map(Value::SmallInteger),
-                IntegerOperation::Multiply => left_integer
-                    .checked_mul(right_integer)
-                    .map(Value::SmallInteger),
-                // `checked_div_euclid` answers `None` for a zero divisor as
-                // well as for `i64::MIN // -1`, so both take the fallback and
-                // the primitive raises its own "division by zero" or overflow
-                // error. No zero check is written here, because writing one
-                // would be the second copy.
-                IntegerOperation::FloorDivide => left_integer
-                    .checked_div_euclid(right_integer)
-                    .map(Value::SmallInteger),
-                IntegerOperation::Less => Some(Value::Boolean(left_integer < right_integer)),
-                IntegerOperation::Greater => Some(Value::Boolean(left_integer > right_integer)),
-                IntegerOperation::LessOrEqual => {
-                    Some(Value::Boolean(left_integer <= right_integer))
+            // A lazy slot's getter answers its field once it is filled; the
+            // field's address is `InitializeSlot`'s, and reading it is a
+            // `locals` helper's.
+            Instruction::ReturnSlotIfFilled { own_index } => {
+                match filled_own_slot(&mutator.heap, activation, *own_index) {
+                    Some(value) => finish(mutator, activation, value, floor, &mut handoff),
+                    None => {
+                        program_counter += 1;
+                        continue;
+                    }
                 }
-                IntegerOperation::GreaterOrEqual => {
-                    Some(Value::Boolean(left_integer >= right_integer))
+            }
+            // §6.3.2's simultaneous slot clauses: one arm and one call, out of
+            // line (`simultaneous_clause_instruction`).
+            Instruction::MakeFuture { .. }
+            | Instruction::ResolveFuture { .. }
+            | Instruction::LoadOwnSlot { .. }
+            | Instruction::InitializeSlotProvisionally { .. } => simultaneous_clause_instruction(
+                mutator,
+                activation,
+                program_counter,
+                floor,
+                &mut handoff,
+            ),
+            Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
+                let value = mutator.heap.register(register_base, *register);
+                finish(mutator, activation, value, floor, &mut handoff)
+            }
+            Instruction::NonLocalReturn { register } => {
+                let value = mutator.heap.register(register_base, *register);
+                mutator
+                    .heap
+                    .set_activation_program_counter(activation, program_counter);
+                let signal = mutator.raise_return(activation, value);
+                unwind(mutator, signal, floor, &mut handoff)
+            }
+            Instruction::Jump { target } => jump_to!(*target),
+            Instruction::JumpIfNotBoolean { register, target } => {
+                if matches!(
+                    mutator.heap.register(register_base, *register),
+                    Value::Boolean(_)
+                ) {
+                    program_counter += 1;
+                    continue;
                 }
-                IntegerOperation::Equal => Some(Value::Boolean(left_integer == right_integer)),
-            };
-            match result {
-                Some(value) => {
-                    write_local(&mut mutator.heap, activation, *destination, value);
-                    Flow::Next
+                jump_to!(*target)
+            }
+            Instruction::BranchIfFalse { register, target } => {
+                if matches!(
+                    mutator.heap.register(register_base, *register),
+                    Value::Boolean(false)
+                ) {
+                    jump_to!(*target)
                 }
-                None => Flow::Jump(*target as usize),
+                program_counter += 1;
+                continue;
+            }
+            Instruction::BranchIfTrue { register, target } => {
+                if matches!(
+                    mutator.heap.register(register_base, *register),
+                    Value::Boolean(true)
+                ) {
+                    jump_to!(*target)
+                }
+                program_counter += 1;
+                continue;
+            }
+            // The inlined fast path for an integer leaf. Not dispatch: it either
+            // computes the one answer the primitive would have computed, or
+            // declines and jumps to the ordinary send standing at `target`. Every
+            // case it declines -- a non-integer operand, an overflow, a zero
+            // divisor -- is that send's primitive to decide, so no error and no
+            // error text is raised here. It cannot fail for any operand, which is
+            // what lets a decoded image reach it safely.
+            Instruction::IntegerBinary {
+                operation,
+                destination,
+                left,
+                right,
+                target,
+            } => {
+                let left_value = mutator.heap.register(register_base, *left);
+                let right_value = mutator.heap.register(register_base, *right);
+                let (Value::SmallInteger(left_integer), Value::SmallInteger(right_integer)) =
+                    (left_value, right_value)
+                else {
+                    jump_to!(*target)
+                };
+                let result = match operation {
+                    IntegerOperation::Add => left_integer
+                        .checked_add(right_integer)
+                        .map(Value::SmallInteger),
+                    IntegerOperation::Subtract => left_integer
+                        .checked_sub(right_integer)
+                        .map(Value::SmallInteger),
+                    IntegerOperation::Multiply => left_integer
+                        .checked_mul(right_integer)
+                        .map(Value::SmallInteger),
+                    // `checked_div_euclid` answers `None` for a zero divisor as
+                    // well as for `i64::MIN // -1`, so both take the fallback and
+                    // the primitive raises its own "division by zero" or overflow
+                    // error. No zero check is written here, because writing one
+                    // would be the second copy.
+                    IntegerOperation::FloorDivide => left_integer
+                        .checked_div_euclid(right_integer)
+                        .map(Value::SmallInteger),
+                    IntegerOperation::Less => Some(Value::Boolean(left_integer < right_integer)),
+                    IntegerOperation::Greater => Some(Value::Boolean(left_integer > right_integer)),
+                    IntegerOperation::LessOrEqual => {
+                        Some(Value::Boolean(left_integer <= right_integer))
+                    }
+                    IntegerOperation::GreaterOrEqual => {
+                        Some(Value::Boolean(left_integer >= right_integer))
+                    }
+                    IntegerOperation::Equal => Some(Value::Boolean(left_integer == right_integer)),
+                };
+                match result {
+                    Some(value) => {
+                        mutator
+                            .heap
+                            .set_register(register_base, *destination, value);
+                        program_counter += 1;
+                        continue;
+                    }
+                    None => jump_to!(*target),
+                }
+            }
+        };
+        match transfer {
+            Transfer::Next => program_counter += 1,
+            Transfer::Switched => {
+                activation = handoff.activation;
+                code = handoff
+                    .code
+                    .take()
+                    .expect("internal: a switch names its code");
+                program_counter = handoff.program_counter;
+                feedback_base = handoff.feedback_base;
+                register_base = mutator.heap.register_base(activation);
+                if mutator.heap.safepoint_requested() {
+                    break;
+                }
+            }
+            Transfer::Exited => {
+                return Leave::Exit(
+                    handoff
+                        .exit
+                        .take()
+                        .expect("internal: an exit carries its result"),
+                );
             }
         }
     }
+    // A safepoint is requested, at a switch or a backward jump: the frame
+    // the stretch stands at, written back for the next one.
+    *frame = FrameRegisters {
+        activation,
+        code,
+        program_counter,
+        feedback_base,
+        register_base,
+    };
+    Leave::Safepoint
 }
 
 /// A send: the arguments gathered from the caller's registers into the
@@ -602,34 +751,38 @@ fn execute<'gc>(
 fn send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    register_base: RegisterBase,
     program_counter: usize,
     argument_registers: &[u16],
     destination: u16,
     floor: usize,
     inlinable: bool,
+    handoff: &mut Handoff,
     decide: impl FnOnce(&mut Mutator<'gc>, &[Value<'gc>]) -> Result<Step<'gc>, Signal<'gc>>,
-) -> Flow {
+) -> Transfer {
     let mut arguments = mutator.take_argument_buffer();
     arguments.extend(
         argument_registers
             .iter()
-            .map(|register| read_local(&mutator.heap, activation, *register)),
+            .map(|register| mutator.heap.register(register_base, *register)),
     );
     mutator
         .heap
         .set_activation_program_counter(activation, program_counter);
     let decided = decide(mutator, &arguments);
-    let flow = deliver(
+    let transfer = deliver(
         mutator,
         activation,
+        register_base,
         decided,
         &arguments,
         destination,
         floor,
         inlinable,
+        handoff,
     );
     mutator.return_argument_buffer(arguments);
-    flow
+    transfer
 }
 
 /// What a send decided, run: a value written to `destination`, or an
@@ -637,30 +790,28 @@ fn send<'gc>(
 /// `send_arguments`. Shared by `send` and `SendMirror`, so a mirror leaf's
 /// decision is delivered exactly as any send's is.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn deliver<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    register_base: RegisterBase,
     decided: Result<Step<'gc>, Signal<'gc>>,
     send_arguments: &[Value<'gc>],
     destination: u16,
     floor: usize,
     inlinable: bool,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     match decided {
         Ok(Step::Value(value)) => {
-            write_local(&mut mutator.heap, activation, destination, value);
-            Flow::Next
+            mutator.heap.set_register(register_base, destination, value);
+            Transfer::Next
         }
         Ok(step) => match mutator.push_step(step, send_arguments, Some(activation), inlinable) {
-            Ok(callee) => Flow::Switch {
-                activation: callee,
-                code: mutator.heap.activation_code(callee),
-                program_counter: 0,
-                feedback_base: mutator.heap.activation_feedback_base(callee),
-            },
-            Err(signal) => unwind(mutator, signal, floor),
+            Ok(callee) => handoff.switch_to(mutator, callee, 0),
+            Err(signal) => unwind(mutator, signal, floor, handoff),
         },
-        Err(signal) => unwind(mutator, signal, floor),
+        Err(signal) => unwind(mutator, signal, floor, handoff),
     }
 }
 
@@ -679,7 +830,8 @@ fn finish<'gc>(
     activation: ActivationReference,
     value: Value<'gc>,
     floor: usize,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     let popped = mutator.heap.pop_activation(activation);
     let value = match popped.then {
         // `Deliver` owns nothing, so forgetting it is dropping it. Written
@@ -697,44 +849,34 @@ fn finish<'gc>(
         // `interpreter::future`'s to decide, and the loop carries it out.
         Continuation::Future(forcing) => match mutator.future_computed(*forcing, value) {
             Ok(FutureOutcome::Deliver(value)) => value,
-            Ok(FutureOutcome::Reexecute) => return reexecute(mutator, floor),
+            Ok(FutureOutcome::Reexecute) => return reexecute(mutator, floor, handoff),
             Ok(FutureOutcome::Force(step)) => {
                 return match mutator.push_continuation(step, popped.counted) {
-                    Ok(next) => Flow::Switch {
-                        activation: next,
-                        code: mutator.heap.activation_code(next),
-                        program_counter: 0,
-                        feedback_base: mutator.heap.activation_feedback_base(next),
-                    },
-                    Err(signal) => unwind(mutator, signal, floor),
+                    Ok(next) => handoff.switch_to(mutator, next, 0),
+                    Err(signal) => unwind(mutator, signal, floor, handoff),
                 };
             }
-            Err(signal) => return unwind(mutator, signal, floor),
+            Err(signal) => return unwind(mutator, signal, floor, handoff),
         },
         then => match mutator.resume(then, value) {
             Ok(Step::Value(value)) => value,
             Ok(step) => {
                 return match mutator.push_continuation(step, popped.counted) {
-                    Ok(next) => Flow::Switch {
-                        activation: next,
-                        code: mutator.heap.activation_code(next),
-                        program_counter: 0,
-                        feedback_base: mutator.heap.activation_feedback_base(next),
-                    },
-                    Err(signal) => unwind(mutator, signal, floor),
+                    Ok(next) => handoff.switch_to(mutator, next, 0),
+                    Err(signal) => unwind(mutator, signal, floor, handoff),
                 };
             }
-            Err(signal) => return unwind(mutator, signal, floor),
+            Err(signal) => return unwind(mutator, signal, floor, handoff),
         },
     };
     if mutator.heap.activation_depth() == floor {
-        return Flow::Exit(mutator.to_host(Ok(value)));
+        return handoff.exit(mutator.to_host(Ok(value)));
     }
     let caller = mutator
         .heap
         .top_activation()
         .expect("internal: an activation above the run's floor has a caller");
-    resume_caller(mutator, caller, value)
+    resume_caller(mutator, caller, value, handoff)
 }
 
 /// Writes a callee's value into the send `caller` is stopped at, and resumes
@@ -743,7 +885,8 @@ fn resume_caller<'gc>(
     mutator: &mut Mutator<'gc>,
     caller: ActivationReference,
     value: Value<'gc>,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     let code = mutator.heap.activation_code(caller);
     let program_counter = mutator.heap.activation_program_counter(caller);
     write_local(
@@ -752,12 +895,7 @@ fn resume_caller<'gc>(
         send_destination(&code.instructions[program_counter]),
         value,
     );
-    Flow::Switch {
-        activation: caller,
-        code,
-        program_counter: program_counter + 1,
-        feedback_base: mutator.heap.activation_feedback_base(caller),
-    }
+    handoff.switch_with_code(mutator, caller, code, program_counter + 1)
 }
 
 /// The instruction the popped activation's caller is stopped at, run again
@@ -766,21 +904,17 @@ fn resume_caller<'gc>(
 /// nothing before it forced the future, so running it again is running it
 /// once. A host's send has no instruction to run again; a future it passes
 /// in straight to a leaf ends the run.
-fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize) -> Flow {
+fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
     if mutator.heap.activation_depth() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
-        return Flow::Exit(mutator.to_host(Err(error)));
+        return handoff.exit(mutator.to_host(Err(error)));
     }
     let caller = mutator
         .heap
         .top_activation()
         .expect("internal: an activation above the run's floor has a caller");
-    Flow::Switch {
-        activation: caller,
-        code: mutator.heap.activation_code(caller),
-        program_counter: mutator.heap.activation_program_counter(caller),
-        feedback_base: mutator.heap.activation_feedback_base(caller),
-    }
+    let program_counter = mutator.heap.activation_program_counter(caller);
+    handoff.switch_to(mutator, caller, program_counter)
 }
 
 // The arms of §6.3.2's simultaneous slot clauses -- `InitializeSlot`'s
@@ -801,7 +935,8 @@ fn initialize_slot_refused<'gc>(
     program_counter: usize,
     signal: Signal<'gc>,
     floor: usize,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     // Read back here rather than handed over, so that the arm `vm::run`
     // inlines passes no more than an unwind would.
     let code = mutator.heap.activation_code(activation);
@@ -811,7 +946,7 @@ fn initialize_slot_refused<'gc>(
     };
     let value = read_local(&mutator.heap, activation, source);
     match value_for_a_value_slot(mutator, value) {
-        None => unwind(mutator, signal, floor),
+        None => unwind(mutator, signal, floor, handoff),
         Some(Ok(Resolution::Value(resolved))) => {
             let receiver = mutator.heap.activation_receiver(activation);
             let base = mutator.heap.activation_slot_base(activation);
@@ -823,15 +958,15 @@ fn initialize_slot_refused<'gc>(
                         base + own_index as usize,
                         resolved,
                     );
-                    Flow::Next
+                    Transfer::Next
                 }
-                Err(signal) => unwind(mutator, signal, floor),
+                Err(signal) => unwind(mutator, signal, floor, handoff),
             }
         }
         Some(Ok(Resolution::Force(step))) => {
-            force_and_reexecute(mutator, activation, program_counter, step, floor)
+            force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Some(Err(signal)) => unwind(mutator, signal, floor),
+        Some(Err(signal)) => unwind(mutator, signal, floor, handoff),
     }
 }
 
@@ -842,7 +977,8 @@ fn simultaneous_clause_instruction<'gc>(
     activation: ActivationReference,
     program_counter: usize,
     floor: usize,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     // Read back here rather than handed over, so that the arm `vm::run`
     // inlines passes no more than `initialize_slot_refused`'s does.
     let code = mutator.heap.activation_code(activation);
@@ -856,7 +992,7 @@ fn simultaneous_clause_instruction<'gc>(
         Instruction::MakeFuture {
             destination,
             closure,
-        } => make_future(mutator, activation, destination, closure, floor),
+        } => make_future(mutator, activation, destination, closure, floor, handoff),
         Instruction::ResolveFuture {
             destination,
             source,
@@ -867,6 +1003,7 @@ fn simultaneous_clause_instruction<'gc>(
             destination,
             source,
             floor,
+            handoff,
         ),
         Instruction::LoadOwnSlot {
             destination,
@@ -886,11 +1023,12 @@ fn make_future<'gc>(
     destination: u16,
     closure: u16,
     floor: usize,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     let operand = read_local(&mutator.heap, activation, closure);
     let closure = match operand {
         Value::Object(object) if mutator.heap.is_closure(object) => object,
-        _ => return unwind(mutator, not_a_closure(operand), floor),
+        _ => return unwind(mutator, not_a_closure(operand), floor, handoff),
     };
     let future = mutator.new_future(closure);
     write_local(
@@ -899,7 +1037,7 @@ fn make_future<'gc>(
         destination,
         Value::Object(future),
     );
-    Flow::Next
+    Transfer::Next
 }
 
 /// `ResolveFuture`: the value `source` holds, seen through a future --
@@ -911,17 +1049,18 @@ fn resolve_future<'gc>(
     destination: u16,
     source: u16,
     floor: usize,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     let value = read_local(&mutator.heap, activation, source);
     match resolve_for_instruction(mutator, value) {
         Ok(Resolution::Value(value)) => {
             write_local(&mut mutator.heap, activation, destination, value);
-            Flow::Next
+            Transfer::Next
         }
         Ok(Resolution::Force(step)) => {
-            force_and_reexecute(mutator, activation, program_counter, step, floor)
+            force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Err(signal) => unwind(mutator, signal, floor),
+        Err(signal) => unwind(mutator, signal, floor, handoff),
     }
 }
 
@@ -931,10 +1070,10 @@ fn load_own_slot_into<'gc>(
     activation: ActivationReference,
     destination: u16,
     own_index: u32,
-) -> Flow {
+) -> Transfer {
     let value = load_own_slot(&mutator.heap, activation, own_index);
     write_local(&mut mutator.heap, activation, destination, value);
-    Flow::Next
+    Transfer::Next
 }
 
 /// `InitializeSlotProvisionally`: `InitializeSlot` without §3.1.1's check.
@@ -943,7 +1082,7 @@ fn initialize_slot_provisionally<'gc>(
     activation: ActivationReference,
     source: u16,
     own_index: u32,
-) -> Flow {
+) -> Transfer {
     let value = read_local(&mutator.heap, activation, source);
     let receiver = mutator.heap.activation_receiver(activation);
     let base = mutator.heap.activation_slot_base(activation);
@@ -953,7 +1092,7 @@ fn initialize_slot_provisionally<'gc>(
         base + own_index as usize,
         value,
     );
-    Flow::Next
+    Transfer::Next
 }
 
 /// An instruction met an unresolved future: store where it stands, push the
@@ -968,18 +1107,14 @@ fn force_and_reexecute<'gc>(
     program_counter: usize,
     step: Step<'gc>,
     floor: usize,
-) -> Flow {
+    handoff: &mut Handoff,
+) -> Transfer {
     mutator
         .heap
         .set_activation_program_counter(activation, program_counter);
     match mutator.push_step(step, &[], Some(activation), false) {
-        Ok(callee) => Flow::Switch {
-            activation: callee,
-            code: mutator.heap.activation_code(callee),
-            program_counter: 0,
-            feedback_base: mutator.heap.activation_feedback_base(callee),
-        },
-        Err(signal) => unwind(mutator, signal, floor),
+        Ok(callee) => handoff.switch_to(mutator, callee, 0),
+        Err(signal) => unwind(mutator, signal, floor, handoff),
     }
 }
 
@@ -994,20 +1129,18 @@ fn force_and_reexecute<'gc>(
 /// turn, hence the loop rather than a recursion. It ends: the unwinder marks
 /// each block run before answering it, so no block is answered twice and
 /// every refusal leaves one pending block fewer on the stack.
-fn unwind<'gc>(mutator: &mut Mutator<'gc>, mut signal: Signal<'gc>, floor: usize) -> Flow {
+fn unwind<'gc>(
+    mutator: &mut Mutator<'gc>,
+    mut signal: Signal<'gc>,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
     loop {
         let next = match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
             UnwindOutcome::Returned { target, value } => {
-                return finish(mutator, target, value, floor)
+                return finish(mutator, target, value, floor, handoff)
             }
-            UnwindOutcome::Restarted { target } => {
-                return Flow::Switch {
-                    activation: target,
-                    code: mutator.heap.activation_code(target),
-                    program_counter: 0,
-                    feedback_base: mutator.heap.activation_feedback_base(target),
-                }
-            }
+            UnwindOutcome::Restarted { target } => return handoff.switch_to(mutator, target, 0),
             UnwindOutcome::Signalling(next) => next,
             UnwindOutcome::RunBlock { block, then } => {
                 match mutator.start_unwind_block(block, then) {
@@ -1018,14 +1151,9 @@ fn unwind<'gc>(mutator: &mut Mutator<'gc>, mut signal: Signal<'gc>, floor: usize
                     }
                 }
             }
-            UnwindOutcome::Exit(result) => return Flow::Exit(mutator.to_host(result)),
+            UnwindOutcome::Exit(result) => return handoff.exit(mutator.to_host(result)),
         };
-        return Flow::Switch {
-            activation: next,
-            code: mutator.heap.activation_code(next),
-            program_counter: 0,
-            feedback_base: mutator.heap.activation_feedback_base(next),
-        };
+        return handoff.switch_to(mutator, next, 0);
     }
 }
 

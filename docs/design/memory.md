@@ -29,7 +29,8 @@
 > doctests that pin the brand), `trace.rs` (everything the collector
 > traces, marking and forwarding alike, in every build), `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::collect_now` and the three stress modes),
-> `vm.rs` (one entry per instruction, and the poll), `types.rs` (`Value`,
+> `vm.rs` (one entry per stretch between two safepoints, and the poll),
+> `types.rs` (`Value`,
 > `Object`, `Frame`), `mixin.rs` (layout, and the one remaining iterative
 > `Drop`).
 
@@ -317,11 +318,13 @@ instead — "The trigger and the growth policy" below — which runs at the next
 safepoint of the run loop. `vm::run` polls one at every switch
 to another activation — a push, or a caller resumed — and at every backward
 jump, so every call and every loop iteration passes one, a loop that makes no
-send included; a forward jump does not poll. Between two instructions `run`
-holds the running `ActivationReference`, its `Rc<CompiledCode>` and its
-`program_counter`, and no handle the collector would move — each instruction
-is an entry of its own and the poll is outside every one, so the compiler
-refuses anything else ("The brand" below); every live value is in a register
+send included; a forward jump does not poll. Across a safepoint `run`
+holds `FrameRegisters` — the running `ActivationReference`, its
+`Rc<CompiledCode>`, its `program_counter`, its `FeedbackBase` and its
+`RegisterBase` — and no handle the collector would move: each stretch of
+instructions between two safepoints is an entry of its own, and the
+safepoint is outside every one, so the compiler refuses anything else ("The
+brand" below); every live value is in a register
 on the activation stack or in one of the places "What the collector traces"
 below lists. The step state's reusable argument buffer is empty there — a
 send gathers into it, decides and pushes within one instruction, and it is
@@ -354,8 +357,9 @@ heap can pass its threshold by what one step allocates. A large object going
 straight to a large-object space and a small reserve absorb that, as they do in
 Cog and Primordial Soup.
 
-**The poll** (`vm::poll`, inlined into `vm::run`) is one compare of a flag the
-heap owns, `safepoint_requested`. When the flag is set it calls
+**The poll** (in `vm::run_stretch`, forced inline into `vm::run`) is one
+compare of a flag the heap owns, `Heap::safepoint_requested`. When the flag is
+set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a
 safepoint does. The safepoint serves a request by clearing the flag, except
@@ -431,15 +435,14 @@ is chosen outside the `for<'gc>` and cannot name it. The crate forbids
 **Nothing branded leaves an entry, and nothing in an entry reaches the loop.**
 `Mutator` offers no way back to the `Interpreter`, so no step — no decision,
 native or continuation, each of which is handed only a `&mut Mutator` — can
-run `vm::run`, reach the safepoint or start a host's send. Each instruction
-the loop executes is one entry, and the poll is outside every one; what the
-loop carries from one instruction to the next names no brand — the running
-`ActivationReference`, its code and its `program_counter` — and a run ends
+run `vm::run`, reach the safepoint or start a host's send. The loop makes
+one entry per stretch between two safepoints, and the safepoint is outside
+every one; what the loop carries from one stretch to the next names no brand
+— `FrameRegisters`: the running `ActivationReference`, its code, its
+`program_counter`, its `FeedbackBase` and its `RegisterBase` — and a run ends
 inside its last entry, its answer rooted for the host (`vm::run`, and
-[execution.md](execution.md), "The VM"). A host makes one entry per read.
-One entry per instruction is planned to become one entry per stretch between
-two safepoints, the brand's guarantee unchanged ([execution.md](execution.md),
-"Planned: the loop over locals").
+[execution.md](execution.md), "The VM" and "The loop over locals"). A host
+makes one entry per read.
 `World::enter` is `#[inline(always)]`, and a lifetime is gone before code is
 generated.
 
