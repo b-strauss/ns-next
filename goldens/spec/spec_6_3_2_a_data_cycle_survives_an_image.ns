@@ -1,0 +1,15 @@
+Newspeak3
+'Test'
+(* The data cycle of spec_6_3_2_a_data_cycle_resolves, kept in module state
+   so the golden round trip snapshots it: an image never holds a resolved
+   future, only its value (docs/design/image-format.md), so after a load the
+   element and the slot are still one object. *)
+class Spec632ADataCycleSurvivesAnImage usingPlatform: p = Object new (
+    | t = p transcript. probe = Probe new. |
+) (
+    class Probe = Object new (|| public first = {second}. public second = {first}. ||) () : ()
+    public main: platform args: arguments = (
+        t show: ((probe first at: 1) == probe second) printString; newLine.
+        t show: (((probe second at: 1) at: 1) == probe second) printString; newLine
+    )
+) : ()

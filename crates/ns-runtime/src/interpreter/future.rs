@@ -7,6 +7,7 @@
 //! `AfterForcing`.
 
 use crate::builtins::primitive::Primitive;
+use crate::heap::Heap;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -21,6 +22,7 @@ const RESOLVED: i64 = 2;
 /// `a_futures_slots_are_where_this_module_reads_them` pins both.
 const COMPUTATION_FIELD: usize = 0;
 const STATE_FIELD: usize = 1;
+const FIELD_COUNT: usize = 2;
 
 /// Where a future is in its life.
 pub enum FutureState<'gc> {
@@ -170,7 +172,7 @@ impl<'gc> Mutator<'gc> {
         );
         self.futures_made = true;
         let class = self.builtin_class(BuiltinClass::Future);
-        let mut fields = vec![Value::Nil; 2];
+        let mut fields = vec![Value::Nil; FIELD_COUNT];
         fields[COMPUTATION_FIELD] = Value::Object(closure);
         fields[STATE_FIELD] = Value::SmallInteger(UNRESOLVED);
         self.heap
@@ -277,6 +279,57 @@ pub(crate) fn replace_resolved_futures(mutator: &mut Mutator<'_>) -> usize {
     mutator
         .heap
         .replace_resolved_futures(future_class, COMPUTATION_FIELD, STATE_FIELD, RESOLVED)
+}
+
+/// What an image writes in place of `value`: a resolved future's value, and
+/// `value` itself otherwise (`docs/design/image-format.md`, "Futures in a
+/// graph"). Every reference to a resolved future is written as a reference
+/// to its value, so the walk never records the future and a load gives back
+/// one object where the program saw one. Reads the heap alone, since the
+/// encoder holds nothing more; the class check is `class_builtin`, as the
+/// encoder's other builtin checks are.
+pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'gc> {
+    let Value::Object(object) = value else {
+        return value;
+    };
+    if heap.class_builtin(heap.class_of_object(object)) != Some(BuiltinClass::Future) {
+        return value;
+    }
+    match (
+        heap.instance_field(object, STATE_FIELD),
+        heap.instance_field(object, COMPUTATION_FIELD),
+    ) {
+        (Some(Value::SmallInteger(RESOLVED)), Some(resolved)) => resolved,
+        _ => value,
+    }
+}
+
+/// The fields an image writes for an unresolved or resolving `future`: its
+/// closure and the state 0. A resolving future is met only by a snapshot
+/// taken while its block runs, and a load starts no block, so it is written
+/// as what `future_abandoned` would make of it -- its closure is still in
+/// `computation`, kept there for exactly that.
+pub(crate) fn fields_for_an_image<'gc>(fields: &[Value<'gc>]) -> Vec<Value<'gc>> {
+    let mut written = fields.to_vec();
+    if let Some(state) = written.get_mut(STATE_FIELD) {
+        *state = Value::SmallInteger(UNRESOLVED);
+    }
+    written
+}
+
+/// Whether a decoded record under the `Future` header is what the encoder
+/// writes: exactly two fields, a closure and the state 0. `computation` may
+/// name a record decoded later, so the closure half is checked once every
+/// record is in (`decode::decode_graph_section`); this answers the closure
+/// it names, if the rest holds.
+pub(crate) fn decoded_future_computation<'gc>(fields: &[Value<'gc>]) -> Option<Value<'gc>> {
+    if fields.len() != FIELD_COUNT {
+        return None;
+    }
+    match (fields.get(COMPUTATION_FIELD), fields.get(STATE_FIELD)) {
+        (Some(computation), Some(Value::SmallInteger(UNRESOLVED))) => Some(*computation),
+        _ => None,
+    }
 }
 
 /// Forces `future`: its value when it is resolved, its block's activation

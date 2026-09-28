@@ -864,12 +864,47 @@ through `platform kernel` and may subclass them, so an image may name any
 of the five wherever it names a class: an exception a program made is an
 ordinary instance record.
 
-**`Future` carries tag 30**, the kernel-private pull future of §6.3.2's
-simultaneous slots ([object-model.md](object-model.md), "Planned:
-simultaneous slots"). No program names it, so `read_referenced_builtin_class`
-refuses tag 30 wherever the graph names a class, an object's header
-included, and the encoder refuses a graph that reaches the class or a
-future ("Planned: futures in a graph" below).
+**Futures in a graph: a resolved future is its value, an unresolved one a
+record under tag 30.** `Future` carries builtin tag **30**, the
+kernel-private pull future of §6.3.2's simultaneous slots
+([object-model.md](object-model.md), "Planned: simultaneous slots"). No
+program names it, so `read_referenced_builtin_class` refuses tag 30 wherever
+the graph names a class — as a value, a superclass, a `<:` clause's builtin
+and behind `CLASS_METACLASS` — and the encoder refuses a graph that reaches
+the class or its metaclass (`encode::unnameable_class`), exactly as for
+`Activation`'s 23. A future *object* is written two ways. A resolved one is
+never a record: the graph walk and the value encoder both see through it
+(`future::seen_through`), so every reference to it is written as a reference
+to its value, and a load gives back one object where the program saw one —
+the value a collection would have put in its place anyway
+([memory.md](memory.md)). An unresolved one is an ordinary instance record
+(`OBJECT_INSTANCE`) whose header is `CLASS_BUILTIN` followed by tag 30, the
+one other header besides an activation record's that names a
+kernel-private class; the walk does not visit that header as a reference, as
+it does not an activation's. Its two fields are its closure and the state 0.
+A *resolving* future — met only by a snapshot taken while its block runs —
+is written as unresolved, its closure still in the first field
+(`future::fields_for_an_image`), which is what an abandonment would make of
+it; a load starts no block, so nothing could finish resolving it.
+
+The decoder accepts tag 30 in an object's header alone
+(`decode_object_header`) and holds the record to what the encoder writes: an
+instance body of exactly two fields whose second is the state 0 and whose
+first, once every record is read, is a closure. Anything else under that
+header — another body, another field count, the state 1 or 2 or one that is
+none of the three, a computation that is no closure — is `FutureRecord`,
+refused rather than decoded, so `Mutator::future_state` never meets a future
+it cannot read and no resolved future stands apart from the value every
+other reference was written as. A graph that decodes a future sets the
+loading world's `futures_made`, as `Mutator::new_future` does, so the leaves
+see through it and every check that stays off a program's paths until a
+future exists runs in the loaded world
+(`a_resolved_future_is_written_as_its_value`,
+`an_unresolved_future_round_trips_and_computes_after_load`,
+`a_future_record_that_is_not_an_unresolved_future_is_refused`,
+`a_graph_naming_future_as_a_class_is_refused`, `tests/image.rs`;
+`goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose snapshot
+round trip carries a data cycle through resolved futures).
 
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
@@ -1093,14 +1128,6 @@ carries a third lane that builds and loads each whitelisted entry, where a
 row's `send` is the build's `--entry`; and mutation and truncation tests cover
 the new flag, the entry field and the trailing-byte check
 (`crates/ns-runtime/tests/image.rs`).
-
-## Planned: futures in a graph
-
-Would change: the encoder writes a resolved future of a simultaneous slot
-clause as its value; an unresolved one is an ordinary record of the
-kernel-private `Future`, whose builtin class tag 30 the decoder then
-accepts in an object's header alone, refusing it wherever else a graph
-names a class, as it refuses `Top`'s ([object-model.md](object-model.md), "Planned: simultaneous slots").
 
 ## Planned: suspend and resume
 

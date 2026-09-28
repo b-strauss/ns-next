@@ -116,6 +116,14 @@ pub enum DecodeError {
     /// answering some other class's methods, or an ordinary object answering
     /// `Activation`'s, which read other frames and unwind the stack.
     ActivationHeader,
+    /// A record under the builtin `Future` header that is not an unresolved
+    /// future's: an instance record of exactly two fields, a closure and the
+    /// state 0. The encoder writes a resolved future as its value and a
+    /// resolving one as unresolved (`docs/design/image-format.md`, "Futures
+    /// in a graph"), so any other record describes a future no encoder
+    /// wrote -- one `Mutator::future_state` could not read, or a resolved one
+    /// standing apart from the value every other reference was written as.
+    FutureRecord,
     /// An object record that is not a class object is an instance of a class
     /// whose chain reaches `Behavior` -- `Class`, `Metaclass` or a
     /// metaclass. A class object is made only by evaluating a declaration
@@ -446,6 +454,10 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "an object in the image is an Activation without an activation's record, \
                  or an activation's record under another class"
+            ),
+            DecodeError::FutureRecord => write!(
+                f,
+                "an object in the image is a Future without an unresolved future's record"
             ),
             DecodeError::InstanceOfAClassClass => write!(
                 f,
@@ -867,7 +879,8 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// (`docs/design/core-library.md`, "Exceptions") -- except as the
 /// header of an activation record, which `decode_object_header` reads.
 /// `Future`: §6.3.2's pull future is kernel-private as `Activation` is, and
-/// no program names its class. `Object` declares an accessor for none of the
+/// no program names its class -- except as the header of an unresolved
+/// future's record, which `decode_object_header` reads too. `Object` declares an accessor for none of the
 /// four, for the same reasons, which is what
 /// keeps source and artifact agreed on the names a program has. Only the
 /// closing hash table names them, by tag, as it names every builtin.
@@ -877,7 +890,7 @@ pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass
 
 /// `read_referenced_builtin_class`'s refusals, of a builtin already read --
 /// what `decode_object_header` applies to every header but an activation
-/// record's.
+/// record's and an unresolved future's.
 fn referenced_builtin_class(kind: BuiltinClass) -> Result<BuiltinClass, DecodeError> {
     match kind {
         BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
@@ -2123,6 +2136,8 @@ struct ObjectHeader<'gc> {
     class: ClassReference<'gc>,
     /// The header named the builtin `Activation`.
     activation: bool,
+    /// The header named the builtin `Future`.
+    future: bool,
     /// The header named a class by platform path (`CLASS_PLATFORM_PATH`),
     /// whose layout comes from the loading binary.
     platform_path: bool,
@@ -2130,11 +2145,13 @@ struct ObjectHeader<'gc> {
 
 /// An object record's header: its class tag, which is `decode_class_tag`'s
 /// except that it also accepts the builtin `Activation` -- the header of an
-/// activation record, the one place an image may name that class. Answers
-/// whether it did, so the caller can hold the header and the body to each
-/// other (`DecodeError::ActivationHeader`) once it has read the body's tag,
-/// and whether it named its class by platform path, so the caller can hold an
-/// instance's fields to that class's layout.
+/// activation record, the one place an image may name that class -- and the
+/// builtin `Future`, the header of an unresolved future's record, for the
+/// same reason. Answers whether it did, so the caller can hold the header
+/// and the body to each other (`DecodeError::ActivationHeader`,
+/// `DecodeError::FutureRecord`) once it has read the body, and whether it
+/// named its class by platform path, so the caller can hold an instance's
+/// fields to that class's layout.
 fn decode_object_header<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
@@ -2145,24 +2162,18 @@ fn decode_object_header<'gc>(
         return Ok(ObjectHeader {
             class: decode_class_tag_after(tag, reader, context, tables)?,
             activation: false,
+            future: false,
             platform_path: tag == CLASS_PLATFORM_PATH,
         });
     }
-    let (class, activation) = match read_builtin_class(reader)? {
-        BuiltinClass::Activation => (
-            context.mutator.builtin_class(BuiltinClass::Activation),
-            true,
-        ),
-        kind => (
-            context
-                .mutator
-                .builtin_class(referenced_builtin_class(kind)?),
-            false,
-        ),
+    let kind = match read_builtin_class(reader)? {
+        kind @ (BuiltinClass::Activation | BuiltinClass::Future) => kind,
+        kind => referenced_builtin_class(kind)?,
     };
     Ok(ObjectHeader {
-        class,
-        activation,
+        class: context.mutator.builtin_class(kind),
+        activation: kind == BuiltinClass::Activation,
+        future: kind == BuiltinClass::Future,
         platform_path: false,
     })
 }
@@ -3093,12 +3104,14 @@ pub fn decode_graph_section<'gc>(
     let mut max_identity_hash = 0;
     let mut pending_classes: Vec<PendingClass> = Vec::new();
     let mut pending_metaclasses: Vec<usize> = Vec::new();
+    let mut pending_futures: Vec<Value<'gc>> = Vec::new();
     let metaclass_rows = metaclass_rows(context.mixins);
     let metaclass_class = context.mutator.builtin_class(BuiltinClass::Metaclass);
     for (index, object) in objects.iter().enumerate() {
         let ObjectHeader {
             class,
             activation: activation_header,
+            future: future_header,
             platform_path: class_named_by_path,
         } = decode_object_header(reader, context, &tables)?;
         let identity_hash = reader.read_u32()?;
@@ -3112,6 +3125,9 @@ pub fn decode_graph_section<'gc>(
         let body = reader.read_u8()?;
         if activation_header != (body == OBJECT_ACTIVATION) {
             return Err(DecodeError::ActivationHeader);
+        }
+        if future_header && body != OBJECT_INSTANCE {
+            return Err(DecodeError::FutureRecord);
         }
         let data = match body {
             OBJECT_INSTANCE => {
@@ -3130,6 +3146,15 @@ pub fn decode_graph_section<'gc>(
                             found: fields.len(),
                         });
                     }
+                }
+                // Held to what the encoder writes; that its computation is
+                // a closure is checked below, once the record it names has
+                // been read.
+                if future_header {
+                    let computation =
+                        crate::interpreter::future::decoded_future_computation(&fields)
+                            .ok_or(DecodeError::FutureRecord)?;
+                    pending_futures.push(computation);
                 }
                 ObjectData::Instance(fields)
             }
@@ -3223,6 +3248,19 @@ pub fn decode_graph_section<'gc>(
                 .heap
                 .record_canonical_symbol(symbol, *object);
         }
+    }
+    // Every record is in, so a future's computation is a closure now or
+    // never: `future_state` reads an unresolved future's as one.
+    for computation in &pending_futures {
+        match computation {
+            Value::Object(closure) if context.mutator.heap.is_closure(*closure) => {}
+            _ => return Err(DecodeError::FutureRecord),
+        }
+    }
+    // Every check for a future stays off a program's paths until one exists
+    // (`Mutator::new_future`); a loaded one exists as surely as a made one.
+    if !pending_futures.is_empty() {
+        context.mutator.futures_made = true;
     }
     rebuild_applications(context, &objects, pending_classes, &pending_metaclasses)?;
     context.mutator.heap.stamp_dispatch_ids(&objects);

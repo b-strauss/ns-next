@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::Heap;
+use crate::interpreter::future;
 use crate::types::{
     BuiltinClass, ClassData, ClassReference, ClosureData, FrameKind, FrameReference, ObjectData,
     ObjectReference, SourceOrigin, Value,
@@ -864,15 +865,17 @@ fn is_class_tag<'gc>(
 }
 
 /// `object` described, when it is a class object an image may not name:
-/// `Top`, the VM mirror's class or `Activation`, which the decoder refuses
-/// wherever the graph names a class (`decode::read_referenced_builtin_class`),
-/// or the metaclass of one of them, which it refuses behind a
-/// `CLASS_METACLASS` reference the same way. No source module can name any
-/// of the six -- `Object` declares no accessor for them -- so only a graph
-/// reaching into the kernel can; writing one would produce an image nothing
-/// loads, so the encoder refuses it instead. An activation object's header
-/// is not such a reference: `GraphTable::visit_value` never walks it, and
-/// the decoder accepts `Activation` there and only there.
+/// `Top`, the VM mirror's class, `Activation` or `Future`, which the decoder
+/// refuses wherever the graph names a class
+/// (`decode::read_referenced_builtin_class`), or the metaclass of one of
+/// them, which it refuses behind a `CLASS_METACLASS` reference the same way.
+/// No source module can name any of the eight -- `Object` declares no
+/// accessor for them -- so only a graph reaching into the kernel can;
+/// writing one would produce an image nothing loads, so the encoder refuses
+/// it instead. The header of an activation object or of an unresolved
+/// future is not such a reference: `GraphTable::visit_value` never walks
+/// it, and the decoder accepts `Activation` and `Future` there and only
+/// there.
 fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
     let (class, suffix) = match heap.class_this_class(object) {
         Some(this_class) => (this_class, " class"),
@@ -958,8 +961,8 @@ pub struct GraphTable<'gc> {
     frames: Vec<FrameReference<'gc>>,
     frame_ids: HashMap<usize, u32>,
     /// The first class the traversal reached that no program may name --
-    /// `Top`, the VM mirror's class, `Activation`, or the metaclass of one of
-    /// them -- which
+    /// `Top`, the VM mirror's class, `Activation`, `Future`, or the metaclass
+    /// of one of them -- which
     /// `encode_graph_section` refuses (`unnameable_class`).
     unnameable: Option<String>,
     /// The first shipped object the traversal reached that no platform path
@@ -1031,6 +1034,10 @@ impl<'gc> GraphTable<'gc> {
         (root_class, root_levels): (ClassReference<'gc>, &[ClassReference<'gc>]),
         stack: &mut Vec<Pending<'gc>>,
     ) {
+        // A resolved future is never entered: every reference to one is
+        // written as its value (`encode_value`), so its value is what the
+        // graph holds.
+        let value = &future::seen_through(heap, *value);
         let Value::Object(object) = value else { return };
         if is_same_object(value, platform) {
             return;
@@ -1075,14 +1082,16 @@ impl<'gc> GraphTable<'gc> {
             // `Activation`, which its header names by tag and needs no id
             // for, and which `unnameable_class` refuses wherever else the
             // graph reaches it -- the header of its own instances is the one
-            // place an image may name it.
-            if matches!(record.data, ObjectData::Activation(_)) {
-                debug_assert_eq!(
-                    heap.class_builtin(record.class),
-                    Some(BuiltinClass::Activation),
-                    "an activation object's header names the builtin `Activation`"
-                );
-            } else {
+            // place an image may name it. An unresolved future's is not
+            // walked either, for the same reason: its header names the
+            // kernel-private `Future` by tag.
+            let activation = matches!(record.data, ObjectData::Activation(_));
+            debug_assert!(
+                !activation || heap.class_builtin(record.class) == Some(BuiltinClass::Activation),
+                "an activation object's header names the builtin `Activation`"
+            );
+            let future = heap.class_builtin(record.class) == Some(BuiltinClass::Future);
+            if !activation && !future {
                 stack.push(Pending::Value(Value::Object(record.class)));
             }
             match &record.data {
@@ -1356,6 +1365,9 @@ fn encode_optional_class<'gc>(
 /// resolves to an object-table id: one rule per kind of referent is what
 /// keeps the encoding canonical.
 fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeContext<'_, 'gc>) {
+    // A resolved future is written as its value, which is what the graph
+    // walk recorded in its place (`GraphTable::visit_value`).
+    let value = &future::seen_through(context.heap, *value);
     if encode_scalar_value(writer, value) {
         return;
     }
@@ -1564,6 +1576,15 @@ fn encode_object<'gc>(
     encode_class_tag(writer, record.class, context);
     writer.write_u32(record.identity_hash);
     match &record.data {
+        // An unresolved future -- a resolved one is never a record -- is
+        // written unresolved even while its block runs
+        // (`future::fields_for_an_image`).
+        ObjectData::Instance(fields)
+            if context.heap.class_builtin(record.class) == Some(BuiltinClass::Future) =>
+        {
+            writer.write_u8(OBJECT_INSTANCE);
+            encode_values(writer, &future::fields_for_an_image(fields), context);
+        }
         ObjectData::Instance(fields) => {
             writer.write_u8(OBJECT_INSTANCE);
             encode_values(writer, fields, context);
