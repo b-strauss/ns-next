@@ -2201,6 +2201,16 @@ names `Array` and `OrderedCollection` every iteration, is 1.5% slower, about
 1.4 ns per accessor send against the constant load it replaces. `vm::run`
 grew from 6,507 to 6,626 instructions and is still one function.
 
+### Planned: the pull future
+
+Would change: `Kernel.ns` gains a private future class after Primordial
+Soup's `Proxy`, overriding every public member of `Object` as protected and
+forwarding through `doesNotUnderstand:`, with a class-side `computing:` and
+`valueOf:` that only the desugaring of a simultaneous slot clause reaches.
+`builtins::execute` looks for a future on its failure path, and the
+equality and identity leaves on their "no" path. The design is
+[object-model.md](object-model.md), "Planned: simultaneous slots".
+
 ### Planned: real bodies for control flow and `do:`, before the JIT tiers
 
 Would change: `Block`'s `whileTrue:` and `whileFalse:` and the

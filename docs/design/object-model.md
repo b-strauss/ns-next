@@ -593,6 +593,177 @@ that slot at `List` rather than `String`, so the class it
 instantiates is no value class in an ordinary module; its recorded outcome
 did not change.
 
+## Planned: simultaneous slots
+
+Would change: a `|| ... ||` slot clause (§6.3.2), in a class header or as a
+code body's temporaries, initializes its slots simultaneously through pull
+futures, so well-founded mutual recursion between them resolves, instead of
+in declaration order as a `| ... |` clause does today
+([frontend.md](frontend.md), "Deviation: simultaneous slot clauses initialize
+sequentially"). Designed with the user on 2026-09-28; every decision below
+was taken with them unless it says otherwise.
+
+**What §6.3.2 says, and all it says.** A simultaneous slot declaration with
+a right-hand side *e* "initializes the slot to the value of *p*
+`computing:` *e*, where *p* is the class `` Past`Future ``", a future "that
+will compute the expression *e* on demand"; "All these futures are resolved
+once the last slot declaration in the simultaneous slot clause has been
+executed", and `` Past`Future `` "implements a pipelined promise so that any
+well founded mutual recursion between simultaneous slots will resolve
+properly". The specification says nothing else about futures — neither what
+a slot holds once its future is resolved, nor whether a future that escaped
+is observable. What it does say, in §5.5's commentary on `doesNotUnderstand:`,
+is the intent that a forwarding proxy be indistinguishable from its target:
+"Otherwise it would be possible to distinguish between an object and a
+proxy."
+
+**What the prior art does.** Both canonical compilers
+(`NewspeakCompilation.ns`, `Newspeak2SqueakCompilation.ns`, and
+`Newspeak2PrimordialSoupCompilation.ns` in `prior-art/primordialsoup/`) wrap
+each initializer of a simultaneous clause in `Future computing: [e]` and do
+nothing at the clause's end: the slot keeps its future forever, forced on
+demand. Squeak's `Future` is an ordinary `Object` with a forwarding
+`doesNotUnderstand:`, so `=`, `==` and `class` answer the future's own.
+Primordial Soup's is a `Proxy`, which overrides every public member of
+`Object` as protected so that §5.5's `lookupPublic` stops there and every
+message reaches `doesNotUnderstand:`; its gaps are an asymmetric `==`
+(`future == value` is true, `value == future` false), the identity
+primitives, and a primitive that receives a future as an argument. Both
+signal "Divergent evaluation" for a future forced while it is being
+computed. Both mark this the *pull* future, as distinct from the *push*
+future of actors and `<-:` (`KernelForSqueak.ns`, `Future`'s comment): it is
+synchronous, computed on the forcing thread in the forcing send, with no
+event loop. SOMns parses `|| ... ||` and does not support it.
+
+**The four rules.**
+
+1. **Once the clause is done, no slot of it holds a future.** Its end forces
+   each slot's future in declaration order and writes the value back, so
+   every read afterwards is a direct slot read. This goes beyond the prior
+   art, which keeps the future, and is how ns-next reads "resolved". A slot
+   a sibling's initializer assigned holds whatever it was given, resolved
+   the same way if that is a future; a slot with no initializer stays
+   **nil**.
+2. **Every future a clause made is resolved when the clause is done** —
+   including one that escaped during it, into an array, a closure or another
+   object, since it is the same object the slot held. What remains after
+   the clause is resolved future objects wherever they escaped to.
+3. **A resolved future is observable by no program.** Messages are
+   forwarded, as Primordial Soup's `Proxy` does; `==` and the identity hash,
+   the equality leaves and a leaf's arguments see through it ("Where Rust
+   sees a future" below). The collector replaces a reference to one with its
+   value in every object field it traces, so a resolved future lives at most
+   until the next collection; removing escaped futures at the clause's end
+   instead would be `becomeForward:`, a walk of the whole heap on every
+   instantiation of such a class, for nothing a program can observe.
+4. **A value never holds a future** (§3.1.1's deep immutability). A future
+   about to be stored in a slot of a value is forced first, and its value is
+   stored and checked — so `|| p = Pair first: q second: 1. q = 3. ||`
+   builds a `Pair` holding `3`, where refusing the future would fail a
+   well-founded program. The clause's own slots in a value class are the one
+   exception, and only for the first write ("The lowering" below).
+
+A future still being computed is observable, as §6.3.2 intends: touching one
+forces it, and forcing one that is already being computed signals an
+ordinary `Error`, "Divergent evaluation". **A clause abandoned by an
+exception** — an initializer raises and a handler outside the instantiation
+takes it — leaves the futures it had not resolved as they are, wherever
+they escaped to: the next message forces one, runs its initializer again and,
+for the same cause, raises the same error. Nothing answers wrongly, and it
+costs nothing; marking them broken would put an `ifCurtailed:` around every
+simultaneous clause.
+
+**The future.** `Kernel.ns` gains a private class, which no program can name
+(as `Activation`), after Primordial Soup's `Proxy`: every public member of
+`Object` — `class`, `==`, `=`, `hash`, `printString`, the nil protocol, and
+any added later — is overridden as protected, and `doesNotUnderstand:`
+forwards the message to the forced value with `Message>>sentTo:`. It holds
+its block or its value and a state, unresolved, resolving or resolved. Its
+class side answers `computing:`, the factory, and `valueOf:`, which forces
+its argument when it is a future and answers anything else unchanged; no
+instance-side message forces it, since a public `resolve` would tell an
+escaped future from its value. It carries a builtin class tag, the next free
+number, because the collector, the leaves and the image must recognize it.
+Its name is proposed as `Future`, §6.3.2's; `Deferred`, which Squeak's own
+comment suggests to keep it apart from the actors' promise, was offered and
+not yet decided.
+
+**The lowering.** The parser keeps the `simultaneous` flag it computes today
+and discards, on a class's slot clause and on a code body's temporaries
+alike. One desugaring before both lowerings, so the reference lowering stays
+an oracle for it, turns
+
+```
+|| a = e1. b ::= e2. c. ||
+```
+
+into the writes `a := ⟨Future⟩ computing: [e1]` and
+`b := ⟨Future⟩ computing: [e2]` in declaration order, then
+`a := ⟨Future⟩ valueOf: a` and `b := ⟨Future⟩ valueOf: b`, where
+`⟨Future⟩` is a fixed reference to the kernel class, not the implicit send
+`Future` a program could shadow. The future's blocks capture siblings that
+the clause's end writes again, so the capture analysis puts them in their
+scope's indirection vector by itself ([execution.md](execution.md), "Closure
+conversion"). In a value class, the first write — the future — is a
+*provisional* initialization that skips §3.1.1's slot check (an
+`InitializeSlot` flag or instruction under the next free wire tag); the
+write at the clause's end is an ordinary one and is checked. A value whose
+clause is done therefore meets §3.1.1 exactly as strictly as today.
+
+**Where Rust sees a future.** Nothing on a hot path pays for it.
+
+- *As a receiver* it needs nothing: every send reaches its
+  `doesNotUnderstand:`. The inlined conditionals fall back to a real send
+  on a receiver that is no Boolean, and `IntegerBinary` on anything but two
+  small integers; the compiler inlines neither `==` nor `isNil`.
+- *As a leaf's argument or subject*, `builtins::execute`, the one function
+  every leaf runs through (sent, `SendMirror`, primitive method), looks for a
+  future only on its failure path — the leaf declined or raised. A resolved
+  one is replaced by its value and the leaf runs again, in Rust. An
+  unresolved one cannot be forced in Rust, since nothing re-enters the loop:
+  the answer is a step that activates the future's private forcing method
+  under a new continuation, `Reexecute`, which discards that activation's
+  value and runs the caller's instruction again instead of the next one; the
+  second time the future is resolved. This rests on an invariant written into
+  `builtins::execute` and checked leaf by leaf: **a leaf that declines or
+  raises has changed nothing.**
+- *The leaves that answer "no" rather than declining* — identity and the
+  equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`,
+  `Symbol` and `Behavior` — look for a future only on that path and only for
+  an object argument, and then do the same. `==` is symmetric, unlike
+  Primordial Soup's.
+- *`InitializeSlot` into a value* looks for a future only on its refusal
+  path (`check_value_slot`), and forces it through the same `Reexecute`.
+- *A host* that passes a future straight to `Interpreter::send` has no
+  instruction to run again, and the leaf declines as it does today; a host
+  holds a future only if a program handed it one during a clause.
+
+**The collector** replaces a reference to a resolved future with its value in
+object fields — slots, array elements, closure copies, indirection vectors —
+and never in registers or host roots: a forcing activation that is returning
+has the future as `self`, and would otherwise read its own slots from the
+value ([memory.md](memory.md)).
+
+**The image** never holds a resolved future: the encoder writes its value in
+its place. An unresolved one, which exists only after an abandoned clause or
+in a snapshot taken during one, is an ordinary record of its class with its
+closure, and the decoder refuses the class's tag wherever a graph names a
+class, as it refuses `Top`'s ([image-format.md](image-format.md)).
+
+**What pins it.** `goldens/spec/spec_6_3_2_simultaneous_slots_resolve_mutual_recursion`
+unskipped, answering `3`, and new goldens for: the data cycle
+`|| a = {b}. b = {a}. ||` with `==` true in both directions; a code body's
+simultaneous temporaries, with a block capturing a sibling; a future as a
+leaf's argument (`1 + second`, `3 = second`, `show: second`); divergence;
+a value class with a simultaneous clause, accepted, and refused for a slot
+that is no value; a future passed into another value; a mutable slot a
+sibling assigns; and an abandoned clause. Every golden runs under both
+lowerings and through the image round trip. Unit tests cover the parser's
+flag, the image's two cases and its refusal, the collector's replacement,
+`Reexecute` under both lowerings and all four entries, and the new wire tag
+in `opcode_tags.rs`. The four `goldens/bench/` fixtures must stay level under
+the measurement protocol ([execution.md](execution.md)).
+
 ## Mixin application
 
 §6.2 lets a superclass clause apply one or more mixins to the superclass it

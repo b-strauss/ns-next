@@ -5216,6 +5216,16 @@ second did not. "What closure conversion moved", in the measurements section
 above, is the measurement, with the reasoning for why the memory moved the way
 it did and how far that reasoning is evidence.
 
+## Planned: running an instruction again after forcing a future
+
+Would change: a new continuation, `Reexecute`, discards its activation's
+value and runs the caller's instruction again instead of the next one. A
+leaf, an equality leaf's "no" path or `InitializeSlot` that meets an
+unresolved future of a simultaneous slot clause answers a step that forces
+it under this continuation, since nothing forces it in Rust without
+re-entering the loop. It rests on a leaf that declines or raises having
+changed nothing. The design is [object-model.md](object-model.md), "Planned: simultaneous slots".
+
 ## Planned: tail calls, skipped but kept
 
 **Status: a direction the user set on 2026-09-25, not designed and not

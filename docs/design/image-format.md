@@ -1087,6 +1087,14 @@ row's `send` is the build's `--entry`; and mutation and truncation tests cover
 the new flag, the entry field and the trailing-byte check
 (`crates/ns-runtime/tests/image.rs`).
 
+## Planned: futures in a graph
+
+Would change: the encoder writes a resolved future of a simultaneous slot
+clause as its value; an unresolved one is an ordinary record of the
+kernel-private future class, which takes the next free builtin class tag
+and which the decoder refuses wherever a graph names a class, as it
+refuses `Top`'s ([object-model.md](object-model.md), "Planned: simultaneous slots").
+
 ## Planned: suspend and resume
 
 An image cannot be taken mid-execution, and the obstacle is control flow rather

@@ -648,6 +648,12 @@ rest of the object. Its four bytes are paid for by boxing a class object's
 data (`ObjectData::Class(Box<ClassData>)`), so an `Object` is still 56 bytes
 in a release build and the amplification figures below did not move there.
 
+**Planned: a resolved future is traced as its value.** Would change: the
+tracer replaces a reference to a resolved future of a simultaneous slot
+clause with its value in every object field, never in a register or a host
+root, so a resolved future lives at most until the next collection
+([object-model.md](object-model.md), "Planned: simultaneous slots").
+
 ### The move stress mode
 
 The brand checks what Rust locals hold; it cannot check that the list above

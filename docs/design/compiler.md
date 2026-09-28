@@ -1053,6 +1053,14 @@ invariant"). What "How the limit counts" needs — `SendInlinable` and the depth
 counter that is its only consumer — arrived with the
 [trampoline](../superpowers/plans/2026-09-12-1619-ns-next-trampoline.md).
 
+## Planned: the simultaneous slot clause's desugaring
+
+Would change: a `|| ... ||` clause is desugared once, before both
+lowerings, into its futures' writes and, at its end, their forcing
+writes, with a provisional `InitializeSlot` for the first write in a value
+class under the next free wire tag. The design is
+[object-model.md](object-model.md), "Planned: simultaneous slots".
+
 ## Follow-up: entry points that reach a class object only to find its mixin
 
 The compiler itself no longer has such an entry point: it compiles onto a
