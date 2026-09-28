@@ -1,8 +1,10 @@
 //! The shipped core-library modules beyond the kernel
 //! (`docs/design/core-library.md`, "The module table and the boot"):
 //! source compiled into the binary, resolved with `resolve_kernel` because
-//! it is shipped, and booted at every start.
+//! it is shipped, each on its first request: `PlatformFactory` at every
+//! boot, any other when a program first asks for it.
 
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use crate::interpreter::{HostResult, HostSignal, Mutator, Root};
@@ -35,26 +37,38 @@ pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
 ];
 
 thread_local! {
-    /// Every shipped module, parsed and resolved once per thread, in
-    /// `SHIPPED_MODULES`' order, for the reason `interpreter::kernel`'s
+    /// One cell per `SHIPPED_MODULES` entry, in its order, each filled with
+    /// that module parsed and resolved the first time anything on this thread
+    /// asks for it. Per thread, for the reason `interpreter::kernel`'s
     /// `RESOLVED_KERNEL` is: the AST and its bindings are immutable, and the
-    /// test suite bootstraps well over a hundred interpreters. Each
-    /// interpreter still compiles them, because compiled code is numbered
-    /// against one heap's inline caches.
-    static RESOLVED_SHIPPED_MODULES: Vec<Rc<ResolvedModule>> = SHIPPED_MODULES
-        .iter()
-        .map(|shipped| Rc::new(resolve_shipped_source(shipped)))
-        .collect();
+    /// test suite bootstraps well over a hundred interpreters. On first
+    /// request rather than all at once, because a program pays for a module
+    /// only when it asks for one: the boot needs `PlatformFactory` alone, and
+    /// `CollectionsFactory` is resolved the first time a program reaches
+    /// `platform collections` (`docs/design/execution.md`, "What the
+    /// collections module cost"). Resolving is pure -- a parse and
+    /// `resolve_kernel`, no heap and no handle -- and never asks for another
+    /// module, so filling a cell cannot re-enter it. Each interpreter still
+    /// compiles what it asks for, because compiled code is numbered against
+    /// one heap's inline caches.
+    static RESOLVED_SHIPPED_MODULES: Vec<OnceCell<Rc<ResolvedModule>>> =
+        SHIPPED_MODULES.iter().map(|_| OnceCell::new()).collect();
 }
 
-/// The shipped module `name`, resolved, or `None` when the table lists no
-/// such module: what the mirror's `moduleNamed:` answers from, since the
-/// name there is a program value, even if only shipped code can send it.
+/// The shipped module `name`, resolved on this thread's first request for
+/// it, or `None` when the table lists no such module: what the mirror's
+/// `moduleNamed:` answers from, since the name there is a program value,
+/// even if only shipped code can send it.
 pub(crate) fn shipped_module_named(name: &str) -> Option<Rc<ResolvedModule>> {
     let position = SHIPPED_MODULES
         .iter()
         .position(|shipped| shipped.name == name)?;
-    Some(RESOLVED_SHIPPED_MODULES.with(|resolved| Rc::clone(&resolved[position])))
+    Some(RESOLVED_SHIPPED_MODULES.with(|resolved| {
+        Rc::clone(
+            resolved[position]
+                .get_or_init(|| Rc::new(resolve_shipped_source(&SHIPPED_MODULES[position]))),
+        )
+    }))
 }
 
 /// The shipped module `name`, resolved, for the boot, which names it in
@@ -67,8 +81,10 @@ pub(crate) fn resolved_shipped_module(name: &str) -> Rc<ResolvedModule> {
 
 /// A shipped module that does not parse or resolve is a defect in the
 /// binary, not in a program, so it panics, as the kernel's does
-/// (`interpreter::kernel::resolve_kernel_source`); every test that
-/// bootstraps catches it before a release could.
+/// (`interpreter::kernel::resolve_kernel_source`). Since a module is
+/// resolved only on request, a boot no longer resolves every entry;
+/// `every_shipped_module_resolves` does, so the suite still catches one
+/// before a release could.
 fn resolve_shipped_source(shipped: &ShippedModule) -> ResolvedModule {
     let name = shipped.name;
     let module = match ns_syntax::parse(shipped.source) {
@@ -212,6 +228,21 @@ mod tests {
             crate::builtins::primitive::ModulePrimitive::Named,
             subject,
         )
+    }
+
+    /// A boot resolves only the modules it asks for, so this is what
+    /// catches a shipped module that does not parse or resolve: it resolves
+    /// every table entry, panicking on the first that fails.
+    #[test]
+    fn every_shipped_module_resolves() {
+        for shipped in SHIPPED_MODULES {
+            let resolved = resolve_shipped_source(shipped);
+            assert!(
+                !resolved.bindings.is_empty(),
+                "{}.ns resolved to no bindings",
+                shipped.name
+            );
+        }
     }
 
     /// The leaf answers a shipped module's root class, and declines a name
