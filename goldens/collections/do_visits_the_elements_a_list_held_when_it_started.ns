@@ -1,8 +1,9 @@
 Newspeak3
 'Collections'
 (* `do:` reads the size once, as Primordial Soup's `1 to: size_ do:` does:
-   an element added inside the block is not visited, as it was not when
-   OrderedCollection>>do: copied its elements first. *)
+   an element added inside the block is not visited, as the `Array>>do:`
+   leaf does not visit one either -- it walks a copy of the elements it
+   read when it started. *)
 class DoVisitsTheElementsAListHeldWhenItStarted usingPlatform: thePlatform = Object new (
     | transcript = thePlatform transcript.
       private List = thePlatform collections List. |

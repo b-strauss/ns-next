@@ -4484,9 +4484,7 @@ when these paths ran in nested runs of the loop.
   `CollectionPrimitive` a lookup found ([dispatch.md](dispatch.md),
   "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and
   every other primitive's leaf result is lifted into a step through
-  `leaf_step`. `Array` and `OrderedCollection` share this one function; which
-  of them answers `at:put:` and which `add:` is decided by the methods their
-  classes declare in `Kernel.ns`, not here. Each element's activation is counted, like any block a `value`
+  `leaf_step`. These are `Array`'s leaves alone. Each element's activation is counted, like any block a `value`
   send activates; a `^` in it unwinds like any other activation's, and its
   arity is checked by the same `check_block_arity`. Its argument is a
   one-element vector, allocated per element: a `StepArguments` variant that carried

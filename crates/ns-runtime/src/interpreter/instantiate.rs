@@ -480,21 +480,20 @@ impl<'gc> Mutator<'gc> {
                 receiver: Value::Object(class),
                 message: "the VM mirror's class cannot be instantiated".to_string(),
             })),
-            // `Array`/`OrderedCollection`'s representation is
-            // `ObjectData::Array`, not `decide_instantiation`'s
-            // `ObjectData::Instance` -- `builtins::collections`' primitives
-            // pattern-match on `ObjectData::Array` directly, so handing them
-            // a generic instance payload would leave every native method on
-            // the result silently unable to find its data (falling straight
-            // through to `doesNotUnderstand:` on the very next send). Built
-            // directly with `new_instance_object`, tagged with `class`
-            // itself (the receiver's own class -- *not* `Mutator::new_array`,
-            // which unconditionally tags its result `BuiltinClass::Array`;
-            // using that here would make `OrderedCollection new`'s result an
-            // `Array`, whose method table has no `add:`).
-            Some(BuiltinClass::OrderedCollection) | Some(BuiltinClass::Array) => Ok(Step::Value(
-                Value::Object(self.new_instance_object(class, ObjectData::Array(vec![]))),
-            )),
+            // `Array`'s representation is `ObjectData::Array`, not
+            // `decide_instantiation`'s `ObjectData::Instance` --
+            // `builtins::collections`' primitives pattern-match on
+            // `ObjectData::Array` directly, so handing it a generic instance
+            // payload would leave every native method on the result silently
+            // unable to find its data (falling straight through to
+            // `doesNotUnderstand:` on the very next send). Built directly
+            // with `new_instance_object`, tagged with `class` itself (the
+            // receiver's own class -- *not* `Mutator::new_array`, which
+            // unconditionally tags its result `BuiltinClass::Array`, which
+            // would be wrong for a user subclass of `Array`).
+            Some(BuiltinClass::Array) => Ok(Step::Value(Value::Object(
+                self.new_instance_object(class, ObjectData::Array(vec![])),
+            ))),
             _ => self.decide_instantiation(class, arguments.to_vec()),
         }
     }

@@ -328,7 +328,6 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::String), 6);
     assert_eq!(builtin_class_tag(BuiltinClass::Symbol), 7);
     assert_eq!(builtin_class_tag(BuiltinClass::Array), 9);
-    assert_eq!(builtin_class_tag(BuiltinClass::OrderedCollection), 10);
     assert_eq!(builtin_class_tag(BuiltinClass::UndefinedObject), 11);
     assert_eq!(builtin_class_tag(BuiltinClass::Block), 12);
     assert_eq!(builtin_class_tag(BuiltinClass::VmMirror), 14);
@@ -350,7 +349,9 @@ fn builtin_class_tags_are_fixed() {
     // 13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
     // `KernelNamespace`, retired 2026-09-26 when the four moved into the
     // shipped `PlatformFactory.ns`: an image names them by their platform paths.
-    assert_eq!(RETIRED_BUILTIN_CLASS_TAGS, [8, 13, 18, 19, 29]);
+    // 10 was `OrderedCollection`, retired 2026-09-28 when `platform collections
+    // List`, Newspeak in the shipped `CollectionsFactory.ns`, replaced it.
+    assert_eq!(RETIRED_BUILTIN_CLASS_TAGS, [8, 10, 13, 18, 19, 29]);
     for retired in RETIRED_BUILTIN_CLASS_TAGS {
         assert_eq!(
             builtin_class_from_tag(retired),

@@ -74,26 +74,26 @@ fn nil_prints_as_nil() {
     });
 }
 
-/// `(OrderedCollection new) printString`: `OrderedCollection` implements no
-/// `printString`, so it falls back to `Object`'s own generic default rather
-/// than `doesNotUnderstand:`.
+/// `(Array new) printString`: `Array` implements no `printString`, so it
+/// falls back to `Object`'s own generic default rather than
+/// `doesNotUnderstand:`.
 #[test]
 fn builtins_without_their_own_print_string_inherit_objects_default() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let ordered_collection = interpreter.enter(|mutator| {
-        let class = mutator.builtin_class(BuiltinClass::OrderedCollection);
+    let array_class = interpreter.enter(|mutator| {
+        let class = mutator.builtin_class(BuiltinClass::Array);
         mutator.stash(Value::Object(class))
     });
-    let collection = expect_ok(
-        interpreter.send(&ordered_collection, Symbol::intern("new"), &[]),
-        "OrderedCollection new",
+    let array = expect_ok(
+        interpreter.send(&array_class, Symbol::intern("new"), &[]),
+        "Array new",
     );
-    let collection_result = interpreter.send(&collection, Symbol::intern("printString"), &[]);
-    let collection_result = expect_ok(collection_result, "(OrderedCollection new) printString");
+    let array_result = interpreter.send(&array, Symbol::intern("printString"), &[]);
+    let array_result = expect_ok(array_result, "(Array new) printString");
     interpreter.enter(|mutator| {
         assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&collection_result)),
+            as_string(mutator.heap(), &mutator.fetch(&array_result)),
             "an Object"
         );
     });

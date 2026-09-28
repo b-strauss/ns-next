@@ -7,16 +7,15 @@ Newspeak3
 
    The module is a value (`Object <: Value`) because §3.1.1 asks a value
    class's enclosing object to be one; the transcript lives in `Script`,
-   which is no value. `MyArray`, `MyOrderedCollection` and `MyBlock` stay
-   here, at module level, and are no values themselves -- only a value
-   class is asked about its enclosing object. *)
+   which is no value. `MyArray` and `MyBlock` stay here, at module level,
+   and are no values themselves -- only a value class is asked about its
+   enclosing object. *)
 class FallThrough usingPlatform: platformAtCreation = Object <: Value () (
     class MyBoolean = Boolean new () ()
     class MyInteger = Integer new () ()
     class MyFloat = Float new () ()
     class MySymbol = Symbol new () ()
     class MyArray = Array new () ()
-    class MyOrderedCollection = OrderedCollection new () ()
     class MyBlock = Block new () ()
     class Script on: aTranscript = Object new (
         | transcript = aTranscript. |
@@ -30,7 +29,6 @@ class FallThrough usingPlatform: platformAtCreation = Object <: Value () (
             report: MyFloat new.
             report: MySymbol new.
             report: MyArray new.
-            report: MyOrderedCollection new.
             report: MyBlock new.
             transcript show: MyArray new size printString; newLine
         )

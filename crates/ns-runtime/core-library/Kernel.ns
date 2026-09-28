@@ -55,7 +55,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Symbol = ( ^outer Kernel Symbol )
         public UndefinedObject = ( ^outer Kernel UndefinedObject )
         public Array = ( ^outer Kernel Array )
-        public OrderedCollection = ( ^outer Kernel OrderedCollection )
         public Block = ( ^outer Kernel Block )
         (* §5.5: protected, so an explicit-receiver send of it finds nothing
            through lookupPublic and falls to the access-blind "defined for"
@@ -510,12 +509,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
            search fills. The leaf declines only a subject that is not `Array`
            itself, which a flat class side cannot be sent from. *)
         public new: size = ( ^vmMirror arrayClass: self new: size ifFail: [nil] )
-    )
-    public class OrderedCollection = Object new () (
-        public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
-        public add: element = ( ^vmMirror collection: self add: element ifFail: [^super add: element] )
-        public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
-        public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     )
     (* §5.1.3: `nil` is the unique instance of `UndefinedObject`, which
        answers `isNil` with true. It answers the rest of the nil protocol

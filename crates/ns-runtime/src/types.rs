@@ -148,8 +148,8 @@ pub struct ClassData<'gc> {
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// core-library classes the bootstrap fills from `Kernel.ns` (or the VM
     /// mirror's class), for the image's class tags and for `decide_factory`,
-    /// which instantiates `Array` and `OrderedCollection` with their own
-    /// payload and refuses the mirror's class. Lookup does not read it: a
+    /// which instantiates `Array` with its own payload and refuses the
+    /// mirror's class. Lookup does not read it: a
     /// builtin's methods are `Kernel.ns`'s, found in its mixin's method table
     /// like any other class's, and the only primitive entries are the VM
     /// mirror's.
@@ -234,7 +234,6 @@ pub enum BuiltinClass {
     String,
     Symbol,
     Array,
-    OrderedCollection,
     UndefinedObject,
     Block,
     /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
@@ -292,7 +291,7 @@ impl BuiltinClass {
     /// superclass-first order: the kernel phase sorts the kinds by their
     /// depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 25] = [
+    pub const ALL: [BuiltinClass; 24] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -302,7 +301,6 @@ impl BuiltinClass {
         BuiltinClass::String,
         BuiltinClass::Symbol,
         BuiltinClass::Array,
-        BuiltinClass::OrderedCollection,
         BuiltinClass::UndefinedObject,
         BuiltinClass::Block,
         BuiltinClass::VmMirror,

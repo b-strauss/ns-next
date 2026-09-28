@@ -319,7 +319,7 @@ kernel's.
   `Number` is empty; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
-  `Array`, `OrderedCollection` and `Block` stay directly under `Object`,
+  `Array` and `Block` stay directly under `Object`,
   since their instances are not values, and so does `Behavior`, with `Class`
   and `Metaclass` below it ("Class sides and metaclasses" below). The VM mirror's class,
   which `Kernel.ns` does not declare, sits below `Value`, so the mirror is a
@@ -351,7 +351,7 @@ kernel's.
 - **Its factory is `new`, with no arguments.** A kernel class declares none,
   so its mixin has §6's default, and the arity check applies: a host's
   `Interpreter::instantiate` of a builtin class with factory arguments is
-  refused. `Array new` and `OrderedCollection new` build their own payload
+  refused. `Array new` builds its own payload
   (`instantiate::decide_factory`), and the VM mirror's class is refused
   outright — there is exactly one mirror.
 - **A user subclass of a builtin inherits its methods but not its payload.**
@@ -589,7 +589,7 @@ not hold the platform or the transcript, so such a module reads the
 transcript where it uses it, or keeps its former module methods in a nested
 `Script` class that is no value. `goldens/nesting/nested_override.ns`, which
 instantiates a class whose superclass clause reads an overridden slot, starts
-that slot at `OrderedCollection` rather than `String`, so the class it
+that slot at `List` rather than `String`, so the class it
 instantiates is no value class in an ordinary module; its recorded outcome
 did not change.
 

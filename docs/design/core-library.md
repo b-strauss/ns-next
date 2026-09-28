@@ -49,7 +49,6 @@ Top                     (private; no superclass, declares nothing)
     │   ├── Symbol
     │   └── UndefinedObject
     ├── Array
-    ├── OrderedCollection
     ├── Block           ..., on:do:, ensure:, ifCurtailed: (marked methods)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
     │   ├── Error       └── MessageNotUnderstood
@@ -107,15 +106,14 @@ may.
 
 Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
-and `printString`, beside its fifteen
+and `printString`, beside its thirteen
 accessors for the predefined classes, `Object` to `Block`, each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
 below); `Integer`'s `+ - * // < >
 <= >= =`, `negated`, `abs`, `printString` and `asString`; `Float`'s
 `+ - * / < > =`, `hash`, `printString` and `asString`; `String`'s `size`,
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
-`hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `OrderedCollection`'s `do:`,
-`add:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
+`hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
 `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript`
 forwards `show:` and `newLine` the same way ("The platform" below).
 `UndefinedObject` reaches no leaf either: its nil protocol is quick methods
@@ -354,13 +352,12 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 72 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 73 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
 `ifFail:`; its arguments are the subject (the kernel method's `self`), the
-leaf's own arguments, and the failure block. `Array` and `OrderedCollection`
-share rows 42–46 (counted from 0), as they share their payload.
+leaf's own arguments, and the failure block.
 
 ### The platform
 
@@ -1145,9 +1142,8 @@ class declares no factory, so its mixin has §6's default, and
 `decide_instantiation`'s arity check applies to it like any class's: a host's
 `Interpreter::instantiate` of a builtin class with factory arguments is
 refused ("wrong number of factory arguments"), where a placeholder, which
-declared no factory at all, let any count through. `Array new` and
-`OrderedCollection new` still build their own payload
-(`instantiate::decide_factory`).
+declared no factory at all, let any count through. `Array new` still builds
+its own payload (`instantiate::decide_factory`).
 
 **`Kernel` is a value, and so is the mirror** (decided with the user on
 2026-09-23). `Kernel.ns` declares
@@ -1595,13 +1591,12 @@ and caught twenty activations up costs about 6.4 µs.
 2026-09-26, in two plans, each ending with every gate green. Plan 1 is
 built (2026-09-26): lazy slots, the table of shipped modules and the
 platform's boot, and platform paths in the image ("The platform" above
-describes what exists). Plan 2, the collections module, is under way:
-`Array new: size`, the handler search that keeps no `OrderedCollection`,
-`moduleNamed:` and `CollectionsFactory.ns` with a Newspeak `List`, and the
-image round trips of a `List` and of a second collections facet, are
-built ("The collections module (plan 2)" below); the rest -- moving every
-program to `List`, and the `OrderedCollection` removal -- is the next
-piece of work.** `Kernel.ns` is to hold only what the VM
+describes what exists). Plan 2 is built (2026-09-28): `Array new: size`,
+the handler search that keeps no growable collection, `moduleNamed:` and
+`CollectionsFactory.ns` with a Newspeak `List`, the image round trips of a
+`List` and of a second collections facet, every program moved to `List`,
+and `OrderedCollection` removed with its leaf and `Heap::array_push`
+("The collections module (plan 2)" below).** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
@@ -1615,15 +1610,15 @@ The two plans:
 1. **The platform module**: §6.3.3's lazy slots, the module table,
    `Platform.ns` with `Platform`, `Transcript` and
    `KernelNamespace`, booted with `usingVmMirror:kernel:`, and platform
-   paths in the image. `Collections` moves too, still answering the
-   kernel's `OrderedCollection` for `List`. Built, and since 2026-09-27
+   paths in the image. `Collections` moves too. Built, and since 2026-09-27
    written in the factory pattern ("The platform" above): the module is
    `PlatformFactory.ns`, whose root takes `usingVmMirror:kernel:` and is
    never handed out, and the platform is its nested `Platform`.
 2. **The collections module**: the mirror's `moduleNamed:`, `Array new:`,
    `CollectionsFactory.ns` with a
-   Newspeak `List`, a handler search that keeps no `OrderedCollection`, and
-   `OrderedCollection` removed with its leaf and `Heap::array_push`.
+   Newspeak `List`, a handler search that keeps no growable collection, and
+   `OrderedCollection` removed with its leaf and `Heap::array_push`. Built
+   (2026-09-28).
 
 #### Lazy slots first (plan 1)
 
@@ -1936,16 +1931,17 @@ its class. That needs its own decision when the first such module arrives.
 - **Removed:** `OrderedCollection` in `Kernel.ns` and its `Object` accessor
   (§3.2's accessors are for the classes of the literals and the array
   factories), `BuiltinClass::OrderedCollection` with builtin class tag 10,
-  the `add:` leaf and `Heap::array_push`, the one payload that grew in
-  place — which answers the question step 7 has to settle first.
-- **Goldens:** those that write `OrderedCollection new` move to
+  the `add:` leaf and `Heap::array_push`. Every `ObjectData::Array` is
+  fixed-size once allocated -- nothing grows a payload in place any more
+  ([memory.md](memory.md)).
+- **Goldens:** those that wrote `OrderedCollection new` moved to
   `platform collections List new` with their recorded outcomes unchanged;
   `goldens/nesting/nested_override` starts its slot at the module's `List`,
   unchanged in output since every ordinary object prints `an Object`;
-  `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods` loses
+  `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods` lost
   `MyOrderedCollection`, and one `true an Object` line with it, because
   `List` is no builtin; `the_platform_and_its_parts_are_values`'s
-  `c List == OrderedCollection` is replaced, by a check that a second
+  `c List == OrderedCollection` was replaced by a check that a second
   platform's `List` is the same class. New goldens pin `Array new:`, and
   `goldens/collections/` pins `List`'s protocol, its growth, its index
   errors caught and uncaught, a user subclass of `List`, and one module
@@ -2080,8 +2076,9 @@ Each decision below was taken with the user.
 
 **The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
-`Float`, `String`, `Symbol`, `UndefinedObject`, `Array`,
-`OrderedCollection` and `Block`. `Top` and the VM mirror's class get none:
+`Float`, `String`, `Symbol`, `UndefinedObject`, `Array` and `Block`.
+`OrderedCollection` was among them until it was removed (2026-09-28), when
+`platform collections List` replaced it. `Top` and the VM mirror's class get none:
 §3.2 lets only `Object` name `Top`, as its superclass, and the mirror is a
 capability; `Platform` and its members' classes are no kernel classes at
 all, and a program is handed the platform through its factory.

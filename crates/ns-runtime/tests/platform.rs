@@ -79,7 +79,6 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
     for (name, kind) in [
         ("Object", BuiltinClass::Object),
         ("Array", BuiltinClass::Array),
-        ("OrderedCollection", BuiltinClass::OrderedCollection),
         ("String", BuiltinClass::String),
         ("Symbol", BuiltinClass::Symbol),
     ] {

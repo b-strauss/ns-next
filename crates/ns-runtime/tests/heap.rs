@@ -30,11 +30,6 @@ fn array_accessors_read_and_write_through_the_seam() {
             mutator.heap().array_at(object, 0),
             Some(Value::SmallInteger(9))
         ));
-
-        assert!(mutator
-            .heap_mut()
-            .array_push(object, Value::SmallInteger(3)));
-        assert_eq!(mutator.heap().array_length(object), Some(3));
     });
 }
 
@@ -45,7 +40,6 @@ fn an_array_accessor_on_a_non_array_answers_none_rather_than_panicking() {
         let object = mutator.new_string("not an array".to_string());
         assert_eq!(mutator.heap().array_length(object), None);
         assert!(mutator.heap().array_at(object, 0).is_none());
-        assert!(!mutator.heap_mut().array_push(object, Value::Nil));
     });
 }
 

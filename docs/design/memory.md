@@ -1329,26 +1329,29 @@ interim over again. Compaction is not an allocator feature -- it needs to
 know the references -- so it stays ours, in `compact_arena`'s shape. The one
 level where a crate does fit is pages, not arenas.
 
-**A payload is size-stable on every hot path, and the two exceptions are
-reflective.** This decides more of the design than the allocator question
-does. Both reference runtimes implement a growable collection *in Newspeak
-over a fixed `Array`*: Primordial Soup's `List`
+**A payload is size-stable on every hot path -- settled (2026-09-28), no
+exception left.** This decides more of the design than the allocator
+question does. Both reference runtimes implement a growable collection *in
+Newspeak over a fixed `Array`*: Primordial Soup's `List`
 (`prior-art/primordialsoup/newspeak/Collections.ns`) holds `data ::= Array
 new: capacity` and on overflow does `data:: data copyWithSize: (capacity >>
 1 + capacity | 7)`, where `copyWithSize:` is itself Newspeak over `Array
 new:` and `replaceFrom:to:with:startingAt:`; SOMns's `Vector`
 (`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage
 size` and copies. Neither VM has a primitive that resizes a payload --
-the shape `java.util.ArrayList` has. `Heap::array_push`, which grows one in
-place here, exists only because `OrderedCollection`'s `add:` is a Rust leaf, a
-simplification `builtins/collections.rs` flags as such. Step 6 of
+the shape `java.util.ArrayList` has. `Heap::array_push`, which grew one in
+place here, existed only because `OrderedCollection`'s `add:` was a Rust
+leaf, a simplification `builtins/collections.rs` flagged as such. Step 6 of
 [PROGRESS.md](../PROGRESS.md)'s order of work was to retire it; its first
 plan moved `OrderedCollection` into `Kernel.ns` but kept `add:` a forwarder
 to that leaf, as it kept every body a forwarder
 ([core-library.md](core-library.md), "Planned: real bodies for control flow
-and `do:`, before the JIT tiers"), so **which step writes a Newspeak
-`OrderedCollection` over a fixed `Array`, and so retires `array_push`, is
-open**, and has to be settled before the space is planned.
+and `do:`, before the JIT tiers"); the plan that followed wrote `List`, the
+Newspeak growable sequence over a fixed `Array`, in the shipped
+`CollectionsFactory.ns`, and removed `OrderedCollection` and `array_push`
+with it. **Every `ObjectData::Array` is now fixed-size once allocated: no
+payload grows in place, so the space needs no growth-in-place case at
+all.**
 
 What remains after that is reflective and rare: edit-and-continue adding
 locals to a live activation, and a MirrorBuilder adding or removing slots of
@@ -1493,9 +1496,9 @@ measurement's baseline.
   root from a mistake in marking.
 - **The payload space comes after the core library in Newspeak and before the
   JIT tiers** (decided with the user on 2026-09-21), as step 7 of
-  [PROGRESS.md](../PROGRESS.md)'s order of work. Step 6 retires the one payload
-  that grows in place -- `Heap::array_push`, which exists only because
-  `OrderedCollection` is a Rust builtin where both reference runtimes write a
+  [PROGRESS.md](../PROGRESS.md)'s order of work. Step 6 retired the one payload
+  that grew in place -- `Heap::array_push`, which existed only because
+  `OrderedCollection` was a Rust builtin where both reference runtimes write a
   growable collection in Newspeak over a fixed `Array` -- and raises what the
   space is worth, since a Newspeak `List>>add:` allocates a fresh `Array` at
   every capacity overflow. A measurement decides whether it is built at all:

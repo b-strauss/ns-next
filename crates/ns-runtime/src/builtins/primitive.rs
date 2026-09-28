@@ -115,15 +115,13 @@ pub enum SymbolPrimitive {
     PrintString,
 }
 
-/// `Array` and `OrderedCollection` share their payload, so they share their
-/// primitives; each class's list names only the ones it answers.
+/// `Array`'s primitives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionPrimitive {
     Enumerate,
     Size,
     ElementAt,
     ElementAtPut,
-    Add,
     /// `Array new: size`, on `Array`'s class side.
     Allocate,
 }
@@ -248,9 +246,8 @@ const fn mirror(
 
 /// The complete leaf table the VM mirror answers (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"); a row's index is its
-/// position here, which `MirrorPrimitive` carries. `Array` and `OrderedCollection` share
-/// rows 42-46, as they share their payload; each of their kernel classes
-/// forwards only the selectors `Kernel.ns` declares for it.
+/// position here, which `MirrorPrimitive` carries. The rows here are
+/// `Array`'s.
 pub const MIRROR: &[MirrorEntry] = &[
     mirror(
         "objectClass:ifFail:",
@@ -483,11 +480,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Collection(CollectionPrimitive::ElementAtPut),
     ),
     mirror(
-        "collection:add:ifFail:",
-        "add:",
-        Primitive::Collection(CollectionPrimitive::Add),
-    ),
-    mirror(
         "blockValue:ifFail:",
         "value",
         Primitive::Block(BlockPrimitive::Value),
@@ -532,8 +524,9 @@ pub const MIRROR: &[MirrorEntry] = &[
         "newLine",
         Primitive::Platform(PlatformPrimitive::NewLine),
     ),
-    // Appended, so no row above moves ("A wire tag is assigned once",
-    // `CLAUDE.md`).
+    // A row's index never reaches an artifact -- `SendMirror` has no wire tag
+    // and a decoded method carries no fast path -- so a row may be removed;
+    // new rows are appended all the same, so a diff shows what was added.
     mirror(
         "className:ifFail:",
         "name",

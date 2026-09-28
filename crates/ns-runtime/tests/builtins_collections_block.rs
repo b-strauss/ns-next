@@ -1,12 +1,10 @@
-//! Integration tests for the `Array`/`OrderedCollection` native
-//! methods (`crate::builtins::collections`) and `Block` native methods
+//! Integration tests for `Array`'s native methods
+//! (`crate::builtins::collections`) and `Block` native methods
 //! (`crate::builtins::block`), found as primitives by the ordinary lookup
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
 use indoc::indoc;
-use ns_runtime::{
-    BuiltinClass, HostError, HostResult, HostSignal, Interpreter, ObjectData, Root, Symbol, Value,
-};
+use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -43,20 +41,6 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
     }
-}
-
-/// Builds a bare `OrderedCollection` instance directly: an
-/// `ObjectData::Array` payload tagged with the `OrderedCollection` class,
-/// the shape `decide_factory` gives `OrderedCollection new`. Constructing
-/// it without a send is sufficient to exercise `collections::execute`.
-fn new_ordered_collection(interpreter: &mut Interpreter) -> Root {
-    interpreter.enter(|mutator| {
-        let class = mutator.builtin_class(BuiltinClass::OrderedCollection);
-        let collection = mutator
-            .heap_mut()
-            .allocate_object(class, ObjectData::Array(vec![]));
-        mutator.stash(Value::Object(collection))
-    })
 }
 
 #[test]
@@ -152,71 +136,6 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     });
 }
 
-/// `OrderedCollection new add: 1; add: 2; size` -> `2` -- exercises cascades
-/// together with `add:`/`size`. The receiver is built via
-/// `new_ordered_collection` (see its doc comment for why) and passed in as a
-/// method argument, so the cascade's receiver expression (`aColl`) is a real
-/// `Expression::Cascade`, compiled and run, not something faked in Rust.
-#[test]
-fn ordered_collection_add_and_size_through_a_real_cascade() {
-    let source = indoc! {"
-        Newspeak3
-        'T'
-        class Foo = Object new (
-        ) (
-          public m: aColl = ( ^aColl add: 1; add: 2; size )
-        ) : ()
-    "};
-    let (mut interpreter, class) = load(source);
-    let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let collection = new_ordered_collection(&mut interpreter);
-    let result = interpreter.send(&receiver, Symbol::intern("m:"), &[collection]);
-    let result = expect_ok(result, "OrderedCollection new add: 1; add: 2; size");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(2) => {}
-        other => panic!(
-            "expected Value::SmallInteger(2), got {}",
-            mutator.heap().describe(&other)
-        ),
-    });
-}
-
-#[test]
-fn ordered_collection_add_returns_the_argument_not_the_receiver() {
-    let mut interpreter = Interpreter::bootstrap();
-    let collection = new_ordered_collection(&mut interpreter);
-    let result = interpreter.send(
-        &collection,
-        Symbol::intern("add:"),
-        &[interpreter.stash(Value::SmallInteger(42))],
-    );
-    let result = expect_ok(result, "OrderedCollection add: 42");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(42) => {}
-        other => panic!(
-            "expected Value::SmallInteger(42) (the argument), got {}",
-            mutator.heap().describe(&other)
-        ),
-    });
-}
-
-#[test]
-fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
-    let mut interpreter = Interpreter::bootstrap();
-    let collection = new_ordered_collection(&mut interpreter);
-    let result = interpreter.send(
-        &collection,
-        Symbol::intern("at:"),
-        &[interpreter.stash(Value::SmallInteger(1))],
-    );
-    let error = expect_error(&mut interpreter, result, "OrderedCollection (empty) at: 1");
-    assert!(
-        error.message.to_lowercase().contains("range"),
-        "expected an out-of-range-shaped error message, got: {}",
-        error.message
-    );
-}
-
 #[test]
 fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     // `not_an_integer`'s message must not `{:?}`-format the argument: a
@@ -242,36 +161,6 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
         "unexpected message: {}",
         error.message
     );
-}
-
-/// `do:` walks the elements its receiver had when it began: a block that adds
-/// to the collection it is walking neither sees what it adds nor runs
-/// forever. Two elements seen, four in the collection afterwards.
-#[test]
-fn do_walks_a_snapshot_of_its_receiver() {
-    let source = indoc! {"
-        Newspeak3
-        'T'
-        class Foo = Object new (
-        ) (
-          public m: aColl = (
-            | seen |
-            seen:: 0.
-            aColl add: 1; add: 2.
-            aColl do: [:x | seen:: seen + 1. aColl add: x].
-            ^seen * 100 + aColl size
-          )
-        ) : ()
-    "};
-    let (mut interpreter, class) = load(source);
-    let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let collection = new_ordered_collection(&mut interpreter);
-    let result = interpreter.send(&receiver, Symbol::intern("m:"), &[collection]);
-    let result = expect_ok(result, "do: over a collection it grows");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(204) => {}
-        other => panic!("expected 204, got {}", mutator.heap().describe(&other)),
-    });
 }
 
 /// A non-block argument stands for its own value, so `do:` hands it every

@@ -76,7 +76,6 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::String => "String",
         BuiltinClass::Symbol => "Symbol",
         BuiltinClass::Array => "Array",
-        BuiltinClass::OrderedCollection => "OrderedCollection",
         BuiltinClass::UndefinedObject => "UndefinedObject",
         BuiltinClass::Block => "Block",
         BuiltinClass::Top => "Top",
@@ -1011,7 +1010,6 @@ mod tests {
         BuiltinClass::Symbol,
         BuiltinClass::UndefinedObject,
         BuiltinClass::Array,
-        BuiltinClass::OrderedCollection,
         BuiltinClass::Block,
     ];
 
@@ -1511,6 +1509,8 @@ mod tests {
                 "Transcript",
                 "Collections",
                 "CollectionsFactory",
+                "OrderedCollection",
+                "List",
                 "VmMirror",
                 "Exception",
                 "Error",
@@ -1587,7 +1587,6 @@ mod tests {
                 (BuiltinClass::Symbol, Some(BuiltinClass::Value)),
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
-                (BuiltinClass::OrderedCollection, Some(BuiltinClass::Object)),
                 (BuiltinClass::Block, Some(BuiltinClass::Object)),
                 (BuiltinClass::Top, None),
             ];
@@ -1628,7 +1627,6 @@ mod tests {
                 (BuiltinClass::UndefinedObject, true),
                 (BuiltinClass::Number, true),
                 (BuiltinClass::Array, false),
-                (BuiltinClass::OrderedCollection, false),
                 (BuiltinClass::Block, false),
                 (BuiltinClass::Object, false),
                 // §3.2's "subclass of" is inclusive -- "C's superclass is S

@@ -1,15 +1,7 @@
-//! `Array` and `OrderedCollection` native methods.
-//!
-//! Design note (a deliberate simplification): `OrderedCollection` needs a
-//! mutable, growable payload, but `ObjectData::Array(Vec<Value>)` is shared
-//! by both `Array` and `OrderedCollection` -- the spec's Core Library list
-//! groups them loosely together, and `Vec<Value>` already grows fine either
-//! way (`Heap::array_push` mutates it in place through `&mut self`, no
-//! separate growable representation needed). So `OrderedCollection` is
-//! backed by the very same `ObjectData::Array` variant rather than a second
-//! growable-collection payload variant. A real `OrderedCollection` would
-//! grow independently of a literal array's fixed size; revisit if the two
-//! ever need to diverge (e.g. `Array` becoming genuinely fixed-size).
+//! `Array`'s leaves. An `Array` is fixed-size once made -- `new:` sizes it, a
+//! literal fills it -- and nothing grows a payload in place; the growable
+//! sequence is `List`, Newspeak in `CollectionsFactory.ns`, over arrays it
+//! replaces when full.
 
 use crate::builtins::primitive::CollectionPrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
@@ -47,9 +39,7 @@ fn not_an_integer<'gc>(
     }
 }
 
-/// `size` -- shared by `Array` and `OrderedCollection` since both share the
-/// `ObjectData::Array` payload (see this module's design note). `None` if
-/// `receiver` isn't `ObjectData::Array`-backed at all.
+/// `size`. `None` if `receiver` isn't `ObjectData::Array`-backed at all.
 fn size<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
@@ -63,7 +53,7 @@ fn size<'gc>(
         .map(|length| Ok(Value::SmallInteger(length as i64)))
 }
 
-/// `at:` -- shared by `Array` and `OrderedCollection`, same payload as `size`.
+/// `at:` -- same payload as `size`.
 fn element_at<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
@@ -89,8 +79,7 @@ fn element_at<'gc>(
     })
 }
 
-/// `at:put:` -- `Array`'s alone; the lists in `builtins::primitive` are what
-/// keeps `OrderedCollection` from answering it.
+/// `at:put:`.
 fn element_at_put<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
@@ -118,24 +107,6 @@ fn element_at_put<'gc>(
     let value = arguments.get(1).copied().unwrap_or(Value::Nil);
     mutator.heap.array_set(*object, (index as usize) - 1, value);
     Some(Ok(receiver))
-}
-
-/// `add:` -- `OrderedCollection`'s alone; the lists in `builtins::primitive`
-/// are what keeps `Array` from answering it.
-fn add<'gc>(
-    mutator: &mut Mutator<'gc>,
-    receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
-) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = &receiver else {
-        return None;
-    };
-    mutator.heap.array_length(*object)?;
-    // Matches the reference library's convention: `add:` returns the
-    // argument, not the receiver.
-    let value = arguments.first().copied().unwrap_or(Value::Nil);
-    mutator.heap.array_push(*object, value);
-    Some(Ok(value))
 }
 
 /// `Array new: size`: an array of `size` `nil`s. Its subject is the class
@@ -193,10 +164,7 @@ fn leaf_step<'gc>(
     Some(result?.map(Step::Value).map_err(Signal::Error))
 }
 
-/// `Array` and `OrderedCollection`'s native methods: which class answers
-/// `at:put:` and which `add:` is decided by their lists in
-/// `builtins::primitive`, not by this function -- both send
-/// `CollectionPrimitive::ElementAtPut`/`Add` through the same arm here.
+/// `Array`'s native methods.
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: CollectionPrimitive,
@@ -213,15 +181,14 @@ pub(crate) fn execute<'gc>(
         CollectionPrimitive::ElementAtPut => {
             leaf_step(element_at_put(mutator, receiver, selector, arguments))
         }
-        CollectionPrimitive::Add => leaf_step(add(mutator, receiver, arguments)),
         CollectionPrimitive::Allocate => {
             leaf_step(allocate(mutator, receiver, selector, arguments))
         }
     }
 }
 
-/// `do:` on an `Array` or an `OrderedCollection`: the block activated for each
-/// element in turn, as trampoline steps -- the first here, each next one by
+/// `do:` on an `Array`: the block activated for each element in turn, as
+/// trampoline steps -- the first here, each next one by
 /// `after_element` when the one before it returns -- so no Rust frame waits
 /// on Newspeak code (`docs/design/execution.md`, "No re-entry from Rust").
 /// `None` when `receiver` has no `ObjectData::Array` payload, so the send

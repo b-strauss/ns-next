@@ -1138,7 +1138,7 @@ failed. `Factory` instantiates the receiver (`instantiate::decide_factory`),
 re-checking nothing the lookup decided — §3.2's flat metaclass leaves the
 entry reachable only on the receiver's own metaclass, which the guard
 determines — but reading `ClassData.builtin` off the receiver on every
-send, because `Array` and `OrderedCollection` need an `ObjectData::Array`
+send, because `Array` needs an `ObjectData::Array`
 payload and no entry carries which kind of instance to build ("Every target is
 a function of its key and its site" below). A
 handler target builds the message array per send and calls the handler, and
@@ -1582,7 +1582,7 @@ dispatches on one.
     metaclass, which the guard — that metaclass's dispatch id —
     determines, and never on a `super` chain or through inheritance. The
     builtin branch of 3b's pre-lookup factory check goes into the entry's action, since
-    `Array` and `OrderedCollection` need an `ObjectData::Array` payload rather
+    `Array` needs an `ObjectData::Array` payload rather
     than a generic instance. It does **not** leave the reads a key does not
     cover, as the decision expected it would: `decide_factory` reads
     `ClassData.builtin` off the receiver on every send, which is what keeps

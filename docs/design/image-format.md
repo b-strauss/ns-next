@@ -864,7 +864,10 @@ through `platform kernel` and may subclass them, so an image may name any
 of the five wherever it names a class: an exception a program made is an
 ordinary instance record.
 
-**Retired builtin class tags: 8, 13, 18, 19 and 29.** 8 was `Character`;
+**Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
+10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
+in the shipped `CollectionsFactory.ns`
+([core-library.md](core-library.md), "The collections module (plan 2)");
 13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
 `KernelNamespace`, which moved into a shipped module, now `PlatformFactory.ns`
 ([core-library.md](core-library.md), "The platform"). An image names the

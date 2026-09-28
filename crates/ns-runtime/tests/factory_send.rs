@@ -90,72 +90,8 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-/// `OrderedCollection new` via ordinary `send` (not a direct
-/// `interpreter.instantiate(...)` call) must produce an
-/// `ObjectData::Array`-backed object -- the payload shape
-/// `builtins::collections`' dispatch functions actually pattern-match on -- and
-/// that object must go on to support `add:`/`size` through the real dispatch
-/// chain, which also proves the result stays classed as `OrderedCollection`
-/// (not `Array`: `Array`'s own native dispatch has no `add:`, so `add:`
-/// succeeding rules out the mis-tagging bug this test was written to catch).
-#[test]
-fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and_size() {
-    let mut interpreter = Interpreter::bootstrap();
-    let class_value = interpreter.enter(|mutator| {
-        let class = mutator.builtin_class(BuiltinClass::OrderedCollection);
-        mutator.stash(Value::Object(class))
-    });
-
-    let result = interpreter.send(&class_value, Symbol::intern("new"), &[]);
-    let receiver = expect_ok(result, "OrderedCollection new");
-
-    interpreter.enter(|mutator| {
-        let fetched = mutator.fetch(&receiver);
-        let Value::Object(object) = &fetched else {
-            panic!(
-                "expected Value::Object, got {}",
-                mutator.heap().describe(&fetched)
-            );
-        };
-        let elements = mutator.heap().array_elements(*object);
-        assert!(
-            matches!(&elements, Some(items) if items.is_empty()),
-            "expected an empty ObjectData::Array payload"
-        );
-    });
-
-    let add_result = expect_ok(
-        interpreter.send(
-            &receiver,
-            Symbol::intern("add:"),
-            &[interpreter.stash(Value::SmallInteger(1))],
-        ),
-        "OrderedCollection new add: 1",
-    );
-    interpreter.enter(|mutator| match mutator.fetch(&add_result) {
-        Value::SmallInteger(1) => {}
-        other => panic!(
-            "expected add: to return its argument, got {}",
-            mutator.heap().describe(&other)
-        ),
-    });
-
-    let size_result = expect_ok(
-        interpreter.send(&receiver, Symbol::intern("size"), &[]),
-        "OrderedCollection new (after add:) size",
-    );
-    interpreter.enter(|mutator| match mutator.fetch(&size_result) {
-        Value::SmallInteger(1) => {}
-        other => panic!(
-            "expected Value::SmallInteger(1), got {}",
-            mutator.heap().describe(&other)
-        ),
-    });
-}
-
-/// `Array new` via ordinary `send` must also be `Array`-tagged (not
-/// `OrderedCollection`), confirmed here by `add:` *failing* --
-/// `Array`'s method table has no `add:` primitive.
+/// `Array new` via ordinary `send` must be `Array`-tagged, confirmed here by
+/// `add:` *failing* -- `Array`'s method table has no `add:` primitive.
 #[test]
 fn array_new_via_ordinary_send_does_not_understand_add() {
     let mut interpreter = Interpreter::bootstrap();
@@ -258,7 +194,7 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dispatch() {
     let mut interpreter = Interpreter::bootstrap();
     let class_value = interpreter.enter(|mutator| {
-        let class = mutator.builtin_class(BuiltinClass::OrderedCollection);
+        let class = mutator.builtin_class(BuiltinClass::Array);
         mutator.stash(Value::Object(class))
     });
 
@@ -332,7 +268,7 @@ fn a_class_without_a_class_side_still_has_a_factory_entry() {
 fn a_builtin_class_has_a_factory_entry_under_new() {
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.enter(|mutator| {
-        let class = mutator.builtin_class(BuiltinClass::OrderedCollection);
+        let class = mutator.builtin_class(BuiltinClass::Array);
         mutator.stash(Value::Object(class))
     });
     assert_eq!(

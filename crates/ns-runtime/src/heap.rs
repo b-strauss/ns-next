@@ -1230,15 +1230,6 @@ impl<'gc> Heap<'gc> {
         false
     }
 
-    pub fn array_push(&mut self, object: ObjectReference<'gc>, value: Value<'gc>) -> bool {
-        self.check_object_origin(object);
-        if let ObjectData::Array(items) = &mut self.objects[object.index as usize].data {
-            items.push(value);
-            return true;
-        }
-        false
-    }
-
     /// The instance field at `index`, or `None` when `object`'s payload is not
     /// `ObjectData::Instance` or `index` is out of range -- the same
     /// total-rather-than-panicking shape as the array accessors above.
@@ -3883,13 +3874,13 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let stale = heap.allocate_object(class, ObjectData::String("stale".to_string()));
-        let array = heap.allocate_object(class, ObjectData::Array(vec![]));
+        let array = heap.allocate_object(class, ObjectData::Array(vec![Value::Nil]));
         let root = heap.stash(Value::Object(array));
         move_bare_heap(&mut heap);
         let Value::Object(array) = heap.fetch(&root) else {
             panic!("a root keeps its object")
         };
-        heap.array_push(array, Value::Object(stale));
+        heap.array_set(array, 0, Value::Object(stale));
         move_bare_heap(&mut heap);
     }
 
