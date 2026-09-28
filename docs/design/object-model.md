@@ -1342,6 +1342,40 @@ outside a collection and drives the same forwarding on demand — so the
 MirrorBuilder in [liveness-and-reflection.md](liveness-and-reflection.md)
 stays blocked on that, not on the collector.
 
+## Planned: an eight-byte value
+
+Would change: `Value` becomes one 64-bit word -- tagged immediates and
+object references, as Primordial Soup's `Object` and Cog's Spur words are --
+instead of today's 16-byte enum of a tag and an 8-byte payload (`Nil`,
+`Boolean`, `SmallInteger(i64)`, `Float(f64)`, `Object`). Noted with the user
+on 2026-09-28 as a later project, after "a send's value delivered where it
+is decided" ([execution.md](execution.md)), and together with unbounded
+integers.
+
+**What it would bring.** A value is read and written as one word, so no
+value moves through memory as narrow stores read back by a wide load -- the
+store-forwarding stall the profile found ([execution.md](execution.md),
+"Where the 3% goes") cannot arise anywhere. On Windows x64 only a value of at
+most eight bytes comes back in `RAX`; every function that answers a `Value`
+today answers through memory. Registers, instance fields, arrays, argument
+buffers and copied closure values take half the memory, and `Step`,
+`Result<Step, Signal>` and the continuations shrink with it. Small integer
+arithmetic can work on the tagged words with one overflow test, as Cog's and
+Soup's does, which is the usual ground for a JIT's tiers.
+
+**What it would cost.** A 64-bit word holds a full `i64`, a full `f64` and a
+handle only by giving something up. Tagged pointers make `SmallInteger` 62 or
+63 bits and box floats (or, as Spur's `SmallFloat64`, keep most exponents
+immediate and box the rest); NaN-boxing keeps floats and limits integers to
+about 48–51 bits. Either changes where an integer overflows, which goldens
+pin -- so it comes with a decision on the semantics, and §5.1.1's "integers
+are not limited in size" points at `LargeInteger`, the unbounded integers
+the user set aside, as the answer. Every pattern on `Value::…` (about 550
+sites in `ns-runtime`) would go through accessors; `heap.rs`'s handle code,
+the collector, the image codec and the leaves change with it. A release
+handle is 32 bits and fits; a debug handle carries its heap id and move
+epoch and needs another home.
+
 ## Decisions
 
 - **Three layers rather than one**, because §6 requires a distinct class object

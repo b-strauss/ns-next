@@ -37,9 +37,14 @@ of `bench_loop.ns`'s, which two outlying rounds overlap; `vm::run` is one
 function of 7,143 instructions against 7,083. A scratch build with one more
 calling instruction arm, not committed, left `bench_megamorphic.ns` and
 `bench_block.ns` level but cost `bench_loop.ns` and `bench_send.ns` about 3%
-(+3.0%, +3.3%, means): an arm is still not free, and why is open. **Next:
-the compact instruction encoding**, the separate plan this one named
-([execution.md](design/execution.md), "The loop over locals").
+(+3.0%, +3.3%, means): an arm is still not free. A profile places the
+loss at a store-forwarding stall: every send's `Result<Step, Signal>`
+passes through one stack slot where the inline cache's hit paths and its
+`miss` join, the 16-byte `Value` read back from narrower stores holds 28%
+of `vm::run`'s samples, and `Step`'s drop glue runs for every send (4.7%)
+([execution.md](design/execution.md), "Where the 3% goes"). **Next: a
+send's value delivered where it is decided**, then the compact instruction
+encoding ([execution.md](design/execution.md), "The loop over locals").
 
 **Simultaneous slots are done** (2026-09-28;
 [ns-next-simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);
@@ -101,7 +106,9 @@ semantic deviation that answers a correct program wrongly at exit status 0
 -- the synchronous `<-:`, set aside by the user until there are actors --
 as the first candidate of a section-by-section semantic audit of the
 specification, like the syntax one. Unbounded integers were set aside by the
-user (2026-09-28).
+user (2026-09-28), and an eight-byte `Value` is noted to go with them
+([object-model.md](design/object-model.md), "Planned: an eight-byte
+value").
 
 **The collections module is done** (2026-09-28;
 [ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md);

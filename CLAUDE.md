@@ -455,7 +455,9 @@ inline into `run`; before timing a change to a send's path, check with `dumpbin 
 information that no `vm::run::closure` and no `run_stretch` became a function of its own
 (`docs/design/execution.md`, "What the inline caches moved" and "What the loop over
 locals moved"). An instruction arm is not free: one more arm that calls a function
-measured about 3% on `bench_loop.ns` and `bench_send.ns` (the same section).
+measured about 3% on `bench_loop.ns` and `bench_send.ns`, which a profile
+places at a store-forwarding stall on the send path (the same section,
+"Where the 3% goes").
 
 Every corpus module must parse; there is no list of exceptions. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector

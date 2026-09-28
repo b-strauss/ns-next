@@ -4534,10 +4534,43 @@ the second, so the claim that one more calling arm moves no fixture does
 not hold: the fixture that paid the `Flow` test is immune now, and two
 others are not. In the probe build `vm::run` is 7,149 instructions, and
 its stack frame 0x408 bytes against the head's 0x3e8 -- the arm changes the
-register assignment of the whole function, as it did before. Which part of
-the send path and the loop's backward jump pays for it is **open**; it is
-the first thing to look at when an arm is next added to `run_stretch`, and
-until then an instruction arm is not free.
+register assignment of the whole function, as it did before.
+
+**Where the 3% goes: a store-forwarding stall on the send path.** Probed
+2026-09-28 with `xperf` (0.12 ms sampling), 400 runs of `bench_loop.ns` on
+a head build and on the probe build, both with debug information, the
+samples attributed through `vm::run`'s jump table
+(`.temp/loop/`, not committed). The fixture's loop is lexical slot sends
+(`n`, `sum`, `sum:`, `n:`), `IntegerBinary` and a backward jump, and its
+cost is not where the dispatch is:
+
+- Every send's decision reaches the loop as a `Result<Step, Signal>` in a
+  stack slot (`[rbp+1A0h]` in the head build): the inline cache's hit
+  paths and its out-of-line `inline_cache::miss` join in one block that 22
+  jumps reach, so the result cannot stay in registers. That block reads the
+  16-byte `Value` back with one `movups` from a slot the paths wrote with
+  narrower stores -- a load the store buffer cannot forward -- and the
+  store after it, where the stall's samples land, holds **28% of all
+  samples in `vm::run`** (2,946 of 10,319). Two more sites of the same
+  shape, a `Value` copied between stack slots in pieces (a `word`, a
+  `dword`, a `qword`) and then read whole, hold about 20% more.
+- The same block then calls the out-of-line `drop_glue<Step>` for every
+  send, a `Step::Value` included: 4.7% of all samples.
+- In the probe build that one store holds 3,272 samples, +326 of the +360
+  `vm::run` gained (the fixture +3.9% in this run). The extra arm adds no
+  work; it moves the stall. Why the timing shifts is not established; that
+  the loss sits at the stall is.
+- Beside it: `program_counter` and the code pointer live in stack slots in
+  the head build (`[rbp+2F8h]`, `[rbp+338h]`), since `vm::run` is large
+  enough that its allocator spills -- about 1,900 stack references in
+  7,143 instructions -- and the probe build happens to keep
+  `program_counter` in `r13`; and every dispatch decodes `Instruction`'s
+  discriminant through a niche (`xor`, `cmovns`) before its jump.
+
+The remedy is the send path's: a decision that is a `Step::Value` must not
+pass through a joined stack slot, and must not reach `Step`'s drop glue
+("Planned: a send's value delivered where it is decided" below). Until it
+lands, an instruction arm is not free.
 
 ## The trampoline
 
@@ -5585,6 +5618,58 @@ which catch a handle held across a safepoint because the stretch still
 leaves its entry there. `heap.rs`'s unit tests pin that a stale
 `RegisterBase` panics in a debug build and that one survives a deeper push.
 What it moved is measured in "What the loop over locals moved" above.
+
+## Planned: a send's value delivered where it is decided
+
+Would change: a send's decision no longer comes back to the loop as a
+`Result<Step, Signal>`; the decision writes a value straight into the
+sending instruction's destination register and answers one byte, and only
+an activation or a signal is handed over whole. Designed with the user on
+2026-09-28 from the profile in "What the loop over locals moved", "Where
+the 3% goes": the joined `Result<Step, Signal>` slot costs a
+store-forwarding stall on every send (28% of `vm::run`'s samples on
+`bench_loop.ns`) and a call of `Step`'s drop glue (4.7%), and it is where
+one more instruction arm moves the timing.
+
+**Prior art.** Primordial Soup's primitives push their result onto the
+stack themselves and answer only whether they succeeded
+(`Primitives::Invoke`); Cog's `commonSend` writes a send's result into the
+frame. Neither hands a result object back to the loop.
+
+**The sink.** `interpreter/` gains a trait, `DecisionSink`, with three
+methods: `value(mutator, value)`, `step(step)` and `signal(signal)`.
+`act_with_base`, `decide_send`, the three cache paths (`send_public`,
+`send_lexical`, `send_super`, with `cached` and `miss`) and
+`mirror::execute_method` become generic over it: every place that answers
+`Ok(Step::Value(value))` today calls `sink.value` instead, a `Step` goes to
+`sink.step`, an error to `sink.signal`. The logic stays in one place --
+the invariant that one place decides -- and each sink gets its own inlined
+copy. `miss` stays out of line and is handed the sink, so a miss delivers
+its value itself instead of through an out-pointer joined with the hit
+paths.
+
+**Two sinks.** `vm.rs`'s `RegisterSink` writes a value into the
+destination register (`Heap::set_register`) and records in one byte what
+happened -- delivered, activate, raised -- keeping a rare `Step` or
+`Signal` in an out slot, as `Handoff` keeps the next frame. `StepSink`
+collects the decision as the `Result<Step, Signal>` it is today, and the
+functions every other caller uses -- the host's send, the unwinder,
+`Message>>sentTo:`, the block leaves -- stay as thin wrappers over it, so
+none of those callers changes. `vm.rs` still decides nothing: the sink
+carries out what was decided, as `deliver` does today. A cache still
+records what the lookup decided and never decides.
+
+**Gated by an experiment.** The plan's first task tries the sink on
+`send_lexical` alone in a throwaway copy and profiles `bench_loop.ns` with
+`xperf`: the stall and the drop-glue call must be gone and the fixture
+faster, or the plan stops before touching every path.
+
+**What pins it.** The semantics are the suite's, unchanged: every golden
+under both lowerings and the three stress modes, which run while a sink
+holds a `Step` up to its push. Measured by the protocol against the
+`master` the plan starts from; the `xperf` profile's hotspots before and
+after; and the robustness probe repeated -- one rare instruction given an
+arm of its own -- which should move no fixture any more.
 
 ## Planned: tail calls, skipped but kept
 
