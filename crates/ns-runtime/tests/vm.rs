@@ -877,11 +877,15 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
         interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
         99
     );
-    // `n` still holds the future `InitializeSlotProvisionally` stored --
-    // nothing in this body replaces it with its value through a checked
-    // `InitializeSlot`, as a clause's end does -- but forcing left it
-    // resolved, not stuck resolving: the `Reexecute` this test's
-    // `ResolveFuture` triggered ran the block and recorded its answer.
+    // Nothing in this body replaces the future `InitializeSlotProvisionally`
+    // stored in `n` with its value through a checked `InitializeSlot`, as a
+    // clause's end does, but forcing left it resolved, not stuck resolving:
+    // the `Reexecute` this test's `ResolveFuture` triggered ran the block
+    // and recorded its answer. `n` holds that future still -- or, once a
+    // collection has run (`NS_NEXT_STRESS_COLLECT` collects at every
+    // safepoint), the value itself, since a collection replaces a resolved
+    // future in an object field (`docs/design/memory.md`, "A resolved future
+    // is traced as its value").
     interpreter.enter(|mutator| {
         let Value::Object(receiver) = mutator.fetch(&instance) else {
             panic!("expected an instance");
@@ -890,13 +894,16 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
             .heap()
             .instance_field(receiver, 0)
             .expect("X declares one slot");
-        let future = mutator
-            .as_future(field)
-            .expect("n still holds the future InitializeSlotProvisionally stored");
-        assert!(matches!(
-            mutator.future_state(future),
-            ns_runtime::interpreter::future::FutureState::Resolved(Value::SmallInteger(99))
-        ));
+        match mutator.as_future(field) {
+            Some(future) => assert!(matches!(
+                mutator.future_state(future),
+                ns_runtime::interpreter::future::FutureState::Resolved(Value::SmallInteger(99))
+            )),
+            None => assert!(
+                matches!(field, Value::SmallInteger(99)),
+                "n holds the future InitializeSlotProvisionally stored, or its value"
+            ),
+        }
     });
 }
 
