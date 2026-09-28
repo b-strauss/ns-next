@@ -1967,10 +1967,12 @@ selector exists because the corpus or a golden asks for it.
 
 #### What is measured
 
-Every start now compiles one more module, and `List>>add:` is Newspeak
-where `OrderedCollection>>add:` was a leaf. Each plan measures, release
-build and pinned protocol ([execution.md](execution.md)), the start-up of a
-module that answers at once, and the four `goldens/bench/` fixtures.
+Every start now resolves one more module and the first `platform
+collections` compiles it, and `List>>add:` is Newspeak where
+`OrderedCollection>>add:` was a leaf. Each plan measures, release build and
+pinned protocol ([execution.md](execution.md)), the start-up of a module
+that answers at once, and the four `goldens/bench/` fixtures; plan 2 also
+the start-up of a module that builds one `List`.
 
 **Plan 1, measured 2026-09-27** ([execution.md](execution.md), "What the
 platform module cost"): start-up is unchanged, +0.2%, inside the
@@ -1987,6 +1989,24 @@ getter answering a filled slot from its own activation
 (`ReturnSlotIfFilled`, "The mechanism" above). **Re-measured 2026-09-27
 with the fast path gone, all four fixtures are level with `7c6bdbf`**
 (-0.7% to +0.4%, every comparison overlapping).
+
+**Plan 2, measured 2026-09-28** ([execution.md](execution.md), "What the
+collections module cost"), `f9d953a` against `6d9974b`, three builds a
+side: **all four bench fixtures are level** (-0.2% to +0.5%, every
+comparison overlapping in both sittings), as they should be, since none
+sends a collection message in its timed loop and no send path changed.
+Start-up grew by about 0.1 ms (+0.7% to +1.1%) for a module that answers at
+once, and by about 0.14 ms more for one that builds a `List`: both inside a
+single run group's spread, but every head build above every `6d9974b` build
+in both sittings that interleaved the binaries. The first-use cost is
+compiling and instantiating `CollectionsFactory.ns`, which the lazy
+`collectionsModule` defers to the first `platform collections`, as intended.
+The cost every start pays is the module being resolved at boot:
+`RESOLVED_SHIPPED_MODULES` (`interpreter/core_library.rs`) parses and
+resolves the whole table on its first use, so a program that never touches
+`platform collections` still resolves `CollectionsFactory.ns`. Resolving
+each module on its own first request would move that onto the first use;
+it is not done.
 
 ### What this step did not break
 

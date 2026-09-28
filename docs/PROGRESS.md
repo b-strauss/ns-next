@@ -36,6 +36,40 @@ semantic deviations that answer a correct program wrongly at exit status 0
 candidates of a section-by-section semantic audit of the specification, like
 the syntax one. Unbounded integers were set aside by the user (2026-09-28).
 
+**The collections module is done** (2026-09-28;
+[ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md);
+[core-library.md](design/core-library.md), "The collections module (plan
+2)"), in the factory pattern, decided with the user: a shipped
+`CollectionsFactory.ns`, whose root holds the kernel and is never handed
+out, and whose private nested `Collections` is the facet `platform
+collections` answers. The facet names its own class
+(`public Collections = ( ^outer CollectionsFactory Collections )`) as
+`Platform` does, so its image path is `collections Collections` without
+widening the compiler's class-accessor recognition, and
+`Platform>>Collections` is gone. `List` is a private class of the factory,
+Newspeak over arrays it replaces when full, handed out by the facet's class
+accessor. The mirror's new `moduleNamed:` leaf builds a shipped module's
+root class on every request and keeps nothing in Rust; `PlatformFactory`'s
+lazy `collectionsModule` keeps the one instance, so every platform shares
+one `List` class and the module is compiled on the first `platform
+collections`. `Array new:` answers a sized array of nils (a class-side
+mirror forwarder), and the exception handler search collects its handlers
+into an `Array` in two walks. Every program moved to `List`;
+`OrderedCollection`, its `add:` leaf and `Heap::array_push` are removed,
+builtin class tag 10 retired. Three semantics were confirmed with the user:
+`moduleNamed:` keeps nothing, `List>>at:put:` answers the value, and
+`List>>do:` reads the size once. Image tests cover a `List` record, a second
+facet and the refusal of the factory. The one golden whose output changed
+is `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`, seven
+lines to six: there is no builtin `OrderedCollection` left to subclass.
+**Measured** ([execution.md](design/execution.md), "What the collections
+module cost"), three builds a side against `6d9974b`: **all four
+`goldens/bench/` fixtures are level** (-0.2% to +0.5%, every comparison
+overlapping); start-up grew by about 0.1 ms (+0.7% to +1.1%), because
+every shipped module is resolved at boot although `CollectionsFactory.ns`
+is compiled only on first use, and the first `platform collections` costs
+about 0.14 ms more.
+
 **The platform module is done** (2026-09-26 to 2026-09-27;
 [ns-next-platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md);
 [core-library.md](design/core-library.md), "Planned: the platform and
@@ -124,14 +158,12 @@ debug builds compile at `opt-level = 1`; and the end-of-batch gate runs the
 three stress modes at once. The normal suite went from about 47 s to 16 s,
 the three stress modes from about 48 minutes to under 4.
 
-**The next piece of work is the collections module** (plan 2 of
-[core-library.md](design/core-library.md), "Planned: the platform and
-collections as core-library modules"), written in the factory pattern: the
-mirror's `moduleNamed:`, `Array new:`, a Newspeak `List` in
-`CollectionsFactory.ns`, whose root holds the kernel and is never handed
-out, a handler search that keeps no `OrderedCollection`, and
-`OrderedCollection` removed with its leaf and `Heap::array_push` — which
-answers the question step 7 (below) has to settle first.
+**The next piece of work is step 7, the payload space** (item 4 of the
+list under "What came next was the third plan, now done, and then step 7"
+below; [memory.md](design/memory.md), "Payloads belong to the Rust
+allocator, and what that costs"), now unblocked: with `OrderedCollection`
+and `Heap::array_push` gone, no payload grows in place. Run one of its named
+measurements before building anything there.
 
 **Editor support — the language server and the JetBrains plugin — reached
 Built on 2026-09-26** ("Editor support: the language server and the
@@ -153,12 +185,10 @@ signalling it — see "Exceptions" below. It followed step 6's third plan,
 `Metaclass`" below).
 **Then step 7, the payload space**
 (item 4 of the list under "What came next was the third plan, now done, and
-then step 7" below), whose open question is that one: the space was ordered
-after step 6 because a Newspeak `OrderedCollection` over a fixed `Array`
-removes the one payload that grows in place (`Heap::array_push`), but
-`OrderedCollection>>add:` is still a forwarder to that leaf, and no plan yet
-names the step that removes it. The reflection work, which needed the
-reified instance-of relation step 6's third plan built and can build its
+then step 7" below), ordered after step 6 because a Newspeak collection over
+a fixed `Array` removes the one payload that grew in place
+(`Heap::array_push`); the collections module removed it. The reflection
+work, which needed the reified instance-of relation step 6's third plan built and can build its
 `ActivationMirror` on the activation objects, can now start as well
 ([liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
 and MirrorBuilder"). An open performance item remains from the third plan's
@@ -415,8 +445,9 @@ trigger's comparison itself costs. Not yet run.
 before the JIT tiers, is **step 6, the core library in Newspeak, and then
 step 7, the payload space** (the order of work below). That ordering was
 decided with the user on 2026-09-21: step 6 first because it removes the
-one constraint that complicates the space -- a payload that grows in place,
-which exists only because `OrderedCollection` is a Rust builtin -- and
+one constraint that complicates the space -- a payload that grew in place,
+which existed only because `OrderedCollection` was a Rust builtin, until the
+collections module removed both -- and
 because it raises what the space is worth, a Newspeak `List>>add:`
 allocating a fresh `Array` at every capacity overflow where a `Vec::push`
 amortizes to nothing.
@@ -517,13 +548,11 @@ value conditions" below). Numbered as step 6's plans are:
 4. **The payload space**, step 7 of the order of work below, whose own
    measurements are named under [memory.md](design/memory.md), "Payloads
    belong to the Rust allocator, and what that costs". Run one of them before
-   building anything there. **Open, and to settle before planning it:** the
-   space was ordered after step 6 because a Newspeak `OrderedCollection` over
-   a fixed `Array` removes the one payload that grows in place
-   (`Heap::array_push`). The first plan kept `OrderedCollection>>add:` a
-   forwarder to that leaf, as it kept every body a forwarder, so the
-   constraint is still there, and no plan yet names the step that removes
-   it.
+   building anything there. The space was ordered after step 6 because a
+   Newspeak collection over a fixed `Array` removes the one payload that
+   grew in place (`Heap::array_push`); the collections module did so, with
+   `List` in `CollectionsFactory.ns` ("The collections module is done"
+   above), so nothing is left to settle before planning it.
 
 **A separate step, created by this plan, sits before the JIT tiers**:
 rewriting the kernel's control-flow methods and `do:` as real Newspeak loops
@@ -1065,10 +1094,11 @@ Then, after M4 and before the JIT tiers:
    and lays a payload next to its object, which nothing does today. Decided
    with the user on 2026-09-21 to sit here: **after step 6, before the tiers.**
 
-   Step 6 removes the one constraint that would complicate it. `Heap::array_push`
-   grows a payload in place only because `OrderedCollection` is a Rust builtin
-   (`builtins/collections.rs`'s own design note calls that a deliberate
-   simplification); both reference runtimes implement a growable collection in
+   Step 6 removed the one constraint that would have complicated it.
+   `Heap::array_push` grew a payload in place only because `OrderedCollection`
+   was a Rust builtin; the collections module replaced it with a Newspeak
+   `List` and removed both ("The collections module is done" above). Both
+   reference runtimes implement a growable collection in
    Newspeak over a **fixed** `Array` — Primordial Soup's `List`
    (`prior-art/primordialsoup/newspeak/Collections.ns`) and SOMns's `Vector`
    (`prior-art/somns/core-lib/Kernel.ns`) each allocate a larger `Array` and

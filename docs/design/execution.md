@@ -4184,6 +4184,128 @@ instruction count, then, is not what these fixtures measure: (b) was
 larger than the head and no slower, (c) larger than `7c6bdbf` and level. What
 they measure is the send sites' shape, which (c) restored.
 
+### What the collections module cost
+
+The collections module (`docs/design/core-library.md`, "The collections
+module (plan 2)") added a third shipped module, `CollectionsFactory.ns`
+(99 lines), whose `List` is Newspeak over `Array new:` where the builtin
+`OrderedCollection` was Rust over a growable payload; the mirror's
+`moduleNamed:`, which builds a shipped module's root class on request; and
+`PlatformFactory`'s lazy `collectionsModule`, so the module is compiled and
+instantiated on the first `platform collections`, not at boot.
+`Kernel.ns` grew from 553 lines to 568 (`Array new:`, the handler search
+collecting into an `Array`) and `PlatformFactory.ns` from 83 to 87: 754
+lines of shipped source against 636. Nothing on a send's path changed.
+
+**Measured 2026-09-28, `f9d953a` against `6d9974b`** (the commit before the
+plan's first), by the protocol of "What removing the re-entries moved"
+above: `6d9974b` built in a throwaway worktree under the git-ignored
+`.temp/` (`git worktree add`, removed afterwards), the head in the current
+tree, three builds of each with the pinned `RUSTFLAGS`, the second and third
+adding `-C metadata=buildb` and `-C metadata=buildc`, each in its own
+`--target-dir`; the six binaries differ byte for byte, none imports
+`VCRUNTIME140.dll` (`dumpbin /dependents`), and each printed every
+fixture's recorded answer and ran both start-up sources to exit status 0
+first.
+
+**Start-up.** `ns-next run` of two sources, wall-clock from the parent
+process (a .NET `Process` under a `Stopwatch`, not through a shell):
+`startup_zero.ns`, whose `main:args:` answers `0` at once, the source "What
+the platform module cost" measured; and `startup_list.ns`, which sends
+`platform collections List new` once and then answers `0` -- at `6d9974b`
+that answers the builtin `OrderedCollection`, so the same source runs on
+both trees and measures what building the collections module on first use
+costs. 200 runs per binary and source in each of four sittings, five
+discarded warm-up runs each. Sittings 1 and 2 ran each binary's 200 runs
+back to back, the binaries' order rotated between the sittings; sittings 3
+and 4 interleaved them, one run of each of the twelve binary-and-source
+pairs per round, the order rotated by one position every round, so a drift
+of the machine falls on every pair alike. This machine's per-process
+overhead was far higher than in the platform module's measurement --
+`ns-next --help`, which never compiles a kernel, medians 10.55 ms here
+against 2.84 ms then, with the antivirus service busy throughout -- so the
+figures below compare with each other only.
+
+Means per build in ms (p10–p90 of a single group is 0.8–1.2 ms wide):
+
+| Source | Sitting | Head a | Head b | Head c | `6d9974b` a | `6d9974b` b | `6d9974b` c |
+|---|---|---|---|---|---|---|---|
+| `startup_zero.ns` | 1 | 13.43 | 13.30 | 13.26 | 13.22 | 13.16 | 13.11 |
+| | 2 | 13.30 | 13.40 | 13.27 | 13.10 | 13.32 | 12.98 |
+| | 3 | 13.26 | 13.27 | 13.31 | 13.16 | 13.21 | 13.14 |
+| | 4 | 13.11 | 13.13 | 13.12 | 13.03 | 13.06 | 13.01 |
+| `startup_list.ns` | 1 | 13.58 | 13.26 | 13.26 | 13.33 | 13.16 | 12.91 |
+| | 2 | 13.20 | 13.38 | 13.25 | 12.90 | 13.29 | 13.29 |
+| | 3 | 13.38 | 13.42 | 13.45 | 13.15 | 13.13 | 13.13 |
+| | 4 | 13.25 | 13.27 | 13.25 | 12.96 | 12.96 | 12.96 |
+
+Pooled means in ms, over all four sittings (n = 2,400 runs a side) and over
+the two interleaved ones alone (n = 1,200):
+
+| Source | Head, all | `6d9974b`, all | Change | Head, interleaved | `6d9974b`, interleaved | Change |
+|---|---|---|---|---|---|---|
+| `startup_zero.ns` | 13.263 | 13.125 | +0.14 ms, +1.1% | 13.200 | 13.102 | +0.10 ms, +0.7% |
+| `startup_list.ns` | 13.329 | 13.098 | +0.23 ms, +1.8% | 13.337 | 13.048 | +0.29 ms, +2.2% |
+
+**Every start costs about 0.1 ms more, and the first `platform collections`
+about 0.14 ms on top of that.** Both differences are well inside a single
+group's p10–p90 spread, but they are consistent: in both interleaved
+sittings every head build's mean lies above every `6d9974b` build's, for
+both sources, while in the back-to-back sittings the groups overlap in three
+of the four comparisons. The head's `startup_list.ns` is 0.137 ms above its
+own `startup_zero.ns` in the interleaved sittings; `6d9974b`'s is level with
+its own (-0.05 ms), since its `List` was a builtin class that was there
+anyway. The first-use cost is what the design expected to pay: compiling
+`CollectionsFactory.ns`, building its root class, and instantiating it and
+its facet. The 0.1 ms every start pays is the module being *resolved* at
+boot although nothing uses it: `interpreter/core_library.rs`'s
+`RESOLVED_SHIPPED_MODULES` parses and resolves every module of the table
+the first time any is asked for, which the boot does for `PlatformFactory`
+-- so a program that never sends `platform collections` still parses and
+resolves `CollectionsFactory.ns`'s 99 lines, beside the 15 lines `Kernel.ns`
+grew by. That is the reading of the code, not a profile. Resolving each
+shipped module on its first request instead would move that 0.1 ms onto the
+first use; it is not done here.
+
+**The four `goldens/bench/` fixtures.** `ns-next bench <source>
+--iterations 30`, five rounds a sitting, the six binaries rotating by one
+position from round to round, two sittings, nothing else of this work
+running. Means of the five rounds' medians:
+
+Sitting 1:
+
+| Source | `6d9974b` a | `6d9974b` b | `6d9974b` c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.0054 | 4.9705 | 4.9458 | 4.9758 | 5.0059 | 4.9711 |
+| `bench_send.ns` | 6.4439 | 6.4290 | 6.3627 | 6.4214 | 6.4699 | 6.3869 |
+| `bench_block.ns` | 13.9434 | 13.9328 | 13.8841 | 13.7780 | 13.8448 | 13.9391 |
+| `bench_megamorphic.ns` | 9.0513 | 9.0736 | 9.0105 | 9.0756 | 9.1582 | 9.1128 |
+
+Sitting 2:
+
+| Source | `6d9974b` a | `6d9974b` b | `6d9974b` c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.0197 | 5.0049 | 5.0035 | 5.0135 | 5.0097 | 5.0304 |
+| `bench_send.ns` | 6.4133 | 6.4194 | 6.3839 | 6.4107 | 6.4782 | 6.4264 |
+| `bench_block.ns` | 13.9237 | 13.9686 | 13.8974 | 14.0602 | 13.9364 | 13.8294 |
+| `bench_megamorphic.ns` | 9.1510 | 9.0505 | 9.0947 | 9.1189 | 9.1161 | 9.1089 |
+
+Both sittings pooled (n = 30 rounds a side), means in ms, and whether every
+round of the head lies outside every round of `6d9974b`'s, sitting by
+sitting:
+
+| Source | Head | `6d9974b` | Change | Sitting 1 | Sitting 2 |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.0011 | 4.9917 | +0.19% | overlapping | overlapping |
+| `bench_send.ns` | 6.4323 | 6.4087 | +0.37% | overlapping | overlapping |
+| `bench_block.ns` | 13.8980 | 13.9250 | -0.19% | overlapping | overlapping |
+| `bench_megamorphic.ns` | 9.1151 | 9.0719 | +0.48% | overlapping | overlapping |
+
+**All four fixtures are level with `6d9974b`**, as they should be: none
+sends a collection message in its timed loop, and nothing on a send's path
+changed. `bench_block.ns`'s largest round, 14.80 for one head build, is the
+build-to-build outlier kind the pooling is for.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
