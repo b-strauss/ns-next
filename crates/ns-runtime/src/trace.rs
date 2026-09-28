@@ -166,8 +166,8 @@ impl Trace for Continuation<'_> {
 
 /// The future of every forcing in the chain: each waiting one is held by
 /// nothing but the link from the forcing it waits on. A loop rather than a
-/// recursion, though a chain is as long as a run of futures each answering
-/// the next, which a program decides.
+/// recursion: a chain is as long as a run of futures each answering the
+/// next, which a program decides and no depth limit bounds.
 impl Trace for crate::interpreter::future::FutureForcing<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let mut forcing = self;

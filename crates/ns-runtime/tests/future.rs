@@ -39,6 +39,7 @@ const HOLDER: &str = indoc! {"
         public looping = ( ^[held + 1] )
         public answeringHeld = ( ^[held] )
         public taking = ( ^[:argument | argument] )
+        public answering: answer = ( ^[answer] )
     ) : ()
 "};
 
@@ -339,4 +340,66 @@ ns_runtime::for_each_lowering! {
         );
         assert!(message.contains("does not understand #Future"), "{message}");
     }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A chain of futures each answering the next is as long as the
+    /// program makes it, and the run loop pops each block's activation
+    /// before it pushes the next, so no depth limit bounds it: resolving,
+    /// abandoning, tracing and dropping the chain must all walk it without
+    /// recursing in Rust once per link.
+    fn a_long_chain_of_futures_resolves_without_recursing_per_link(lowering) {
+        let (mut interpreter, holder) = a_holder(lowering);
+        let next = a_chain(&mut interpreter, &holder, "three");
+        let four = interpreter.stash(Value::SmallInteger(4));
+        let sum = expect_ok(
+            interpreter.send(&next, Symbol::intern("+"), &[four]),
+            "head + 4",
+        );
+        interpreter.enter(|mutator| {
+            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
+        });
+        assert_eq!(state_of(&mut interpreter, &next), "resolved");
+        assert_eq!(runs(&mut interpreter, &holder), 1, "the last block ran once");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same chain, its last block raising: the unwind abandons the
+    /// whole chain, one link at a time, and leaves the head unresolved.
+    fn a_long_chain_of_futures_is_abandoned_without_recursing_per_link(lowering) {
+        let (mut interpreter, holder) = a_holder(lowering);
+        let next = a_chain(&mut interpreter, &holder, "failing");
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let message = expect_error_message(
+            interpreter.send(&next, Symbol::intern("+"), &[one]),
+            "head + 1",
+        );
+        assert!(message.contains("zork"), "{message}");
+        assert_eq!(state_of(&mut interpreter, &next), "unresolved");
+    }
+}
+
+/// How many futures `a_chain` links: far more than any native stack holds
+/// frames of a recursion per link.
+const LINKS: usize = 200_000;
+
+/// The head of `LINKS` futures, each one's block answering the next, the
+/// last one's the block `holder` answers for `last`.
+fn a_chain(interpreter: &mut Interpreter, holder: &Root, last: &str) -> Root {
+    let mut next = a_future(interpreter, holder, last);
+    for _ in 1..LINKS {
+        let block = expect_ok(
+            interpreter.send(holder, Symbol::intern("answering:"), &[next]),
+            "answering:",
+        );
+        next = interpreter.enter(|mutator| {
+            let Value::Object(closure) = mutator.fetch(&block) else {
+                panic!("answering: answers a block");
+            };
+            let future = mutator.new_future(closure);
+            mutator.stash(Value::Object(future))
+        });
+    }
+    next
 }

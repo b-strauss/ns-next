@@ -46,7 +46,14 @@ pub enum AfterForcing {
 /// A forcing in progress, boxed in the `Continuation::Future` of the
 /// activation running its future's block, and owned by exactly one stack
 /// entry.
-#[derive(Debug, Clone)]
+///
+/// The chain behind `then` is as long as a program makes it -- each future's
+/// block answering the next -- and nothing bounds it: the run loop pops each
+/// block's activation before it pushes the next, so the depth limit never
+/// sees it. So everything that walks the chain loops rather than recursing
+/// once per link: `future_computed`, `future_abandoned`, the trace, and
+/// `Drop`, `Clone` and `Debug` below, which is why none of the three is
+/// derived.
 pub struct FutureForcing<'gc> {
     /// The future being computed, `Resolving` while this forcing lasts.
     pub(crate) future: ObjectReference<'gc>,
@@ -56,6 +63,63 @@ pub struct FutureForcing<'gc> {
     /// Its own activation has returned already, so nothing but this link
     /// keeps it -- which is why `future_abandoned` walks it.
     pub(crate) then: Option<Box<FutureForcing<'gc>>>,
+}
+
+impl<'gc> FutureForcing<'gc> {
+    /// Every link of the chain from this one on, as (future, after) pairs.
+    fn links(&self) -> Vec<(ObjectReference<'gc>, AfterForcing)> {
+        let mut links = Vec::new();
+        let mut forcing = Some(self);
+        while let Some(current) = forcing {
+            links.push((current.future, current.after));
+            forcing = current.then.as_deref();
+        }
+        links
+    }
+}
+
+/// Unlinks the chain one box at a time, so that dropping it does not
+/// recurse once per link.
+impl Drop for FutureForcing<'_> {
+    fn drop(&mut self) {
+        let mut next = self.then.take();
+        while let Some(mut forcing) = next {
+            next = forcing.then.take();
+        }
+    }
+}
+
+/// Rebuilds the chain from its last link back, without recursing.
+impl Clone for FutureForcing<'_> {
+    fn clone(&self) -> Self {
+        let mut links = self.links().into_iter().rev();
+        let (future, after) = links
+            .next()
+            .expect("internal: a forcing is at least its own link");
+        let mut chain = FutureForcing {
+            future,
+            after,
+            then: None,
+        };
+        for (future, after) in links {
+            chain = FutureForcing {
+                future,
+                after,
+                then: Some(Box::new(chain)),
+            };
+        }
+        chain
+    }
+}
+
+/// The chain as a flat list of its links.
+impl std::fmt::Debug for FutureForcing<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FutureForcing")
+            .field("links", &self.links())
+            .finish()
+    }
 }
 
 /// What `vm::finish` does once a forcing's activation has returned.
@@ -99,6 +163,10 @@ impl<'gc> Mutator<'gc> {
     /// one, which is what will let every check for a future stay off the
     /// paths of a program that never makes one.
     pub fn new_future(&mut self, closure: ObjectReference<'gc>) -> ObjectReference<'gc> {
+        debug_assert!(
+            self.heap.is_closure(closure),
+            "internal: a future computes a closure"
+        );
         self.futures_made = true;
         let class = self.builtin_class(BuiltinClass::Future);
         let mut fields = vec![Value::Nil; 2];
@@ -167,9 +235,14 @@ impl<'gc> Mutator<'gc> {
                 }
             }
         }
+        // Record the value on every link, the waiting ones included; the
+        // last link waits on nothing and says what happens next.
+        let mut forcing = forcing;
         self.set_future_fields(forcing.future, value, RESOLVED);
-        if let Some(waiting) = forcing.then {
-            return self.future_computed(*waiting, value);
+        while let Some(mut waiting) = forcing.then.take() {
+            self.set_future_fields(waiting.future, value, RESOLVED);
+            forcing.after = waiting.after;
+            forcing.then = waiting.then.take();
         }
         Ok(match forcing.after {
             AfterForcing::Deliver => FutureOutcome::Deliver(value),
@@ -185,12 +258,12 @@ impl<'gc> Mutator<'gc> {
     /// by an exception").
     pub(crate) fn future_abandoned(&mut self, forcing: FutureForcing<'gc>) {
         let mut next = Some(Box::new(forcing));
-        while let Some(forcing) = next {
+        while let Some(mut forcing) = next {
             if let FutureState::Resolving = self.future_state(forcing.future) {
                 let computation = self.future_field(forcing.future, COMPUTATION_FIELD);
                 self.set_future_fields(forcing.future, computation, UNRESOLVED);
             }
-            next = forcing.then;
+            next = forcing.then.take();
         }
     }
 }
