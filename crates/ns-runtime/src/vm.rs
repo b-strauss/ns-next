@@ -56,7 +56,7 @@ enum Leave {
 /// Where control goes after a send, a return, an unwind or a forcing: one
 /// byte, answered in a register. The frame a `Switched` names and the
 /// result an `Exited` carries are in the `Handoff`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum Transfer {
     /// Resume after the instruction: its value, if any, is written.
     Next,
