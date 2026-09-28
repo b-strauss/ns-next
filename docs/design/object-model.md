@@ -1352,6 +1352,15 @@ on 2026-09-28 as a later project, after "a send's value delivered where it
 is decided" ([execution.md](execution.md)), and together with unbounded
 integers.
 
+**Why it matters more than one site.** The decision-sink experiment
+([execution.md](execution.md), "Planned: a send's value delivered where it
+is decided") found that LLVM copies today's `Value` as a tag byte and two
+overlapping quadwords, so every `Value` that passes through a memory
+temporary -- a result answered by an out-of-line function, a joined
+`Result`, `LoadLiteral`'s `make_value` -- is a store-forwarding stall; a
+fix site by site had to inline the whole path to the register write and
+doubled `vm::run`.
+
 **What it would bring.** A value is read and written as one word, so no
 value moves through memory as narrow stores read back by a wide load -- the
 store-forwarding stall the profile found ([execution.md](execution.md),

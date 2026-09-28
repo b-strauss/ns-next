@@ -42,9 +42,15 @@ loss at a store-forwarding stall: every send's `Result<Step, Signal>`
 passes through one stack slot where the inline cache's hit paths and its
 `miss` join, the 16-byte `Value` read back from narrower stores holds 28%
 of `vm::run`'s samples, and `Step`'s drop glue runs for every send (4.7%)
-([execution.md](design/execution.md), "Where the 3% goes"). **Next: a
-send's value delivered where it is decided**, then the compact instruction
-encoding ([execution.md](design/execution.md), "The loop over locals").
+([execution.md](design/execution.md), "Where the 3% goes"). A sink that
+delivers a send's value where it is decided was planned and tried as an
+experiment ([execution.md](design/execution.md), "Planned: a send's value
+delivered where it is decided"): inlined all the way to the register write
+it made `bench_loop.ns` 17% faster but doubled `vm::run`, and it showed that
+any 16-byte `Value` passing through memory stalls; the user halted it in
+favour of the eight-byte value, which comes later. **Next: the compact
+instruction encoding** ([execution.md](design/execution.md), "The loop over
+locals").
 
 **Simultaneous slots are done** (2026-09-28;
 [ns-next-simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);

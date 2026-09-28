@@ -5659,10 +5659,32 @@ none of those callers changes. `vm.rs` still decides nothing: the sink
 carries out what was decided, as `deliver` does today. A cache still
 records what the lookup decided and never decides.
 
-**Gated by an experiment.** The plan's first task tries the sink on
-`send_lexical` alone in a throwaway copy and profiles `bench_loop.ns` with
-`xperf`: the stall and the drop-glue call must be gone and the fixture
-faster, or the plan stops before touching every path.
+**Gated by an experiment, and halted.** The plan's first task
+([its plan](../superpowers/plans/2026-09-28-2106-ns-next-decision-sink.md))
+tried the sink on `send_lexical` alone in a throwaway copy on 2026-09-28,
+profiled with `xperf` and measured three builds a side against `master`.
+As written -- `act_into` and the cache paths generic, `decide_slot_accessor`
+generic but left out of line -- the drop-glue call vanished (4.66% to 0%)
+but the stall moved into the out-of-line `decide_slot_accessor_into`, one
+store there holding 33.8% of all samples, and every fixture got slower
+(`bench_loop.ns` +1.4%, `bench_send.ns` +10.4%, `bench_block.ns` +4.0%,
+`bench_megamorphic.ns` +5.7%). With `decide_slot_accessor_into` forced
+inline as well, the joined slot's stall and the drop glue were gone and
+every fixture faster -- `bench_loop.ns` -17.1% (separated),
+`bench_send.ns` -3.5%, `bench_block.ns` -0.9%, `bench_megamorphic.ns`
+-1.5% -- at the price of `vm::run` growing from 7,143 to 13,371
+instructions and its frame from 0x3E8 to 0x7D8 bytes, with
+`Heap::instance_field` and `set_instance_field` left out of line (13.8% of
+samples) and `LoadLiteral`'s own stall (through `make_value`, 12.3% of
+`vm::run` on `master`, 18.6% after) untouched. What the experiment showed
+beyond the send path: LLVM copies a `Value` as its tag byte and two
+overlapping quadwords, so **any** `Value` that passes through a memory
+temporary stalls, and a sink helps only where delivery is inlined all the
+way to the register write. The user halted the plan there (2026-09-28): the
+stall is a property of the 16-byte `Value`, which "Planned: an eight-byte
+value" ([object-model.md](object-model.md)) removes everywhere, and that
+comes later. The sink is not built; a revisit starts from the forced-inline
+variant's numbers above.
 
 **What pins it.** The semantics are the suite's, unchanged: every golden
 under both lowerings and the three stress modes, which run while a sink
