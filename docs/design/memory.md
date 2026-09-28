@@ -437,6 +437,9 @@ loop carries from one instruction to the next names no brand — the running
 `ActivationReference`, its code and its `program_counter` — and a run ends
 inside its last entry, its answer rooted for the host (`vm::run`, and
 [execution.md](execution.md), "The VM"). A host makes one entry per read.
+One entry per instruction is planned to become one entry per stretch between
+two safepoints, the brand's guarantee unchanged ([execution.md](execution.md),
+"Planned: the loop over locals").
 `World::enter` is `#[inline(always)]`, and a lifetime is gone before code is
 generated.
 

@@ -5368,6 +5368,106 @@ forcing that was to run one and finds the run's floor below it ends the run
 with an error (`interpreter::future::host_passed_a_future`). The design is
 [object-model.md](object-model.md), "Simultaneous slots".
 
+## Planned: the loop over locals
+
+Would change: `vm::run` keeps the running frame's state in local variables
+of one loop that runs many instructions inside one entry, each instruction
+advancing the program counter itself, instead of executing one instruction
+per entry and answering a `Flow` that the loop then tests. Designed with the
+user on 2026-09-28, after "What simultaneous slots cost" above traced a 4%
+loss on `bench_megamorphic.ns` to where LLVM places the block that tests a
+send's `Flow`; a compact instruction encoding is a separate plan after this
+one.
+
+**Why.** Two costs sit on every instruction today. `Flow` is too large for
+registers -- `Switch` carries an `ActivationReference`, an
+`Rc<CompiledCode>`, a program counter and a `FeedbackBase`, `Exit` a whole
+`HostResult` -- so every send writes it to the stack and the loop reads it
+back and tests it, and how fast that test is depends on how LLVM lays out
+`vm::run`: one more instruction arm that calls anything reordered it and cost
+`bench_megamorphic.ns` 4%. And every register access loads the activation's
+window base (`stack.entries[activation].base`, bounds-checked) before the
+register itself (`stack.values[base + index]`, bounds-checked again)
+(`Heap::register_slot`, `Heap::activation_local`).
+
+**Prior art.** Primordial Soup's `Interpreter::Interpret` keeps `ip_`, `sp_`
+and `fp_` as fields of the interpreter object; a send is a call that rewrites
+them in place (`Activate` sets `ip_` to the method's first bytecode), with no
+answer to test, and its safepoint is one compare of the stack limit that
+interrupts lower. Cog's StackInterpreter keeps `localIP`, `localSP` and
+`localFP` as locals of `interpret()` so the C compiler holds them in
+registers, and writes them out (`externalizeIPandSP`) before anything that
+can collect and reads them back (`internalizeIPandSP`) after. This design
+takes Cog's choice: in Rust, locals of one function are what LLVM keeps in
+registers, where fields of an object mostly are not. Threaded dispatch
+(computed goto) does not exist in Rust -- the `match` already compiles to a
+jump table -- and a tail-calling interpreter needs `become`, which is
+unstable.
+
+**The frame state as locals.** `vm::run` holds one small struct, its fields
+the running frame's state: the `ActivationReference`, the code
+(`Rc<CompiledCode>`), the program counter, the `FeedbackBase`, and a
+`RegisterBase` (below) -- Cog's `localFP`. None of them is branded: each is
+an index or a number a move leaves valid, as the three the loop carries
+between entries today are.
+
+**Two levels.** The outer loop enters once per stretch between safepoints:
+`interpreter.enter(|mutator| run_stretch(mutator, &mut frame, floor))`
+answers `Leave::Safepoint`, and the outer loop runs the safepoint and enters
+again, or `Leave::Exit(result)`, and the run ends. The inner loop,
+`run_stretch` (`#[inline(always)]`), dispatches
+`frame.code.instructions[frame.program_counter]` and runs until a safepoint
+is requested or the run's base activation is done. A move or collection
+still happens only between two entries, so within a stretch every handle
+stays valid until the entry ends, exactly as it does within one instruction
+today; the brand's guarantee is unchanged ([memory.md](memory.md), "The
+brand"). The safepoint is tested where it is today -- every switch to
+another activation and every backward jump -- as a compare of the heap's
+flag, and only when it is set does the stretch leave its entry. Under the
+stress modes it is set at every safepoint, so the suite still meets every
+handle held across one.
+
+**No `Flow`.** A straight-line arm writes its register, advances the program
+counter and continues. A jump sets the program counter, and a backward one
+tests the flag. A send, a return, an unwind and a future's forcing go
+through the helpers they go through today -- `send`, `deliver`, `finish`,
+`resume_caller`, `unwind`, `reexecute`, `force_and_reexecute` -- which write
+the new frame into the struct instead of answering `Flow::Switch`, and
+answer a one-byte `Continue { Stay, Leave }`, leaving a run's result in an
+out-parameter on the rare exit. The test after a send becomes one compare of
+a register, and the block whose placement cost 4% is gone. `vm.rs` still
+holds no dispatch logic: every decision stays in `interpreter/` -- the caches,
+`act`, the continuations, the unwinder -- behind the interfaces it has, which
+a JIT tier will reach the same way.
+
+**The register base.** `heap.rs` hands out an opaque `RegisterBase`, which
+only `Heap` can mint: `Heap::register_base(activation)` computes an
+activation's window start once per switch, and `Heap::register(base,
+index)` and `Heap::set_register(base, index, value)` reach `stack.values`
+with one index and one bounds check. It is an index, not a pointer: it
+survives `stack.values` growing and a move, which touches no register
+window, and so it may sit in the frame struct across a safepoint. It carries
+the danger an `ActivationReference` does -- once its activation is popped,
+the next one at that depth reuses the window -- so in a debug build it
+carries its activation and generation and every access checks them, as
+`check_activation` does; in a release build it is a `u32`. `LoadOuterLocal`,
+`StoreOuterLocal`, the indirection vectors and married frames are unchanged:
+a married frame's registers are its stack entry's, so a write through the
+base is the write it is today. `read_local` and `write_local` remain for
+every caller outside the loop. No `unsafe`.
+
+**What pins it.** The semantics are the suite's: every golden under both
+lowerings, the image round trips, the corpus, and the three stress modes,
+which catch a handle held across a safepoint because the stretch still leaves
+its entry there. A `heap.rs` unit test pins that a stale `RegisterBase`
+panics in a debug build. Measured by the protocol ("What removing the
+re-entries moved") against `5fbb2cb`, three builds a side in two sittings:
+all four `goldens/bench/` fixtures at least level, `bench_megamorphic.ns`
+recovering its 4%. Robustness is measured too: a build with one more
+instruction arm that calls something, not committed, must move no fixture.
+`dumpbin /disasm` shows one `vm::run` and no `vm::run::closure`, and its
+instruction count is recorded.
+
 ## Planned: tail calls, skipped but kept
 
 **Status: a direction the user set on 2026-09-25, not designed and not
