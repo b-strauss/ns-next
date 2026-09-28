@@ -1174,10 +1174,15 @@ by `interpreter/kernel.rs`; every other shipped module is an entry of
 `interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name and its source,
 embedded with `include_str!` from `crates/ns-runtime/core-library/` like
 the kernel. Today it has two entries, `PlatformFactory` and
-`CollectionsFactory`. The table parses and resolves an entry once per thread, with `resolve_kernel`,
-because the entry is shipped source, and panics for one that does not
-parse or resolve, as the kernel's does: that is a defect in the binary, not
-in a program. Every interpreter still compiles each module itself, since
+`CollectionsFactory`. The table parses and resolves an entry once per
+thread, on the first request for it, with `resolve_kernel`, because the
+entry is shipped source: the boot asks for `PlatformFactory` alone, so a
+program that never reaches `platform collections` never pays for
+`CollectionsFactory.ns`. It panics for an entry that does not parse or
+resolve, as the kernel's does: that is a defect in the binary, not in a
+program, and since a boot no longer resolves every entry, the unit test
+`every_shipped_module_resolves` does, so the suite still catches one.
+Every interpreter still compiles each module it asks for itself, since
 compiled code is numbered against one heap's inline caches. Every entry is
 shipped source; a user module joins the table, marked as such by the host
 and resolved with `resolve`, with the step that loads one. The mirror's
@@ -1967,8 +1972,8 @@ selector exists because the corpus or a golden asks for it.
 
 #### What is measured
 
-Every start now resolves one more module and the first `platform
-collections` compiles it, and `List>>add:` is Newspeak where
+The first `platform collections` now resolves and compiles one more
+module, and `List>>add:` is Newspeak where
 `OrderedCollection>>add:` was a leaf. Each plan measures, release build and
 pinned protocol ([execution.md](execution.md)), the start-up of a module
 that answers at once, and the four `goldens/bench/` fixtures; plan 2 also
@@ -1991,22 +1996,21 @@ with the fast path gone, all four fixtures are level with `7c6bdbf`**
 (-0.7% to +0.4%, every comparison overlapping).
 
 **Plan 2, measured 2026-09-28** ([execution.md](execution.md), "What the
-collections module cost"), `f9d953a` against `6d9974b`, three builds a
-side: **all four bench fixtures are level** (-0.2% to +0.5%, every
+collections module cost"), three builds a side against `6d9974b`: **all
+four bench fixtures are level** (`f9d953a`, -0.2% to +0.5%, every
 comparison overlapping in both sittings), as they should be, since none
 sends a collection message in its timed loop and no send path changed.
-Start-up grew by about 0.1 ms (+0.7% to +1.1%) for a module that answers at
-once, and by about 0.14 ms more for one that builds a `List`: both inside a
-single run group's spread, but every head build above every `6d9974b` build
-in both sittings that interleaved the binaries. The first-use cost is
+**A start that answers at once is level too** (`816367e`, +0.03 ms, +0.2%,
+the head's build means among `6d9974b`'s): `interpreter/core_library.rs`
+resolves each shipped module on its first request, so a program that never
+touches `platform collections` never parses or resolves
+`CollectionsFactory.ns`. When the boot still resolved the whole table
+(`ee4bdc8`), that start cost 0.11 ms (+0.8%) more, every build of it above
+every head build. A start that builds one `List` costs about 0.28 ms
+(+2.1%) more than `6d9974b`'s, whose `List` was a builtin class: resolving,
 compiling and instantiating `CollectionsFactory.ns`, which the lazy
-`collectionsModule` defers to the first `platform collections`, as intended.
-The cost every start pays is the module being resolved at boot:
-`RESOLVED_SHIPPED_MODULES` (`interpreter/core_library.rs`) parses and
-resolves the whole table on its first use, so a program that never touches
-`platform collections` still resolves `CollectionsFactory.ns`. Resolving
-each module on its own first request would move that onto the first use;
-it is not done.
+`collectionsModule` defers to the first `platform collections`, as
+intended.
 
 ### What this step did not break
 

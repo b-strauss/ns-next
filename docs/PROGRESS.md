@@ -65,10 +65,10 @@ lines to six: there is no builtin `OrderedCollection` left to subclass.
 **Measured** ([execution.md](design/execution.md), "What the collections
 module cost"), three builds a side against `6d9974b`: **all four
 `goldens/bench/` fixtures are level** (-0.2% to +0.5%, every comparison
-overlapping); start-up grew by about 0.1 ms (+0.7% to +1.1%), because
-every shipped module is resolved at boot although `CollectionsFactory.ns`
-is compiled only on first use, and the first `platform collections` costs
-about 0.14 ms more.
+overlapping); a start that never sends `platform collections` is level
+too (+0.03 ms, +0.2%), since each shipped module is resolved on its first
+request, not at boot, and the first `platform collections` costs about
+0.28 ms (+2.1%): resolving, compiling and instantiating the module.
 
 **The platform module is done** (2026-09-26 to 2026-09-27;
 [ns-next-platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md);

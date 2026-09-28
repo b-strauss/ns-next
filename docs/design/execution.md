@@ -4191,86 +4191,82 @@ module (plan 2)") added a third shipped module, `CollectionsFactory.ns`
 (99 lines), whose `List` is Newspeak over `Array new:` where the builtin
 `OrderedCollection` was Rust over a growable payload; the mirror's
 `moduleNamed:`, which builds a shipped module's root class on request; and
-`PlatformFactory`'s lazy `collectionsModule`, so the module is compiled and
-instantiated on the first `platform collections`, not at boot.
+`PlatformFactory`'s lazy `collectionsModule`, so the module is resolved,
+compiled and instantiated on the first `platform collections`, not at boot.
 `Kernel.ns` grew from 553 lines to 568 (`Array new:`, the handler search
 collecting into an `Array`) and `PlatformFactory.ns` from 83 to 87: 754
 lines of shipped source against 636. Nothing on a send's path changed.
 
-**Measured 2026-09-28, `f9d953a` against `6d9974b`** (the commit before the
-plan's first), by the protocol of "What removing the re-entries moved"
-above: `6d9974b` built in a throwaway worktree under the git-ignored
-`.temp/` (`git worktree add`, removed afterwards), the head in the current
-tree, three builds of each with the pinned `RUSTFLAGS`, the second and third
-adding `-C metadata=buildb` and `-C metadata=buildc`, each in its own
-`--target-dir`; the six binaries differ byte for byte, none imports
-`VCRUNTIME140.dll` (`dumpbin /dependents`), and each printed every
-fixture's recorded answer and ran both start-up sources to exit status 0
-first.
+**Start-up, measured 2026-09-28, `816367e` against `6d9974b`** (the commit
+before the plan's first), by the protocol of "What removing the re-entries
+moved" above, with a third tree beside them: `ee4bdc8`, the plan's last
+commit before `interpreter/core_library.rs` resolved each shipped module on
+its first request, when a boot resolved the whole table. Both older trees
+were built in throwaway worktrees under the git-ignored `.temp/` (`git
+worktree add`, removed afterwards), the head in the current tree, three
+builds of each with the pinned `RUSTFLAGS`, the second and third adding `-C
+metadata=buildb` and `-C metadata=buildc`, each in its own `--target-dir`;
+the nine binaries differ byte for byte, and each ran both start-up sources
+to exit status 0 first.
 
-**Start-up.** `ns-next run` of two sources, wall-clock from the parent
-process (a .NET `Process` under a `Stopwatch`, not through a shell):
-`startup_zero.ns`, whose `main:args:` answers `0` at once, the source "What
-the platform module cost" measured; and `startup_list.ns`, which sends
-`platform collections List new` once and then answers `0` -- at `6d9974b`
-that answers the builtin `OrderedCollection`, so the same source runs on
-both trees and measures what building the collections module on first use
-costs. 200 runs per binary and source in each of four sittings, five
-discarded warm-up runs each. Sittings 1 and 2 ran each binary's 200 runs
-back to back, the binaries' order rotated between the sittings; sittings 3
-and 4 interleaved them, one run of each of the twelve binary-and-source
-pairs per round, the order rotated by one position every round, so a drift
-of the machine falls on every pair alike. This machine's per-process
-overhead was far higher than in the platform module's measurement --
-`ns-next --help`, which never compiles a kernel, medians 10.55 ms here
-against 2.84 ms then, with the antivirus service busy throughout -- so the
-figures below compare with each other only.
+`ns-next run` of two sources, wall-clock from the parent process (a .NET
+`Process` under a `Stopwatch`, not through a shell): `startup_zero.ns`,
+whose `main:args:` answers `0` at once, the source "What the platform module
+cost" measured; and `startup_list.ns`, which sends `platform collections
+List new` once and then answers `0` -- at `6d9974b` that answers the builtin
+`OrderedCollection`, so the same source runs on every tree and measures what
+building the collections module on first use costs. Three interleaved
+sittings: one run of each of the eighteen binary-and-source pairs per round,
+the order rotated by one position every round, so a drift of the machine
+falls on every pair alike; 200 rounds a sitting after five discarded
+warm-up rounds, 600 runs per binary and source in all. The per-process
+overhead of this machine is high -- the antivirus service scans every
+process start -- so the figures compare with each other only.
 
-Means per build in ms (p10–p90 of a single group is 0.8–1.2 ms wide):
+Means per build over the three sittings, in ms:
 
-| Source | Sitting | Head a | Head b | Head c | `6d9974b` a | `6d9974b` b | `6d9974b` c |
-|---|---|---|---|---|---|---|---|
-| `startup_zero.ns` | 1 | 13.43 | 13.30 | 13.26 | 13.22 | 13.16 | 13.11 |
-| | 2 | 13.30 | 13.40 | 13.27 | 13.10 | 13.32 | 12.98 |
-| | 3 | 13.26 | 13.27 | 13.31 | 13.16 | 13.21 | 13.14 |
-| | 4 | 13.11 | 13.13 | 13.12 | 13.03 | 13.06 | 13.01 |
-| `startup_list.ns` | 1 | 13.58 | 13.26 | 13.26 | 13.33 | 13.16 | 12.91 |
-| | 2 | 13.20 | 13.38 | 13.25 | 12.90 | 13.29 | 13.29 |
-| | 3 | 13.38 | 13.42 | 13.45 | 13.15 | 13.13 | 13.13 |
-| | 4 | 13.25 | 13.27 | 13.25 | 12.96 | 12.96 | 12.96 |
+| Source | Head a | Head b | Head c | `ee4bdc8` a | `ee4bdc8` b | `ee4bdc8` c | `6d9974b` a | `6d9974b` b | `6d9974b` c |
+|---|---|---|---|---|---|---|---|---|---|
+| `startup_zero.ns` | 13.277 | 13.273 | 13.313 | 13.404 | 13.375 | 13.340 | 13.279 | 13.253 | 13.252 |
+| `startup_list.ns` | 13.500 | 13.480 | 13.492 | 13.518 | 13.514 | 13.543 | 13.221 | 13.205 | 13.210 |
 
-Pooled means in ms, over all four sittings (n = 2,400 runs a side) and over
-the two interleaved ones alone (n = 1,200):
+Pooled over the three builds (n = 1,800 runs a tree), in ms, with the
+median and the p10–p90 range of the pooled runs:
 
-| Source | Head, all | `6d9974b`, all | Change | Head, interleaved | `6d9974b`, interleaved | Change |
-|---|---|---|---|---|---|---|
-| `startup_zero.ns` | 13.263 | 13.125 | +0.14 ms, +1.1% | 13.200 | 13.102 | +0.10 ms, +0.7% |
-| `startup_list.ns` | 13.329 | 13.098 | +0.23 ms, +1.8% | 13.337 | 13.048 | +0.29 ms, +2.2% |
+| Source | Tree | Mean | Median | p10–p90 | Against `6d9974b` |
+|---|---|---|---|---|---|
+| `startup_zero.ns` | head | 13.288 | 13.191 | 12.763–13.907 | +0.03 ms, +0.2% |
+| | `ee4bdc8` | 13.373 | 13.283 | 12.839–14.003 | +0.11 ms, +0.8% |
+| | `6d9974b` | 13.262 | 13.164 | 12.732–13.891 | |
+| `startup_list.ns` | head | 13.491 | 13.401 | 12.992–14.123 | +0.28 ms, +2.1% |
+| | `ee4bdc8` | 13.525 | 13.428 | 13.002–14.149 | +0.31 ms, +2.4% |
+| | `6d9974b` | 13.212 | 13.122 | 12.705–13.858 | |
 
-**Every start costs about 0.1 ms more, and the first `platform collections`
-about 0.14 ms on top of that.** Both differences are well inside a single
-group's p10–p90 spread, but they are consistent: in both interleaved
-sittings every head build's mean lies above every `6d9974b` build's, for
-both sources, while in the back-to-back sittings the groups overlap in three
-of the four comparisons. The head's `startup_list.ns` is 0.137 ms above its
-own `startup_zero.ns` in the interleaved sittings; `6d9974b`'s is level with
-its own (-0.05 ms), since its `List` was a builtin class that was there
-anyway. The first-use cost is what the design expected to pay: compiling
-`CollectionsFactory.ns`, building its root class, and instantiating it and
-its facet. The 0.1 ms every start pays is the module being *resolved* at
-boot although nothing uses it: `interpreter/core_library.rs`'s
-`RESOLVED_SHIPPED_MODULES` parses and resolves every module of the table
-the first time any is asked for, which the boot does for `PlatformFactory`
--- so a program that never sends `platform collections` still parses and
-resolves `CollectionsFactory.ns`'s 99 lines, beside the 15 lines `Kernel.ns`
-grew by. That is the reading of the code, not a profile. Resolving each
-shipped module on its first request instead would move that 0.1 ms onto the
-first use; it is not done here.
+**A start that never sends `platform collections` costs what it did before
+the module existed; the first `platform collections` costs about 0.28 ms.**
+The head's `startup_zero.ns` is level with `6d9974b`'s: its builds' means lie
+among `6d9974b`'s (13.27–13.31 against 13.25–13.28), a difference of 0.03 ms
+where one build's p10–p90 range is over 1 ms wide. `ee4bdc8`'s lay above
+both in every sitting, every one of its builds above every head build, by
+0.085 ms pooled: that is what resolving `CollectionsFactory.ns`'s 99 lines
+at every boot cost, and resolving each shipped module on its first request
+(`interpreter/core_library.rs`'s `RESOLVED_SHIPPED_MODULES`, one cell per
+table entry) is what removed it. The 15 lines `Kernel.ns` grew by do not
+show. `startup_list.ns` is where the work went: the head and `ee4bdc8` are
+level there (-0.03 ms), since both resolve the module by the time the
+program ends, and both lie 0.28–0.31 ms above `6d9974b`, whose `List` was a
+builtin class that was there anyway. That first-use cost is what the design
+expects to pay: parsing and resolving `CollectionsFactory.ns`, compiling it,
+building its root class, and instantiating it and its facet.
 
-**The four `goldens/bench/` fixtures.** `ns-next bench <source>
+**The four `goldens/bench/` fixtures, measured 2026-09-28, `f9d953a`
+against `6d9974b`**, three builds of each by the same protocol; what the
+branch changed after `f9d953a` runs only at boot and on the first request
+for a shipped module, never inside a timed loop. `ns-next bench <source>
 --iterations 30`, five rounds a sitting, the six binaries rotating by one
 position from round to round, two sittings, nothing else of this work
-running. Means of the five rounds' medians:
+running; each printed every fixture's recorded answer. Means of the five
+rounds' medians:
 
 Sitting 1:
 
