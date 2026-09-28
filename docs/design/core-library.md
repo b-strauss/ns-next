@@ -1597,10 +1597,11 @@ built (2026-09-26): lazy slots, the table of shipped modules and the
 platform's boot, and platform paths in the image ("The platform" above
 describes what exists). Plan 2, the collections module, is under way:
 `Array new: size`, the handler search that keeps no `OrderedCollection`,
-`moduleNamed:` and `CollectionsFactory.ns` with a Newspeak `List` are
-built ("The collections module (plan 2)" below); the rest -- the image
-round trips of a `List`, moving every program to `List`, and the
-`OrderedCollection` removal -- is the next piece of work.** `Kernel.ns` is to hold only what the VM
+`moduleNamed:` and `CollectionsFactory.ns` with a Newspeak `List`, and the
+image round trips of a `List` and of a second collections facet, are
+built ("The collections module (plan 2)" below); the rest -- moving every
+program to `List`, and the `OrderedCollection` removal -- is the next
+piece of work.** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
@@ -1796,7 +1797,8 @@ the table has two entries. The design as decided:
 
 An artifact names a shipped object by its **path of public members from
 the platform**: the empty path is the platform, `collections` its
-collections facet, `transcript` the transcript, `Transcript` its class,
+collections facet, `collections List` and `collections Collections` that
+facet's two classes, `transcript` the transcript, `Transcript` its class,
 `Platform` the platform's own. A step is a public slot's getter, a public
 nested class's accessor, or a public **class accessor**: a method the
 compiler recognized, in shipped source other than the kernel, as exactly
@@ -1821,7 +1823,13 @@ superclass clause — Newspeak the decoder must never run.
   stays, for the empty path. What needs a path is a **module instance** or
   a **class object** compiled from shipped source; any other instance of
   a shipped class — a `List`, a second transcript — is an ordinary
-  record (below).
+  record (below). `CollectionsFactory`'s root instance and its class object
+  are exactly such a module instance and such a class object: the facet's
+  class accessors name `CollectionsFactory`'s private nested classes, never
+  the root that built the facet, so no path names either the root instance
+  or its class, and an image that reaches them -- which only a host
+  walking `class_enclosing` can -- is refused the same way as the
+  kernel's.
 - **On load, before the graph is decoded**, the host sends each listed
   path's members to the loading interpreter's platform, each step a public
   slot's, nested class's or class accessor of the shipped instance reached

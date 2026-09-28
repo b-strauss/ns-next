@@ -446,16 +446,23 @@ them, numbered densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
 instance of the nested class `Platform` of the shipped `PlatformFactory.ns`
 ([core-library.md](core-library.md), "The platform"): its public slots are
 the lazy `transcript`, `collections` and `kernel`, and its class accessors
-`Platform`, `Transcript`, `Collections` and `KernelNamespace` name those
-classes of the module, once the module root's accessor for each has run.
-The four classes are private to the root: a class accessor reaches them
-by a lexical send (§5.9), and `discover` looks the class up the same way
+`Platform`, `Transcript` and `KernelNamespace` name those classes of the
+module, once the module root's accessor for each has run. `collections`
+answers an instance of the shipped `CollectionsFactory.ns`'s facet
+`Collections`, whose own class accessors `Collections` and `List` name that
+module's two classes the same way, so `collections Collections` and
+`collections List` are platform paths too, with the facet as their first
+member. All five classes are private to their root: a class accessor reaches
+them by a lexical send (§5.9), and `discover` looks the class up the same way
 (`dispatch::lexical_member`), so a private nested class is named by its
 accessor's path like a public one.
-The root instance itself is named by no path, and never written: nothing a
-program can name answers it. A second platform a program made with
-`platform class new` is an ordinary instance record of the class the path
-`Platform` names.
+Neither root instance is named by any path, and neither is ever written:
+nothing a program can name answers `PlatformFactory`'s root, and
+`CollectionsFactory`'s root is reached only lexically, from inside its own
+module, never through a slot a program can read. A second platform a program
+made with `platform class new` is an ordinary instance record of the class
+the path `Platform` names, and a second facet made with `platform collections
+class new` is one of the class the path `collections Collections` names.
 
 An object a path names is referenced as `VALUE_PLATFORM_PATH` (value tag 8), a
 class a path names as `CLASS_PLATFORM_PATH` (class tag 5), each followed by the
@@ -891,8 +898,11 @@ object is no class is `PlatformPathNotAClass`. A crafted image can make the
 second phase read public slots, nested classes and class accessors of
 shipped objects, and so run their lazy initializers, the class accessors'
 one send and superclass clauses; it can run no other method. A crafted
-`collections List` is refused too: `List` answers a class, but its body,
-`^OrderedCollection`, is no class accessor.
+`collections List` decodes: `List` is a class accessor step of the facet,
+exactly `^outer CollectionsFactory List`. A crafted `collections
+newCollections` is refused instead: `newCollections` is the collections
+factory's own public member, never a step of the facet's shipped instance, so
+no enumeration of the facet's members finds it.
 
 **An instance of a path-named class carries exactly that class's layout.** The
 code and the layout of a shipped class come from the loading binary, not from

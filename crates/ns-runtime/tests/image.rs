@@ -10434,6 +10434,93 @@ fn a_second_platform_is_a_record_of_its_path_named_class() {
     );
 }
 
+/// A `List` is an ordinary instance of a shipped class: written as a record
+/// of the class the path `collections List` names, with its `size_` and its
+/// `data` array, and it answers as before after a load -- the class and its
+/// code are the loading binary's.
+#[test]
+fn a_list_is_a_record_of_its_path_named_class() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder usingPlatform: platform = Object new (
+            | public list = platform collections List new. |
+            list add: 3.
+            list add: 4.
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .platform_paths
+            .contains(&"collections List".to_string()),
+        "the list's class is named by its path: {:?}",
+        report.platform_paths
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let list = send_to(&mut loaded, &instance, "list");
+    let size = send_to(&mut loaded, &list, "size");
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&size), Value::SmallInteger(2)));
+    });
+    let two = loaded.interpreter.stash(Value::SmallInteger(2));
+    let at_two = expect_ok(
+        loaded
+            .interpreter
+            .send(&list, Symbol::intern("at:"), &[two]),
+        "list at: 2",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&at_two), Value::SmallInteger(4)));
+    });
+    let platform = loaded.interpreter.platform();
+    let collections = send_to(&mut loaded, &platform, "collections");
+    let fresh_class = send_to(&mut loaded, &collections, "List");
+    let stored_class = send_to(&mut loaded, &list, "class");
+    assert!(
+        same_object(&mut loaded, &stored_class, &fresh_class),
+        "the loaded list is an instance of the loading platform's List"
+    );
+}
+
+/// A facet a program makes itself from `platform collections class` is an
+/// ordinary record of the class the path `collections Collections` names,
+/// and after a load it is equal to the loading platform's facet: a value.
+#[test]
+fn a_second_collections_facet_is_a_record_of_its_path_named_class() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder usingPlatform: platform = Object new (
+            | public facet = platform collections class new. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .platform_paths
+            .contains(&"collections Collections".to_string()),
+        "the facet's class is named by its path: {:?}",
+        report.platform_paths
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let facet = send_to(&mut loaded, &instance, "facet");
+    let list = send_to(&mut loaded, &facet, "List");
+    let platform = loaded.interpreter.platform();
+    let collections = send_to(&mut loaded, &platform, "collections");
+    let fresh_list = send_to(&mut loaded, &collections, "List");
+    assert!(
+        same_object(&mut loaded, &list, &fresh_list),
+        "the loaded facet hands out the loading platform's List"
+    );
+}
+
 #[test]
 fn a_platform_path_the_loader_cannot_follow_is_refused() {
     let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
@@ -10598,11 +10685,21 @@ fn a_class_reference_to_a_path_that_is_no_class_is_refused() {
 /// A module instance holds the core library's state, as the platform holds
 /// the mirror, and a class compiled from shipped source belongs to the
 /// loading binary: the encoder writes neither, and refuses one no platform
-/// path names. The kernel instance and its class are both.
+/// path names. The kernel instance and its class are both; the collections
+/// factory is the second such module, reached here only because a host can
+/// walk a class's enclosing object, which no program can.
 #[test]
 fn a_shipped_object_no_platform_path_names_is_refused() {
     let (mut interpreter, class) = load(EMPTY);
     let platform = interpreter.platform();
+    let collections = expect_ok(
+        interpreter.send(&platform, Symbol::intern("collections"), &[]),
+        "platform collections",
+    );
+    let collections_class = expect_ok(
+        interpreter.send(&collections, Symbol::intern("class"), &[]),
+        "collections class",
+    );
     interpreter.enter(|mutator| {
         let root_class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
@@ -10612,6 +10709,12 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
             .class_enclosing(object)
             .expect("the kernel instance encloses Object");
         let kernel_class = mutator.heap().class_of_object(kernel);
+        let collections_class = class_reference(mutator, &collections_class);
+        let collections_factory = mutator
+            .heap()
+            .class_enclosing(collections_class)
+            .expect("the collections factory instance encloses the facet class");
+        let collections_factory_class = mutator.heap().class_of_object(collections_factory);
         for (shipped, expected) in [
             (
                 kernel,
@@ -10622,6 +10725,16 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
                 kernel_class,
                 "image encoding refuses the class object Kernel: it is compiled from shipped \
                  source, and no platform path names it",
+            ),
+            (
+                collections_factory,
+                "image encoding refuses a module instance of CollectionsFactory: it holds the \
+                 core library's state, and no platform path names it",
+            ),
+            (
+                collections_factory_class,
+                "image encoding refuses the class object CollectionsFactory: it is compiled \
+                 from shipped source, and no platform path names it",
             ),
         ] {
             let refused = image::snapshot(
