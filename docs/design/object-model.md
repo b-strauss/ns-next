@@ -1339,8 +1339,8 @@ and one that is captured is stored the way an object is. See
 Would change: the object representation becomes the one the reference
 engines with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with
 Primordial Soup beside them -- adapted where Newspeak's nesting requires it,
-and the JIT tiers follow on it. Decided with the user on 2026-09-28 and
-2026-09-29; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
+and the JIT tiers follow on it. Decided with the user on 2026-09-29, the
+eight-byte value having been first noted on 2026-09-28; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
 to a high-performance VM". Three `Planned:` sections below and four in
 [memory.md](memory.md) describe its representation steps. The road, each
 step landing green on its own:
@@ -1388,7 +1388,7 @@ a 32-bit arena index already fits the word.
 | `011`, `101`, `111` | never produced; kept so that bit 0 alone tells a `SmallInteger` |
 
 The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4, three tag bits,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779`, `:2836`): Spur
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779` for the three tag bits, `:2836` for `smallIntegerTag`, `:2784` for `smallFloatTag`): Spur
 writes a `SmallInteger` as `(value << 3) + 1` (`integerObjectOf`,
 `:41159`) and tests it by bit 0 alone. Spur's `Character` tag, `010`, is
 taken for the constants: ns-next has no characters, and
@@ -1413,7 +1413,7 @@ result answered by an out-of-line function, a joined `Result`,
 `LoadLiteral`'s `make_value` -- is a store-forwarding stall, 28% of
 `vm::run`'s samples on the send path ([execution.md](execution.md), "Where
 the 3% goes"); fixing it site by site had to inline the whole path to the
-register write and doubled `vm::run` ("A send's value delivered where it
+register write and nearly doubled `vm::run` ("A send's value delivered where it
 is decided: tried and halted", there). A value read and written as one word cannot
 stall that way, on Windows x64 it comes back in `RAX`, and registers, fields,
 arrays, argument buffers and copied closure values take half the memory, with
@@ -1438,7 +1438,11 @@ Rust-side literal data of its code (`Literal`, which holds no handle), and
 needs no identity, so a fresh one per execution is correct. The compact
 instruction encoding takes this as an input ([execution.md](execution.md),
 "Planned: the compact instruction encoding"). A float literal outside the
-`SmallFloat64` range does the same with a boxed `Float`.
+`SmallFloat64` range does the same with a boxed `Float`. Since every
+integer literal is then representable, `Literal::MalformedInteger` and its
+wire tag 8 retire ([compiler.md](compiler.md);
+[image-format.md](image-format.md), "Planned: the image under the new
+representation").
 
 **The debug build keeps its exact check.** Today a debug handle carries its
 heap's id and its move epoch in full, and every accessor compares both
@@ -1447,10 +1451,15 @@ in a debug build it is wider than a word, the word plus both numbers, exactly
 as now, and in a release build it is the bare word. What has to be exactly
 eight bytes in both builds is a word stored in a heap object -- a field, an
 element, a frame's register -- so that the layout is the same in both. Such
-a word cannot go stale the way a Rust-side handle can: the collector walks
-every object by its format and rewrites every field, so it has no field to
-overlook the way it could overlook one a Rust type forgot to trace, and a
-word read out of the heap is given the current heap id and epoch. The check
+a word cannot go stale the way a Rust-side handle can while every
+collection walks every object: the collector reads each object by its format
+and rewrites every field, so it has no field to overlook the way it could
+overlook one a Rust type forgot to trace, and a word read out of the heap is
+given the current heap id and epoch. Under generations (road step 4) a
+scavenge walks only the young objects and the remembered ones, so an old
+object whose store missed the barrier would keep a stale young word; that is
+what `NS_NEXT_STRESS_SCAVENGE`, with the from-space made no-access, catches
+([memory.md](memory.md), "Planned: generations"). The check
 therefore stays exact where the mistake it catches can be made, with the
 brand checking the rest at compile time.
 
@@ -1505,12 +1514,16 @@ verbatim").
 
 **Application ids are 22 bits wide** as well. Running out keeps today's
 rule: an application without an id runs uncached ([dispatch.md](dispatch.md),
-"The dispatch id"). An id is reclaimed once no class object and no cache
-entry names it, which the collector can tell, so reusing it is safe.
+"The dispatch id"). An application id is reclaimed once no class object, no
+inline-cache entry and no application-cache key names it, and a mixin id
+once no application and no application-cache key names it; the collector can
+tell both, so reusing an id is safe.
 
 **The class word** is an ordinary value naming the object's class object.
-An immediate has no header; its class comes from a small table indexed by
-its tag, as Spur's class table's first page holds the tag classes.
+An immediate has no header; its class and its guard come from a small table
+indexed by its tag, and for the constant tag by the constant, since `nil`,
+`true` and `false` share a tag but have three classes and three guards --
+as Spur's class table's first page holds the tag classes.
 
 **Why a class word, and not Spur's one word.** Spur's header holds a class
 *index*, which is both the object's class and the inline caches' tag. That
@@ -1550,26 +1563,35 @@ forwarder needs no field of its own: the class word, which every object has
 -- a header and a class word are the 16-byte minimum -- takes the target, as
 Spur's forwarders take their first slot.
 
-**What becomes a heap object.** A class object keeps its state in fixed
-fields -- its enclosing object, declaring class, superclass and, for a
-metaclass, the class it describes -- plus its application id as a
+**What becomes a heap object.** A class object keeps in fixed fields
+everything of today's `ClassData` that holds per class object: its enclosing
+object, declaring class, superclass, for a metaclass the class it describes
+(`this_class`), its builtin tag (`ClassData.builtin`, which `act` re-reads
+on every send), its value-class refusal, and its application id as a
 `SmallInteger`, which indexes a Rust-side table of `MixinApplication`s; the
 behaviour stays Rust. The application cache is keyed by the mixin's id and
 the superclass application's id rather than by `Rc` addresses, which lets it
 become weak ([memory.md](memory.md), "Weak
 references"). A closure keeps its code id, captured frame and feedback base
-in fixed fields and its copied values inline. A reified frame keeps its
+in fixed fields and its copied values inline; a code id indexes a Rust-side
+table of compiled code that is append-only per heap, its entries never freed
+or reused, since compiled code is shared by mixins and reclaiming it belongs
+with live editing. A reified frame keeps its
 sender, home, receiver, current class, program counter, code id, kind and
 the index of the activation it is married to, if any (today `FrameSlot`'s
 `live`), in fixed fields and its registers inline, and the kernel-private
 `Activation` objects the exception machinery holds become these frame
 objects themselves; the running activations stay on the activation stack
-until road step 7. A frame object has registers only if its code can retain
-them, which is decided once per `CompiledCode`: whether any block in the
-body reaches the frame's registers by reference -- the reference lowering's
-blocks, an inlined conditional's fallback closure. A converted body's frame
-carries none, so no frame object ever grows after `reify`; `bench_block.ns`,
-which reifies a frame per iteration, is the workload that shows the cost.
+until road step 7. A frame object is allocated at `reify` with its code's
+full register count, whatever the code; whether the divorce copies the
+registers into it stays decided per activation from the block's
+`outer_reach`, as today. So no frame object ever grows, and suspension, the
+debugger and edit-and-continue find room for the registers in every reified
+frame; edit-and-continue adding locals makes a new frame object and
+re-marries the activation, the VM rewriting references to the old frame
+itself rather than through `become:`. The cost is a few more words per
+reified frame, and `bench_block.ns`, which reifies a frame per iteration, is
+the workload that shows it.
 While a frame is married its registers live on the stack and the trace skips
 the object's inline copies. `FrameReference` stays, now the type of a handle
 to a frame object, so an `ActivationReference` is still never stored. The
@@ -1593,10 +1615,12 @@ them is a library protocol above the string, since the segmentation rules
 change with every Unicode version and allow no constant-time indexing.
 `Symbol` becomes a subclass of `String`, as in every reference kernel, and
 `Mutator::new_symbol` stays the only way to make one: instantiating `Symbol`
-is refused, with a golden that pins it. Today nothing refuses it --
+is refused, and `String new` answers an empty one-byte string, each pinned by
+a golden. Today nothing refuses it --
 `decide_factory` (`interpreter/instantiate.rs`) special-cases only the VM
-mirror's class and `Array`, so `Symbol new` answers an instance with no text
-([OPEN-WORK.md](../OPEN-WORK.md), "Known defects and gaps").
+mirror's class and `Array`, so `Symbol new` answers an instance with no text,
+and `String new` answers an instance that understands no `size`
+([OPEN-WORK.md](../OPEN-WORK.md)).
 
 **Handles.** An `ObjectReference` becomes the object's byte offset, 64 bits
 wide, so the space is bounded by its reservation rather than by a handle's
@@ -1605,7 +1629,10 @@ heap at 32 GB; that saving exists because a Java field of reference type
 holds nothing else. A Newspeak field holds any value -- an integer, a float,
 an object -- so it is a full 64-bit word whatever the handle's width, as in
 Spur. Accessors may lend a string's units or an object's fields as a slice
-instead of copying them out.
+instead of copying them out. Every field, element and register accessor
+checks its index against the object's own word count, not only against the
+space's bounds, so no write through one object -- a crafted image's
+by-reference register write included -- can reach the next object's header.
 
 ## Planned: `become:` through forwarders
 
@@ -1619,11 +1646,25 @@ its inline cache. The miss
 path, in `interpreter/`, follows the forwarder and cleans up the receiver,
 the stack and the registers, as Spur's `handleForwardedSendFaultForTag:`
 does; the scavenger and the compaction rewrite every reference they meet to
-the target, and the forwarder is garbage afterwards. A forwarder can also be
+the target, and the forwarder is garbage afterwards. The scavenger tells its
+own mark from `become:`'s: a forwarded object in from-space is one it has
+already copied, while a `become:` forwarder it meets is followed to its
+target, which it scavenges in turn; marking likewise follows a forwarder to
+its target. A forwarder can also be
 met without a send: `==` follows forwarders when its two handles differ, and
 a leaf that meets one in an argument fails and is retried after following it,
 as Spur's primitives unforward their arguments on failure. An immediate has
-no object to forward, and `become:` refuses one, as Spur does. Both one-way and
+no object to forward, and `become:` refuses one, as Spur does. It also
+refuses the objects the VM reads structurally rather than through sends --
+class objects, whose fields lookup and `outer` read, closures, whose captured
+frame the VM reads, and frame objects, whose sender and home the unwinder
+reads -- so only instances, arrays, strings and the like are ever forwarded,
+and those structural reads need no check. After a `become:` the VM follows
+forwarders eagerly in the activation stack's registers and receivers, as
+Spur's post-become action does; what is left to meet one lazily is a field
+read, handled by the send miss path, `==` and the leaves as above.
+Edit-and-continue does not use `become:` to grow a live activation's frame
+("Planned: the object layout" above). Both one-way and
 two-way `become:`, each with the choice whether the identity hash moves with
 the identity (Spur's `become:with:twoWay:copyHash:`). The eager
 alternative walks the whole heap on every `become:`: Primordial Soup's
@@ -1711,8 +1752,8 @@ them as its reflective exception is not decided.
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
 - **The value will be one tagged 64-bit word, with Spur's tags, unbounded
-  integers and immediate floats in Spur's range** (planned; decided with the
-  user on 2026-09-28 and 2026-09-29; "Planned: an eight-byte value" above).
+  integers and immediate floats in Spur's range** (planned; first noted with
+  the user on 2026-09-28, decided on 2026-09-29; "Planned: an eight-byte value" above).
   It lands on today's arena, before the object layout, so each step is
   checked against the goldens on its own.
 - **An object will be a header word, a class word and its fields** (planned;

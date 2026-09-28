@@ -684,7 +684,9 @@ it, so a method that is never run never fails. Two literals carry that deferral:
   makes a float). The compiler
   lowers it to `MalformedInteger`; the VM re-runs `parse_integer_literal` when the
   instruction executes and raises its error text, and only if execution actually
-  reaches it.
+  reaches it. With `LargeInteger` (road step 2) every integer literal becomes
+  representable, so this literal and its wire tag 8 are planned to retire
+  ([object-model.md](object-model.md), "Planned: an eight-byte value").
 - `Literal::UnresolvedIdentifier` — an identifier the resolver left unbound:
   a module root's clause receiver, which the root rule decides and which
   never runs ([object-model.md](object-model.md),

@@ -182,8 +182,12 @@ in the corpus only inside comments.
 form C", and the lexer keeps the code points the source text holds, so a
 decomposed `é` stays two code points and differs from a precomposed one. No
 code anywhere in the workspace normalizes. Closing it means normalizing where
-source text becomes a string, which the planned string representation takes
-as given ([object-model.md](object-model.md), "Planned: the object layout").
+source text becomes a string. It is not on the road to a high-performance VM
+([OPEN-WORK.md](../OPEN-WORK.md)), and it needs Unicode normalization data,
+from a crate or from generated tables, which is a dependency decision still
+to be taken. The planned string representation
+([object-model.md](object-model.md), "Planned: the object layout") stores
+whatever code points it is given and does not depend on it.
 
 **Numbers, selectors and symbols follow §4.2's lexical grammar.**
 

@@ -899,9 +899,11 @@ until that pass — its class may not have its application yet — and nothing
 dispatches on it in between. A decoded image rebuilds its applications
 through `apply_mixin` ([image-format.md](image-format.md), "What is *not*
 serialized"), so an id never comes from its bytes. The id is not a handle,
-so the tracer does not see it and a move carries it along; `become:` will
-have to exchange it with the class
-([liveness-and-reflection.md](liveness-and-reflection.md)). In a debug build
+so the tracer does not see it and a move carries it along. The planned
+`become:` swaps no ids: a forwarder carries a reserved id that makes every
+send to it miss, and its target keeps its own id
+([object-model.md](object-model.md), "Planned: `become:` through
+forwarders"). In a debug build
 `Heap::dispatch_id` recomputes the id from the class on every read and
 asserts that the header agrees, so a missed restamp fails the first test
 that dispatches on the stale object. Outside `heap.rs` nothing knows where
@@ -1443,7 +1445,10 @@ interpreter's measurement cannot see:
 `bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_block.ns`; an
 allocation per class object; and a copy that must be restamped wherever a
 class's application changes (`Heap::set_class_application`, the decoder's
-one stamping pass), which `become:` will have to honour too. A debug build's
+one stamping pass). The planned `become:` needs no restamp: its forwarder
+carries a reserved id and the target keeps its own
+([object-model.md](object-model.md), "Planned: `become:` through
+forwarders"). A debug build's
 check in `Heap::dispatch_id` catches a stale copy in every test that
 dispatches on one.
 
@@ -1468,11 +1473,15 @@ cache is free to become weak
 forwarders", road step 5) carries a reserved application id that is never a
 guard, so every send to one misses and the miss path, in
 `interpreter/inline_cache.rs`, follows it before resolving -- Spur's read
-barrier on send, which needs no check on a hit. At 22 bits the ids can run
+barrier on send, which needs no check on a hit. An immediate's guard comes
+from a table indexed by its tag, and for the constant tag by the constant,
+since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the ids can run
 out where today's `u32` counter practically cannot; running out keeps
 today's rule, an application without an id running uncached (`NONE`, "The
-dispatch id" above), and an id is reclaimed once no class object and no cache
-entry names it, which the collector can tell.
+dispatch id" above). An application id is reclaimed once no class object, no
+inline-cache entry and no application-cache key names it, and a mixin id
+once no application and no application-cache key names it, which the
+collector can tell.
 
 ### Considered and rejected
 

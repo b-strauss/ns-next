@@ -230,7 +230,9 @@ program wrongly at exit status 0**:
 - A string literal keeps its source's code points instead of their Unicode
   normal form C (§5.1.5), so a decomposed and a precomposed `é` differ.
   Nothing in the workspace normalizes; closing it means normalizing where
-  source text becomes a string. [frontend.md](design/frontend.md), "A string
+  source text becomes a string. It is not on the road yet, and it needs
+  Unicode normalization data, from a crate or from generated tables -- a
+  dependency decision that is the user's. [frontend.md](design/frontend.md), "A string
   literal is not normalized to NFC".
 
 The others: `i64` integers (§5.1.1); no character literals and no
@@ -332,10 +334,7 @@ value objects are never copied across an actor boundary (§3.1.1).
 - `bench_block.ns` measures 16% apart between two builds of the same tree —
   a standing protocol caveat, not a defect: pool several builds per tree.
 
-## Known defects and gaps
-
-None of these changes a correct program's output; each is wrong but safe, or
-reachable only from a crafted artifact.
+## Defects that change a correct program's output
 
 - **`Symbol new` and `String new` answer an instance with no text.**
   `decide_factory` (`interpreter/instantiate.rs`) special-cases only the VM
@@ -347,6 +346,11 @@ reachable only from a crafted artifact.
   way to make one, and `String new` should answer an empty string; the object
   layout (road step 3) settles both, with goldens
   ([object-model.md](design/object-model.md), "Planned: the object layout").
+
+## Known defects and gaps
+
+None of these changes a correct program's output; each is wrong but safe, or
+reachable only from a crafted artifact.
 
 - **`ns-cli build` accepts a slot accessor as the entry selector.**
   `root_class_answers` (`crates/ns-cli/src/commands/build.rs:54`) asks
@@ -381,7 +385,10 @@ reachable only from a crafted artifact.
   are tag-named but have no entry in that table".
 - **A crafted image can pair a register-less converted frame with a
   by-reference closure, and an `own_index` bound is unchecked** — wrong but
-  safe output, accepted. [image-format.md](design/image-format.md).
+  safe output, accepted; it stays safe because every access is bounds-checked
+  per object, today per `Vec` and in the planned object space against the
+  object's own word count ([memory.md](design/memory.md), "Planned: the
+  object space"). [image-format.md](design/image-format.md).
 - **The memory bound under a crafted artifact** is proportional but large,
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.

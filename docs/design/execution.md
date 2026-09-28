@@ -5640,8 +5640,8 @@ experiment that decided against it.
 
 **Prior art.** Primordial Soup's primitives push their result onto the
 stack themselves and answer only whether they succeeded
-(`Primitives::Invoke`); Cog's `commonSend` writes a send's result into the
-frame. Neither hands a result object back to the loop.
+(`Primitives::Invoke`); Cog's primitives do the same through `pop:thenPush:`
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:72079`). Neither hands a result object back to the loop.
 
 **The sink.** `interpreter/` gains a trait, `DecisionSink`, with three
 methods: `value(mutator, value)`, `step(step)` and `signal(signal)`.
@@ -5787,8 +5787,7 @@ Each step gets its own design when it comes up.
   Newspeak versions SOMns carries (`prior-art/somns/core-lib/Benchmarks`)
   and whose Java versions are in that suite's own repository, and with
   `prior-art/newspeak-benchmarks`, a separate suite -- DeltaBlue, Richards,
-  Splay, parser combinators and micro-benchmarks -- with Java versions of
-  six of its programs.
+  Splay, parser combinators and micro-benchmarks -- with Java versions of five of its programs.
 
 Steps 1 to 6 of the road give a very good interpreter on a modern object
 representation; road step 8 reaches Cog's class, and road step 9 Strongtalk's and

@@ -1169,15 +1169,16 @@ valid and unique. A weak cache would let a freed `Rc<Mixin>` hand its address
 to a newly allocated one, and the new mixin would hit the old entry and be
 given a **different, perfectly valid** application, reporting nothing — the
 failure class the handle invariants exist to prevent. Weakness becomes
-decidable only once a mixin carries an id of its own instead of an address.
-That is a change in its own right, and it belongs with the live-editing work
-([liveness-and-reflection.md](liveness-and-reflection.md)), which is also where
-the cache's unbounded growth belongs. The same per-mixin id is wanted
-independently by dispatch's open option of guarding a private lexical site on
-N's mixin ([dispatch.md](dispatch.md), "Decisions"). The object layout gives
-mixins and applications such ids ([object-model.md](object-model.md),
-"Planned: the object layout"); an id that is never reused while a key can
-still name it is what makes the weak cache sound.
+decidable only once a mixin carries an id of its own instead of an address,
+and the object layout (road step 3) gives mixins and applications ids
+([object-model.md](object-model.md), "Planned: the object layout"). The same
+per-mixin id is wanted by dispatch's open option of guarding a private
+lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What
+makes the weak cache sound is the reuse rule: an application id is reclaimed
+once no class object, no inline-cache entry and no application-cache key
+names it, and a mixin id once no application and no application-cache key
+names it. The cache's unbounded growth under live editing
+([liveness-and-reflection.md](liveness-and-reflection.md)) ends with it.
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
 value — so it is neither a root nor a forwarding target.
@@ -1351,7 +1352,9 @@ owning it makes possible, none of which the measurement covers:
 - **Allocation a JIT can inline.** Cogit bumps `freeStart` against
   `scavengeThreshold` in machine code for `new`, closures and boxed floats
   (`genPrimitiveNew`, `genCreateFullClosure:…`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64SysV.c:16464`, `:19026`);
+  `genInstantiateFloatValue:into:scratchReg:scratchReg:mayFail:`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64SysV.c:16464`, `:19026`,
+  `:15181`);
   Strongtalk does it in generated stubs its compiled code calls
   (`test_for_scavenge`, `prior-art/strongtalk/vm/prims/generatedPrimitives.cpp:52-69`).
   A `malloc` call cannot be inlined.
@@ -1415,11 +1418,14 @@ high-performance VM".
 - **Operations**: reserve, commit a range, decommit a range when a space
   shrinks, protect a range as no-access or read-write, and hand out the
   committed part as `&[u64]` and `&mut [u64]`; dropping the reservation
-  releases it.
+  releases it. `protect` and `decommit` take the reservation by `&mut`, so no
+  lent slice outlives a change of what is accessible, and a lent slice covers
+  only accessible, committed words.
 - **Two implementations behind one interface, from the start**: Windows
   (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, through `windows-sys`) and
   POSIX (`mmap` with `PROT_NONE` to reserve, `mprotect` to commit and protect,
-  `munmap`, through `libc`). Both crates are declarations only, with no
+  `mprotect` to `PROT_NONE` followed by `madvise(MADV_DONTNEED)` to decommit,
+  since `mprotect` alone gives no memory back, and `munmap`, through `libc`). Both crates are declarations only, with no
   run-time code of their own. Primordial Soup has the same split behind the
   same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
   `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits
@@ -1430,8 +1436,12 @@ high-performance VM".
 - **In a debug build a vacated range is protected as no-access**, as Soup does
   around its scavenges and mark-sweeps
   (`from_.NoAccess()`, `prior-art/primordialsoup/vm/heap.cc:341-344`,
-  `:653-655`), so a read through a stale
-  offset faults at once rather than reading whatever was compacted there.
+  `:653-655`). Since the heap's slices cover only accessible words, a stale
+  offset into a protected range fails the accessor's bounds check at once --
+  a panic in the debug build's stress runs. This catches a stale offset into
+  an evacuated nursery space or the compacted-away tail above the new top; a
+  stale offset below the new top lands in live, compacted memory, which is
+  what the epoch check on the Rust-side handles is for.
 - **Executable memory for the JIT tiers** comes to the same crate when they
   do, with its `unsafe` entry into generated code.
 
@@ -1458,22 +1468,27 @@ instruction encoding.
   continuations and host roots -- carry the heap id and the move epoch in
   full in a debug build, as they do today, so the origin guard and the epoch
   check stay exact wherever a stale handle can arise; a word read out of the
-  space is given the current ones, since the collector rewrites every field it
-  walks by format and cannot miss one the way it can miss an unknown Rust
-  field. The one exception is deliberate: a married frame's inline registers
+  space is given the current ones, since a full collection rewrites every
+  field it walks by format and cannot miss one the way it can miss an unknown
+  Rust field; under generations a scavenge walks only the young and the
+  remembered objects, and a missed barrier is what
+  `NS_NEXT_STRESS_SCAVENGE` catches ("Planned: generations"). The one exception is deliberate: a married frame's inline registers
   are skipped, because while it is married its registers live on the
   activation stack, which is traced as a root.
 - **Access stays behind `Heap`'s accessors**, which read the space's words
   through bounds-checked slices, so a stale offset reads a wrong object at
-  worst, never undefined behaviour. Accessors may lend a string's bytes or an
+  worst, never undefined behaviour; every field, element and register
+  accessor also checks its index against the object's own word count, so no
+  access through one object reaches the next object's header. Accessors may lend a string's bytes or an
   object's fields as a slice rather than copy them out, which ends the copy-out
   costs "Known rough edges in the seam" names.
 - **The frame arena goes**: a reified frame is an object of the frame format
   with its registers inline, so there is one graph, one mark, one compaction
   and one forwarding table. Married and divorced frames keep their meaning
   ("Frames, the activation stack and the marriage"), the marriage now a field
-  of the frame object; a frame object has registers only if its code can
-  retain them, decided once per `CompiledCode`, so none ever grows
+  of the frame object; a frame object is allocated with its code's full
+  register count, so none ever grows, and whether a divorce copies the
+  registers stays decided per activation from the block's `outer_reach`
   ([object-model.md](object-model.md), "Planned: the object layout"). The
   activation stack of running activations is unchanged until road step 7,
   the execution model for compiled code.
@@ -1508,7 +1523,17 @@ checking each record's declared size against the bytes remaining; the handle
 paragraphs describe a 64-bit byte offset and the frame arena's end (road step
 3); "A cache records what the lookup decided" reads `ClassData.builtin` as a
 field of the class object, which `act` still reads afresh on every send (road
-step 3); and the gates' stress loop gains `SCAVENGE` (road step 4).
+step 3); and the gates' stress loop gains `SCAVENGE` (road step 4). Road step
+2 also retires `Literal::MalformedInteger` and its wire tag 8, since every
+integer literal becomes representable, which changes the example "Compiling
+an already-resolved module can never raise a `NewspeakError`" gives; "Never
+`{:?}` a `Value`" names `Value::Object`, which constructors and accessors
+replace; and the `prior-art/` paragraph counts ten reference implementations
+instead of seven once `num-bigint`, `num-integer` and `num-rational`, all
+MIT OR Apache-2.0, join as submodules, with a third-party notices file for
+the code adapted from them. Road step 3 leaves "decided per activation from
+the block's `outer_reach`" as it stands, since the divorce keeps that rule,
+but the frame arena's wording goes.
 
 ## Planned: generations
 
@@ -1518,7 +1543,7 @@ Road step 4.
 
 - **Layout**: the nursery sits at the low end of the reservation -- two
   survivor spaces and eden -- and the old space above it, as in Spur
-  (`setHeapBase:memoryLimit:endOfMemory:`, `cointerp.c:~60013`) and Strongtalk
+  (`setHeapBase:memoryLimit:endOfMemory:`, `cointerp.c:60020`) and Strongtalk
   (`prior-art/strongtalk/vm/memory/universe.cpp:64-79`). Young means an offset
   below the boundary, one comparison, in the barrier and later in generated
   code.
@@ -1558,12 +1583,20 @@ Road step 4.
   (`prior-art/primordialsoup/vm/heap.cc:279-283`).
 - **Large objects are allocated old**, as Soup does from 32 KB
   (`kLargeAllocationSize`), since copying them buys nothing.
+- **Initializing stores skip the barrier.** A freshly allocated object is
+  filled before anything else can see it, so its initializing stores take no
+  barrier; therefore every old-space allocation outside the decoder -- a large
+  object, or an allocation that found eden's reserve spent ("Planned: inline
+  allocation") -- is born remembered, and the next scavenge scans it.
 - **A full collection** is the mark-compact over both generations; the image
   decoder allocates everything old, the boxed floats and large integers it
   creates included, since a decoded graph is long-lived and an old-to-old
   store needs no barrier.
 - **The weak symbol table is pruned at every scavenge** as well as at every
-  full collection, since a young symbol can die in either.
+  full collection, since a young symbol can die in either. At a scavenge a
+  young entry whose symbol was not copied becomes `None`, a copied one is
+  rewritten to its new location, and an old entry is left alone; the table
+  is not a strong root.
 - **A fourth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
   safepoint, which is what finds a store that missed the barrier.
 
@@ -1588,7 +1621,7 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   allocations are bounded by a stretch's straight-line instructions times the
   large-object threshold, but no fixed reserve fits every body, so an
   allocation that finds the reserve spent allocates in old space, born
-  remembered, and requests a safepoint, as Strongtalk's `allocate_tenured`
+  remembered by the rule in "Planned: generations", and requests a safepoint, as Strongtalk's `allocate_tenured`
   does when a scavenge cannot run
   (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
 - **The bump path lives in `heap.rs`**; an instruction arm calls it and does
@@ -1692,9 +1725,8 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   `Rc::as_ptr` as a key needs the strong reference to keep it unique; weakly, a
   recycled address would answer an old entry with a different, perfectly valid
   application. It becomes decidable once a mixin carries an id, which the
-  live-editing work wants anyway. The planned object layout gives mixins and
-  applications ids ("Planned: the object space"; [object-model.md](object-model.md),
-  "Planned: the object layout").
+  planned object layout gives mixins and applications (road step 3;
+  [object-model.md](object-model.md), "Planned: the object layout").
 - **A collection is requested by comparing an arena's length against a limit**,
   reset to `max(4096, live * 2)` after each collection, rather than by counting
   allocations: the length is already in hand where an allocation happens, so the

@@ -2375,14 +2375,14 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   name is the self send §5.7 makes it, so a class that declares or inherits
   the name reaches its own. `LoadBuiltinClass` and its wire tag 2 are
   retired — "The predefined classes are accessors on `Object`" above.
-- **Integers are unbounded, through a `LargeInteger` written here** (decided
-  with the user on 2026-09-29, planned with the eight-byte value): §5.1.1
+- **Integers will be unbounded, through a `LargeInteger` written here**
+  (planned; decided with the user on 2026-09-29, with the eight-byte value): §5.1.1
   requires it, and a bignum crate would keep its digits outside the object
   space. The algorithms are adapted from `num-bigint` and `num-integer`, with
   their attribution ("Planned: large integers" above). Until then an integer
   is an `i64`, and overflow is an error rather than a silent wraparound.
-- **Strings store code points in one of two widths**, Latin-1 or 32 bits
-  (decided with the user on 2026-09-29; [object-model.md](object-model.md),
+- **Strings will store code points in one of two widths**, Latin-1 or 32
+  bits (planned; decided with the user on 2026-09-29; [object-model.md](object-model.md),
   "Planned: the object layout").
 - **Exceptions** (nine decisions taken with the user on 2026-09-25, built
   2026-09-25 to 2026-09-26; "Exceptions" above;

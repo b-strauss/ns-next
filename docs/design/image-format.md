@@ -1157,7 +1157,9 @@ which is old space's bytes relocated on load, is the model this does not take.
   answers a SmallInteger when the value fits 61 bits and a `LargeInteger`
   otherwise. An integer beyond the `i64` range, as a value and as a literal,
   takes a new value tag and a new literal tag, each the next free number when
-  it lands, carrying a sign and its 64-bit digits.
+  it lands, carrying a sign and its 64-bit digits. Since every integer
+  literal is then representable, the malformed-integer literal tag 8
+  (`Literal::MalformedInteger`) retires.
 - **Floats** stay `VALUE_FLOAT`, an `f64` on the wire, and the decoder answers
   an immediate SmallFloat64 or a boxed `Float` from the value alone. A boxed
   `Float` is a value with no identity, so it needs no record of its own.
@@ -1166,14 +1168,18 @@ which is old space's bytes relocated on load, is the model this does not take.
 - **Frames become object records.** A reified frame is an object of the frame
   format ([object-model.md](object-model.md), "Planned: the object layout"), so
   its record joins the object table under a new object tag. The separate frame
-  count and frame table go; the frame's kind stays a field of the frame object
-  and keeps its `FRAME_*` tags, and the frame record tags the object record
-  replaces retire.
+  count and frame table go, and a frame id in a closure record or any other
+  record becomes an object id. `OBJECT_ACTIVATION` (9), whose body is one
+  frame id, retires into the new frame object tag, since a kernel-private
+  `Activation` is then the frame object itself. The frame's kind stays a field
+  of the frame object and keeps its `FRAME_*` kind tags.
 - **The decoder learns each record's size before it allocates.** A placeholder
   per record, allocated before any record is read, assumes a fixed size; in a
-  space of variably sized objects the first pass reads each record's size from
-  its header, allocates, and the second pass fills the fields, whose forward
-  references then name objects that already exist.
+  space of variably sized objects the first pass parses each record's body,
+  whose field, element or unit count gives the object's size -- records carry
+  no size field, and none is added -- and checks it against the bytes
+  remaining, then allocates, and the second pass fills the fields, whose
+  forward references then name objects that already exist.
 - **The decode amplification is recomputed** for a 16-byte minimum object
   against the minimum record ([memory.md](memory.md), "The interim cost, and the one
   question still open", where the figures are, and `CLAUDE.md`'s paragraph on untrusted images), and
@@ -1210,7 +1216,10 @@ without the rest of the loop, the class creation, the walk or the unwind it
 belongs to. The depth limit's reserve (`Mutator.depth_reserve`), a frame
 held while an error near the limit is signalled, would have to travel with
 the stack as well ([execution.md](execution.md), "The depth limit").
-Suspending then means reifying and divorcing the whole stack, which is the same
+Under the planned object layout every reified frame will have room for its
+registers, since a frame object will be allocated with its code's full
+register count ([object-model.md](object-model.md),
+"Planned: the object layout"). Suspending then means reifying and divorcing the whole stack, which is the same
 operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
 before taking a snapshot. An activation's `program_counter` being stored only at sends,
