@@ -15,6 +15,32 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
+**The loop over locals is done** (2026-09-28;
+[ns-next-loop-over-locals](superpowers/plans/2026-09-28-1808-ns-next-loop-over-locals.md);
+[execution.md](design/execution.md), "The loop over locals"), designed with
+the user after the 4% `bench_megamorphic.ns` lost to simultaneous slots was
+traced to where LLVM placed the test of a send's `Flow`. `vm::run` enters
+once per stretch between two safepoints; `run_stretch`, forced inline, keeps
+the running frame's activation, code, program counter, feedback base and a
+new `RegisterBase` (`heap.rs`: a register access is one index and one bounds
+check, a debug build checks its activation's generation) in locals, each arm
+advances the program counter itself, and a send, a return, an unwind or a
+forcing answers a one-byte `Transfer` with the next frame in a `Handoff`;
+`Flow` and `vm::poll` are gone, and the frame is written back to
+`FrameRegisters` only when a safepoint is requested. The safepoints are
+where they were, and no golden changed. **Measured**
+([execution.md](design/execution.md), "What the loop over locals moved"),
+three builds a side against `5fbb2cb`, two sittings: every fixture faster --
+`bench_loop.ns` -29.7%, `bench_send.ns` -23.3%, `bench_block.ns` -13.6%,
+`bench_megamorphic.ns` -19.9% (medians), separated in every sitting but one
+of `bench_loop.ns`'s, which two outlying rounds overlap; `vm::run` is one
+function of 7,143 instructions against 7,083. A scratch build with one more
+calling instruction arm, not committed, left `bench_megamorphic.ns` and
+`bench_block.ns` level but cost `bench_loop.ns` and `bench_send.ns` about 3%
+(+3.0%, +3.3%, means): an arm is still not free, and why is open. **Next:
+the compact instruction encoding**, the separate plan this one named
+([execution.md](design/execution.md), "The loop over locals").
+
 **Simultaneous slots are done** (2026-09-28;
 [ns-next-simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);
 [object-model.md](design/object-model.md), "Simultaneous slots"), through
@@ -52,7 +78,8 @@ recovered two. The rest is bisected to the one calling arm the four
 instructions add to `vm::run`'s dispatch: a build whose arm calls nothing is
 level on all four, and one whose arm calls and discards the answer is not;
 aligning every jump target does not help; it reorders every block of
-`vm::run` and the `Flow` test after a send with it. Left open below.
+`vm::run` and the `Flow` test after a send with it. The loop over locals,
+above, took the `Flow` away and recovered it.
 
 **The syntax is the specification's grammar** (2026-09-27 to 2026-09-28,
 decided with the user; [frontend.md](design/frontend.md), "Grammar"): every
@@ -74,10 +101,7 @@ semantic deviation that answers a correct program wrongly at exit status 0
 -- the synchronous `<-:`, set aside by the user until there are actors --
 as the first candidate of a section-by-section semantic audit of the
 specification, like the syntax one. Unbounded integers were set aside by the
-user (2026-09-28). Recovering the 4% `bench_megamorphic.ns` lost to
-the dispatch arm simultaneous slots add to `vm::run`, starting from the
-bisection [execution.md](design/execution.md)'s "What simultaneous slots
-cost" records.
+user (2026-09-28).
 
 **The collections module is done** (2026-09-28;
 [ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md);

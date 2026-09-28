@@ -69,11 +69,11 @@ pub(crate) fn enclosing_object<'gc>(
 ///
 /// `#[inline(never)]`: only an uncached `super` send comes here
 /// (`inline_cache::send_super` is the cached one), and the run loop's
-/// instruction step, which inlines every send, need not carry a copy of
-/// its lookup. Inlined, it once made the step a function of its own, and
-/// every instruction -- not only every send -- paid a call and a `Flow`
+/// stretch, which inlines every send, need not carry a copy of its lookup.
+/// Inlined, it once made the per-instruction step a function of its own,
+/// and every instruction -- not only every send -- paid a call and a `Flow`
 /// returned through memory, 6.6-13.6% on all seven benchmarks; `vm::run`
-/// now forces the step inline.
+/// now forces its stretch inline.
 #[inline(never)]
 pub(crate) fn decide_super_send<'gc>(
     mutator: &mut Mutator<'gc>,

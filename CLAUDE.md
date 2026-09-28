@@ -448,11 +448,14 @@ that source one build per commit measures the build rather than the commit — b
 several of each tree and pool them, or the comparison is noise. The shipped build does
 not carry the pin: it costs about 110 KB (5.6%) and
 measured no faster. `docs/design/execution.md`'s measurement protocol ("What removing the
-re-entries moved") spells it out. `vm::run`'s per-instruction step sits near LLVM's
-inlining threshold and is forced inline; before timing a change to a send's path, check
-with `dumpbin /disasm` (from the Visual Studio Build Tools, not on `PATH`) on a release
-build with debug information that no `vm::run::closure` became a function of its own
-(`docs/design/execution.md`, "What the inline caches moved").
+re-entries moved") spells it out. `vm::run`'s stretch (`run_stretch`, the loop over the
+frame's locals between two safepoints) sits near LLVM's inlining threshold and is forced
+inline into `run`; before timing a change to a send's path, check with `dumpbin /disasm`
+(from the Visual Studio Build Tools, not on `PATH`) on a release build with debug
+information that no `vm::run::closure` and no `run_stretch` became a function of its own
+(`docs/design/execution.md`, "What the inline caches moved" and "What the loop over
+locals moved"). An instruction arm is not free: one more arm that calls a function
+measured about 3% on `bench_loop.ns` and `bench_send.ns` (the same section).
 
 Every corpus module must parse; there is no list of exceptions. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
