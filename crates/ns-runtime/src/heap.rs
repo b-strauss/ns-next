@@ -2950,8 +2950,9 @@ impl<'gc> Heap<'gc> {
     /// is `SmallInteger(resolved)`; its value is then field
     /// `computation_index`. That value is never itself a future --
     /// `Mutator::future_computed` follows a future of a future before it
-    /// records one -- so one pass of replacement leaves no resolved future
-    /// behind in any field it rewrites.
+    /// records one, and one whose fields crafted code made so is malformed
+    /// and not replaced -- so one pass of replacement leaves no resolved
+    /// future behind in any field it rewrites.
     pub(crate) fn replace_resolved_futures(
         &mut self,
         future_class: ClassReference<'gc>,
@@ -2972,7 +2973,12 @@ impl<'gc> Heap<'gc> {
             if let (Some(Value::SmallInteger(state)), Some(value)) =
                 (fields.get(state_index), fields.get(computation_index))
             {
-                if *state == resolved {
+                // A "resolved" future whose value is a future is one crafted
+                // code corrupted (`FutureState::Malformed`): it is left in
+                // place, for a forcing to refuse.
+                let value_is_a_future = matches!(value, Value::Object(target)
+                    if self.class_of_object(*target).same(future_class));
+                if *state == resolved && !value_is_a_future {
                     let index = u32::try_from(index)
                         .expect("internal: an arena index fits the handle's u32");
                     values.insert(index, *value);

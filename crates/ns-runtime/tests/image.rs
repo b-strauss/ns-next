@@ -9952,6 +9952,73 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
     });
 }
 
+/// Crafted code can corrupt a future's slots once it holds one; the encoder
+/// refuses to write such a future rather than write a record the decoder
+/// would refuse (`future::fields_for_an_image`), and does not see through a
+/// "resolved" one whose value is another future.
+#[test]
+fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder = Object new (
+          | public held |
+        ) (
+          public block = ( ^[3] )
+        ) : ()
+    "};
+    for corruption in ["no closure", "state 7", "resolved to each other"] {
+        let (mut interpreter, class) = load(source);
+        let holder = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+        let block = expect_ok(
+            interpreter.send(&holder, Symbol::intern("block"), &[]),
+            "block",
+        );
+        let platform = interpreter.platform();
+        let refusal = interpreter.enter(|mutator| {
+            let Value::Object(closure) = mutator.fetch(&block) else {
+                panic!("block answers a block");
+            };
+            let holder = mutator.fetch(&holder);
+            let future = mutator.new_future(closure);
+            let other = mutator.new_future(closure);
+            let heap = mutator.heap_mut();
+            match corruption {
+                "no closure" => {
+                    heap.set_instance_field(future, 0, Value::SmallInteger(5));
+                }
+                "state 7" => {
+                    heap.set_instance_field(future, 1, Value::SmallInteger(7));
+                }
+                _ => {
+                    heap.set_instance_field(future, 0, Value::Object(other));
+                    heap.set_instance_field(future, 1, Value::SmallInteger(2));
+                    heap.set_instance_field(other, 0, Value::Object(future));
+                    heap.set_instance_field(other, 1, Value::SmallInteger(2));
+                }
+            }
+            heap.set_instance_field(*object(&holder), 0, Value::Object(future));
+            let class = class_reference(mutator, &class);
+            let platform = mutator.fetch(&platform);
+            match image::snapshot(
+                mutator,
+                Some(source),
+                &Origin::File(PathBuf::from("t.ns")),
+                class,
+                &platform,
+                &[holder],
+            ) {
+                Ok(_) => panic!("{corruption}: a malformed future was written"),
+                Err(message) => message,
+            }
+        });
+        assert_eq!(
+            refusal, "image encoding cannot serialize a malformed future",
+            "{corruption}"
+        );
+    }
+}
+
 /// Tag 5 was the class record before its mixin became a tagged reference;
 /// a stale record's bytes meet an unknown tag instead of being read in the
 /// new layout.

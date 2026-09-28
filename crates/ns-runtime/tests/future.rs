@@ -87,7 +87,7 @@ fn runs(interpreter: &mut Interpreter, holder: &Root) -> i64 {
     })
 }
 
-/// Which of its three states `future` is in, as a word, since a
+/// Which of its states `future` is in, as a word, since a
 /// `FutureState` carries handles that cannot leave the entry.
 fn state_of(interpreter: &mut Interpreter, future: &Root) -> &'static str {
     interpreter.enter(|mutator| {
@@ -98,6 +98,7 @@ fn state_of(interpreter: &mut Interpreter, future: &Root) -> &'static str {
             FutureState::Unresolved(_) => "unresolved",
             FutureState::Resolving => "resolving",
             FutureState::Resolved(_) => "resolved",
+            FutureState::Malformed => "malformed",
         }
     })
 }

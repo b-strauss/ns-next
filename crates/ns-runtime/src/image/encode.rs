@@ -1578,12 +1578,16 @@ fn encode_object<'gc>(
     match &record.data {
         // An unresolved future -- a resolved one is never a record -- is
         // written unresolved even while its block runs
-        // (`future::fields_for_an_image`).
-        ObjectData::Instance(fields)
+        // (`future::fields_for_an_image`). One whose fields crafted code
+        // corrupted is refused: the decoder would refuse it.
+        ObjectData::Instance(_)
             if context.heap.class_builtin(record.class) == Some(BuiltinClass::Future) =>
         {
+            let Some(fields) = future::fields_for_an_image(context.heap, object) else {
+                return Err("image encoding cannot serialize a malformed future".to_string());
+            };
             writer.write_u8(OBJECT_INSTANCE);
-            encode_values(writer, &future::fields_for_an_image(fields), context);
+            encode_values(writer, &fields, context);
         }
         ObjectData::Instance(fields) => {
             writer.write_u8(OBJECT_INSTANCE);

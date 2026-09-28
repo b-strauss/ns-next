@@ -692,7 +692,11 @@ without its override fails
 `future_overrides_every_public_member_of_object_as_protected`. Its state is
 two private slots, `computation` — its block until it is resolved, then its
 value — and `state`, 0 unresolved, 1 resolving, 2 resolved, which only
-`interpreter/future.rs` reads and writes. Forcing is a trampoline step that
+`interpreter/future.rs` reads and writes. It reads them as untrusted, since
+crafted code can store into them once it holds a future: any other state,
+an unresolved future without a closure, or a resolved one whose value is a
+future is `FutureState::Malformed`, and forcing it is an ordinary error
+([image-format.md](image-format.md), "Futures in a graph"). Forcing is a trampoline step that
 activates the future's block under `Continuation::Future`, never a call
 back into Newspeak; once the block returns, `vm::finish` hands its value to
 `Mutator::future_computed`, which records it and either delivers it to the

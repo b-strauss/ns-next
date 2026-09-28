@@ -1061,6 +1061,178 @@ fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
     );
 }
 
+/// How a test corrupts a future's two slots, as crafted code can once the
+/// future exists: a decoded frame may carry the future as its receiver, and
+/// `InitializeSlot` stores into `self` without a class check.
+#[derive(Clone, Copy)]
+enum Corruption {
+    /// `computation` a small integer, the state still "unresolved".
+    ComputationNoObject,
+    /// `computation` an object that is no closure, the state still
+    /// "unresolved".
+    ComputationNoClosure,
+    /// The state none of the three, the closure intact.
+    StateNoneOfTheThree,
+    /// Two futures "resolved", each to the other.
+    ResolvedToEachOther,
+}
+
+/// A future of `block`'s closure, its fields corrupted as `corruption`
+/// says, stored into `holder`'s slot 0.
+fn a_corrupted_future(
+    interpreter: &mut Interpreter,
+    holder: &Root,
+    block: &Root,
+    corruption: Corruption,
+) -> Root {
+    interpreter.enter(|mutator| {
+        let Value::Object(closure) = mutator.fetch(block) else {
+            panic!("block answers a block");
+        };
+        let Value::Object(receiver) = mutator.fetch(holder) else {
+            panic!("an instance");
+        };
+        let future = mutator.new_future(closure);
+        let heap = mutator.heap_mut();
+        match corruption {
+            Corruption::ComputationNoObject => {
+                heap.set_instance_field(future, 0, Value::SmallInteger(5));
+            }
+            Corruption::ComputationNoClosure => {
+                heap.set_instance_field(future, 0, Value::Object(receiver));
+            }
+            Corruption::StateNoneOfTheThree => {
+                heap.set_instance_field(future, 1, Value::SmallInteger(7));
+            }
+            Corruption::ResolvedToEachOther => {
+                let other = mutator.new_future(closure);
+                let heap = mutator.heap_mut();
+                heap.set_instance_field(future, 0, Value::Object(other));
+                heap.set_instance_field(future, 1, Value::SmallInteger(2));
+                heap.set_instance_field(other, 0, Value::Object(future));
+                heap.set_instance_field(other, 1, Value::SmallInteger(2));
+            }
+        }
+        mutator
+            .heap_mut()
+            .set_instance_field(receiver, 0, Value::Object(future));
+        mutator.stash(Value::Object(future))
+    })
+}
+
+/// A future whose fields no forcing wrote -- corrupted by crafted code --
+/// is an ordinary, catchable error wherever it is forced: by
+/// `ResolveFuture`, by a message to it (its `doesNotUnderstand:`), and as
+/// the answer of another future's block (`Mutator::future_computed`). Never
+/// a panic, and never a recursion without end through futures resolved to
+/// each other.
+#[test]
+fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | public held |
+        ) (
+          public block = ( ^[3] )
+          public answeringHeld = ( ^[held] )
+          public probe = ( ^0 )
+          public good = ( ^1 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // LoadOwnSlot r0 <- own 0 (held, the corrupted future);
+        // ResolveFuture r1 <- r0; Return r1
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::LoadOwnSlot {
+                    destination: 0,
+                    own_index: 0,
+                },
+                Instruction::ResolveFuture {
+                    destination: 1,
+                    source: 0,
+                },
+                Instruction::Return { register: 1 },
+            ],
+            argument_count: 0,
+            register_count: 2,
+            statement_program_counter: vec![(0, 0..3)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            unwind_marker: None,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let block = expect_ok(send(&mut interpreter, &instance, "block", &[]), "block");
+    for corruption in [
+        Corruption::ComputationNoObject,
+        Corruption::ComputationNoClosure,
+        Corruption::StateNoneOfTheThree,
+        Corruption::ResolvedToEachOther,
+    ] {
+        let future = a_corrupted_future(&mut interpreter, &instance, &block, corruption);
+        let result = send(&mut interpreter, &instance, "probe", &[]);
+        let error = expect_error(&mut interpreter, result, "ResolveFuture");
+        assert!(
+            error.message.contains("malformed future"),
+            "{}",
+            error.message
+        );
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let result = send(&mut interpreter, &future, "+", &[one]);
+        let error = expect_error(&mut interpreter, result, "a message to it");
+        assert!(
+            error.message.contains("malformed future"),
+            "{}",
+            error.message
+        );
+        // A well-formed future whose block answers the corrupted one.
+        let answering = expect_ok(
+            send(&mut interpreter, &instance, "answeringHeld", &[]),
+            "answeringHeld",
+        );
+        let outer = interpreter.enter(|mutator| {
+            let Value::Object(closure) = mutator.fetch(&answering) else {
+                panic!("answeringHeld answers a block");
+            };
+            let future = mutator.new_future(closure);
+            mutator.stash(Value::Object(future))
+        });
+        let one = interpreter.stash(Value::SmallInteger(1));
+        let result = send(&mut interpreter, &outer, "+", &[one]);
+        let error = expect_error(&mut interpreter, result, "a block answering it");
+        assert!(
+            error.message.contains("malformed future"),
+            "{}",
+            error.message
+        );
+        // The outer future was abandoned, not left resolving.
+        interpreter.enter(|mutator| {
+            let Value::Object(outer) = mutator.fetch(&outer) else {
+                panic!("a future is an object");
+            };
+            assert!(matches!(
+                mutator.future_state(outer),
+                ns_runtime::interpreter::future::FutureState::Unresolved(_)
+            ));
+        });
+    }
+    // The interpreter goes on.
+    let result = expect_ok(send(&mut interpreter, &instance, "good", &[]), "good");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        1
+    );
+}
+
 /// The inlined integer leaves (`Instruction::IntegerBinary`). Each one is
 /// checked through compiled source rather than a hand-built code object, so
 /// the test survives a change to the lowering, and each is checked against

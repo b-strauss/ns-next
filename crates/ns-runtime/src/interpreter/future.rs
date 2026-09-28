@@ -31,7 +31,19 @@ pub enum FutureState<'gc> {
     /// Its closure is running; forcing it again is §6.3.2's ill-founded
     /// recursion.
     Resolving,
+    /// Its value, which is never itself a future: `future_computed` follows
+    /// a future of a future before it records one.
     Resolved(Value<'gc>),
+    /// Fields no forcing wrote: a state that is none of the three, an
+    /// unresolved future whose `computation` is no closure, or a resolved
+    /// one whose value is a future. Nothing the runtime does makes one, and
+    /// the decoder refuses one in an image, but crafted code can store into
+    /// a future's slots once it holds one -- a decoded frame may carry any
+    /// receiver, and `InitializeSlot` stores into `self` unchecked -- so a
+    /// future's fields are read as untrusted: forcing this one is an
+    /// ordinary error (`malformed`), never a panic, and never a walk from
+    /// one resolved future to the next that need not end.
+    Malformed,
 }
 
 /// What the activation that forced a future does once its block returns.
@@ -151,15 +163,7 @@ impl<'gc> Mutator<'gc> {
 
     /// Where `future` is in its life, read from its two slots.
     pub fn future_state(&self, future: ObjectReference<'gc>) -> FutureState<'gc> {
-        let computation = self.future_field(future, COMPUTATION_FIELD);
-        match self.future_field(future, STATE_FIELD) {
-            Value::SmallInteger(RESOLVED) => FutureState::Resolved(computation),
-            Value::SmallInteger(RESOLVING) => FutureState::Resolving,
-            _ => match computation {
-                Value::Object(closure) => FutureState::Unresolved(closure),
-                _ => unreachable!("internal: an unresolved future holds its closure"),
-            },
-        }
+        state_in(&self.heap, future)
     }
 
     /// A new unresolved future of `closure`. Marks the heap as having made
@@ -177,12 +181,6 @@ impl<'gc> Mutator<'gc> {
         fields[STATE_FIELD] = Value::SmallInteger(UNRESOLVED);
         self.heap
             .allocate_object(class, ObjectData::Instance(fields))
-    }
-
-    fn future_field(&self, future: ObjectReference<'gc>, index: usize) -> Value<'gc> {
-        self.heap
-            .instance_field(future, index)
-            .expect("internal: a future has both of its slots")
     }
 
     fn set_future_fields(
@@ -215,12 +213,21 @@ impl<'gc> Mutator<'gc> {
         forcing: FutureForcing<'gc>,
         value: Value<'gc>,
     ) -> Result<FutureOutcome<'gc>, Signal<'gc>> {
-        if let Some(inner) = self.as_future(value) {
-            match self.future_state(inner) {
-                FutureState::Resolved(resolved) => return self.future_computed(forcing, resolved),
+        // A resolved future's value is never a future
+        // (`FutureState::Resolved`), so one look through `value` is all it
+        // takes: nothing here loops or recurses, whatever a future's fields
+        // hold.
+        let value = match self.as_future(value) {
+            None => value,
+            Some(inner) => match self.future_state(inner) {
+                FutureState::Resolved(resolved) => resolved,
                 FutureState::Resolving => {
                     self.future_abandoned(forcing);
                     return Err(divergent(Value::Object(inner)));
+                }
+                FutureState::Malformed => {
+                    self.future_abandoned(forcing);
+                    return Err(malformed(Value::Object(inner)));
                 }
                 FutureState::Unresolved(closure) => {
                     // Force the inner one, then come back to this one, which
@@ -236,8 +243,8 @@ impl<'gc> Mutator<'gc> {
                         })),
                     }));
                 }
-            }
-        }
+            },
+        };
         // Record the value on every link, the waiting ones included; the
         // last link waits on nothing and says what happens next.
         let mut forcing = forcing;
@@ -263,11 +270,45 @@ impl<'gc> Mutator<'gc> {
         let mut next = Some(Box::new(forcing));
         while let Some(mut forcing) = next {
             if let FutureState::Resolving = self.future_state(forcing.future) {
-                let computation = self.future_field(forcing.future, COMPUTATION_FIELD);
+                // Its closure, kept there while it resolved -- or whatever
+                // crafted code stored since, which the next read finds
+                // `Malformed`.
+                let computation = self
+                    .heap
+                    .instance_field(forcing.future, COMPUTATION_FIELD)
+                    .unwrap_or(Value::Nil);
                 self.set_future_fields(forcing.future, computation, UNRESOLVED);
             }
             next = forcing.then.take();
         }
+    }
+}
+
+/// Where `future` is in its life, read from the heap alone, so that the
+/// encoder, which holds nothing more, reads a future as the run loop does.
+/// `future` is an instance of `Future`; its fields are read as untrusted
+/// (`FutureState::Malformed`).
+fn state_in<'gc>(heap: &Heap<'gc>, future: ObjectReference<'gc>) -> FutureState<'gc> {
+    let (Some(computation), Some(Value::SmallInteger(state))) = (
+        heap.instance_field(future, COMPUTATION_FIELD),
+        heap.instance_field(future, STATE_FIELD),
+    ) else {
+        return FutureState::Malformed;
+    };
+    match (state, computation) {
+        (RESOLVED, Value::Object(value))
+            if heap
+                .class_of_object(value)
+                .same(heap.class_of_object(future)) =>
+        {
+            FutureState::Malformed
+        }
+        (RESOLVED, value) => FutureState::Resolved(value),
+        (RESOLVING, _) => FutureState::Resolving,
+        (UNRESOLVED, Value::Object(closure)) if heap.is_closure(closure) => {
+            FutureState::Unresolved(closure)
+        }
+        _ => FutureState::Malformed,
     }
 }
 
@@ -295,11 +336,8 @@ pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'g
     if heap.class_builtin(heap.class_of_object(object)) != Some(BuiltinClass::Future) {
         return value;
     }
-    match (
-        heap.instance_field(object, STATE_FIELD),
-        heap.instance_field(object, COMPUTATION_FIELD),
-    ) {
-        (Some(Value::SmallInteger(RESOLVED)), Some(resolved)) => resolved,
+    match state_in(heap, object) {
+        FutureState::Resolved(resolved) => resolved,
         _ => value,
     }
 }
@@ -311,12 +349,28 @@ pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'g
 /// met, it is written as what `future_abandoned` would make of it -- its
 /// closure is still in `computation`, kept there for exactly that -- since a
 /// load starts no block, so nothing could finish resolving it.
-pub(crate) fn fields_for_an_image<'gc>(fields: &[Value<'gc>]) -> Vec<Value<'gc>> {
-    let mut written = fields.to_vec();
-    if let Some(state) = written.get_mut(STATE_FIELD) {
-        *state = Value::SmallInteger(UNRESOLVED);
-    }
-    written
+///
+/// `None` for a future whose fields are no future's
+/// (`FutureState::Malformed`, or one "resolving" whose `computation` is no
+/// closure), a malformed "resolved" one among them -- `seen_through` does
+/// not see through that one: the decoder would refuse any of them, so the
+/// encoder refuses to write one.
+pub(crate) fn fields_for_an_image<'gc>(
+    heap: &Heap<'gc>,
+    future: ObjectReference<'gc>,
+) -> Option<Vec<Value<'gc>>> {
+    let closure = match state_in(heap, future) {
+        FutureState::Unresolved(closure) => closure,
+        FutureState::Resolving => match heap.instance_field(future, COMPUTATION_FIELD) {
+            Some(Value::Object(closure)) if heap.is_closure(closure) => closure,
+            _ => return None,
+        },
+        FutureState::Resolved(_) | FutureState::Malformed => return None,
+    };
+    let mut written = vec![Value::Nil; FIELD_COUNT];
+    written[COMPUTATION_FIELD] = Value::Object(closure);
+    written[STATE_FIELD] = Value::SmallInteger(UNRESOLVED);
+    Some(written)
 }
 
 /// Whether a decoded record under the `Future` header is what the encoder
@@ -345,6 +399,7 @@ pub(crate) fn force<'gc>(
     match mutator.future_state(future) {
         FutureState::Resolved(value) => Ok(Step::Value(value)),
         FutureState::Resolving => Err(divergent(Value::Object(future))),
+        FutureState::Malformed => Err(malformed(Value::Object(future))),
         FutureState::Unresolved(closure) => {
             mutator.set_future_resolving(future);
             Ok(Step::Block {
@@ -367,6 +422,18 @@ fn divergent<'gc>(future: Value<'gc>) -> Signal<'gc> {
         selector: Symbol::intern("value"),
         receiver: future,
         message: "divergent evaluation of a simultaneous slot's initializer".to_string(),
+    })
+}
+
+/// A future whose fields no forcing wrote (`FutureState::Malformed`): an
+/// ordinary, catchable error, since only crafted code makes one and crafted
+/// code must never make the runtime panic (`CLAUDE.md`, "An image is
+/// untrusted input").
+fn malformed<'gc>(future: Value<'gc>) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern("value"),
+        receiver: future,
+        message: "a malformed future: its fields are no future's".to_string(),
     })
 }
 
@@ -485,9 +552,9 @@ pub(crate) enum SeeThrough<'gc> {
 /// leaf's having changed nothing makes safe; one being computed is §6.3.2's
 /// ill-founded recursion.
 ///
-/// `future_computed` follows a future of a future, so a resolved future's
-/// value is never a future, and running the leaf once more on the resolved
-/// operands cannot come back here with another.
+/// A resolved future's value is never a future (`FutureState::Resolved`),
+/// so running the leaf once more on the resolved operands cannot come back
+/// here with another.
 pub(crate) fn see_through<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: Primitive,
@@ -511,6 +578,7 @@ pub(crate) fn see_through<'gc>(
         match mutator.future_state(future) {
             FutureState::Resolved(value) => resolved.push(value),
             FutureState::Resolving => return SeeThrough::Answer(Some(Err(divergent(operand)))),
+            FutureState::Malformed => return SeeThrough::Answer(Some(Err(malformed(operand)))),
             FutureState::Unresolved(_) => {
                 return SeeThrough::Answer(Some(force(mutator, future, AfterForcing::Reexecute)));
             }

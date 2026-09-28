@@ -660,7 +660,8 @@ string or symbol none at all, and an `Activation` object only a frame. The
 marker then finds a future that only object fields reached unreachable, and
 the compaction reclaims it. A resolved future's value is never itself a
 future (`Mutator::future_computed` follows a future of a future before it
-records one), so one pass leaves none behind.
+records one, and one whose fields crafted code made so is malformed and
+left in place), so one pass leaves none behind.
 
 Registers and host roots are exempt -- a reified frame's, the activation
 stack's, and every `Root`. The `Future`'s own `doesNotUnderstand:`, whose

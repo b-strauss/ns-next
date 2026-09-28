@@ -895,9 +895,18 @@ instance body of exactly two fields whose second is the state 0 and whose
 first, once every record is read, is a closure. Anything else under that
 header — another body, another field count, the state 1 or 2 or one that is
 none of the three, a computation that is no closure — is `FutureRecord`,
-refused rather than decoded, so `Mutator::future_state` never meets a future
-it cannot read and no resolved future stands apart from the value every
-other reference was written as. A graph that decodes a future sets the
+refused rather than decoded, so no image hands the runtime a future whose
+fields are no future's, and no resolved future stands apart from the value
+every other reference was written as. Crafted code can still store into a
+future's slots once it holds one -- a decoded frame may carry any receiver,
+and `InitializeSlot` stores into `self` unchecked -- so
+`Mutator::future_state` reads the fields as untrusted: a state that is none
+of the three, an unresolved future without a closure, or a resolved one
+whose value is a future is `FutureState::Malformed`, which forcing raises as
+an ordinary error, the collector leaves in place, and the encoder refuses to
+write (`forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic`,
+`tests/vm.rs`; `a_future_with_corrupted_fields_is_refused_by_the_encoder`,
+`tests/image.rs`). A graph that decodes a future sets the
 loading world's `futures_made`, as `Mutator::new_future` does, so the leaves
 see through it and every check that stays off a program's paths until a
 future exists runs in the loaded world

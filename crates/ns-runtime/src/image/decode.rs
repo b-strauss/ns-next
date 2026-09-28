@@ -121,7 +121,7 @@ pub enum DecodeError {
     /// state 0. The encoder writes a resolved future as its value and a
     /// resolving one as unresolved (`docs/design/image-format.md`, "Futures
     /// in a graph"), so any other record describes a future no encoder
-    /// wrote -- one `Mutator::future_state` could not read, or a resolved one
+    /// wrote -- one `Mutator::future_state` reads as malformed, or a resolved one
     /// standing apart from the value every other reference was written as.
     FutureRecord,
     /// An object record that is not a class object is an instance of a class
@@ -3251,7 +3251,8 @@ pub fn decode_graph_section<'gc>(
         }
     }
     // Every record is in, so a future's computation is a closure now or
-    // never: `future_state` reads an unresolved future's as one.
+    // never: `future_state` reads an unresolved future with anything else
+    // there as malformed.
     for computation in &pending_futures {
         match computation {
             Value::Object(closure) if context.mutator.heap.is_closure(*closure) => {}
