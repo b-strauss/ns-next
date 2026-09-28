@@ -1,7 +1,9 @@
 # Image format — serialization and deployment artifacts
 
 > **Status:** built. Both artifacts round-trip, and both can be inspected without
-> being loaded.
+> being loaded. **Planned:** the decoder builds the planned eight-byte values
+> and variably sized objects from an unchanged, id-based wire format ("Planned:
+> the image under the new representation"), and suspend and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs`, `encode.rs`, `decode.rs`,
 > `mixins.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`. CLI: `ns-next snapshot`,
 > `ns-next load`, `ns-next build`, `ns-next inspect`, and `ns-next disasm` on an
@@ -1139,6 +1141,43 @@ carries a third lane that builds and loads each whitelisted entry, where a
 row's `send` is the build's `--entry`; and mutation and truncation tests cover
 the new flag, the entry field and the trailing-byte check
 (`crates/ns-runtime/tests/image.rs`).
+
+## Planned: the image under the new representation
+
+Would change: the decoder builds the planned representation -- eight-byte
+values and one space of variably sized objects ([object-model.md](object-model.md),
+"Planned: an eight-byte value", "Planned: the object layout";
+[memory.md](memory.md), "Planned: the object space") -- from a wire format that
+stays id-based. Nothing on the wire becomes an address or an offset, so an
+artifact stays independent of word size and layout, as Primordial Soup's
+snapshots are (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image,
+which is old space's bytes relocated on load, is the model this does not take.
+
+- **Integers.** `VALUE_SMALL_INTEGER` keeps carrying an `i64`; the decoder
+  answers a SmallInteger when the value fits 61 bits and a `LargeInteger`
+  otherwise. An integer beyond the `i64` range, as a value and as a literal,
+  takes a new value tag and a new literal tag, each the next free number when
+  it lands, carrying a sign and its 64-bit digits.
+- **Floats** stay `VALUE_FLOAT`, an `f64` on the wire, and the decoder answers
+  an immediate SmallFloat64 or a boxed `Float` from the value alone. A boxed
+  `Float` is a value with no identity, so it needs no record of its own.
+- **Strings and symbols** stay UTF-8 on the wire; the decoder picks the
+  one-byte or the four-byte form from the code points it reads.
+- **Frames become object records.** A reified frame is an object of the frame
+  format ([object-model.md](object-model.md), "Planned: the object layout"), so
+  its record joins the object table under a new object tag and the separate
+  frame count and frame table retire their tags.
+- **The decoder learns each record's size before it allocates.** A placeholder
+  per record, allocated before any record is read, assumes a fixed size; in a
+  space of variably sized objects the first pass reads each record's size from
+  its header, allocates, and the second pass fills the fields, whose forward
+  references then name objects that already exist.
+- **The decode amplification is recomputed** for a 16-byte minimum object
+  against the minimum record ([memory.md](memory.md), "The interim cost, and the one
+  question still open", where the figures are, and `CLAUDE.md`'s paragraph on untrusted images), and
+  `bounded_count` keeps bounding every pre-allocation by the bytes remaining.
+- **Identity hashes** are preserved as they are today, per record and in the
+  tag-named table; only where the hash is stored changes, into the header word.
 
 ## Planned: suspend and resume
 

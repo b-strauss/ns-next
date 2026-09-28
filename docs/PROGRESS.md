@@ -15,12 +15,13 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: the compact instruction encoding**, which has no design yet
-([execution.md](design/execution.md), "The loop over locals"). What the
-profile found about the dispatch it would reshape -- `Instruction`'s
-discriminant decoded through a niche on every dispatch, and
-`program_counter` and the code pointer spilled to the stack frame -- is in
-the same document's "Where the 3% goes".
+**Next: step 1 of the road to a high-performance VM, the memory layer**
+(`crates/ns-memory`). Its plan is to be written from
+[memory.md](design/memory.md), "Planned: the memory layer". Step 2, the
+eight-byte value with `LargeInteger`, follows
+([object-model.md](design/object-model.md), "Planned: an eight-byte
+value"). The whole road, decided with the user on 2026-09-29, is in
+[OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
 each item with where it is explained. The sections below record the
@@ -3473,8 +3474,8 @@ runs for every send (4.7%) ([execution.md](design/execution.md), "Where the
 3% goes").
 
 A sink that delivers a send's value where it is decided was planned and
-tried as an experiment ([execution.md](design/execution.md), "Planned: a
-send's value delivered where it is decided"): inlined all the way to the
+tried as an experiment ([execution.md](design/execution.md), "A send's value
+delivered where it is decided: tried and halted"): inlined all the way to the
 register write it made `bench_loop.ns` 17% faster but doubled `vm::run`, and
 it showed that any 16-byte `Value` passing through memory stalls. The user
 halted it in favour of the eight-byte value ([OPEN-WORK.md](OPEN-WORK.md)).

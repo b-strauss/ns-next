@@ -20,6 +20,10 @@
 > movable handle carries a lifetime brand, so that holding one across a
 > safepoint is a compile error (step 2c). The canonical symbol table is
 > weak; everything else the collector traces is strong.
+> **Planned:** memory the heap owns ("Planned: the memory layer"), one space
+> of variably sized objects with their fields inline in place of the two
+> arenas ("Planned: the object space"), a nursery ("Planned: generations")
+> and allocation by a bump in eden ("Planned: inline allocation").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the activation
 > stack, the handle types and their brand, every accessor, the host root
 > table, the move, the collection trigger, compaction and forwarding),
@@ -991,16 +995,20 @@ creator's frame record without registers.
 Decided with the user on 2026-09-20; built. The collector
 marks from the roots, slides the live slots to the front of each arena, and
 rewrites every handle through a forwarding table. One space, stop-the-world.
-Generations come later, as their own measured step.
+Generations are planned ("Planned: generations" below), with this collector as
+the old space's.
 
 Three things the representation settles before any taste enters:
 
-- **MMTk is out.** It is the one Rust framework whose collectors move, but it
-  works on raw addresses, mapped spaces and headers reached by pointer
-  arithmetic, and `crates/ns-runtime/src/lib.rs` is `#![forbid(unsafe_code)]`.
-  Adopting it would replace not only the arena of 32-bit indices but the origin
-  guards, the epoch check and the proof behind the brand. That is a different
-  runtime, not a choice of collector.
+- **MMTk is out.** It is the one Rust framework whose collectors move, but its
+  handles are raw addresses. A raw address as a handle makes every access a
+  dereference that needs `unsafe`, and a stale one undefined behaviour rather
+  than a wrong but safe read, so it would take with it the checked access, the
+  origin guards, the epoch check and the brand's proof that every access is
+  safe. That is a different runtime, not a choice of collector. The planned
+  object space owns its memory as the address-based engines do but keeps
+  handles as byte offsets read through bounds-checked slices, which keeps all
+  four ("Planned: the object space").
 - **Reference counting is out**, because cycles need tracing and `become:`
   needs forwarding.
 - **Conservative scanning is out**, decided earlier and on its own grounds
@@ -1296,138 +1304,244 @@ statistics for every source and the inline check are in
 An object's slot is 56 bytes in the arena, but its variable-length part is a
 separate Rust allocation: `ObjectData::Instance`'s and `Array`'s
 `Vec<Value>`, `String`, `Box<ClassData>`, `ClosureData.copied`, and a reified
-frame's `arguments` and `temporaries`. A collection therefore does not merely
-reclaim slots; it drops those allocations, one call into the system allocator
-each, and the program allocates them again as it runs on. That is the
-structural difference between this collector and the ones it is modelled
-against, and it is the leading candidate for the part of `bench_block.ns`'s
-slowdown that the measured pause does not account for ("How the collector is
-measured" above; [execution.md](execution.md), "What the moving collector
-moved").
+frame's `arguments` and `temporaries`. Reading an instance's field is
+therefore two dependent loads, the slot and then the `Vec`'s buffer, usually
+in different cache lines. A collection does not merely reclaim slots; it
+drops those allocations, one call into the system allocator each, and the
+program allocates them again as it runs on.
 
-**The address-based engines do not have this cost at all, and their
-OS-specific code is how they avoid it.** Primordial Soup reserves its spaces
-through a virtual-memory layer with one implementation per platform
-(`prior-art/primordialsoup/vm/virtual_memory_win.cc`, `_posix.cc`,
-`_fuchsia.cc`, `_emscripten.cc`, beside `os_win.cc`, `os_linux.cc`,
-`os_macos.cc` and the rest): `VirtualAlloc` with `MEM_COMMIT | MEM_RESERVE`
-on Windows, `mmap` with `MAP_PRIVATE | MAP_ANON` on POSIX, and `Protect` to
-make a from-space inaccessible. Inside a space, allocation is a bump pointer
-— `Heap::AllocateNormal` is `addr = top_; top_ = addr + size` — and an
-object's fields live inline in the space, variably sized. An object's death
-costs nothing there: no allocator call, no bookkeeping, just a space that is
-reused. Its `delete[]` calls are for the remembered set and the class table,
-never for objects. Spur and HotSpot have the same shape, and MMTk is
-essentially that layer offered as a library.
+**What the allocator costs was measured on 2026-09-28**, by swapping the
+global allocator of `ns-cli` in scratch builds (three builds a side, two
+sittings, medians, the measurement protocol of [execution.md](execution.md)),
+against the Windows heap the shipped build uses:
 
-**The Rust engines with an index arena do not, and neither do we.** Nova
-— the one reference implementation sharing this representation — contains
-no `mmap` and no `VirtualAlloc` anywhere in `nova_vm/src`; it keeps a `Vec`
-of heap data per type, exactly as `Heap` keeps `objects` and `frames`. The
-handle discipline, the lifetime brand and `#![forbid(unsafe_code)]` all rest
-on that choice, and so does "MMTk is out" in "The shape: mark, compact,
-forward" above -- the last of those now for what it would replace rather than
-for the lint, which is revisitable (see "Decisions").
+| Source | mimalloc | A bump allocator that never frees |
+|---|---|---|
+| `bench_loop.ns` | level | +6.8% |
+| `bench_send.ns` | level | +2.6% |
+| `bench_block.ns` | **−15.6%** | −10.3% |
+| `bench_megamorphic.ns` | level | +6.6% |
+| A scratch source churning short-lived lists, instances and strings | **−8.9%** | −5.6% |
 
-**Nova does mitigate the payload half, and that part is transferable.**
-`prior-art/nova/nova_vm/src/heap/element_array.rs` pools an object's
-element storage into size-classed arenas — `Empty`, `E1`, `E2`, `E3`,
-`E4`, `E6`, `E8`, `E10`, `E12`, `E16`, `E24`, `E32` and upward — so an
-object's variable-length part is a slot in a pool rather than an allocation
-of its own, and returning it is a pool operation rather than a `free`. The
-four sites that would move to such a pool here are the ones a collection
-drops in bulk: `Instance`, `Array`, `copied`, and a frame's registers.
+An xperf profile of the shipped allocator puts 16.9% of `bench_block.ns`'s
+samples and 11.0% of the churning source's in `ntdll.dll`'s heap; under
+mimalloc about 3% and 2% remain in the allocator's own functions, with about
+1.3% more in the drop glue of `ObjectData` and `FrameSlot`. The bump
+allocator, which never reuses memory, is slower than mimalloc and on three
+sources slower than the Windows heap: memory that is never recycled is cold.
+The mimalloc swap is the measured alternative, not an adopted one.
 
-Three routes follow, and all three are open. Accept the cost where a program
-churns, which is what the branch that built the collector did. Pool the
-payloads as Nova does. Or own the memory like Soup and Spur, through
-`VirtualAlloc`/`mmap` under a space of our own. The third is no longer ruled
-out by the lint: `unsafe` is acceptable on a performance-critical path where
-the abstraction over it is safe again (decided with the user on 2026-09-21),
-which for a page layer means roughly a hundred lines behind an interface of
-three methods, or a crate such as `region` in their place. What still argues
-against it is the second half of the MMTk decision, which the lint never
-carried: a space of raw addresses replaces the index arena, the origin
-guards, the epoch check and the brand's proof along with the allocator.
+**That measurement answers only what the allocator calls cost**, and it is not
+why the address-based engines own their memory. They do because of what
+owning it makes possible, none of which the measurement covers:
 
-**No existing arena crate does what this needs**, and `unsafe` does not
-change that, because the obstacle was never `unsafe`. Every arena crate
-models one lifetime pattern -- everything lives until a reset. This wants
-another: a tracer decides per object, and what lives is *moved*. `bumpalo`
-offers no individual deallocation at all, only `reset`, and its chunked
-layout has no linear address space for an offset to mean anything in;
-`typed-arena` hands out `&mut T` that pins its contents for the arena's
-life; `slab`, `slotmap`, `generational-arena` and `id-arena` are fixed-slot
-object arenas that do not address the payload question; and an
-`allocator-api2` bump allocator behind `Vec<Value, _>` would make allocation
-free but leave the space growing monotonically, which is the never-reclaim
-interim over again. Compaction is not an allocator feature -- it needs to
-know the references -- so it stays ours, in `compact_arena`'s shape. The one
-level where a crate does fit is pages, not arenas.
+- **Fields inline with the header.** Primordial Soup, Strongtalk and Spur lay
+  an object out as its header followed by its fields in one allocation, so a
+  field is one load at a fixed offset (Strongtalk's compiled field load is
+  `movl dst,[base + offset*oopSize - Mem_Tag]`,
+  `prior-art/strongtalk/vm/compiler/codeGenerator.cpp:930-941`).
+- **A nursery where death is free.** Soup's semispaces
+  (`prior-art/primordialsoup/vm/heap.h:40-73`), Strongtalk's eden and
+  survivors and Spur's scavenger copy the survivors and never touch the dead,
+  so a young collection costs what survives. Here every dead object with a
+  payload is freed one by one.
+- **Allocation a JIT can inline.** Cogit bumps `freeStart` against
+  `scavengeThreshold` in machine code for `new`, closures and boxed floats
+  (`genPrimitiveNew`, `genCreateFullClosure:…`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64SysV.c:16464`, `:19026`);
+  Strongtalk does it in generated stubs its compiled code calls
+  (`test_for_scavenge`, `prior-art/strongtalk/vm/prims/generatedPrimitives.cpp:52-69`).
+  A `malloc` call cannot be inlined.
+- **A moving collector owns the space it moves objects in**, which the slot
+  arena already does and the payloads do not.
 
-**A payload is size-stable on every hot path -- settled (2026-09-28), no
-exception left.** This decides more of the design than the allocator
-question does. Both reference runtimes implement a growable collection *in
-Newspeak over a fixed `Array`*: Primordial Soup's `List`
-(`prior-art/primordialsoup/newspeak/Collections.ns`) holds `data ::= Array
-new: capacity` and on overflow does `data:: data copyWithSize: (capacity >>
-1 + capacity | 7)`, where `copyWithSize:` is itself Newspeak over `Array
-new:` and `replaceFrom:to:with:startingAt:`; SOMns's `Vector`
-(`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage
-size` and copies. Neither VM has a primitive that resizes a payload --
-the shape `java.util.ArrayList` has. `Heap::array_push`, which grew one in
-place here, existed only because `OrderedCollection`'s `add:` was a Rust
-leaf, a simplification `builtins/collections.rs` flagged as such. The core
-library in Newspeak retired it: its first
-plan moved `OrderedCollection` into `Kernel.ns` but kept `add:` a forwarder
-to that leaf, as it kept every body a forwarder
-([core-library.md](core-library.md), "Planned: real bodies for control flow
-and `do:`, before the JIT tiers"); the plan that followed wrote `List`, the
-Newspeak growable sequence over a fixed `Array`, in the shipped
-`CollectionsFactory.ns`, and removed `OrderedCollection` and `array_push`
-with it. **Every `ObjectData::Array` is now fixed-size once allocated: no
-payload grows in place, so the space needs no growth-in-place case at
-all.**
+So the question is not where payloads live but whether they are separate at
+all. The answer is the object space below: fields inline after a one-word
+header, in memory the heap owns ("Planned: the memory layer", "Planned: the
+object space"). A payload region beside the arena would keep the second load
+and the per-object free, and is not pursued.
 
-What remains after that is reflective and rare: edit-and-continue adding
-locals to a live activation, and a MirrorBuilder adding or removing slots of
-live instances (requirements 2 and 3 of
-[liveness-and-reflection.md](liveness-and-reflection.md)). Each takes a fresh
-region and orphans the old one, which is why the space needs a fill-level
-trigger of its own beside the two arena limits. `become:` exchanges the
-payload reference along with the rest of the object. And the space belongs
-to a `Heap`, never to a thread or the process, because an actor is meant to
-be a per-heap scope -- which by itself rules out every allocator that keeps
-its state in a `static` or a thread local.
+**A payload is size-stable on every hot path.** Both reference runtimes
+implement a growable collection in Newspeak over a fixed `Array`: Primordial
+Soup's `List` (`prior-art/primordialsoup/newspeak/Collections.ns`) holds
+`data ::= Array new: capacity` and on overflow does `data:: data
+copyWithSize: (capacity >> 1 + capacity | 7)`; SOMns's `Vector`
+(`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage size`
+and copies. ns-next's `List` in the shipped `CollectionsFactory.ns` does the
+same. **Every `ObjectData::Array` is fixed-size once allocated: no payload
+grows in place**, so the object space needs no growth-in-place case. What
+changes an object's size is reflective and rare -- edit-and-continue adding
+locals to a live activation, a MirrorBuilder adding or removing slots of live
+instances (requirements 2 and 3 of
+[liveness-and-reflection.md](liveness-and-reflection.md)) -- and takes a new
+object and a `become:` ([object-model.md](object-model.md), "Planned:
+`become:` through forwarders").
 
-**The ordering matters more than the choice**, and it now has two parts.
-The space comes after the core library in Newspeak and before the tiers, because step 6 both removes the in-place growth above
-and raises what the space is worth: a Newspeak `List>>add:` allocates a
-fresh `Array` and payload at every capacity overflow, where a `Vec::push`
-amortizes to nothing.
+**No existing arena crate does what the space needs.** Every arena crate
+models one lifetime pattern -- everything lives until a reset -- where this
+wants another: a tracer decides per object, and what lives is moved.
+`bumpalo` offers no individual deallocation and no linear address space;
+`typed-arena` hands out `&mut T` that pins its contents; `slab`, `slotmap`,
+`generational-arena` and `id-arena` are fixed-slot object arenas; an
+`allocator-api2` bump allocator behind `Vec<Value, _>` never reclaims.
+Compaction is not an allocator feature -- it needs to know the references --
+so it stays ours. The one level where a crate fits is pages, which is what
+the memory layer declares through `windows-sys` and `libc`.
 
-Before building it, measure. Pooling, and the space with it, addresses only
-the allocator-churn explanation. If the unaccounted cost is instead the
-cache after-effect of walking the whole live graph — which scales with how
-often a program collects rather than with what each collection costs, and
-which `bench_block.ns` leads on by collecting 269 times against the next
-source's 107 — then neither buys anything. The experiments that discriminate
-are named in [OPEN-WORK.md](../OPEN-WORK.md), under the collector's
-unexplained cost on `bench_block.ns`, and one more is cheaper than all of them: a `#[global_allocator]`
-swap in `ns-cli` answers whether payload allocation costs measurable time at
-all, without a line of design changing.
+## Planned: the memory layer
 
-That fourth experiment is not optional, because the churn reading is weaker
-than the paragraphs above make it sound. **Against `dc0ffe5` the head
-allocates exactly as many payloads as the baseline did** — the baseline
-reclaimed none, so every `Vec`, `Box` and boxed slice was allocated there
-too. What the collector added is the *frees*, and `compact_arena`'s
-`truncate` drops those inside the span `World::collect` times. The allocator
-difference that remains is one of behaviour, not of count: a heap that grows
-monotonically against one that recycles freed blocks, and recycling can be
-the faster of the two. The paragraph opening this section argues against a
-bump-space engine, where the comparison is sound; it does not carry to this
-measurement's baseline.
+Would change: a new crate, `crates/ns-memory`, reserves and commits the
+memory the object space lives in; it is the only crate in the workspace with
+`unsafe` code, and `ns-runtime` keeps `#![forbid(unsafe_code)]`. This is
+step 1 of the road in [OPEN-WORK.md](../OPEN-WORK.md), "The road to a
+high-performance VM".
+
+- **One contiguous reservation per space**, reserved once at a size chosen at
+  start-up with a generous default, since reserved address space costs
+  nothing, and committed as the space grows. A handle is an offset from the
+  reservation's base, so the base must be fixed and the reservation
+  contiguous, as HotSpot's compressed oops require; Spur's segments at
+  scattered addresses (`addSegmentOfSize:`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:63653`) do not fit.
+  Strongtalk has this shape: `ReservedSpace` reserves, `VirtualSpace::expand`
+  commits (`prior-art/strongtalk/vm/runtime/virtualspace.cpp:27-31`, `:73-135`;
+  `VirtualAlloc` with `MEM_RESERVE`, then `MEM_COMMIT`,
+  `prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414`).
+- **Operations**: reserve, commit a range, decommit a range when a space
+  shrinks, protect a range as no-access or read-write, and hand out the
+  committed part as `&[u64]` and `&mut [u64]`; dropping the reservation
+  releases it.
+- **Two implementations behind one interface, from the start**: Windows
+  (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, through `windows-sys`) and
+  POSIX (`mmap` with `PROT_NONE` to reserve, `mprotect` to commit and protect,
+  `munmap`, through `libc`). Both crates are declarations only, with no
+  run-time code of their own. Primordial Soup has the same split behind the
+  same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
+  `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits
+  everything at once, which a single large reservation cannot.
+- **A failure is a value, never a panic**: a reservation or a commit the
+  operating system refuses answers an error the heap reports as running out of
+  memory.
+- **In a debug build a vacated range is protected as no-access**, as Soup does
+  around its scavenges and mark-sweeps
+  (`prior-art/primordialsoup/vm/heap.cc:321-323`), so a read through a stale
+  offset faults at once rather than reading whatever was compacted there.
+- **Executable memory for the JIT tiers** comes to the same crate when they
+  do, with its `unsafe` entry into generated code.
+
+## Planned: the object space
+
+Would change: `Heap`'s two arenas of fixed-size slots, `objects` and
+`frames`, give way to one space of variably sized objects, each a header word,
+a class word and its fields inline ([object-model.md](object-model.md),
+"Planned: the object layout"), in memory from "Planned: the memory layer".
+Step 3 of the road; it follows the eight-byte value (step 2) and the compact
+instruction encoding.
+
+- **Allocation is a bump pointer** in the space, as Soup's `Heap::Allocate`
+  (`prior-art/primordialsoup/vm/heap.h:373-387`). Objects are 8-byte aligned
+  and at least 16 bytes, a header and a class word.
+- **A handle is a 64-bit byte offset from the space's base**, so base plus
+  handle is the object's address, the form generated code will use. There is
+  no 32 GB ceiling: HotSpot's compressed oops save memory because a Java
+  reference field is 32 bits, while every field here is a full `Value` word
+  able to hold any value, so the offset can be as wide as the word allows
+  after its tag. The words in the space are 8 bytes in every build, so the
+  layout a debug build tests is the layout a release build runs. The Rust-side
+  types -- `ObjectReference`, and `Value` in Rust variables, structures,
+  continuations and host roots -- carry the heap id and the move epoch in
+  full in a debug build, as they do today, so the origin guard and the epoch
+  check stay exact wherever a stale handle can arise; a word read out of the
+  space is given the current ones, since the collector rewrites every field it
+  walks by format and cannot miss one the way it can miss an unknown Rust
+  field.
+- **Access stays behind `Heap`'s accessors**, which read the space's words
+  through bounds-checked slices, so a stale offset reads a wrong object at
+  worst, never undefined behaviour. Accessors may lend a string's bytes or an
+  object's fields as a slice rather than copy them out, which ends the copy-out
+  costs "Known rough edges in the seam" names.
+- **The frame arena goes**: a reified frame is an object of the frame format
+  with its registers inline, so there is one graph, one mark, one compaction
+  and one forwarding table. Married and divorced frames keep their meaning
+  ("Frames, the activation stack and the marriage"); the activation stack of
+  running activations is unchanged until step 7 of the road, the execution model for compiled code.
+- **The collector is mark and sliding compaction** over variably sized
+  objects, after Spur's planning compactor, which slides unpinned marked
+  objects down and plans their new addresses before moving any
+  (`compact`, `planCompactSavingForwarders`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:61596`, `:62399`). The
+  forwarding addresses live in a side table while a collection runs, where
+  Spur saves each object's first field to make room for one. The heap is walked
+  linearly by the word count in each header, with the overflow word before the
+  header for large objects.
+- **The weak symbol table and the replacement of resolved futures** walk the
+  space and read fields by format, as they walk the arena today.
+- **The trigger** compares the space's fill level in bytes against a limit
+  reset after each collection, as the slot count is compared today ("The
+  trigger and the growth policy").
+- **The stress modes stay**: `NS_NEXT_STRESS_MOVES` shifts every object by an
+  offset, so every handle changes; `NS_NEXT_STRESS_COLLECT` and
+  `NS_NEXT_STRESS_CACHES` are unchanged.
+- **The space belongs to a `Heap`**, never to a thread or the process, because
+  an actor is meant to be a per-heap scope
+  ([liveness-and-reflection.md](liveness-and-reflection.md)).
+
+## Planned: generations
+
+Would change: the space gains a nursery with a copying scavenger, and the
+mark-compact of "Planned: the object space" becomes the old space's collector.
+Step 4 of the road.
+
+- **Layout**: the nursery sits at the low end of the reservation -- two
+  survivor spaces and eden -- and the old space above it, as in Spur
+  (`setHeapBase:memoryLimit:endOfMemory:`, `cointerp.c:~60013`) and Strongtalk
+  (`prior-art/strongtalk/vm/memory/universe.cpp:64-79`). Young means an offset
+  below the boundary, one comparison, in the barrier and later in generated
+  code.
+- **The scavenger** is a Cheney copy of the survivors, as in all three
+  references (Spur `doScavenge:`, `cointerp.c:48477`; Strongtalk
+  `Universe::scavenge`, `prior-art/strongtalk/vm/memory/universe_more.cpp:81-137`).
+  An object's age lives in the header's spare bits, and it is tenured once its
+  age reaches a threshold that adapts to how full the survivor space is,
+  Strongtalk's age table (`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`).
+- **The write barrier**: an old object that stores a young value sets its
+  remembered bit and joins the remembered set, as in Spur
+  (`storePointer:ofObject:withValue:`, `cointerp.c:60688`; `remember:`,
+  `:42843`) and Soup (`HeapObject::Store`,
+  `prior-art/primordialsoup/vm/object.h:257-273`) -- per object rather than
+  Strongtalk's cards, simpler and cheaper to emit. The barrier sits in
+  `heap.rs`'s store accessors, never in `vm.rs`, so the interpreter, the
+  reference lowering and a JIT share one rule. The running activation stack's
+  registers are roots and take no barrier.
+- **A remembered set past its limit forces a scavenge that tenures
+  everything**, as Soup's `kRememberedSetOverflowSize` does
+  (`prior-art/primordialsoup/vm/heap.cc:279-283`).
+- **Large objects are allocated old**, as Soup does from 32 KB
+  (`kLargeAllocationSize`), since copying them buys nothing.
+- **A full collection** is the mark-compact over both generations; the image
+  decoder allocates old, since a decoded graph is long-lived.
+- **A fourth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
+  safepoint, which is what finds a store that missed the barrier.
+
+## Planned: inline allocation
+
+Would change: the instructions that allocate take their memory by a bump in
+eden instead of a call into the collector's allocation path. Step 6 of the
+road, and the groundwork the JIT tiers take over, as Cogit's
+`genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
+(`cogitX64SysV.c:16464`, `:19026`).
+
+- **What bumps**: `new` of a class of fixed size, `MakeClosure`, a boxed
+  `Float`, and `Array new:`.
+- **Eden keeps a reserve past the scavenge threshold**, so an allocation that
+  crosses the threshold still succeeds and only requests a safepoint, as Spur
+  schedules a scavenge rather than failing (`ceScheduleScavengeTrampoline`).
+  A collection therefore still happens only at a safepoint of the run loop
+  ("Where a collection can happen: only at a safepoint in the run loop"), and
+  generated code will allocate the same way.
+- **The bump path lives in `heap.rs`**; an instruction arm calls it and does
+  nothing else with it, since one more calling arm measures about 3% on the
+  send-heavy sources ([execution.md](execution.md), "Where the 3% goes").
 
 ## Decisions
 
@@ -1491,8 +1605,8 @@ measurement's baseline.
   about 4% faster, since `MakeClosure` no longer allocates an `Rc` and a popped
   block activation drops none.
 - **Mark-compact over the index arena, one space, stop-the-world** (decided with
-  the user on 2026-09-20), with generations as a later, separately measured
-  step. Over uniform slots a free list has no fragmentation to solve and a
+  the user on 2026-09-20). Under the planned generations it is the old space's
+  collector, over variably sized objects ("Planned: generations"). Over uniform slots a free list has no fragmentation to solve and a
   copier little locality to win, so the choice rested on what the step is for —
   the table shrinks and the pages go back — on rewriting being O(1) per handle
   through a flat forwarding table over an index arena, and on the machinery
@@ -1500,19 +1614,25 @@ measurement's baseline.
   compacts; Strongtalk, Spur and HotSpot compact or evacuate their old
   generation, and HotSpot removed the one free-list old space it had.
 - **MMTk is ruled out by what it would replace**, not by a comparison of
-  collectors. It works on raw addresses, so adopting it would replace the arena,
-  the origin guards, the epoch check and the brand's proof along with the
-  collector. The lint was the first half of this argument and no longer carries
-  it (see the entry below); this half never depended on it.
+  collectors. Its handles are raw addresses, so adopting it would replace the
+  checked access, the origin guards, the epoch check and the brand's proof along
+  with the collector. Owning the memory is not what costs them: the planned
+  object space owns its memory and keeps all four, because its handles are
+  byte offsets read through bounds-checked slices ("Planned: the object
+  space").
 - **`unsafe` is acceptable on a performance-critical path where the abstraction
-  over it is safe again** (decided with the user on 2026-09-21). `ns-runtime`
-  carries `#![forbid(unsafe_code)]` today and no change to that is pending, but
-  the lint is an engineering choice rather than an axiom, so an option is not
-  dismissed for needing `unsafe` alone -- the argument has to be about what the
-  option dismantles. Where a path does take it, the shape is `deny` at the crate
-  level with a narrowly scoped `#[allow(unsafe_code)]` on the one module that
-  needs it, so every unsafe block stays local and the rest of the crate -- the
-  brand's proof above all -- keeps the compiler-checked guarantee.
+  over it is safe again** (decided with the user on 2026-09-21), so an option is
+  not dismissed for needing `unsafe` alone -- the argument has to be about what
+  the option dismantles.
+- **The `unsafe` the object space needs lives in a crate of its own**,
+  `crates/ns-memory` (decided with the user on 2026-09-29), and `ns-runtime`
+  keeps `#![forbid(unsafe_code)]`: a crate boundary is one the compiler checks,
+  where a crate-level `deny` with a scoped `allow` admits the next `allow`
+  without anyone noticing. The executable memory and the entry into generated
+  code of the JIT tiers go to the same crate. Its operating-system calls come
+  from `windows-sys` and `libc`, declaration-only crates, rather than
+  hand-written declarations whose constants differ per platform and would be
+  wrong only on the platforms nobody here runs.
 - **The canonical symbol table is the system's only weak structure.** §5.1.6
   survives it because `Mutator::new_symbol` is the only way to make a symbol
   object, so one that is collected was held by nothing.
@@ -1529,12 +1649,16 @@ measurement's baseline.
   `NS_NEXT_STRESS_COLLECT`, kept beside the move stress rather than replacing
   it, because moving everything without liveness is what separates a missing
   root from a mistake in marking.
-- **The payload space comes after the core library in Newspeak and before the
-  JIT tiers** (decided with the user on 2026-09-21). The core library retired the one payload
-  that grew in place -- `Heap::array_push`, which existed only because
-  `OrderedCollection` was a Rust builtin where both reference runtimes write a
-  growable collection in Newspeak over a fixed `Array` -- and raises what the
-  space is worth, since a Newspeak `List>>add:` allocates a fresh `Array` at
-  every capacity overflow. A measurement decides whether it is built at all:
-  the experiments listed in [OPEN-WORK.md](../OPEN-WORK.md), and a
-  `#[global_allocator]` swap that is cheaper than any of them.
+- **Fields go inline in an object space the heap owns, not payloads into a
+  region beside the arena** (decided with the user on 2026-09-29). An allocator
+  swap measured what the allocator calls cost ("Payloads belong to the Rust
+  allocator, and what that costs"); what the address-based engines gain by
+  owning their memory -- one load per field, a nursery where death is free,
+  allocation a JIT can inline -- needs the fields inline, which a payload region
+  would not give. The memory layer, the eight-byte value, the object space,
+  generations, `become:` and inline allocation are steps 1 to 6 of the road in
+  [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM".
+- **A reservation per space, contiguous and committed as it grows** (decided
+  with the user on 2026-09-29), for Windows and POSIX from the start: a handle
+  is an offset from a fixed base, so the base cannot move and the space cannot
+  be scattered.

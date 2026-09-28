@@ -4566,10 +4566,15 @@ cost is not where the dispatch is:
   `program_counter` in `r13`; and every dispatch decodes `Instruction`'s
   discriminant through a niche (`xor`, `cmovns`) before its jump.
 
-The remedy is the send path's: a decision that is a `Step::Value` must not
-pass through a joined stack slot, and must not reach `Step`'s drop glue
-("Planned: a send's value delivered where it is decided" below). Until it
-lands, an instruction arm is not free.
+A decision that is a `Step::Value` must not pass through a joined stack
+slot, and must not reach `Step`'s drop glue. Delivering it where it is
+decided was tried and halted ("A send's value delivered where it is decided:
+tried and halted" below): the stall belongs to the 16-byte `Value` itself,
+which "Planned: an eight-byte value" ([object-model.md](object-model.md))
+removes. The dispatch findings -- the spilled `program_counter` and code
+pointer, the discriminant decoded through a niche -- are the input of
+"Planned: the compact instruction encoding" below. Until both land, an
+instruction arm is not free.
 
 ## The trampoline
 
@@ -5528,8 +5533,9 @@ program counter itself; nothing answers a per-instruction value for the loop
 to test. Designed with the user on 2026-09-28, after "What simultaneous
 slots cost" above traced a 4% loss on `bench_megamorphic.ns` to where LLVM
 placed the block that tested a send's answer, and built the same day
-([plan](../superpowers/plans/2026-09-28-1808-ns-next-loop-over-locals.md));
-a compact instruction encoding is a separate plan after this one.
+([plan](../superpowers/plans/2026-09-28-1808-ns-next-loop-over-locals.md)).
+The instruction encoding it dispatches on is unchanged ("Planned: the compact
+instruction encoding" below).
 
 **Why.** Two costs sat on every instruction when each was one entry. The
 answer each instruction gave the loop, `Flow`, was too large for registers
@@ -5618,17 +5624,19 @@ leaves its entry there. `heap.rs`'s unit tests pin that a stale
 `RegisterBase` panics in a debug build and that one survives a deeper push.
 What it moved is measured in "What the loop over locals moved" above.
 
-## Planned: a send's value delivered where it is decided
+## A send's value delivered where it is decided: tried and halted
 
-Would change: a send's decision no longer comes back to the loop as a
-`Result<Step, Signal>`; the decision writes a value straight into the
-sending instruction's destination register and answers one byte, and only
-an activation or a signal is handed over whole. Designed with the user on
-2026-09-28 from the profile in "What the loop over locals moved", "Where
-the 3% goes": the joined `Result<Step, Signal>` slot costs a
-store-forwarding stall on every send (28% of `vm::run`'s samples on
-`bench_loop.ns`) and a call of `Step`'s drop glue (4.7%), and it is where
-one more instruction arm moves the timing.
+Not built. The design had a send's decision write its value straight into
+the sending instruction's destination register and answer one byte, handing
+over only an activation or a signal whole, instead of coming back to the
+loop as a `Result<Step, Signal>`. It came from the profile in "What the loop
+over locals moved", "Where the 3% goes": the joined `Result<Step, Signal>`
+slot costs a store-forwarding stall on every send (28% of `vm::run`'s
+samples on `bench_loop.ns`) and a call of `Step`'s drop glue (4.7%), and it
+is where one more instruction arm moves the timing. What addresses that
+stall is the eight-byte value ([object-model.md](object-model.md),
+"Planned: an eight-byte value"); this section records the design and the
+experiment that decided against it.
 
 **Prior art.** Primordial Soup's primitives push their result onto the
 stack themselves and answer only whether they succeeded
@@ -5681,16 +5689,25 @@ overlapping quadwords, so **any** `Value` that passes through a memory
 temporary stalls, and a sink helps only where delivery is inlined all the
 way to the register write. The user halted the plan there (2026-09-28): the
 stall is a property of the 16-byte `Value`, which "Planned: an eight-byte
-value" ([object-model.md](object-model.md)) removes everywhere, and that
-comes later. The sink is not built; a revisit starts from the forced-inline
-variant's numbers above.
+value" ([object-model.md](object-model.md)) removes everywhere. A revisit,
+should one be wanted after that, starts from the forced-inline variant's
+numbers above.
 
-**What pins it.** The semantics are the suite's, unchanged: every golden
-under both lowerings and the three stress modes, which run while a sink
-holds a `Step` up to its push. Measured by the protocol against the
-`master` the plan starts from; the `xperf` profile's hotspots before and
-after; and the robustness probe repeated -- one rare instruction given an
-arm of its own -- which should move no fixture any more.
+## Planned: the compact instruction encoding
+
+Would change: `Instruction`, today a Rust enum the run loop matches on, gets
+an encoding designed for dispatch. Not designed yet. It comes after the
+eight-byte value ([object-model.md](object-model.md), "Planned: an eight-byte
+value") and before the object space ([memory.md](memory.md), "Planned: the
+object space"), so that it is designed against the value representation the
+loop will actually move, and the interpreter stays the first tier in front of
+the JIT, as Cog's does. Its inputs are the dispatch findings of "Where the 3%
+goes" above: every dispatch decodes `Instruction`'s discriminant through a
+niche before its jump, and `vm::run` is large enough that `program_counter`
+and the code pointer are spilled to its stack frame. The design starts from
+how Primordial Soup, SOMns, Strongtalk and Cog encode their instructions.
+Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
+and a removed one retires its number.
 
 ## Planned: tail calls, skipped but kept
 
@@ -5726,9 +5743,50 @@ position, since `onUnwind value` follows `self value`.
 
 ## Planned: JIT tiers
 
-Beyond inline caches nothing is designed. The tiering model is sketched in
-[liveness-and-reflection.md](liveness-and-reflection.md), and the constraint that
-binds it is that no native code may ever enter an image.
+Would change: hot code runs as machine code instead of in `vm::run`. Nothing
+is designed beyond the inline caches; the tiering model is sketched in
+[liveness-and-reflection.md](liveness-and-reflection.md), and the constraint
+that binds every tier is that no native code may ever enter an image. The
+tiers are the last three steps of the road to a high-performance VM (decided
+with the user on 2026-09-29; the whole order is in
+[OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM"). They
+build on the representation steps before them -- the memory layer, the
+eight-byte value, the object space with its one-word header and inline
+fields, generations and inline allocation ([memory.md](memory.md),
+[object-model.md](object-model.md)) -- which give generated code fixed field
+offsets, a guard read in one load, a cheap write barrier and a bump
+allocation it can emit itself, and on real Newspeak bodies for
+`whileTrue:`, `whileFalse:` and `do:` ([core-library.md](core-library.md),
+"Planned: real bodies for control flow and `do:`, before the JIT tiers").
+Each step gets its own design when it comes up.
+
+- **Step 7, an execution model for compiled code.** Frames that interpreted and
+  compiled code share, as Cog's stack pages are, in place of today's
+  trampoline over the activation stack for compiled callers; a calling
+  convention; GC maps, so the collector finds and rewrites the values in a
+  compiled frame at a safepoint; and deoptimization metadata, so a compiled
+  frame can be turned back into interpreted ones. Deoptimization serves the
+  debugger as much as the optimizer: inspecting, stepping and editing a
+  compiled activation goes through it, as it does in Strongtalk and
+  HotSpot.
+- **Step 8, a baseline JIT**, Cog's class: every method compiled without
+  speculation, the inline caches and the allocation fast path emitted into
+  the code, values kept in registers, for x64 and arm64, since images are
+  portable across architectures. Executable memory comes from `ns-memory`
+  ([memory.md](memory.md), "Planned: the memory layer").
+- **Step 9, an optimizing JIT with type feedback, inlining and deoptimization**,
+  Strongtalk's and HotSpot's class: recompiling hot code along the receiver
+  types the caches recorded, inlining the sends that make Newspeak slow when
+  they are not inlined -- slot accessors, `outer` sends, kernel methods that
+  forward to the VM mirror -- and deoptimizing when a speculation fails. Its
+  target is measured against Java with the Are We Fast Yet benchmarks, whose
+  Newspeak versions SOMns carries (`prior-art/somns/core-lib/Benchmarks`),
+  and with `prior-art/newspeak-benchmarks`, which holds the same programs in
+  Newspeak and Java.
+
+Steps 1 to 6 of the road give a very good interpreter on a modern object
+representation; step 8 reaches Cog's class, and step 9 Strongtalk's and
+HotSpot's.
 
 ## Decisions
 

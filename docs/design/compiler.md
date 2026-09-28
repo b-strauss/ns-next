@@ -20,9 +20,12 @@ the dispatch loop — is [execution.md](execution.md).
 compiled code — a tag byte and a fixed operand layout per instruction, with the
 tag numbers fixed for good; see [image-format.md](image-format.md) — not a
 requirement on the in-memory representation. Manual opcode packing is a technique
-that pays off once a JIT or a very hot interpreter loop demands it; building it
-now would add real complexity for no measurable benefit. Revisit only if
-profiling shows `match` dispatch is the bottleneck.
+that pays off once a JIT or a very hot interpreter loop demands it. The profile
+of the loop over locals found that point: every dispatch decodes the enum's
+discriminant through a niche, and `program_counter` and the code pointer are
+spilled to `vm::run`'s stack frame ([execution.md](execution.md), "Where the 3%
+goes"). A compact encoding is planned after the eight-byte value
+([execution.md](execution.md), "Planned: the compact instruction encoding").
 
 Every register operand is a `u16`; every jump target is an instruction index. The
 set follows the resolver's `Binding` variants and the lookup shapes directly, so
@@ -1120,8 +1123,9 @@ signatures is a design change to the image module's interface, not a migration.
 
 ## Decisions
 
-- **`Instruction` is a Rust enum, not packed bytes.** Revisit only on profiling
-  evidence.
+- **`Instruction` is a Rust enum, not packed bytes**, until profiling showed
+  its dispatch cost; a compact encoding is planned after the eight-byte value
+  ([execution.md](execution.md), "Planned: the compact instruction encoding").
 - **A local's read costs no instruction**, which makes its register live storage
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run

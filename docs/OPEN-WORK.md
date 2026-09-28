@@ -13,41 +13,75 @@ An item's code references were checked against the tree on 2026-09-28.
 
 ## Next
 
-**The compact instruction encoding.** `Instruction` is a Rust enum, decoded
-through a niche on every dispatch, and `program_counter` and the code pointer
-are spilled to the stack frame; one more calling instruction arm costs about
-3% on `bench_loop.ns` and `bench_send.ns`. No design exists yet. Start from
-how Primordial Soup, SOMns, Strongtalk and Cog encode their instructions.
-[execution.md](design/execution.md), "The loop over locals", "Where the 3%
-goes"; [compiler.md](design/compiler.md) (the `Instruction` enum, "revisit
-only on profiling evidence").
+**The memory layer**, step 1 of the road below: a crate of its own,
+`crates/ns-memory`, that reserves one contiguous address range, commits and
+decommits it as the heap grows and shrinks, protects cleared ranges in a debug
+build, and hands the committed part out as a word slice, on Windows and POSIX.
+Its plan is to be written from [memory.md](design/memory.md), "Planned: the
+memory layer".
+
+## The road to a high-performance VM
+
+Decided with the user on 2026-09-29, in this order: nine numbered steps,
+with the compact instruction encoding after step 2 and real Newspeak bodies
+for the control-flow loops before step 8. Steps 1 to 6 give a very good
+interpreter on a modern object representation; step 8 reaches Cog's class,
+step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
+Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`)
+and `prior-art/newspeak-benchmarks`.
+
+- **Step 1, the memory layer.** `crates/ns-memory`, the one crate with
+  `unsafe`, over `windows-sys` and `libc`; `ns-runtime` keeps
+  `#![forbid(unsafe_code)]`. [memory.md](design/memory.md), "Planned: the
+  memory layer".
+- **Step 2, the eight-byte value**, on today's arena: one tagged 64-bit word
+  -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`, `true` and
+  `false`, and handles -- with `LargeInteger` for §5.1.1's unbounded
+  integers, written after `num-bigint` and `num-integer`. It removes the
+  store-forwarding stall every `Value` in memory costs today.
+  [object-model.md](design/object-model.md), "Planned: an eight-byte value";
+  [core-library.md](design/core-library.md), "Planned: large integers".
+- **After step 2, the compact instruction encoding**, designed against the
+  new value, from the dispatch findings of "Where the 3% goes".
+  [execution.md](design/execution.md), "Planned: the compact instruction
+  encoding".
+- **Step 3, the object space.** One header word (the application id as the
+  cache guard, the identity hash, format, size, GC bits) and a class word,
+  the fields inline, variably sized objects in one VM-owned space with
+  byte-offset handles; classes, closures and reified frames become heap
+  objects and the frame arena goes; strings in two widths; `Symbol` under
+  `String`; the application cache keyed by id. [memory.md](design/memory.md),
+  "Planned: the object space"; [object-model.md](design/object-model.md),
+  "Planned: the object layout"; [image-format.md](design/image-format.md),
+  "Planned: the image under the new representation".
+- **Step 4, generations**: eden and two survivor spaces below the old space,
+  a copying scavenger with age-based tenuring, and a remembered bit and set
+  behind the store accessors. [memory.md](design/memory.md), "Planned:
+  generations".
+- **Step 5, `become:` through forwarders**, after Spur.
+  [object-model.md](design/object-model.md), "Planned: `become:` through
+  forwarders".
+- **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
+  closures, boxed floats and `Array new:`, with headroom past the scavenge
+  threshold so that collection stays at safepoints.
+  [memory.md](design/memory.md), "Planned: inline allocation".
+- **Before step 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
+  `do:`.** Making them Newspeak loops re-settles three semantics: `do:`
+  iterates over a copy, `do:` with a non-block is a no-op, and `whileTrue:`
+  with a non-block body re-runs the condition.
+  [core-library.md](design/core-library.md), "Planned: real bodies for
+  control flow and `do:`, before the JIT tiers".
+- **Step 7, an execution model for compiled code**: frames interpreted and
+  compiled code share, a calling convention, GC maps for compiled frames, and
+  deoptimization metadata, which the debugger needs as much as the optimizer.
+- **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.
+- **Step 9, an optimizing JIT** with type feedback, inlining and
+  deoptimization, Strongtalk's and HotSpot's class.
+
+Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
-- **An eight-byte value.** `Value` becomes one 64-bit word, tagged immediates
-  and handles, instead of today's 16-byte enum. Every `Value` that passes
-  through memory today is a store-forwarding stall (28% of `vm::run`'s samples
-  on the send path), and on Windows x64 only a value of at most eight bytes
-  comes back in a register. It forces a decision on integer semantics (62/63
-  bits or NaN-boxing), so it comes together with unbounded integers (below),
-  and it touches about 550 `Value::` sites. Set aside by the user as a later
-  project. [object-model.md](design/object-model.md), "Planned: an eight-byte
-  value".
-- **A send's value delivered where it is decided** (`DecisionSink`) — tried
-  and halted. Forced inline it made `bench_loop.ns` 17% faster but doubled
-  `vm::run`; the user halted it in favour of the eight-byte value, which
-  removes the stall it worked around. Not built.
-  [execution.md](design/execution.md), "Planned: a send's value delivered
-  where it is decided".
-- **The payload space.** Payloads (strings, arrays, closures' copied
-  values) belong to the Rust allocator, so a collection frees them one system
-  call at a time — the leading candidate for `bench_block.ns`'s unexplained
-  collector cost. Three routes are open: accept the cost, pool payloads as
-  Nova does, or own the memory (`VirtualAlloc`/`mmap`) and compact it with the
-  arenas. Unblocked since no payload grows in place any more. **Run one of the
-  named measurements first**, the cheapest being a `#[global_allocator]` swap;
-  none has been run. [memory.md](design/memory.md), "Payloads belong to the
-  Rust allocator, and what that costs".
 - **`IntegerBinary` without its `Jump`.** A successful inlined integer
   operation executes an unconditional `Jump` past its fallback send
   (`compiler/lower.rs:1747`), two dispatches on the hot path. Invert the
@@ -55,26 +89,16 @@ only on profiling evidence").
   instruction tag 33 and takes the next free tag, 40.
   [compiler.md](design/compiler.md), "Planned: inverting the branch sense to
   drop the `Jump`".
-- **Generations** for the collector, a later and separately measured step.
-  [memory.md](design/memory.md).
 - **Tail calls, skipped but kept** (§3.6). A tail send skips the sender in
   the continuation while the skipped activations stay reachable for the
   debugger; an `on:do:` activation is never skipped; how much history to keep
   is undecided. Not designed. [execution.md](design/execution.md), "Planned:
   tail calls, skipped but kept".
-- **JIT tiers (M5–M6).** Nothing is designed beyond the inline caches; no
-  native code may enter an image. [execution.md](design/execution.md),
-  "Planned: JIT tiers"; [liveness-and-reflection.md](design/liveness-and-reflection.md).
-- **Real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:`**, before
-  the JIT tiers. Today they forward to trampoline leaves. Making them Newspeak
-  loops re-settles three semantics: `do:` iterates over a copy, `do:` with a
-  non-block is a no-op, and `whileTrue:` with a non-block body re-runs the
-  condition. [core-library.md](design/core-library.md), "Planned: real bodies
-  for control flow and `do:`, before the JIT tiers".
 - **`do:`'s per-element argument vector.** Each element's block activation
   takes a one-element `StepArguments::Owned(vec![item])`
   (`builtins/collections.rs:267`); a one-value variant changes `Step`'s
-  layout, which measured as a 4–8% risk. Moot if `do:` becomes Newspeak first.
+  layout, which measured as a 4–8% risk. Moot once `do:` is Newspeak
+  (before step 8 of the road).
 - **`Mutator.builtin_classes` as a fixed-size array** instead of a `Vec`
   (`interpreter/mod.rs:255`). `builtin_class(kind)` carries a bounds check, and
   the fast-path arm puts it and its cold panic block at every site `act` is
@@ -102,22 +126,21 @@ only on profiling evidence").
   "Code families".
 - **Guarding a private lexical site on N's mixin** rather than its
   application — kept open until a program has such a site (a mixin under
-  several superclasses) to measure; wants a per-mixin id, which the weak
-  application cache wants too. [dispatch.md](design/dispatch.md), "Decisions".
+  several superclasses) to measure; the per-mixin id it wants comes with the
+  object space (step 3 of the road). [dispatch.md](design/dispatch.md),
+  "Decisions".
 
 ## Planned: language and library
 
-- **Unbounded integers.** Integers are `i64` and overflow raises an error,
-  where §5.1.1 says integers are not limited in size. Set aside by the user
-  (2026-09-28); goes with the eight-byte value.
-  [core-library.md](design/core-library.md).
 - **The numeric tower and `Integer>>/`.** `Integer` answers `//` but not `/`
   (only `Float` has `/`, `Kernel.ns:524`); `1 = 1.0` and `1.0 = 1` both answer
   false; `Number` (`Kernel.ns:463`) carries no behaviour. Settling it means
-  `Number`'s shared behaviour, `Fraction`, `LargeInteger`, cross-type
-  comparison and a matching hash (`3 asFloat hash = 3 hash`). Decided only that
-  it must be settled. [core-library.md](design/core-library.md), "Gap: an
-  integer has no `/`".
+  `Number`'s shared behaviour, `Fraction`, cross-type comparison and a
+  matching hash (`3 asFloat hash = 3 hash`); `LargeInteger` comes earlier, with
+  the eight-byte value (step 2 of the road). Decided only that it must be
+  settled; `num-rational` is the reference for `Fraction` and for converting a
+  `Float` to a fraction exactly. [core-library.md](design/core-library.md),
+  "Gap: an integer has no `/`".
 - **Pattern literals lowered to §5.1.9's `Pattern` sends** (`Pattern
   wildcard`, `Pattern literal:`, `Pattern keywords:patterns:`) instead of
   **nil**; needs a pattern AST in place of the kept source text and a library
@@ -127,9 +150,6 @@ only on profiling evidence").
   *Unimplemented* by the specification; object literals need the activation as
   enclosing object and a syntax choice. [frontend.md](design/frontend.md),
   "Possible future extensions".
-- **`Symbol` under `String`**, as every reference kernel declares it;
-  `Kernel.ns:541` puts it under `Value`, beside `String`.
-  [object-model.md](design/object-model.md), "Values and objects".
 - **The module namespace on the mirror.** `moduleNamed:` is built; the table
   of shipped modules is still the host's, a table entry has no "shipped" flag,
   and the file-system fallback for user modules does not exist — all three
@@ -160,18 +180,15 @@ only on profiling evidence").
   the yield path above. [liveness-and-reflection.md](design/liveness-and-reflection.md).
 - **Mirrors and `MirrorBuilder`**, on the activation objects (`ActivationMirror`)
   and the reified instance-of relation, both of which exist; a `MirrorBuilder`
-  must seal the VM mirror's class. Depends on `become:`.
+  must seal the VM mirror's class. Depends on `become:` (step 5 of the road).
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors and
   MirrorBuilder"; [dispatch.md](design/dispatch.md).
-- **`become:`.** Both preconditions exist (index identity, the collector's
-  forwarding); the primitive itself is missing.
-  [object-model.md](design/object-model.md), "Planned: `become:` becomes
-  expressible".
 - **Live editing of mixins.** A `Mixin` has no interior mutability, so an edit
   re-applies a fresh mixin and existing instances keep the old code, where
   §6.2 requires otherwise: interior mutability or mixin versioning. The
-  application cache grows without bound and stays strong until a mixin carries
-  an id of its own. `Interpreter::invalidate_caches` exists but nothing but a
+  application cache grows without bound; it can become weak once the object
+  space keys it by id (step 3 of the road). `Interpreter::invalidate_caches`
+  exists but nothing but a
   test calls it; scoped invalidation comes with the first mutation.
   `SourceOrigin` has only `File(PathBuf)`; code entered in the debugger wants a
   variant. [liveness-and-reflection.md](design/liveness-and-reflection.md);
@@ -264,26 +281,6 @@ value objects are never copied across an actor boundary (§3.1.1).
   application; neither isolated. [execution.md](design/execution.md), "What
   the core library's move cost" ("What is left unexplained") and "What mixin
   application cost".
-- **About 1 ms per round of `bench_block.ns`'s collector cost is
-  unexplained.** The pause accounts for about 1.4 ms of the 2.46 ms the
-  collector added per round; on the four other collecting sources the pause
-  *exceeds* the measured difference, on `bench_block.ns` it falls 1.05 ms
-  short. What sets `bench_block.ns` apart: 269 collections against 26 to 107
-  at a similar live count, and the only populated frame arena, so the only
-  source whose closures have their `captured_frame` rewritten at every
-  collection. Freeing dead payloads is ruled out as a mutator cost
-  (`compact_arena`'s `truncate` runs inside the timed span). Three cheap
-  experiments, none run: a fixture whose blocks capture nothing (separates
-  the frame arena from everything else); varying `COLLECTION_FLOOR` (separates
-  a cost that tracks the collection count, the cache after-effect, from one
-  that tracks the pause); and `COLLECTION_FLOOR` raised above the whole
-  allocation, so it never collects but still pays the trigger's comparison.
-  Cheaper still: a `#[global_allocator]` swap (see "The payload
-  space"). Also not run: pre-sizing the arenas with `with_capacity`, and
-  whether the max-over-median latency gap persists under the collector.
-  [execution.md](design/execution.md), "What the moving collector moved";
-  [memory.md](design/memory.md), "Payloads belong to the Rust allocator, and
-  what that costs".
 - **`bench_do.ns` shifts without a cause** on code a change does not execute:
   2.8% / 3.3% slower on the flat-metaclass and factory change, although its
   loop neither instantiates, nor sends to a class object, nor reaches a
@@ -297,11 +294,8 @@ value objects are never copied across an actor boundary (§3.1.1).
   [dispatch.md](design/dispatch.md).
 - **`vm::run`'s growth** from the `fast_path` arm and from `vm::unwind`
   becoming a loop (6,486 to 6,561 instructions) was never timed on its own.
-- **Whether batching two heap accessor calls still pays**, and what the
-  copy-out accessors cost (`builtins/text.rs` clones strings per send;
-  `object_snapshot` and `frame_snapshot` clone payloads twice); a borrowing
-  accessor is expressible now. [memory.md](design/memory.md), "Known rough
-  edges in the seam".
+- **Whether batching two heap accessor calls still pays.**
+  [memory.md](design/memory.md), "Known rough edges in the seam".
 - **`==` on immediates in a hot loop** pays two dispatches; no benchmark sends
   `=` or `==`. [core-library.md](design/core-library.md).
 - `bench_block.ns` measures 16% apart between two builds of the same tree —

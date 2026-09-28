@@ -1,6 +1,7 @@
 # Object model — values, objects, mixins, classes
 
-> **Status:** built.
+> **Status:** built; the representation ahead -- an eight-byte value, the
+> object layout and `become:` -- is planned ("The representation ahead").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `types.rs` (`Object`, `ObjectData`, `Value`),
 > `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
@@ -45,7 +46,8 @@ weak `symbolTable` (`KernelForPrimordialSoup.ns`), SOMns's
 `Symbols.symbolFor`, Squeak's symbol table -- and it keeps a symbol an
 indexable object for a kernel where `Symbol` is a subclass of `String`, as
 the references declare it; `Kernel.ns` still puts `Symbol` directly under
-`Value`, beside `String` rather than below it. Rejected: a symbol as an immediate `Value` variant, which no
+`Value`, beside `String` rather than below it, which the object layout
+changes ("Planned: the object layout" below). Rejected: a symbol as an immediate `Value` variant, which no
 reference does and which every string primitive, and later the Newspeak
 kernel, would have to accept as a non-object. An image carries a symbol as a
 record; the decoder enters each one into the loading heap's table and refuses
@@ -1315,10 +1317,10 @@ and cheap to carry.
 
 `Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is an
 entry in one `Heap`'s arena and an `ObjectReference` is a 32-bit index into it, private to
-`heap.rs`. The representation, what it measured, and the root discipline —
-all three of its parts built, the lifetime brand included, and the collector
-still to come — are designed in [memory.md](memory.md), "Checked roots and a
-collector".
+`heap.rs`. The representation, what it measured, the root discipline with
+its lifetime brand, and the mark-compact collector are designed in
+[memory.md](memory.md), "Checked roots and a collector" onward. The layout
+that replaces the arena is "Planned: the object layout" below.
 
 Two consequences belong here rather than there, because they are about this
 document's subject.
@@ -1331,63 +1333,230 @@ So an activation nothing captures costs no allocation and leaves nothing behind,
 and one that is captured is stored the way an object is. See
 [execution.md](execution.md), "Activations".
 
-**Planned: `become:` becomes expressible**, now that the collector's object
-forwarding exists. Adding or removing an instance slot on a class with live
-instances requires allocating new-shape instances, copying fields and
-swapping identity, which the layout model already anticipates: the class
-owns the layout and access resolves through the current one. The arena
-supplies one precondition — identity is an index the `Heap` owns, not a
-pointer a caller holds — and the mark-compact collector supplies the other:
-swapping identity safely means finding and rewriting every reference, which
-is exactly what its forwarding table already does for a collection
-([memory.md](memory.md), "The shape: mark, compact, forward"). What is still
-missing is `become:` itself — the primitive that swaps two identities
-outside a collection and drives the same forwarding on demand — so the
-MirrorBuilder in [liveness-and-reflection.md](liveness-and-reflection.md)
-stays blocked on that, not on the collector.
+## The representation ahead
+
+Three `Planned:` sections below, together with four in
+[memory.md](memory.md), are one piece of work, decided with the user on
+2026-09-28 and 2026-09-29: the object representation the reference engines
+with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with Primordial Soup
+beside them -- adapted where Newspeak's nesting requires it. The steps, in
+order, each landing green on its own:
+
+1. **The memory layer** -- a crate of its own that reserves one contiguous
+   address range and commits it on demand ([memory.md](memory.md),
+   "Planned: the memory layer").
+2. **An eight-byte value**, on today's arena, with `LargeInteger`
+   ("Planned: an eight-byte value" below; [core-library.md](core-library.md),
+   "Planned: large integers"). The compact instruction encoding
+   ([execution.md](execution.md)) follows it, designed against the new value.
+3. **The object space** -- one header word, the class word, the fields
+   inline ("Planned: the object layout" below; [memory.md](memory.md),
+   "Planned: the object space").
+4. **Generations** ([memory.md](memory.md), "Planned: generations").
+5. **`become:` through forwarders** ("Planned: `become:` through forwarders"
+   below).
+6. **Inline allocation in the interpreter** ([memory.md](memory.md),
+   "Planned: inline allocation").
+7. to 9. **The execution model for compiled code, a baseline JIT and an
+   optimizing JIT** ([execution.md](execution.md), "Planned: JIT tiers").
 
 ## Planned: an eight-byte value
 
-Would change: `Value` becomes one 64-bit word -- tagged immediates and
-object references, as Primordial Soup's `Object` and Cog's Spur words are --
-instead of today's 16-byte enum of a tag and an 8-byte payload (`Nil`,
-`Boolean`, `SmallInteger(i64)`, `Float(f64)`, `Object`). Noted with the user
-on 2026-09-28 as a later project, after "a send's value delivered where it
-is decided" ([execution.md](execution.md)), and together with unbounded
-integers.
+Would change: `Value` becomes one 64-bit word whose low three bits are its
+tag, instead of today's 16-byte enum of a tag and an 8-byte payload (`Nil`,
+`Boolean`, `SmallInteger(i64)`, `Float(f64)`, `Object`). Step 2 of the
+representation ahead, built on today's arena before the object space, since
+a 32-bit arena index already fits the word.
 
-**Why it matters more than one site.** The decision-sink experiment
-([execution.md](execution.md), "Planned: a send's value delivered where it
-is decided") found that LLVM copies today's `Value` as a tag byte and two
-overlapping quadwords, so every `Value` that passes through a memory
-temporary -- a result answered by an out-of-line function, a joined
-`Result`, `LoadLiteral`'s `make_value` -- is a store-forwarding stall; a
-fix site by site had to inline the whole path to the register write and
-doubled `vm::run`.
+| Low bits | Meaning |
+|---|---|
+| `000` | an object handle: today the arena index, from step 3 the object's byte offset in the space, so that the space's base plus the word is its address |
+| `xx1` | a `SmallInteger` of 61 bits |
+| `010` | a constant -- `nil`, `true`, `false`, with room for more |
+| `100` | a `SmallFloat64` |
+| `110` | free |
 
-**What it would bring.** A value is read and written as one word, so no
-value moves through memory as narrow stores read back by a wide load -- the
-store-forwarding stall the profile found ([execution.md](execution.md),
-"Where the 3% goes") cannot arise anywhere. On Windows x64 only a value of at
-most eight bytes comes back in `RAX`; every function that answers a `Value`
-today answers through memory. Registers, instance fields, arrays, argument
-buffers and copied closure values take half the memory, and `Step`,
-`Result<Step, Signal>` and the continuations shrink with it. Small integer
-arithmetic can work on the tagged words with one overflow test, as Cog's and
-Soup's does, which is the usual ground for a JIT's tiers.
+The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4 in
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c`), with Spur's
+`Character` tag taken for the constants: ns-next has no characters, and
+`nil`, `true` and `false` stay immediates as they are today rather than
+becoming heap singletons as in Spur and Soup. A `SmallFloat64` is Spur's
+encoding (`floatObjectOf:`, `smallFloatValueOf:`): an eight-bit subset of
+the exponent -- IEEE exponents 897 to 1151, about 2^-126 to 2^128, plus
+±0.0 -- with the sign rotated down beside the tag. Every other float -- NaN,
+the infinities, denormals and magnitudes outside that range -- is a boxed
+`Float` object. Soup boxes every float, which costs an allocation per
+floating-point result; Spur's split keeps the common range immediate.
 
-**What it would cost.** A 64-bit word holds a full `i64`, a full `f64` and a
-handle only by giving something up. Tagged pointers make `SmallInteger` 62 or
-63 bits and box floats (or, as Spur's `SmallFloat64`, keep most exponents
-immediate and box the rest); NaN-boxing keeps floats and limits integers to
-about 48–51 bits. Either changes where an integer overflows, which goldens
-pin -- so it comes with a decision on the semantics, and §5.1.1's "integers
-are not limited in size" points at `LargeInteger`, the unbounded integers
-the user set aside, as the answer. Every pattern on `Value::…` (about 550
-sites in `ns-runtime`) would go through accessors; `heap.rs`'s handle code,
-the collector, the image codec and the leaves change with it. A release
-handle is 32 bits and fits; a debug handle carries its heap id and move
-epoch and needs another home.
+**Why.** LLVM copies today's `Value` as a tag byte and two overlapping
+quadwords, so every `Value` that passes through a memory temporary -- a
+result answered by an out-of-line function, a joined `Result`,
+`LoadLiteral`'s `make_value` -- is a store-forwarding stall, 28% of
+`vm::run`'s samples on the send path ([execution.md](execution.md), "Where
+the 3% goes"); fixing it site by site had to inline the whole path to the
+register write and doubled `vm::run` ("A send's value delivered where it
+is decided: tried and halted", there). A value read and written as one word cannot
+stall that way, on Windows x64 it comes back in `RAX`, and registers, fields,
+arrays, argument buffers and copied closure values take half the memory, with
+`Step`, `Result<Step, Signal>` and the continuations shrinking alongside.
+Small-integer arithmetic works on the tagged words with one overflow test, as
+Cog's and Soup's does, which is what a JIT's tiers build on.
+
+**Integers become unbounded.** A `SmallInteger` that overflows its 61 bits
+becomes a `LargeInteger`, and a result that fits again becomes a
+`SmallInteger` ([core-library.md](core-library.md), "Planned: large
+integers"). That is what §5.1.1's "integers are not limited in size"
+requires, so the deviation row for `i64` integers in
+[README.md](README.md) goes, and the goldens that record an overflow error
+change to record the promoted result, each established against the
+specification before it is updated.
+
+**The debug build keeps its exact check.** Today a debug handle carries its
+heap's id and its move epoch in full, and every accessor compares both
+([memory.md](memory.md), "The brand, checked by the compiler rather than by convention"). The Rust-side `Value` keeps doing so:
+in a debug build it is wider than a word, the word plus both numbers, exactly
+as now, and in a release build it is the bare word. What has to be exactly
+eight bytes in both builds is a word stored in a heap object -- a field, an
+element, a frame's register -- so that the layout is the same in both. Such
+a word cannot go stale the way a Rust-side handle can: the collector walks
+every object by its format and rewrites every field, so it has no field to
+overlook the way it could overlook one a Rust type forgot to trace, and a
+word read out of the heap is given the current heap id and epoch. The check
+therefore stays exact where the mistake it catches can be made, with the
+brand checking the rest at compile time.
+
+**What changes.** Every pattern on `Value::…` -- about 1,050 sites, some 550
+in `ns-runtime`'s sources and the rest in its tests -- goes through
+constructors and accessors; `heap.rs`'s handle code, `trace.rs`, the image
+codec and the leaves change with it. The image gains wire tags for a
+`LargeInteger` record and a boxed `Float`, each the next free number; a float
+stays an `f64` on the wire, and the decoder decides whether it is immediate.
+
+## Planned: the object layout
+
+Would change: an object stops being a 56-byte slot in an index arena with
+its variable part in a separate Rust allocation, and becomes a run of words
+in one space -- a header word, a class word, then its fields -- addressed by
+its byte offset. Step 3 of the representation ahead; the space, its
+allocation and its collector are [memory.md](memory.md), "Planned: the
+object space". Decided with the user on 2026-09-29.
+
+```
+[header word][class word][field 1][field 2] ...     8-byte aligned, at least 16 bytes
+```
+
+**The header word**, after Spur's (`headerForSlots:format:classIndex:`) and
+HotSpot's compact object headers (JEP 450, a product feature from JDK 25 as
+JEP 519), which fit a class reference, the identity hash, the GC age and
+the lock bits into one 64-bit word:
+
+| Bits | Holds |
+|---|---|
+| 22 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id") |
+| 22 | the identity hash, drawn lazily from the counter; 0 means none yet |
+| 5 | the format |
+| 8 | the object's size in words; 255 means the real count is in an overflow word *before* the header, as in Spur |
+| 1 | the mark bit |
+| 6 | spare, for the generations' remembered bit and age and for the forwarder |
+
+**The class word** is an ordinary value naming the object's class object.
+An immediate has no header; its class comes from a small table indexed by
+its tag, as Spur's class table's first page holds the tag classes.
+
+**Why a class word, and not Spur's one word.** Spur's header holds a class
+*index*, which is both the object's class and the inline caches' tag. That
+does not carry over: a nested class has a class object per enclosing
+instance, all of them sharing one mixin application, so a guard on the class
+would make every send site that sees instances from two enclosing objects
+polymorphic -- the mistake "Three layers, not one" and `CLAUDE.md` warn
+about. The guard has to be the application id, and the class object still
+has to be one load away, because `class` and every `outer` send -- every
+implicit send to an enclosing scope -- read it, and a JIT cannot fold it to a
+constant when it differs per instance. A one-word alternative was weighed: a
+22-bit application id and a 32-bit class index sharing the header, the
+identity hash moved out and appended when a hashed object first moves, as
+HotSpot plans for four-byte headers. It saves 8 bytes an object and costs
+`class` and `outer` a second load, through the class table, plus the most new
+mechanism. Speed on a hot path went first; the accessors in `heap.rs` keep
+either layout open.
+
+**Formats**, after Spur's five-bit field (`formatOf:`):
+
+| Format | Objects |
+|---|---|
+| fixed pointer fields | ordinary instances, class objects |
+| indexable pointers | `Array` |
+| frame | a reified frame: fixed fields, then its registers |
+| closure | fixed fields, then its copied values |
+| byte-indexed | a one-byte string or symbol |
+| 32-bit-indexed | a wide string or symbol |
+| 64-bit-indexed | a `LargeInteger`'s digits, a boxed `Float` |
+| forwarder | "Planned: `become:` through forwarders" |
+| free | a gap the collector leaves, walkable like an object |
+
+The byte and 32-bit formats carry the number of unused units at the end in
+their low bits, as Spur's do, so an exact length needs no length field.
+
+**What becomes a heap object.** A class object keeps its state in fixed
+fields -- its enclosing object, declaring class, superclass and, for a
+metaclass, the class it describes -- plus its application id as a
+`SmallInteger`, which indexes a Rust-side table of `MixinApplication`s; the
+behaviour stays Rust. The application cache is keyed by that id rather than
+by an `Rc` address, which lets it become weak ([memory.md](memory.md), "Weak
+references"). A closure keeps its code id, captured frame and feedback base
+in fixed fields and its copied values inline. A reified frame keeps its
+sender, home, receiver, current class, program counter, code id and kind in
+fixed fields and its registers inline, and the kernel-private `Activation`
+objects the exception machinery holds become these frame objects themselves;
+the running activations stay on the activation stack until step 7. The
+frame arena, its second forwarding table and every separate register vector
+go.
+
+**Strings have two widths.** One byte per code point while every code point
+fits Latin-1, 32 bits per code point otherwise; either way the elements are
+code points, so `size` and `at:` are one access. §5.1.5 makes a string's
+elements "integers representing the encoding of the string in Unicode normal
+form C" and leaves the representation to the implementation. This is Spur's
+`ByteString` and `WideString`; Java's compact strings (JEP 254) and V8 do the
+same with a UTF-16 wide form, and Python (PEP 393) adds a middle width of two
+bytes, which can be added here later behind the same interface. Primordial
+Soup stores UTF-8 bytes and answers a byte from `at:`
+(`String_at`, `vm/primitives.cc`), which would change what `size` answers
+for any text beyond ASCII. Source files, the transcript and files stay UTF-8,
+converted at the boundary. A grapheme cluster -- one emoji with a skin-tone
+modifier is two code points -- is never an element; counting or iterating
+them is a library protocol above the string, since the segmentation rules
+change with every Unicode version and allow no constant-time indexing.
+`Symbol` becomes a subclass of `String`, as in every reference kernel.
+
+**Handles.** An `ObjectReference` becomes the object's byte offset, 64 bits
+wide, so the space is bounded by its reservation rather than by a handle's
+width. HotSpot's compressed oops store a reference in 32 bits and so cap a
+heap at 32 GB; that saving exists because a Java field of reference type
+holds nothing else. A Newspeak field holds any value -- an integer, a float,
+an object -- so it is a full 64-bit word whatever the handle's width, as in
+Spur. Accessors may lend a string's units or an object's fields as a slice
+instead of copying them out.
+
+## Planned: `become:` through forwarders
+
+Would change: `become:` exists, as Spur implements it, with lazy
+forwarders. Step 5 of the representation ahead.
+
+`become:` turns the old object into a forwarder: the forwarder format, the
+target in its first field, and a reserved application id that is never any
+send's guard, so every send to a forwarder misses its inline cache. The miss
+path, in `interpreter/`, follows the forwarder and cleans up the receiver,
+the stack and the registers, as Spur's `handleForwardedSendFaultForTag:`
+does; the scavenger and the compaction rewrite every reference they meet to
+the target, and the forwarder is garbage afterwards. Both one-way and
+two-way `become:`, each with the choice whether the identity hash moves with
+the identity (Spur's `become:with:twoWay:copyHash:`). Primordial Soup's
+eager alternative walks the whole heap on every `become:`; Strongtalk has
+none. It is reached as a leaf on the VM mirror, which is what the
+MirrorBuilder in [liveness-and-reflection.md](liveness-and-reflection.md)
+needs to add or remove slots of a class with live instances: allocate the
+new-shape instances, copy the fields, forward the old ones.
 
 ## Decisions
 
@@ -1459,3 +1628,19 @@ epoch and needs another home.
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
+- **The value is one tagged 64-bit word, with Spur's tags, unbounded integers
+  and immediate floats in Spur's range** (decided with the user on
+  2026-09-28 and 2026-09-29; "Planned: an eight-byte value" above). It lands
+  on today's arena, before the object layout, so each step is checked
+  against the goldens on its own.
+- **An object is a header word, a class word and its fields** (decided with
+  the user on 2026-09-29; "Planned: the object layout" above). The header's
+  guard is the application id, because a class-index guard would make nested
+  classes megamorphic; the class object gets a word of its own rather than a
+  class index packed beside the guard, so that `class` and `outer` stay one
+  load.
+- **Strings store code points in one of two widths**, Latin-1 or 32 bits,
+  with UTF-8 only at the boundaries (decided with the user on 2026-09-29;
+  "Planned: the object layout" above).
+- **Reified frames, closures and class objects become heap objects** in the
+  same space, and the frame arena goes (decided with the user on 2026-09-29).

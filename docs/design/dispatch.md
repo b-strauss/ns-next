@@ -1447,6 +1447,27 @@ one stamping pass), which `become:` will have to honour too. A debug build's
 check in `Heap::dispatch_id` catches a stale copy in every test that
 dispatches on one.
 
+### Planned: the guard in the header word
+
+Would change: the guard is read from the object's one header word instead
+of from an `Object` slot, and nothing else about the caches changes. The
+object layout ([object-model.md](object-model.md), "Planned: the object
+layout", step 3 of the representation ahead) keeps the application id as the
+header's first 22 bits and the class object in a word of its own, precisely
+so that this guard stays a per-application id -- a class-index guard as in
+Spur and Primordial Soup would make every site that sees nested-class
+instances from two enclosing objects polymorphic. Two things follow for the
+caches. The application cache (`Mutator.applications`) is keyed by an
+application id rather than by `Rc::as_ptr`, since a class object holds its
+application's id in a field and the `MixinApplication`s live in a Rust-side
+table indexed by it; that makes the cache free to become weak
+([memory.md](memory.md), "Weak references"). And a forwarder
+([object-model.md](object-model.md), "Planned: `become:` through
+forwarders", step 5) carries a reserved application id that is never a
+guard, so every send to one misses and the miss path, in
+`interpreter/inline_cache.rs`, follows it before resolving -- Spur's read
+barrier on send, which needs no check on a hit.
+
 ### Considered and rejected
 
 - **Cache state in the instruction stream** (Strongtalk). Every instruction
@@ -1534,7 +1555,10 @@ dispatches on one.
     mixin-relative slot index — the site stays monomorphic when a mixin is
     applied under several superclasses, at a second load per private hit;
     worth measuring against the built guard once a program has that shape
-    (none of the measured sources did).
+    (none of the measured sources did). The per-mixin id it needs arrives
+    with the object layout, which gives mixins and applications ids of their
+    own in place of `Rc` addresses ("Planned: the guard in the header word"
+    above).
   - **A block's `family_size` is its own subtree's**, which bounds every site
     a block can run, computed by one function in compiler and decoder.
     Rejected: the whole family's size on every body (a second pass, and a

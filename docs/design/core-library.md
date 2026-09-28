@@ -150,6 +150,15 @@ so it does **not** survive a snapshot: the same symbol in a reloaded image
 can hash to another number, and a hash a program recorded in an artifact
 cannot be compared against one computed after the load.
 
+**Planned: strings of code points in two widths.** Would change: a `String`
+stops being a Rust `String` of UTF-8, whose `size` counts code points by
+walking the bytes, and stores its code points in the object space, one byte
+each while every one fits Latin-1 and 32 bits each otherwise, so `size` and
+an `at:` are one access; `Symbol` becomes a subclass of `String` sharing both
+formats. UTF-8 stays the encoding at every boundary -- source, the
+transcript, files. The design and the comparison with the reference engines
+are [object-model.md](object-model.md), "Planned: the object layout".
+
 Four further rows serve `Value` itself rather than one builtin:
 `value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
 `valueSlotCount:ifFail:` (`slotCount`) and `value:slotAt:ifFail:`
@@ -649,7 +658,54 @@ bound on the *n* in the digit sum it defines a literal by, so a literal past
 `Literal::MalformedInteger` here.
 
 This is observable to any program that overflows, which is why it is a recorded
-deviation rather than an implementation detail.
+deviation rather than an implementation detail. It is closed by "Planned:
+large integers" below.
+
+## Planned: large integers
+
+Would change: an `Integer` is unbounded, as §5.1.1 requires. A
+`SmallInteger` that overflows becomes a `LargeInteger`, and a result that
+fits again becomes a `SmallInteger`, so every `Integer` has exactly one
+representation. It comes with the eight-byte value -- step 2 of the
+representation ahead ([object-model.md](object-model.md), "Planned: an
+eight-byte value") -- because narrowing `SmallInteger` to 61 bits is what
+moves the overflow boundary in the first place. The deviation above goes
+with it, and the goldens recording an overflow error change to record the
+promoted result.
+
+`LargeInteger` is a kernel class, below `Integer`. Its instances hold a sign
+and 64-bit digits, least significant first, in a 64-bit-indexed object
+([object-model.md](object-model.md), "Planned: the object layout") -- on
+today's arena in an `Array`-like payload, then inline in the object space.
+Its arithmetic is leaves on the VM mirror, as `SmallInteger`'s is, with
+`Integer>>+` and the rest trying the `SmallInteger` fast path first and
+falling back to them. Every reference engine writes this itself -- Primordial
+Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
+subtraction, multiplication, division and modulo, the bitwise operations,
+shifts, comparison, `printString` and conversion to and from `double` -- and
+ns-next does too, because a crate's numbers live in its own `Vec` in the
+Rust heap, which is the payload split the object space removes, and every
+operation would copy between the two.
+
+**The algorithms are taken from `num-bigint` and `num-integer`**, both MIT OR
+Apache-2.0, so their code may be adapted into ns-next's MIT tree provided the
+copyright notice and licence text travel with it: a header in each file that
+carries adapted code and an entry in the repository's third-party notices.
+What is taken is the arithmetic over digit slices -- 64-bit digits with
+128-bit intermediates, schoolbook multiplication below `num-bigint`'s
+thresholds and Karatsuba and Toom-3 above them, Knuth's algorithm D for
+division, the fast conversion to decimal text -- and `num-integer`'s floor
+division and modulo, which `//` and `\\` need for negative operands and
+across the `SmallInteger`/`LargeInteger` boundary. It works on `&[u64]` and
+`&mut [u64]`, which is what the object space lends. `num-bigint`'s own
+representation and its trait layer are not taken.
+
+`num-bigint`, `num-integer` and `num-rational` become submodules under
+`prior-art/`, recorded in `prior-art/PROVENANCE.md`, read and never built
+like the others. `num-rational` is there for the numeric tower ("Gap: an
+integer has no `/`" below): its `Ratio` is the model for `Fraction`, and its
+exact conversion of a float into a fraction is what a correct comparison
+between an `Integer` and a `Float` needs.
 
 ## Deviation: a non-integral literal is a binary float
 
@@ -714,7 +770,9 @@ answer while an `Integer`'s hash is the integer and a `Float`'s is a hash of
 its bits. What resolves it is one piece of work, not two: a numeric tower
 under `Number` — the class that now exists to hold it — with cross-type
 comparison and a hash that matches it, `/` answering an exact quotient, and
-whatever `Fraction` and `LargeInteger` that needs. The contract such a tower
+the `Fraction` that needs; `LargeInteger` arrives before it, with the
+eight-byte value ("Planned: large integers" above), and leaves `Integer>>/`,
+`Fraction` and the cross-type comparison to the tower. The contract such a tower
 has to meet is written down in Primordial Soup's `testFloatHash`
 (`prior-art/primordialsoup/newspeak/KernelTests.ns`): `3 asFloat hash` must
 equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
@@ -1199,7 +1257,7 @@ Nothing would touch the file system at run time, which is what linking
 statically means here. Later the same primitive falls back to the file system
 on a miss, so dynamic loading extends one primitive and changes neither
 `Kernel.ns` nor anything else on the Newspeak side. Its first half is
-built: `moduleNamed:` ("Planned: the platform and collections as
+built: `moduleNamed:` ("The platform and collections as
 core-library modules" below) looks a name up in the table the binary
 carries. The table itself is still the host's rather than the mirror's,
 and the fallback to the file system comes with user modules.
@@ -1591,18 +1649,14 @@ nothing signalled, one `ensure:` and one `on:do:` cost about 145 ns an
 iteration over sending `value` to the same blocks; an `Error` signalled
 and caught twenty activations up costs about 6.4 µs.
 
-### Planned: the platform and collections as core-library modules
+### The platform and collections as core-library modules
 
-**Status: decided with the user on 2026-09-25, designed with the user on
-2026-09-26, in two plans, each ending with every gate green. Plan 1 is
-built (2026-09-26): lazy slots, the table of shipped modules and the
-platform's boot, and platform paths in the image ("The platform" above
-describes what exists). Plan 2 is built (2026-09-28): `Array new: size`,
-the handler search that keeps no growable collection, `moduleNamed:` and
-`CollectionsFactory.ns` with a Newspeak `List`, the image round trips of a
-`List` and of a second collections facet, every program moved to `List`,
-and `OrderedCollection` removed with its leaf and `Heap::array_push`
-("The collections module (plan 2)" below).** `Kernel.ns` is to hold only what the VM
+**Built in two plans: the first gives lazy slots, the table of shipped
+modules and the platform's boot, and platform paths in the image ("The
+platform" above describes what exists); the second gives `Array new:
+size`, the handler search that keeps no growable collection,
+`moduleNamed:` and `CollectionsFactory.ns` with a Newspeak `List` ("The
+collections module (plan 2)" below).** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
@@ -2234,7 +2288,10 @@ the trampoline-step leaves, as mirror primitives, so `do:`'s loop is still
 opaque: nothing can inline its block or compile the loop as a unit. Rewriting
 them must happen **before the JIT tiers** — they are what the tiers need to
 see through — and pays off **only with one**: before a JIT a Newspeak loop is
-more sends and activations than the leaf it replaces, and costs.
+more sends and activations than the leaf it replaces, and costs. Its place is
+therefore after inline allocation and before the baseline JIT, step 8 of the
+representation ahead ([object-model.md](object-model.md), "The
+representation ahead"; [execution.md](execution.md), "Planned: JIT tiers").
 
 The step owns three semantic decisions, each of which the leaves settle
 today and a Newspeak body would have to settle again, visibly. A fourth,
@@ -2309,8 +2366,15 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   name is the self send §5.7 makes it, so a class that declares or inherits
   the name reaches its own. `LoadBuiltinClass` and its wire tag 2 are
   retired — "The predefined classes are accessors on `Object`" above.
-- **`i64` with an error on overflow**, rather than silent wraparound or a bignum
-  library nothing yet needs.
+- **Integers are unbounded, through a `LargeInteger` written here** (decided
+  with the user on 2026-09-29, planned with the eight-byte value): §5.1.1
+  requires it, and a bignum crate would keep its digits outside the object
+  space. The algorithms are adapted from `num-bigint` and `num-integer`, with
+  their attribution ("Planned: large integers" above). Until then an integer
+  is an `i64`, and overflow is an error rather than a silent wraparound.
+- **Strings store code points in one of two widths**, Latin-1 or 32 bits
+  (decided with the user on 2026-09-29; [object-model.md](object-model.md),
+  "Planned: the object layout").
 - **Exceptions** (nine decisions taken with the user on 2026-09-25, built
   2026-09-25 to 2026-09-26; "Exceptions" above;
   [plan](../superpowers/plans/2026-09-25-2244-ns-next-exceptions.md)):

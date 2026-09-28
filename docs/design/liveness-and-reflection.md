@@ -92,7 +92,10 @@ it. The dispatch id a cache guards on is a copy in the object header
 it along with the class, and a class change must restamp it, as
 `Heap::set_class_application` already does when a class's application
 changes; otherwise a cache hit would run the old class's method on the
-object.
+object. The planned `become:` meets that by construction: a forwarder
+carries a reserved id that no guard holds, so every send to one misses
+([object-model.md](object-model.md), "Planned: `become:` through
+forwarders", step 5 of "The representation ahead").
 
 ## Debugger
 
@@ -147,7 +150,9 @@ instead of by stripping metadata.
 A **MirrorBuilder** applies class changes:
 
 - *Add or remove an instance slot* → new layout → migrate every live instance via
-  `become:` → flush caches keyed to the class.
+  `become:` → flush caches keyed to the class. `become:` is step 5 of the
+  representation ahead ([object-model.md](object-model.md), "Planned:
+  `become:` through forwarders"); the MirrorBuilder waits on it.
 - *Add, remove or replace a method* → update the method dictionary → flush caches
   keyed to (class, selector).
 - *Change a superclass* → re-resolve lookup for the subtree, flush its caches,
@@ -282,7 +287,10 @@ concurrency arrives — the vocabulary above is the specification's own.
 Near-Java performance for a fully live dynamic language comes from **inline-cache
 feedback, speculative optimization and deoptimization** — the V8 and HotSpot
 path — not from whole-program ahead-of-time assumptions, which liveness forbids
-anyway.
+anyway. The tiers are steps 7 to 9 of the representation ahead
+([object-model.md](object-model.md), "The representation ahead";
+[execution.md](execution.md), "Planned: JIT tiers"), after the object
+layout, generations and inline allocation that compiled code builds on.
 
 - **Tier 0 — interpreter.** Always correct, always the deopt and snapshot target.
 - **Tier 1 — baseline JIT.** One code template per bytecode op. Candidate
