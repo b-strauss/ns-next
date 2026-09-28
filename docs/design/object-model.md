@@ -598,10 +598,10 @@ did not change.
 Would change: a `|| ... ||` slot clause (§6.3.2), in a class header or as a
 code body's temporaries, initializes its slots simultaneously through pull
 futures, so well-founded mutual recursion between them resolves, instead of
-in declaration order as a `| ... |` clause does today
-([frontend.md](frontend.md), "Deviation: simultaneous slot clauses initialize
-sequentially"). Designed with the user on 2026-09-28; every decision below
-was taken with them unless it says otherwise.
+in declaration order as a `| ... |` clause does. The clause's desugaring is
+built ([compiler.md](compiler.md), "The simultaneous slot clause"). Designed
+with the user on 2026-09-28; every decision below was taken with them unless
+it says otherwise.
 
 **What §6.3.2 says, and all it says.** A simultaneous slot declaration with
 a right-hand side *e* "initializes the slot to the value of *p*

@@ -151,11 +151,11 @@ both round trips -- so `main:args:` receives them (§8.4,
 goldens have none and receive an empty list.
 
 A fourth key, `skipped`, carries why the runtime does not answer this one
-yet -- `skipped = "not implemented yet: simultaneous slot clauses initialize
-sequentially, so second is nil when first is computed"`. The sweeps pass it
-over and count it; everything
-else about it still holds, including the pairing check, so a `skipped`
-cannot switch a half-written golden past discovery. The other three keys
+yet -- for instance (an illustration: no golden is skipped today)
+`skipped = "not implemented yet: a pattern literal evaluates to nil"`. The
+sweeps pass it over and count it; everything else about it still holds,
+including the pairing check, so a `skipped` cannot switch a half-written
+golden past discovery. The other three keys
 still record what the program *should* answer, which is the point: a gap
 gets its golden the day it is found, stating the whole expectation, and
 closing the gap is deleting one line. A reason is required, and a blank
@@ -240,11 +240,10 @@ rather than an oversight -- and, where a row says so, to keep a defect nobody
 has had time to fix from being a surprise.
 
 Most rows only under-reject, over-accept or narrow what can be expressed.
-Four do worse: the sequential simultaneous slot clauses, the binary float
-behind a non-integral literal, the synchronous asynchronous send and the
-pattern literal that evaluates to **nil** each answer a **correct** program
-**wrongly, at exit status 0**. Read all four before trusting a program's
-output.
+Three do worse: the binary float behind a non-integral literal, the
+synchronous asynchronous send and the pattern literal that evaluates to
+**nil** each answer a **correct** program **wrongly, at exit status 0**. Read
+all three before trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
@@ -252,20 +251,18 @@ output.
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | There are no character literals and no `Character` class: `"c"` is a one-character string, as the section itself announces and §5.1.5's `"σ"` form states; a double-quoted string has no escape, and a quote in one is written `"""`, not the section's `""""` | §5.1.4 | [frontend.md](frontend.md) |
-| Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md); planned in [object-model.md](object-model.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | An access modifier or `lazy` needs no whitespace after it, where the grammar's `accessModifier` and `lazyModifier` end in `whitespace`: `\| public= 1. \|` is refused like `\| public = 1. \|` rather than declaring a slot named `public` | §6.3.3, §6.3.4 | [frontend.md](frontend.md) |
 | A pattern literal parses as §5.1.9's grammar says but evaluates to **nil**, where the section makes `<_>` `Pattern wildcard` and `<l>` `Pattern literal: l`; there is no `Pattern` class | §5.1.9 | [frontend.md](frontend.md) |
 | `outer N` with no message after it answers the enclosing object `outer N m` would send to, as canonical Newspeak does, where the section defines `outer N` only as a send's receiver | §5.9 | [dispatch.md](dispatch.md) |
 
-One of these has a golden under `goldens/spec/`, recorded as `skipped`:
-the sequential simultaneous slot clauses. It states what the specification
-requires the program to answer, so closing the gap is deleting the
-`skipped` line, and the expectation written the day the gap was found is
-what then has to hold. The
-asynchronous send has none: §5.6 says the result is "a promise that is
-immediately returned to the sender", and with no promise to observe there
-is no answer to record that would not be invented.
+None of these has a golden recorded as `skipped`: no golden is skipped
+today. A deviation that gets one states what the specification requires the
+program to answer, so closing the gap is deleting the `skipped` line, and
+the expectation written the day the gap was found is what then has to hold.
+The asynchronous send could not have one: §5.6 says the result is "a
+promise that is immediately returned to the sender", and with no promise to
+observe there is no answer to record that would not be invented.
 
 ## What lives elsewhere
 

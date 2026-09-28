@@ -201,7 +201,11 @@ impl Resolver {
                 continue;
             }
             if let Some(initializer) = &slot.initializer {
-                self.resolve_expression(initializer, &mut scope, &class_chain);
+                if slot.simultaneous {
+                    self.resolve_simultaneous_initializer(initializer, &mut scope, &class_chain);
+                } else {
+                    self.resolve_expression(initializer, &mut scope, &class_chain);
+                }
             }
         }
         for statement in &declaration.instance_side.initializer_expressions {
@@ -324,9 +328,28 @@ impl Resolver {
     ) {
         for temporary in temporaries {
             if let Some(initializer) = &temporary.initializer {
-                self.resolve_expression(initializer, scope, chain);
+                if temporary.simultaneous {
+                    self.resolve_simultaneous_initializer(initializer, scope, chain);
+                } else {
+                    self.resolve_expression(initializer, scope, chain);
+                }
             }
         }
+    }
+
+    /// §6.3.2: a simultaneous declaration's initializer runs inside a future's
+    /// block (`compiler::simultaneous::future_block`), so it resolves in a
+    /// scope of its own, one block deeper than its neighbours' -- a sibling
+    /// or a factory parameter it reads is an outer local.
+    fn resolve_simultaneous_initializer(
+        &mut self,
+        initializer: &Expression,
+        scope: &mut ScopeStack,
+        chain: &[EnclosingClass],
+    ) {
+        scope.push(LocalScope::new(&[], &[]));
+        self.resolve_expression(initializer, scope, chain);
+        scope.pop();
     }
 
     fn resolve_statement(

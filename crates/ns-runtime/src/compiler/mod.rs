@@ -10,6 +10,7 @@ pub(crate) mod control_flow;
 pub(crate) mod lower;
 pub(crate) mod primitive_method;
 pub(crate) mod reference;
+pub(crate) mod simultaneous;
 pub(crate) mod unwind_marker;
 
 /// Which lowering compiles a module: the optimized one every program runs
@@ -154,14 +155,27 @@ pub(super) fn fill_mixin_application_messages(
 /// needs.
 fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>>) -> CompiledCode {
     let argument_count = factory_argument_count(mixin);
+    // Each own slot's future block (§6.3.2), by own index, for a simultaneous
+    // slot with an initializer: built once, so the capture analysis and the
+    // lowering below walk the very same block literal.
+    let future_blocks: Vec<Option<Expression>> = mixin
+        .slots
+        .iter()
+        .map(|slot| simultaneous::future_block(slot.declaration.as_ref()?))
+        .collect();
     // The same expressions, in the same order, this function lowers below:
     // a lazy slot's initializer is its getter's (`compile_lazy_slot_getter`),
-    // never this body's.
+    // never this body's, and a simultaneous slot's is its future's block.
     let slot_initializers: Vec<&Expression> = mixin
         .slots
         .iter()
-        .filter(|slot| !slot.lazy)
-        .filter_map(|slot| slot.declaration.as_ref()?.initializer.as_ref())
+        .zip(&future_blocks)
+        .filter(|(slot, _)| !slot.lazy)
+        .filter_map(|(slot, future_block)| {
+            future_block
+                .as_ref()
+                .or_else(|| slot.declaration.as_ref()?.initializer.as_ref())
+        })
         .collect();
     let captures = Rc::new(capture::analyze(
         RootBody {
@@ -191,9 +205,20 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
         let Some(declaration) = &slot.declaration else {
             continue;
         };
-        if let Some(initializer) = &declaration.initializer {
+        if let Some(block) = &future_blocks[own_index] {
+            lowerer.lower_simultaneous_slot_initializer(block, own_index as u32);
+            source = Some(merge_span(source, declaration.span));
+        } else if let Some(initializer) = &declaration.initializer {
             lowerer.lower_slot_initializer(initializer, own_index as u32);
             source = Some(merge_span(source, declaration.span));
+        }
+    }
+    // §6.3.2: "All these futures are resolved once the last slot declaration
+    // in the simultaneous slot clause has been executed" -- each simultaneous
+    // slot read back and stored resolved, in declaration order.
+    for (own_index, future_block) in future_blocks.iter().enumerate() {
+        if future_block.is_some() && !mixin.slots[own_index].lazy {
+            lowerer.lower_simultaneous_slot_end(own_index as u32);
         }
     }
     for statement in &mixin.initializer_expressions {

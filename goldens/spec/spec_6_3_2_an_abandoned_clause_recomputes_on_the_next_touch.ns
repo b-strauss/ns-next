@@ -1,0 +1,19 @@
+Newspeak3
+'Test'
+(* An initializer that raises abandons its clause, and a future that had
+   escaped stays unresolved (docs/design/object-model.md, "A clause
+   abandoned by an exception"): the next message forces it, runs its
+   initializer again, and raises the same error -- never "divergent
+   evaluation". `escaped` receives `second`'s future before `first`'s
+   initializer raises. *)
+class Spec632AnAbandonedClause usingPlatform: p = Object new (
+    | t = p transcript. private Error = p kernel Error. public escaped. |
+) (
+    class Probe keep: holder = Object new (
+        || public first = {holder escaped: second. nil zork}. public second = 2 + 1. ||
+    ) () : ()
+    public main: platform args: arguments = (
+        t show: ([Probe keep: self. 'no error'] on: Error do: [:error | error class name]); newLine.
+        t show: (escaped + 1) printString; newLine
+    )
+) : ()

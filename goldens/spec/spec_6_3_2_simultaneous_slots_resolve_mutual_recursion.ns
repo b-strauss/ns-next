@@ -8,10 +8,10 @@ Newspeak3
    simultaneous slots will resolve properly". first reads second, which is
    declared after it, and must still answer 3.
 
-   The parser computes the simultaneous flag only to pick the closing
-   delimiter and discards it (docs/design/frontend.md, "Deviation:
-   simultaneous slot clauses initialize sequentially"), so second is still
-   nil when first is computed. Skipped until the futures exist. *)
+   The clause makes a future of each initializer and resolves them at its
+   end, in declaration order: when first's future is forced, second's is
+   forced in turn through the message first's initializer sends it, so
+   second is 2 when first is computed. *)
 class Spec632SimultaneousSlots usingPlatform: p = Object new (| t = p transcript. |) (
     class Probe = Object new (|| first = second + 1. second = 2. ||) (
         public answer = ( ^first )

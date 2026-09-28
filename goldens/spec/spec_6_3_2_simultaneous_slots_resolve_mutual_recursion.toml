@@ -1,4 +1,3 @@
-skipped = "not implemented yet: simultaneous slot clauses initialize sequentially, so second is nil when first is computed"
 stdout = '''
 3
 '''
