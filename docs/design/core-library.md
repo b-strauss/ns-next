@@ -3,16 +3,21 @@
 > **Status:** partial — the core library is built as Newspeak source,
 > `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
-> of the shipped module `PlatformFactory.ns` with lazy members; missing is
-> `Integer>>/`, and the surface grows on demand, not speculatively.
+> of the shipped module `PlatformFactory.ns` with lazy members, its
+> `collections` the facet of the shipped module `CollectionsFactory.ns`
+> with a Newspeak `List`; missing is `Integer>>/`, and the surface grows on
+> demand, not speculatively.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
+> `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections
+> module),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/core_library.rs` (the table of shipped modules and the
 > platform's boot),
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
-> `builtins/activation.rs` and `builtins/message.rs` the exceptions'),
+> `builtins/activation.rs` and `builtins/message.rs` the exceptions',
+> `builtins/module.rs` `moduleNamed:`),
 > `interpreter/unwind.rs` (the one unwinder, and a VM error signalled),
 > `compiler/primitive_method.rs`, `compiler/unwind_marker.rs`, `platform.rs`.
 
@@ -369,19 +374,35 @@ core-library module beside `Kernel.ns` (decided with the user on
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
     | private vmMirror = theMirror. private kernelModule = theKernel. |
 ) (
+    lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [nil]) usingKernel: kernelModule.
     private class Platform = Value new () (
         lazy public transcript = Transcript new.
-        lazy public collections = Collections new.
+        lazy public collections = collectionsModule newCollections.
         lazy public kernel = KernelNamespace new.
         public Platform = ( ^outer PlatformFactory Platform )
         public Transcript = ( ^outer PlatformFactory Transcript )
-        public Collections = ( ^outer PlatformFactory Collections )
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
     )
     private class Transcript = Value new () ( show: and newLine, through vmMirror )
-    private class Collections = Value new () ( public List = ( ^OrderedCollection ) )
     private class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
     public newPlatform = ( ^Platform new )
+) : ()
+```
+
+and `platform collections` is the facet of a second shipped module,
+`crates/ns-runtime/core-library/CollectionsFactory.ns`, written the same
+way (2026-09-28, "The collections module (plan 2)" below):
+
+```newspeak
+class CollectionsFactory usingKernel: theKernel = Object <: Value (
+    | private kernelModule = theKernel. |
+) (
+    private class Collections = Value new () (
+        public Collections = ( ^outer CollectionsFactory Collections )
+        public List = ( ^outer CollectionsFactory List )
+    )
+    private class List = Object new ( | protected size_ ::= 0. protected data ::= Array new: 4. | ) ( ... )
+    public newCollections = ( ^Collections new )
 ) : ()
 ```
 
@@ -393,8 +414,8 @@ program receives, and may instantiate, are the root's nested classes, its
 facets. Each reaches the privileged state lexically, as a
 member of the root, never through a slot of its own, so the facets keep
 `new` and hold no privileged state in slots of their own -- `Transcript`,
-`Collections` and `KernelNamespace` declare none, and `Platform`'s three
-lazy slots hold only facets it builds itself: `t class new` makes a
+`KernelNamespace` and the collections module's `Collections` declare none,
+and `Platform`'s three lazy slots hold only facets: `t class new` makes a
 transcript equal to `t`, and `platform class new` a platform that writes
 like the first
 (`goldens/kernel/a_second_platform_writes_like_the_first`). The platform
@@ -412,12 +433,30 @@ program reaches a shipped module's root" below): even a holder of the
 root could make only another platform from it, never name a class that
 reaches the mirror (`tests/platform.rs`,
 `the_platform_factory_answers_only_new_platform`,
-`the_platforms_class_accessors_reach_the_private_classes`). Plan 2's
-`CollectionsFactory.ns` follows the same pattern.
+`the_platforms_class_accessors_reach_the_private_classes`).
+`CollectionsFactory.ns` follows the same pattern: its root holds the kernel
+instance, its nested `Collections` and `List` are private, and its one
+public member, `newCollections`, answers the facet `platform collections`
+is (`the_collections_factory_answers_only_new_collections`).
 
 **The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
 built on its first use, so a program pays only for the members it asks for,
 and the host's boot runs no member's initializer.
+
+**One collections module serves every platform.** `PlatformFactory`'s root
+keeps the collections module in its private lazy slot `collectionsModule`,
+which fetches `CollectionsFactory`'s root class through the mirror's
+`moduleNamed:` ("The module table and the boot" below) and instantiates it
+with the kernel instance, on the first `platform collections` of any
+platform; `Platform`'s `collections` answers that instance's
+`newCollections`. So every platform's facet comes from one factory and
+hands out one `List` class, and the facets, values, are all equal
+(`goldens/collections/every_platform_shares_one_collections_module`). The
+facet names its own class, `^outer CollectionsFactory Collections`, as
+`Platform>>Platform` does, and `List` by `^outer CollectionsFactory List`:
+class accessors the compiler recognizes in every shipped module but the
+kernel, so the platform paths `collections Collections` and `collections
+List` needed no wider recognition.
 
 **The boot.** `Interpreter::install_platform`, run by `bootstrap_with`
 right after `install_kernel`, takes `PlatformFactory` from the table of
@@ -477,18 +516,18 @@ rather than on a corpus module's demand. `show:` does not send
 (`goldens/kernel/the_transcript_prints_any_object`,
 `goldens/errors/show_of_something_that_is_no_string_is_an_error`).
 
-**The namespace members are ordinary methods.** `Collections>>List` answers
-`OrderedCollection` through `Object`'s accessor, and `KernelNamespace`'s
-five answer the kernel instance's nested classes. The class-accessor fast
-path ("The predefined classes are accessors on `Object`" below) is
-recognized only in the form `^outer Kernel <Name>`, which no module but the
-kernel can write, so each costs one activation more than it did as a kernel
-accessor (`interpreter/kernel.rs`,
+**The namespace members are ordinary methods.** `KernelNamespace`'s five
+answer the kernel instance's nested classes. The class-accessor fast path
+("The predefined classes are accessors on `Object`" below) is recognized
+only in the form `^outer Kernel <Name>`, which no module but the kernel can
+write, so each costs one activation more than it did as a kernel accessor
+(`interpreter/kernel.rs`,
 `the_platform_modules_members_have_the_fast_path_they_should`). A
 namespace member is asked for once, typically in a slot initializer. The
-platform's class accessors carry no fast path either: the compiler
-recognizes them (`MixinMethod::class_accessor`) for the image's platform
-paths alone, and no send reads the mark
+platform's class accessors, and the collections facet's `Collections` and
+`List`, carry no fast path either: the compiler recognizes them
+(`MixinMethod::class_accessor`) for the image's platform paths alone, and
+no send reads the mark
 (`the_platforms_class_accessors_are_recognized_without_a_fast_path`).
 
 Being values, the platform and its members have no identity: two
@@ -528,9 +567,15 @@ whose `receiver` slot is public. So no code whose receiver is the factory
 instance may ever send it a message it does not understand -- today the
 only sends to it are the host's `newPlatform` at boot, `newPlatform`'s own
 `Platform`, the class accessors' `outer PlatformFactory <Name>`, each
-naming a nested class it declares, and the nested classes' superclass
-clauses, run with it as receiver. Whoever edits `PlatformFactory.ns` (or
-writes another `XFactory` root) keeps it that way: a send to the root that
+naming a nested class it declares, the nested classes' superclass
+clauses, run with it as receiver, and the lazy `collectionsModule`
+initializer's own. `CollectionsFactory`'s instance is held the same way:
+only `PlatformFactory`'s private `collectionsModule` slot keeps it, and the
+facet's classes have it as their enclosing object; the sends to it are
+`newCollections` from `Platform`'s `collections` initializer, the facet's
+class accessors' `outer CollectionsFactory <Name>`, and its nested classes'
+superclass clauses. Whoever edits either module (or writes another
+`XFactory` root) keeps it that way: a send to the root that
 can miss, or a method of the root that sends to `self` something it may
 not understand, would hand the root, and with it `usingVmMirror:kernel:`
 through its class, to any program that catches the error.
@@ -574,9 +619,10 @@ ordinary record of the class the path `Platform` names.
 
 ## The on-demand rule
 
-**`PlatformFactory.ns` is widened only on demand.** An accessor exists because a
-module on `corpus/runnable.toml` needs it, and the whitelist entry that
-demanded it is named in the accessor's comment.
+**`PlatformFactory.ns` and `CollectionsFactory.ns` are widened only on
+demand.** An accessor exists because a module on `corpus/runnable.toml`
+needs it, and the whitelist entry that demanded it is named in the
+accessor's comment.
 
 This is not minimalism for its own sake. A capability nothing on that list asks
 for has no test that would catch it rotting, so it is a liability rather than an
@@ -584,14 +630,15 @@ asset. A module that needs something nobody has asked for is a reason to widen
 the whitelist deliberately — with a real module, run end to end, its output
 recorded — not a reason to build a speculative library.
 
-The `collections` namespace is the worked example. It has exactly one member,
-`List`, because exactly one is asked for; `List` names the growable ordered
-sequence the runtime already has under its Smalltalk name `OrderedCollection`, so
-it is a name for an existing class rather than a new implementation. The corpus
-also asks that namespace for `Map`, `IdentityMap`, `IdentitySet`, `WeakArray` and
-`Collection`. Those name classes the runtime does not have, and inventing them —
-or worse, aliasing them onto `OrderedCollection`, which is neither a dictionary
-nor a set — would be a collections library built without a caller. Modules
+The `collections` namespace is the worked example. It hands out exactly one
+class of the library, `List`, because exactly one is asked for -- `Ducts.ns`,
+`NewspeakASTs.ns` and `V5BytecodeSimulation.ns` bind `platform collections
+List` -- and `List` answers exactly the six selectors the corpus and the
+goldens send: `new`, `add:`, `at:`, `at:put:`, `do:` and `size`. The corpus
+also asks that namespace for `Map`, `IdentityMap`, `IdentitySet`, `WeakArray`
+and `Collection`. Those name classes the runtime does not have, and inventing
+them — or worse, aliasing them onto `List`, which is neither a dictionary nor
+a set — would be a collections library built without a caller. Modules
 needing them stay off the whitelist.
 
 ## Deviation: `i64` integers
@@ -794,8 +841,8 @@ and loosening any one of them lets a program claim every primitive:
 
 - Only `resolver::resolve_kernel` records `Binding::MirrorSend`, the mark the
   compiler's recognizers read, and only the shipped core-library modules —
-  `Kernel.ns`, and `PlatformFactory.ns` from `interpreter/core_library.rs`'s
-  table — are resolved with it; a user module goes through `resolve`, so
+  `Kernel.ns`, and `PlatformFactory.ns` and `CollectionsFactory.ns` from
+  `interpreter/core_library.rs`'s table — are resolved with it; a user module goes through `resolve`, so
   copying shipped text gets an ordinary send to whatever that module's own
   `vmMirror` holds.
 - The bootstrap checks what the resolver cannot: that `Kernel`'s root class
@@ -1130,16 +1177,17 @@ Loading several *user* modules is a separate, later step.
 by `interpreter/kernel.rs`; every other shipped module is an entry of
 `interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name and its source,
 embedded with `include_str!` from `crates/ns-runtime/core-library/` like
-the kernel. Today the one entry is `Platform`. `resolved_shipped_module`
-parses and resolves an entry once per thread, with `resolve_kernel`,
+the kernel. Today it has two entries, `PlatformFactory` and
+`CollectionsFactory`. The table parses and resolves an entry once per thread, with `resolve_kernel`,
 because the entry is shipped source, and panics for one that does not
 parse or resolve, as the kernel's does: that is a defect in the binary, not
 in a program. Every interpreter still compiles each module itself, since
 compiled code is numbered against one heap's inline caches. Every entry is
 shipped source; a user module joins the table, marked as such by the host
-and resolved with `resolve`, with the step that loads one, and the mirror's
-`moduleNamed:` (below) is the leaf through which Newspeak will reach an
-entry.
+and resolved with `resolve`, with the step that loads one. The mirror's
+`moduleNamed:` (below) is the leaf through which shipped Newspeak reaches
+an entry (`shipped_module_named`), and the host's boot names
+`PlatformFactory` directly (`resolved_shipped_module`).
 
 **Planned: the module namespace on the mirror.** For the modules there are,
 the namespace belongs on the mirror (decided with the user on 2026-09-21): a
@@ -1148,10 +1196,11 @@ than a namespace builtin of its own or an invented factory convention.
 Nothing would touch the file system at run time, which is what linking
 statically means here. Later the same primitive falls back to the file system
 on a miss, so dynamic loading extends one primitive and changes neither
-`Kernel.ns` nor anything else on the Newspeak side. Nothing loads a second
-module yet, so the primitive belongs with the step that does. That step is
-the platform module's, designed on 2026-09-26 ("Planned: the platform and
-collections as core-library modules" below), where it is `moduleNamed:`.
+`Kernel.ns` nor anything else on the Newspeak side. Its first half is
+built: `moduleNamed:` ("Planned: the platform and collections as
+core-library modules" below) looks a name up in the table the binary
+carries. The table itself is still the host's rather than the mirror's,
+and the fallback to the file system comes with user modules.
 
 **Start-up was measured, not assumed: the kernel costs about 0.5 ms** —
 `ns-next run` of a module that answers at once, 4.07 ms against 3.56 ms
@@ -1251,7 +1300,7 @@ and as Primordial Soup's `Kernel wrapping:` facet provides them: the
 platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
 `MessageNotUnderstood`, `Halt` and `Message` from the kernel instance the
-platform was handed, as `Collections` does for `platform collections`.
+platform was handed.
 `Object` gains no accessor, so its set stays what §3.2 names.
 
 `Block` has `on: exceptionClass do: handler`, `ensure: aBlock` and
@@ -1547,11 +1596,11 @@ and caught twenty activations up costs about 6.4 µs.
 built (2026-09-26): lazy slots, the table of shipped modules and the
 platform's boot, and platform paths in the image ("The platform" above
 describes what exists). Plan 2, the collections module, is under way:
-`Array new: size` and the handler search that keeps no `OrderedCollection`
-are built ("The collections module (plan 2)" below); the rest --
-`moduleNamed:`, `CollectionsFactory.ns` with a Newspeak `List`, and the
-`OrderedCollection` removal -- is the next piece of
-work.** `Kernel.ns` is to hold only what the VM
+`Array new: size`, the handler search that keeps no `OrderedCollection`,
+`moduleNamed:` and `CollectionsFactory.ns` with a Newspeak `List` are
+built ("The collections module (plan 2)" below); the rest -- the image
+round trips of a `List`, moving every program to `List`, and the
+`OrderedCollection` removal -- is the next piece of work.** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
@@ -1653,24 +1702,32 @@ without an activation, but its arm, inlined into every send site of
 #### The module table and the boot (plan 1)
 
 **Built**, as "The platform" and "Where the library source lives, and how
-modules are found" above describe, with two parts of the design below
-waiting for plan 2: the table is `interpreter/core_library.rs`'s
-`SHIPPED_MODULES`, read by the host, not yet a table on the mirror, and
+modules are found" above describe, with one part of the design below not
+built: the table is `interpreter/core_library.rs`'s `SHIPPED_MODULES`,
+read by the host and by `moduleNamed:`, not yet a table on the mirror, and
 its entries carry no shipped flag yet, since every entry is shipped
-source; the flag comes with the first user module the table holds, and
-the mirror's `moduleNamed:` with `CollectionsFactory.ns`. The design as decided:
+source; the flag comes with the first user module the table holds. The
+mirror's `moduleNamed:` came with `CollectionsFactory.ns` in plan 2, and
+the table has two entries. The design as decided:
 
 - **One module table, on the mirror** (the decision of 2026-09-21 in
   "Where the library source lives, and how modules are found"). The host
   fills a table of name to source at bootstrap; the shipped modules —
-  `PlatformFactory.ns`, and `CollectionsFactory.ns` from plan 2 — sit beside `Kernel.ns`
+  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit beside `Kernel.ns`
   in `crates/ns-runtime/core-library/` and are embedded the same way.
   **Loading is unified; trust and visibility are not:** every entry carries
   whether it is shipped core-library source, set by the host and never by
   the module, and only such an entry is resolved with `resolve_kernel`.
-  A mirror leaf `moduleNamed:` (plan 2) answers an entry's module class,
-  built on its first request and kept; compiling is total, so the leaf runs no
-  Newspeak. The same table later holds user modules and falls back to the
+  The mirror leaf `moduleNamed:` (the row `moduleNamed:ifFail:`, whose
+  subject is the name, `builtins/module.rs`) answers an entry's root class,
+  built by `Mutator::load_root_class` on every request, and declines a
+  subject that is no `Symbol` or names no entry. It keeps nothing: the
+  caller keeps the class it wants, `PlatformFactory`'s root the one
+  instance of it in its lazy `collectionsModule`, which Newspeak evaluates
+  once. The design had the leaf keep the class, built on its first
+  request; decided with the user on 2026-09-28, a lazy slot keeps it
+  instead, which needs no new root in `Mutator` and no tracing. Compiling
+  is total, so the leaf runs no Newspeak. The same table later holds user modules and falls back to the
   file system. The loader a program is later handed through the platform
   sees user modules only: a program reaches the standard modules as the
   instances the platform built (`platform collections`), never as module
@@ -1728,9 +1785,9 @@ the mirror's `moduleNamed:` with `CollectionsFactory.ns`. The design as decided:
   replaced, and the other checks kept their recorded output. The factory
   pattern gave the platform's class `new` back, and the golden its
   original checks.
-- **`moduleNamed:` waits for plan 2.** The host takes `PlatformFactory`
-  from the table itself; the leaf is needed only once `PlatformFactory.ns`
-  fetches `CollectionsFactory.ns`.
+- **`moduleNamed:` came with plan 2.** The host still takes
+  `PlatformFactory` from the table itself; `PlatformFactory.ns` fetches
+  `CollectionsFactory.ns` through the leaf.
 
 #### Platform paths in the image (plan 1)
 
@@ -1739,7 +1796,7 @@ the mirror's `moduleNamed:` with `CollectionsFactory.ns`. The design as decided:
 
 An artifact names a shipped object by its **path of public members from
 the platform**: the empty path is the platform, `collections` its
-collections module, `transcript` the transcript, `Transcript` its class,
+collections facet, `transcript` the transcript, `Transcript` its class,
 `Platform` the platform's own. A step is a public slot's getter, a public
 nested class's accessor, or a public **class accessor**: a method the
 compiler recognized, in shipped source other than the kernel, as exactly
@@ -1815,30 +1872,48 @@ its class. That needs its own decision when the first such module arrives.
   allocation abort, since the size is the program's and an abort is not
   catchable. A `List` over a fixed array needs a sized array; this is what
   it grows into.
-- **`CollectionsFactory.ns`**, in the factory pattern ("The platform"
-  above): `class CollectionsFactory usingKernel: kernelModule = Object <:
-  Value`, a root that holds the kernel and is never handed out, with the
-  private nested classes a program reaches through the platform -- the
-  `Collections` namespace and `List` -- as SOMns's and Primordial Soup's
-  collections modules are values; it needs no mirror. `List`
-  is Primordial Soup's `List` in this runtime's Newspeak: `protected size_`,
-  `protected data`, grown by copying into a larger `Array`. Its protocol
-  follows the on-demand rule: `new`, `add:`, `at:`, `at:put:`, `do:` and
-  `size`, what the corpus and the goldens ask of `OrderedCollection` today,
-  plus `at:put:`, which `Array` has. It reports its errors — an index out
-  of range — as `kernelModule Error`. `PlatformFactory`'s root fetches the
-  module (`vmMirror moduleNamed: #CollectionsFactory`) and instantiates it
-  with `kernelModule`, once, so every platform shares one module instance
-  and one `List` class; the platform's lazy `collections` slot answers that
-  instance's `Collections new`, and plan 1's `Collections` class leaves
-  `PlatformFactory.ns`. **Open for plan 2:** once `Collections` is a
-  nested class of `CollectionsFactory` rather than of `PlatformFactory`,
-  `Platform>>Collections` can no longer be `^outer PlatformFactory
-  Collections`, so the class-accessor recognition (`MixinMethod::
-  class_accessor`) would not mark whatever replaces it, and the platform
-  path `Collections` would vanish from images. Plan 2 must decide how that
-  class is named -- a path through the collections module instance, a
-  wider recognition, or no path at all.
+- **`CollectionsFactory.ns`, built**, in the factory pattern ("The
+  platform" above): `class CollectionsFactory usingKernel: theKernel =
+  Object <: Value`, a root that holds the kernel in a private slot and is
+  never handed out, with the private nested classes a program reaches
+  through the platform -- the `Collections` facet and `List` -- as SOMns's
+  and Primordial Soup's collections modules are values; it needs no mirror.
+  `PlatformFactory`'s root fetches the module (`vmMirror moduleNamed:
+  #CollectionsFactory ifFail: [nil]`) and instantiates it with
+  `kernelModule`, once, in its lazy `collectionsModule`, so every platform
+  shares one module instance and one `List` class; the platform's lazy
+  `collections` slot answers that instance's `newCollections`, its one
+  public member, and plan 1's `Collections` class has left
+  `PlatformFactory.ns`. **How the facet's class is named, settled with the
+  user on 2026-09-28:** the facet names its own class with `public
+  Collections = ( ^outer CollectionsFactory Collections )`, as
+  `Platform>>Platform` does, so its platform path is `collections
+  Collections`; the class-accessor recognition (`MixinMethod::
+  class_accessor`) is not widened, and `Platform>>Collections` is gone.
+  `List` is a private class of the factory, handed out by the facet's class
+  accessor `public List = ( ^outer CollectionsFactory List )`, path
+  `collections List`; a program may still subclass it
+  (`goldens/collections/a_user_subclass_of_list_inherits_its_protocol`).
+- **`List`, built,** is Primordial Soup's `List` in this runtime's
+  Newspeak: `protected size_`, `protected data`, an `Array` of four to
+  start, replaced by one twice as long when it is full -- nothing grows in
+  place. Its protocol follows the on-demand rule: `new`, `add:`, `at:`,
+  `at:put:`, `do:` and `size`, what the corpus and the goldens ask of
+  `OrderedCollection`, plus `at:put:`, which `Array` has. `add:` answers
+  the element, and `at:put:` the value, as Smalltalk's and Primordial
+  Soup's do, where the kernel's `Array>>at:put:` leaf answers the receiver
+  (decided with the user on 2026-09-28). `do:` reads the size once, as
+  Primordial Soup's `1 to: size_ do:` does, so an `add:` inside the block
+  does not extend the walk while an `at:put:` inside it is seen, and it
+  sends `value:` to any argument, as any loop written over `at:` would,
+  where the `Array>>do:` leaf treats a non-block as a no-op (decided with
+  the user on 2026-09-28;
+  `goldens/collections/do_visits_the_elements_a_list_held_when_it_started`).
+  An index outside `1..size` -- whatever capacity the array has spare --
+  or one that is no `Integer` is an `Error` signalled through
+  `kernelModule Error` with `Array>>at:`'s text, "index 3 out of range:
+  valid indices are 1..2 (size 2)", so a program sees one error from
+  either (`goldens/collections/a_list_index_error_is_caught_as_an_error`).
 - **The handler search keeps no `OrderedCollection`, built.** `invokeNextHandler`
   counts the enabled `on:do:` activations it passes, and
   `invokeHandlerAt:disabling:` fills an `Array new: count` by walking the same range
@@ -1862,8 +1937,11 @@ its class. That needs its own decision when the first such module arrives.
   `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods` loses
   `MyOrderedCollection`, and one `true an Object` line with it, because
   `List` is no builtin; `the_platform_and_its_parts_are_values`'s
-  `c List == OrderedCollection` is replaced. New goldens pin `Array new:`,
-  a `List` error caught as an `Error`, and a user subclass of `List`.
+  `c List == OrderedCollection` is replaced, by a check that a second
+  platform's `List` is the same class. New goldens pin `Array new:`, and
+  `goldens/collections/` pins `List`'s protocol, its growth, its index
+  errors caught and uncaught, a user subclass of `List`, and one module
+  shared by every platform.
 
 #### What changes in the invariants
 
@@ -1875,6 +1953,13 @@ is an instance of `PlatformFactory`'s nested `Platform`, and the bootstrap
 checks the factory's `vmMirror`), and that the platform is never written
 field by field: the encoder names it by its path. The on-demand rule
 (above) is `PlatformFactory.ns`'s.
+
+Done in plan 2: `CollectionsFactory.ns` joins the shipped modules resolved
+with `resolve_kernel` and whose root no program reaches -- its one instance
+is kept by `PlatformFactory`'s private lazy `collectionsModule`, and what a
+program gets is the facet `platform collections` answers. It declares no
+`vmMirror` and needs none. The on-demand rule is its too: every `List`
+selector exists because the corpus or a golden asks for it.
 
 #### What is measured
 

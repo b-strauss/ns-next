@@ -25,8 +25,11 @@ Rust 1.98.0, edition 2021, four crates:
   it `core-library/PlatformFactory.ns`, whose root holds the mirror and is
   never handed out, and whose nested `Platform` is the platform every program
   is handed, with lazy members and class accessors, booted from the table of
-  shipped modules (`interpreter/core_library.rs`) -- and the image format
-  (`image/`).
+  shipped modules (`interpreter/core_library.rs`), and
+  `core-library/CollectionsFactory.ns`, the collections module with a
+  Newspeak `List`, whose root `PlatformFactory`'s builds once through the
+  mirror's `moduleNamed:` leaf (`builtins/module.rs`) and whose facet is
+  `platform collections` -- and the image format (`image/`).
   Objects live in an arena owned by one `Heap` (`heap.rs`) and are addressed
   by 32-bit handles; activations live on an
   activation stack in the same `Heap` and are reified into the frame arena only
@@ -148,8 +151,8 @@ given, for one -- and that is not a decoder defect. Loading a stateful image run
 shipped code before its graph decodes: each platform path it lists (at most 4,096
 of at most 32 members) is followed by unary sends, each step a public slot getter,
 nested-class accessor or pure class accessor (`^outer <Root> <Nested>`) of
-`PlatformFactory.ns`, which can run a lazy member's initializer or a nested class's
-superclass clause -- shipped code, never the image's.
+`PlatformFactory.ns` or `CollectionsFactory.ns`, which can run a lazy member's
+initializer or a nested class's superclass clause -- shipped code, never the image's.
 
 **A wire tag is assigned once and never renumbered or reused.** Every instruction,
 literal and graph-section tag is declared in `crates/ns-runtime/src/image/opcodes.rs`
@@ -302,17 +305,20 @@ leaf, so it reaches the shipped core-library modules and nothing else
 keep it there, and loosening any one of them lets a program claim every primitive: only
 `resolver::resolve_kernel` records `Binding::MirrorSend`, the mark `SendMirror` and
 primitive methods are compiled from, and only the shipped core-library modules --
-`Kernel.ns`, and `PlatformFactory.ns` from `interpreter/core_library.rs`'s table -- are
-resolved with it; a user module goes through `resolve`; the bootstrap checks that
+`Kernel.ns`, and `PlatformFactory.ns` and `CollectionsFactory.ns` from
+`interpreter/core_library.rs`'s table -- are resolved with it; a user module goes
+through `resolve`; the bootstrap checks that
 `Kernel`'s one immutable `vmMirror` slot holds the mirror (`interpreter::kernel`), and
 `PlatformFactory`'s too (`interpreter::core_library`), and no program reaches a shipped
 module's root instance or root class, so none can make a second one over something else --
 the platform handed to every program is an instance of `PlatformFactory`'s nested
 `Platform`, whose factory is `new` and whose classes reach the mirror lexically, and
-nothing a program can name answers either root; behind that, `PlatformFactory`'s nested
+nothing a program can name answers any shipped root; behind that, `PlatformFactory`'s nested
 classes are private and its one public member is `newPlatform`, so even a holder of the
 root could only make another platform (the factory pattern,
-`docs/design/core-library.md`); the platform is never written to an image field by
+`docs/design/core-library.md`), and `CollectionsFactory` is written the same way, its root
+held by `PlatformFactory`'s in a private lazy slot and its facet what `platform
+collections` answers; the platform is never written to an image field by
 field: the encoder names it, and every shipped instance or class it reaches, by its
 platform path (`image/platform_paths.rs`), and refuses a shipped module instance or class
 no path names; no program can name the mirror's class -- `Object` declares no
@@ -454,9 +460,9 @@ to send and the output it produces; `run-corpus` runs every listed module from s
 and as a built binary, under both lowerings, and fails if any of the four differs from
 the recorded output. Nothing under `crates/ns-syntax` should change for runtime work.
 
-`PlatformFactory.ns` is widened only on demand: an accessor exists because a module on
-`corpus/runnable.toml` needs it, and the whitelist entry that demanded it is named in the
-accessor's comment. A capability nothing on that list asks for has no test that would
+`PlatformFactory.ns` and `CollectionsFactory.ns` are widened only on demand: an accessor
+exists because a module on `corpus/runnable.toml` needs it, and the whitelist entry that
+demanded it is named in the accessor's comment. A capability nothing on that list asks for has no test that would
 catch it rotting.
 
 Add no new external dependency without a reason that survives review — the image format

@@ -10232,7 +10232,7 @@ const PLATFORM_MEMBERS: &str = indoc! {"
     ) (
         public unused = (
             transcript newLine.
-            collections List.
+            collections newCollections.
             ^transcript show: transcript nonexistent printString
         )
     ) : ()
@@ -10335,9 +10335,10 @@ fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
 }
 
 /// The platform hands out its module's classes by class accessors
-/// (`public Transcript = ( ^outer PlatformFactory Transcript )`), so a class
-/// a program got from one is named by the accessor's path, and the loading
-/// platform answers its own class for it.
+/// (`public Transcript = ( ^outer PlatformFactory Transcript )`), and the
+/// collections facet its module's the same way, so a class a program got
+/// from one is named by the accessor's path, and the loading platform
+/// answers its own class for it.
 #[test]
 fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     let source = indoc! {"
@@ -10346,7 +10347,8 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
         class Holder usingPlatform: platform = Object new (
             | public transcriptClass = platform Transcript.
               public platformClass = platform class.
-              public collectionsClass = platform Collections.
+              public collectionsClass = platform collections Collections.
+              public listClass = platform collections List.
               public kernelNamespaceClass = platform KernelNamespace. |
         ) (
         ) : ()
@@ -10358,7 +10360,8 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
         vec![
             "Transcript".to_string(),
             "Platform".to_string(),
-            "Collections".to_string(),
+            "collections Collections".to_string(),
+            "collections List".to_string(),
             "KernelNamespace".to_string()
         ],
         "the paths the graph uses, in the order it first reaches them"
@@ -10366,14 +10369,16 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
     let platform = loaded.interpreter.platform();
-    for (member, accessor) in [
-        ("transcriptClass", "Transcript"),
-        ("platformClass", "Platform"),
-        ("collectionsClass", "Collections"),
-        ("kernelNamespaceClass", "KernelNamespace"),
+    let collections = send_to(&mut loaded, &platform, "collections");
+    for (member, answerer, accessor) in [
+        ("transcriptClass", &platform, "Transcript"),
+        ("platformClass", &platform, "Platform"),
+        ("collectionsClass", &collections, "Collections"),
+        ("listClass", &collections, "List"),
+        ("kernelNamespaceClass", &platform, "KernelNamespace"),
     ] {
         let stored = send_to(&mut loaded, &instance, member);
-        let fresh = send_to(&mut loaded, &platform, accessor);
+        let fresh = send_to(&mut loaded, answerer, accessor);
         assert!(
             same_object(&mut loaded, &stored, &fresh),
             "the stored {member} is the loading platform's {accessor}"
@@ -10505,19 +10510,19 @@ fn a_platform_path_the_loader_cannot_follow_is_refused() {
          public slot, nested class or class accessor of what the path has reached"
     );
 
-    // `Collections>>List` answers a class, but its body is no class accessor
-    // of the module that declares it (`^OrderedCollection`), so it is no step
-    // either.
+    // `newCollections` is the factory's member, not the facet's, so it is
+    // no step: a path can never reach the collections factory.
     let collections = symbol_id(&report, "collections");
-    let list = symbol_id(&report, "List");
+    let new_collections = symbol_id(&report, "newCollections");
     let message = load_error(&with_platform_path_section(
         &bytes,
-        &platform_path_section(&[vec![collections, list]]),
+        &platform_path_section(&[vec![collections, new_collections]]),
     ));
     assert_eq!(
         message,
-        "the image names platform path `collections List`, whose member `List` is no \
-         public slot, nested class or class accessor of what the path has reached"
+        "the image names platform path `collections newCollections`, whose member \
+         `newCollections` is no public slot, nested class or class accessor of what the path \
+         has reached"
     );
 }
 
@@ -10747,45 +10752,34 @@ fn a_hash_recorded_for_a_platform_path_past_the_section_is_refused() {
 }
 
 /// An object the closing hash table reaches twice is listed once, or the
-/// loader would refuse the table as naming one object twice. The path
-/// `collections List` answers `OrderedCollection`, a builtin class compiled
-/// from shipped source, so the class is reached both as a builtin and by its
-/// path -- it keeps its builtin entry -- and its metaclass both as a
-/// builtin's metaclass and as the metaclass of a path-named class -- it keeps
-/// the builtin one's.
+/// loader would refuse the table as naming one object twice. No platform
+/// path answers a builtin class today; the table must still list one once if
+/// a path ever does, so this hands the encoder `Array` as a path-named
+/// object: the class is reached both as a builtin and by its path -- it
+/// keeps its builtin entry -- and its metaclass both as a builtin's
+/// metaclass and as the metaclass of a path-named class -- it keeps the
+/// builtin one's.
 #[test]
 fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
     let (mut interpreter, class) = load(EMPTY);
     let platform = interpreter.platform();
-    let collections = expect_ok(
-        interpreter.send(&platform, Symbol::intern("collections"), &[]),
-        "platform collections",
-    );
-    let list = expect_ok(
-        interpreter.send(&collections, Symbol::intern("List"), &[]),
-        "platform collections List",
-    );
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        let list = *object(&mutator.fetch(&list));
-        assert!(
-            list.same(mutator.builtin_class(BuiltinClass::OrderedCollection)),
-            "the path answers the builtin class"
-        );
+        let array = mutator.builtin_class(BuiltinClass::Array);
         let metaclass = mutator
             .heap()
-            .class_metaclass(list)
-            .expect("OrderedCollection has a metaclass");
-        let class_hash = mutator.heap_mut().ensure_identity_hash(list);
+            .class_metaclass(array)
+            .expect("Array has a metaclass");
+        let class_hash = mutator.heap_mut().ensure_identity_hash(array);
         let metaclass_hash = mutator.heap_mut().ensure_identity_hash(metaclass);
         let mut writer = encode::Writer::new();
-        encode::encode_tag_named_hashes(&mut writer, mutator, class, &platform, &[list]);
+        encode::encode_tag_named_hashes(&mut writer, mutator, class, &platform, &[array]);
         let bytes = writer.into_bytes();
         let entries = u32::from_le_bytes(bytes[..4].try_into().expect("a count"));
         let mut reader = decode::Reader::new(&bytes);
         let decoded =
-            decode::decode_tag_named_hashes(&mut reader, mutator, class, &[Value::Object(list)]);
+            decode::decode_tag_named_hashes(&mut reader, mutator, class, &[Value::Object(array)]);
         assert_eq!(decoded, Ok(class_hash.max(metaclass_hash)));
         assert_eq!(entries, 2, "one entry for the class, one for its metaclass");
     });

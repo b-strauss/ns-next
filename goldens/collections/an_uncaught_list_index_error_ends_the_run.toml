@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before
+'''
+stderr = '''
+Uncaught Newspeak error: index 1 out of range: valid indices are 1..0 (size 0)
+'''

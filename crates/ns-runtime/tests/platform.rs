@@ -102,10 +102,13 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
 
 /// `platform collections List` exists because three whitelisted corpus
 /// modules open with `platform collections List` in their module state
-/// (`corpus/runnable.toml`). It names the Core Library's growable ordered
-/// sequence, which this runtime already has as `OrderedCollection`.
+/// (`corpus/runnable.toml`). It is `CollectionsFactory.ns`'s `List`, a class
+/// compiled from shipped Newspeak source and no builtin, handed out by the
+/// collections facet; the facet names its own class too, and every platform
+/// shares one collections module, so a second platform answers the same
+/// `List`.
 #[test]
-fn platform_collections_answers_list_with_the_ordered_collection_class() {
+fn platform_collections_answers_the_collections_modules_list() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
 
@@ -113,16 +116,59 @@ fn platform_collections_answers_list_with_the_ordered_collection_class() {
         interpreter.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
-    let got = expect_ok(
+    let list = expect_ok(
         interpreter.send(&collections, Symbol::intern("List"), &[]),
         "platform collections List",
     );
+    let facet_class = expect_ok(
+        interpreter.send(&collections, Symbol::intern("Collections"), &[]),
+        "platform collections Collections",
+    );
+    let collections_class = expect_ok(
+        interpreter.send(&collections, Symbol::intern("class"), &[]),
+        "platform collections class",
+    );
+    let platform_class = expect_ok(
+        interpreter.send(&platform, Symbol::intern("class"), &[]),
+        "platform class",
+    );
+    let second = expect_ok(
+        interpreter.send(&platform_class, Symbol::NEW, &[]),
+        "platform class new",
+    );
+    let second_collections = expect_ok(
+        interpreter.send(&second, Symbol::intern("collections"), &[]),
+        "second collections",
+    );
+    let second_list = expect_ok(
+        interpreter.send(&second_collections, Symbol::intern("List"), &[]),
+        "second collections List",
+    );
     interpreter.enter(|mutator| {
-        let expected = mutator.builtin_class(BuiltinClass::OrderedCollection);
-        match mutator.fetch(&got) {
-            Value::Object(object) => assert!(object.same(expected)),
-            _ => panic!("expected a class object"),
-        }
+        let object_of = |root: &Root| match mutator.fetch(root) {
+            Value::Object(object) => object,
+            other => panic!(
+                "expected a class object, got {}",
+                mutator.heap().describe(&other)
+            ),
+        };
+        let list = object_of(&list);
+        let facet_class = object_of(&facet_class);
+        let collections_class = object_of(&collections_class);
+        let second_list = object_of(&second_list);
+        let heap = mutator.heap();
+        assert!(heap.is_class(list), "platform collections List is a class");
+        assert_eq!(heap.class_builtin(list), None, "List is no builtin");
+        assert!(heap.class_is_shipped(list), "List is shipped source");
+        assert_eq!(heap.class_display_name(list), "List");
+        assert!(
+            facet_class.same(collections_class),
+            "the facet's Collections is its own class"
+        );
+        assert!(
+            second_list.same(list),
+            "a second platform answers the same List"
+        );
     });
 }
 
@@ -425,7 +471,7 @@ fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
 fn the_platform_factory_answers_only_new_platform() {
     let mut interpreter = Interpreter::bootstrap();
     let factory = the_platform_factory(&mut interpreter);
-    for name in ["Platform", "Transcript", "Collections", "KernelNamespace"] {
+    for name in ["Platform", "Transcript", "KernelNamespace"] {
         let message = refusal(
             interpreter.send(&factory, Symbol::intern(name), &[]),
             &format!("factory {name}"),
@@ -453,6 +499,65 @@ fn the_platform_factory_answers_only_new_platform() {
     );
 }
 
+/// `CollectionsFactory` is written in the same factory pattern: its nested
+/// classes are private and its one public member is `newCollections`. A
+/// host reaches its instance only as the enclosing object of the facet's
+/// class, which no program can walk; even then the classes' names find
+/// nothing, while `newCollections` makes a facet whose `List` answers a
+/// class. A second line of defence behind the factory instance being
+/// unreachable, as for `PlatformFactory`.
+#[test]
+fn the_collections_factory_answers_only_new_collections() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let collections = expect_ok(
+        interpreter.send(&platform, Symbol::intern("collections"), &[]),
+        "platform collections",
+    );
+    let factory = interpreter.enter(|mutator| {
+        let Value::Object(collections) = mutator.fetch(&collections) else {
+            panic!("the collections facet is an object");
+        };
+        let heap = mutator.heap();
+        let factory = heap
+            .class_enclosing(heap.class_of_object(collections))
+            .expect("the facet's class is a nested class");
+        assert_eq!(
+            heap.class_display_name(heap.class_of_object(factory)),
+            "CollectionsFactory"
+        );
+        mutator.stash(Value::Object(factory))
+    });
+    for name in ["Collections", "List"] {
+        let message = refusal(
+            interpreter.send(&factory, Symbol::intern(name), &[]),
+            &format!("collections factory {name}"),
+        );
+        assert!(
+            message.contains("does not understand"),
+            "collections factory {name}: {message}"
+        );
+    }
+    let facet = expect_ok(
+        interpreter.send(&factory, Symbol::intern("newCollections"), &[]),
+        "collections factory newCollections",
+    );
+    let list = expect_ok(
+        interpreter.send(&facet, Symbol::intern("List"), &[]),
+        "newCollections List",
+    );
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(&list);
+        let Value::Object(list) = value else {
+            panic!("expected a class, got {}", mutator.heap().describe(&value));
+        };
+        assert!(
+            mutator.heap().is_class(list),
+            "newCollections List is a class"
+        );
+    });
+}
+
 /// The platform's class accessors reach the module's private classes by a
 /// lexical send (§5.9), so each still answers a class a program can use,
 /// and each is still a platform path step.
@@ -460,7 +565,7 @@ fn the_platform_factory_answers_only_new_platform() {
 fn the_platforms_class_accessors_reach_the_private_classes() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
-    for name in ["Platform", "Transcript", "Collections", "KernelNamespace"] {
+    for name in ["Platform", "Transcript", "KernelNamespace"] {
         let class = expect_ok(
             interpreter.send(&platform, Symbol::intern(name), &[]),
             &format!("platform {name}"),

@@ -5,7 +5,8 @@ Newspeak3
    and its members reach the module's classes lexically, so a second
    platform's transcript writes through the mirror the first one's does.
    The platform hands out the module's classes by methods, and each answers
-   the class its own members are instances of. *)
+   the class its own members are instances of; the collections facet hands
+   out its module's classes as the platform hands out its own. *)
 class ASecondPlatformWritesLikeTheFirst usingPlatform: platformAtCreation = Object new () (
     public main: platform args: arguments = (
         | second |
@@ -13,7 +14,7 @@ class ASecondPlatformWritesLikeTheFirst usingPlatform: platformAtCreation = Obje
         platform transcript show: 'first'; newLine.
         second transcript show: 'second'; newLine.
         platform transcript show: (second transcript = platform transcript) printString; newLine.
-        platform transcript show: (platform Collections new = platform collections) printString; newLine.
+        platform transcript show: (platform collections Collections new = second collections) printString; newLine.
         platform transcript show: (platform Transcript == platform transcript class) printString; newLine.
         platform transcript show: (platform Platform == platform class) printString; newLine.
         platform transcript show: (second Platform == platform class) printString; newLine

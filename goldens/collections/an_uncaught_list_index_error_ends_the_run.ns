@@ -1,0 +1,13 @@
+Newspeak3
+'Collections'
+(* An unhandled List index error ends the run like any other Error. *)
+class AnUncaughtListIndexErrorEndsTheRun usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private List = thePlatform collections List. |
+) (
+    public main: platform args: arguments = (
+        transcript show: 'before'; newLine.
+        List new at: 1.
+        transcript show: 'after'; newLine
+    )
+) : ()

@@ -18,11 +18,14 @@ Newspeak3
    writes through the one mirror. The nested classes are private, so even
    a holder of this root's instance could send it nothing but
    `newPlatform`: a second line of defence behind the instance being
-   unreachable. Nothing a program can name answers this root's instance or its
-   class, so no program can build a second one over something that is not
-   the mirror. Keep it so: no code whose receiver is this root's instance
-   may send it anything it does not understand, since a
-   `MessageNotUnderstood` hands its receiver to whoever catches it
+   unreachable. The collections module is another such root
+   (`CollectionsFactory.ns`), built once through the mirror's
+   `moduleNamed:` and kept in a private lazy slot here; the platform hands
+   out only the facet it answers. Nothing a program can name answers this
+   root's instance or its class, so no program can build a second one over
+   something that is not the mirror. Keep it so: no code whose receiver is
+   this root's instance may send it anything it does not understand, since
+   a `MessageNotUnderstood` hands its receiver to whoever catches it
    (`docs/design/core-library.md`, "No program reaches a shipped module's
    root").
 
@@ -32,26 +35,33 @@ Newspeak3
    `resolve_kernel`, which only shipped source is.
 
    Everything here is a value (§3.1.1), as SOMns's `Platform` is: stateless
-   but for what the host hands the root. *)
+   but for what the host hands the root and the collections module it
+   builds once. *)
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
     | private vmMirror = theMirror.
       private kernelModule = theKernel. |
 ) (
+    (* The collections module, built on first use and kept here, so that
+       every platform's facet comes from one factory and hands out one
+       `List` class. Its instance is as private as this one: only its
+       `newCollections` facet leaves this module. *)
+    lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [nil]) usingKernel: kernelModule.
     (* §8.3 describes the platform as an object that "provides accessors to
        various modules"; each is a lazy slot (§6.3.3), built on first use,
-       so a program pays only for what it asks for. The module's classes
-       are handed out by class accessors, each exactly `^outer
-       PlatformFactory <Name>`, which an image names by its path from the
-       platform rather than carrying the class
-       (`docs/design/image-format.md`, "The platform path section"). Each
-       is a lexical send, which reaches the root's private classes (§5.9). *)
+       so a program pays only for what it asks for. This module's classes
+       -- `Platform`, `Transcript` and `KernelNamespace` -- are handed out
+       by class accessors, each exactly `^outer PlatformFactory <Name>`,
+       which an image names by its path from the platform rather than
+       carrying the class (`docs/design/image-format.md`, "The platform
+       path section"). Each is a lexical send, which reaches the root's
+       private classes (§5.9). The collections module's classes are its
+       facet's, handed out the same way. *)
     private class Platform = Value new () (
         lazy public transcript = Transcript new.
-        lazy public collections = Collections new.
+        lazy public collections = collectionsModule newCollections.
         lazy public kernel = KernelNamespace new.
         public Platform = ( ^outer PlatformFactory Platform )
         public Transcript = ( ^outer PlatformFactory Transcript )
-        public Collections = ( ^outer PlatformFactory Collections )
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
     )
     (* `show:` writes a string as it is and refuses anything else, as an
@@ -62,12 +72,6 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public show: text = ( ^vmMirror transcript: self show: text ifFail: [nil] )
         public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [nil] )
         public print: object = ( ^self show: object printString )
-    )
-    (* The Core Library's `collections` namespace, whose one member is the
-       one a whitelisted corpus module asks for (`docs/design/core-library.md`,
-       "The on-demand rule"). *)
-    private class Collections = Value new () (
-        public List = ( ^OrderedCollection )
     )
     (* `platform kernel`: the kernel classes a program may name, as
        Primordial Soup's `Kernel wrapping:` facet answers them. *)

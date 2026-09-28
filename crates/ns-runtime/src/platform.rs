@@ -1,10 +1,11 @@
 //! The transcript's output, the one part of the platform that reaches Rust.
 //! The platform is an instance of the shipped `PlatformFactory.ns` module's
 //! nested `Platform` (`docs/design/core-library.md`, "The platform"): its
-//! members are lazy slots holding values of the module's nested classes,
-//! and `Collections>>List` answers its class without a leaf. What is left
-//! here is `show:` and `newLine`, the forwarders of `Transcript`'s two
-//! methods.
+//! members are lazy slots holding values of the module's nested classes and
+//! the facet of the shipped `CollectionsFactory.ns` module, whose `List` is
+//! Newspeak and needs no leaf; that module is reached through the mirror's
+//! `moduleNamed:` (`builtins::module`). What is left here is `show:` and
+//! `newLine`, the forwarders of `Transcript`'s two methods.
 //!
 //! The leaf reads nothing off its receiver, only the string argument. The
 //! capability is the VM mirror the forwarder sends to, which only shipped

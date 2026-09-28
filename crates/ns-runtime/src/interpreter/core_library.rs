@@ -12,6 +12,9 @@ use crate::Symbol;
 pub(crate) const PLATFORM_FACTORY_SOURCE: &str =
     include_str!("../../core-library/PlatformFactory.ns");
 
+pub(crate) const COLLECTIONS_FACTORY_SOURCE: &str =
+    include_str!("../../core-library/CollectionsFactory.ns");
+
 /// One shipped module. Every entry here is shipped source; a user module
 /// joins the table, marked as such by the host, with the step that loads
 /// one.
@@ -20,10 +23,16 @@ pub(crate) struct ShippedModule {
     pub(crate) source: &'static str,
 }
 
-pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[ShippedModule {
-    name: "PlatformFactory",
-    source: PLATFORM_FACTORY_SOURCE,
-}];
+pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
+    ShippedModule {
+        name: "PlatformFactory",
+        source: PLATFORM_FACTORY_SOURCE,
+    },
+    ShippedModule {
+        name: "CollectionsFactory",
+        source: COLLECTIONS_FACTORY_SOURCE,
+    },
+];
 
 thread_local! {
     /// Every shipped module, parsed and resolved once per thread, in
@@ -38,15 +47,22 @@ thread_local! {
         .collect();
 }
 
-/// The shipped module `name`, resolved. A name the table does not list is a
-/// defect in the binary, as a module that does not parse or resolve is, so
-/// both panic.
-pub(crate) fn resolved_shipped_module(name: &str) -> Rc<ResolvedModule> {
+/// The shipped module `name`, resolved, or `None` when the table lists no
+/// such module: what the mirror's `moduleNamed:` answers from, since the
+/// name there is a program value, even if only shipped code can send it.
+pub(crate) fn shipped_module_named(name: &str) -> Option<Rc<ResolvedModule>> {
     let position = SHIPPED_MODULES
         .iter()
-        .position(|shipped| shipped.name == name)
-        .unwrap_or_else(|| panic!("internal: no shipped module is named {name}"));
-    RESOLVED_SHIPPED_MODULES.with(|resolved| Rc::clone(&resolved[position]))
+        .position(|shipped| shipped.name == name)?;
+    Some(RESOLVED_SHIPPED_MODULES.with(|resolved| Rc::clone(&resolved[position])))
+}
+
+/// The shipped module `name`, resolved, for the boot, which names it in
+/// the binary. A name the table does not list is a defect in the binary, as
+/// a module that does not parse or resolve is, so both panic.
+pub(crate) fn resolved_shipped_module(name: &str) -> Rc<ResolvedModule> {
+    shipped_module_named(name)
+        .unwrap_or_else(|| panic!("internal: no shipped module is named {name}"))
 }
 
 /// A shipped module that does not parse or resolve is a defect in the
@@ -95,7 +111,11 @@ impl crate::interpreter::Interpreter {
     /// one send it answers. The factory instance is kept by nothing but the
     /// platform's class, whose enclosing object it is: no program is handed
     /// it, and nothing a program can name answers it. The platform's
-    /// members are lazy slots, so nothing past `Platform new` runs here.
+    /// members are lazy slots, so nothing past `Platform new` runs here:
+    /// the first `platform collections` builds the collections module,
+    /// `CollectionsFactory` from the same table, through the mirror's
+    /// `moduleNamed:` and the factory's lazy `collectionsModule`, and
+    /// `image::load` may do so while it resolves a path.
     /// `image::load` relies on more than the boot, though:
     /// it resolves an image's platform paths -- running each member's lazy
     /// initializer, each class accessor, and each nested class's superclass
@@ -177,4 +197,44 @@ fn check_factory_holds_the_mirror<'gc>(mutator: &Mutator<'gc>, factory: Value<'g
         holds_the_mirror,
         "internal: PlatformFactory's vmMirror slot must hold the VM mirror"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn module_named<'gc>(
+        mutator: &mut Mutator<'gc>,
+        subject: Value<'gc>,
+    ) -> Option<Result<Value<'gc>, crate::types::NewspeakError<'gc>>> {
+        crate::builtins::module::execute(
+            mutator,
+            crate::builtins::primitive::ModulePrimitive::Named,
+            subject,
+        )
+    }
+
+    /// The leaf answers a shipped module's root class, and declines a name
+    /// the table does not list and a subject that is no symbol, so the
+    /// forwarder's failure block runs.
+    #[test]
+    fn module_named_answers_a_shipped_root_class_and_declines_anything_else() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let name = mutator.new_symbol(Symbol::intern("CollectionsFactory"));
+            let Some(Ok(Value::Object(class))) = module_named(mutator, name) else {
+                panic!("moduleNamed: #CollectionsFactory answers no class");
+            };
+            assert!(mutator.heap().is_class(class));
+            assert!(mutator.heap().class_is_shipped(class));
+            assert_eq!(
+                mutator.heap().class_display_name(class),
+                "CollectionsFactory"
+            );
+            let unknown = mutator.new_symbol(Symbol::intern("NoSuchModule"));
+            assert!(module_named(mutator, unknown).is_none());
+            let string = Value::Object(mutator.new_string("CollectionsFactory".to_string()));
+            assert!(module_named(mutator, string).is_none());
+        });
+    }
 }

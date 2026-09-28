@@ -25,6 +25,8 @@ pub enum Primitive {
     Platform(PlatformPrimitive),
     Activation(ActivationPrimitive),
     Message(MessagePrimitive),
+    /// `moduleNamed:`: a shipped module's root class (`builtins::module`).
+    Module(ModulePrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
 }
@@ -164,6 +166,13 @@ pub enum ActivationPrimitive {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessagePrimitive {
     SendTo,
+}
+
+/// The module table's one leaf (`docs/design/core-library.md`, "The module
+/// table and the boot").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModulePrimitive {
+    Named,
 }
 
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
@@ -611,6 +620,12 @@ pub const MIRROR: &[MirrorEntry] = &[
         "arrayClass:new:ifFail:",
         "new:",
         Primitive::Collection(CollectionPrimitive::Allocate),
+    ),
+    mirror(
+        "moduleNamed:ifFail:",
+        // Unary: the module's name is the row's subject.
+        "moduleNamed",
+        Primitive::Module(ModulePrimitive::Named),
     ),
 ];
 

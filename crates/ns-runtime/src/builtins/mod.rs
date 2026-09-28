@@ -3,9 +3,11 @@
 //! for what §3.1.1's value objects derive from their state, `behavior` for
 //! what §3.2's `Class` and `Metaclass` forward to, then `numbers`, `text`,
 //! `collections` and `block`, `activation` for the exceptions
-//! `Kernel.ns` builds over the running activations, and `message` for
-//! `Message>>sentTo:`. `primitive` names every one of them as a
-//! `Primitive` and lists them as the rows of the VM mirror, the one builtin
+//! `Kernel.ns` builds over the running activations, `message` for
+//! `Message>>sentTo:`, and `module` for `moduleNamed:`, through which
+//! shipped source reaches another shipped module. `primitive` names every
+//! one of them as a `Primitive` and lists them as the rows of the VM
+//! mirror, the one builtin
 //! whose method table holds primitive entries (`dispatch::Lookup::Primitive`);
 //! every other builtin's methods are `Kernel.ns`'s, which forward to those
 //! rows. `execute` runs one leaf.
@@ -14,6 +16,7 @@ pub mod behavior;
 pub mod block;
 pub mod collections;
 pub mod message;
+pub mod module;
 pub mod numbers;
 pub mod object_class;
 pub mod primitive;
@@ -74,6 +77,9 @@ pub(crate) fn execute<'gc>(
             activation::execute(mutator, primitive, receiver, arguments)
         }
         Primitive::Message(primitive) => message::execute(mutator, primitive, receiver, arguments),
+        Primitive::Module(primitive) => {
+            module::execute(mutator, primitive, receiver).map(wrap_error)
+        }
         // Always `Some`: a leaf that declines here runs the failure block
         // the send carries, so a mirror row never answers `None`.
         Primitive::Mirror(row) => Some(crate::interpreter::mirror::execute_sent(

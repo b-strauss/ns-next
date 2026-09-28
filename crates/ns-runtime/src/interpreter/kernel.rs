@@ -1131,8 +1131,8 @@ mod tests {
     /// `PlatformFactory.ns`'s namespace members are ordinary methods. The class
     /// accessor recognizer reads only the form `^outer Kernel <Name>`, which
     /// a module other than the kernel cannot write, so `Collections>>List`
-    /// (`^OrderedCollection`, an implicit-receiver send reaching `Object`'s
-    /// accessor) gets no `MethodFastPath::BuiltinClass`, and neither do
+    /// -- a class accessor of `CollectionsFactory.ns`, which only the image
+    /// code reads -- gets no `MethodFastPath::BuiltinClass`, and neither do
     /// `KernelNamespace`'s five, which send to the kernel instance the
     /// platform was handed. Each costs one activation more than it did as a
     /// kernel accessor; a namespace member is asked for once, typically in
@@ -1148,9 +1148,14 @@ mod tests {
                 Ok(class) => class,
                 Err(_) => panic!("platform {name} failed"),
             };
-        let collections = class_named("Collections");
         let kernel_namespace = class_named("KernelNamespace");
         let transcript = class_named("Transcript");
+        let collections = class_named("collections");
+        let collections = match interpreter.send(&collections, crate::Symbol::intern("class"), &[])
+        {
+            Ok(class) => class,
+            Err(_) => panic!("platform collections class failed"),
+        };
         interpreter.enter(|mutator| {
             let fast_path = |class: &crate::Root, selector: &str| {
                 let Value::Object(class) = mutator.fetch(class) else {
@@ -1225,14 +1230,48 @@ mod tests {
     }
 
     /// The platform hands out its module's classes by methods the compiler
-    /// recognizes as class accessors (`MixinMethod::class_accessor`), which
-    /// only the image code reads: none carries a fast path, so no send pays
-    /// for the recognition. `Object`'s accessors are `Kernel.ns`'s, whose
-    /// classes an image names by their builtin tags, so none of them is one.
+    /// recognizes as class accessors (`MixinMethod::class_accessor`), and the
+    /// collections facet its module's the same way; only the image code
+    /// reads them: none carries a fast path, so no send pays for the
+    /// recognition. `Object`'s accessors are `Kernel.ns`'s, whose classes an
+    /// image names by their builtin tags, so none of them is one.
     #[test]
     fn the_platforms_class_accessors_are_recognized_without_a_fast_path() {
         let mut interpreter = Interpreter::bootstrap();
+        let platform = interpreter.platform();
+        let collections =
+            match interpreter.send(&platform, crate::Symbol::intern("collections"), &[]) {
+                Ok(collections) => collections,
+                Err(_) => panic!("platform collections failed"),
+            };
+        let collections_class =
+            match interpreter.send(&collections, crate::Symbol::intern("class"), &[]) {
+                Ok(class) => class,
+                Err(_) => panic!("platform collections class failed"),
+            };
         interpreter.enter(|mutator| {
+            let Value::Object(collections_class) = mutator.fetch(&collections_class) else {
+                panic!("the facet's class is an object");
+            };
+            let facet_application = mutator
+                .heap()
+                .class_application(collections_class)
+                .expect("Collections has an application");
+            for name in ["Collections", "List"] {
+                let method = facet_application
+                    .mixin
+                    .compiled_method(crate::Symbol::intern(name))
+                    .unwrap_or_else(|| panic!("Collections declares no {name}"));
+                assert_eq!(
+                    method.class_accessor,
+                    Some(crate::mixin::ClassAccessor {
+                        depth: 1,
+                        class_name: crate::Symbol::intern(name),
+                    }),
+                    "Collections>>{name}"
+                );
+                assert_eq!(method.fast_path, None, "Collections>>{name}");
+            }
             let Value::Object(platform) = mutator.platform_value() else {
                 panic!("the platform is an object");
             };
@@ -1241,7 +1280,7 @@ mod tests {
                 .heap()
                 .class_application(platform_class)
                 .expect("Platform has an application");
-            for name in ["Platform", "Transcript", "Collections", "KernelNamespace"] {
+            for name in ["Platform", "Transcript", "KernelNamespace"] {
                 let method = application
                     .mixin
                     .compiled_method(crate::Symbol::intern(name))
@@ -1471,6 +1510,7 @@ mod tests {
                 "Platform",
                 "Transcript",
                 "Collections",
+                "CollectionsFactory",
                 "VmMirror",
                 "Exception",
                 "Error",

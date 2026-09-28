@@ -1,0 +1,18 @@
+Newspeak3
+'Collections'
+(* `do:` reads the size once, as Primordial Soup's `1 to: size_ do:` does:
+   an element added inside the block is not visited, as it was not when
+   OrderedCollection>>do: copied its elements first. *)
+class DoVisitsTheElementsAListHeldWhenItStarted usingPlatform: thePlatform = Object new (
+    | transcript = thePlatform transcript.
+      private List = thePlatform collections List. |
+) (
+    public main: platform args: arguments = (
+        | list |
+        list:: List new.
+        list add: 1; add: 2.
+        list do: [:each | list add: each * 10. transcript show: each printString; show: ' '].
+        transcript newLine.
+        transcript show: list size printString; newLine
+    )
+) : ()
