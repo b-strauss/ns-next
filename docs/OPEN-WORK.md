@@ -23,10 +23,10 @@ memory layer".
 ## The road to a high-performance VM
 
 Decided with the user on 2026-09-29, in this order: nine numbered steps,
-with the compact instruction encoding after step 2 and real Newspeak bodies
+with the compact instruction encoding after road step 2 and real Newspeak bodies
 for the control-flow loops between steps 7 and 8. Steps 1 to 6 give a very good
-interpreter on a modern object representation; step 8 reaches Cog's class,
-step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
+interpreter on a modern object representation; road step 8 reaches Cog's class,
+road step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
 Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`)
 and `prior-art/newspeak-benchmarks`.
 
@@ -41,7 +41,7 @@ and `prior-art/newspeak-benchmarks`.
   store-forwarding stall every `Value` in memory costs today.
   [object-model.md](design/object-model.md), "Planned: an eight-byte value";
   [core-library.md](design/core-library.md), "Planned: large integers".
-- **After step 2, the compact instruction encoding**, designed against the
+- **After road step 2, the compact instruction encoding**, designed against the
   new value, from the dispatch findings of "Where the 3% goes".
   [execution.md](design/execution.md), "Planned: the compact instruction
   encoding".
@@ -216,7 +216,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 ## Deviations from the specification
 
 The full table, with the reasoning, is [design/README.md](design/README.md),
-"Deviations from the language specification". Three answer a **correct
+"Deviations from the language specification". Four answer a **correct
 program wrongly at exit status 0**:
 
 - A non-integral literal is a binary `f64`, not an exact `FixedPointNumber`
@@ -227,6 +227,11 @@ program wrongly at exit status 0**:
   specification, like the syntax one.
 - A pattern literal evaluates to **nil** (§5.1.9); see "Pattern literals"
   above.
+- A string literal keeps its source's code points instead of their Unicode
+  normal form C (§5.1.5), so a decomposed and a precomposed `é` differ.
+  Nothing in the workspace normalizes; closing it means normalizing where
+  source text becomes a string. [frontend.md](design/frontend.md), "A string
+  literal is not normalized to NFC".
 
 The others: `i64` integers (§5.1.1); no character literals and no
 `Character` (§5.1.4); a modifier needs no whitespace after it (§6.3.3,
@@ -234,6 +239,13 @@ The others: `i64` integers (§5.1.1); no character literals and no
 value objects are never copied across an actor boundary (§3.1.1).
 
 ## Open design questions
+
+- **`become:` on a value object.** §3.1.1 gives a value no identity, so
+  `become:` on one would make identity observable, yet a MirrorBuilder
+  migrating a value class's instances needs something in its place: refuse,
+  or treat values as `become:`'s reflective exception. Not decided.
+  [object-model.md](design/object-model.md), "Open: `become:` on a value
+  object".
 
 - **The class side's own scope.** Instance-side methods and class-side
   declarations share one member set; canonical Newspeak scopes the class side
@@ -324,6 +336,17 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact.
+
+- **`Symbol new` and `String new` answer an instance with no text.**
+  `decide_factory` (`interpreter/instantiate.rs`) special-cases only the VM
+  mirror's class and `Array`, so both reach `decide_instantiation` and make a
+  slotless instance of the class: `String new size` does not understand
+  `size`, and `Symbol new == #foo` answers `true`, since a value's `==` is its
+  derived equality, which finds two slotless instances of one class equal. Instantiating
+  `Symbol` should be refused, as `Mutator::new_symbol` is meant to be the only
+  way to make one, and `String new` should answer an empty string; the object
+  layout (road step 3) settles both, with goldens
+  ([object-model.md](design/object-model.md), "Planned: the object layout").
 
 - **`ns-cli build` accepts a slot accessor as the entry selector.**
   `root_class_answers` (`crates/ns-cli/src/commands/build.rs:54`) asks

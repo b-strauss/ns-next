@@ -3987,8 +3987,8 @@ three fixes above, the same check finds one `ns_runtime::vm::run` label and no
 
 ### What the platform module cost
 
-The platform module (`docs/design/core-library.md`, "Planned: the platform
-and collections as core-library modules", plan 1) added §6.3.3's lazy
+The platform module (`docs/design/core-library.md`, "The platform and
+collections as core-library modules", plan 1) added §6.3.3's lazy
 slots — as first measured below, a lazy getter was a compiled method with
 `MethodFastPath::LazySlot`, its arm sitting beside the other
 `MethodFastPath` arms in `interpreter/resolve.rs`'s `act_with_base`; since
@@ -5706,8 +5706,11 @@ goes" above: every dispatch decodes `Instruction`'s discriminant through a
 niche before its jump, and `vm::run` is large enough that `program_counter`
 and the code pointer are spilled to its stack frame. The design starts from
 how Primordial Soup, Strongtalk and Cog encode their instructions; SOMns,
-an AST interpreter on Truffle, has no instruction encoding to compare.
-Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
+an AST interpreter on Truffle, has no instruction encoding to compare. One
+more input comes from the eight-byte value: an integer literal beyond 61
+bits keeps its digits in Rust-side literal data and `LoadLiteral` allocates
+its `LargeInteger` when it runs ([object-model.md](object-model.md),
+"Planned: an eight-byte value", "Literals"). Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
 and a removed one retires its number.
 
 ## Planned: tail calls, skipped but kept
@@ -5788,7 +5791,7 @@ Each step gets its own design when it comes up.
   six of its programs.
 
 Steps 1 to 6 of the road give a very good interpreter on a modern object
-representation; step 8 reaches Cog's class, and step 9 Strongtalk's and
+representation; road step 8 reaches Cog's class, and road step 9 Strongtalk's and
 HotSpot's.
 
 ## Decisions

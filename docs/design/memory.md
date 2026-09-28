@@ -1359,10 +1359,10 @@ owning it makes possible, none of which the measurement covers:
   arena already does and the payloads do not.
 
 So the question is not where payloads live but whether they are separate at
-all. The answer is the object space below: fields inline after a one-word
+all, and a payload region beside the arena would keep both the second load
+and the per-object free. The plan puts the fields inline after a one-word
 header, in memory the heap owns ("Planned: the memory layer", "Planned: the
-object space"). A payload region beside the arena would keep the second load
-and the per-object free, and is not pursued.
+object space" below).
 
 **A payload is size-stable on every hot path.** Both reference runtimes
 implement a growable collection in Newspeak over a fixed `Array`: Primordial
@@ -1372,7 +1372,9 @@ copyWithSize: (capacity >> 1 + capacity | 7)`; SOMns's `Vector`
 (`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage size`
 and copies. ns-next's `List` in the shipped `CollectionsFactory.ns` does the
 same. **Every `ObjectData::Array` is fixed-size once allocated: no payload
-grows in place**, so the object space needs no growth-in-place case. What
+grows in place** outside a test -- `Heap::frame_grow_temporaries` grows a dead
+frame's registers for `tests/image.rs` alone, and goes with the frame arena --
+so the planned object space needs no growth-in-place case. What
 changes an object's size is reflective and rare -- edit-and-continue adding
 locals to a live activation, a MirrorBuilder adding or removing slots of live
 instances (requirements 2 and 3 of
@@ -1388,8 +1390,8 @@ wants another: a tracer decides per object, and what lives is moved.
 `generational-arena` and `id-arena` are fixed-slot object arenas; an
 `allocator-api2` bump allocator behind `Vec<Value, _>` never reclaims.
 Compaction is not an allocator feature -- it needs to know the references --
-so it stays ours. The one level where a crate fits is pages, which is what
-the memory layer declares through `windows-sys` and `libc`.
+so it stays ours. The one level where a crate fits is pages, which the
+planned memory layer reaches through `windows-sys` and `libc`.
 
 ## Planned: the memory layer
 
@@ -1439,7 +1441,7 @@ Would change: `Heap`'s two arenas of fixed-size slots, `objects` and
 `frames`, give way to one space of variably sized objects, each a header word,
 a class word and its fields inline ([object-model.md](object-model.md),
 "Planned: the object layout"), in memory from "Planned: the memory layer".
-Step 3 of the road; it follows the eight-byte value (step 2) and the compact
+Road step 3; it follows the eight-byte value (road step 2) and the compact
 instruction encoding.
 
 - **Allocation is a bump pointer** in the space, as Soup's `Heap::Allocate`
@@ -1458,7 +1460,9 @@ instruction encoding.
   check stay exact wherever a stale handle can arise; a word read out of the
   space is given the current ones, since the collector rewrites every field it
   walks by format and cannot miss one the way it can miss an unknown Rust
-  field.
+  field. The one exception is deliberate: a married frame's inline registers
+  are skipped, because while it is married its registers live on the
+  activation stack, which is traced as a root.
 - **Access stays behind `Heap`'s accessors**, which read the space's words
   through bounds-checked slices, so a stale offset reads a wrong object at
   worst, never undefined behaviour. Accessors may lend a string's bytes or an
@@ -1467,8 +1471,12 @@ instruction encoding.
 - **The frame arena goes**: a reified frame is an object of the frame format
   with its registers inline, so there is one graph, one mark, one compaction
   and one forwarding table. Married and divorced frames keep their meaning
-  ("Frames, the activation stack and the marriage"); the activation stack of
-  running activations is unchanged until step 7 of the road, the execution model for compiled code.
+  ("Frames, the activation stack and the marriage"), the marriage now a field
+  of the frame object; a frame object has registers only if its code can
+  retain them, decided once per `CompiledCode`, so none ever grows
+  ([object-model.md](object-model.md), "Planned: the object layout"). The
+  activation stack of running activations is unchanged until road step 7,
+  the execution model for compiled code.
 - **The collector is mark and sliding compaction** over variably sized
   objects, after Spur's planning compactor, which slides unpinned marked
   objects down and plans their new addresses before moving any
@@ -1490,11 +1498,23 @@ instruction encoding.
   an actor is meant to be a per-heap scope
   ([liveness-and-reflection.md](liveness-and-reflection.md)).
 
+**What changes in `CLAUDE.md`, and when.** Its invariants describe what is
+built, so each changes when its road step lands, not before: the crate list
+gains `crates/ns-memory`, the one crate with `unsafe`, and "the crate forbids
+unsafe code" names `ns-runtime` (road step 1); "An image is untrusted input"
+takes new amplification figures for the eight-byte value (road step 2) and
+for variably sized objects (road step 3), with the decoder's first pass
+checking each record's declared size against the bytes remaining; the handle
+paragraphs describe a 64-bit byte offset and the frame arena's end (road step
+3); "A cache records what the lookup decided" reads `ClassData.builtin` as a
+field of the class object, which `act` still reads afresh on every send (road
+step 3); and the gates' stress loop gains `SCAVENGE` (road step 4).
+
 ## Planned: generations
 
 Would change: the space gains a nursery with a copying scavenger, and the
 mark-compact of "Planned: the object space" becomes the old space's collector.
-Step 4 of the road.
+Road step 4.
 
 - **Layout**: the nursery sits at the low end of the reservation -- two
   survivor spaces and eden -- and the old space above it, as in Spur
@@ -1508,6 +1528,17 @@ Step 4 of the road.
   An object's age lives in the header's spare bits, and it is tenured once its
   age reaches a threshold that adapts to how full the survivor space is,
   Strongtalk's age table (`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`).
+  A copied object's old copy becomes a forwarder -- the forwarded format, its
+  class word naming the new location -- the same mechanism `become:` uses
+  ([object-model.md](object-model.md), "Planned: the object layout").
+- **Before a scavenge starts it commits old space for the worst case** -- the
+  occupancy of eden and the survivor space -- so a promotion never meets a
+  commit failure halfway through; a commit the operating system refuses is
+  reported before the scavenge, as running out of memory.
+- **The roots include the whole activation stack**, so a scavenge costs time
+  in proportion to the recursion depth, up to the depth limit's 100,000
+  activations; Spur bounds that with stack pages, and road step 7's shared
+  frames revisit it.
 - **The write barrier**: an old object that stores a young value sets its
   remembered bit and joins the remembered set, as in Spur
   (`storePointer:ofObject:withValue:`, `cointerp.c:60688`; `remember:`,
@@ -1515,34 +1546,51 @@ Step 4 of the road.
   `prior-art/primordialsoup/vm/object.h:257-273`) -- per object rather than
   Strongtalk's cards, simpler and cheaper to emit. The barrier sits in
   `heap.rs`'s store accessors, never in `vm.rs`, so the interpreter, the
-  reference lowering and a JIT share one rule. The running activation stack's
-  registers are roots and take no barrier.
+  reference lowering and a JIT share one rule. Every store into a heap object
+  goes through them: fields and elements, the class word, a frame object's
+  registers written on divorce and by `StoreOuterLocal`, a closure's copied
+  values, and a forwarder's target. The collector's own rewrites -- the
+  scavenge, the compaction, the replacement of resolved futures -- keep the
+  remembered set themselves. The running activation stack's registers are
+  roots and take no barrier.
 - **A remembered set past its limit forces a scavenge that tenures
   everything**, as Soup's `kRememberedSetOverflowSize` does
   (`prior-art/primordialsoup/vm/heap.cc:279-283`).
 - **Large objects are allocated old**, as Soup does from 32 KB
   (`kLargeAllocationSize`), since copying them buys nothing.
 - **A full collection** is the mark-compact over both generations; the image
-  decoder allocates old, since a decoded graph is long-lived.
+  decoder allocates everything old, the boxed floats and large integers it
+  creates included, since a decoded graph is long-lived and an old-to-old
+  store needs no barrier.
+- **The weak symbol table is pruned at every scavenge** as well as at every
+  full collection, since a young symbol can die in either.
 - **A fourth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
   safepoint, which is what finds a store that missed the barrier.
 
 ## Planned: inline allocation
 
 Would change: the instructions that allocate take their memory by a bump in
-eden instead of a call into the collector's allocation path. Step 6 of the
-road, and the groundwork the JIT tiers take over, as Cogit's
+eden instead of a call into the collector's allocation path. Road step 6, and the groundwork the JIT tiers take over, as Cogit's
 `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
 (`cogitX64SysV.c:16464`, `:19026`).
 
 - **What bumps**: `new` of a class of fixed size, `MakeClosure`, a boxed
-  `Float`, and `Array new:`.
+  `Float`, and `Array new:` below the large-object threshold; a larger
+  `Array new:` allocates old, as every large object does ("Planned:
+  generations").
 - **Eden keeps a reserve past the scavenge threshold**, so an allocation that
   crosses the threshold still succeeds and only requests a safepoint, as Spur
   schedules a scavenge rather than failing (`ceScheduleScavengeTrampoline`).
   A collection therefore still happens only at a safepoint of the run loop
   ("Where a collection can happen: only at a safepoint in the run loop"), and
   generated code will allocate the same way.
+- **An exhausted reserve takes the slow path.** Between two safepoints the
+  allocations are bounded by a stretch's straight-line instructions times the
+  large-object threshold, but no fixed reserve fits every body, so an
+  allocation that finds the reserve spent allocates in old space, born
+  remembered, and requests a safepoint, as Strongtalk's `allocate_tenured`
+  does when a scavenge cannot run
+  (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
 - **The bump path lives in `heap.rs`**; an instruction arm calls it and does
   nothing else with it, since one more calling arm measures about 3% on the
   send-heavy sources ([execution.md](execution.md), "Where the 3% goes").
@@ -1628,13 +1676,13 @@ road, and the groundwork the JIT tiers take over, as Cogit's
   over it is safe again** (decided with the user on 2026-09-21), so an option is
   not dismissed for needing `unsafe` alone -- the argument has to be about what
   the option dismantles.
-- **The `unsafe` the object space needs lives in a crate of its own**,
-  `crates/ns-memory` (decided with the user on 2026-09-29), and `ns-runtime`
-  keeps `#![forbid(unsafe_code)]`: a crate boundary is one the compiler checks,
+- **The `unsafe` the object space needs will live in a crate of its own**,
+  `crates/ns-memory` (planned; decided with the user on 2026-09-29), and
+  `ns-runtime` keeps `#![forbid(unsafe_code)]`: a crate boundary is one the compiler checks,
   where a crate-level `deny` with a scoped `allow` admits the next `allow`
   without anyone noticing. The executable memory and the entry into generated
-  code of the JIT tiers go to the same crate. Its operating-system calls come
-  from `windows-sys` and `libc`, declaration-only crates, rather than
+  code of the JIT tiers are to go to the same crate. Its operating-system calls
+  are to come from `windows-sys` and `libc`, declaration-only crates, rather than
   hand-written declarations whose constants differ per platform and would be
   wrong only on the platforms nobody here runs.
 - **The canonical symbol table is the system's only weak structure.** §5.1.6
@@ -1644,8 +1692,8 @@ road, and the groundwork the JIT tiers take over, as Cogit's
   `Rc::as_ptr` as a key needs the strong reference to keep it unique; weakly, a
   recycled address would answer an old entry with a different, perfectly valid
   application. It becomes decidable once a mixin carries an id, which the
-  live-editing work wants anyway. The object layout gives mixins and applications
-  ids ("Planned: the object space"; [object-model.md](object-model.md),
+  live-editing work wants anyway. The planned object layout gives mixins and
+  applications ids ("Planned: the object space"; [object-model.md](object-model.md),
   "Planned: the object layout").
 - **A collection is requested by comparing an arena's length against a limit**,
   reset to `max(4096, live * 2)` after each collection, rather than by counting
@@ -1655,8 +1703,8 @@ road, and the groundwork the JIT tiers take over, as Cogit's
   `NS_NEXT_STRESS_COLLECT`, kept beside the move stress rather than replacing
   it, because moving everything without liveness is what separates a missing
   root from a mistake in marking.
-- **Fields go inline in an object space the heap owns, not payloads into a
-  region beside the arena** (decided with the user on 2026-09-29). An allocator
+- **Fields will go inline in an object space the heap owns, not payloads into
+  a region beside the arena** (planned; decided with the user on 2026-09-29). An allocator
   swap measured what the allocator calls cost ("Payloads belong to the Rust
   allocator, and what that costs"); what the address-based engines gain by
   owning their memory -- one load per field, a nursery where death is free,
@@ -1664,7 +1712,8 @@ road, and the groundwork the JIT tiers take over, as Cogit's
   would not give. The memory layer, the eight-byte value, the object space,
   generations, `become:` and inline allocation are steps 1 to 6 of the road in
   [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM".
-- **One reservation per heap, contiguous and committed as it grows**, because
+- **One reservation per heap, contiguous and committed as it grows**
+  (planned), because
   a handle is an offset from a fixed base, so the base cannot move and the
   space cannot be scattered; for Windows and POSIX from the start (decided
   with the user on 2026-09-29).

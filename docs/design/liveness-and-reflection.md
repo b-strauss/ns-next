@@ -95,7 +95,7 @@ changes; otherwise a cache hit would run the old class's method on the
 object. The planned `become:` meets that by construction: a forwarder
 carries a reserved id that no guard holds, so every send to one misses
 ([object-model.md](object-model.md), "Planned: `become:` through
-forwarders", step 5 of "The representation ahead").
+forwarders", road step 5).
 
 ## Debugger
 
@@ -150,9 +150,9 @@ instead of by stripping metadata.
 A **MirrorBuilder** applies class changes:
 
 - *Add or remove an instance slot* → new layout → migrate every live instance via
-  `become:` → flush caches keyed to the class. `become:` is step 5 of the
-  representation ahead ([object-model.md](object-model.md), "Planned:
-  `become:` through forwarders"); the MirrorBuilder waits on it.
+  `become:` → flush caches keyed to the class. `become:` is road step 5
+  ([object-model.md](object-model.md), "Planned: `become:` through
+  forwarders"); the MirrorBuilder waits on it.
 - *Add, remove or replace a method* → update the method dictionary → flush caches
   keyed to (class, selector).
 - *Change a superclass* → re-resolve lookup for the subtree, flush its caches,
@@ -287,8 +287,9 @@ concurrency arrives — the vocabulary above is the specification's own.
 Near-Java performance for a fully live dynamic language comes from **inline-cache
 feedback, speculative optimization and deoptimization** — the V8 and HotSpot
 path — not from whole-program ahead-of-time assumptions, which liveness forbids
-anyway. The tiers are steps 7 to 9 of the representation ahead
-([object-model.md](object-model.md), "The representation ahead";
+anyway. The tiers are road steps 7 to 9
+([object-model.md](object-model.md), "Planned: the road to a
+high-performance VM";
 [execution.md](execution.md), "Planned: JIT tiers"), after the object
 layout, generations and inline allocation that compiled code builds on.
 

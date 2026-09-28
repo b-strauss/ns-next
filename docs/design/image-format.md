@@ -1179,9 +1179,13 @@ which is old space's bytes relocated on load, is the model this does not take.
   question still open", where the figures are, and `CLAUDE.md`'s paragraph on untrusted images), and
   `bounded_count` keeps bounding every pre-allocation by the bytes remaining.
 - **Identity hashes** are preserved as they are today, per record and in the
-  tag-named table; only where the hash is stored changes, into the header
-  word's 22 bits, so a hash wider than that is refused like any other
-  malformed hash.
+  tag-named table; what changes is their width. The header word holds 22 bits
+  ([object-model.md](object-model.md), "Planned: the object layout"), so the
+  decoder refuses a hash of 2^22 or more where it refuses `u32::MAX` today.
+  The counter is still advanced past the largest loaded hash, so a hash
+  assigned after a load avoids every loaded one until the counter wraps;
+  after a wrap, which skips 0, two objects may share a hash, as any hash
+  allows, so "never collides" above holds only for today's width.
 
 ## Planned: suspend and resume
 

@@ -1452,8 +1452,8 @@ dispatches on one.
 Would change: the guard is read from the object's one header word instead
 of from an `Object` slot, and nothing else about the caches changes. The
 object layout ([object-model.md](object-model.md), "Planned: the object
-layout", step 3 of the representation ahead) keeps the application id as the
-header's first 22 bits and the class object in a word of its own, precisely
+layout", road step 3) keeps the application id in the header's low 22
+bits and the class object in a word of its own, precisely
 so that this guard stays a per-application id -- a class-index guard as in
 Spur and Primordial Soup would make every site that sees nested-class
 instances from two enclosing objects polymorphic. Two things follow for the
@@ -1465,10 +1465,14 @@ by their ids; with ids that are never reused while a key can name them, the
 cache is free to become weak
 ([memory.md](memory.md), "Weak references"). And a forwarder
 ([object-model.md](object-model.md), "Planned: `become:` through
-forwarders", step 5) carries a reserved application id that is never a
+forwarders", road step 5) carries a reserved application id that is never a
 guard, so every send to one misses and the miss path, in
 `interpreter/inline_cache.rs`, follows it before resolving -- Spur's read
-barrier on send, which needs no check on a hit.
+barrier on send, which needs no check on a hit. At 22 bits the ids can run
+out where today's `u32` counter practically cannot; running out keeps
+today's rule, an application without an id running uncached (`NONE`, "The
+dispatch id" above), and an id is reclaimed once no class object and no cache
+entry names it, which the collector can tell.
 
 ### Considered and rejected
 

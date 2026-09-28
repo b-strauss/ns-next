@@ -176,6 +176,15 @@ doubling, `""""`, would have lexed those as an unterminated string. `""""`
 therefore reads as `"""` followed by the start of another string, and appears
 in the corpus only inside comments.
 
+**A string literal is not normalized to NFC**, a recorded deviation
+([README.md](README.md), "Deviations from the language specification"):
+§5.1.5 makes a literal's value "the encoding of the string in Unicode normal
+form C", and the lexer keeps the code points the source text holds, so a
+decomposed `é` stays two code points and differs from a precomposed one. No
+code anywhere in the workspace normalizes. Closing it means normalizing where
+source text becomes a string, which the planned string representation takes
+as given ([object-model.md](object-model.md), "Planned: the object layout").
+
 **Numbers, selectors and symbols follow §4.2's lexical grammar.**
 
 - *Negative numbers.* `decimalNum → ["-"] digits ...` has a sign, and

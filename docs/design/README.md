@@ -243,10 +243,11 @@ rather than an oversight -- and, where a row says so, to keep a defect nobody
 has had time to fix from being a surprise.
 
 Most rows only under-reject, over-accept or narrow what can be expressed.
-Three do worse: the binary float behind a non-integral literal, the
-synchronous asynchronous send and the pattern literal that evaluates to
-**nil** each answer a **correct** program **wrongly, at exit status 0**. Read
-all three before trusting a program's output.
+Four do worse: the binary float behind a non-integral literal, the
+synchronous asynchronous send, the pattern literal that evaluates to
+**nil** and the string literal that is not normalized to NFC each answer a
+**correct** program **wrongly, at exit status 0**. Read all four before
+trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
@@ -254,6 +255,7 @@ all three before trusting a program's output.
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | There are no character literals and no `Character` class: `"c"` is a one-character string, as the section itself announces and §5.1.5's `"σ"` form states; a double-quoted string has no escape, and a quote in one is written `"""`, not the section's `""""` | §5.1.4 | [frontend.md](frontend.md) |
+| A string literal holds the code points its source text holds, not their Unicode normal form C: a literal written with a decomposed `é` (`e` and a combining accent) has two elements and is not equal to one written precomposed, where the section makes both the same NFC string | §5.1.5 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | An access modifier or `lazy` needs no whitespace after it, where the grammar's `accessModifier` and `lazyModifier` end in `whitespace`: `\| public= 1. \|` is refused like `\| public = 1. \|` rather than declaring a slot named `public` | §6.3.3, §6.3.4 | [frontend.md](frontend.md) |
 | A pattern literal parses as §5.1.9's grammar says but evaluates to **nil**, where the section makes `<_>` `Pattern wildcard` and `<l>` `Pattern literal: l`; there is no `Pattern` class | §5.1.9 | [frontend.md](frontend.md) |

@@ -1123,9 +1123,10 @@ signatures is a design change to the image module's interface, not a migration.
 
 ## Decisions
 
-- **`Instruction` is a Rust enum, not packed bytes**, until profiling showed
-  its dispatch cost; a compact encoding is planned after the eight-byte value
-  ([execution.md](execution.md), "Planned: the compact instruction encoding").
+- **`Instruction` is a Rust enum, not packed bytes**; the loop-over-locals
+  profile shows its dispatch cost, and a compact encoding is planned after
+  the eight-byte value ([execution.md](execution.md), "Planned: the compact
+  instruction encoding").
 - **A local's read costs no instruction**, which makes its register live storage
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run

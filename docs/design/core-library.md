@@ -666,9 +666,8 @@ large integers" below.
 Would change: an `Integer` is unbounded, as §5.1.1 requires. A
 `SmallInteger` that overflows becomes a `LargeInteger`, and a result that
 fits again becomes a `SmallInteger`, so every `Integer` has exactly one
-representation. It comes with the eight-byte value -- step 2 of the
-representation ahead ([object-model.md](object-model.md), "Planned: an
-eight-byte value") -- because narrowing `SmallInteger` to 61 bits is what
+representation. It comes with the eight-byte value -- road step 2
+([object-model.md](object-model.md), "Planned: an eight-byte value") -- because narrowing `SmallInteger` to 61 bits is what
 moves the overflow boundary in the first place. The deviation above goes
 with it, and the goldens recording an overflow error change to record the
 promoted result.
@@ -2299,9 +2298,9 @@ them must happen **before the JIT tiers** — they are what the tiers need to
 see through — and pays off **only with one**: before a JIT a Newspeak loop is
 more sends and activations than the leaf it replaces, and costs. Its place is
 therefore as late as it can come: after the execution model for compiled
-code, step 7, and before the baseline JIT, step 8, of the representation
-ahead ([object-model.md](object-model.md), "The
-representation ahead"; [execution.md](execution.md), "Planned: JIT tiers").
+code, road step 7, and before the baseline JIT, road step 8
+([object-model.md](object-model.md), "Planned: the road to a
+high-performance VM"; [execution.md](execution.md), "Planned: JIT tiers").
 
 The step owns three semantic decisions, each of which the leaves settle
 today and a Newspeak body would have to settle again, visibly. A fourth,
