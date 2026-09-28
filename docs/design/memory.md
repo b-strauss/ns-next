@@ -597,10 +597,10 @@ time.
   activation an error near the limit arose in, marked and forwarded with the
   bootstrap's roots ([execution.md](execution.md), "The depth limit").
 - The heap's canonical symbol table ([object-model.md](object-model.md),
-  "Values and objects"), a strong root until the collector makes it weak, as
-  Primordial Soup's `symbolTable` is -- a symbol no program holds any more is
-  then free to go, and the next literal of its text allocates a new
-  canonical one.
+  "Values and objects"), forwarded by a move but not a root for marking: it
+  is weak, as Primordial Soup's `symbolTable` is -- a symbol no program holds
+  any more is free to go, and the next literal of its text allocates a new
+  canonical one ("Weak references", below).
 
 **Every impl names every field and matches every variant**, with no `..` and
 no `_` arm, so a field or a variant added later does not compile until someone
@@ -1066,7 +1066,7 @@ compiler refuses that place until it is named.
 The roots are the list `Heap::move_everything` and `World::move_everything`
 already walk — the activation stack's entries and registers, the builtin
 classes, the `platform` singleton, the host roots — with the canonical symbol
-table removed from it, since that becomes weak. The difference from a move is
+table removed from it, since that is weak. The difference from a move is
 the direction: a move walks every arena record because everything counts as
 live, while the collector starts at the roots and reaches a record only along
 an edge.
@@ -1136,11 +1136,12 @@ In a release build this gives the safepoint's slow path its first real work.
 
 ### Weak references
 
-**The canonical symbol table becomes weak.** It is a strong root today
-(`canonical_symbols`), and left that way every symbol object a program ever
-makes would outlive the process, since a selector literal makes one. It is not
-a root for marking; after marking and before compaction, an entry whose object
-is unmarked becomes `None`, and the rest are forwarded like everything else.
+**The canonical symbol table is weak** (`canonical_symbols`,
+`Heap::prune_canonical_symbols`). As a strong root every symbol object a
+program ever made would outlive the process, since a selector literal makes
+one. It is not a root for marking; after marking and before compaction, an
+entry whose object is unmarked becomes `None`, and the rest are forwarded like
+everything else.
 Nova has exactly this pair: `shift_strong_u32_index` answers an index,
 `shift_weak_u32_index` answers an `Option`.
 
@@ -1412,8 +1413,8 @@ cache after-effect of walking the whole live graph — which scales with how
 often a program collects rather than with what each collection costs, and
 which `bench_block.ns` leads on by collecting 269 times against the next
 source's 107 — then neither buys anything. The experiments that discriminate
-are named in [PROGRESS.md](../PROGRESS.md)'s "Where the next session
-starts", and one more is cheaper than all of them: a `#[global_allocator]`
+are named in [OPEN-WORK.md](../OPEN-WORK.md), under the collector's
+unexplained cost on `bench_block.ns`, and one more is cheaper than all of them: a `#[global_allocator]`
 swap in `ns-cli` answers whether payload allocation costs measurable time at
 all, without a line of design changing.
 

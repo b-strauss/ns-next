@@ -38,14 +38,14 @@ answers the table's object, allocating it only the first time. It is the one
 way to make a symbol, so a symbol literal, `asSymbol` and every selector
 handed to `doesNotUnderstand:` all reach the same object for the same text,
 which is what §5.1.6 and §3.1.1 make two equal symbols. The table is per heap
-because a handle means nothing against another heap. It is a strong root
-until the collector, which makes it weak ([memory.md](memory.md), "What the
-collector traces"). This is what every reference does -- Primordial Soup's
+because a handle means nothing against another heap. It is weak: the
+collector clears an entry whose symbol nothing else holds ([memory.md](memory.md),
+"Weak references"). This is what every reference does -- Primordial Soup's
 weak `symbolTable` (`KernelForPrimordialSoup.ns`), SOMns's
 `Symbols.symbolFor`, Squeak's symbol table -- and it keeps a symbol an
 indexable object for a kernel where `Symbol` is a subclass of `String`, as
 the references declare it; `Kernel.ns` still puts `Symbol` directly under
-`Object`. Rejected: a symbol as an immediate `Value` variant, which no
+`Value`, beside `String` rather than below it. Rejected: a symbol as an immediate `Value` variant, which no
 reference does and which every string primitive, and later the Newspeak
 kernel, would have to accept as a non-object. An image carries a symbol as a
 record; the decoder enters each one into the loading heap's table and refuses
@@ -83,19 +83,23 @@ graph section, precisely because nothing about a record would otherwise carry
 one; see [image-format.md](image-format.md), "Identity hashes are preserved
 verbatim".
 
-`ClosureData { parameters, code, captured_frame: FrameReference, home: FrameReference }`
-captures its defining frame for closure semantics and its home activation for
-non-local return. `parameters` and `code` are `Rc`s shared with the `MakeClosure`
-instruction that made the closure; the payload itself is inline in the closure
+`ClosureData { code, captured_frame: FrameReference, copied, feedback_base }`
+captures its defining frame, and derives its home activation for non-local
+return from it; `copied` holds what closure conversion handed it -- a copied
+variable's value or an enclosing body's indirection vector
+([execution.md](execution.md), "Closure conversion"). `code` is an `Rc` shared
+with the `MakeClosure` instruction that made the closure, and its parameter
+count is the body's; the payload itself is inline in the closure
 object, never behind an `Rc` of its own, because a handle lives only where the
 tracer can rewrite it in place ([memory.md](memory.md), "What the collector
 traces") and an `Rc` shared by several holders is not such a place. So a block's
 activation (`FrameKind::Closure`), a native `whileTrue:` or `do:` loop's state
 and a decided block step name the closure object, and reach its body and its
-two frames through it. **`home` is a `FrameReference`, not an `ObjectReference`** — it names the
-lexically enclosing *method* or initializer activation, which is what
-`raise_return` walks to. `types.rs` names it an activation at the field too,
-because the enclosing *object* is the tempting misreading and both are handles.
+captured frame through it. **The home is a `FrameReference`, not an
+`ObjectReference`** — it names the lexically enclosing *method* or initializer
+activation, which is what a non-local return aims at, and a frame records it
+(`Frame.home`); the enclosing *object* is the tempting misreading, since both
+are handles.
 
 **Never `{:?}` a `Value`.** `ObjectReference`'s hand-written `Debug` prints its arena
 index only, so this cannot recurse -- but it renders Rust internals such as

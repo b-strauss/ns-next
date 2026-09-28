@@ -53,6 +53,9 @@ module (`LexerComparisonTest`), and the connection to `ns-next-lsp`.
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology
 beside it; its "Where the next session starts" names the next piece of work.
+`docs/OPEN-WORK.md` lists everything still to be done: remove an item there when
+work closes it, and add one when a review, measurement or design leaves something
+open.
 
 ## Invariants that are easy to break
 

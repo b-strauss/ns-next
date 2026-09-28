@@ -21,8 +21,10 @@ is described in the present tense as a way of describing an intention.
 **Unbuilt work is marked, not paraphrased.** A section describing something that
 does not exist yet is headed `Planned: …` and says in its first line what would
 change. Something built but incomplete opens with **Partial:** and names what is
-missing. Planned work lives in the document whose mechanism it changes, not in a
-separate roadmap, because that is where a reader needs it.
+missing. Planned work is described in the document whose mechanism it changes,
+because that is where a reader needs it; [`docs/OPEN-WORK.md`](../OPEN-WORK.md)
+is the index of all of it, every open item in one list with a pointer to where
+it is explained.
 
 **Every document names its code.** Each opens with a status block listing the
 modules it describes, so a claim can be checked by opening a file. A document
@@ -34,7 +36,7 @@ that cannot name its code is describing an intention, and should say so.
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built: the syntax is the specification's grammar (§4.2 to §8.1), strictly, read as a PEG over tokens, every rule pinned by a parser test and every accepted form by a golden; where the specification contradicts itself its prose decides, and one deviation is recorded (a modifier needs no whitespace after it) | A pattern literal lowered to the `Pattern` send §5.1.9 defines, not to **nil** ([frontend.md](frontend.md), "What is parsed and dropped"); chains (`:\|`) and object literals, both marked *Unimplemented* in the specification |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built, §6.2's mixin application included: each `<:` clause adds an ordinary class level, so lookup, `super`, `outer` and the caches need nothing new. §3.2's class hierarchy is reified: every class object's class is its metaclass, over `Class`, and every metaclass's class is `Metaclass`. All four of §3.1.1's value conditions are enforced, refused where an instance is made, and a module's root may name only `Object` or `Value`, or write `Object <: Value`. §6.3.2's simultaneous slots, through pull futures: a clause's slots initialize simultaneously, so well-founded mutual recursion between them resolves ("Simultaneous slots") | `become:`; an eight-byte value ("Planned: an eight-byte value") |
-| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) — since step 6 on the VM mirror's class alone, with kernel primitive methods run in `act` without an activation — per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c); step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | — |
+| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) — since step 6 on the VM mirror's class alone, with kernel primitive methods run in `act` without an activation — per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c); step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | Open: whether the class side gets a scope of its own ("Open: the class side's scope"); guarding a private lexical site on the mixin rather than its application, once a program has one to measure |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop runs over the frame's state in locals, one entry per stretch between two safepoints, and polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers | A compact instruction encoding (a decision sink was tried and halted, "Planned: a send's value delivered where it is decided"); JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Built — the arena, the activation stack, the safepoint, tracing, host roots, the stress modes, the lifetime brand and a mark-compact collector; a slot is reclaimed once nothing reaches it | generations |
@@ -164,6 +166,7 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 
 | Directory | What belongs in it |
 |---|---|
+| `arithmetic/` | the inlined integer fast path beside the ways its guard declines, which must answer what the primitive answers |
 | `bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
 | `cache/` | an outcome an inline cache could change, each added before any cache existed |
 | `capture/` | what a block captures: copied variables, indirection vectors, the fallback closures of an inlined conditional |
@@ -270,8 +273,11 @@ observe there is no answer to record that would not be invented.
   already produced a real defect. Load-bearing for anyone working in the
   repository; the reasoning behind each one is in these documents.
 - **`docs/PROGRESS.md`** — milestone chronology: what was completed and when,
-  and, under "Where the next session starts", what comes next and in which
-  order. These documents describe the design; that one records the schedule.
+  and, under "Where the next session starts", the next piece of work. These
+  documents describe the design; that one records the milestones.
+- **`docs/OPEN-WORK.md`** — everything still to be done: planned features,
+  specification deviations, open design questions, unexplained measurements
+  and known gaps, each with where it is explained.
 - **`docs/superpowers/plans/`** — implementation plans, dated. A plan is an
   execution record of finished work and is legitimately historical, so it is not
   a living document and is left as written.

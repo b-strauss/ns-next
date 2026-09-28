@@ -15,1216 +15,41 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**The loop over locals is done** (2026-09-28;
-[ns-next-loop-over-locals](superpowers/plans/2026-09-28-1808-ns-next-loop-over-locals.md);
-[execution.md](design/execution.md), "The loop over locals"), designed with
-the user after the 4% `bench_megamorphic.ns` lost to simultaneous slots was
-traced to where LLVM placed the test of a send's `Flow`. `vm::run` enters
-once per stretch between two safepoints; `run_stretch`, forced inline, keeps
-the running frame's activation, code, program counter, feedback base and a
-new `RegisterBase` (`heap.rs`: a register access is one index and one bounds
-check, a debug build checks its activation's generation) in locals, each arm
-advances the program counter itself, and a send, a return, an unwind or a
-forcing answers a one-byte `Transfer` with the next frame in a `Handoff`;
-`Flow` and `vm::poll` are gone, and the frame is written back to
-`FrameRegisters` only when a safepoint is requested. The safepoints are
-where they were, and no golden changed. **Measured**
-([execution.md](design/execution.md), "What the loop over locals moved"),
-three builds a side against `5fbb2cb`, two sittings: every fixture faster --
-`bench_loop.ns` -29.7%, `bench_send.ns` -23.3%, `bench_block.ns` -13.6%,
-`bench_megamorphic.ns` -19.9% (medians), separated in every sitting but one
-of `bench_loop.ns`'s, which two outlying rounds overlap; `vm::run` is one
-function of 7,143 instructions against 7,083. A scratch build with one more
-calling instruction arm, not committed, left `bench_megamorphic.ns` and
-`bench_block.ns` level but cost `bench_loop.ns` and `bench_send.ns` about 3%
-(+3.0%, +3.3%, means): an arm is still not free. A profile places the
-loss at a store-forwarding stall: every send's `Result<Step, Signal>`
-passes through one stack slot where the inline cache's hit paths and its
-`miss` join, the 16-byte `Value` read back from narrower stores holds 28%
-of `vm::run`'s samples, and `Step`'s drop glue runs for every send (4.7%)
-([execution.md](design/execution.md), "Where the 3% goes"). A sink that
-delivers a send's value where it is decided was planned and tried as an
-experiment ([execution.md](design/execution.md), "Planned: a send's value
-delivered where it is decided"): inlined all the way to the register write
-it made `bench_loop.ns` 17% faster but doubled `vm::run`, and it showed that
-any 16-byte `Value` passing through memory stalls; the user halted it in
-favour of the eight-byte value, which comes later. **Next: the compact
-instruction encoding** ([execution.md](design/execution.md), "The loop over
-locals"), which has no design yet; what the profile found about the dispatch
-it would reshape -- `Instruction`'s discriminant decoded through a niche on
-every dispatch, and `program_counter` and the code pointer spilled to the
-stack frame -- is in "Where the 3% goes".
+**Next: the compact instruction encoding**, which has no design yet
+([execution.md](design/execution.md), "The loop over locals"). What the
+profile found about the dispatch it would reshape -- `Instruction`'s
+discriminant decoded through a niche on every dispatch, and
+`program_counter` and the code pointer spilled to the stack frame -- is in
+the same document's "Where the 3% goes".
 
-**Simultaneous slots are done** (2026-09-28;
-[ns-next-simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);
-[object-model.md](design/object-model.md), "Simultaneous slots"), through
-pull futures, decided with the user: a `|| ... ||` clause, in a class
-header or as a code body's temporaries, initializes its slots
-simultaneously, so well-founded mutual recursion between them resolves.
-Four rules: once the clause is done no slot of it holds a future (its end
-forces each and writes the value back); every future it made is resolved
-then, escaped ones included; a resolved future is observable by no program
--- messages are forwarded, identity, equality and every leaf see through
-it, and the collector replaces it with its value in object fields; and a
-value never holds one. The mechanism: the parser keeps the `simultaneous`
-flag; one desugaring before both lowerings (`compiler/simultaneous.rs`)
-emits `MakeFuture`, `InitializeSlotProvisionally` or a store, then
-`LoadOwnSlot` or a read, `ResolveFuture` and a checked write at the
-clause's end (instruction tags 36 to 39); `Kernel.ns`'s private `Future`
-(builtin class tag 30), after Primordial Soup's `Proxy`, forwards through
-`doesNotUnderstand:`; forcing is a trampoline step under
-`Continuation::Future`, and an instruction or a leaf that meets an
-unresolved future forces it and runs again (`vm::reexecute`), which rests
-on a leaf that declines or raises having changed nothing, and a leaf's
-callers look for a future only on its failure path; ill-founded
-recursion is an ordinary error; an abandoned clause leaves its futures
-unresolved, to be computed on the next touch; an image writes a resolved
-future as its value and an unresolved one as a record. Fourteen new
-goldens under `goldens/spec/` pin it, and the one that was `skipped` answers
-`3`. **Measured** ([execution.md](design/execution.md), "What simultaneous
-slots cost"), three builds a side against `0b1f474`, two sittings:
-`bench_loop.ns`, `bench_send.ns` and `bench_block.ns` are level (+0.86%,
--0.27%, +0.23%, medians); **`bench_megamorphic.ns` is 4.2% slower**,
-separated in both sittings. A first version, which wrapped every leaf and
-inlined the four arms, cost all three sending fixtures 1–2%; the leaf
-search moved to the callers' failure paths and the arms out of line
-recovered two. The rest is bisected to the one calling arm the four
-instructions add to `vm::run`'s dispatch: a build whose arm calls nothing is
-level on all four, and one whose arm calls and discards the answer is not;
-aligning every jump target does not help; it reorders every block of
-`vm::run` and the `Flow` test after a send with it. The loop over locals,
-above, took the `Flow` away and recovered it.
+**Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
+each item with where it is explained. The sections below record the
+milestones, oldest first.
 
-**The syntax is the specification's grammar** (2026-09-27 to 2026-09-28,
-decided with the user; [frontend.md](design/frontend.md), "Grammar"): every
-production of `newspeak-spec.pdf` §4.2 to §8.1 is accepted as written and
-nothing else, read as a PEG over tokens, every rule pinned by a parser test
-and every accepted form by a golden; §3.6's and §5.9's compile-time errors
-are reported before anything runs; the corpus parses completely and its
-blacklist is gone; `main:args:` receives the program's arguments; the
-JetBrains plugin's lexer and the language server follow all of it. The
-entries below "The unreserved words are names" in this file list each step.
-The deviations that remain are decided and recorded in
-[README.md](design/README.md)'s deviations table.
+**Measuring.** The protocol is [execution.md](design/execution.md)'s "What
+removing the re-entries moved"; every compared binary, the current tree
+included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
+"Working in this repository"). Four of the eight measurement sources are
+goldens under `goldens/bench/`; the other four -- `bench_new.ns`,
+`bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
+and must be written out from [execution.md](design/execution.md), "What
+spec-conformant lookup moved", never reconstructed from a prose
+description: a reconstruction runs and prints the right answer while
+measuring something else.
 
-**Noted for later, not started:** lowering a pattern literal to the
-`Pattern` send §5.1.9 defines instead of **nil** ([frontend.md](design/frontend.md),
-"What is parsed and dropped", "Planned"); chains and object literals as
-possible extensions (frontend.md, "Possible future extensions"); and the
-semantic deviation that answers a correct program wrongly at exit status 0
--- the synchronous `<-:`, set aside by the user until there are actors --
-as the first candidate of a section-by-section semantic audit of the
-specification, like the syntax one. Unbounded integers were set aside by the
-user (2026-09-28), and an eight-byte `Value` is noted to go with them
-([object-model.md](design/object-model.md), "Planned: an eight-byte
-value").
+## Notes
 
-**The collections module is done** (2026-09-28;
-[ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md);
-[core-library.md](design/core-library.md), "The collections module (plan
-2)"), in the factory pattern, decided with the user: a shipped
-`CollectionsFactory.ns`, whose root holds the kernel and is never handed
-out, and whose private nested `Collections` is the facet `platform
-collections` answers. The facet names its own class
-(`public Collections = ( ^outer CollectionsFactory Collections )`) as
-`Platform` does, so its image path is `collections Collections` without
-widening the compiler's class-accessor recognition, and
-`Platform>>Collections` is gone. `List` is a private class of the factory,
-Newspeak over arrays it replaces when full, handed out by the facet's class
-accessor. The mirror's new `moduleNamed:` leaf builds a shipped module's
-root class on every request and keeps nothing in Rust; `PlatformFactory`'s
-lazy `collectionsModule` keeps the one instance, so every platform shares
-one `List` class and the module is compiled on the first `platform
-collections`. `Array new:` answers a sized array of nils (a class-side
-mirror forwarder), and the exception handler search collects its handlers
-into an `Array` in two walks. Every program moved to `List`;
-`OrderedCollection`, its `add:` leaf and `Heap::array_push` are removed,
-builtin class tag 10 retired. Three semantics were confirmed with the user:
-`moduleNamed:` keeps nothing, `List>>at:put:` answers the value, and
-`List>>do:` reads the size once. Image tests cover a `List` record, a second
-facet and the refusal of the factory. The one golden whose output changed
-is `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`, seven
-lines to six: there is no builtin `OrderedCollection` left to subclass.
-**Measured** ([execution.md](design/execution.md), "What the collections
-module cost"), three builds a side against `6d9974b`: **all four
-`goldens/bench/` fixtures are level** (-0.2% to +0.5%, every comparison
-overlapping); a start that never sends `platform collections` is level
-too (+0.03 ms, +0.2%), since each shipped module is resolved on its first
-request, not at boot, and the first `platform collections` costs about
-0.28 ms (+2.1%): resolving, compiling and instantiating the module.
-
-**The platform module is done** (2026-09-26 to 2026-09-27;
-[ns-next-platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md);
-[core-library.md](design/core-library.md), "Planned: the platform and
-collections as core-library modules"): §6.3.3's lazy slots — a lazy getter
-is a compiled method that opens with `ReturnSlotIfFilled` (instruction tag
-34), and a value's `=` and `hash` skip them; the table of shipped modules
-(`interpreter/core_library.rs`'s `SHIPPED_MODULES`) and a shipped
-`Platform.ns`, holding `Platform`, `Transcript` and `KernelNamespace`,
-booted with `usingVmMirror:kernel:` beside `Kernel.ns` (`Collections` moved
-too, still answering the kernel's `OrderedCollection` for `List`); and
-platform paths in the image (`VALUE_PLATFORM_PATH`, `CLASS_PLATFORM_PATH`,
-`HASHED_PLATFORM_PATH`), each resolved through a public slot getter or
-nested-class accessor before the rest of a graph decodes. `Platform`'s root
-class is uninstantiable by a program
-(`InstantiationRefusal::CoreLibraryModule`,
-`goldens/kernel/a_program_cannot_instantiate_the_platform`), and that
-refusal is recorded behind every other, so a shipped root with a defect of
-its own is refused to the bootstrap too; builtin class tags 13, 18, 19 and
-29 (`Platform`, `Transcript`, `Collections`, `KernelNamespace`) are
-retired.
-`goldens/kernel/the_platform_and_its_parts_are_values` compares the
-collections namespace against a fresh one instead of the platform itself,
-now that only the runtime can make one; new goldens pin the lazy-slot
-rules (`goldens/spec/spec_6_3_3_*`, `goldens/kernel/a_values_lazy_slot_*`)
-and the instantiation refusal, and
-`spec_6_3_3_a_lazy_slot_is_initialized_on_first_use`, skipped since the
-parser dropped `lazy` and ran the initializer eagerly, is unskipped: its
-recorded `stdout` now holds, since a lazy slot is initialized on first use
-rather than at instantiation. **Measured** ([execution.md](design/execution.md),
-"What the platform module cost"): start-up is unchanged, +0.2%, inside the
-protocol's own spread — the platform's classes moved out of `Kernel.ns`
-rather than being added on top of it. The lazy getter's first mechanism, a
-`MethodFastPath::LazySlot` arm in `act_with_base`, inlined into every send
-site of `vm::run`, cost `bench_send.ns` 4.6% and `bench_block.ns` 2.6%;
-moving the arm out of line, and then taking the slot base off the
-activation, did not recover it, and dropping the fast path did: a getter
-answers a filled slot from its own activation, and the activation derives
-its slot base from its `current_class`. **All four `goldens/bench/`
-fixtures are level with `7c6bdbf`** (pooled over three builds a side and
-two sittings, -0.7% to +0.4%, every comparison overlapping); `vm::run` is
-6,691 instructions against 6,561, the difference an arm no ordinary send
-runs.
-
-**The platform is a facet of a `PlatformFactory`** (2026-09-27, decided
-with the user; [core-library.md](design/core-library.md), "The platform"):
-`core-library/Platform.ns` became `PlatformFactory.ns`, whose root holds the
-mirror and the kernel and is never handed out; the host instantiates it
-through the ordinary `Interpreter::instantiate`, checks its `vmMirror`, and
-hands every program what the factory's one public member, `newPlatform`,
-answers: an instance of the private nested `Platform`, whose factory is
-`new` and whose class accessors (`public Transcript = ( ^outer PlatformFactory
-Transcript )`, lexical sends that reach the root's private classes) hand
-out the module's classes. That replaces the runtime
-refusal with plain Newspeak: `InstantiationRefusal::CoreLibraryModule`,
-`Mixin::core_library_module`, `instantiate_core_library_module` and
-`goldens/kernel/a_program_cannot_instantiate_the_platform` are gone. A
-platform path may now also step through a pure class accessor, recognized
-by the compiler in shipped source (`MixinMethod::class_accessor`, read only
-by the image code, no fast path); a second platform is an ordinary record of
-the class the path `Platform` names.
-`goldens/kernel/the_platform_and_its_parts_are_values` has its original
-`platform = platform class new` checks back, and
-`goldens/kernel/a_second_platform_writes_like_the_first` is new. The boot
-now runs `newPlatform` and `Platform`'s superclass clause, so a freshly
-bootstrapped interpreter's caches are no longer empty (four sites, three
-global entries, pinned by a test); no send path changed.
-
-**The transcript's `show:` and `print:` are done** (2026-09-27, decided
-with the user; [core-library.md](design/core-library.md), "The platform"):
-`show:` writes a string and refuses anything else as an ordinary error,
-where `show: 42` used to write nothing; `print:` writes any object's
-`printString`, in Newspeak, as canonical Newspeak's transcript does.
-`goldens/kernel/the_transcript_prints_any_object` and
-`goldens/errors/show_of_something_that_is_no_string_is_an_error` pin both.
-
-**The test harness was reworked** (2026-09-27, decided with the user;
-`CLAUDE.md`, "Working in this repository"; [README.md](design/README.md),
-"The goldens" and "Gates"; [compiler.md](design/compiler.md), "The
-harness"): the suites run under `cargo-nextest`, with `cargo test --doc`
-beside it for the doctests; every golden is a test of its own, and so is
-each of its build/load and snapshot/load round trips
-(`crates/ns-cli/tests/run_goldens.rs`, `golden_round_trips.rs`, on
-`libtest-mimic`); a test whose two lowerings are independent is written once
-with `ns_runtime::for_each_lowering!` and runs as one test per lowering;
-debug builds compile at `opt-level = 1`; and the end-of-batch gate runs the
-three stress modes at once. The normal suite went from about 47 s to 16 s,
-the three stress modes from about 48 minutes to under 4.
-
-**The next piece of work is step 7, the payload space** (item 4 of the
-list under "What came next was the third plan, now done, and then step 7"
-below; [memory.md](design/memory.md), "Payloads belong to the Rust
-allocator, and what that costs"), now unblocked: with `OrderedCollection`
-and `Heap::array_push` gone, no payload grows in place. Run one of its named
-measurements before building anything there.
-
-**Editor support — the language server and the JetBrains plugin — reached
-Built on 2026-09-26** ("Editor support: the language server and the
-JetBrains plugin" below); it runs beside the runtime milestones above rather
-than as one of them. The runtime deviation from §5.9 that trying it by hand
-surfaced -- `outer N m` recognized only for an uppercase `N` -- is fixed
-("The unreserved words are names" below).
-
-**Exceptions are done** (2026-09-25 to 2026-09-26;
-[ns-next-exceptions](superpowers/plans/2026-09-25-2244-ns-next-exceptions.md);
-[core-library.md](design/core-library.md), "Exceptions"): `Exception`,
-`Error`, `MessageNotUnderstood`, `Halt` and `Message` in `Kernel.ns`, reached
-through `platform kernel`, over kernel-private `Activation` objects; ANSI's
-`on:do:`, `ensure:`, `ifCurtailed:`, `return:`, `retry`, `resume:` and `pass`;
-one unwinder aimed at a `FrameReference`; every VM error and every message
-nothing understands signalled; and a reserve above the depth limit for
-signalling it — see "Exceptions" below. It followed step 6's third plan,
-`Behavior`, `Class` and `Metaclass` (2026-09-25; "`Behavior`, `Class` and
-`Metaclass`" below).
-**Then step 7, the payload space**
-(item 4 of the list under "What came next was the third plan, now done, and
-then step 7" below), ordered after step 6 because a Newspeak collection over
-a fixed `Array` removes the one payload that grew in place
-(`Heap::array_push`); the collections module removed it. The reflection
-work, which needed the reified instance-of relation step 6's third plan built and can build its
-`ActivationMirror` on the activation objects, can now start as well
-([liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
-and MirrorBuilder"). An open performance item remains from the third plan's
-measurement: [execution.md](design/execution.md), "What the profile shows
-beyond it" (after "What `Behavior`, `Class` and `Metaclass` cost") finds
-about a quarter of `bench_send.ns`'s samples sitting on 16-byte loads of
-`Value`s written piecewise, in `decide_slot_accessor`, `vm::make_value` and
-`push_activation` — profiled before the exceptions branch's `1d7587f`
-removed the spill inside `decide_slot_accessor`, so it wants profiling
-again before it is worked on.
-
-Everything the user put ahead of the third plan is done, each described
-below under its own heading: the predefined classes are accessors on
-`Object` ("The predefined classes as accessors on `Object`"); `True` and
-`False` are Newspeak over quick methods ("`True` and `False` in Newspeak");
-`nil`'s class is §5.1.3's `UndefinedObject` ("`UndefinedObject` and the nil
-protocol"); `"..."` is a string literal and there is no `Character` class
-("Double-quoted strings replace characters"); the parser refuses §4.1's
-reserved words as identifiers ("The reserved words are refused"); the
-platform declares no accessor for a predefined class ("The platform's class
-accessors are gone"); the platform, its transcript and its `collections`
-namespace are values ("The platform, its transcript and its namespace are
-values"); and §6.2's mixin application and the strict enforcement of
-§3.1.1's value conditions ("Mixin application" and "The value conditions").
-Step 6's first two plans — the core library over a VM mirror, and `Top`,
-`Value` and `Number` — are described from "Step 6's first part" on, after
-the account of how M4 got here.
-
-M4 is complete. **Step 2, the compiler-checked root discipline, is done**,
-in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
-"Checked roots and a collector"). **2a, no re-entry from Rust** — `do:`,
-instantiation and the nested-class accessor are trampoline steps, so Rust
-enters the run loop only as the host; see "M4 — No re-entry from Rust" below.
-**2b, the safepoint, the tracing, host roots and the stress mode** — the run
-loop polls a safepoint, `trace.rs` enumerates every handle a collector would
-trace, a host keeps values across runs only as `Root`s, and
-`NS_NEXT_STRESS_MOVES=1` moves everything at the safepoints under the whole
-suite, which `CLAUDE.md` makes a gate; see "M4 — The safepoint, tracing, host
-roots and the stress mode" below. **2c, the lifetime brand** — every movable
-handle carries a lifetime obtainable only inside `Interpreter::enter`, in safe
-Rust, so holding one across a safepoint, keeping one outside an entry, and a
-native re-entering the loop fail to compile; see "M4 — The lifetime brand"
-below. Measured whole, it is level with `a5d1e05` on every source; its first
-measurement was not, and finding out why put a function-alignment pin into
-the measurement protocol — and only there (the third finding below).
-
-**Name resolution and lookup follow the specification**, a step inserted
-ahead of the inline caches and done: a slot's accessors are method-table
-entries that a subclass overrides, §5.7 lets only lexically *declared*
-members decide a lexical send, and every send kind applies its access rule
-(§5.5–§5.10, §6.3.2). The method and slot tables hash their identity keys
-with a multiply-rotate hasher instead of SipHash. Measured whole, no source is
-slower than `59061ec` or `be3eb40`, and six are 4–12.5% faster than both; see
-"M4 — Spec-conformant lookup" below.
-
-**Step 3, the inline caches, is done** (designed
-2026-09-15; [dispatch.md](design/dispatch.md), "Inline caches"; item 3 of the
-order of work below), in three parts, each landing green and measured on its
-own. **3a, primitives are method-table entries, is done**: every native is
-an entry of its builtin class's method table carrying an enumerated
-primitive, found by the ordinary lookups; see "M4 — Primitives as
-method-table entries" below. **3b, the caches, is done** (2026-09-16): every
-send the optimized lowering compiles probes a cache at its call site, per
-heap, indexed from the activation's `feedback_base`; a site goes
-monomorphic, then a polymorphic cache of 4, then megamorphic, with a global
-cache of 1024 entries — 512 two-slot groups since the step below — behind
-every site; the guard is a dense per-application
-dispatch id; a send's decision is
-`resolve` then `act`, so a cache records what the lookup decided and never
-decides; call sites are numbered per code family as `u32`s behind new send
-tags; the reference lowering runs uncached as the oracle; and
-`NS_NEXT_STRESS_CACHES=1` vacates every cache at every safepoint, a gate of
-its own. Measured whole, every source is 4.3–11.3% faster than 3a's head and
-9.4–19.7% faster than `be3eb40`; see "M4 — Inline caches" below.
-
-**The step before 3c is done** (2026-09-18): five changes the user decided on
-2026-09-17 and 2026-09-18 ([dispatch.md](design/dispatch.md), "Decisions",
-"Decided by the user … built before 3c"), planned and measured together;
-see "M4 — Flat metaclasses, the factory and the cache refinements" below.
-Designing the factory change is what added the first two: §3.2 settles, from
-a section the earlier reading had not reached, that a class side is not
-inherited at all.
-- **Metaclasses are flat** (§3.2, §6): a class side is applied to `Class` —
-  to `Object`'s behaviour then, since ns-next reified no `Class` until step
-  6's third plan — instead of to the superclass's metaclass, so a class side
-  is not inherited and a class-side `super` send looked in `Object`'s
-  behaviour; it looks in `Class` now.
-- **The primary factory is a class-side method** (§6.3), an entry of the
-  metaclass mixin's method table found by the ordinary lookups. With flat
-  metaclasses the factory's special cases went with nothing in their place:
-  a factory entry sits only on the receiver's own metaclass, which the
-  class-side guard determines, so neither re-check survives. A class side may
-  not declare the factory's selector; the resolver refuses it. The factory
-  selector is a member of the class side for §5.7's depth search too, so an
-  implicit `new` inside a class-side method reaches the class that declares
-  it rather than an enclosing class's member of the same name.
-- **The global cache's lexical key includes N's application**, so a vacant
-  lexical site may use it.
-- **Call-site numbers are no longer serialized**; the decoder numbers each
-  family, with a flag for a family compiled uncached, and the send tags
-  retired again, to 25–28.
-- **The global cache is 512 two-slot least-recently-used groups**, measured
-  against 3b's insert with `goldens/bench/bench_megamorphic.ns` — which
-  measures the probe path only, so the replacement rule itself is still
-  unmeasured (the finding below).
-
-The rest of §3.2 — the reified instance-of relation and the `Class`,
-`Behavior` and `Metaclass` kernel classes — was scheduled for step 6, the
-core library in Newspeak, where both references declare them, and is done
-("`Behavior`, `Class` and `Metaclass`" below).
-
-**3c, the dispatch id's place, is done** (2026-09-19): a guard reads the id
-from the object header, and a class object's data is boxed so that an
-`Object` stays 56 bytes in a release build. Neither header variant measured
-faster than the id on the class object, and the rule proposed with the
-measurement would have kept it there; the user chose the header for a JIT
-tier's guard and step 6's uniform stamping; see "M4 — The dispatch id's
-place" below.
-
-**The specification gaps are done** (2026-09-19): the worst deviation the two
-specification audits found — a §5.7 member set keyed by a class's simple
-name, so two same-named classes in one module shared one set, silently
-wrong for eighteen corpus modules and invisible to the reference lowering
-because the mistake was in the resolver, above both — and the two cheap
-fixes the second audit found alongside it — equal symbol literals not one
-object (§5.1.6) and a parameter slot accepting a setter send (§3.6) — plus
-two changes the design work surfaced along the way — a local slot's
-declaration kept and its initializer run (§3.6), and a parameter's or an
-immutable local's register never copied. All five decided with the user on
-2026-09-19 and built in one plan
-([specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md)).
-See "M4 — The specification gaps" below for what changed, commit by commit,
-and the decisions behind each.
-
-**Removing `:=` is done** (2026-09-19): the lexer refuses Smalltalk's
-assignment by name, and every golden, test and document example is spelled
-as §5.4.3's setter send, `name:: expression`, with no recorded outcome
-moving; see "M4 — Removing `:=`" below.
-
-**Closure conversion, step 4 of the order of work below, is done**
-(2026-09-20; designed 2026-09-19,
-[execution.md](design/execution.md), "Closure conversion"): under the
-optimized lowering a block no longer reaches its method's variables through
-the method's frame. A captured variable nothing writes after capture is
-copied into the closure at `MakeClosure`; one that is written lives in its
-scope's indirection vector, an ordinary `Array` built by `MakeVector` and
-read and written by `LoadVector`/`StoreVector`. A block's registers are its
-parameters, its copied values, its temporaries and then the hidden vector
-register. `ClosureData` carries `copied` and derives its home from its
-captured frame, at the same 32 bytes as before. Whether a returning
-activation copies its registers into its reified frame is decided per
-activation, from `CompiledCode.outer_reach`, a depth. The fallback closures
-an inlined conditional sends to a non-Boolean receiver keep the by-reference
-model, and so does the reference lowering, which stays the oracle. The
-protective register copies are now asked per register rather than assumed for
-every send. See "M4 — Closure conversion" below.
-
-**Measured whole, it costs nothing and gives nothing back on speed**: the
-head is level with `efac7d2` on all eight sources in both sittings, and stays
-6–19% below `be3eb40`. The one concrete cost is memory, and it is the
-conversion's own: `bench_block.ns`'s peak working set rose about 2.6%
-(454.7 MB to 466.4 MB), which a three-way measurement attributes to the
-conversion rather than to the copy-narrowing. `vm::run` grew from 4,878 to
-5,700 instructions and stayed one inlined function. See
-[execution.md](design/execution.md), "What closure conversion moved".
-
-**Step 5, the moving collector, is done** (2026-09-20;
-[ns-next-moving-collector](superpowers/plans/2026-09-20-1746-ns-next-moving-collector.md),
-nine tasks over the shape decided with the user the same day,
-[memory.md](design/memory.md), "The shape: mark, compact, forward" onward):
-**mark-compact over the index arena, one space, stop-the-world**, with
-generations as a later, separately measured step. Marking is a second
-`Tracer` beside `Forwarder`, driven from the roots through the one edge
-enumeration in `trace.rs`; compaction slides each arena's live slots to the
-front, truncates and shrinks with hysteresis (`max(4096, live * 2)` after
-each collection), and rewrites every handle through a flat forwarding table.
-The canonical symbol table is now the system's only weak structure; the
-application cache stays strong because its key is an address, which
-`Rc::as_ptr` needs a strong reference to keep unique. A collection runs only
-at a safepoint of the run loop, requested by a comparison `push_object` and
-`reify` already make against an arena's limit, never inside an allocation.
-`NS_NEXT_STRESS_COLLECT` is a third stress mode and gate, collecting at
-every safepoint to catch premature reclamation, which the move stress
-mode's everything-is-live sweep cannot see. `bench --collector-statistics`
-reports the counts and pauses. This ends the arena's never-reclaim interim:
-before this step nothing gave an object or a reified frame back, which is
-why `bench_block.ns` grew with the work it did whichever way its blocks
-reached their variables; the indirection vector closure conversion added is
-itself an object the collector now reclaims.
-
-**Measured against `dc0ffe5` and `be3eb40`: peak working set is the point of
-the step, and it moved as designed.** `bench --iterations 10` on
-`bench_block.ns` — the one source that allocates a closure and reifies a
-frame every iteration, the interim's worst case — falls from 228.8 MB to
-5.6 MB, level with `bench_loop.ns` and `bench_send.ns`. Seven of the eight
-sources are level with `dc0ffe5` on throughput and 5.3–18.0% below
-`be3eb40`; six of them overlap the baseline's group in both sittings, and
-`bench_newarg.ns`, pooled at +2.9%, is the narrowest of the seven — entirely
-above `dc0ffe5` in the second sitting and overlapping it by only 0.01 ms in
-the first — and it is the source with the second-most collections, 107.
-`bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns`
-report zero collections and are exactly the three whose throughput does not
-move — the recorded expectation named the first two by exactly this
-reasoning in advance, and `bench_megamorphic.ns` turns out to fit it too.
-`bench_block.ns` is the one source that does not stay level — **+12.2%
-against `dc0ffe5`**, the one source whose pooled groups do not overlap in
-either sitting and the only one beyond a couple of percent — because
-it is the only one that collects enough to show: 269 collections, 15.479 ms
-total pause, 0.202 ms longest. Pause accounts for roughly 1.4 ms of the
-2.46 ms the head adds per round; the rest is recorded as unexplained rather
-than guessed at. See "M4 — The moving collector" below,
-[execution.md](design/execution.md)'s "What the moving collector moved" and
-[memory.md](design/memory.md)'s "How the collector is measured" for the
-full tables.
-
-**The unexplained remainder on `bench_block.ns` is an open finding, not a
-closed one.** Pause accounts for roughly 1.4 ms of the 2.46 ms the head adds
-per round there; nothing in this measurement explains the rest. What the
-numbers do support: on the four other collecting sources the pause is
-1.7–5.4% of the median (`bench_do.ns` 0.12 ms of 7.06 ms; `bench_newarg.ns`
-0.49 ms of 9.13 ms) while the measured difference against `dc0ffe5` runs
-−2.1% to +2.9%. Set against the change actually measured, the pause on those
-four — far from being additive — *exceeds* it by 0.13 to 0.38 ms per send:
-collecting gives more back there than it costs, plausibly because an arena
-that never passes its limit never doubles and copies. On `bench_block.ns`
-the pause falls 1.05 ms per send short instead, and that sign change across
-four sources is the part most in need of explaining
-([execution.md](design/execution.md), "What the moving collector moved", has
-the table).
-
-One candidate is ruled out: freeing the dead payloads is **not** a mutator
-cost, since `compact_arena`'s `truncate` drops them inside the span
-`World::collect` times. What distinguishes `bench_block.ns` from the other
-four is that it collects 269 times against their 26 to 107 at a similar live
-object count, and that it is the only source with a populated frame arena
-(1,529 live frames against 0–1 elsewhere), so the only one whose closures
-have their `captured_frame` rewritten at every collection. A cost that scales
-with how *often* a program collects rather than with the total pause would be
-the cache after-effect of walking the live graph, which falls outside the
-measurement. **These are hypotheses, not findings.**
-Three cheap experiments, none run. A fixture whose blocks capture nothing
-keeps the object churn and removes the frame reification, separating the
-frame arena from everything else. Varying `COLLECTION_FLOOR` so the same
-program collects less often but does more per collection separates a cost
-that tracks the collection count — the cache after-effect — from one that
-tracks the pause total. And to separate the trigger's cost from the
-collection's: a head build with `COLLECTION_FLOOR` raised above
-`bench_block.ns`'s whole allocation, which then never collects but still
-pays the trigger's comparison in `push_object` and `reify` — that isolates
-whether the remainder is the reallocation cost above or something the
-trigger's comparison itself costs. Not yet run.
-
-**M4's numbered steps are now complete.** What comes next, after M4 and
-before the JIT tiers, is **step 6, the core library in Newspeak, and then
-step 7, the payload space** (the order of work below). That ordering was
-decided with the user on 2026-09-21: step 6 first because it removes the
-one constraint that complicates the space -- a payload that grew in place,
-which existed only because `OrderedCollection` was a Rust builtin, until the
-collections module removed both -- and
-because it raises what the space is worth, a Newspeak `List>>add:`
-allocating a fresh `Array` at every capacity overflow where a `Vec::push`
-amortizes to nothing.
-
-**Step 6's first part, the inlined fast path for the integer leaves, is
-done** (2026-09-21;
-[ns-next-leaf-inlining](superpowers/plans/2026-09-21-2107-ns-next-leaf-inlining.md);
-[compiler.md](design/compiler.md), "Arithmetic inlining"). The compiler
-recognizes the nine binary integer primitives (`+ - * // < > <= >= =`) at an
-ordinary explicit-receiver send and emits `Instruction::IntegerBinary`,
-which computes when both operands are `Value::SmallInteger` and the
-`checked_*` operation yields a result and otherwise jumps to the ordinary
-send standing beside it, so every error the operation can raise — a
-`doesNotUnderstand:`, an overflow, a zero divisor — still comes from
-`builtins/numbers.rs` and from nowhere else. **Measured by the protocol
-below against `6f5a5b1`, the commit on `master` the branch was cut from,
-every one of the eight sources is 11.5% to 31.0% faster, and every
-after-group lies entirely below its before-group in both sittings**. The
-only earlier step to clear that gate across its whole suite was 3b, the
-inline caches, at 4.3–11.3% over seven sources. `vm::run` grew from 5,732 to
-5,866 instructions and stayed one inlined function. See "Leaf inlining"
-below and [execution.md](design/execution.md), "What leaf inlining moved".
-
-**This is the cushion step 6's move to the VM mirror was sequenced to have.**
-Moving the library into Newspeak, and later rewriting `do:` and the
-control-flow methods as Newspeak loops, turns arithmetic in those bodies into
-sends the interpreter dispatches; the numbers above are what that work has to
-spend before it shows as a regression against `6f5a5b1`, and the fast path is
-what supplies it.
-
-**The rest of step 6 breaks into three plans, and all three are done.**
-The first — the core
-library over a VM mirror — is done (2026-09-22;
-[ns-next-kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md);
-[core-library.md](design/core-library.md), "The core library as Newspeak
-source over a VM mirror"). Every builtin method is a one-line forwarder in
-`crates/ns-runtime/core-library/Kernel.ns` — `^vmMirror integer: self add: other
-ifFail: [^super + other]` — over the one VM mirror, a builtin object whose
-method table carries every leaf as an enumerated primitive, one row of
-`builtins/primitive.rs`'s `MIRROR` each; the per-class primitive lists and
-the pass-over a failing primitive used to take are gone. The bootstrap
-compiles `Kernel.ns`, fills the builtin class objects it had built as
-placeholders from its nested classes, `True` and `False` now under
-`Boolean`, and instantiates it with the mirror, which nothing else can
-obtain: only `resolver::resolve_kernel` marks a send to it, the image format
-refuses it both ways, and its class cannot be instantiated. Inside a kernel
-method the mirror send's failure block is lowered inline
-(`Instruction::SendMirror`, no wire tag; [compiler.md](design/compiler.md),
-"Mirror sends"), and a kernel method whose body only forwards is a
-primitive method, whose leaf `act` runs without an activation under both
-lowerings ([dispatch.md](design/dispatch.md), "Primitive methods").
-**No recorded outcome moved.** The one observable difference — a builtin
-subclass's own `doesNotUnderstand:` is now passed by, as §5.10 says — was
-decided with the user and is pinned by a new golden under `goldens/kernel/`
-([core-library.md](design/core-library.md), "The one observable
-difference"). **Measured against `e2bb31e` over the eight sources, two
-sittings: with primitive methods −4.5% to +2.1%, no group entirely above in
-either sitting — the move cost nothing measurable.** Without them
-(`NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary) −2.0% to +23.6%:
-`bench_megamorphic.ns` +23.6%, `bench_block.ns` +21.3% and `bench_do.ns`
-+5.5%, the three that send a leaf the fast path does not absorb in their
-loop. Against `be3eb40` the head is 24.7–40.2% faster. Start-up (`run` of a
-module that returns at once) is 0.5 ms slower, 4.07 ms against 3.56 ms.
-`vm::run` grew from 5,866 to 6,385 instructions and stayed one inlined
-function. See [execution.md](design/execution.md), "What the core library's
-move cost".
-
-**The second — `Top`, `Value` and `Number` — is done too** (2026-09-23;
-[ns-next-value-and-top](superpowers/plans/2026-09-22-2112-ns-next-value-and-top.md);
-[core-library.md](design/core-library.md), "What exists"). It gave the core
-library the specification's *object model* where the first gave it the
-specification's *dispatch*: §3.2's empty class `Top` above `Object`, with
-every other class below `Object`; §3.1.1's `Value` over the value classes,
-`Number` among them, empty and waiting for the numeric tower; the value
-classes hashing by content rather than by identity; `Value` deriving `=`,
-`==` and `hash` from an instance's state through `builtins/value.rs`, with a
-Newspeak fallback for what that leaf declines; and §3.1.1's two conditions
-refused at instantiation. Every class but `Top` is public, because §6.3.1
-would otherwise leave them unreachable from any other module. **Measured,
-seven of the eight sources are level and `bench_new2.ns` is 3.6% slower**;
-see "`Top`, `Value` and the value semantics" below, which also carries one
-open defect and a finding about the measurement protocol itself.
-
-**What came next was the third plan, now done, and then step 7**,
-deliberately not one plan, for the reason the leaf inlining was split off first: each
-produces working, measured software on its own, and each one's measurement
-informs the next. §6.2's mixin application and the strict enforcement of
-§3.1.1's value conditions were inserted ahead of the third plan on
-2026-09-23, because §3.1.1's enclosing-object condition needs a module that
-can declare itself a value, and both are done ("Mixin application" and "The
-value conditions" below). Numbered as step 6's plans are:
-
-3. **`Class`, `Behavior` and `Metaclass`. Done** (2026-09-25) — the rest
-   of §3.2: the three are declared classes of `Kernel.ns`, and a class
-   object's own class is its metaclass instead of the builtin `Object` class
-   ([object-model.md](design/object-model.md), "Class sides and
-   metaclasses"; "`Behavior`, `Class` and `Metaclass`" below).
-4. **The payload space**, step 7 of the order of work below, whose own
-   measurements are named under [memory.md](design/memory.md), "Payloads
-   belong to the Rust allocator, and what that costs". Run one of them before
-   building anything there. The space was ordered after step 6 because a
-   Newspeak collection over a fixed `Array` removes the one payload that
-   grew in place (`Heap::array_push`); the collections module did so, with
-   `List` in `CollectionsFactory.ns` ("The collections module is done"
-   above), so nothing is left to settle before planning it.
-
-**A separate step, created by this plan, sits before the JIT tiers**:
-rewriting the kernel's control-flow methods and `do:` as real Newspeak loops
-and branches instead of forwarders to today's leaves (decided with the user
-on 2026-09-22). It pays off only with a JIT, so it comes right before the
-tiers rather than now, and it owns four semantic decisions already recorded
-with their goldens and code ([core-library.md](design/core-library.md),
-"Planned: real bodies for control flow and `do:`, before the JIT tiers").
-
-Three things are recorded and not yet built, and none should be
-rediscovered: **the numeric tower under `Number` is needed**, which the
-class-tight `=` of 2026-09-23 forced — `1.0 = 1` and `1 = 1.0` both answer
-`false` now, which is symmetric and keeps the `=`/`hash` contract but is not
-what a program comparing numbers expects, and only a tower under the
-`Number` that already exists resolves it: cross-type comparison with a
-matching hash (the contract is Primordial Soup's `testFloatHash`,
-`3 asFloat hash = 3 hash`), `/` answering an exact quotient, and whatever
-`Fraction` and `LargeInteger` that needs ([core-library.md](design/core-library.md),
-"Gap: an integer has no `/`"); `Integer` has no `/`, the piece of that tower
-step 6 left open deliberately and which still has to be settled — what an
-exact quotient answers without a `Fraction` class (same section); and the
-arithmetic fast path can drop its `Jump` by
-inverting the branch sense, a separate step that requires retiring wire tag
-33 and taking 34 ([compiler.md](design/compiler.md), "Arithmetic inlining").
-
-**The baseline was `efac7d2`**, the merge of removing `:=` into `master`;
-`22a56f7`, the merge of 3c, stayed superseded, and `be3eb40` was carried
-beside it, as every measurement since
-step 2. Performance is measured, not assumed: the protocol and the seven
-sources of "What removing the re-entries moved"
-([execution.md](design/execution.md)), plus
-`goldens/bench/bench_megamorphic.ns`, the eighth source and the only one
-that drives a megamorphic site.
-
-**Four of the eight sources are goldens, under `goldens/bench/`. The other
-four are not in the tree at all and must be written out from the text the
-documents give, never reconstructed from their prose descriptions.**
-A reconstruction runs and prints the right answer while measuring something
-else, and older comparison binaries may not run it at all. All four —
-`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns`, whose slots had to be
-renamed when accessors became method-table entries, and `bench_do.ns` — are
-written out in [execution.md](design/execution.md), "What spec-conformant
-lookup moved", spelled with the setter send. The
-[2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md)'s
-older copies spell `:=`, which the tree no longer parses; take them from
-execution.md.
-
-**Every compared binary, the current tree included, was built with the
-protocol's explicit flags through `RUSTFLAGS`** — `+crt-static` and the
-function-alignment pin, which no configuration carries — two sittings,
-compared against the baseline and against `be3eb40`. The head is level with
-`efac7d2` on every source, no source entirely above in both sittings, and
-6–19% below `be3eb40`. Closure conversion was measured in two steps against
-the one baseline — the conversion alone, then the narrowed protective copies
-on top of it — because they are separate changes with separate risks: the
-conversion changes what every block creation and activation does, and the
-copy-narrowing changes the code every method compiles to. `dumpbin /disasm` checked
-before any timing that `vm::run`'s step was still inline: one function of
-4,878 instructions at the baseline and 5,700 at the head, no split closure.
-The measurement, and the template for the next, is
-[execution.md](design/execution.md), "What closure conversion moved".
-
-**Known gaps the step left**, each recorded where it applies:
-
-- **Lazy slots are eager** (§6.3.3): the parser drops `lazy`, and the slot is
-  initialized with the others ([README.md](design/README.md), deviations).
-- **The class side's own scope**: both sides of a class declaration
-  contribute to one member set for lexical resolution; the specification is
-  silent and the canonical compiler scopes the class side apart
-  ([dispatch.md](design/dispatch.md), "Resolution").
-
-**The two specification audits' other findings are closed**, in "M4 — The
-specification gaps" below: the member-set fix, the symbol-identity fix and
-the parameter-setter fix. Mixin application (§6.2), the one finding they
-left open, is closed too, on 2026-09-23 ("Mixin application" below).
-**Three goldens are still `skipped`** (`grep -l '^skipped' goldens/*/*.toml`):
-the parameter-and-a-local-of-the-same-name compile check (§3.6), the
-sequential simultaneous slot clauses (§6.3.2) and the eager lazy slot
-(§6.3.3) — the last two also rows in [README.md](design/README.md)'s
-deviations table, answering a **correct** program **wrongly, at exit status
-0**, and worth reading before trusting a program's output.
-
-**Open findings**, for whoever plans next to weigh:
-
-- **The global cache's replacement rule is unmeasured.** The cache is 512
-  two-slot groups with the least recently *used* evicted, Strongtalk's
-  `lookupCache` rule, and it replaced 3b's insert on that precedent, not on
-  numbers of this runtime's own. `goldens/bench/bench_megamorphic.ns`, added
-  for the comparison, cannot supply them: it fills 27 of 1024 slots, five of
-  them at the one megamorphic site it drives, so across 512 groups its hot keys
-  almost certainly share no group — almost every hit is at the first slot, the
-  second is almost never read and almost certainly nothing is evicted. What it
-  measured is the probe path, one hash and one cache line against 3b's two
-  hashes anywhere in the table, and there the change moved no source beyond
-  noise. Deciding the rule on numbers
-  needs cache pressure: many more hot keys than any fixture has, or a debug
-  build's small `NS_NEXT_GLOBAL_CACHE_ENTRIES`
-  ([dispatch.md](design/dispatch.md), "The global cache";
-  [execution.md](design/execution.md), "What the step before 3c moved").
-- **The run loop's step sits near LLVM's inlining limit.** A send's
-  decision is sensitive to the shape it travels through, not only to what it
-  looks up: 3a's first shape returned a 64-byte settled enum on every send
-  and cost 5.5–22.4% ([execution.md](design/execution.md), "What primitives
-  as method-table entries moved"), and in 3b splitting the decision into
-  `resolve` and `act`, then the caches' hit path, each pushed `vm::run`'s
-  per-instruction step out of line, where every instruction pays a call and
-  returns its `Flow` through memory — 6.6–13.6% on every source. The step is
-  now forced inline (`#[inline(always)]`), which on 3a's code measured no
-  faster by itself, and `decide_super_send` is kept out of it
-  ([execution.md](design/execution.md), "What the inline caches moved";
-  [dispatch.md](design/dispatch.md), "A standing hazard"). Anything added to
-  a send's hit path lands in the step: check it with `dumpbin /disasm` (from
-  the Visual Studio Build Tools, not on `PATH`) on a release build with debug
-  information — no `vm::run::closure` may be a function of its own — before
-  timing it. The structural answer is planned for later (the user's decision,
-  2026-09-17): one `Interpreter::enter` per stretch between two safepoints
-  rather than one per instruction, so that no per-instruction boundary
-  exists; to be looked at before a send's hit path grows further, and at the
-  latest with the JIT tiers.
-- **A later option for private lexical sites: guard on N's mixin.** 3b
-  guards a private site on N's application, so a site goes polymorphic when
-  its mixin is applied under several superclasses. A per-heap mixin id on the
-  application, with a mixin-relative slot index, would keep it monomorphic
-  at a second load per private hit ([dispatch.md](design/dispatch.md),
-  "Decisions"). None of the measured sources has such a site; measure it
-  against the built guard once a program does.
-- **A measurement builds every compared binary with the same explicit
-  flags, function alignment pinned; the shipped build is unpinned.** 2c's
-  first whole-step measurement read 1–2.5% slower than `a5d1e05` on the
-  block and instantiation benchmarks, `bench_new2.ns` beyond noise in both
-  sittings, and a bisection placed it on the brand commit, `1549fb0`. The
-  cause was placement, not code: the brand commit's hot machine code is
-  instruction for instruction identical to its parent's, but smaller cold
-  host code ahead of it moved every hot function by 224 or 240 bytes into a
-  different 64-byte phase, and with function starts pinned to 64 bytes
-  (`-C llvm-args=-align-all-functions=6`) the two commits measured level.
-  Under the pin 2c is level with `a5d1e05` on every source in
-  both sittings, −1.4% to +0.6%, every group overlapping
-  ([execution.md](design/execution.md), "What 2c moved"). The unpinned
-  parent reads −0.1% to −1.8% against the pinned one, overlapping on all but
-  one group, and the pin costs about 110 KB of padding, 5.6% of the binary:
-  it buys repeatability, not speed. So the user decided on 2026-09-14 that the
-  pin belongs to the measurement protocol only — `.cargo/config.toml` carries
-  `+crt-static` and nothing else, and every binary a measurement compares,
-  the current tree included, is built with
-  `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`
-  set for that build, since `RUSTFLAGS` replaces the configuration's flags
-  ([execution.md](design/execution.md), "What removing the re-entries
-  moved", the protocol). The two earlier "uniform shift on unchanged code"
-  findings of 2a likely share the mechanism, verified only for 2c.
-- **The comparison with `be3eb40` continues.** 2a left `bench_loop.ns` 1.4–1.9%
-  and `bench_block.ns` 1.4–1.6% slower than `be3eb40`, the commit it started
-  from — a uniform codegen shift in `vm::run` and `dispatch_native`, traced as
-  far as inlining and register allocation and not bisected; code placement,
-  the mechanism the protocol now pins, is the likely cause, verified only
-  for 2c. 2c, measured under the pin, left `bench_send.ns` +3.1% and +2.2%
-  and `bench_loop.ns` +1.7% above `be3eb40` ([execution.md](design/execution.md),
-  "What 2c moved"). Spec-conformant lookup closed both: `bench_send.ns` is
-  10.4% and 10.1% below `be3eb40`, `bench_loop.ns` level with it (+0.3% and
-  +0.8%, overlapping), and every other source 6.2–9.9% below it
-  ([execution.md](design/execution.md), "What spec-conformant lookup
-  moved"). The rule stays:
-  **every performance measurement up to and including step 3 compares
-  against `be3eb40` as well as against the commit it starts from**, reports
-  both, and builds every binary with the same codegen flags (the finding
-  above). 3a closed the rest: `bench_loop.ns` stays level with `be3eb40`
-  (+1.15%/+1.56%, overlapping) and the other six sources are 7–10% below it
-  ([execution.md](design/execution.md), "What primitives as method-table
-  entries moved"). 3b left every source 9.4–19.7% below `be3eb40`,
-  `bench_loop.ns` included, entirely below in both sittings
-  ([execution.md](design/execution.md), "What the inline caches moved"). The
-  step before 3c gave some of that back — `bench_loop.ns` and
-  `bench_send.ns` 2.2–3.6% slower than the commit it started from, entirely
-  above in both sittings — and every source is still 6.7–18.2% below
-  `be3eb40`, entirely below in both
-  ([execution.md](design/execution.md), "What the step before 3c moved").
-  3c left every source 8.3–19.4% below `be3eb40`, entirely below in both
-  sittings ([execution.md](design/execution.md), "What 3c moved"). None is
-  slower. The specification gaps' plan carried `be3eb40` too, one binary
-  more, and left every source 7.6–18.2% below it, entirely below in both
-  sittings ([execution.md](design/execution.md), "What the specification
-  gaps moved"). Whether a measurement past step 3 still carries `be3eb40` is
-  for its own plan to say.
-- **A send's hit path pays about 2% for every component its key gains.** The
-  step before 3c cost `bench_loop.ns` and `bench_send.ns` 2.1–3.3% and
-  `bench_megamorphic.ns` about 1%, all of it on the lexical global-cache
-  key's commit. A control binary — that commit with
-  `send_lexical_first`'s two probes cut out and everything else kept, whose
-  `vm::run` is instruction for instruction the commit's — settled which half:
-  the control alone reproduces the loss, and adding the probes on top of it
-  moves no source beyond the noise. So it is not work done per send; it is
-  the eighteen instructions the key's fourth component adds to the step,
-  which every send executes. Entry size is not it either — `GlobalEntry`
-  stayed 32 bytes and `CacheEntry` 24 throughout. It is the going rate for
-  widening a send's hit path: a change that adds work per send should be
-  expected to show, not assumed to be free. 3c changed what every guard
-  *reads* rather than what the key carries, and measured level
-  ([execution.md](design/execution.md), "Which half of the lexical key costs
-  the send benchmarks").
-- **`bench_do.ns` moves without a cause, twice in one step.** 2.8% / 3.3%
-  slower on the flat-metaclass and factory change, entirely above in both
-  sittings, and most of it back on the least-recently-used groups — and it
-  neither instantiates, nor sends to a class object, nor reaches a
-  megamorphic site in its loop. This is the fourth recorded instance of a
-  uniform shift on code a change does not execute, and the
-  function-alignment pin, which removes a 64-byte phase shift, does not
-  remove it. A fifth instance is worth one focused investigation rather than
-  another footnote ([execution.md](design/execution.md), "What the step
-  before 3c moved").
-- **A decoded image's last initializer is not held to answering `self`**, so
-  `new` answers whatever it answers — wrong but safe, no panic.
-  `image::decode::verify_mixins` could refuse such an initializer, which would
-  make "`new` answers the instance" hold for images too.
-- **No test reaches a `^` that targets a superclass clause's own activation.**
-  A clause's receiver is a single name, so only a crafted image can put a
-  block in that body; the clause *message*'s case, a `^` caught by the
-  message's activation, is pinned
-  (`a_return_in_a_clause_messages_block_hands_its_value_to_the_walk`).
-- **The stress suites take over four minutes together.** Under
-  `NS_NEXT_STRESS_MOVES=1` the suite takes about 3 min 9 s, almost half of it
-  one test, `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`;
-  under `NS_NEXT_STRESS_CACHES=1`, about 1 min 5 s. Both are gates before
-  every commit, so a plan should budget for them.
-- **Small follow-ups 3b's reviews deferred**, none affecting an outcome:
-  `InlineCaches::fresh_range` adds `start + size as usize` unchecked, which
-  only a 32-bit `usize` could overflow; no unit test covers a decoded
-  closure's base being written back
-  or `fresh_range` refusing a range past the table's limit (an image test
-  covers the first through a program); `types.rs` names
-  `interpreter::inline_cache::FeedbackBase` rather than its re-export
-  `interpreter::FeedbackBase`; `inline_cache::send_super` reads
-  `current_class` and its superclass before it knows whether the send is
-  cached, and `send_lexical` computes N twice on a private site's miss.
-  Also open: whether the family map per push shows on the instantiation
-  benchmarks, the condition under which a `Factory` entry would carry the
-  bases of the bodies its instantiation runs — no task isolated the map's
-  cost ([dispatch.md](design/dispatch.md), "Code families").
-- **`ns-cli build`'s `root_class_answers` accepts a slot setter as an entry
-  selector, although its own doc comment says it must not.** It checks
-  `mixin.methods.get(&symbol)` for any entry that is not a
-  `MethodEntry::Primitive` — which now also matches a
-  `MethodEntry::SlotAccessor`, getter and setter alike, since 3a left slot
-  accessors as they already were (method-table entries) but this check
-  predates that and was never updated to tell the two accessor kinds apart.
-  A build whose only entry selector is a setter passes the check and still
-  starts and runs: `image::build` interns the entry selector itself
-  (`crates/ns-runtime/src/image/mod.rs`, "The symbol table is not covered by
-  that guarantee"), and a decoded mixin carries its slot accessors again. The
-  consequence is the one `build.rs`'s own doc comment names — accepting a
-  selector `mixins::encode` never interned makes `build` grow the symbol
-  table to record it, breaking the byte-identity guarantee with `snapshot`
-  that `root_class_answers` exists to preserve
-  (`a_build_and_a_snapshot_agree_on_the_describing_sections`,
-  `crates/ns-cli/tests/build_load.rs`). Pre-existing, untouched by this step;
-  worth a small task (`crates/ns-cli/src/commands/build.rs`).
-- **Golden proposals the coverage audits raised and nobody built.** The two
-  audits of 2026-09-18 classified all 64 numbered sections and proposed more
-  goldens than were worth adding; nine were built and about a dozen judged
-  marginal, so that analysis survives only as a decision. Worth knowing
-  before anyone audits the specification a third time: what was left out was
-  §5.1.8's closure value rules, §5.1.5's doubled quote, §5.1.7's empty and
-  immutable tuples, §5.1.4's character literals (the section's
-  `Character codePoint:` equivalence is unimplementable -- no such selector),
-  §6.3.4's binary message pattern, §6.3.1's unmodified *method* being
-  protected, §4.3's inert metadata comments, §8.1's optional category string
-  and §8.4's `args:` list. Each is either pure syntax the corpus already
-  gates or a near-duplicate of a golden that exists. The sections judged
-  untestable -- actors, mirrors, types, object literals, pattern literals --
-  are untestable for reasons that will not change until those subsystems
-  exist.
-- **Three findings the review of the goldens branch carried.**
-  `spec_6_3_factory_is_a_class_side_member` is the one golden under
-  `goldens/spec/` with neither a rationale comment nor a citation.
-  `spec_6_3_2_simultaneous_slots_resolve_mutual_recursion` raises at exit 1
-  today, while the deviation it belongs to is described as answering wrongly
-  at exit status 0 -- the general claim holds, that one program just does not
-  demonstrate it, because its expression errors on the nil instead of
-  computing with it. And
-  `spec_6_3_3_a_lazy_slot_is_initialized_on_first_use.toml` records a
-  trailing space, which is correct and which an editor that strips trailing
-  whitespace would silently break.
-
-Sends run on the activation stack rather than the Rust stack, in one loop that
-pushes, pops and resumes; `value`, the control-flow natives, `do:`,
-instantiation and the nested-class accessor are trampoline steps, so nothing
-re-enters the loop from Rust; and recursion depth has one counted bound,
-100,000 activations, counted by the rule in [compiler.md](design/compiler.md),
-"How the limit counts" — an ordinary Newspeak error that agrees under both
-lowerings ([execution.md](design/execution.md), "The depth limit"). The bytecode
-VM is the only engine ([execution.md](design/execution.md), "One engine"):
-step A retired the tree-walker on 2026-09-11, because designing 1b showed that
-a recursive AST evaluator cannot take part in what the trampoline exists for —
-suspending a running computation, the debugger, edit-and-continue on a live
-activation. Three steps came before 1b, each landing on its own, and all three
-are done:
-
-- **A — Retire the tree-walker. Done.** Its verdicts were harvested into golden
-  outcomes first, then everything that existed only because there were two
-  engines was removed; see "M4 — Retiring the tree-walker" below.
-- **B — Clean up with one engine. Done.** Behaviour-preserving refactoring,
-  measured wherever it touched a hot path, with the golden outcomes and the
-  image bytes as the guard; see "M4 — Cleaning up with one engine" below.
-- **C — The reference lowering. Done.** The differential oracle the retired
-  tree-walker used to be: a second, deliberately naive lowering, under which
-  every program must behave byte for byte as it does under the optimized one
-  ([compiler.md](design/compiler.md), "The reference lowering"). Every
-  recorded program answers alike under both. Probing with it found and fixed
-  one defect in the optimized lowering, and lazy identity hashes left one
-  known regression — a builtin class, the root class and `platform` did not
-  keep their hash across a snapshot — closed by the small fix below. See
-  "M4 — The reference lowering" below.
-
-M4's pieces are one change: the object representation, the activation
-representation and the root discipline each constrain the other two, which is
-why the object and activation representations were converted together rather
-than one at a time. Each piece is designed in the document for its own aspect;
-those documents are the authority, and this is only the map to them.
-
-**Thirteen pieces are done.** The heap seam routes every object and activation
-access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
-it replaced `Rc<RefCell<_>>`: an `ObjectReference` or a `FrameReference` is a 32-bit index
-into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
-seam. That is worth ~15% of the benchmark and is described in
-[memory.md](design/memory.md); see "M4 — The heap seam" and "M4 — The object
-and frame arena" below. Then activations moved onto a stack the `Heap` owns
-(step 1a below), reified into the frame arena only when a block captures one;
-see "M4 — The activation stack" below. **Nothing reclaimed an arena slot
-until the collector** — every object and every reified frame was kept for
-the life of the process, a deliberate interim cost the activation stack
-bounded for activations nothing captures. Step 5, the moving collector, ends
-it: a slot is reclaimed once nothing reaches it (see "M4 — The moving
-collector" below). Then step A
-retired the tree-walker, step B cleaned up after it, and step C built the
-reference lowering as the differential oracle; see "M4 — Retiring the
-tree-walker", "M4 — Cleaning up with one engine" and "M4 — The reference
-lowering" below. Then 1b took sends off the Rust stack; see "M4 — The
-trampoline" below. Then 2a took the last re-entries of the run loop from Rust
-away; see "M4 — No re-entry from Rust" below. Then 2b put a safepoint into the
-run loop, enumerated every handle a collector would trace, rooted what a host
-keeps, and checked all of it by moving everything under the whole suite; see
-"M4 — The safepoint, tracing, host roots and the stress mode" below. Then 2c
-branded every movable handle with the lifetime of the entry that minted it,
-so the compiler checks what 2b's stress mode could only find at run time; see
-"M4 — The lifetime brand" below. Then name resolution and lookup were made to
-follow the specification, slot accessors became method-table entries, and the
-method and slot tables got an identity hasher; see "M4 — Spec-conformant
-lookup" below. Then 3a made every builtin's native an entry of its class's
-method table too, carrying an enumerated primitive instead of a selector
-matched as a string; see "M4 — Primitives as method-table entries" below.
-Then 3b put an inline cache in front of every send's lookup; see "M4 —
-Inline caches" below.
-
-**The profile of `bench_block.ns` is taken**
-([execution.md](design/execution.md), "What the profiles show"). The question
-was why `bench_block.ns`'s time did not move under the activation stack,
-although the stack took the block's own activation out of the frame arena. The
-answer is allocation: before the trampoline, a send's argument vector was 16.7%
-of the timed samples, `value` as a native callback 12.1%, reifying the frame
-into an arena that grows by doubling 9.6% and the divorce on return 8.9%; the
-trampoline took the first two. Profiling the trampoline's head as well found
-one cost no measurement had isolated: `Symbol::intern` is 11.9% of
-`bench_send.ns`, because a lexical send with a setter-shaped selector —
-`self tick: sum` — interned its getter name on every send to look for a slot,
-and the method and slot tables hashed `Symbol` keys with SipHash.
-Spec-conformant lookup took both out: a slot's accessors are method-table
-entries, so no send interns a name, and the tables hash identity keys with
-one multiply; `bench_send.ns` is 12.5% faster for it.
-
-The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-and all three done, 1b done, 2 done in all three parts, the spec-conformant
-lookup inserted ahead of 3 and done, 3 done in all three parts, the
-specification gaps done, removing `:=` done as its own small step ahead of
-4, 4 done, 5 done — and it is
-not the order the milestone was originally sketched in. Two things settled the order of the
-numbered steps, neither of them a preference.
-
-The first is a measurement. On a release build, before the arena, a
-user-method send cost ~165 ns, of which ~68 ns — about 41% — was spent building
-the activation, and none of that is touched by an inline cache. The
-decomposition is in [execution.md](design/execution.md)'s measurements section.
-The arena took part of that activation cost and the activation stack more of
-it: measured against the arena in one sitting, a user-method send went from
-~146 ns to ~91 ns, and what it costs beyond a native send from ~62 ns to ~37 ns.
-
-The second is that the root discipline is defined *over* the activation stack,
-so it wanted the stack to exist first. With the arena in place and roots
-checked, the collector's root set is the bootstrap plus the activation stack —
-"a contiguous, precisely typed pair of arrays rather than a pointer-chased chain
-of individually allocated frames", as [memory.md](design/memory.md) puts it.
-Establishing the discipline against the frame arena would have meant
-establishing it against a representation step 1 then replaced, and threading
-lifetimes through `Interpreter::send`, the run loop and `Signal::Return` twice.
-The discipline costs nothing at run time and pays off only with the collector,
-so nothing is lost by it going second.
-
-1. **Activations on a stack, reified on demand** —
-   [execution.md](design/execution.md). Cog's model, as Primordial Soup
-   implements it for Newspeak. Split in two, each landing green and measured on
-   its own:
-   - **1a — the stack. Done.** Activations are entries on one stack the `Heap`
-     owns, addressed by an `ActivationReference`; a `Frame` is reified only when a
-     block is created, and divorced — its registers copied out — when its
-     activation returns. A user-method send fell from ~146 ns to ~91 ns, and
-     an activation nothing captures leaves nothing behind; see "M4 — The
-     activation stack" below.
-   - **1b — the trampoline. Done.** `send` split into a decision and an
-     activation, run by one loop on the activation stack; arguments gathered
-     into one reusable buffer instead of a vector per send; `Block value` and
-     the control-flow natives trampoline steps; recursion depth an ordinary
-     Newspeak error under two bounds (2a removed the second, on re-entries from
-     Rust), the first counted by the rule in
-     [compiler.md](design/compiler.md), "How the limit counts", with
-     `SendInlinable` and the counter added together. `bench_loop.ns` fell by
-     about 32%, `bench_send.ns` 31% and `bench_block.ns` 22%; see "M4 — The
-     trampoline" below.
-2. **A compiler-checked root discipline. Done.** [memory.md](design/memory.md),
-   "Checked roots and a collector". Designed on 2026-09-13, from how
-   Cog, Nova, CPython, piccolo, V8, HotSpot, Primordial Soup and SOMns place
-   their collections: a collection only ever at a safepoint in the run loop,
-   never in an allocation; no Rust frame live below one; and a lifetime brand in
-   the style of gc-arena, which makes holding a handle across a safepoint a
-   compile error. That replaced the earlier plan of Nova's
-   `GcScope`/`NoGcScope`, whose scopes would root the re-entry paths rather
-   than remove them. The ergonomic cost is accepted deliberately. Split in
-   three, each landing green and measured on its own:
-   - **2a — no re-entry from Rust. Done.** `do:`, instantiation and the
-     nested-class accessor are trampoline steps, and the bound on re-entries
-     went with them ([execution.md](design/execution.md), "No re-entry from
-     Rust"). Measured whole, instantiation came out 0.9–3.8% faster, `do:` and
-     `bench_send.ns` level, and `bench_loop.ns` and `bench_block.ns` 1.4–1.9%
-     slower — an open finding, above; see "M4 — No re-entry from Rust" below.
-   - **2b — the safepoint, the tracing, host roots and the stress mode. Done.**
-     The run loop polls a safepoint at every switch and every backward jump,
-     `trace.rs` enumerates every place a handle is stored, a closure's payload
-     sits inline in its object so that no handle is behind a shared `Rc`, a
-     host keeps values across runs only as `Root`s, and a debug-build stress
-     mode moves everything at the safepoints, on a budget paced by heap size,
-     under the whole suite. Measured whole, no source is slower than before
-     the step beyond noise and `bench_block.ns` is about 4% faster; the suite
-     takes 12.7 s, and 190 s under the stress mode; see "M4 — The safepoint,
-     tracing, host roots and the stress mode" below.
-   - **2c — the brand. Done.** Every movable handle carries a lifetime
-     obtainable only inside `Interpreter::enter`, which lends the step state,
-     `Mutator`, to a closure generic over it in safe Rust — the crate forbids
-     `unsafe` code — once per instruction the run loop executes, so a host
-     holds values only as `Root`s and reads through `enter`. Measured whole,
-     every source is level with `a5d1e05`; a first measurement read 1–2.5%
-     slower on the block and instantiation benchmarks, which turned out to be
-     code placement, and the measurement protocol now pins every function
-     start to a 64-byte boundary in every binary it compares (the first
-     finding above); see "M4 — The lifetime brand" below.
-3. **Inline caches** — [dispatch.md](design/dispatch.md). **Ahead of them, done:
-   spec-conformant lookup**, which made the lookups the caches record follow
-   §5.5–§5.10 and §6.3.2, put slot accessors into the method table, where a
-   cache entry records them like any member, and gave the tables an identity
-   hasher; see "M4 — Spec-conformant lookup" below. Designed on 2026-09-15 in
-   three parts, 3a to 3c ("Where the next session starts" above).
-   **3a, primitives are method-table entries, is done**: a native entry
-   carries an enumerated primitive, not a selector or a function pointer, so a
-   hit will cost the guard and an indexed jump and a later JIT tier can emit
-   the primitive inline ([dispatch.md](design/dispatch.md), "Primitives");
-   see "M4 — Primitives as method-table entries" below. **3b, the caches, is
-   done**: a cache guards on the **mixin application**, not on the class
-   object, whose obvious key would never hit on a nested class; see "M4 —
-   Inline caches" below. **3c, the dispatch id's place, is done**: a guard
-   reads the id from the object header; see "M4 — The dispatch id's place"
-   below. **The specification gaps are done**, one plan and one measurement;
-   see "M4 — The specification gaps" below. **Removing `:=`** is done, its
-   own small step before step 4; see "M4 — Removing `:=`" below.
-4. **Closure conversion. Done.** [execution.md](design/execution.md),
-   "Closure conversion". Blocks copy the
-   variables they only read and share their scope's indirection vector for the
-   ones they write, instead of reaching them through their method's frame
-   (designed 2026-09-19, built 2026-09-20). That ended 1a's divorce copy for
-   optimized code — whether a returning activation copies its registers out is
-   decided per activation, from the block's `outer_reach` — and makes a
-   surviving block retain what it captured plus its creator's frame
-   record without registers, which is why it came
-   directly before the collector. Every Smalltalk and Newspeak VM that moved to
-   stack frames made this change to do it; ns-next made it second, because the
-   reification mechanism is needed with or without it. Level with `efac7d2` on
-   all eight sources; `bench_block.ns`'s peak working set 2.6% higher; see
-   "M4 — Closure conversion" below.
-5. **A moving collector. Done** (2026-09-20) — [memory.md](design/memory.md).
-   Mark-compact over the index arena, one space, stop-the-world, with
-   generations as a later step. `become:` and instance migration rule out a
-   conservative non-moving design, and pinning whatever a conservative stack
-   scan finds was considered and rejected for the same reason. This ends the
-   arena's never-reclaim interim — the one the closure conversion measurement
-   ran into, where an indirection vector per block activation showed as peak
-   working set because nothing gave it back. `bench_block.ns`'s peak working
-   set under `bench --iterations 10` fell from 228.8 MB to 5.6 MB; every
-   source but `bench_block.ns` itself stayed level with the baseline, and
-   `bench_block.ns` is 12.2% slower, the honest cost of the collections it
-   alone runs; see "M4 — The moving collector" below.
-
-Then, after M4 and before the JIT tiers:
-
-6. **The core library in Newspeak, over a VM mirror** —
-   [core-library.md](design/core-library.md). Every builtin method becomes
-   Newspeak source in `Kernel.ns`, the way SOMns's kernel is; the leaves
-   (`+`, `<`, `at:put:`, `size`, `show:`) stay Rust primitives, but as entries
-   of **one VM mirror object** that `Kernel.ns` is handed, which §8.3.1
-   requires ("A primitive call is a message send to the VM mirror") and which
-   makes the Rust boundary a capability rather than something any method can
-   claim. Decided with the user on 2026-09-21; a leaf is what a Rust primitive
-   is good for and the artifact-size and trust arguments still hold for it.
-   It is required so that every builtin method is a real method lookup,
-   mirrors, the debugger and a JIT see. Where it sits is fixed from both
-   ends: before the caches it made the numbers worse, and it must come before
-   the tiers, which need the library as real Newspeak code to optimize at all.
-   **The inlined fast path for leaves came first** (2026-09-21), because
-   without it every leaf send costs an activation: the nine binary integer
-   primitives compile to `Instruction::IntegerBinary` under a run-time type
-   guard whose fallback is the ordinary send, and all eight measurement
-   sources came out 11.5–31.0% faster for it, each entirely below its
-   baseline group in both sittings — the cushion the rest of this step
-   spends. See "Leaf inlining" below. **The core library over the mirror is
-   done** (2026-09-22): every builtin method a forwarder in
-   `crates/ns-runtime/core-library/Kernel.ns`, primitive methods absorbing what the
-   forwarding costs, and no source measurably slower; see "Where the next
-   session starts" above. **`Class`, `Behavior` and `Metaclass` are done
-   too** (2026-09-25), the step's third plan — the rest of §3.2 (decided
-   2026-09-18): declared kernel classes as they are in both references, with
-   a class object's own class its metaclass, the reified instance-of
-   relation that mirrors need ([object-model.md](design/object-model.md),
-   "Class sides and metaclasses"; "`Behavior`, `Class` and `Metaclass`"
-   below). The kernel's control-flow methods and `do:` stay forwarders
-   over today's leaves; rewriting them as Newspeak loops is a separate step
-   right before the tiers ([core-library.md](design/core-library.md),
-   "Planned: real bodies for control flow and `do:`, before the JIT tiers").
-
-7. **The payload space** — [memory.md](design/memory.md), "Payloads belong to
-   the Rust allocator, and what that costs". An object's variable-length part
-   is a separate Rust allocation today: `Instance`'s and `Array`'s
-   `Vec<Value>`, `ClosureData.copied`, and a reified frame's `arguments` and
-   `temporaries`. Moving those four into one `Value` space the collector
-   compacts beside the arenas makes an allocation a bump and reclamation free,
-   and lays a payload next to its object, which nothing does today. Decided
-   with the user on 2026-09-21 to sit here: **after step 6, before the tiers.**
-
-   Step 6 removed the one constraint that would have complicated it.
-   `Heap::array_push` grew a payload in place only because `OrderedCollection`
-   was a Rust builtin; the collections module replaced it with a Newspeak
-   `List` and removed both ("The collections module is done" above). Both
-   reference runtimes implement a growable collection in
-   Newspeak over a **fixed** `Array` — Primordial Soup's `List`
-   (`prior-art/primordialsoup/newspeak/Collections.ns`) and SOMns's `Vector`
-   (`prior-art/somns/core-lib/Kernel.ns`) each allocate a larger `Array` and
-   copy on overflow, as `java.util.ArrayList` does, and neither VM has a
-   primitive that resizes a payload. Step 6 also makes the space worth more: a
-   `List>>add:` written in Newspeak allocates a fresh `Array` and payload at
-   every capacity overflow, where a `Vec::push` amortizes to nothing.
-
-   What the space must still support after step 6 is reflective, not hot:
-   edit-and-continue adding locals to a live activation, and a MirrorBuilder
-   adding or removing slots of live instances (requirements 2 and 3 of
-   [liveness-and-reflection.md](design/liveness-and-reflection.md)). Each takes
-   a fresh region and orphans the old one, so the space needs a fill-level
-   trigger of its own beside the two arena limits. `become:` exchanges the
-   payload reference along with the rest of the object, and the space belongs
-   to a `Heap` — never to a thread or the process — because an actor is meant
-   to be a per-heap scope.
-
-   **Measure before building.** The three experiments named under "Where the
-   next session starts" above still apply, and a fourth is cheaper than any of
-   them: a `#[global_allocator]` swap in `ns-cli` says whether payload
-   allocation costs measurable time at all. It is needed because the
-   allocator-churn reading of `bench_block.ns`'s unexplained remainder is
-   weaker than it looks — against `dc0ffe5` the head allocates exactly as many
-   payloads as the baseline did, since the baseline reclaimed none; what the
-   collector added is the frees, and `compact_arena`'s `truncate` drops those
-   inside the span `World::collect` times.
-
-What M4 unlocks beyond speed is recorded where it applies: suspending a running
-computation and serializing it needed the trampoline and the removal of the
-re-entries from Rust, both built, and still needs a yield path out of the run
-loop and a re-entry point for a decoded frame
-([image-format.md](design/image-format.md), "Planned: suspend and resume"),
-and so does the debugger; `become:`-based class mutation can now build on the
-collector's object forwarding, which it needed and did not have before step 5
-([liveness-and-reflection.md](design/liveness-and-reflection.md)).
+**Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
+the performance work, so M3 became nested classes and source-free images, inline
+caches and the GC became M4, and the JIT tiers became M5–M6. Plans written before
+that date use the old numbering.
 
 ## M1 — Frontend (2026-09-01)
 
 `ns-syntax`: hand-written lexer, recursive-descent and Pratt parser, and AST for
 the official Newspeak3 textual syntax, plus `ns-next parse` and `parse-corpus`.
-Validated against the vendored corpus at 210 of 211 files, with one deferred
-lexer ambiguity in `corpus/blacklist.toml`.
+Validated against the vendored corpus at 210 of 211 files; the last one
+parses since "The syntax is the specification's grammar" (2026-09-27).
 
 ## M1 — Runtime (2026-09-04)
 
@@ -1396,22 +221,21 @@ machine's load rather than the code:
 **About 15% off the bytecode engine**, with the two groups not overlapping. What
 moved is the `Rc` box, its reference-count traffic, and the `RefCell` borrow on
 every register read and write. What did **not** move is the rest of the
-activation cost — `arguments` and `temporaries` are still a `Vec` allocation apiece per
-activation, and that is the next step's, not this one's. The tree-walker is
+activation cost — `arguments` and `temporaries` were still a `Vec` allocation
+apiece per activation, which the activation stack took next. The tree-walker was
 unchanged within noise, as expected.
 
-The interim cost is real and is the number the collector will be judged against.
-Nothing reclaims a slot, so Windows peak working set over `bench_loop.ns` went
+Until the moving collector (2026-09-20) nothing reclaimed a slot, so Windows
+peak working set over `bench_loop.ns` went
 from 4.6 MB to 25.4 MB for one tree-walk run, and from 4.6 MB to 340.7 MB for
 `bench`'s twenty-two entry sends. Retention is proportional to every activation
 ever created, not to what is live. The tree-walk maximum in the same ten timed
 runs also went from ~38 ms to ~117 ms, which the arena's `Vec` doubling would
 explain — an inference from the shape of the growth curve rather than a measured
 cause, and one the next step contradicted for this benchmark (below). The
-conditions the peak figures were taken under, and the control that would settle
-the doubling attribution, are in [memory.md](design/memory.md), "The interim cost, and
-the one question still open"; the tree-walk figures, retired with the engine, are recorded
-only here.
+conditions the peak figures were taken under are in [memory.md](design/memory.md),
+"The interim cost, and the one question still open"; the tree-walk figures,
+retired with the engine, are recorded only here.
 
 ## M4 — The activation stack (2026-09-10)
 
@@ -1513,11 +337,11 @@ half as much, since the block's own activation no longer takes an arena entry.
 What did **not** move: the bytecode engine's `bench_loop.ns`, whose inlined
 loop builds no activation; `bench_block.ns`'s time under either engine — the
 stack took the block's own activation out of the arena, and what offsets that
-saving has not been attributed, since no profile was taken; and what the design
-left for later — the argument vector `collect` builds for every send, the
-`HashMap` lookup per invocation that finds a compiled body, and recursion on the
-Rust stack with no depth limit. The first and the last are 1b's, the lookup the
-inline caches'. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which
+saving was attributed later ("M4 — The trampoline"); and three costs the design
+assigned to later steps — the argument vector `collect` built for every send
+and recursion on the Rust stack with no depth limit, both taken by the
+trampoline, and the `HashMap` lookup per invocation that found a compiled body,
+taken by the inline caches. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which
 the arena's `Vec` doubling was thought to explain, survived under a binary that
 retains nothing for that benchmark — 4.6 MB across all twenty-two entry sends —
 so that explanation does not hold for it; its cause was never found. What the
@@ -1579,7 +403,7 @@ claimed it was an error was wrong, and was corrected.
   `run_code(interpreter, activation, code)`. `ClosureData`,
   `CompiledModule` and `LoadedImage` no longer carry one.
 
-**What replaced the differential for now** is recorded answers: every fixture
+**What replaced the differential** was recorded answers: every fixture
 against its `.expected` stdout and an empty stderr, the golden outcomes, and
 `run-corpus` — `CLAUDE.md`'s "Program outcomes are pinned, not re-derived".
 Step C's reference lowering became the differential oracle; see "M4 — The
@@ -1607,12 +431,7 @@ record also lower the image decoder's worst-case amplification, from ~17.8x to
 ([memory.md](design/memory.md)).
 
 583 tests pass, with one ignored; `parse-corpus` stays at **210/0/1/0** and
-`run-corpus` at **6/0/205**.
-
-What the retirement left for step B — its inventory of leftovers, the items its
-plan assigned B, and what its final review found — step B cleared, except the
-four items listed under "M4 — Cleaning up with one engine" as "Left,
-deliberately".
+`run-corpus` at **6/0/205**. Step B cleared what the retirement left.
 
 ## M4 — Cleaning up with one engine (2026-09-12)
 
@@ -1748,25 +567,6 @@ the same result.
 581 tests pass, with one ignored; `parse-corpus` stays at **210/0/1/0** and
 `run-corpus` at **6/0/205**.
 
-**Left, deliberately** — each is outside a behaviour-preserving cleanup:
-
-- **Two error messages that name a milestone.** `builtins/numbers.rs`'s
-  `type_mismatch` ("... (Milestone 1 has no Integer/Float coercion) ...") and
-  `interpreter/literals.rs`'s `parse_integer_literal` ("fractional radix literals
-  are not supported in Milestone 1"). A program observes them on stderr, so
-  rewording them is a behaviour change that needs its own decision.
-- **The discarded `Object` allocation in `build_builtin_classes`.** Step C
-  removed it once identity hashes became lazy, so dropping an allocation no
-  longer shifted any hash.
-- **`ClosureData.parameters` duplicating `code.argument_count`.** At run time only the
-  count is read, but the image's closure record carries the names, so dropping
-  them is a wire change. Step B shares the vector instead of copying it.
-- **The lexical-send slot lookup.** `dispatch_lexical_send` interns the getter
-  name for every setter-shaped selector and hashes the name into the
-  application's `slot_index` for every lexical send. Spec-conformant lookup
-  removed both: a slot's accessors are method-table entries, and the tables
-  hash identity keys with one multiply ("M4 — Spec-conformant lookup" below).
-
 ## M4 — The reference lowering (2026-09-12)
 
 Plan: [ns-next-reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md).
@@ -1829,8 +629,8 @@ design:
    does not agree. The Smalltalk lineage bounds depth by memory and Nova by a
    fixed count of contexts ([execution.md](design/execution.md), "How other
    systems bound recursion depth"); none has two lowerings that must agree, so
-   the rule is ns-next's own. Neither `SendInlinable` nor the counter is built:
-   the counter is its only consumer, so both arrive with 1b
+   the rule is ns-next's own. `SendInlinable` and the counter were built
+   together in 1b, the counter being its only consumer
    ([compiler.md](design/compiler.md), "How the limit counts").
 3. **Identity hashes are assigned lazily**, the first time `hash` asks, as in
    Cog/Spur (`hashBitsOf:`, which calls `newHashBitsOf:` when the bits are 0)
@@ -1959,28 +759,6 @@ ignored; `parse-corpus` reports **parsed 210, failed
 0, expected-fail 1, stale 0** and `run-corpus` **ran 6, failed 0, skipped
 205**.
 
-**Left, deliberately:**
-
-- **`SendInlinable`, the depth counter, the limit's value and its error text**
-  — 1b's, together with whether the control-flow natives become trampoline
-  steps. Until then they call back into Newspeak on the Rust stack, so under
-  the reference lowering a recursion through an `ifTrue:` costs more native
-  stack per level and aborts sooner. The deepest recursion a suite runs under
-  it is eleven levels, `fact: 10` in
-  `crates/ns-runtime/tests/reference_lowering.rs`; the fixtures reach six
-  ([compiler.md](design/compiler.md), "How the limit counts"). Closed by 1b;
-  see "M4 — The trampoline" below.
-- **Programs without a recorded answer** — generated programs, fuzzing — and
-  the direct run-against-run comparison only they would need. While every
-  program the suites run has a recorded answer, "both produce the recorded
-  answer" is the comparison.
-- **`ns-runtime`'s integration tests under the reference lowering.** They test
-  dispatch, the natives, instantiation and the image, which the two lowerings
-  share.
-- **The two error messages that name a milestone, `ClosureData.parameters` and the
-  lexical-send slot lookup**, still as listed under "M4 — Cleaning up with one
-  engine".
-
 ## M4 — Tag-named identity hashes (2026-09-12)
 
 Plan: [ns-next-tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md).
@@ -2030,8 +808,8 @@ Plan: [ns-next-trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.
 
 Step 1b. Sends no longer recurse on the Rust stack: one run loop, `vm::run`,
 pushes, pops and resumes every activation a send makes, and the activation
-stack is the only place a running computation lives, apart from the three paths
-that still re-enter the loop from Rust — `do:`, instantiation and the
+stack is the only place a running computation lives, apart from three paths
+that re-entered the loop from Rust until 2a — `do:`, instantiation and the
 nested-class accessor. Recursion depth is an ordinary Newspeak error under two
 counted bounds, the same under both lowerings
 ([execution.md](design/execution.md), "The trampoline"). The design was settled
@@ -2060,7 +838,7 @@ and recorded in the design documents before the plan.
 
 **What changed**, in the plan's order. The plan's first task, the profile of
 `bench_block.ns`, was taken last, with the user, on a binary built from
-`04e5fc0` (above, and [execution.md](design/execution.md), "What the profiles
+`04e5fc0` ([execution.md](design/execution.md), "What the profiles
 show").
 
 1. **`SendInlinable`**, wire tag 20, pinned in `opcode_tags.rs`. The reference
@@ -2168,52 +946,6 @@ test runs three recursions to 100,000 counted activations under each lowering.
 
 644 tests pass, with one ignored (617 before); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**.
-
-**Left, deliberately:**
-
-- **Instantiation, the nested-class accessor and `do:` stay re-entries of the
-  loop**, counted against N. `do:` moves to Newspeak after the inline caches;
-  the other two could become trampoline steps once something needs it. (All
-  three became trampoline steps in 2a; see "M4 — No re-entry from Rust" below.)
-- **The unchecked `arguments[0]`** in the control-flow natives (`builtins/boolean.rs`,
-  `builtins/block.rs`). The decoder does not check a send's argument count
-  against its selector, so a crafted artifact that sends `ifTrue:` with no
-  argument still reaches it and panics
-  ([image-format.md](design/image-format.md)).
-- **A `^` into a running initializer** still escapes as "internal: non-local
-  return escaped the entry send", the known gap, now pinned by a test.
-- **Catchable exceptions.** Both depth errors unwind to the entry send like
-  every other error. `Heap::activation_is_live`'s release-build answer rests on
-  nothing being pushed while a signal propagates, so an `ensure:` or `on:do:`
-  needs the activation generation in every build first
-  ([execution.md](design/execution.md), "Unwinding").
-- **Suspending a running computation**: a yield path out of the loop, and a way
-  past its re-entries from Rust, which went in 2a
-  ([image-format.md](design/image-format.md), "Planned: suspend and resume").
-- **Small follow-ups the task reviews deferred.** A nested run's argument
-  buffer is dropped when the outer one is given back, so a re-entry with
-  arguments allocates once, and a returned buffer keeps its stale values until
-  the next send (a collector concern). `catches_return` clones a `FrameKind`
-  to test its variant; `doesNotUnderstand:` copies the send's arguments; a
-  native loop's body step looks its closure up again every iteration;
-  `run_initializer_levels` allocates a list per instantiation — none measured.
-  The argument buffer's stale values and every value a continuation holds
-  (`WhileLoop`) are roots step 2, the root discipline, has to account for.
-  `vm::send` carries `#[allow(clippy::too_many_arguments)]`. `inspect`'s walk
-  bounds the tag-named hash count at one byte per entry where the decoder uses
-  five; it never pre-allocates from the count, so this is only an
-  inconsistency.
-- **The memory bound under a crafted artifact is real but large.** A decoded
-  code table may nest blocks 128 deep, the parser's own limit, so up to 128
-  exempt activations can sit above each counted one: at most 129 × L stack
-  entries, about 1.3 GB of entries at the size measured when this landed
-  ([execution.md](design/execution.md), "The depth limit"). The encoder
-  does not refuse deeper nesting itself — no parsed source can produce it, so
-  only a hand-built `CompiledCode` could write an image the decoder then
-  refuses.
-- **The two error messages that name a milestone, `ClosureData.parameters` and the
-  lexical-send slot lookup** (now in `sends::decide_lexical_send`), still as
-  listed under "M4 — Cleaning up with one engine".
 
 ## M4 — No re-entry from Rust (2026-09-13)
 
@@ -2355,13 +1087,13 @@ five medians in ms, and the change in each sitting:
 | `bench_newarg.ns` | 10.51 | 10.11 | −3.8% / −3.2%, after entirely below in both |
 
 **Instantiation is faster than it was with the re-entries, and two sources
-are slightly slower, an open finding.** The instantiation sources gained what
+are slightly slower.** The instantiation sources gained what
 the boxes and the drop glue had cost, and running an initializer in the same
 loop, once the walk allocates nothing, is cheaper than a nested run. `do:` as
 a step came out −1.3%, overlapping — not clearly faster, although the design
 expected it to be. `bench_loop.ns` and `bench_block.ns`, which run none of the
 changed paths in their loops, are 1.4–1.9% slower: the uniform codegen shift
-the step's first change showed, not isolated.
+the step's first change showed ([OPEN-WORK.md](OPEN-WORK.md)).
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 12.5 s in two runs alike, as before the step. Before the marker
@@ -2371,26 +1103,6 @@ quadratic, 7.8 s each.
 
 662 tests pass, with one ignored (644 before); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**.
-
-**Left, deliberately:**
-
-- **The two slightly slower benchmarks** and **`verify_mixins` not holding a
-  decoded last initializer to `self`**, for whoever plans next to weigh
-  ("Where the next session starts").
-- **`do:`'s per-element argument vector.** Each element's block activation
-  takes a one-element `StepArguments::Owned` vector; a one-value `StepArguments` variant
-  would avoid it, and would change `Step`'s layout, which the trampoline
-  measured as a 4–8% risk.
-- **Suspend and resume must encode each stack entry's `Continuation`**, with
-  the Rust state it carries — `WhileLoop`, `DoLoop`, `NestedClassCreation`,
-  `Instantiation` — which no image records today
-  ([image-format.md](design/image-format.md), "Planned: suspend and resume").
-- **Step 2b must split `DoLoop.block`** along with every other
-  `Rc<ClosureData>` that holds a handle behind a shared `Rc`
-  ([memory.md](design/memory.md), "What the collector traces").
-- **A `^` into a running initializer** still escapes as "internal: non-local
-  return escaped the entry send", the known gap, unchanged.
-- **Moving `do:` into Newspeak**, after the inline caches, as before.
 
 ## M4 — The safepoint, tracing, host roots and the stress mode (2026-09-13)
 
@@ -2420,7 +1132,7 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
    (6), and a record naming a non-closure is `NotAClosureReference`.
 3. **The host API takes and answers `Root`s**; `Signal` and `EvaluationResult`
    become crate-private; `heap_reference()` and `heap_mut()` stay until 2c;
-   `image::snapshot` and `image::build` keep taking plain values, fetched just
+   `image::snapshot` and `image::build` took plain values, fetched just
    before the call.
 4. **The root table lives in `Heap` behind a `RefCell`**, so `stash` and
    `fetch` take `&self`, and it is swept at every move and whenever it has
@@ -2521,8 +1233,7 @@ overlapping). Against `be3eb40` nothing is slower beyond the groups' spread:
 `bench_loop.ns` is +1.1%, where 2a left it +1.4–1.9% with the groups apart,
 and `bench_block.ns` is 2.5% faster. `bench_send.ns`, +0.9% / +1.4%
 overlapping, is level with `4882a2c`, which itself sat +0.6% / +1.9% above
-`be3eb40` in the same sittings — 2a's figure read in other sittings, carried
-as an open finding ("Where the next session starts").
+`be3eb40` in the same sittings — 2a's figure read in other sittings.
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 12.7 s, against 12.5 s before the step. Under
@@ -2535,9 +1246,8 @@ against 7.6 s.
 685 tests pass, with one ignored (662 before); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under the stress mode.
 
-**Left, deliberately**, the one finding of the reviews that is not closed:
-two stale handles from the same old epoch compare in `same()` without a
-panic, since `same` has no heap to check them against. 2c's brand closed it
+Two stale handles from the same old epoch compared in `same()` without a
+panic, since `same` has no heap to check them against; 2c's brand closed that
 ([memory.md](design/memory.md), "The brand").
 
 ## M4 — The lifetime brand (2026-09-14)
@@ -2720,9 +1430,10 @@ commits follow the plan (`1cfee47`) on `feature/spec-conformant-lookup`, from
    and a method table cannot hold both.
 5. **An identity hasher** for the tables keyed by identities the runtime
    assigned, written here rather than taken as a dependency.
-6. **Lazy slots stay out of scope** (§6.3.3); the parser drops `lazy`.
+6. **Lazy slots stay out of scope** (§6.3.3); they came with the platform
+   module.
 7. **The megamorphic fallback and an application id in the object header
-   are open questions for step 3**, not part of this step.
+   belong to step 3**, not to this step.
 
 **What changed**, in the plan's order:
 
@@ -2839,9 +1550,7 @@ moved", which also records what the step's first shape cost — a 64-byte
 settled enum on every send's return path measured 5.5–22.4% slower than start
 in the first, blocked measurement — and the five `perf:` commits that
 recovered it, the largest by having each of the five callers that can reach a
-`Lookup::Primitive` match it directly instead (`8a05621`). 3b rebuilds this
-same decision path and should not repeat that shape; carried forward as an
-open finding above.
+`Lookup::Primitive` match it directly instead (`8a05621`).
 
 Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
 warning-free; `cargo test --workspace`, 722 tests passing with one ignored;
@@ -2924,7 +1633,7 @@ during execution; the user went through all eight on 2026-09-17
 ([dispatch.md](design/dispatch.md), "Decisions"). Confirmed as built: a
 private lexical site guarded on N's application, a block's `family_size`
 being its own subtree's, one stored dispatch id, and the forced step
-inlining. Replaced by decisions still to be built: a vacant lexical site
+inlining. Replaced by decisions built in the next step: a vacant lexical site
 skipping the global cache (the lexical global key takes N's application
 instead), the factory re-checks (the primary factory becomes a class-side
 method, §6.3, which also corrects a non-conforming fixture), the decoder's
@@ -2944,8 +1653,7 @@ sitting, and carries an unbounded growth risk; the user kept the 24-byte
 entry. See [execution.md](design/execution.md), "What the inline
 caches moved".
 
-**The open finding that a lexical send's decision is sensitive to codegen is
-closed.** Spec-conformant lookup had measured a variant that changed only
+**A lexical send's decision is no longer sensitive to codegen.** Spec-conformant lookup had measured a variant that changed only
 how the lexical decision's result travelled at 3.4–14.7% slower. With the
 caches, `bench_send.ns`'s two sittings are 0.14% apart and `bench_block.ns`'s
 1.3%, and the attribution binary, a codegen-only change, moved both by less
@@ -2976,8 +1684,9 @@ whole-pair deletion, the trade for having no count.
 
 A `skipped` key records why the runtime does not answer a golden yet, with the
 other keys still holding what it should. That turned the deviations table from
-a description into a work list: nine goldens are skipped, six for gaps the
-table already recorded and three for rules nothing had pinned.
+a description into a work list: nine goldens were skipped then, six for gaps
+the table already recorded and three for rules nothing had pinned; none is
+skipped today.
 
 Two specification-coverage audits ran over the whole document, section by
 section, and found more than the gaps: §6.3's five-step instantiation order
@@ -3008,9 +1717,10 @@ inherited factory reachable.
 1. **Metaclasses are flat** (`1fe05e3`, `cf97de9`). A metaclass's application
    has no superclass application, so a class-side chain finds a member on the
    receiver's own metaclass or not at all; the class object's superclass link
-   still points at `Object`'s behaviour, which stands in for the `Class` §3.2
-   makes a metaclass's superclass, so a class-side `super` reaches `Object`
-   and a class-side `super new` no longer instantiates. Two recorded outcomes
+   pointed at `Object`'s behaviour, standing in for the `Class` §3.2 makes a
+   metaclass's superclass until `Behavior`, `Class` and `Metaclass` reified
+   it, so a class-side `super` reached `Object` and a class-side `super new`
+   no longer instantiates. Two recorded outcomes
    were re-cut: `tests-fixtures/class_side.ns`, whose subclass now declares
    its own `describe`, and `cache_super_send_reaches_the_factory_check.ns`,
    which rested on an inherited class-side `doesNotUnderstand:` and is
@@ -3095,7 +1805,7 @@ almost certainly answers at the first slot and the replacement rule almost
 certainly never runs. It measures
 the probe path and cannot measure the replacement rule, which therefore
 stands on Strongtalk's precedent rather than on numbers of this runtime's own
-(the open finding above).
+([OPEN-WORK.md](OPEN-WORK.md)).
 
 Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
 warning-free; `cargo test --workspace`, 777 tests passing with one ignored;
@@ -3252,9 +1962,9 @@ its minors and recommendations found:
    by its own setter, can no longer arise at all. The program relied on the
    bug the fix closed.
 2. The new local-slot golden checks nil-ness with `== nil` rather than
-   `printString`, because `nil printString` answers `'an Object'`
-   (`Object>>printString` is a pre-existing stub, out of scope here) and
-   `nil isNil` is itself a skipped gap.
+   `printString`, because `nil printString` answered `'an Object'` and
+   `nil isNil` was a skipped gap then; both were fixed by "`UndefinedObject`
+   and the nil protocol".
 
 **Measurement.** The head (`abd9bb4`) against `22a56f7`, the merge of 3c,
 with `be3eb40` carried as the reference, two sittings by the protocol, eight
@@ -3273,20 +1983,6 @@ the same under `NS_NEXT_STRESS_MOVES=1` and `NS_NEXT_STRESS_CACHES=1`;
 under both stress modes. One recorded outcome moved, deliberately (the first
 ruling above): the `Init` case of
 `assignment_through_a_setter_answers_the_value_before_the_setter_ran`.
-
-**Left, none affecting an outcome:** the golden comment "order collected"
-and dispatch.md's "what a namesake declares" name the member-set fix's
-second axis differently (Task 1); README.md's forward-reference paragraph
-also had its count corrected, beyond the brief's literal wording, signed off
-by the controller (Task 3); the image round-trip test's `storedSymbol` name
-collides with its own held accessors, explained in its own comment (Task 6);
-`Heap::traced_size` counts the canonical symbol table's empty slots too —
-its length follows the process-wide interner, not this heap's own symbols —
-irrelevant to the stress mode's pacing, which only needs an upper bound, and
-worth revisiting only if many heaps live in one process (actors). `nil
-printString` answering `'an Object'` and `:=` not being Newspeak syntax are
-open findings, not follow-ups of this step's own code; both are recorded in
-"Where the next session starts" above.
 
 ## M4 — Removing `:=` (2026-09-19)
 
@@ -3323,7 +2019,7 @@ committed on the branch ahead of Task 1 (`faf527c`), over the design decided
 with the user on 2026-09-19 (`891de70`, refined by `ec546dd`). Branch
 `feature/closure-conversion`, started from `efac7d2`, on the checked-out tree
 throughout — no worktree for the work itself, only throwaway ones for the
-comparison binaries. Step 4 of the order of work above; the design is
+comparison binaries. Step 4 of M4; the design is
 [execution.md](design/execution.md), "Closure conversion".
 
 **Decisions**, all taken with the user on 2026-09-19 and unchanged by the
@@ -3417,30 +2113,6 @@ bytes, the new closure record and `copied_count`) and the `disasm` snapshot
 of `find:in:`, whose block now takes the sought value as a copied register
 instead of a `LoadOuterLocal`.
 
-**Left, none affecting an outcome:** `capture.rs`'s `Captures::keys` exists
-for tests only (`#[cfg(test)]`); `closure_activation` answers a
-parameter count that is now just its body's own `argument_count`, which its
-caller already holds; `closure_home` does not check the frame's
-handle origin as its neighbours do; `inspect.rs`'s `read_closure_record`
-bounds its count with `min(1024)` rather than `reserve_for`; a fallback
-closure reloads its scope's vector on every access; one slot-initializer test
-traded its exact-instruction assertion for three targeted ones when the
-program it lowers grew a second statement; the committed `insta` snapshot
-carries an `assertion_line` key; and no fixture exercises the one silent form
-of a wrong inlined-depth correction, where the frame it lands on declares a
-local at the same index.
-
-**Left by the branch's own reviews, worth knowing before the next change
-here:** `outer_reach_of`'s `_ => 0` arm means the rule that every
-by-reference instruction must be named there is carried by prose and by the
-three places it is written down, not by the compiler — an instruction added
-without it silently loses its frame's registers. `DecodeError::CodeArityMismatch`
-(a different variant from the corrected `ClosureArityMismatch`) still
-justifies itself by `read_local` indexing past the end, which
-`Heap::frame_local` no longer does. And three citations of "Converted
-representation" are split across a line break, so grepping the workspace for
-that section's name misses them.
-
 ## M4 — The moving collector (2026-09-20)
 
 Plan: [ns-next-moving-collector](superpowers/plans/2026-09-20-1746-ns-next-moving-collector.md),
@@ -3518,8 +2190,8 @@ still 5.3% below `be3eb40`. It is the only source that allocates
 a closure per iteration, so the only one that collects enough to show: 269
 collections, 15.479 ms total pause, 0.202 ms longest, over
 `bench --iterations 10`. Pause accounts for roughly 1.4 ms of the 2.46 ms
-the head adds per round; the rest is recorded as unexplained rather than
-guessed at. See [execution.md](design/execution.md), "What the moving
+the head adds per round; the rest is unexplained ([OPEN-WORK.md](OPEN-WORK.md)).
+See [execution.md](design/execution.md), "What the moving
 collector moved", and [memory.md](design/memory.md), "How the collector is
 measured", for the full tables.
 
@@ -3534,8 +2206,8 @@ No recorded outcome moved.
 Plan:
 [ns-next-leaf-inlining](superpowers/plans/2026-09-21-2107-ns-next-leaf-inlining.md),
 six tasks. Branch `feature/leaf-inlining`, started from `6f5a5b1` on
-`master`, on the checked-out tree throughout. The first part of step 6 of
-the order of work above, and sequenced ahead of the rest of it
+`master`, on the checked-out tree throughout. The first part of step 6, the
+core library in Newspeak over a VM mirror, and sequenced ahead of the rest of it
 ([core-library.md](design/core-library.md)): once the library is Newspeak
 over a VM mirror, every arithmetic operation in it is a send, so the fast
 path has to exist before the rewrite rather than after.
@@ -3581,13 +2253,11 @@ activation, a closure allocation and a block activation, is the extreme.
 See [execution.md](design/execution.md), "What leaf inlining moved", for the
 tables and for what is left unexplained.
 
-**A known cost, carried forward, not paid.** A successful operation also
-executes the unconditional `Jump` past the fallback, so the hot path is two
-dispatches where an out-of-line fallback would leave one. It does not show
-above the noise — `bench_loop.ns` removed 33% of its per-iteration sends and
-gained 31.0%, which is the tightest the suite gets — so moving the fallback
-out of line is a follow-up worth trying rather than one these numbers
-demand.
+**A known cost.** A successful operation also executes the unconditional
+`Jump` past the fallback, so the hot path is two dispatches where one would
+do. It does not show above the noise — `bench_loop.ns` removed 33% of its
+per-iteration sends and gained 31.0%, which is the tightest the suite gets;
+dropping the `Jump` is in [OPEN-WORK.md](OPEN-WORK.md).
 
 Gates: run task by task as each code commit landed, and green at `88d86d9`,
 the branch's last code commit — `cargo test --workspace`, `cargo clippy
@@ -3750,7 +2420,7 @@ level, so the per-store check alone does not explain it. `vm::run` grew from
 `instantiate::check_value_slot` inlined into its `InitializeSlot` arm.
 Start-up did not move measurably. See
 [execution.md](design/execution.md), "What `Top`, `Value` and `Number` cost",
-for the tables, the open finding and what would recover it.
+for the tables and what would recover the 3.6%.
 
 **A protocol finding.** `bench_block.ns` spreads 16% between builds of the
 same tree, with the function-alignment pin in place and each build stable to
@@ -3762,29 +2432,13 @@ the commit; the protocol paragraph in
 [execution.md](design/execution.md), "What removing the re-entries moved",
 now says so.
 
-**What is enforced, and what is not.** The slot half of §3.1.1's second
-bullet — no mutable slot, and no slot holding a non-value — is refused where
-an instance comes into being, which is every instance of every class,
-whether its class came from source, from a nested declaration or from an
-image. **The other half of the bullet is not checked at all**: §3.1.1 also
-requires that a value's enclosing objects (§3.3) are values and that its
-class does not define `==`. By the letter of the first, a value class a
-module declares has no value instances, since a module instance is an
-ordinary object — which is true of every user value class in the goldens
-here. SOMns keeps the condition by declaring its module a value
-(`class Kernel vmMirror: vmMirror = Object <: Value (`), a mixin
-application ns-next does not parse. **What to do about it is an open
-decision for the user**, recorded in
-[core-library.md](design/core-library.md), "What is still unchecked".
-Three further things are deliberately outside the checks: a value class with a
-mutable slot that nothing ever instantiates is accepted silently, because
-the refusal sits at instantiation rather than at class creation; a
-ready-made instance decoded from an image is not re-checked, so a crafted
-artifact can produce a wrong answer, never a crash, since the derivation
-declines what it cannot decide; and nothing canonicalizes two equal
-`String`s, so §3.1.1's "globally unique" holds for `=` and `==` but not for
-object identity. All three are recorded in
-[core-library.md](design/core-library.md), "What is still unchecked".
+**What is enforced.** The slot half of §3.1.1's second bullet — no mutable
+slot, and no slot holding a non-value — is refused where an instance comes
+into being, which is every instance of every class, whether its class came
+from source, from a nested declaration or from an image. The other half —
+a value's enclosing objects are values, and its class defines no `==` —
+came with mixin application and "The value conditions" below. What is
+still unchecked is listed in [OPEN-WORK.md](OPEN-WORK.md).
 
 **One defect, found while writing that section up and fixed the same day.**
 A value class that declares a nested class compared wrongly
@@ -3807,8 +2461,8 @@ slots its classes *declare*").
 2026-09-23** (`0ccff43`, `95f2a07`, `cf1c5a0`, `0a5bb4e`, `3da730d`,
 `ed70803`). `Float>>=` is class-tight, so `1.0 = 1` and `1 = 1.0` both
 answer `false` and the leaf's class-first rule and `Float`'s own `=` are
-one rule again — the ruling that makes the numeric tower a named open item
-above. `Value`'s own application carries `inherits_value`, since §3.2's
+one rule again — the ruling that makes the numeric tower needed
+([OPEN-WORK.md](OPEN-WORK.md)). `Value`'s own application carries `inherits_value`, since §3.2's
 "subclass of" is inclusive, so `Value new = Value new` and a slot holding
 a `Value new` no longer disagree. Both value walks charge their node
 budget when a node is *pushed*, which bounds the work vector by the budget
@@ -3902,45 +2556,9 @@ path it took before. `06fd024` restored the ordinary paths plus one test per
 level, moved the `<:` machinery into cold helpers and boxed the clause.
 Measured again against `6833234`, three builds a tree and three sittings,
 all ten sources are within the protocol's noise, −2.2% to +1.4%; four
-instantiating sources still sit 0.5–1.4% above the base in every build and
-sitting, a difference whose cause — data placement is the likely one — is not
-isolated. `vm::run` is 6,508 instructions in both trees and one function. See
+instantiating sources sat 0.5–1.4% above the base in every build and
+sitting, a difference whose cause is not isolated ([OPEN-WORK.md](OPEN-WORK.md)). `vm::run` is 6,508 instructions in both trees and one function. See
 [execution.md](design/execution.md), "What mixin application cost".
-
-**Known gaps**, each recorded where it applies:
-
-- **At a module's root, every `<:` clause but `<: Value` should be
-  refused**: `<: Value` is how a module declares itself a value and stays;
-  a root `<: self X` or `<: super X` adds no level, silently, a clause naming
-  another builtin adds one, and the prefix before a builtin's name is
-  ignored, as for the root superclass clause
-  ([README.md](design/README.md), deviations;
-  [object-model.md](design/object-model.md), "Mixin application").
-- **A root class's levels lose their identity hash across a snapshot**; not
-  observable today ([image-format.md](design/image-format.md), "Identity
-  hashes are preserved verbatim").
-- **Load does not check that a level sits directly above a class of its
-  applying row**; the walk's run-time arity guard makes a crafted mismatch a
-  Newspeak error, never a panic ([image-format.md](design/image-format.md),
-  "Verification").
-- **Type arguments on a clause's receiver are dropped**, as elsewhere
-  ([frontend.md](design/frontend.md), "What is parsed and dropped").
-- **A private slot of a mixin applied twice in one chain** has no pinned
-  answer: §5.9's private-access rule does not say which application's slot a
-  method of the lower application reads when both applications declare it.
-  `goldens/mixin/mixin_same_mixin_applied_twice_in_one_chain` pins the
-  protected case only. Settle it from the specification (and SOMns) before a
-  golden records either answer.
-
-**Left as they are**, judged not worth a change on their own by the
-whole-branch review and recorded so a later pass through the same code can
-take them: `MixinApplicationClause` (`mixin.rs`) repeats `SuperclassClause`'s
-fields rather than holding one; `nested::after_clause` looks the superclass's
-application up twice on the `<:` path; the not-a-class error names a `<:`
-clause by position ("clause 1") rather than by its source text;
-`image::encode`'s `encode_class_tag` scans the root levels twice; and
-`build_root_class` maps every `build_applied_levels` error to
-`NotAClassReference`, which is unreachable today.
 
 **Gates.** Every commit that changed code or tests saw the per-commit group.
 At the branch's final state the whole end-of-batch group ran at `56ecf79`, the last commit that changed code or tests:
@@ -4050,9 +2668,9 @@ conditions" and "Mixin application", "The root rule".
 tree (varied with `-C metadata`, because three plain builds of one tree were
 the same binary), six of nine sources are level (−0.6% to +0.6%),
 `bench_newvalue.ns` is 3.3% faster, start-up did not move, and `vm::run` is
-6,507 instructions against 6,508. **Open finding:** `bench_block.ns` is 4.5%
-slower and `bench_new.ns` 2.2% slower, every head layout above every base
-layout in every sitting, with causes not isolated. See
+6,507 instructions against 6,508. `bench_block.ns` measured 4.5% slower and
+`bench_new.ns` 2.2% slower, every head layout above every base layout in
+every sitting. See
 [execution.md](design/execution.md), "What the value conditions cost".
 
 **Re-measured after the review's fix** (`7b2af64`, six sittings, the base,
@@ -4063,38 +2681,9 @@ measured the same, so the earlier +2.2% did not reproduce in this session and
 the fix is not what closed it. `bench_block.ns` is still slower and the fix
 did not touch it: +4.4% against the base's two `-C metadata` layouts, +6.9%
 pooled with the base's plain build, a fast layout outlier in this session.
-Control (a) below was run and refuted: a base seeded with `==` measures
-like the base, and the head stays 4.3% above it.
-
-**Known gaps**, each recorded where it applies:
-
-- **A ready-made instance decoded from an image is not re-checked**, as
-  before; a decoded class object now is
-  ([image-format.md](design/image-format.md), "Verification").
-- **No test pins the error selector and receiver of the instantiation
-  refusals.** The goldens pin each refusal's message only; that
-  `decide_instantiation` names the class's own primary factory as the
-  selector and the class as the receiver is untested.
-- **A subclass inheriting a root-clause refusal is untested.** A root whose
-  clause the rule refuses can never be instantiated, so reaching a subclass
-  of it is practically impossible; the path exists but nothing exercises it.
-
-**Open: `bench_block.ns`'s 4.4%.** Not isolated. What `-C metadata` varies is
-code layout, and the gap survives every layout measured, so the review's
-remaining hypotheses are about data layout and the machine:
-
-- (a) *The seeded symbol* -- run and refuted on 2026-09-24
-  ([execution.md](design/execution.md), "What the value conditions cost").
-  Appending `IDENTICAL` to the seeded symbols shifts every later symbol id by
-  one and so every `IdentityMap<Symbol, …>` bucket distribution; a base with
-  the same seed measures like the base.
-- (b) *The kernel's extra `Value`-level class object*, which shifts every
-  later arena index and dispatch id by one. The control is a throwaway head
-  build with a plain `Object new` kernel and `kernel.rs`'s `Object <: Value`
-  assertion removed.
-- (c) *Hardware counters*: instructions retired against cycles and cache
-  misses, which would say whether the head executes more or merely waits
-  longer.
+A control for the seeded `==` symbol was run and refuted it: a base seeded
+with `==` measures like the base, and the head stays 4.3% above it. What is
+left of the 4.4% is in [OPEN-WORK.md](OPEN-WORK.md).
 
 ## The predefined classes as accessors on `Object` (2026-09-24)
 
@@ -4164,18 +2753,6 @@ names `Array` and `OrderedCollection` each iteration is 1.5% slower, about
 1.4 ns per class-accessor send against the old constant load, and `vm::run`
 grew from 6,507 to 6,626 instructions, still one function
 ([execution.md](design/execution.md), "What the class accessors cost").
-
-**Open: `builtin_classes` as a fixed-size array.** `Mutator.builtin_classes`
-is a `Vec`, so `builtin_class(kind)` carries a bounds check, and the
-fast-path arm puts it and its cold panic block at every site `act` is
-inlined into. A `[ClassReference; BuiltinClass::ALL.len()]` would remove
-both and should return most of `vm::run`'s growth from 6,507 to 6,626
-instructions as headroom under LLVM's inlining threshold. It needs the
-bootstrap restructured: `World::new` must initialise the field before any
-class object exists, and `build_builtin_classes` builds them through the
-`Mutator` itself (`apply_mixin`, `mint_dispatch_ids`). A forged placeholder
-handle, `Option` and `MaybeUninit` were rejected, since each either breaks a
-handle invariant, puts the check back, or needs `unsafe`.
 
 ## `True` and `False` in Newspeak (2026-09-24)
 
@@ -4420,22 +2997,8 @@ reference to the send's own local, which keeps it one object in memory.
 7,055 instructions at the base to 6,741. The same profile shows the same
 kind of stall on every tree costing far more -- a quarter of `bench_send.ns`'s
 samples on `Value`s a callee writes through its out-parameter in pieces that
-do not line up with the load that reads them -- an open performance item
-recorded there.
-
-**Small follow-ups the reviews deferred**, none affecting an outcome:
-`HASHED_METACLASS` has no crafted-input test of its own (its readers,
-`read_prebuilt_class` and `read_root_level`, are shared with
-`CLASS_METACLASS` and tested there); the encoder's refusal of a class record
-without a metaclass has no test, since no class object without one is
-reachable after the bootstrap -- a unit test inside `ns-runtime` could build
-one; `builtins::value`'s `derived_equality` pushes a class pair again when it
-is already assumed, and charges a metaclass pair several budget units, which
-is bounded and correct but wasted work; the hash of a value class object,
-from its mixin's name alone, collides for every same-named nested class
-under different enclosing values, which is valid and coarse; and every level
-a `<:` clause adds gets a metaclass no program can send to, part of the
-measured eager cost.
+do not line up with the load that reads them; the eight-byte value is its
+planned answer ([OPEN-WORK.md](OPEN-WORK.md)).
 
 ## Exceptions (2026-09-25)
 
@@ -4482,7 +3045,7 @@ signalled as `MyError new signal: 'text'` unless its class side declares
 them; the handler environment is ANSI's and Squeak's rather than Primordial
 Soup's one flag — every `on:do:` the search passed is disabled while a
 handler runs and enabled again under an `ensure:`, at the cost of a second
-walk over the passed range and an `OrderedCollection` per handler
+walk over the passed range and a collection of the handlers per handler
 invocation; an `Activation` record's header is the one place an image may
 name tag 23; a fresh `Activation` object per leaf call, compared only
 within one call's answers; `Exception`'s `hostSelector` and `hostReceiver`
@@ -4543,99 +3106,6 @@ ms for the same recursion answering). `vm::run` is still one function,
 with no `vm::run::closure`: 6,741 instructions on the base, 6,486 at
 `d7a6680`; `push` is inlined into `push_step` and `push_initializer` as
 before, with `push_past_the_limit` out of line.
-
-**Small follow-ups the reviews deferred**, none affecting an outcome: the
-test `a_level_applying_the_mirrors_or_tops_mixin_is_refused` covers
-`Activation` too and its name is stale; `activation_leaf`'s `unreachable!`
-arm holds only by `execute`'s routing; a restart sets its target's program
-counter to 0 twice (`arrive` and `vm.rs`); `defaultAction` keeps an
-`ifFail: [nil]` nothing can reach; `searching` and `reachedDefault` stay
-true after a resumed default action, visible only through the test hook; no
-test drives a `doesNotUnderstand:` whose own machinery overruns the
-reserve; `Transcript show:` with an argument that is no String prints
-nothing at status 0 (older than this plan); `tests/collector.rs`'s
-give-back test proves little under the new arena rule, which only
-`compaction_never_shrinks_an_arena_below_its_next_limit` pins; the
-release-only size test for `Signal` is run by no listed gate (`CLAUDE.md`'s
-measurement paragraph names it and `cargo test --workspace --release`); and
-the last fix
-wave turned `vm::unwind` into a loop — it stays a function of its own and
-`vm::run` grew from 6,486 to 6,561 instructions, which no timing has
-checked since.
-
-## Notes
-
-**Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
-the performance work, so M3 became nested classes and source-free images, inline
-caches and the GC became M4, and the JIT tiers became M5–M6. Plans written before
-that date use the old numbering.
-
-**Design documentation (2026-09-07).** The dated design specs under
-`docs/superpowers/specs/` were folded into the living documents in `docs/design/`
-and removed. Git holds the originals.
-
-**Deferred follow-ups from the artifact-inspection branch — cleared 2026-09-08.**
-The final whole-branch review raised four items as real but not merge-blocking.
-All four are done: the CLI tests share one self-removing scratch directory
-(`crates/ns-cli/tests/common/mod.rs`), the stale comments in
-`crates/ns-cli/src/main.rs` are corrected, and `image-format.md`'s code list
-names `opcodes.rs`.
-
-One of the four was recorded inaccurately and is worth stating properly, since
-the same shape will recur. The note said only `disasm_snapshots.rs` failed to
-remove its temporary directories while the other CLI tests cleaned up after
-themselves. They did — but by hand, at roughly thirty separate call sites, which
-is exactly why four were missed. A full suite run left 807 directories in the
-system temp folder; it now leaves none. Cleanup that every call site has to
-remember is cleanup that some call site will forget.
-
-`cli.rs` and `run.rs` were left with their own helpers at the time, on the
-reasoning that they removed what they created. They did not: `cli.rs`'s
-`tempdir()` never removed its directory, so every suite run left one behind
-(670 by 2026-09-13), and the other helpers removed theirs only when a test
-passed. Since 2026-09-13 every CLI test uses `ScratchDirectory`, whose `Drop` runs
-on the way out of a failing test too, and `ScratchDirectory` writes under the
-repository's git-ignored `.temp/` instead of the system temp folder, so that
-anything a killed run still leaves behind stays in the project.
-
-**Deferred follow-ups from the object-and-frame-arena branch — cleared
-2026-09-10.** Three items were left out of the arena commit deliberately;
-all three are done.
-
-*`identity_key` moved onto `Heap`.* It was the one handle operation with no
-origin check, because it was handed a handle and no `Heap` to check against:
-two handles from different arenas produced the same key and collided silently
-in a caller's map. Folding the debug-only `origin` field into the key was
-tried on the arena branch and reverted — it would have made the collision
-impossible in exactly the build that reports it and left it as possible in
-the build that ships. `Heap::object_identity_key` and
-`Heap::frame_identity_key` check the origin like every other accessor, and
-the compiler enforces the rule in the most literal way available: no `Heap`,
-no key. All seven call sites already had one in reach;
-`GraphTable::object_id`, `GraphTable::frame_id` and `encode_frame_reference` gained
-a `&Heap` parameter to pass it on.
-
-*Source comments citing plan bookkeeping.* The sweep was wider than the
-`Task[s]? [0-9]+` grep that motivated it: the same unresolvable references
-also appear as "Gap 1 (Task 12 brief)", "Final-review finding I6", "the
-brief's original example" and "a later task's job". 99 lines across 32 files,
-comments only, no code changed. Three outcomes per site — drop the
-reference where the sentence stands without it, state what the comment means
-where it carried its point through the reference, and keep it where the
-number is a genuine algorithm or specification step
-(`newspeak-spec.pdf`'s Class Instantiation steps, `interpreter/nested.rs`'s
-numbered accessor steps, `image/mixins.rs`'s decode steps). Two comments
-turned out to be stale rather than merely opaque and were corrected:
-`build_mixin`'s claim that a class side has no accessor to dispatch to
-(`metaclass_of` applies it) and the lexer's claim that `skip_trivia` only
-skips ASCII whitespace (it handles nested block comments too).
-
-*`.cloned()` over a `Copy` element.* 30 sites, 18 under `src` and 12 under
-`tests`, applied with `cargo clippy --fix`. The lint that finds them,
-`clippy::cloned_instead_of_copied`, is in `clippy::pedantic` and off by
-default; it is now enabled in `[workspace.lints.clippy]` with `[lints]
-workspace = true` in each crate manifest, so the existing "clippy must be
-warning-free" gate covers it and the question stops needing a note here.
 
 ## Editor support: the language server and the JetBrains plugin (2026-09-26)
 
@@ -4722,8 +3192,83 @@ an editor defect: the resolver recognizes `outer N m` only when `N` starts
 with an uppercase letter (`resolver/sends.rs`, `outer_class_name`), where
 §5.9's outer send takes any identifier and makes a non-enclosing one a
 compile-time error. `^outer missing foo` therefore resolves as the chain
-`(outer missing) foo` and fails only at run time. It is a resolver change,
-left for runtime work.
+`(outer missing) foo` and fails only at run time. The resolver was fixed
+the next day ("The unreserved words are names").
+
+## The platform module (2026-09-26 to 2026-09-27)
+
+Plan: [ns-next-platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md);
+[core-library.md](design/core-library.md), "The platform".
+
+§6.3.3's lazy slots: a lazy getter is a compiled method that opens with
+`ReturnSlotIfFilled` (instruction tag 34), and a value's `=` and `hash` skip
+lazy slots. The table of shipped modules (`interpreter/core_library.rs`'s
+`SHIPPED_MODULES`) boots a shipped `PlatformFactory.ns` beside `Kernel.ns`.
+Its root holds the mirror and the kernel and is never handed out; the host
+instantiates it through the ordinary `Interpreter::instantiate`, checks its
+`vmMirror`, and hands every program what the factory's one public member,
+`newPlatform`, answers: an instance of the private nested `Platform`, whose
+factory is `new` and whose class accessors (`public Transcript = ( ^outer
+PlatformFactory Transcript )`, lexical sends that reach the root's private
+classes) hand out the module's classes -- the factory pattern, plain
+Newspeak rather than a runtime refusal (decided with the user, 2026-09-27).
+Builtin class tags 13, 18, 19 and 29 (`Platform`, `Transcript`,
+`Collections`, `KernelNamespace`) are retired.
+
+An image names the platform and everything shipped it reaches by platform
+path (`VALUE_PLATFORM_PATH`, `CLASS_PLATFORM_PATH`, `HASHED_PLATFORM_PATH`),
+each step a public slot getter, a nested-class accessor or a pure class
+accessor, recognized by the compiler in shipped source
+(`MixinMethod::class_accessor`, read only by the image code, no fast path),
+resolved before the rest of a graph decodes; a second platform is an
+ordinary record of the class the path `Platform` names. The boot runs
+`newPlatform` and `Platform`'s superclass clause, so a freshly bootstrapped
+interpreter's caches are not empty (four sites, three global entries, pinned
+by a test).
+
+New goldens pin the lazy-slot rules (`goldens/spec/spec_6_3_3_*`,
+`goldens/kernel/a_values_lazy_slot_*`) and
+`goldens/kernel/a_second_platform_writes_like_the_first`;
+`goldens/kernel/the_platform_and_its_parts_are_values` checks
+`platform = platform class new`, and
+`spec_6_3_3_a_lazy_slot_is_initialized_on_first_use` runs, unskipped.
+
+**Measured** ([execution.md](design/execution.md), "What the platform module
+cost"): start-up is unchanged, +0.2%, inside the protocol's own spread. The
+lazy getter's first mechanism, a `MethodFastPath::LazySlot` arm in
+`act_with_base`, inlined into every send site of `vm::run`, cost
+`bench_send.ns` 4.6% and `bench_block.ns` 2.6%; moving the arm out of line,
+and then taking the slot base off the activation, did not recover it, and
+dropping the fast path did: a getter answers a filled slot from its own
+activation, and the activation derives its slot base from its
+`current_class`. All four `goldens/bench/` fixtures are level with `7c6bdbf`
+(pooled over three builds a side and two sittings, -0.7% to +0.4%, every
+comparison overlapping); `vm::run` is 6,691 instructions against 6,561, the
+difference an arm no ordinary send runs.
+
+## The transcript's `show:` and `print:` (2026-09-27)
+
+Decided with the user ([core-library.md](design/core-library.md), "The
+platform"): `show:` writes a string and refuses anything else as an ordinary
+error, where `show: 42` wrote nothing; `print:` writes any object's
+`printString`, in Newspeak, as canonical Newspeak's transcript does.
+`goldens/kernel/the_transcript_prints_any_object` and
+`goldens/errors/show_of_something_that_is_no_string_is_an_error` pin both.
+
+## The test harness (2026-09-27)
+
+Decided with the user (`CLAUDE.md`, "Working in this repository";
+[README.md](design/README.md), "The goldens" and "Gates";
+[compiler.md](design/compiler.md), "The harness"): the suites run under
+`cargo-nextest`, with `cargo test --doc` beside it for the doctests; every
+golden is a test of its own, and so is each of its build/load and
+snapshot/load round trips (`crates/ns-cli/tests/run_goldens.rs`,
+`golden_round_trips.rs`, on `libtest-mimic`); a test whose two lowerings are
+independent is written once with `ns_runtime::for_each_lowering!` and runs
+as one test per lowering; debug builds compile at `opt-level = 1`; and the
+end-of-batch gate runs the three stress modes at once. The normal suite went
+from about 47 s to 16 s, the three stress modes from about 48 minutes to
+under 4.
 
 ## The unreserved words are names (2026-09-27)
 
@@ -4812,3 +3357,124 @@ environment-specific (e.g., command line) arguments"; the CLI passed `nil`.
 in both round trips
 (`goldens/spec/spec_8_4_main_args_receives_the_program_arguments`,
 `spec_8_4_main_args_without_arguments_is_an_empty_list`).
+
+## The collections module (2026-09-28)
+
+Plan: [ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md);
+[core-library.md](design/core-library.md), "The collections module (plan 2)".
+
+In the factory pattern, decided with the user: a shipped
+`CollectionsFactory.ns`, whose root holds the kernel and is never handed
+out, and whose private nested `Collections` is the facet `platform
+collections` answers. The facet names its own class (`public Collections = (
+^outer CollectionsFactory Collections )`) as `Platform` does, so its image
+path is `collections Collections` without widening the compiler's
+class-accessor recognition. `List` is a private class of the factory,
+Newspeak over arrays it replaces when full, handed out by the facet's class
+accessor. The mirror's `moduleNamed:` leaf builds a shipped module's root
+class on every request and keeps nothing in Rust; `PlatformFactory`'s lazy
+`collectionsModule` keeps the one instance, so every platform shares one
+`List` class and the module is compiled on the first `platform collections`.
+`Array new:` answers a sized array of nils (a class-side mirror forwarder),
+and the exception handler search collects its handlers into an `Array` in
+two walks. Every program uses `List`; `OrderedCollection`, its `add:` leaf
+and `Heap::array_push` are removed, builtin class tag 10 retired, so no
+payload grows in place any more. Three semantics were confirmed with the
+user: `moduleNamed:` keeps nothing, `List>>at:put:` answers the value, and
+`List>>do:` reads the size once. Image tests cover a `List` record, a second
+facet and the refusal of the factory. The one golden whose output changed is
+`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`, seven
+lines to six: there is no builtin `OrderedCollection` left to subclass.
+
+**Measured** ([execution.md](design/execution.md), "What the collections
+module cost"), three builds a side against `6d9974b`: all four
+`goldens/bench/` fixtures are level (-0.2% to +0.5%, every comparison
+overlapping); a start that never sends `platform collections` is level too
+(+0.03 ms, +0.2%), since each shipped module is resolved on its first
+request, not at boot, and the first `platform collections` costs about
+0.28 ms (+2.1%): resolving, compiling and instantiating the module.
+
+## Simultaneous slots (2026-09-28)
+
+Plan: [ns-next-simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);
+[object-model.md](design/object-model.md), "Simultaneous slots".
+
+Through pull futures, decided with the user: a `|| ... ||` clause, in a
+class header or as a code body's temporaries, initializes its slots
+simultaneously, so well-founded mutual recursion between them resolves. Four
+rules: once the clause is done no slot of it holds a future (its end forces
+each and writes the value back); every future it made is resolved then,
+escaped ones included; a resolved future is observable by no program --
+messages are forwarded, identity, equality and every leaf see through it,
+and the collector replaces it with its value in object fields; and a value
+never holds one. The mechanism: the parser keeps the `simultaneous` flag;
+one desugaring before both lowerings (`compiler/simultaneous.rs`) emits
+`MakeFuture`, `InitializeSlotProvisionally` or a store, then `LoadOwnSlot`
+or a read, `ResolveFuture` and a checked write at the clause's end
+(instruction tags 36 to 39); `Kernel.ns`'s private `Future` (builtin class
+tag 30), after Primordial Soup's `Proxy`, forwards through
+`doesNotUnderstand:`; forcing is a trampoline step under
+`Continuation::Future`, and an instruction or a leaf that meets an
+unresolved future forces it and runs again (`vm::reexecute`), which rests on
+a leaf that declines or raises having changed nothing, and a leaf's callers
+look for a future only on its failure path; ill-founded recursion is an
+ordinary error; an abandoned clause leaves its futures unresolved, to be
+computed on the next touch; an image writes a resolved future as its value
+and an unresolved one as a record. Fourteen new goldens under
+`goldens/spec/` pin it, and
+`spec_6_3_2_simultaneous_slots_resolve_mutual_recursion` answers `3`,
+unskipped.
+
+**Measured** ([execution.md](design/execution.md), "What simultaneous slots
+cost"), three builds a side against `0b1f474`, two sittings: `bench_loop.ns`,
+`bench_send.ns` and `bench_block.ns` level (+0.86%, -0.27%, +0.23%,
+medians); `bench_megamorphic.ns` 4.2% slower, separated in both sittings. A
+first version, which wrapped every leaf and inlined the four arms, cost all
+three sending fixtures 1–2%; the leaf search moved to the callers' failure
+paths and the arms out of line recovered two. The rest bisected to the one
+calling arm the four instructions add to `vm::run`'s dispatch: a build whose
+arm calls nothing is level on all four, and one whose arm calls and discards
+the answer is not; aligning every jump target does not help; it reorders
+every block of `vm::run` and the `Flow` test after a send with it. The loop
+over locals (below) removed the `Flow` and recovered it.
+
+## The loop over locals (2026-09-28)
+
+Plan: [ns-next-loop-over-locals](superpowers/plans/2026-09-28-1808-ns-next-loop-over-locals.md);
+[execution.md](design/execution.md), "The loop over locals".
+
+Designed with the user after the 4% `bench_megamorphic.ns` lost to
+simultaneous slots was traced to where LLVM placed the test of a send's
+`Flow`. `vm::run` enters once per stretch between two safepoints;
+`run_stretch`, forced inline, keeps the running frame's activation, code,
+program counter, feedback base and a `RegisterBase` (`heap.rs`: a register
+access is one index and one bounds check, a debug build checks its
+activation's generation) in locals, each arm advances the program counter
+itself, and a send, a return, an unwind or a forcing answers a one-byte
+`Transfer` with the next frame in a `Handoff`; `Flow` and `vm::poll` are
+gone, and the frame is written back to `FrameRegisters` only when a
+safepoint is requested. The safepoints are where they were, and no golden
+changed.
+
+**Measured** ([execution.md](design/execution.md), "What the loop over
+locals moved"), three builds a side against `5fbb2cb`, two sittings: every
+fixture faster -- `bench_loop.ns` -29.7%, `bench_send.ns` -23.3%,
+`bench_block.ns` -13.6%, `bench_megamorphic.ns` -19.9% (medians), separated
+in every sitting but one of `bench_loop.ns`'s, which two outlying rounds
+overlap; `vm::run` is one function of 7,143 instructions against 7,083. A
+scratch build with one more calling instruction arm, not committed, left
+`bench_megamorphic.ns` and `bench_block.ns` level but cost `bench_loop.ns`
+and `bench_send.ns` about 3% (+3.0%, +3.3%, means): an arm is not free. A
+profile places the loss at a store-forwarding stall: every send's
+`Result<Step, Signal>` passes through one stack slot where the inline
+cache's hit paths and its `miss` join, the 16-byte `Value` read back from
+narrower stores holds 28% of `vm::run`'s samples, and `Step`'s drop glue
+runs for every send (4.7%) ([execution.md](design/execution.md), "Where the
+3% goes").
+
+A sink that delivers a send's value where it is decided was planned and
+tried as an experiment ([execution.md](design/execution.md), "Planned: a
+send's value delivered where it is decided"): inlined all the way to the
+register write it made `bench_loop.ns` 17% faster but doubled `vm::run`, and
+it showed that any 16-byte `Value` passing through memory stalls. The user
+halted it in favour of the eight-byte value ([OPEN-WORK.md](OPEN-WORK.md)).

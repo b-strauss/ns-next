@@ -503,7 +503,8 @@ and fall through into the immediately following `SendPublic` when it
 declines. `vm::run` polls a safepoint only on a backward jump (`target <=
 program_counter`), so the forward jump costs no safepoint, and the hot path
 becomes one dispatch with no `Jump` instruction at all. **This requires
-retiring tag 33 and taking 34 for the changed instruction**, because the
+retiring tag 33 and taking the next free instruction tag (40 today, per
+`image/opcodes.rs`) for the changed instruction**, because the
 meaning of `target` changes and a stale artifact would otherwise decode into
 a different, perfectly valid program and run it silently
 (`CLAUDE.md`, "A wire tag is assigned once and never renumbered or reused").

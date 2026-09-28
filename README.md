@@ -9,24 +9,29 @@ world can be serialized to a versioned image and loaded back.
 
 ## Status
 
-Working today: the full frontend, Newspeak's real name resolution, nested classes and
-mixins with a class object per enclosing instance, the bytecode compiler and VM, a
-second, deliberately naive lowering the compiler is checked against, and a source-free
-image format. Every `.ns` file in the vendored corpus parses but one.
+Working today: the specification's grammar (§4.2 to §8.1), Newspeak's real name
+resolution, nested classes, §6.2's mixin application with a class object per enclosing
+instance, metaclasses, value objects, simultaneous and lazy slots, §8.6's exceptions,
+the bytecode compiler and a register VM with inline caches, a second, deliberately
+naive lowering the compiler is checked against, a mark-compact garbage collector, a
+core library written in Newspeak over one VM mirror, and a source-free image format.
+Every `.ns` file in the vendored corpus parses.
 
 Not built yet, and the limits worth knowing before trying it on real code:
 
-- **No garbage collector.** Objects live in an arena of 32-bit handles and nothing
-  reclaims a slot yet, so every object a process creates is kept until it exits.
-- **Integers are `i64`.** Overflow raises a Newspeak error; there are no bignums.
+- **Integers are `i64`.** Overflow raises a Newspeak error; there are no bignums, an
+  `Integer` answers `//` but not `/`, and a non-integral literal is a binary float.
 - **The platform is minimal**, and widens only when a whitelisted corpus module needs
-  something. Six of the 211 corpus modules run end to end; the rest ask for
+  something: a transcript, the kernel's classes and exceptions, and a collections
+  module with `List`. Six of the 211 corpus modules run end to end; the rest ask for
   collections, streams and mirrors that do not exist yet.
-- **No actors, no reflection API, no debugger, no JIT.** Eventual sends and
-  Typed-Newspeak annotations parse and are discarded.
+- **No actors, no reflection API, no debugger, no JIT.** An eventual send runs
+  synchronously and answers its value rather than a promise, a pattern literal
+  evaluates to **nil**, and Typed-Newspeak annotations parse and are discarded.
 
 `docs/design/` describes how the system works and how much of each aspect exists;
-`docs/PROGRESS.md` is the milestone chronology beside it.
+`docs/PROGRESS.md` is the milestone chronology beside it, and `docs/OPEN-WORK.md`
+lists everything that is still to be done.
 
 ## Requirements
 
@@ -143,11 +148,14 @@ cargo run --release -p ns-cli -- bench goldens/bench/bench_loop.ns --iterations 
 crates/ns-syntax     lexer, parser, AST, spans
 crates/ns-runtime    resolver, object model, dispatch, compiler, VM, core library, image format
 crates/ns-cli        the `ns-next` binary
+crates/ns-lsp        the `ns-next-lsp` binary: a language server for `.ns` files
+editors/jetbrains/   the JetBrains plugin, over ns-next-lsp (see its README.md)
 corpus/              vendored Newspeak modules used as a parser corpus
 goldens/             end-to-end programs, each with its recorded outcome
 prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)
 docs/design/         living design documents — start at its README.md
 docs/PROGRESS.md     milestone chronology
+docs/OPEN-WORK.md    everything still to be done, in detail
 docs/superpowers/    implementation plans, kept as execution records
 docs/references/     the Newspeak papers the design argues from (third-party, see PROVENANCE.md)
 ```

@@ -3476,8 +3476,8 @@ and the head is as far above them as before, so the shifted symbol ids
 explain none of `bench_block.ns`'s gap. The seed did move the base's plain
 build from 17.30 to 18.53 ms, a layout change like any other. On
 `bench_new.ns` the head's plain build is again the one 3% above the rest.
-The review's two other hypotheses remain open ([PROGRESS.md](../PROGRESS.md),
-"The value conditions"): the kernel's extra `Value`-level class object,
+The review's two other hypotheses remain open ([OPEN-WORK.md](../OPEN-WORK.md)):
+the kernel's extra `Value`-level class object,
 which shifts every later arena index and dispatch id by one, and hardware
 counters.
 
@@ -3543,8 +3543,7 @@ it is inlined into grew alike: `inline_cache::global_hit` from 909 to 926,
 growth is the same one, the new `fast_path` arm at each place `act` is inlined
 into it; that was not isolated. Storing the builtin classes in a fixed-size array rather than a
 `Vec` would drop `builtin_class`'s bounds check from each of those sites; it
-waits on a bootstrap restructuring ([PROGRESS.md](../PROGRESS.md), "The
-predefined classes as accessors on `Object`").
+waits on a bootstrap restructuring ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 Means in ms per layout, the four sittings pooled:
 
