@@ -1343,8 +1343,9 @@ rest the CLI tests that spawn `ns-next` per fixture or golden
 
 Step 2c ([memory.md](memory.md), "The brand, checked by the compiler rather
 than by convention") put one thing into a release build: the step state
-behind `World::enter`, entered once per instruction the run loop executes
-("The VM" above). The brand itself is a zero-sized lifetime and changes no
+behind `World::enter`, at the time entered once per instruction the run loop
+executes ("The VM" above); "The loop over locals" below says what runs
+between entries today. The brand itself is a zero-sized lifetime and changes no
 layout: `Object`, `FrameSlot` and `Result<Step, Signal>` kept their release
 sizes, 56, 136 and 56 bytes. The step was measured whole against the commit
 it started from, `a5d1e05`, and against `be3eb40`, in two sittings on
@@ -4491,10 +4492,13 @@ instructions against 7,083** at `5fbb2cb`. Its stack frame grows from
 `vm::unwind` 2,157 against 2,127, and `Handoff`'s drop glue, 73
 instructions, is a function of its own.
 
-**Robustness: one more calling arm.** The measurement that found the 4%
-was a build with one more instruction arm that calls anything. A scratch
-copy of the head, never committed, added `Instruction::RobustnessProbe`,
-which no lowering emits, whose arm in `run_stretch` calls an
+**Robustness: one more calling arm.** The 4% was found measuring
+simultaneous slots ("What simultaneous slots cost" above), and the
+bisection there ("What the remaining 4% is") located it to the one arm of
+`vm::run`'s dispatch that calls anything. A scratch copy of the head, never
+committed, checks that finding with a second calling arm: it added
+`Instruction::RobustnessProbe`, which no lowering emits, whose arm in
+`run_stretch` calls an
 `#[inline(never)]` function (it reads its instruction back, writes the
 receiver to a register and answers `Transfer::Next`, or `finish`es on an
 impossible operand) and answers its `Transfer`; every other exhaustive
