@@ -2913,7 +2913,7 @@ mod tests {
     }
 
     /// §5.7: a name no enclosing declaration declares is `self
-    /// OrderedCollection`, which `Object`'s accessor answers (§3.2) -- a
+    /// Array`, which `Object`'s accessor answers (§3.2) -- a
     /// depth-0 lexical send, never a constant load.
     #[test]
     fn a_bare_builtin_class_name_lowers_to_a_self_send() {
@@ -2922,7 +2922,7 @@ mod tests {
             'T'
             class X = Object new (
             ) (
-              foo = ( ^OrderedCollection )
+              foo = ( ^Array )
             ) : ()
         "};
         let (foo, bindings) = resolve_method(source, 0);
@@ -2939,7 +2939,7 @@ mod tests {
         else {
             panic!("expected one depth-0 lexical send: {:?}", code.instructions);
         };
-        assert_eq!(selector.as_str(), "OrderedCollection");
+        assert_eq!(selector.as_str(), "Array");
         assert!(argument_registers.is_empty());
         assert_eq!(*send_destination, destination);
     }
@@ -2951,7 +2951,7 @@ mod tests {
             'T'
             class X = Object new (
             ) (
-              foo = ( | c | c:: OrderedCollection new. c add: 1; add: 2 )
+              foo = ( | c | c:: List new. c add: 1; add: 2 )
             ) : ()
         "};
         let (foo, bindings) = resolve_method(source, 0);
@@ -2969,7 +2969,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // `OrderedCollection new`, then the cascade's two `add:` sends.
+        // `List new`, then the cascade's two `add:` sends.
         assert_eq!(receiver_registers.len(), 3);
         // Nothing the `add:` sends run can write `c`'s register -- no
         // inlinable branch of this body assigns it, so no fallback closure
@@ -2983,7 +2983,7 @@ mod tests {
             receiver_registers[1], receiver_registers[2],
             "both cascade sends share one receiver register"
         );
-        // Four call sites: `self OrderedCollection` (§5.7), `new` and the two
+        // Four call sites: `self List` (§5.7), `new` and the two
         // `add:` sends.
         assert_eq!(code.family_size, 4);
     }
@@ -3020,8 +3020,8 @@ mod tests {
             ) (
               foo = (
                 | c |
-                c:: OrderedCollection new.
-                true ifTrue: [c:: OrderedCollection new].
+                c:: List new.
+                true ifTrue: [c:: List new].
                 c add: 1; add: 2
               )
             ) : ()
@@ -3053,8 +3053,8 @@ mod tests {
             ) (
               foo = (
                 | c |
-                c:: OrderedCollection new.
-                c add: 1; add: (c:: OrderedCollection new)
+                c:: List new.
+                c add: 1; add: (c:: List new)
               )
             ) : ()
         "};

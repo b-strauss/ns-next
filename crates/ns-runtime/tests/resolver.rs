@@ -78,10 +78,10 @@ fn outer_named_send_resolves_to_the_exact_depth() {
 }
 
 /// A bare reference to a builtin class name that no enclosing declaration
-/// declares is §5.7's self send, `self OrderedCollection`, answered by
+/// declares is §5.7's self send, `self Array`, answered by
 /// `Object`'s accessor (§3.2) -- a depth-0 `LexicalSend` at the identifier's
 /// span, not a resolve error and not a constant. Locates the exact span of
-/// the `OrderedCollection` identifier by walking the parsed AST directly,
+/// the `Array` identifier by walking the parsed AST directly,
 /// rather than scanning `bindings.values()`, which cannot tell which
 /// identifier a binding belongs to.
 #[test]
@@ -91,7 +91,7 @@ fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
         'T'
         class Foo = Object new (
         ) (
-          bar = ( | c | c:: OrderedCollection new. ^c )
+          bar = ( | c | c:: Array new. ^c )
         ) : ()
     "};
     let module = ns_syntax::parse(source).expect("parse");
@@ -106,15 +106,15 @@ fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
     let ns_syntax::ast::Statement::Expression(ns_syntax::ast::Expression::Assign { value, .. }) =
         &method.body.statements[0]
     else {
-        panic!("expected the method's first statement to be `c:: OrderedCollection new.`");
+        panic!("expected the method's first statement to be `c:: Array new.`");
     };
     let ns_syntax::ast::Expression::Send(send) = value.as_ref() else {
-        panic!("expected the assignment's value to be a `Send` (`OrderedCollection new`)");
+        panic!("expected the assignment's value to be a `Send` (`Array new`)");
     };
     let ns_syntax::ast::Expression::Identifier(receiver_id) = &send.receiver else {
-        panic!("expected the send's receiver to be a bare `Identifier` (`OrderedCollection`)");
+        panic!("expected the send's receiver to be a bare `Identifier` (`Array`)");
     };
-    assert_eq!(receiver_id.name, "OrderedCollection");
+    assert_eq!(receiver_id.name, "Array");
     assert!(
         matches!(
             resolved.bindings.get(&receiver_id.span),

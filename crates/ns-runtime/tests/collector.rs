@@ -206,11 +206,11 @@ fn kept_closures_keep_their_frames() {
         class Keeper = Object new (| public blocks ::= nil. |) (
           public fill: count = (
             | made remaining |
-            made:: OrderedCollection new.
+            made:: Array new: count.
             remaining:: count.
             [remaining > 0] whileTrue: [
               | captured = remaining. |
-              made add: [captured + 1].
+              made at: count - remaining + 1 put: [captured + 1].
               remaining:: remaining - 1.
             ].
             blocks:: made.

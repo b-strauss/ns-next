@@ -4,7 +4,7 @@ Newspeak3
    closure built in an earlier statement: a cascade receiver and an
    assignment's value handed on through a setter send. *)
 class CalleeClobber usingPlatform: platform = Object new (
-    | c ::= nil. |
+    | c ::= nil. private List = platform collections List. |
 ) (
     first: x second: y = ( ^x )
     hook: v = ( c value. ^v )
@@ -12,9 +12,9 @@ class CalleeClobber usingPlatform: platform = Object new (
     argThroughASend = ( | t | t:: 1. c:: [t:: 9]. ^self first: t second: (self hook: 0) )
     cascadeReceiver = (
         | t orig |
-        orig:: OrderedCollection new.
+        orig:: List new.
         t:: orig.
-        c:: [t:: OrderedCollection new].
+        c:: [t:: List new].
         t add: 1; add: (self hook: 2).
         ^orig size
     )

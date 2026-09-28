@@ -7,14 +7,15 @@ Newspeak3
    `Inner` for `g`, changing `g`'s `Inner` slot afterwards must not change
    the class `g Nested` already answers.
 
-   The slot starts at `OrderedCollection`, not `Array`: `setInner:` supplies
-   `Array` later, to show the cached class does not change, so the starting
-   value has to differ from it. `OrderedCollection` is no value class --
-   this golden instantiates `Nested` (`n1 new` below), and a value class
-   whose enclosing object is mutable, as `g` is here, is refused where an
-   instance is made (newspeak-spec.pdf 3.1.1), which would be `n1 new`
+   The slot starts at `List`, an implicit-receiver send the module's own
+   slot answers -- the collections module's `List` -- not `Array`:
+   `setInner:` supplies `Array` later, to show the cached class does not
+   change, so the starting value has to differ from it. `List` is no value
+   class -- this golden instantiates `Nested` (`n1 new` below), and a value
+   class whose enclosing object is mutable, as `g` is here, is refused where
+   an instance is made (newspeak-spec.pdf 3.1.1), which would be `n1 new`
    itself rather than the line above it. *)
-class NestedOverride usingPlatform: p = Object new (| t ::= p transcript. |) (
+class NestedOverride usingPlatform: p = Object new (| t ::= p transcript. private List = p collections List. |) (
     class Outer = Object new () (
         class Inner = Object new () (
             public printString = ( ^'Inner instance' )
@@ -23,7 +24,7 @@ class NestedOverride usingPlatform: p = Object new (| t ::= p transcript. |) (
     class ChildOfOuter = Outer () (
         public class Nested = Inner () ()
     )
-    class GrandChildOfOuter = ChildOfOuter (| public Inner ::= OrderedCollection. |) (
+    class GrandChildOfOuter = ChildOfOuter (| public Inner ::= List. |) (
         public setInner: v = ( Inner:: v )
     )
     public main: platform args: args = (

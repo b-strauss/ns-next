@@ -1,7 +1,6 @@
 Newspeak3
 'Test'
-class NonlocalReturnDepth usingPlatform: platform = Object new (
-) (
+class NonlocalReturnDepth usingPlatform: platform = Object new (| private List = platform collections List. |) (
 	m = (
 		self deeper: [^1].
 		^2
@@ -29,7 +28,7 @@ class NonlocalReturnDepth usingPlatform: platform = Object new (
 	)
 	intercept: b = (
 		| coll |
-		coll:: OrderedCollection new.
+		coll:: List new.
 		coll add: 1; add: 2; add: 3.
 		coll do: [:e | e = 2 ifTrue: [b value. ^'intercepted by its own block']].
 		^'intercepted normally'

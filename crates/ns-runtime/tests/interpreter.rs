@@ -83,9 +83,9 @@ fn method_with_explicit_return_returns_the_returned_value() {
     assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(42))));
 }
 
-/// A bare `OrderedCollection` (no `platform` prefix, outside any superclass
-/// clause) is the self send `self OrderedCollection`, which `Object`'s
-/// accessor answers with the builtin class.
+/// A bare `Array` (no `platform` prefix, outside any superclass clause) is
+/// the self send `self Array`, which `Object`'s accessor answers with the
+/// builtin class.
 #[test]
 fn bare_builtin_class_name_reference_produces_a_working_instance() {
     let (mut interpreter, receiver) = instance_of(indoc! {"
@@ -93,7 +93,7 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
         'T'
         class Foo = Object new (
         ) (
-          public bar = ( ^OrderedCollection new )
+          public bar = ( ^Array new )
         ) : ()
     "});
     let result = expect_ok(
@@ -102,7 +102,7 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
     );
     interpreter.enter(|mutator| {
         let Value::Object(object) = mutator.fetch(&result) else {
-            panic!("expected an OrderedCollection instance")
+            panic!("expected an Array instance")
         };
         assert!(matches!(
             mutator.heap().array_elements(object),

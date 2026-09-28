@@ -267,17 +267,19 @@ fn a_super_send_falls_through_to_objects_native_print_string() {
 }
 
 #[test]
-fn cascades_and_builtin_instantiation_work() {
+fn cascades_and_list_instantiation_work() {
     let source = indoc! {"
         Newspeak3
         'T'
-        class X = Object new (
+        class X usingPlatform: platform = Object new (
+          | List = platform collections List. |
         ) (
-          public foo = ( | c | c:: OrderedCollection new. c add: 1; add: 2. ^c size )
+          public foo = ( | c | c:: List new. c add: 1; add: 2. ^c size )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let instance = new_instance(&mut interpreter, &class);
+    let platform = interpreter.platform();
+    let instance = expect_ok(interpreter.instantiate(&class, &[platform]), "instantiate");
     let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
     assert_eq!(
         interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
@@ -293,7 +295,7 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
         class X = Object new (
         ) (
           find: target in: coll = ( coll do: [:each | each = target ifTrue: [^'found']]. ^'not found' )
-          public main = ( | c | c:: OrderedCollection new. c add: 1; add: 2; add: 3. ^(self find: 2 in: c), (self find: 9 in: c) )
+          public main = ( ^(self find: 2 in: {1. 2. 3}), (self find: 9 in: {1. 2. 3}) )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

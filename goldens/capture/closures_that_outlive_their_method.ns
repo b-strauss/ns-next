@@ -7,7 +7,7 @@ Newspeak3
    other's value. findFirstAbove: returns out of a block whose home
    activation is still running and whose home has captured variables. *)
 class ClosuresThatOutliveTheirMethod usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+	| transcript = platform transcript. private List = platform collections List. |
 ) (
 	writerAndReader = (
 		| value ::= 0. |
@@ -18,7 +18,7 @@ class ClosuresThatOutliveTheirMethod usingPlatform: platform = Object new (
 	)
 	findFirstAbove: limit = (
 		| seen ::= 0. numbers ::= nil. |
-		numbers:: OrderedCollection new.
+		numbers:: List new.
 		numbers add: 3; add: 8; add: 12; add: 20.
 		numbers do: [:each | seen:: seen + 1. each > limit ifTrue: [^seen]].
 		^0

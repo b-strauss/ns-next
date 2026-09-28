@@ -20,7 +20,7 @@ Newspeak3
    blocks answer the last value written, 2. Textual order alone would
    copy and answer 0 1 2. *)
 class ABlocksOwnRegistersAndVector usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+	| transcript = platform transcript. private List = platform collections List. |
 ) (
 	fullLayout = (
 		| outerCopied ::= 3. |
@@ -35,7 +35,7 @@ class ABlocksOwnRegistersAndVector usingPlatform: platform = Object new (
 	loopInsideABlock = (
 		^[
 			| index ::= 0. x ::= 0. blocks ::= nil. |
-			blocks:: OrderedCollection new.
+			blocks:: List new.
 			[index < 3] whileTrue: [x:: index. blocks add: [x]. index:: index + 1].
 			blocks]
 	)

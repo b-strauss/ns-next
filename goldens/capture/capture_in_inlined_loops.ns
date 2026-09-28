@@ -16,29 +16,29 @@ Newspeak3
    an inlined ifTrue: block is not a block at run time, so reading x
    there captures nothing. *)
 class CaptureInInlinedLoops usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+	| transcript = platform transcript. private List = platform collections List. |
 ) (
 	loopBody = (
 		| index ::= 0. x ::= 0. blocks ::= nil. |
-		blocks:: OrderedCollection new.
+		blocks:: List new.
 		[index < 3] whileTrue: [x:: index. blocks add: [x]. index:: index + 1].
 		^blocks
 	)
 	loopCondition = (
 		| index ::= 0. x ::= 0. blocks ::= nil. |
-		blocks:: OrderedCollection new.
+		blocks:: List new.
 		[x:: index. index < 3] whileTrue: [blocks add: [x]. index:: index + 1].
 		^blocks
 	)
 	loopConditionWhileFalse = (
 		| index ::= 0. x ::= 0. blocks ::= nil. |
-		blocks:: OrderedCollection new.
+		blocks:: List new.
 		[x:: index. index >= 3] whileFalse: [blocks add: [x]. index:: index + 1].
 		^blocks
 	)
 	writtenBeforeTheLoop = (
 		| x ::= 0. blocks ::= nil. |
-		blocks:: OrderedCollection new.
+		blocks:: List new.
 		x:: 41.
 		blocks add: [x + 1].
 		^blocks

@@ -667,9 +667,9 @@ fn a_failing_primitive_keeps_its_entry() {
             public hash = ( ^0 )
           )
           public run = (
-            | answers |
-            answers:: OrderedCollection new.
-            {Pair of: 1. Pair of: Loud new} do: [:each | answers add: each = each].
+            | answers index |
+            answers:: Array new: 2. index:: 0.
+            {Pair of: 1. Pair of: Loud new} do: [:each | index:: index + 1. answers at: index put: each = each].
             ^(answers at: 1) & (answers at: 2) not
           )
         ) : ()

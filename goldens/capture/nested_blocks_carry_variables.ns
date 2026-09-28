@@ -9,7 +9,7 @@ Newspeak3
    blockLocals captures a block's own temporary, one per activation of
    that block, each written before the inner block is created. *)
 class NestedBlocksCarryVariables usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+	| transcript = platform transcript. private List = platform collections List. |
 ) (
 	threeDeep = (
 		| first ::= 1. second ::= 10. outermost ::= nil. |
@@ -19,16 +19,16 @@ class NestedBlocksCarryVariables usingPlatform: platform = Object new (
 	)
 	innerWrites = (
 		| total ::= 0. numbers ::= nil. |
-		numbers:: OrderedCollection new.
+		numbers:: List new.
 		numbers add: 1; add: 2; add: 3.
 		numbers do: [:each | [:factor | total:: total + (each * factor)] value: 10].
 		^total
 	)
 	blockLocals = (
 		| numbers ::= nil. makers ::= nil. |
-		numbers:: OrderedCollection new.
+		numbers:: List new.
 		numbers add: 1; add: 2; add: 3.
-		makers:: OrderedCollection new.
+		makers:: List new.
 		numbers do: [:each | | doubled ::= 0. | doubled:: each * 2. makers add: [doubled]].
 		^makers
 	)
