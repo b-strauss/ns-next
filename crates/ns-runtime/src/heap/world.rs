@@ -72,11 +72,6 @@ impl World {
         self.mutator.heap.activation_depth()
     }
 
-    #[inline(always)]
-    pub(crate) fn safepoint_requested(&self) -> bool {
-        self.mutator.heap.safepoint_requested()
-    }
-
     pub(crate) fn clear_safepoint_request(&mut self) {
         self.mutator.heap.clear_safepoint_request();
     }

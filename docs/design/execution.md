@@ -5433,8 +5433,8 @@ tests the flag. A send, a return, an unwind and a future's forcing go
 through the helpers they go through today -- `send`, `deliver`, `finish`,
 `resume_caller`, `unwind`, `reexecute`, `force_and_reexecute` -- which write
 the new frame into the struct instead of answering `Flow::Switch`, and
-answer a one-byte `Continue { Stay, Leave }`, leaving a run's result in an
-out-parameter on the rare exit. The test after a send becomes one compare of
+answer a one-byte `Transfer { Next, Switched, Exited }`, the next frame or
+a run's result written into a `Handoff`. The test after a send becomes one compare of
 a register, and the block whose placement cost 4% is gone. `vm.rs` still
 holds no dispatch logic: every decision stays in `interpreter/` -- the caches,
 `act`, the continuations, the unwinder -- behind the interfaces it has, which

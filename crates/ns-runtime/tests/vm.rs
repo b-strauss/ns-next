@@ -1425,3 +1425,56 @@ fn an_inlined_integer_operation_evaluates_its_argument_once_on_the_fallback_path
     let ticks = expect_ok(result, "run");
     interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&ticks)), 1));
 }
+
+/// Every switch to another activation is a safepoint: with one requested at
+/// each, a send and its return reach at least two, and the run carries on
+/// where it stood after each -- the callee after its push, the caller after
+/// the return (`docs/design/execution.md`, "The loop over locals").
+#[test]
+#[cfg(debug_assertions)]
+fn a_stretch_leaves_for_a_requested_safepoint_and_resumes_where_it_stood() {
+    let (mut interpreter, class) = load(indoc! {"
+        Newspeak3
+        'Test'
+        class Probe = Object new () (
+            public caller = ( ^self callee + 1 )
+            public callee = ( ^41 )
+        ) : ()
+    "});
+    let probe = new_instance(&mut interpreter, &class);
+    interpreter.set_stress_moves(true);
+    let answer = expect_ok(send(&mut interpreter, &probe, "caller", &[]), "caller");
+    let safepoints = interpreter.stress_safepoints();
+    interpreter.set_stress_moves(false);
+    interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&answer)), 42));
+    assert!(
+        safepoints >= 2,
+        "the push of callee and the return to caller: {safepoints}"
+    );
+}
+
+/// A loop that sends nothing -- the optimized lowering inlines
+/// `whileTrue:`, so its body is `IntegerBinary`s and jumps -- still reaches
+/// a safepoint at every backward jump.
+#[test]
+#[cfg(debug_assertions)]
+fn a_loop_that_sends_nothing_still_reaches_a_safepoint() {
+    let (mut interpreter, class) = load(indoc! {"
+        Newspeak3
+        'Test'
+        class Probe = Object new () (
+            public count = (
+                | index ::= 0. |
+                [index < 1000] whileTrue: [index:: index + 1].
+                ^index
+            )
+        ) : ()
+    "});
+    let probe = new_instance(&mut interpreter, &class);
+    interpreter.set_stress_moves(true);
+    let answer = expect_ok(send(&mut interpreter, &probe, "count", &[]), "count");
+    let safepoints = interpreter.stress_safepoints();
+    interpreter.set_stress_moves(false);
+    interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&answer)), 1000));
+    assert!(safepoints >= 1000, "one per backward jump: {safepoints}");
+}
