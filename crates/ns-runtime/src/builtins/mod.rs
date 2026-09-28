@@ -27,67 +27,9 @@ pub mod value;
 
 use primitive::Primitive;
 
-use crate::interpreter::future::{see_through, SeeThrough};
 use crate::interpreter::{Signal, Step};
 use crate::types::*;
 use crate::{platform, Mutator, Symbol};
-
-/// Runs `primitive` on `receiver` (`execute_leaf`), seeing through a future
-/// among its operands where the leaf could not: when it declined, raised, or
-/// -- for a leaf that answers `false` to a stranger -- answered `false`
-/// (`interpreter::future::see_through`). A program that never made a future
-/// pays one flag test, and only on those paths.
-///
-/// This rests on an invariant every leaf keeps: **a leaf that declines or
-/// raises has changed nothing** -- it checks its operands before it writes
-/// anything -- so running it again, or running the instruction that sent it
-/// again, is running it once (`docs/design/dispatch.md`, "A primitive can
-/// fail").
-pub(crate) fn execute<'gc>(
-    mutator: &mut Mutator<'gc>,
-    primitive: Primitive,
-    receiver: Value<'gc>,
-    selector: Symbol,
-    arguments: &[Value<'gc>],
-) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let answer = execute_leaf(mutator, primitive, receiver, selector, arguments);
-    let unanswered = matches!(
-        answer,
-        None | Some(Err(Signal::Error(_))) | Some(Ok(Step::Value(Value::Boolean(false))))
-    );
-    if !unanswered || !mutator.futures_made {
-        return answer;
-    }
-    see_through_after(mutator, primitive, receiver, selector, arguments, answer)
-}
-
-/// `execute`'s failure path once a future has been made: whether a future
-/// among the operands is why the leaf could not answer. Out of line, so that
-/// the path every answered leaf takes stays as short as it was.
-#[cold]
-#[inline(never)]
-fn see_through_after<'gc>(
-    mutator: &mut Mutator<'gc>,
-    primitive: Primitive,
-    receiver: Value<'gc>,
-    selector: Symbol,
-    arguments: &[Value<'gc>],
-    answer: Option<Result<Step<'gc>, Signal<'gc>>>,
-) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let consulted = match &answer {
-        Some(Ok(_)) => primitive.answers_false_to_a_stranger(),
-        // A mirror row reaches its own leaf through `execute_sent`, which ran
-        // this function already.
-        _ => !matches!(primitive, Primitive::Mirror(_)),
-    };
-    if !consulted {
-        return answer;
-    }
-    match see_through(mutator, primitive, receiver, selector, arguments) {
-        SeeThrough::NoFuture => answer,
-        SeeThrough::Answer(seen) => seen,
-    }
-}
 
 /// Runs `primitive` on `receiver`. `None` means a leaf declines: the
 /// receiver is not of the shape it works on, and the answer goes back to the
@@ -97,7 +39,14 @@ fn see_through_after<'gc>(
 /// methods"). `selector` is the send's, for the error texts
 /// that name it. No primitive calls a block: the control-flow ones, `value`
 /// and `do:` answer a `Step` (`docs/design/execution.md`, "The trampoline").
-pub(crate) fn execute_leaf<'gc>(
+///
+/// A leaf that declines or raises has changed nothing -- it checks its
+/// operands before it writes anything -- so running it again, or running
+/// again the instruction that sent it, is running it once. The callers'
+/// failure paths rest on that when they see through a future among the
+/// operands (`interpreter::future::after_a_failed_leaf`,
+/// `docs/design/dispatch.md`, "Primitives").
+pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: Primitive,
     receiver: Value<'gc>,

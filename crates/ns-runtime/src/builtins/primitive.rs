@@ -36,11 +36,14 @@ pub enum Primitive {
 
 impl Primitive {
     /// Whether this leaf answers `false` for an operand of the wrong kind
-    /// instead of declining: identity and the equality leaves. On that
-    /// answer `builtins::execute` looks for a future among the operands,
-    /// since a future answers here for its value (`docs/design/
-    /// object-model.md`, "Where Rust sees a future"). Every variant is
-    /// named, so a new leaf does not compile until someone decides.
+    /// instead of declining: identity and the equality leaves. Each of them
+    /// declines instead when that answer is `false` and an operand is a
+    /// future (`interpreter::future::declines_for_a_future`, which checks
+    /// in a debug build that its caller is one of these), so its caller's
+    /// failure path sees through it, since a future answers here for its
+    /// value (`docs/design/object-model.md`, "Where Rust sees a future").
+    /// Every variant is named, so a new leaf does not compile until someone
+    /// decides.
     ///
     /// Every leaf marked `false` either declines or raises on an operand of
     /// the wrong kind -- which the failure path covers -- or never needs to
@@ -135,8 +138,8 @@ impl Primitive {
             Primitive::Module(ModulePrimitive::Named) => false,
             Primitive::Future(FuturePrimitive::Value) => false,
             // It reaches its own primitive's row through `execute_sent`,
-            // which runs `builtins::execute` again, so that row has already
-            // looked for a future by the time this one answers.
+            // whose failure path looks for a future among that row's
+            // operands.
             Primitive::Mirror(_) => false,
         }
     }

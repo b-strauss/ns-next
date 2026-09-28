@@ -383,6 +383,91 @@ pub(crate) fn host_passed_a_future<'gc>() -> Signal<'gc> {
     })
 }
 
+/// A leaf's answer on its caller's failure path -- the leaf declined or
+/// raised -- seen through a future among its operands once the program has
+/// made one: a leaf that could not answer for a future may well answer for
+/// the value it stands for. Called by the three ways a leaf runs, and only
+/// where the leaf's answer already sent them off their hot path:
+/// `interpreter::mirror::execute_sent` and `send_inlined` (a mirror send,
+/// before the failure block runs) and `execute_method` (a primitive method,
+/// before the method is activated). A leaf that answers `false` to a
+/// stranger declines for a future (`declines_for_a_future`), so it arrives
+/// here too. Before any future exists this is one flag test.
+#[inline(always)]
+pub(crate) fn after_a_failed_leaf<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: Primitive,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+    answer: Option<Result<Step<'gc>, Signal<'gc>>>,
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    if !mutator.futures_made {
+        return answer;
+    }
+    see_through_a_failed_leaf(mutator, primitive, receiver, selector, arguments, answer)
+}
+
+#[cold]
+#[inline(never)]
+fn see_through_a_failed_leaf<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: Primitive,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+    answer: Option<Result<Step<'gc>, Signal<'gc>>>,
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    if !matches!(answer, None | Some(Err(Signal::Error(_)))) {
+        return answer;
+    }
+    match see_through(mutator, primitive, receiver, selector, arguments) {
+        SeeThrough::NoFuture => answer,
+        SeeThrough::Answer(seen) => seen,
+    }
+}
+
+/// `answer`, the verdict of a leaf that answers `false` to a stranger
+/// (`Primitive::answers_false_to_a_stranger` names each one), unless it is
+/// `false` and an operand is a future: that leaf declines instead (`None`),
+/// so its caller's failure path sees through the future
+/// (`after_a_failed_leaf`) -- the future may well stand for an equal value.
+/// On the `false` path alone, and only once the program has made a future.
+#[inline(always)]
+pub(crate) fn declines_for_a_future<'gc>(
+    mutator: &Mutator<'gc>,
+    primitive: Primitive,
+    answer: bool,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<bool> {
+    if answer || !mutator.futures_made {
+        return Some(answer);
+    }
+    if a_future_among(mutator, primitive, receiver, arguments) {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn a_future_among<'gc>(
+    mutator: &Mutator<'gc>,
+    primitive: Primitive,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> bool {
+    debug_assert!(
+        primitive.answers_false_to_a_stranger(),
+        "internal: only a leaf that answers false to a stranger declines for a future"
+    );
+    std::iter::once(receiver)
+        .chain(arguments.iter().copied())
+        .any(|operand| mutator.as_future(operand).is_some())
+}
+
 /// What `see_through` found among a leaf's operands.
 pub(crate) enum SeeThrough<'gc> {
     /// No operand is a future: the leaf's own answer stands.
@@ -394,7 +479,7 @@ pub(crate) enum SeeThrough<'gc> {
 }
 
 /// A leaf could not answer, and a future among its operands may be why
-/// (`builtins::execute`). Resolved ones are replaced by their values and the
+/// (`after_a_failed_leaf`). Resolved ones are replaced by their values and the
 /// leaf runs again; the first unresolved one is forced under `Reexecute`,
 /// after which the instruction that sent the leaf runs again -- which the
 /// leaf's having changed nothing makes safe; one being computed is §6.3.2's
@@ -434,7 +519,7 @@ pub(crate) fn see_through<'gc>(
     let Some((receiver, arguments)) = resolved.split_first() else {
         unreachable!("internal: the receiver is an operand");
     };
-    SeeThrough::Answer(crate::builtins::execute_leaf(
+    SeeThrough::Answer(crate::builtins::execute(
         mutator, primitive, *receiver, selector, arguments,
     ))
 }

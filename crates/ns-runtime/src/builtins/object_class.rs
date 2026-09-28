@@ -2,7 +2,7 @@
 //! (`newspeak-spec.pdf` §5.5) is Newspeak in `Kernel.ns`, which signals a
 //! `MessageNotUnderstood`.
 
-use crate::builtins::primitive::ObjectPrimitive;
+use crate::builtins::primitive::{ObjectPrimitive, Primitive};
 use crate::types::*;
 use crate::{Heap, Mutator};
 
@@ -14,9 +14,18 @@ pub(crate) fn execute<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         ObjectPrimitive::Class => Some(Ok(Value::Object(mutator.class_of(&receiver)))),
-        ObjectPrimitive::Identical => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))),
-        // Object's default `=`: identity.
-        ObjectPrimitive::Equal => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))),
+        // Identity, and `Object`'s default `=`: declined for a future it
+        // would answer `false` to (`interpreter::future::declines_for_a_future`).
+        ObjectPrimitive::Identical | ObjectPrimitive::Equal => {
+            crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::Object(primitive),
+                identical(&receiver, &arguments[0]),
+                receiver,
+                arguments,
+            )
+            .map(|answer| Ok(Value::Boolean(answer)))
+        }
         ObjectPrimitive::Hash => Some(Ok(Value::SmallInteger(identity_hash_of(
             &mut mutator.heap,
             &receiver,

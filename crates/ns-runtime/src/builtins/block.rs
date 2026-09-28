@@ -19,7 +19,7 @@ pub(crate) fn execute<'gc>(
     let parameters = mutator.heap().closure_parameter_count(closure)?;
     // A loop keeps its body and takes a non-block for a value of its own,
     // which a future is not: it stands for its value, which may well be a
-    // block. Declining hands it to `builtins::execute`, which sees through
+    // block. Declining hands it to its caller's failure path, which sees through
     // it before the loop keeps anything. Asked only of a body that is no
     // block, as `do:` asks it, so a block body pays nothing for it.
     if let BlockPrimitive::WhileTrue | BlockPrimitive::WhileFalse = primitive {

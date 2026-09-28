@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use crate::builtins::primitive::ActivationPrimitive;
+use crate::builtins::primitive::{ActivationPrimitive, Primitive};
 use crate::bytecode::UnwindMarker;
 use crate::heap::ActivationReference;
 use crate::interpreter::{unwind, Signal, Step};
@@ -35,12 +35,20 @@ pub(crate) fn execute<'gc>(
             Some(Ok(Step::Value(activation_object(mutator, top))))
         }
         ActivationPrimitive::InheritsMixinOf => {
-            inherits_mixin_of(mutator, subject, arguments).map(|answer| Ok(Step::Value(answer)))
+            let inherits = inherits_mixin_of(mutator, subject, arguments)?;
+            crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::Activation(primitive),
+                inherits,
+                subject,
+                arguments,
+            )
+            .map(|answer| Ok(Step::Value(Value::Boolean(answer))))
         }
         // It reads its selector and renders its description, so a future in
         // either would be reported as a future rather than as the value it
         // stands for. Declining -- before the test hook below counts
-        // anything -- hands it to `builtins::execute`, which sees through
+        // anything -- hands it to its caller's failure path, which sees through
         // it; the failure block never runs, since a future is there. The
         // receiver alone does not make it decline: it is often the very
         // future whose divergent forcing raised the error, and declining for
@@ -186,7 +194,7 @@ fn inherits_mixin_of<'gc>(
     mutator: &Mutator<'gc>,
     subject: Value<'gc>,
     arguments: &[Value<'gc>],
-) -> Option<Value<'gc>> {
+) -> Option<bool> {
     let Some(Value::Object(class)) = arguments.first() else {
         return None;
     };
@@ -198,12 +206,12 @@ fn inherits_mixin_of<'gc>(
     while let Some(level) = current {
         if let Some(application) = mutator.heap.class_application(level) {
             if Rc::ptr_eq(&application.mixin, &mixin) {
-                return Some(Value::Boolean(true));
+                return Some(true);
             }
         }
         current = mutator.heap.class_superclass(level);
     }
-    Some(Value::Boolean(false))
+    Some(false)
 }
 
 /// The termination an unhandled exception's `defaultAction` asks for: the

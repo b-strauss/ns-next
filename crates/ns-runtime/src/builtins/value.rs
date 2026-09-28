@@ -45,7 +45,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use crate::builtins::primitive::ValuePrimitive;
+use crate::builtins::primitive::{Primitive, ValuePrimitive};
 use crate::builtins::{numbers, text};
 use crate::dispatch::{self, Lookup};
 use crate::interpreter::instantiate::class_object_is_a_value;
@@ -85,7 +85,15 @@ pub(crate) fn execute<'gc>(
     match primitive {
         ValuePrimitive::SameAs => {
             let other = *arguments.first()?;
-            derived_equality(mutator, receiver, other).map(|equal| Ok(Value::Boolean(equal)))
+            let equal = derived_equality(mutator, receiver, other)?;
+            crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::Value(primitive),
+                equal,
+                receiver,
+                arguments,
+            )
+            .map(|answer| Ok(Value::Boolean(answer)))
         }
         ValuePrimitive::Hash => {
             derived_hash(mutator, receiver).map(|hash| Ok(Value::SmallInteger(hash)))

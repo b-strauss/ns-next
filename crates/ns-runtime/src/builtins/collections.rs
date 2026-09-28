@@ -232,7 +232,7 @@ fn do_step<'gc>(
     if !mutator.heap.is_closure(block) {
         // A future stands for its value, which may well be a block: taking
         // it for a non-block would skip every element. Declining hands it
-        // to `builtins::execute`, which sees through it.
+        // to its caller's failure path, which sees through it.
         if mutator.as_future(Value::Object(block)).is_some() {
             return None;
         }
