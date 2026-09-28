@@ -2055,7 +2055,7 @@ with `'handled here'`.
 
 ### The ordering, and what it cost
 
-It is step 6 of M4's order of work ([PROGRESS.md](../PROGRESS.md)), after the
+It comes after the
 caches, closure conversion and the collector, for the reason below, and it
 did not change the image's decision to keep the builtins out of every artifact
 ([image-format.md](image-format.md), "How upstream compares"): the library is
@@ -2274,8 +2274,7 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   a later JIT tier can emit it inline. It is a method-table entry of the VM
   mirror's class, `public` like every row.
 - **The core library is Newspeak source over a VM mirror**, as SOMns's is, so
-  that every builtin method is a real method: step 6 of M4's order of work
-  ([PROGRESS.md](../PROGRESS.md)), after the caches, closure conversion and
+  that every builtin method is a real method: after the caches, closure conversion and
   the collector, and before the JIT tiers, which need the library as real
   Newspeak code to optimize.
 - **The VM mirror is the whole Rust boundary** (decided with the user on

@@ -1377,8 +1377,8 @@ new:` and `replaceFrom:to:with:startingAt:`; SOMns's `Vector`
 size` and copies. Neither VM has a primitive that resizes a payload --
 the shape `java.util.ArrayList` has. `Heap::array_push`, which grew one in
 place here, existed only because `OrderedCollection`'s `add:` was a Rust
-leaf, a simplification `builtins/collections.rs` flagged as such. Step 6 of
-[PROGRESS.md](../PROGRESS.md)'s order of work was to retire it; its first
+leaf, a simplification `builtins/collections.rs` flagged as such. The core
+library in Newspeak retired it: its first
 plan moved `OrderedCollection` into `Kernel.ns` but kept `add:` a forwarder
 to that leaf, as it kept every body a forwarder
 ([core-library.md](core-library.md), "Planned: real bodies for control flow
@@ -1401,8 +1401,7 @@ be a per-heap scope -- which by itself rules out every allocator that keeps
 its state in a `static` or a thread local.
 
 **The ordering matters more than the choice**, and it now has two parts.
-The space is step 7 of the order of work, after the core library in Newspeak
-and before the tiers, because step 6 both removes the in-place growth above
+The space comes after the core library in Newspeak and before the tiers, because step 6 both removes the in-place growth above
 and raises what the space is worth: a Newspeak `List>>add:` allocates a
 fresh `Array` and payload at every capacity overflow, where a `Vec::push`
 amortizes to nothing.
@@ -1531,12 +1530,11 @@ measurement's baseline.
   it, because moving everything without liveness is what separates a missing
   root from a mistake in marking.
 - **The payload space comes after the core library in Newspeak and before the
-  JIT tiers** (decided with the user on 2026-09-21), as step 7 of
-  [PROGRESS.md](../PROGRESS.md)'s order of work. Step 6 retired the one payload
+  JIT tiers** (decided with the user on 2026-09-21). The core library retired the one payload
   that grew in place -- `Heap::array_push`, which existed only because
   `OrderedCollection` was a Rust builtin where both reference runtimes write a
   growable collection in Newspeak over a fixed `Array` -- and raises what the
   space is worth, since a Newspeak `List>>add:` allocates a fresh `Array` at
   every capacity overflow. A measurement decides whether it is built at all:
-  the three experiments in [PROGRESS.md](../PROGRESS.md), and a
+  the experiments listed in [OPEN-WORK.md](../OPEN-WORK.md), and a
   `#[global_allocator]` swap that is cheaper than any of them.

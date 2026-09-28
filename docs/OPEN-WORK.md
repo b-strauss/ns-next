@@ -39,7 +39,7 @@ only on profiling evidence").
   removes the stall it worked around. Not built.
   [execution.md](design/execution.md), "Planned: a send's value delivered
   where it is decided".
-- **Step 7, the payload space.** Payloads (strings, arrays, closures' copied
+- **The payload space.** Payloads (strings, arrays, closures' copied
   values) belong to the Rust allocator, so a collection frees them one system
   call at a time — the leading candidate for `bench_block.ns`'s unexplained
   collector cost. Three routes are open: accept the cost, pool payloads as
@@ -278,7 +278,7 @@ value objects are never copied across an actor boundary (§3.1.1).
   a cost that tracks the collection count, the cache after-effect, from one
   that tracks the pause); and `COLLECTION_FLOOR` raised above the whole
   allocation, so it never collects but still pays the trigger's comparison.
-  Cheaper still: a `#[global_allocator]` swap (see "Step 7, the payload
+  Cheaper still: a `#[global_allocator]` swap (see "The payload
   space"). Also not run: pre-sizing the arenas with `with_capacity`, and
   whether the max-over-median latency gap persists under the collector.
   [execution.md](design/execution.md), "What the moving collector moved";
