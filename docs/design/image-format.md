@@ -867,7 +867,7 @@ ordinary instance record.
 **Futures in a graph: a resolved future is its value, an unresolved one a
 record under tag 30.** `Future` carries builtin tag **30**, the
 kernel-private pull future of §6.3.2's simultaneous slots
-([object-model.md](object-model.md), "Planned: simultaneous slots"). No
+([object-model.md](object-model.md), "Simultaneous slots"). No
 program names it, so `read_referenced_builtin_class` refuses tag 30 wherever
 the graph names a class — as a value, a superclass, a `<:` clause's builtin
 and behind `CLASS_METACLASS` — and the encoder refuses a graph that reaches
@@ -882,10 +882,12 @@ the value a collection would have put in its place anyway
 one other header besides an activation record's that names a
 kernel-private class; the walk does not visit that header as a reference, as
 it does not an activation's. Its two fields are its closure and the state 0.
-A *resolving* future — met only by a snapshot taken while its block runs —
-is written as unresolved, its closure still in the first field
+A future is *resolving* only while its block runs, and `image::snapshot`
+refuses a world with a running activation, so no snapshot meets one; the
+encoder handles the case defensively all the same, writing it as
+unresolved, its closure still in the first field
 (`future::fields_for_an_image`), which is what an abandonment would make of
-it; a load starts no block, so nothing could finish resolving it.
+it — a load starts no block, so nothing could finish resolving it.
 
 The decoder accepts tag 30 in an object's header alone
 (`decode_object_header`) and holds the record to what the encoder writes: an

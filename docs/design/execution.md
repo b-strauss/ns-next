@@ -16,7 +16,8 @@
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path, the indirection vector's reads and writes in
 > `interpreter/locals.rs`, and the unwinder and the depth limit's reserve in
-> `interpreter/unwind.rs`), `compiler/capture.rs` (the capture analysis) and
+> `interpreter/unwind.rs`, and forcing a future in `interpreter/future.rs`),
+> `compiler/capture.rs` (the capture analysis) and
 > `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
@@ -355,7 +356,12 @@ activations from its callers'.
   activation — a native loop's next block, `do:`'s block for the next element,
   an instantiation's next body, or the method a non-Boolean condition's
   `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
-  in the popped activation's place ("The trampoline" below).
+  in the popped activation's place ("The trampoline" below). A future's
+  forcing, `Continuation::Future`, is the one `finish` does not hand to
+  `resume`: `Mutator::future_computed` records the value, and the loop
+  delivers it, forces the next future of a chain, or runs the caller's
+  stopped instruction again ("Running an instruction again after forcing a
+  future" below).
 - **A signal** — a Newspeak error, a non-local return, or an exception's
   `return:`, `retry` or termination — goes to `vm::unwind`, which hands it
   to the one unwinder, `interpreter::unwind`, and carries out what it
@@ -4302,6 +4308,114 @@ sends a collection message in its timed loop, and nothing on a send's path
 changed. `bench_block.ns`'s largest round, 14.80 for one head build, is the
 build-to-build outlier kind the pooling is for.
 
+### What simultaneous slots cost
+
+Simultaneous slots ([object-model.md](object-model.md), "Simultaneous
+slots") added four instructions and their arms in `vm::run`, a
+`Continuation::Future` arm in `vm::finish`, a refusal path to
+`InitializeSlot`, and a wrapper around every leaf: `builtins::execute` now
+runs the leaf (`execute_leaf`), then tests the answer and
+`Mutator::futures_made` before handing it back, the search for a future out
+of line and cold (`see_through_after`). None of the four fixtures makes a
+future, so none runs any of that past the flag test; what they can pay is
+the shape of the code around it.
+
+**Measured 2026-09-28, `36ad885` against `0b1f474`** (the plan commit
+before Task 1; `36ad885`'s code is Task 8's `383f758` plus test-only and
+comment changes), by the protocol of "What removing the re-entries moved":
+three release builds of each with the pinned `RUSTFLAGS`, the second and
+third adding `-C metadata=buildb` and `-C metadata=buildc`, each in its own
+`--target-dir`; the base tree exported with `git archive` under the
+git-ignored `.temp/`. `ns-next bench <source> --iterations 30`, five rounds
+a sitting, the six binaries rotating by one position from round to round,
+two sittings; each printed every fixture's recorded answer. Means of the
+five rounds' medians, in ms:
+
+Sitting 1:
+
+| Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.0525 | 5.0335 | 5.0314 | 5.1288 | 5.0638 | 5.2711 |
+| `bench_send.ns` | 6.4443 | 6.4309 | 6.4348 | 6.4734 | 6.5591 | 6.5254 |
+| `bench_block.ns` | 13.8554 | 13.9750 | 13.8622 | 14.2976 | 14.1897 | 14.3638 |
+| `bench_megamorphic.ns` | 9.2508 | 9.2752 | 9.0622 | 9.2670 | 9.5507 | 9.3081 |
+
+Sitting 2:
+
+| Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.0813 | 5.0003 | 5.0027 | 5.0561 | 5.0999 | 4.9880 |
+| `bench_send.ns` | 6.4367 | 6.4028 | 6.3918 | 6.5474 | 6.5368 | 6.5518 |
+| `bench_block.ns` | 13.8643 | 13.9859 | 13.9960 | 14.1854 | 14.1717 | 14.1879 |
+| `bench_megamorphic.ns` | 9.0978 | 9.1068 | 9.0741 | 9.3432 | 9.2688 | 9.3583 |
+
+Both sittings pooled (n = 30 rounds a side), in ms, and whether every
+round of the head lies outside every round of `0b1f474`'s, sitting by
+sitting:
+
+| Source | Head mean | `0b1f474` mean | Change | Head median | `0b1f474` median | Change | Sitting 1 | Sitting 2 |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5.1013 | 5.0336 | +1.34% | 5.0221 | 5.0211 | +0.02% | overlapping | overlapping |
+| `bench_send.ns` | 6.5323 | 6.4236 | +1.69% | 6.4997 | 6.4186 | +1.26% | overlapping | overlapping |
+| `bench_block.ns` | 14.2327 | 13.9231 | +2.22% | 14.1972 | 13.9292 | +1.92% | overlapping | overlapping |
+| `bench_megamorphic.ns` | 9.3494 | 9.1445 | +2.24% | 9.2958 | 9.0900 | +2.26% | overlapping | separated |
+
+**Not level: the three fixtures that send are 1–2% slower.**
+`bench_loop.ns`, which sends nothing in its loop, is level -- its mean
+carries one head round of 6.28, its median has not moved. The other three
+are not, though every sitting but one overlaps: every head build's mean lies
+above every `0b1f474` build's for `bench_send.ns` (6.51–6.55 against
+6.41–6.44), `bench_block.ns` (14.18–14.28 against 13.86–13.98) and
+`bench_megamorphic.ns` (9.31–9.41 against 9.07–9.19), and the three
+sittings of the experiments below, which ran both trees again beside their
+own builds, put the head above `0b1f474` for those three fixtures each time
+(`bench_block.ns` +1.6% to +2.1%, `bench_megamorphic.ns` +2.2% to +3.3%).
+
+`dumpbin /disasm` of a release build with debug information
+(`CARGO_PROFILE_RELEASE_DEBUG=limited`, the same pinned flags): one
+`ns_runtime::vm::run` label, no `vm::run::closure`; **7,666 instructions
+against 6,983** at `0b1f474`, the four new arms and `InitializeSlot`'s
+refusal path inlined into it. `vm::finish` grew from 679 to 1,047.
+`builtins::execute`, 5,964 instructions at `0b1f474`, is now an 86-instruction
+wrapper -- eight callee-saved registers pushed, the leaf's 56-byte answer
+copied back -- around `execute_leaf` (6,093), and the flag test sits after
+the leaf's answer, as intended: a leaf that answers never reaches
+`see_through_after`. Every leaf a fixture runs (`at:` in
+`bench_megamorphic.ns`, `value` in `bench_block.ns`) now pays that call;
+where the wrapper is inlined, into `inline_cache::global_hit`, the function
+grew from 4,273 to 4,724 bytes.
+
+Where it came from, by a single build of every commit of the plan (one
+sitting, five rounds, beside `0b1f474` and the head): `bench_loop.ns` stays
+within 1% throughout, and the other three step up at `29bbf9e`, the commit
+that added the four instructions' arms to `vm::run` (`bench_megamorphic.ns`
++3.2%, `bench_send.ns` +1.5%, `bench_block.ns` +1.3%), and
+`bench_block.ns` again at `7aecd06`, the leaf wrapper (+2.6%). No fixture
+runs one of the new arms: their cost is the larger loop's register
+allocation and layout, the kind of shift a one-build comparison can
+exaggerate, which is why these numbers only locate it.
+
+Three experiments, three builds each, each in one sitting beside both trees
+(means against `0b1f474`'s):
+
+| Experiment | loop | send | block | megamorphic |
+|---|---|---|---|---|
+| `Continuation::Future`'s arm moved out of `vm::finish` into a cold function | +0.57% | +0.52% | +1.99% | +3.64% |
+| the arms of `MakeFuture` and `ResolveFuture` and `InitializeSlot`'s refusal path moved out of line (`#[inline(never)]`) | -0.06% | +0.67% | +1.22% | +3.82% |
+| the leaf wrapper forced inline (`#[inline(always)]`) | +0.10% | +0.53% | +1.32% | +2.88% |
+| both of the last two | -2.40% | -1.17% | +0.47% | +3.38% |
+
+In those sittings the head measured -0.42% to +1.11% (loop), +0.60% to
++4.38% (send, its top one outlier round of 7.59), +1.63% to +2.12% (block)
+and +2.20% to +3.31% (megamorphic). Moving `finish`'s arm out changed
+nothing. The last row brings `bench_loop.ns`, `bench_send.ns` and
+`bench_block.ns` back level, and leaves `bench_megamorphic.ns` about 3%
+slower -- the one fixture whose every iteration goes through the global
+cache's hit (`global_hit`) and a leaf -- so none of these was kept: none
+recovers all four, and the remaining cost is not located. **Open: recover
+the 1–3% on the sending fixtures**, starting from the last row and from
+what `global_hit` inlines of the leaf wrapper.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -5216,15 +5330,40 @@ second did not. "What closure conversion moved", in the measurements section
 above, is the measurement, with the reasoning for why the memory moved the way
 it did and how far that reasoning is evidence.
 
-## Planned: running an instruction again after forcing a future
+## Running an instruction again after forcing a future
 
-Would change: a new continuation, `Reexecute`, discards its activation's
-value and runs the caller's instruction again instead of the next one. A
-leaf, an equality leaf's "no" path or `InitializeSlot` that meets an
-unresolved future of a simultaneous slot clause answers a step that forces
-it under this continuation, since nothing forces it in Rust without
-re-entering the loop. It rests on a leaf that declines or raises having
-changed nothing. The design is [object-model.md](object-model.md), "Planned: simultaneous slots".
+An instruction that meets an unresolved future of a simultaneous slot clause
+where it needs the value -- `ResolveFuture`, `InitializeSlot` into a value's
+slot, and a send whose leaf declined, raised or answered "no" because an
+operand is a future -- cannot force it in Rust, since nothing re-enters the
+loop. It answers a step instead: the future's block, activated under
+`Continuation::Future`, whose `FutureForcing` carries
+`AfterForcing::Reexecute`. For `ResolveFuture` and `InitializeSlot`,
+`vm::force_and_reexecute` stores the instruction's `program_counter` -- `run`'s
+doc comment lists the instructions that must -- and pushes that step; a send
+has stored its `program_counter` already, and pushes a leaf's step as it
+pushes any. When the block returns, `vm::finish` hands its value
+to `Mutator::future_computed`, which records it and answers a
+`FutureOutcome`: `Reexecute`, and `vm::reexecute` switches back to the
+caller at the stored `program_counter`, so the same instruction runs again
+and finds the future resolved; `Deliver`, for a forcing a message to the
+future started (`futureValue:ifFail:`, `AfterForcing::Deliver`), and the
+value goes to that send as any return's does; or `Force`, when the block
+answered another unresolved future, whose forcing is pushed in the popped
+activation's place with this one chained behind it. Every other
+continuation still goes through `Mutator::resume`.
+
+Running an instruction twice is safe because the first run wrote nothing:
+`ResolveFuture` and `InitializeSlot` force before they write, and **a leaf
+that declines or raises has changed nothing** ([dispatch.md](dispatch.md),
+"Primitives"), so running again the send that ran it is running it once.
+A forcing whose activation an unwind pops, or which `push_step` refuses --
+the depth limit, or a block's arity -- is thrown away through
+`Mutator::abandon`, which leaves its future, and every future chained behind
+it, unresolved again. A host's send has no instruction to run again: a
+forcing that was to run one and finds the run's floor below it ends the run
+with an error (`interpreter::future::host_passed_a_future`). The design is
+[object-model.md](object-model.md), "Simultaneous slots".
 
 ## Planned: tail calls, skipped but kept
 

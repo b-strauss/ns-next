@@ -15,6 +15,39 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
+**Simultaneous slots are done** (2026-09-28;
+[ns-next-simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);
+[object-model.md](design/object-model.md), "Simultaneous slots"), through
+pull futures, decided with the user: a `|| ... ||` clause, in a class
+header or as a code body's temporaries, initializes its slots
+simultaneously, so well-founded mutual recursion between them resolves.
+Four rules: once the clause is done no slot of it holds a future (its end
+forces each and writes the value back); every future it made is resolved
+then, escaped ones included; a resolved future is observable by no program
+-- messages are forwarded, identity, equality and every leaf see through
+it, and the collector replaces it with its value in object fields; and a
+value never holds one. The mechanism: the parser keeps the `simultaneous`
+flag; one desugaring before both lowerings (`compiler/simultaneous.rs`)
+emits `MakeFuture`, `InitializeSlotProvisionally` or a store, then
+`LoadOwnSlot` or a read, `ResolveFuture` and a checked write at the
+clause's end (instruction tags 36 to 39); `Kernel.ns`'s private `Future`
+(builtin class tag 30), after Primordial Soup's `Proxy`, forwards through
+`doesNotUnderstand:`; forcing is a trampoline step under
+`Continuation::Future`, and an instruction or a leaf that meets an
+unresolved future forces it and runs again (`vm::reexecute`), which rests
+on a leaf that declines or raises having changed nothing; ill-founded
+recursion is an ordinary error; an abandoned clause leaves its futures
+unresolved, to be computed on the next touch; an image writes a resolved
+future as its value and an unresolved one as a record. Thirteen new
+goldens under `goldens/spec/` pin it, and the one that was `skipped` answers
+`3`. **Measured** ([execution.md](design/execution.md), "What simultaneous
+slots cost"), three builds a side against `0b1f474`: **not level** --
+`bench_loop.ns` is, and the three fixtures that send are 1–2% slower
+(`bench_send.ns` +1.3%, `bench_block.ns` +1.9%, `bench_megamorphic.ns`
++2.3%, medians), traced to the four new arms in `vm::run` and the wrapper
+every leaf now runs through; no experiment recovered all four, and it is
+left open below.
+
 **The syntax is the specification's grammar** (2026-09-27 to 2026-09-28,
 decided with the user; [frontend.md](design/frontend.md), "Grammar"): every
 production of `newspeak-spec.pdf` §4.2 to §8.1 is accepted as written and
@@ -31,10 +64,14 @@ The deviations that remain are decided and recorded in
 `Pattern` send §5.1.9 defines instead of **nil** ([frontend.md](design/frontend.md),
 "What is parsed and dropped", "Planned"); chains and object literals as
 possible extensions (frontend.md, "Possible future extensions"); and the
-semantic deviations that answer a correct program wrongly at exit status 0
--- sequential simultaneous slots and the synchronous `<-:` -- as the first
-candidates of a section-by-section semantic audit of the specification, like
-the syntax one. Unbounded integers were set aside by the user (2026-09-28).
+semantic deviation that answers a correct program wrongly at exit status 0
+-- the synchronous `<-:`, set aside by the user until there are actors --
+as the first candidate of a section-by-section semantic audit of the
+specification, like the syntax one. Unbounded integers were set aside by the
+user (2026-09-28). Recovering the 1–3% the sending `goldens/bench/`
+fixtures lost to simultaneous slots, starting from the experiments
+[execution.md](design/execution.md)'s "What simultaneous slots cost"
+records.
 
 **The collections module is done** (2026-09-28;
 [ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md);

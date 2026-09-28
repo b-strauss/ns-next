@@ -1088,7 +1088,7 @@ optimized lowering's writable table agrees. `ResolveFuture` runs user code
 -- the future's block -- as a send does, and runs again once the block has
 answered, reading its source afresh, so its source is protected across it
 as an operand is across a send. The design is
-[object-model.md](object-model.md), "Planned: simultaneous slots".
+[object-model.md](object-model.md), "Simultaneous slots".
 
 ## Follow-up: entry points that reach a class object only to find its mixin
 

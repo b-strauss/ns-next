@@ -567,8 +567,11 @@ the leaf could not answer — it declined, raised, or, for identity and the
 equality leaves, answered `false` — and runs the leaf again on the values, or
 forces the future and runs the sending instruction again
 ([object-model.md](object-model.md), "Where Rust sees a future"). A program
-that never made a future pays one flag test, on those paths only. A new leaf
-that writes before its last check breaks this silently.
+that never made a future searches for none: it pays a test of the leaf's
+answer and, on those paths only, of one flag — and, today, the wrapper's
+own call around the leaf ([execution.md](execution.md), "What simultaneous
+slots cost"). A new leaf that writes before its last check breaks this
+silently.
 
 So a failure is Newspeak code, as in Cog, where a failing primitive falls
 into its method's body — whose code often sends the message on to `super`,

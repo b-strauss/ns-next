@@ -674,7 +674,7 @@ so a resolved future lives at most until then. The walk is gated on
 `Mutator::futures_made`, so a program that never made a future pays nothing
 for it, and the move stress mode (`World::move_everything`) does not
 replace: moving is not collecting ([object-model.md](object-model.md),
-"Planned: simultaneous slots").
+"Simultaneous slots").
 
 ### The move stress mode
 

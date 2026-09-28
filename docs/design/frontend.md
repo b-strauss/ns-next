@@ -262,10 +262,10 @@ provides one, a clean `doesNotUnderstand: #Pattern` instead of a silent
 corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
 Closing it retires the deviations-table row.
 
-Three of the things dropped here change what a correct program answers,
-rather than only what an incorrect one is allowed to say. Each has a row in
-[README.md](README.md)'s deviations table; this section is what those rows
-point at.
+Two of the things dropped here -- the asynchronous send and the pattern
+literal -- change what a correct program answers, rather than only what an
+incorrect one is allowed to say. Each has a row in [README.md](README.md)'s
+deviations table; this section is what those rows point at.
 
 A code body's temporary list has the full slot-declaration form
 (`corpus/reference/NewspeakGrammar.ns:148-150`, `temporaries = slotDecls`), so
