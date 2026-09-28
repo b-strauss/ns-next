@@ -50,7 +50,10 @@ it made `bench_loop.ns` 17% faster but doubled `vm::run`, and it showed that
 any 16-byte `Value` passing through memory stalls; the user halted it in
 favour of the eight-byte value, which comes later. **Next: the compact
 instruction encoding** ([execution.md](design/execution.md), "The loop over
-locals").
+locals"), which has no design yet; what the profile found about the dispatch
+it would reshape -- `Instruction`'s discriminant decoded through a niche on
+every dispatch, and `program_counter` and the code pointer spilled to the
+stack frame -- is in "Where the 3% goes".
 
 **Simultaneous slots are done** (2026-09-28;
 [ns-next-simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md);
