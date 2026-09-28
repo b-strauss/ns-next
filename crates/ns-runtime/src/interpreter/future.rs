@@ -317,6 +317,46 @@ pub(crate) fn host_passed_a_future<'gc>() -> Signal<'gc> {
     })
 }
 
+/// What an instruction that must not hold a future -- `ResolveFuture`, and
+/// `InitializeSlot` into a value (Task 6) -- makes of a value it read.
+pub(crate) enum Resolution<'gc> {
+    Value(Value<'gc>),
+    /// Push this step; once it returns the instruction that asked runs
+    /// again (`vm::force_and_reexecute`).
+    Force(Step<'gc>),
+}
+
+/// What an instruction that must not hold a future -- `ResolveFuture`, and
+/// `InitializeSlot` into a value (Task 6) -- makes of `value`: itself when
+/// it is not a future, a resolved future's value, and an unresolved one
+/// forced first (`AfterForcing::Reexecute`).
+pub(crate) fn resolve_for_instruction<'gc>(
+    mutator: &mut Mutator<'gc>,
+    value: Value<'gc>,
+) -> Result<Resolution<'gc>, Signal<'gc>> {
+    let Some(future) = mutator.as_future(value) else {
+        return Ok(Resolution::Value(value));
+    };
+    match force(mutator, future, AfterForcing::Reexecute)? {
+        Step::Value(value) => Ok(Resolution::Value(value)),
+        step => Ok(Resolution::Force(step)),
+    }
+}
+
+/// `MakeFuture`'s operand held something other than a closure: a crafted
+/// image can put anything in that register, and an image must never panic
+/// (`CLAUDE.md`, "An image is untrusted input"), so this is an ordinary,
+/// catchable error rather than the `unreachable!` a compiler-emitted
+/// `MakeFuture` -- whose operand is always the block `MakeClosure` just
+/// made -- would never trigger.
+pub(crate) fn not_a_closure<'gc>(value: Value<'gc>) -> Signal<'gc> {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern("value"),
+        receiver: value,
+        message: "MakeFuture needs a block".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{BuiltinClass, Interpreter};

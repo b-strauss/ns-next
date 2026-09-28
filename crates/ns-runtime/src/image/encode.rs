@@ -667,6 +667,35 @@ fn encode_instruction(
             writer.write_u16(*source);
             writer.write_u32(*own_index);
         }
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => {
+            writer.write_u8(OPCODE_MAKE_FUTURE);
+            writer.write_u16(*destination);
+            writer.write_u16(*closure);
+        }
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => {
+            writer.write_u8(OPCODE_RESOLVE_FUTURE);
+            writer.write_u16(*destination);
+            writer.write_u16(*source);
+        }
+        Instruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => {
+            writer.write_u8(OPCODE_LOAD_OWN_SLOT);
+            writer.write_u16(*destination);
+            writer.write_u32(*own_index);
+        }
+        Instruction::InitializeSlotProvisionally { source, own_index } => {
+            writer.write_u8(OPCODE_INITIALIZE_SLOT_PROVISIONALLY);
+            writer.write_u16(*source);
+            writer.write_u32(*own_index);
+        }
         Instruction::Return { register } => {
             writer.write_u8(OPCODE_RETURN);
             writer.write_u16(*register);

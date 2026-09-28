@@ -27,7 +27,7 @@
 // retired at 11 and reassigned to 29 for the same reason: closure
 // conversion gave it a list of copied registers, so its old bytes describe
 // a different instruction.
-// Next free number: 35.
+// Next free number: 40.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -101,6 +101,17 @@ pub const OPCODE_RETURN_SLOT_IF_FILLED: u8 = 34;
 /// `outer N` as a value, the kth enclosing object
 /// (`Instruction::LoadEnclosingObject`).
 pub const OPCODE_LOAD_ENCLOSING_OBJECT: u8 = 35;
+/// §6.3.2: a new unresolved future of a closure (`Instruction::MakeFuture`).
+pub const OPCODE_MAKE_FUTURE: u8 = 36;
+/// A value seen through a future, forcing it first if it is unresolved
+/// (`Instruction::ResolveFuture`).
+pub const OPCODE_RESOLVE_FUTURE: u8 = 37;
+/// `self`'s own slot read back without a getter send
+/// (`Instruction::LoadOwnSlot`).
+pub const OPCODE_LOAD_OWN_SLOT: u8 = 38;
+/// `InitializeSlot` without §3.1.1's value-slot check, for a simultaneous
+/// clause's future only (`Instruction::InitializeSlotProvisionally`).
+pub const OPCODE_INITIALIZE_SLOT_PROVISIONALLY: u8 = 39;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction

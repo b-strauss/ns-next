@@ -258,6 +258,35 @@ pub enum Instruction {
     ReturnSlotIfFilled {
         own_index: u32,
     },
+    /// §6.3.2: a new unresolved future of the closure in `closure`, one per
+    /// initializer of a simultaneous slot clause
+    /// (`docs/design/object-model.md`, "Simultaneous slots").
+    MakeFuture {
+        destination: u16,
+        closure: u16,
+    },
+    /// The value `source` holds, seen through a future: itself when it is
+    /// none, a resolved future's value, and an unresolved one forced first --
+    /// the instruction then runs again (`interpreter::future`,
+    /// `AfterForcing::Reexecute`). A simultaneous clause's end.
+    ResolveFuture {
+        destination: u16,
+        source: u16,
+    },
+    /// `self`'s field at the activation's slot base plus `own_index`, as
+    /// `InitializeSlot` addresses it: a simultaneous clause's end reads each
+    /// slot back without a getter send, which a subclass could override.
+    LoadOwnSlot {
+        destination: u16,
+        own_index: u32,
+    },
+    /// `InitializeSlot` without §3.1.1's check of a value's slot: the future
+    /// a simultaneous clause stores first, which its end replaces with the
+    /// value through an ordinary, checked `InitializeSlot`.
+    InitializeSlotProvisionally {
+        source: u16,
+        own_index: u32,
+    },
     /// A method or initializer body's `^`.
     Return {
         register: u16,
@@ -705,6 +734,27 @@ fn format_instruction(instruction: &Instruction) -> String {
         }
         Instruction::ReturnSlotIfFilled { own_index } => {
             format!("ReturnSlotIfFilled own {own_index}")
+        }
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => {
+            format!("MakeFuture r{destination} <- future of r{closure}")
+        }
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => {
+            format!("ResolveFuture r{destination} <- r{source}")
+        }
+        Instruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => {
+            format!("LoadOwnSlot r{destination} <- own {own_index}")
+        }
+        Instruction::InitializeSlotProvisionally { source, own_index } => {
+            format!("InitSlotProvisionally own {own_index} <- r{source}")
         }
         Instruction::Return { register } => format!("Return r{register}"),
         Instruction::ImplicitReturn { register } => format!("ImplicitReturn r{register}"),

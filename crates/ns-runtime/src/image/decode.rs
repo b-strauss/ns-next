@@ -1529,6 +1529,16 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
         Instruction::StoreVector { vector, source, .. } => vec![*vector, *source],
         Instruction::InitializeSlot { source, .. } => vec![*source],
         Instruction::ReturnSlotIfFilled { .. } => vec![],
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => vec![*destination, *closure],
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => vec![*destination, *source],
+        Instruction::LoadOwnSlot { destination, .. } => vec![*destination],
+        Instruction::InitializeSlotProvisionally { source, .. } => vec![*source],
         Instruction::Return { register }
         | Instruction::ImplicitReturn { register }
         | Instruction::NonLocalReturn { register }
@@ -1575,6 +1585,10 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
         | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::MakeFuture { .. }
+        | Instruction::ResolveFuture { .. }
+        | Instruction::LoadOwnSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. } => None,
@@ -1913,6 +1927,34 @@ fn decode_instruction(
         OPCODE_RETURN_SLOT_IF_FILLED => Instruction::ReturnSlotIfFilled {
             own_index: reader.read_u32()?,
         },
+        OPCODE_MAKE_FUTURE => {
+            let destination = reader.read_u16()?;
+            Instruction::MakeFuture {
+                destination,
+                closure: reader.read_u16()?,
+            }
+        }
+        OPCODE_RESOLVE_FUTURE => {
+            let destination = reader.read_u16()?;
+            Instruction::ResolveFuture {
+                destination,
+                source: reader.read_u16()?,
+            }
+        }
+        OPCODE_LOAD_OWN_SLOT => {
+            let destination = reader.read_u16()?;
+            Instruction::LoadOwnSlot {
+                destination,
+                own_index: reader.read_u32()?,
+            }
+        }
+        OPCODE_INITIALIZE_SLOT_PROVISIONALLY => {
+            let source = reader.read_u16()?;
+            Instruction::InitializeSlotProvisionally {
+                source,
+                own_index: reader.read_u32()?,
+            }
+        }
         OPCODE_RETURN => Instruction::Return {
             register: reader.read_u16()?,
         },

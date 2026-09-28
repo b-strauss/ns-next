@@ -631,7 +631,14 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         Instruction::Move { source, .. }
         | Instruction::StoreLocal { source, .. }
         | Instruction::StoreOuterLocal { source, .. }
-        | Instruction::InitializeSlot { source, .. } => vec![*source],
+        | Instruction::InitializeSlot { source, .. }
+        // Unreachable in reference-lowered code: Task 4's simultaneous-slot
+        // lowering emits these, and the reference lowering does not lower
+        // simultaneous clauses through futures at all. Named here anyway, so
+        // a real fifth-instruction addition still has to say what it reads.
+        | Instruction::InitializeSlotProvisionally { source, .. } => vec![*source],
+        Instruction::MakeFuture { closure, .. } => vec![*closure],
+        Instruction::ResolveFuture { source, .. } => vec![*source],
         Instruction::Return { register }
         | Instruction::ImplicitReturn { register }
         | Instruction::NonLocalReturn { register }
@@ -689,6 +696,7 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         | Instruction::MakeClosure { .. }
         | Instruction::MakeVector { .. }
         | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::LoadOwnSlot { .. }
         | Instruction::Jump { .. } => vec![],
     }
 }
@@ -711,12 +719,16 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::MakeVector { destination, .. }
         | Instruction::LoadVector { destination, .. }
         | Instruction::IntegerBinary { destination, .. }
-        | Instruction::SendMirror { destination, .. } => Some(*destination),
+        | Instruction::SendMirror { destination, .. }
+        | Instruction::MakeFuture { destination, .. }
+        | Instruction::ResolveFuture { destination, .. }
+        | Instruction::LoadOwnSlot { destination, .. } => Some(*destination),
         Instruction::StoreLocal { .. }
         | Instruction::StoreOuterLocal { .. }
         | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }
         | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. }

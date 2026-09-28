@@ -508,6 +508,22 @@ fn every_instruction_once() -> CompiledCode {
                 own_index: 3,
             },
             Instruction::ReturnSlotIfFilled { own_index: 2 },
+            Instruction::MakeFuture {
+                destination: 12,
+                closure: 8,
+            },
+            Instruction::ResolveFuture {
+                destination: 13,
+                source: 12,
+            },
+            Instruction::LoadOwnSlot {
+                destination: 14,
+                own_index: 5,
+            },
+            Instruction::InitializeSlotProvisionally {
+                source: 13,
+                own_index: 6,
+            },
             Instruction::Return { register: 0 },
             Instruction::ImplicitReturn { register: 1 },
             Instruction::NonLocalReturn { register: 2 },
@@ -567,8 +583,8 @@ fn every_instruction_once() -> CompiledCode {
             },
         ],
         argument_count: 2,
-        register_count: 12,
-        statement_program_counter: vec![(0, 0..3), (1, 3..33)],
+        register_count: 15,
+        statement_program_counter: vec![(0, 0..3), (1, 3..37)],
         // One past the highest number among its own sends (0..=3, in
         // emission order -- what `number_call_site_families` assigns on the
         // decoded side too) and the block's `family_size` (0): the same
@@ -979,14 +995,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(36); // ... one past the last real tag
+    writer.write_u8(40); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 36
+            tag: 40
         })
     );
 }

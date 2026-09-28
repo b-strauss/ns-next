@@ -773,6 +773,287 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// §6.3.2's simultaneous slots' four instructions (`MakeFuture`,
+// `ResolveFuture`, `LoadOwnSlot`, `InitializeSlotProvisionally`). Hand-built,
+// like the indirection vector's above: Task 4's lowering does not exist yet,
+// so no source expresses a simultaneous clause, and this is the only way to
+// drive `ResolveFuture`'s forcing path (`vm::force_and_reexecute`, the
+// `Reexecute` branch of `interpreter::future::resolve_for_instruction`)
+// before it does.
+// ---------------------------------------------------------------------------
+
+/// A block whose body answers `value` and nothing else -- the future's
+/// computation in the tests below.
+fn constant_block(value: i64) -> Rc<CompiledCode> {
+    Rc::new(CompiledCode {
+        kind: CodeKind::Block,
+        instructions: vec![
+            Instruction::LoadLiteral {
+                destination: 0,
+                literal: Literal::SmallInteger(value),
+            },
+            Instruction::Return { register: 0 },
+        ],
+        argument_count: 0,
+        register_count: 1,
+        statement_program_counter: vec![(0, 0..2)],
+        family_size: 0,
+        copied_count: 0,
+        outer_reach: 0,
+        unwind_marker: None,
+        source: Span::new(0, 0),
+    })
+}
+
+#[test]
+fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_hand() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | n |
+        ) (
+          public probe = ( ^0 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // MakeClosure r0 <- the block answering 99;
+        // MakeFuture r1 <- future of r0;
+        // InitSlotProvisionally own 0 <- r1        (n holds the unresolved future)
+        // LoadOwnSlot r2 <- own 0                  (a simultaneous clause's end
+        //                                            reading its own slot back)
+        // ResolveFuture r3 <- r2                   (unresolved: forces the
+        //                                            block, then runs this same
+        //                                            instruction again --
+        //                                            `vm::force_and_reexecute` /
+        //                                            `reexecute` -- and finds it
+        //                                            resolved)
+        // Return r3  =>  99
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::MakeClosure {
+                    destination: 0,
+                    parameters: Rc::new(vec![]),
+                    code: constant_block(99),
+                    copied: vec![],
+                },
+                Instruction::MakeFuture {
+                    destination: 1,
+                    closure: 0,
+                },
+                Instruction::InitializeSlotProvisionally {
+                    source: 1,
+                    own_index: 0,
+                },
+                Instruction::LoadOwnSlot {
+                    destination: 2,
+                    own_index: 0,
+                },
+                Instruction::ResolveFuture {
+                    destination: 3,
+                    source: 2,
+                },
+                Instruction::Return { register: 3 },
+            ],
+            argument_count: 0,
+            register_count: 4,
+            statement_program_counter: vec![(0, 0..6)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            unwind_marker: None,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let result = expect_ok(send(&mut interpreter, &instance, "probe", &[]), "probe");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        99
+    );
+    // `n` still holds the future `InitializeSlotProvisionally` stored --
+    // replacing it with the value through a checked `InitializeSlot` is
+    // Task 6 -- but forcing left it resolved, not stuck resolving: the
+    // `Reexecute` this test's `ResolveFuture` triggered ran the block
+    // exactly once and recorded its answer.
+    interpreter.enter(|mutator| {
+        let Value::Object(receiver) = mutator.fetch(&instance) else {
+            panic!("expected an instance");
+        };
+        let field = mutator
+            .heap()
+            .instance_field(receiver, 0)
+            .expect("X declares one slot");
+        let future = mutator
+            .as_future(field)
+            .expect("n still holds the future InitializeSlotProvisionally stored");
+        assert!(matches!(
+            mutator.future_state(future),
+            ns_runtime::interpreter::future::FutureState::Resolved(Value::SmallInteger(99))
+        ));
+    });
+}
+
+#[test]
+fn resolve_future_answers_a_non_future_value_unchanged() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public probe = ( ^0 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // LoadLiteral r0 <- 5 (not a future); ResolveFuture r1 <- r0
+        // (answers r0 unchanged, no forcing); Return r1
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: Literal::SmallInteger(5),
+                },
+                Instruction::ResolveFuture {
+                    destination: 1,
+                    source: 0,
+                },
+                Instruction::Return { register: 1 },
+            ],
+            argument_count: 0,
+            register_count: 2,
+            statement_program_counter: vec![(0, 0..3)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            unwind_marker: None,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let result = expect_ok(send(&mut interpreter, &instance, "probe", &[]), "probe");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        5
+    );
+}
+
+#[test]
+fn load_own_slot_answers_nil_for_an_unfilled_slot() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | n |
+        ) (
+          public probe = ( ^0 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // LoadOwnSlot r0 <- own 0 (n, never initialized: nil); Return r0
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::LoadOwnSlot {
+                    destination: 0,
+                    own_index: 0,
+                },
+                Instruction::Return { register: 0 },
+            ],
+            argument_count: 0,
+            register_count: 1,
+            statement_program_counter: vec![(0, 0..2)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            unwind_marker: None,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let result = expect_ok(send(&mut interpreter, &instance, "probe", &[]), "probe");
+    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::Nil)));
+}
+
+/// `MakeFuture`'s operand held something other than a closure: a crafted
+/// image could put anything there, and an image must never panic --
+/// `interpreter::future::not_a_closure` is the ordinary, catchable error
+/// this instruction raises instead of the `unreachable!` a compiler-emitted
+/// `MakeFuture` (whose operand is always the block `MakeClosure` just made)
+/// would never trigger.
+#[test]
+fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public bad = ( ^0 )
+          public good = ( ^1 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // LoadLiteral r0 <- 5 (not a closure); MakeFuture r1 <- future of r0;
+        // Return r1
+        let body = CompiledCode {
+            kind: CodeKind::Method,
+            instructions: vec![
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: Literal::SmallInteger(5),
+                },
+                Instruction::MakeFuture {
+                    destination: 1,
+                    closure: 0,
+                },
+                Instruction::Return { register: 1 },
+            ],
+            argument_count: 0,
+            register_count: 2,
+            statement_program_counter: vec![(0, 0..2)],
+            family_size: 0,
+            copied_count: 0,
+            outer_reach: 0,
+            unwind_marker: None,
+            source: Span::new(0, 0),
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+    });
+    let result = send(&mut interpreter, &instance, "bad", &[]);
+    let error = expect_error(&mut interpreter, result, "bad");
+    assert!(
+        error.message.contains("MakeFuture needs a block"),
+        "{}",
+        error.message
+    );
+    // The activation stack unwound to a clean floor rather than aborting the
+    // process: the same interpreter, on the same instance, still answers an
+    // unrelated send.
+    let result = expect_ok(send(&mut interpreter, &instance, "good", &[]), "good");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        1
+    );
+}
+
 /// The inlined integer leaves (`Instruction::IntegerBinary`). Each one is
 /// checked through compiled source rather than a hand-built code object, so
 /// the test survives a change to the lowering, and each is checked against

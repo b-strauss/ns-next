@@ -15,15 +15,17 @@ use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::ActivationReference;
-use crate::interpreter::future::FutureOutcome;
+use crate::interpreter::future::{
+    not_a_closure, resolve_for_instruction, FutureOutcome, Resolution,
+};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
-    filled_own_slot, load_vector, read_local, read_outer_local, store_instance_field, store_vector,
-    write_local, write_outer_local,
+    filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
+    store_instance_field, store_vector, write_local, write_outer_local,
 };
 use crate::interpreter::unwind::UnwindOutcome;
 use crate::interpreter::{
@@ -66,8 +68,11 @@ enum Flow {
 /// can hand it to an observer: every send (a callee runs above it, and the loop
 /// resumes it from that `program_counter`), `MakeClosure` (it reifies the
 /// activation, so the frame starts from the `program_counter` stored just
-/// before), and `NonLocalReturn` (control leaves with a signal). Nothing reads
-/// `program_counter` while a straight-line instruction executes.
+/// before), `NonLocalReturn` (control leaves with a signal), and
+/// `ResolveFuture` when it meets an unresolved future (`force_and_reexecute`
+/// pushes the forcing above it, and the loop must come back to this same
+/// instruction once the future resolves). Nothing reads `program_counter`
+/// while a straight-line instruction executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
     let (floor, mut code, mut feedback_base) = interpreter.enter(|mutator| {
         (
@@ -464,6 +469,66 @@ fn execute<'gc>(
                 None => Flow::Next,
             }
         }
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => {
+            // A crafted image can put anything in this register (an image
+            // must never panic, `CLAUDE.md`, "An image is untrusted input"),
+            // so an operand that is not a closure is an ordinary error, not
+            // the `unreachable!` a compiler-emitted `MakeFuture` -- whose
+            // operand is always the block `MakeClosure` just made -- would
+            // never trigger.
+            let operand = read_local(&mutator.heap, activation, *closure);
+            let closure = match operand {
+                Value::Object(object) if mutator.heap.is_closure(object) => object,
+                _ => return unwind(mutator, not_a_closure(operand), floor),
+            };
+            let future = mutator.new_future(closure);
+            write_local(
+                &mut mutator.heap,
+                activation,
+                *destination,
+                Value::Object(future),
+            );
+            Flow::Next
+        }
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => {
+            let value = read_local(&mutator.heap, activation, *source);
+            match resolve_for_instruction(mutator, value) {
+                Ok(Resolution::Value(value)) => {
+                    write_local(&mut mutator.heap, activation, *destination, value);
+                    Flow::Next
+                }
+                Ok(Resolution::Force(step)) => {
+                    force_and_reexecute(mutator, activation, program_counter, step, floor)
+                }
+                Err(signal) => unwind(mutator, signal, floor),
+            }
+        }
+        Instruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => {
+            let value = load_own_slot(&mutator.heap, activation, *own_index);
+            write_local(&mut mutator.heap, activation, *destination, value);
+            Flow::Next
+        }
+        Instruction::InitializeSlotProvisionally { source, own_index } => {
+            let value = read_local(&mutator.heap, activation, *source);
+            let receiver = mutator.heap.activation_receiver(activation);
+            let base = mutator.heap.activation_slot_base(activation);
+            store_instance_field(
+                &mut mutator.heap,
+                &receiver,
+                base + *own_index as usize,
+                value,
+            );
+            Flow::Next
+        }
         Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
             let value = read_local(&mutator.heap, activation, *register);
             finish(mutator, activation, value, floor)
@@ -756,6 +821,32 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize) -> Flow {
         code: mutator.heap.activation_code(caller),
         program_counter: mutator.heap.activation_program_counter(caller),
         feedback_base: mutator.heap.activation_feedback_base(caller),
+    }
+}
+
+/// An instruction met an unresolved future: store where it stands, push the
+/// forcing, and switch to it; `Reexecute` brings the loop back to this same
+/// instruction once the future is resolved (`reexecute`). One of the
+/// instructions whose `program_counter` must be stored before it hands
+/// control elsewhere (`run`'s doc comment).
+fn force_and_reexecute<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: usize,
+    step: Step<'gc>,
+    floor: usize,
+) -> Flow {
+    mutator
+        .heap
+        .set_activation_program_counter(activation, program_counter);
+    match mutator.push_step(step, &[], Some(activation), false) {
+        Ok(callee) => Flow::Switch {
+            activation: callee,
+            code: mutator.heap.activation_code(callee),
+            program_counter: 0,
+            feedback_base: mutator.heap.activation_feedback_base(callee),
+        },
+        Err(signal) => unwind(mutator, signal, floor),
     }
 }
 

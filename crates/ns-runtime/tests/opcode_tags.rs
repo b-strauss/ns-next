@@ -49,6 +49,16 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_LOAD_ENCLOSING_OBJECT, 35);
 }
 
+/// §6.3.2's simultaneous slots, through pull futures: the four instructions
+/// that make, resolve and provisionally store a future.
+#[test]
+fn the_simultaneous_slot_instructions_keep_their_numbers() {
+    assert_eq!(OPCODE_MAKE_FUTURE, 36);
+    assert_eq!(OPCODE_RESOLVE_FUTURE, 37);
+    assert_eq!(OPCODE_LOAD_OWN_SLOT, 38);
+    assert_eq!(OPCODE_INITIALIZE_SLOT_PROVISIONALLY, 39);
+}
+
 #[test]
 fn the_integer_binary_opcode_keeps_its_tag() {
     // A tag is assigned once and never renumbered: a stale artifact must hit
@@ -102,6 +112,10 @@ fn no_two_tags_share_a_number() {
         OPCODE_INTEGER_BINARY,
         OPCODE_RETURN_SLOT_IF_FILLED,
         OPCODE_LOAD_ENCLOSING_OBJECT,
+        OPCODE_MAKE_FUTURE,
+        OPCODE_RESOLVE_FUTURE,
+        OPCODE_LOAD_OWN_SLOT,
+        OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -169,6 +183,10 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_INTEGER_BINARY,
         OPCODE_RETURN_SLOT_IF_FILLED,
         OPCODE_LOAD_ENCLOSING_OBJECT,
+        OPCODE_MAKE_FUTURE,
+        OPCODE_RESOLVE_FUTURE,
+        OPCODE_LOAD_OWN_SLOT,
+        OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
     ];
     for retired in RETIRED_OPCODES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
