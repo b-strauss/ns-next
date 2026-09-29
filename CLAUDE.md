@@ -2,7 +2,7 @@
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
 resolver, bytecode compiler and register VM, and a versioned image format.
-Rust 1.98.0, edition 2021, four crates:
+Rust 1.98.0, edition 2021, five crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
@@ -45,6 +45,12 @@ Rust 1.98.0, edition 2021, four crates:
   bindings) and `dump-tokens`, which the JetBrains plugin's lexer is checked
   against. It never starts the VM. Its dependencies (`lsp-server`, `lsp-types`,
   `serde_json`) stay in this crate. See `docs/design/editor-support.md`.
+- `crates/ns-memory` — the memory layer: one contiguous reservation per heap,
+  committed, decommitted and protected by page range, lent as word slices, on
+  Windows (`windows-sys`) and POSIX (`libc`). The only crate with `unsafe`;
+  `ns-runtime` and `ns-lsp` forbid it, and no other crate contains any.
+  Nothing uses it yet: road step 3, the object space, is its first user
+  (`docs/design/memory.md`, "The memory layer").
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
@@ -205,7 +211,7 @@ stops compiling until it says what to do with it.
 `World::enter` hands the at-rest `Mutator<'static>` to a closure generic over
 `'gc` (`for<'gc> FnOnce(&mut Mutator<'gc>) -> R`), in safe Rust: the closure
 is checked for every `'gc`, so it can neither assume the brand is `'static`
-nor let a branded value out. The crate forbids unsafe code
+nor let a branded value out. `ns-runtime` forbids unsafe code
 (`#![forbid(unsafe_code)]`) and the brand needs none. What keeps it meaning
 something: never add a public way to change a handle's brand — `heap.rs`'s
 private `at_rest` and `branded`, one per direction, for the host root table,
@@ -397,6 +403,12 @@ cargo run -p ns-cli -- parse-corpus corpus/modules
 
 # --- before every commit that touches crates/ns-lsp or crates/ns-syntax ---
 cargo nextest run -p ns-lsp
+
+# --- before every commit that touches crates/ns-memory ---
+# once per machine: rustup target add x86_64-unknown-linux-gnu aarch64-apple-darwin
+# the POSIX half is checked, not run, since nothing here runs Linux or macOS
+cargo clippy -p ns-memory --all-targets --target x86_64-unknown-linux-gnu
+cargo clippy -p ns-memory --all-targets --target aarch64-apple-darwin
 
 # --- before every commit that touches editors/jetbrains, crates/ns-lsp or crates/ns-syntax ---
 ./editors/jetbrains/gradlew -p editors/jetbrains check

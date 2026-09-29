@@ -1340,13 +1340,13 @@ Would change: the object representation becomes the one the reference
 engines with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with
 Primordial Soup beside them -- adapted where Newspeak's nesting requires it,
 and the JIT tiers follow on it. Decided with the user on 2026-09-29; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
-to a high-performance VM". Three `Planned:` sections below and four in
+to a high-performance VM". Three `Planned:` sections below and three in
 [memory.md](memory.md) describe its representation steps. The road, each
 step landing green on its own:
 
 1. **The memory layer** -- a crate of its own that reserves one contiguous
    address range and commits it on demand ([memory.md](memory.md),
-   "Planned: the memory layer").
+   "The memory layer").
 2. **An eight-byte value**, on today's arena, with `LargeInteger`
    ("Planned: an eight-byte value" below; [core-library.md](core-library.md),
    "Planned: large integers").
