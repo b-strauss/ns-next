@@ -93,8 +93,9 @@ restamp it, as
 `Heap::set_class_application` already does when a class's application
 changes; otherwise a cache hit would run the old class's method on the
 object. The planned forwarder meets the first by construction: it carries a
-reserved id that no guard holds, so every send to one misses, and the target
-keeps its own id
+reserved id that no guard holds, so every send whose guard is the receiver's
+own header misses on one, super and private lexical sends check the
+receiver's header before using a hit, and the target keeps its own id
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders", road step 5).
 
@@ -106,12 +107,16 @@ forwarders", road step 5).
    mirrors.
 3. **Edit and continue.** Recompile the edited method — new bytecode, new temp
    count, new statement→program-counter table. For every affected context, the active one and
-   any pending frames running the same method, grow `temporaries` if slots were added,
-   set the new ones to nil, and remap the program counter through the statement→program-counter table.
-   Growing an activation requires taking it off the stack into its reified
-   frame first, because a running activation is an entry in a stack where an
-   entry in the middle cannot grow ([execution.md](execution.md), "How this
-   meets the liveness requirements"). That is the same move as forcing a frame out
+   any pending frames running the same method, give it room for the added
+   slots, set the new ones to nil, and remap the program counter through the
+   statement→program-counter table. A running activation is an entry in a
+   stack where an entry in the middle cannot grow, so it is divorced into a
+   newly allocated, larger frame object, the VM rewrites every reference to
+   the old frame by a heap walk, and execution continues from the divorced
+   frame, which needs a divorced frame put back on the stack
+   ([execution.md](execution.md), "How this meets the liveness
+   requirements"; [object-model.md](object-model.md), "Planned: the object
+   layout"). That is the same move as forcing a frame out
    of JIT-optimized form before debugging it, one level down, so the requirement
    is met by the existing principle rather than in tension with it.
    **Resume only at statement boundaries**, which is what keeps program-counter remapping

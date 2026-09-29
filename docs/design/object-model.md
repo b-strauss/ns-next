@@ -1339,8 +1339,7 @@ and one that is captured is stored the way an object is. See
 Would change: the object representation becomes the one the reference
 engines with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with
 Primordial Soup beside them -- adapted where Newspeak's nesting requires it,
-and the JIT tiers follow on it. Decided with the user on 2026-09-29, the
-eight-byte value having been first noted on 2026-09-28; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
+and the JIT tiers follow on it. Decided with the user on 2026-09-29; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
 to a high-performance VM". Three `Planned:` sections below and four in
 [memory.md](memory.md) describe its representation steps. The road, each
 step landing green on its own:
@@ -1366,7 +1365,7 @@ step landing green on its own:
    "Planned: JIT tiers").
    - **Between road steps 7 and 8, real Newspeak bodies for `whileTrue:`,
      `whileFalse:` and `do:`** ([core-library.md](core-library.md), "Planned:
-     real bodies for control flow and `do:`, before the JIT tiers").
+     real bodies for control flow and `do:`, before the baseline JIT").
 8. **A baseline JIT**, and
 9. **an optimizing JIT** ([execution.md](execution.md), "Planned: JIT tiers").
 
@@ -1455,7 +1454,10 @@ a word cannot go stale the way a Rust-side handle can while every
 collection walks every object: the collector reads each object by its format
 and rewrites every field, so it has no field to overlook the way it could
 overlook one a Rust type forgot to trace, and a word read out of the heap is
-given the current heap id and epoch. Under generations (road step 4) a
+given the current heap id and epoch. So that no stale value can be laundered
+that way, every store accessor checks, from this step on, that the Rust-side
+value it stores carries the current heap id and epoch before it becomes a
+word. Under generations (road step 4) a
 scavenge walks only the young objects and the remembered ones, so an old
 object whose store missed the barrier would keep a stale young word; that is
 what `NS_NEXT_STRESS_SCAVENGE`, with the from-space made no-access, catches
@@ -1497,7 +1499,9 @@ the lock bits into one 64-bit word:
 |---|---|
 | 0-21 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id") |
 | 22-26 | the format |
-| 27-32 | spare, for the generations' remembered bit and age (road step 4) |
+| 27-30 | the age, for the generations (road step 4) |
+| 31 | the remembered bit (road step 4) |
+| 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`) |
 | 33 | the mark bit |
 | 34-55 | the identity hash, drawn lazily from the counter; 0 means none yet |
 | 56-63 | the number of words after the header -- the class word and the fields; 255 means the real count is in an overflow word *before* the header |
@@ -1518,8 +1522,8 @@ verbatim").
 rule: an application without an id runs uncached ([dispatch.md](dispatch.md),
 "The dispatch id"). An application id is reclaimed once no class object, no inline-cache or
 global-cache entry (its guard, or a `Lexical` key's application id) and no
-application-cache entry, key or value, names it, and a mixin id once no
-application and no application-cache entry, key or value, names it; the collector can
+application-cache entry, key or value, names it, and a mixin id once the `Mixin` itself is dropped -- its
+table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it; the collector can
 tell both, so reusing an id is safe.
 
 **The class word** is an ordinary value naming the object's class object.
@@ -1556,7 +1560,7 @@ either layout open.
 | closure | fixed fields, then its copied values |
 | byte-indexed | a one-byte string or symbol |
 | 32-bit-indexed | a wide string or symbol |
-| 64-bit-indexed | a `LargeInteger`'s digits, a boxed `Float` |
+| 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
 | forwarded | a forwarder -- `become:`'s ("Planned: `become:` through forwarders") and the scavenger's for a young object it has copied -- whose class word holds the new location |
 | free | a gap the collector leaves, walkable like an object |
 
@@ -1580,9 +1584,11 @@ in fixed fields and its copied values inline; a code id indexes a Rust-side
 table of compiled code that is append-only per heap, its entries never freed
 or reused, since compiled code is shared by mixins and reclaiming it belongs
 with live editing. A reified frame keeps its
-sender, home, receiver, current class, program counter, code id, kind and
-the index of the activation it is married to, if any (today `FrameSlot`'s
-`live`), in fixed fields and its registers inline, and the kernel-private
+sender, home, receiver, current class, program counter, code id, kind, the
+kind's operand -- the closure of a block frame, the class of an initializer
+or superclass-clause frame, a handle the trace and the barrier see --
+`uncontinuable`, and the index of the activation it is married to, if any
+(today `FrameSlot`'s `live`), in fixed fields and its registers inline, and the kernel-private
 `Activation` objects the exception machinery holds become these frame
 objects themselves; the running activations stay on the activation stack
 until road step 7. A frame object is allocated at `reify` with its code's
@@ -1590,9 +1596,12 @@ full register count, whatever the code; whether the divorce copies the
 registers into it stays decided per activation from the block's
 `outer_reach`, as today. So no frame object ever grows, and suspension, the
 debugger and edit-and-continue find room for the registers in every reified
-frame; edit-and-continue adding locals makes a new frame object and
-re-marries the activation, the VM rewriting references to the old frame
-itself, by a walk of the whole heap, since frames are never forwarded. The cost is a few more words per
+frame. Edit-and-continue adding locals divorces the affected activation
+into a newly allocated, larger frame object, the VM rewriting every reference
+to the old frame by a walk of the whole heap, since `become:` never forwards
+a frame; execution continues from the divorced frame, which needs a divorced
+frame put back on the stack, the piece suspend and resume need too
+([execution.md](execution.md), "How this meets the liveness requirements"). The cost is a few more words per
 reified frame, and `bench_block.ns`, which reifies a frame per iteration, is
 the workload that shows it.
 While a frame is married its registers live on the stack and the trace skips
@@ -1644,21 +1653,32 @@ forwarders. Road step 5.
 
 `become:` turns the old object into a forwarder: the forwarded format, the
 target in its class word, and a reserved application id -- one of the 22-bit
-ids -- that is never any send's guard, so every send to a forwarder misses
-its inline cache. The send path follows a forwarded receiver in the shared
-lookup (`interpreter/resolve.rs`, the `decide_*` entries), which both the
-inline caches' miss path and the reference lowering call, so the two
-lowerings cannot diverge; it cleans up the receiver, the stack and the
+ids -- that is never any send's guard, so every send whose guard is the
+receiver's own header misses its inline cache on a forwarder. A super send
+and a private lexical send guard on the running method's or N's application
+instead, not on the receiver's header, so a forwarded receiver could hit
+there: they check the receiver's header for the forwarded format before
+using a hit and take the resolve path when it is forwarded, as Spur's
+explicit read barrier in super sends does (`ensureReceiverUnforwarded`,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`: "To
+maintain the invariant that all receivers are unforwarded we need an
+explicit read barrier in the super send cases"). The send path follows a
+forwarded receiver in the `resolve_*` entries of `interpreter/resolve.rs`
+(`resolve_public`, `resolve_lexical`, `resolve_super`), which the inline
+caches' `miss` and the uncached `decide_send`, `decide_lexical_send` and
+`decide_super_send` (`interpreter/mod.rs`) all reach, so the two lowerings
+cannot diverge; it cleans up the receiver, the stack and the
 registers, as Spur's `handleForwardedSendFaultForTag:` does. The scavenger
 and the compaction rewrite every reference they meet to the target, and the
 forwarder is garbage afterwards.
 
 **One forwarding rule for both causes.** A reference to a forwarded object is
 followed along the whole chain, whatever made each link -- `become:` or the
-scavenger -- and the object at its end is copied unless it already lies in
-the survivor space being filled, as Spur's `scavengeReferentsOf:` does
-(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:43278`: "a forwarding
-pointer could be because of become: or scavenging"). Marking likewise
+scavenger -- and the object at its end is copied only if it is young and not
+already in the survivor space being filled, as Spur's `scavengeReferentsOf:`
+does (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:43278`: "a
+forwarding pointer could be because of become: or scavenging"; the
+`isReallyYoungObject:` test at `:43316-43322`). Marking likewise
 follows a forwarder to its target.
 
 **Where a forwarder can be met.** Every heap accessor reads the object's
@@ -1702,10 +1722,11 @@ the VM writes its fields -- a new application id when methods or slots
 change, a new superclass, a new value refusal -- and every reference to it
 stays valid; when the slots change, its instances migrate by allocating the
 new shape, copying the fields and forwarding the old instances with
-`become:`, which instances admit. A live frame gains locals through a new
-frame object with the new register count, the activation re-married to it,
-and a whole-heap walk by the VM rewriting every reference to the old frame,
-since frames are never forwarded ("Planned: the object layout" above).
+`become:`, which instances admit. A live frame gains locals by being divorced
+into a newly allocated, larger frame object, with a whole-heap walk by the
+VM rewriting every reference to the old frame, since `become:` never forwards
+a frame, and execution continuing from the divorced frame ("Planned: the
+object layout" above).
 Closures keep their old code, as in Smalltalk, and new ones get the new code.
 Editing a value class migrates its instances the same way, inside the VM,
 which no program can observe, since a value has no identity.
@@ -1792,8 +1813,7 @@ remove slots of a class with live instances.
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
 - **The value will be one tagged 64-bit word with unbounded integers through
-  `LargeInteger`** (planned; first noted with the user on 2026-09-28, decided
-  on 2026-09-29; "Planned: an eight-byte value" above). Spur's tags and the
+  `LargeInteger`** (planned; decided with the user on 2026-09-29; "Planned: an eight-byte value" above). Spur's tags and the
   immediate floats in Spur's range are derived.
   It lands on today's arena, before the object layout, so each step is
   checked against the goldens on its own.

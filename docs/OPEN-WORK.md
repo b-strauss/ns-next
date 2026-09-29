@@ -16,7 +16,8 @@ An item's code references were checked against the tree on 2026-09-28.
 **The memory layer**, step 1 of the road below: a crate of its own,
 `crates/ns-memory`, that reserves one contiguous address range, commits and
 decommits it as the heap grows and shrinks, protects cleared ranges in a debug
-build, and hands the committed part out as a word slice, on Windows and POSIX.
+build, and lends each accessible committed range as a word slice, on Windows
+and POSIX.
 Its plan is to be written from [memory.md](design/memory.md), "Planned: the
 memory layer".
 
@@ -46,7 +47,8 @@ and `prior-art/newspeak-benchmarks`.
   [execution.md](design/execution.md), "Planned: the compact instruction
   encoding".
 - **Step 3, the object space.** One header word (the application id as the
-  cache guard, the identity hash, format, size, GC bits) and a class word,
+  cache guard, the identity hash, format, size, GC bits, a `LargeInteger`'s
+  sign) and a class word,
   the fields inline, variably sized objects in one VM-owned space with
   byte-offset handles; classes, closures and reified frames become heap
   objects and the frame arena goes; strings in two widths; `Symbol` under
@@ -73,7 +75,7 @@ and `prior-art/newspeak-benchmarks`.
   iterates over a copy, `do:` with a non-block is a no-op, and `whileTrue:`
   with a non-block body re-runs the condition.
   [core-library.md](design/core-library.md), "Planned: real bodies for
-  control flow and `do:`, before the JIT tiers".
+  control flow and `do:`, before the baseline JIT".
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.

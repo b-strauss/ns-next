@@ -4631,8 +4631,8 @@ Three things the trampoline settles on its own:
   lowerings. `do:` answers its block as a step too ("No re-entry from Rust"
   below). Since step 6 each of these is the leaf a `Kernel.ns` method
   forwards to; rewriting them as Newspeak loops and branches is a separate
-  step before the JIT tiers ([core-library.md](core-library.md), "Planned:
-  real bodies for control flow and `do:`, before the JIT tiers").
+  step before the baseline JIT ([core-library.md](core-library.md), "Planned:
+  real bodies for control flow and `do:`, before the baseline JIT").
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
@@ -5023,7 +5023,11 @@ only the top entry's register window can grow in place. The answer is that
 editing a method takes its affected activations off the stack first — reified
 and divorced while still running, the operation Cog's `divorceAllFrames`
 performs on every stack page before a snapshot — and a divorced frame's `temporaries`
-is a growable `Vec`. Continuing an activation from its divorced frame needs a
+is a growable `Vec`. Under the planned object space a frame object never
+grows; the activation is divorced into a newly allocated, larger frame
+object and the VM rewrites every reference to the old one by a heap walk
+([object-model.md](object-model.md), "Planned: the object layout").
+Continuing an activation from its divorced frame needs a
 way to put the frame back on the stack, which does not exist yet; it is the
 same missing piece as resuming a decoded frame
 ([image-format.md](image-format.md), "Planned: suspend and resume"). The document already accepts that entering the debugger forces the
@@ -5032,8 +5036,8 @@ level below the JIT.
 
 ## Closure conversion
 
-**Built 2026-09-20**, designed with the user on 2026-09-19. Step 4 of the order
-of work ([PROGRESS.md](../PROGRESS.md)), placed after the inline caches and
+**Built 2026-09-20**, designed with the user on 2026-09-19. M4's step 4
+([PROGRESS.md](../PROGRESS.md)), placed after the inline caches and
 before the collector, whose retention it affects most. The decisions are listed
 under "Decisions" below; this section is what they add up to.
 
@@ -5085,7 +5089,7 @@ the creator is still answered after its method has returned
 directly in its method has `sender = enclosingActivation`
 (`testEnclosingActivationEquality`). Once the collection iterators are
 Newspeak loops rather than forwarders to a leaf ([core-library.md](core-library.md),
-"Planned: real bodies for control flow and `do:`, before the JIT tiers"),
+"Planned: real bodies for control flow and `do:`, before the baseline JIT"),
 every block one runs is such an entry.
 
 The alternative — reify nothing for a block without `^`, carry only what it
@@ -5760,7 +5764,7 @@ fields, generations and inline allocation ([memory.md](memory.md),
 offsets, a guard read in one load, a cheap write barrier and a bump
 allocation it can emit itself, and on real Newspeak bodies for
 `whileTrue:`, `whileFalse:` and `do:` ([core-library.md](core-library.md),
-"Planned: real bodies for control flow and `do:`, before the JIT tiers").
+"Planned: real bodies for control flow and `do:`, before the baseline JIT").
 Each step gets its own design when it comes up.
 
 - **Step 7, an execution model for compiled code.** Frames that interpreted and

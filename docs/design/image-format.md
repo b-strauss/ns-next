@@ -1160,10 +1160,12 @@ which is old space's bytes relocated on load, is the model this does not take.
   answers a SmallInteger when the value fits 61 bits and a `LargeInteger`
   otherwise. An integer beyond the `i64` range, as a value and as a literal,
   takes a new value tag and a new literal tag, each the next free number when
-  it lands, carrying a sign and its 64-bit digits. The decoder refuses a
-  `LargeInteger` that is not normalized -- one that fits 61 bits, one with a
-  zero top digit, a negative zero -- so every integer keeps exactly one
-  representation. Since every integer
+  it lands, carrying a sign and its magnitude's 64-bit digits. The decoder
+  refuses a new-tag integer that fits `i64`, which must travel as
+  `VALUE_SMALL_INTEGER`, one with a zero top digit, and a negative zero (a
+  zero magnitude with the sign negative, which in the object space would be
+  the header's negative bit set on a zero magnitude), so every integer keeps
+  exactly one encoding on the wire and one representation on decode. Since every integer
   literal is then representable, the malformed-integer literal tag 8
   (`Literal::MalformedInteger`) retires.
 - **Floats** stay `VALUE_FLOAT`, an `f64` on the wire, and the decoder answers
@@ -1190,10 +1192,16 @@ which is old space's bytes relocated on load, is the model this does not take.
   no size field, and none is added -- and checks it against the bytes
   remaining, then allocates, and the second pass fills the fields, whose
   forward references then name objects that already exist.
-- **The decode amplification is recomputed** for a 16-byte minimum object
-  against the minimum record ([memory.md](memory.md), "The interim cost, and the one
-  question still open", where the figures are, and `CLAUDE.md`'s paragraph on untrusted images), and
-  `bounded_count` keeps bounding every pre-allocation by the bytes remaining.
+- **The decode amplification is recomputed** as the larger of two ratios:
+  per record, a 16-byte minimum object against the minimum record, and per
+  value, the words a decoded value occupies against the bytes that encode
+  it. The per-value ratio dominates -- a one-byte `VALUE_NIL` element becomes
+  an 8-byte word, 8x, and a UTF-8 byte widened to the 32-bit string form 4x
+  -- since the first pass allocates each object's full size before
+  validation ([memory.md](memory.md), "The interim cost, and the one
+  question still open", where the figures are, and `CLAUDE.md`'s paragraph on
+  untrusted images). `bounded_count` keeps bounding every pre-allocation by
+  the bytes remaining.
 - **Identity hashes** are preserved as they are today, per record and in the
   tag-named table; what changes is their width. The header word holds 22 bits
   ([object-model.md](object-model.md), "Planned: the object layout"), so the

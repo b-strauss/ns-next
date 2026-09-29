@@ -1176,7 +1176,7 @@ per-mixin id is wanted by dispatch's open option of guarding a private
 lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What
 makes the weak cache sound is the reuse rule: an application id is reclaimed once no class object, no inline-cache or global-cache entry
 (its guard, or a `Lexical` key's application id) and no application-cache
-entry, key or value, names it, and a mixin id once no application and no
+entry, key or value, names it, and a mixin id once the `Mixin` itself is dropped -- its table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no
 application-cache entry, key or value, names it. The cache's unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with it.
 
@@ -1382,8 +1382,11 @@ changes an object's size is reflective and rare -- edit-and-continue adding
 locals to a live activation, a MirrorBuilder adding or removing slots of live
 instances (requirements 2 and 3 of
 [liveness-and-reflection.md](liveness-and-reflection.md)) -- and takes a new
-object and a `become:` ([object-model.md](object-model.md), "Planned:
-`become:` through forwarders").
+object: for instances, a `become:` forwards the old one to it
+([object-model.md](object-model.md), "Planned: `become:` through
+forwarders"); for a frame, the activation is divorced into the larger frame
+object and the VM rewrites the references to the old one by a heap walk
+("Planned: the object layout", there).
 
 **No existing arena crate does what the space needs.** Every arena crate
 models one lifetime pattern -- everything lives until a reset -- where this
@@ -1416,11 +1419,14 @@ high-performance VM".
   `VirtualAlloc` with `MEM_RESERVE`, then `MEM_COMMIT`,
   `prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414`).
 - **Operations**: reserve, commit a range, decommit a range when a space
-  shrinks, protect a range as no-access or read-write, and hand out the
-  committed part as `&[u64]` and `&mut [u64]`; dropping the reservation
-  releases it. `protect` and `decommit` take the reservation by `&mut`, so no
-  lent slice outlives a change of what is accessible, and a lent slice covers
-  only accessible, committed words.
+  shrinks, protect a range as no-access or read-write, and lend each
+  accessible, committed range as its own `&[u64]` and `&mut [u64]`; dropping
+  the reservation releases it. `protect` and `decommit` take the reservation
+  by `&mut`, so no lent slice outlives a change of what is accessible. The
+  heap keeps one slice per space -- each survivor space, eden and the old
+  space -- and picks it by an offset's range, so an offset into a protected
+  or uncommitted range finds no slice: that selection is the bounds check the
+  accessors rely on.
 - **Two implementations behind one interface, from the start**: Windows
   (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, through `windows-sys`) and
   POSIX (`mmap` with `PROT_NONE` to reserve, `mprotect` to commit and protect,
@@ -1437,8 +1443,8 @@ high-performance VM".
 - **In a debug build a vacated range is protected as no-access**, as Soup does
   around its scavenges and mark-sweeps
   (`from_.NoAccess()`, `prior-art/primordialsoup/vm/heap.cc:341-344`,
-  `:653-655`). Since the heap's slices cover only accessible words, a stale
-  offset into a protected range fails the accessor's bounds check at once --
+  `:653-655`). Since an offset into a protected range finds no slice, a stale
+  one fails the accessor's bounds check at once --
   a panic in the debug build's stress runs. This catches a stale offset into
   an evacuated nursery space or the compacted-away tail above the new top; a
   stale offset below the new top lands in live, compacted memory, which is
@@ -1468,7 +1474,10 @@ instruction encoding.
   types -- `ObjectReference`, and `Value` in Rust variables, structures,
   continuations and host roots -- carry the heap id and the move epoch in
   full in a debug build, as they do today, so the origin guard and the epoch
-  check stay exact wherever a stale handle can arise; a word read out of the
+  check stay exact wherever a stale handle can arise. From road step 2 on,
+  every store accessor checks in a debug build that the stored Rust-side
+  value's heap id and epoch are current before it becomes a word, so a stale
+  value cannot be laundered into a field; a word read out of the
   space is given the current ones, since a full collection rewrites every
   field it walks by format and cannot miss one the way it can miss an unknown
   Rust field; under generations a scavenge walks only the young and the
@@ -1520,7 +1529,12 @@ gains `crates/ns-memory`, the one crate with `unsafe`, and "the crate forbids
 unsafe code" names `ns-runtime` (road step 1); "An image is untrusted input"
 takes new amplification figures for the eight-byte value (road step 2) and
 for variably sized objects (road step 3), with the decoder's first pass
-checking each record's declared size against the bytes remaining; the handle
+checking each record's declared size against the bytes remaining; the bound
+is the larger of the per-record and the per-value ratio, and the per-value
+ratio dominates -- a one-byte `VALUE_NIL` element becomes an 8-byte word,
+8x, and a UTF-8 byte widened to the 32-bit string form 4x
+([image-format.md](image-format.md), "Planned: the image under the new
+representation"); the handle
 paragraphs describe a 64-bit byte offset and the frame arena's end (road step
 3); "A cache records what the lookup decided" reads `ClassData.builtin` as a
 field of the class object, which `act` still reads afresh on every send (road
@@ -1551,15 +1565,15 @@ Road step 4.
 - **The scavenger** is a Cheney copy of the survivors, as in all three
   references (Spur `doScavenge:`, `cointerp.c:48477`; Strongtalk
   `Universe::scavenge`, `prior-art/strongtalk/vm/memory/universe_more.cpp:81-137`).
-  An object's age lives in the header's spare bits, and it is tenured once its
+  An object's age lives in the header's four age bits (bits 27-30), and it is tenured once its
   age reaches a threshold that adapts to how full the survivor space is,
   Strongtalk's age table (`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`).
   A copied object's old copy becomes a forwarder -- the forwarded format, its
   class word naming the new location -- the same mechanism `become:` uses. A
   reference to a forwarder is followed along the whole chain, whatever made
-  each link, and the object at its end is copied unless it already lies in
-  the survivor space being filled, as Spur's `scavengeReferentsOf:` does
-  (`cointerp.c:43278`; [object-model.md](object-model.md), "Planned:
+  each link, and the object at its end is copied only if it is young and not
+  already in the survivor space being filled, as Spur's `scavengeReferentsOf:`
+  does (`cointerp.c:43278`, the `isReallyYoungObject:` test at `:43316-43322`; [object-model.md](object-model.md), "Planned:
   `become:` through forwarders").
 - **Before a scavenge starts it commits old space for the worst case** -- the
   occupancy of eden and the survivor space -- so a promotion never meets a
@@ -1579,10 +1593,9 @@ Road step 4.
   reference lowering and a JIT share one rule. Every store into a heap object
   goes through them: fields and elements, the class word, a frame object's
   registers written on divorce and by `StoreOuterLocal`, a closure's copied
-  values, and a forwarder's target. In a debug build
-  every store accessor first checks the stored Rust-side value's heap id and
-  move epoch, before reducing it to a word, so a stale value cannot be
-  laundered into a field and come back out looking current. The collector's own rewrites -- the
+  values, and a forwarder's target. The debug check of the stored Rust-side
+  value's heap id and epoch, which every store accessor makes from road step
+  2 on ("Planned: the object space"), holds here too. The collector's own rewrites -- the
   scavenge, the compaction, the replacement of resolved futures -- keep the
   remembered set themselves. The running activation stack's registers are
   roots and take no barrier.

@@ -675,9 +675,11 @@ promoted result.
 `LargeInteger` is a kernel class, a subclass of `Integer`, which stays the
 class of the immediate integers: §5.1.1 asks only that an integer "obeys the
 protocol of class `Integer`", so `3 class` keeps answering `Integer`. A
-`LargeInteger` holds a sign and 64-bit digits, least significant first -- on
-today's arena in a digit payload of its own, then inline in a
-64-bit-indexed object of the object space ([object-model.md](object-model.md),
+`LargeInteger` holds its magnitude as 64-bit digits, least significant first,
+and its sign apart -- on today's arena in a digit payload of its own, then
+inline in a 64-bit-indexed object of the object space with the sign in the
+header's negative bit, as Primordial Soup's `kNegativeBit`
+(`prior-art/primordialsoup/vm/object.h:48`); one class, not Spur's two ([object-model.md](object-model.md),
 "Planned: the object layout"). Its arithmetic is leaves on the VM mirror, as
 `Integer`'s is: `Integer`'s methods keep their immediate fast path, and the
 inlined `IntegerBinary`, and answer a `LargeInteger` where an immediate
@@ -835,7 +837,7 @@ block answers it as a trampoline step instead of calling it:
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the kernel method kept as the guarded fallback. There is no leaf: `True`'s or `False`'s method is a quick method, and one whose body is `^<parameter> value` answers the block as a trampoline step instead of calling it ("`True` and `False` are quick methods" below; [execution.md](execution.md), "The trampoline") |
 | `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the JIT tiers" below |
+| `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the baseline JIT" below |
 
 So no native calls back into Newspeak, which the root discipline needs as well:
 no Rust frame may be live below a safepoint ([memory.md](memory.md), "No Rust
@@ -2283,7 +2285,7 @@ decline for one where they would answer "no"
 (`Primitive::answers_false_to_a_stranger`). The design is
 [object-model.md](object-model.md), "Simultaneous slots".
 
-### Planned: real bodies for control flow and `do:`, before the JIT tiers
+### Planned: real bodies for control flow and `do:`, before the baseline JIT
 
 Would change: `Block`'s `whileTrue:` and `whileFalse:` and the
 collections' `do:` become real Newspeak loops instead of forwarders to
@@ -2294,7 +2296,7 @@ already Newspeak ("`True` and `False` are quick methods" above).
 user on 2026-09-22). The loops and `do:` are forwarders over
 the trampoline-step leaves, as mirror primitives, so `do:`'s loop is still
 opaque: nothing can inline its block or compile the loop as a unit. Rewriting
-them must happen **before the JIT tiers** — they are what the tiers need to
+them must happen **before the baseline JIT** — they are what the tiers need to
 see through — and pays off **only with one**: before a JIT a Newspeak loop is
 more sends and activations than the leaf it replaces, and costs. Its place is
 therefore as late as it can come: after the execution model for compiled
@@ -2429,7 +2431,7 @@ date given
 6. **The fast path was built early, with a measurement-only switch**
    (2026-09-22), `NS_NEXT_NO_PRIMITIVE_METHODS=1`.
 7. **Kernel method bodies forward; they do not reimplement** (2026-09-22) —
-   "Planned: real bodies for control flow and `do:`, before the JIT tiers"
+   "Planned: real bodies for control flow and `do:`, before the baseline JIT"
    above.
 8. **`True` and `False` are subclasses of `Boolean`** (2026-09-22), as both
    references declare them.

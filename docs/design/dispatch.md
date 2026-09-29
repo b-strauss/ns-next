@@ -1471,17 +1471,25 @@ cache is free to become weak
 ([memory.md](memory.md), "Weak references"). And a forwarder
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders", road step 5) carries a reserved application id that is never a
-guard, so every send to one misses and the miss path, in
-`interpreter/inline_cache.rs`, follows it before resolving -- Spur's read
-barrier on send, which needs no check on a hit. An immediate's guard comes
+guard, so every send whose guard is the receiver's own header misses on a
+forwarder -- Spur's read barrier on send, which needs no check on a hit. A
+super send and a private lexical send guard on the running method's or N's
+application instead, so they check the receiver's header for the forwarded
+format before using a hit, as Spur's explicit barrier in super sends does
+(`ensureReceiverUnforwarded`,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). A
+forwarded receiver is followed in the `resolve_*` entries of
+`interpreter/resolve.rs`, which `miss` and the uncached `decide_send`,
+`decide_lexical_send` and `decide_super_send` (`interpreter/mod.rs`) all
+reach, so the two lowerings cannot diverge. An immediate's guard comes
 from a table indexed by its tag, and for the constant tag by the constant,
 since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the ids can run
 out where today's `u32` counter practically cannot; running out keeps
 today's rule, an application without an id running uncached (`NONE`, "The
 dispatch id" above). An application id is reclaimed once no class object, no inline-cache or
 global-cache entry (its guard, or a `Lexical` key's application id) and no
-application-cache entry, key or value, names it, and a mixin id once no
-application and no application-cache entry, key or value, names it, which the
+application-cache entry, key or value, names it, and a mixin id once the `Mixin` itself is dropped -- its
+table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it, which the
 collector can tell.
 
 ### Considered and rejected
