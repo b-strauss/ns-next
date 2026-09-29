@@ -123,13 +123,17 @@ pub(crate) fn execute(
             Ok(loaded) => {
                 let ns_runtime::image::LoadedImage {
                     mut interpreter,
-                    root_class,
+                    modules,
                     ..
                 } = loaded;
+                let Some(application) = modules.first() else {
+                    eprintln!("error: {} carries no module", file.display());
+                    return ExitCode::FAILURE;
+                };
                 match interpreter.enter(|mutator| {
                     root_mixin_of(
                         mutator.heap(),
-                        crate::entry::class_reference(mutator, &root_class),
+                        crate::entry::class_reference(mutator, &application.class),
                     )
                 }) {
                     Ok(root_mixin) => root_mixin,

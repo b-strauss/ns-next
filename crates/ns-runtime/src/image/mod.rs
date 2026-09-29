@@ -1,7 +1,8 @@
 //! Image serialization: a versioned, architecture-neutral encoding of a
 //! live `ns-next` world, decoded on load (never a memory dump). See
-//! `docs/design/image-format.md`. Layout: header, optional source text,
-//! `SourceOrigin`, symbol table, code table, mixin table, root class, entry
+//! `docs/design/image-format.md`. Layout: header, symbol table, code
+//! table, mixin table (one tree per module, in module order), module section
+//! (per module: `SourceOrigin`, optional source text, root section), entry
 //! field, then for an image the platform paths, object table, frame table,
 //! roots, tag-named hashes.
 //!
@@ -11,18 +12,22 @@
 //! the world holds, so there is nothing left for a re-parse to rebuild --
 //! and the image's source text, which is attacker-controlled input like
 //! every other byte in the file, is never handed to the parser. It is not
-//! even required to be present: `snapshot(None, ...)` writes an image with
-//! no source in it at all, and `snapshot(Some(source), ...)` writes the debug
-//! variant, whose source blob exists so a loaded world can be shown (and,
-//! once a decompiler exists, compared) as `.ns`.
+//! even required to be present: modules handed as `ModuleSource`s with no
+//! `source` write an image with no program text in it at all, and modules
+//! that all carry theirs write the debug variant, whose source exists so a
+//! loaded world can be shown (and, once a decompiler exists, compared) as
+//! `.ns`.
 
 pub mod decode;
 pub mod encode;
 pub mod inspect;
 pub mod mixins;
+pub mod modules;
 pub mod opcodes;
 pub mod platform_paths;
 pub mod symbols;
+
+pub use modules::{ModuleClass, ModuleClasses, ModuleSource};
 
 use crate::heap::{Heap, Root};
 use crate::types::{ClassReference, SourceOrigin, Value};
@@ -32,7 +37,7 @@ use crate::{HostSignal, Interpreter, Mutator, Symbol};
 /// buffers with the symbol table still open so the caller can intern into it.
 ///
 /// Both artifacts go through this, which is what makes the section *order*
-/// and the *encoding logic* for code, mixins and the root class identical
+/// and the *encoding logic* for code, mixins and the module section identical
 /// between them by construction rather than by discipline -- a second copy
 /// would drift at the first format change, and the test that compares them
 /// would only find out afterwards.
@@ -63,10 +68,12 @@ struct Describing {
 /// and both need them encoded before the (still-open) symbol table can be
 /// written, since it is the table's *contents* that fill it.
 fn encode_describing<'gc>(
-    root_class: ClassReference<'gc>,
+    modules: &[ModuleSource<'_, 'gc>],
     heap: &Heap<'gc>,
 ) -> Result<Describing, String> {
-    let module_roots = std::slice::from_ref(&root_class);
+    let module_roots: Vec<ClassReference<'gc>> =
+        modules.iter().map(|module| module.class).collect();
+    let module_roots = module_roots.as_slice();
     // A root that can never be instantiated could only fail as an artifact,
     // and refusing it here keeps the format from needing a way to say so.
     for module_root in module_roots {
@@ -97,29 +104,29 @@ fn encode_describing<'gc>(
     })
 }
 
-/// Writes header through root class. Everything after that is the caller's:
-/// the entry field, and for an image the graph.
+/// Writes header through the module section. Everything after that is the
+/// caller's: the entry field, and for an image the graph.
+///
+/// The header says the modules carry source when any one is handed some;
+/// `encode_modules` then refuses a module handed none, so a mix is an `Err`
+/// rather than an artifact that silently drops one module's text.
 fn write_describing<'gc>(
     writer: &mut encode::Writer,
-    source: Option<&str>,
-    origin: &SourceOrigin,
+    modules: &[ModuleSource<'_, 'gc>],
     flags: u8,
     describing: Describing,
-    root_class: ClassReference<'gc>,
     heap: &Heap<'gc>,
 ) -> Result<(), String> {
+    let with_source = modules.iter().any(|module| module.source.is_some());
     encode::write_header(
         writer,
         flags
-            | match source {
-                Some(_) => encode::FLAG_HAS_SOURCE,
-                None => 0,
+            | if with_source {
+                encode::FLAG_HAS_SOURCE
+            } else {
+                0
             },
     );
-    if let Some(source) = source {
-        writer.write_str(source);
-    }
-    encode::encode_source_origin(writer, origin);
     // The symbol table is written here, ahead of the code and mixin tables it
     // fills, so a reader can decode it once before either asks it to resolve
     // an id. Both callers are done with `describing.mixin_ids` by this point --
@@ -128,27 +135,26 @@ fn write_describing<'gc>(
     describing.symbols.write(writer);
     writer.write_raw(&describing.code.into_bytes());
     writer.write_raw(&describing.mixins.into_bytes());
-    encode::encode_root_class(writer, heap, root_class)?;
-    Ok(())
+    modules::encode_modules(writer, heap, modules, with_source)
 }
 
 /// Serializes a quiesced world: `roots` (the root instance and, if any,
 /// the entry send's result) plus everything reachable from them, together
-/// with the module's provenance and compiled code.
+/// with every module's provenance and compiled code. `modules` lists the
+/// modules the image carries, the application's first; a graph reaching a
+/// class of any other user module is refused.
 ///
-/// `source` is the debug variant's switch. `None` writes an image whose bytes
-/// contain no program text -- what a loaded world needs is the code table, the
-/// mixin table and the graph, and none of them quotes the source.
-/// `Some(source)` additionally stores `source` verbatim; `load` hands it back
-/// on `LoadedImage::source` and does nothing else with it. The graph closes
-/// with the hashes of the objects it names by tag
-/// (`encode::encode_tag_named_hashes`), and is preceded by the platform paths
-/// it names objects by (`platform_paths`).
+/// A module's `source` is the debug variant's switch. `None` writes a module
+/// whose bytes contain no program text -- what a loaded world needs is the
+/// code table, the mixin table and the graph, and none of them quotes the
+/// source. `Some(source)` additionally stores `source` verbatim; `load` hands
+/// it back on `LoadedModule::source` and does nothing else with it. Source
+/// travels for every module or for none. The graph closes with the hashes of
+/// the objects it names by tag (`encode::encode_tag_named_hashes`), and is
+/// preceded by the platform paths it names objects by (`platform_paths`).
 pub fn snapshot<'gc>(
     mutator: &Mutator<'gc>,
-    source: Option<&str>,
-    origin: &SourceOrigin,
-    root_class: ClassReference<'gc>,
+    modules: &[ModuleSource<'_, 'gc>],
     platform: &Value<'gc>,
     roots: &[Value<'gc>],
 ) -> Result<Vec<u8>, String> {
@@ -165,7 +171,9 @@ pub fn snapshot<'gc>(
                 .to_string(),
         );
     }
-    let mut describing = encode_describing(root_class, heap)?;
+    let mut describing = encode_describing(modules, heap)?;
+    let classes: Vec<ClassReference<'gc>> = modules.iter().map(|module| module.class).collect();
+    let module_classes = ModuleClasses::of(heap, &classes);
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
     // consumes `describing` -- the graph needs the mixin table's row ids, and
@@ -177,14 +185,14 @@ pub fn snapshot<'gc>(
         roots,
         platform,
         &describing.ids,
-        root_class,
+        &module_classes,
         &describing.mixin_ids,
         &mut describing.symbols,
     )?;
     encode::encode_tag_named_hashes(
         &mut graph_writer,
         mutator,
-        root_class,
+        &module_classes,
         platform,
         &used_paths.objects,
     );
@@ -194,7 +202,7 @@ pub fn snapshot<'gc>(
     let mut path_writer = encode::Writer::new();
     platform_paths::encode_section(&mut path_writer, &used_paths.paths, &mut describing.symbols);
     let mut writer = encode::Writer::new();
-    write_describing(&mut writer, source, origin, 0, describing, root_class, heap)?;
+    write_describing(&mut writer, modules, 0, describing, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
     // world is resumed by loading it and sending to `roots`, not by starting
     // it fresh -- but the field is written unconditionally so every artifact
@@ -214,12 +222,10 @@ pub fn snapshot<'gc>(
 /// bootstrapped platform, so the file has never held a capability.
 pub fn build<'gc>(
     heap: &Heap<'gc>,
-    source: Option<&str>,
-    origin: &SourceOrigin,
-    root_class: ClassReference<'gc>,
+    modules: &[ModuleSource<'_, 'gc>],
     entry: Symbol,
 ) -> Result<Vec<u8>, String> {
-    let mut describing = encode_describing(root_class, heap)?;
+    let mut describing = encode_describing(modules, heap)?;
     // Interned before `write_describing` writes the table below: an id
     // assigned after the table is on the wire is an id the table does not
     // contain, which the decoder reports as an out-of-range symbol id.
@@ -227,33 +233,38 @@ pub fn build<'gc>(
     let mut writer = encode::Writer::new();
     write_describing(
         &mut writer,
-        source,
-        origin,
+        modules,
         encode::FLAG_STATELESS,
         describing,
-        root_class,
         heap,
     )?;
     encode::encode_entry(&mut writer, Some(entry_id));
     Ok(writer.into_bytes())
 }
 
+/// One module a loaded artifact carried.
+pub struct LoadedModule {
+    /// The module's root class, rooted for the host that will instantiate
+    /// it or snapshot it again.
+    pub class: Root,
+    /// Where the module came from. Provenance, not program text -- it is
+    /// in every artifact, source or not.
+    pub origin: SourceOrigin,
+    /// The module's source text, for the debug variant only -- `None` for a
+    /// source-free artifact. Never parsed, never resolved, never executed:
+    /// `load` reads it out of the byte stream and hands it over unchanged.
+    pub source: Option<String>,
+}
+
 pub struct LoadedImage {
     /// Bootstrapped. The image's code lives on the declarations its mixin
     /// table rebuilt.
     pub interpreter: Interpreter,
-    /// The module's root class, rooted for the host that will instantiate
-    /// it or snapshot it again.
-    pub root_class: Root,
+    /// Every module the artifact carried, in module order: module 0 is the
+    /// application's.
+    pub modules: Vec<LoadedModule>,
     /// The image's roots, rooted: a host sends to them, which runs code.
     pub roots: Vec<Root>,
-    /// Where the module came from. Provenance, not program text -- it is
-    /// in every image, source blob or not.
-    pub origin: SourceOrigin,
-    /// The image's source text, for the debug variant only -- `None` for a
-    /// source-free image. Never parsed, never resolved, never executed:
-    /// `load` reads it out of the byte stream and hands it over unchanged.
-    pub source: Option<String>,
     /// The selector to send after instantiation. Mandatory in a binary,
     /// always `None` in an image today.
     pub entry: Option<Symbol>,
@@ -265,22 +276,23 @@ pub struct LoadedImage {
     pub stateless: bool,
 }
 
-/// Decodes an artifact: symbols, code table, mixin table, root class, entry,
-/// then -- for an image, never a binary -- the platform paths and the object
-/// graph. Verifies the decoded declarations against their code and, for an
-/// image, advances the identity-hash counter past the graph's maximum.
+/// Decodes an artifact: symbols, code table, mixin table, module section,
+/// entry, then -- for an image, never a binary -- the platform paths and the
+/// object graph. Verifies the decoded declarations against their code and,
+/// for an image, advances the identity-hash counter past the graph's maximum.
 ///
-/// Nothing here parses, resolves or compiles. The root class is rebuilt
-/// from mixin-table row 0 (`decode::build_root_class`), which is what makes
+/// Nothing here parses, resolves or compiles. Each module's root class is
+/// rebuilt from the first row of its tree in the mixin table
+/// (`modules::build_module_classes`), in module order, which is what makes
 /// the front end unnecessary -- and, since an artifact is untrusted input,
 /// what keeps the parser off the load path entirely.
 ///
 /// A binary (`header.stateless`) carries no graph section, so `roots` comes
 /// back empty and `verify_graph` has nothing to check; it must carry an
 /// entry, since that selector is the only way it says how to start once a
-/// caller instantiates `root_class`, so a stateless artifact with no entry
-/// is refused here rather than accepted and left to fail wherever a caller
-/// later looks for something to send.
+/// caller instantiates module 0's class, so a stateless artifact with no
+/// entry is refused here rather than accepted and left to fail wherever a
+/// caller later looks for something to send.
 ///
 /// Both verification passes run before anything the image describes can be
 /// executed: `verify_code_table` and `verify_mixins` before anything is
@@ -292,22 +304,16 @@ pub struct LoadedImage {
 /// by running code and its graph is decoded by running none
 /// (`docs/design/core-library.md`, "Platform paths in the image"). The first
 /// decodes everything up to and including the platform path section and
-/// roots the root class and its levels: a run may move them, and the mixins
-/// and the code hold no handle. The second, outside any entry, sends each
-/// path's members to the loading platform -- each step a public slot's or
-/// nested class's accessor, sent as an ordinary public send, what the
+/// roots every module's root class and levels: a run may move them, and the
+/// mixins and the code hold no handle. The second, outside any entry, sends
+/// each path's members to the loading platform -- each step a public slot's
+/// or nested class's accessor, sent as an ordinary public send, what the
 /// program's own `platform collections` may do -- and refuses a path that
-/// takes any other step, fails or answers no shipped object. The third decodes the graph
-/// against what the paths answered, and runs nothing.
+/// takes any other step, fails or answers no shipped object. The third
+/// decodes the graph against what the paths answered, and runs nothing.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut reader = decode::Reader::new(bytes);
     let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
-    let source = if header.has_source {
-        Some(reader.read_str().map_err(|error| error.to_string())?)
-    } else {
-        None
-    };
-    let origin = decode::decode_source_origin(&mut reader).map_err(|error| error.to_string())?;
     let mut interpreter = Interpreter::bootstrap();
     let described = interpreter.enter(|mutator| -> Result<Described, String> {
         let symbols = symbols::decode(&mut reader).map_err(|error| error.to_string())?;
@@ -320,19 +326,10 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
         let mixins = mixins::decode(&mut reader, &symbols, &table.codes)
             .map_err(|error| error.to_string())?;
-        // One module until the image records how many it carries: a second
-        // tree would be declarations no part of the image names.
-        if mixins.module_rows.len() != 1 {
-            return Err(decode::DecodeError::ModuleCountMismatch {
-                declared: 1,
-                trees: u32::try_from(mixins.module_rows.len()).unwrap_or(u32::MAX),
-            }
-            .to_string());
-        }
         decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
-        let root_section =
-            decode::decode_root_section(&mut reader, &mixins).map_err(|error| error.to_string())?;
-        let (root_class, root_levels) = decode::build_root_class(mutator, &mixins, &root_section)
+        let decoded_modules = modules::decode_modules(&mut reader, &mixins, header.has_source)
+            .map_err(|error| error.to_string())?;
+        let module_classes = modules::build_module_classes(mutator, &mixins, &decoded_modules)
             .map_err(|error| error.to_string())?;
         // `snapshot` always writes this field (as absent); a binary requires it
         // present, since it is the only place a binary records how to start
@@ -354,15 +351,28 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
                 .map_err(|error| error.to_string())?
         };
         // Rooted, because the next phase runs code, and a run may move them.
+        let module_roots = module_classes
+            .roots
+            .iter()
+            .map(|root| mutator.stash(Value::Object(*root)))
+            .collect();
+        let module_levels = module_classes
+            .levels
+            .iter()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .map(|level| mutator.stash(Value::Object(*level)))
+                    .collect()
+            })
+            .collect();
         Ok(Described {
             symbols,
             table,
             mixins,
-            root_class: mutator.stash(Value::Object(root_class)),
-            root_levels: root_levels
-                .into_iter()
-                .map(|level| mutator.stash(Value::Object(level)))
-                .collect(),
+            decoded_modules,
+            module_roots,
+            module_levels,
             entry,
             paths,
         })
@@ -390,22 +400,24 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         symbols,
         table,
         mixins,
-        root_class,
-        root_levels,
+        decoded_modules,
+        module_roots,
+        module_levels,
         entry,
         paths: _,
     } = described;
     let roots = interpreter.enter(|mutator| -> Result<Vec<Root>, String> {
-        let Value::Object(root_class_object) = mutator.fetch(&root_class) else {
-            unreachable!("internal: the root class is a class object");
+        let class_of = |root: &Root| match mutator.fetch(root) {
+            Value::Object(class) => class,
+            _ => unreachable!("internal: a module class is a class object"),
         };
-        let root_levels: Vec<ClassReference> = root_levels
-            .iter()
-            .map(|level| match mutator.fetch(level) {
-                Value::Object(level) => level,
-                _ => unreachable!("internal: a root level is a class object"),
-            })
-            .collect();
+        let module_classes = ModuleClasses {
+            roots: module_roots.iter().map(class_of).collect(),
+            levels: module_levels
+                .iter()
+                .map(|levels| levels.iter().map(class_of).collect())
+                .collect(),
+        };
         let platform_paths: Vec<Value> = resolved.iter().map(|path| mutator.fetch(path)).collect();
         let platform = mutator.platform_value();
         // A binary carries no graph section at all -- `decode_graph_section`
@@ -417,11 +429,10 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         } else {
             let mut context = decode::DecodeContext {
                 mutator,
-                root_class: &root_class_object,
+                modules: &module_classes,
                 codes: &table.codes,
                 platform,
                 mixins: &mixins.mixins,
-                root_levels: &root_levels,
                 platform_paths: &platform_paths,
             };
             decode::decode_graph_section(&mut reader, &mut context, &symbols)
@@ -431,7 +442,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             let tag_named_max = decode::decode_tag_named_hashes(
                 &mut reader,
                 mutator,
-                root_class_object,
+                &module_classes,
                 &platform_paths,
             )
             .map_err(|error| error.to_string())?;
@@ -459,26 +470,34 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             .map(|root| mutator.stash(root))
             .collect())
     })?;
+    let modules = module_roots
+        .into_iter()
+        .zip(decoded_modules)
+        .map(|(class, decoded)| LoadedModule {
+            class,
+            origin: decoded.origin,
+            source: decoded.source,
+        })
+        .collect();
     Ok(LoadedImage {
         interpreter,
-        root_class,
+        modules,
         roots,
-        origin,
-        source,
         entry,
         stateless: header.stateless,
     })
 }
 
 /// What `load`'s first phase decoded, carried across the second, which runs
-/// code: the tables hold no handle, and the root class and its levels are
-/// rooted.
+/// code: the tables hold no handle, and every module's root class and levels
+/// are rooted.
 struct Described {
     symbols: symbols::Table,
     table: decode::DecodedCodeTable,
     mixins: mixins::Decoded,
-    root_class: Root,
-    root_levels: Vec<Root>,
+    decoded_modules: Vec<modules::DecodedModule>,
+    module_roots: Vec<Root>,
+    module_levels: Vec<Vec<Root>>,
     entry: Option<Symbol>,
     paths: Vec<Vec<Symbol>>,
 }

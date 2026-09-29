@@ -18,6 +18,7 @@ use crate::types::{
 use crate::Symbol;
 use crate::{ArbitraryInteger, Mutator};
 
+use super::modules::ModuleClasses;
 use super::opcodes::*;
 use super::{mixins, symbols};
 
@@ -214,7 +215,7 @@ pub enum DecodeError {
         register_count: u16,
     },
     /// A class record names a `<:` clause its applying row does not declare:
-    /// `index` is past the row's clauses, or -- in the root-class section --
+    /// `index` is past the row's clauses, or -- in a module's root section --
     /// the root's levels are not listed in clause order, one per clause at
     /// most. A level's clause is where its selector and compiled message come
     /// from, so there is nothing a level with no clause could initialize by.
@@ -241,18 +242,27 @@ pub enum DecodeError {
     /// (`interpreter::nested::superclass_clause_expression`), so such a row
     /// describes a declaration no source has and whose levels nothing builds.
     MixinApplicationWithoutSuperclass,
-    /// The root-class section names no superclass for the module's root
+    /// A module's root section names no superclass for its root
     /// class. The root rule builds every root over `Object` or `Value`
     /// (`interpreter::instantiate::root_clause_defect`), so the encoder never
     /// writes one without, and a root with none would be a class outside
     /// §3.2's hierarchy, below neither `Object` nor `Top`.
     RootWithoutSuperclass,
-    /// A `CLASS_ROOT_LEVEL` class tag names a position past the levels the
-    /// root-class section rebuilt.
-    BadRootLevel(u32),
-    /// The image's mixin table is empty, so it describes no root class --
-    /// and a world without one has nothing for the graph's class tag 1 to
-    /// name and no declaration to instantiate.
+    /// A `CLASS_MODULE` class tag or `HASHED_MODULE_CLASS` entry names a
+    /// module past the ones the module section declares.
+    BadModuleReference {
+        module: u32,
+    },
+    /// A `CLASS_MODULE_LEVEL` class tag or `HASHED_MODULE_LEVEL` entry names
+    /// a module past the ones the module section declares, or a position
+    /// past the levels that module's root section rebuilt.
+    BadModuleLevel {
+        module: u32,
+        position: u32,
+    },
+    /// A module has no tree in the image's mixin table, so it describes no
+    /// root class -- nothing for the graph's `CLASS_MODULE` tag to name and
+    /// no declaration to instantiate.
     NotAClass,
     /// A selector the image names has no declaration to bind to: a
     /// mixin-table row's code list naming a selector its own method
@@ -539,9 +549,14 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "the image's root class inherits from nothing, but a module's root class must inherit Object or Value"
             ),
-            DecodeError::BadRootLevel(position) => write!(
+            DecodeError::BadModuleReference { module } => write!(
                 f,
-                "root class level {position} out of range"
+                "the image names module {module}, which its module section does not declare"
+            ),
+            DecodeError::BadModuleLevel { module, position } => write!(
+                f,
+                "the image names level {position} of module {module}, which its module section \
+                 does not rebuild"
             ),
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
@@ -785,9 +800,10 @@ impl<'a> Reader<'a> {
 /// What the header says about the rest of the image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
-    /// Whether a source blob follows the header -- the debug variant. The
-    /// source is never executed and never re-parsed; it is carried so a
-    /// loaded world can be shown, and eventually exported, as `.ns`.
+    /// Whether every module in the module section carries its source text --
+    /// the debug variant. The source is never executed and never re-parsed;
+    /// it is carried so a loaded world can be shown, and eventually exported,
+    /// as `.ns`.
     pub has_source: bool,
     /// No graph section follows; the file ends after the entry field.
     pub stateless: bool,
@@ -833,7 +849,7 @@ pub fn decode_entry(
 }
 
 /// The inverse of `encode::encode_source_origin`: the provenance a loaded
-/// world reports as its own.
+/// world reports for a module.
 pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeError> {
     match reader.read_u8()? {
         ORIGIN_FILE => Ok(SourceOrigin::File(PathBuf::from(reader.read_str()?))),
@@ -2123,9 +2139,9 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
 // ---------------------------------------------------------------------------
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
-/// (`mutator`), the root class built from the mixin table, the decoded code
-/// table, the interpreter's `platform` singleton, and the decoded
-/// declaration tree a class object's mixin id names.
+/// (`mutator`), the module classes built from the mixin table, the decoded
+/// code table, the interpreter's `platform` singleton, and the decoded
+/// declaration trees a class object's mixin id names.
 ///
 /// `mutator` is `&mut` because decoding a class object *allocates into* the
 /// interpreter: rebuilding its `MixinApplication` goes through
@@ -2134,7 +2150,10 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
 /// before the snapshot.
 pub struct DecodeContext<'a, 'gc> {
     pub mutator: &'a mut Mutator<'gc>,
-    pub root_class: &'a ClassReference<'gc>,
+    /// Each module's root class and `<:` levels, lowest first, as
+    /// `modules::build_module_classes` built them: what a `CLASS_MODULE` and
+    /// a `CLASS_MODULE_LEVEL` class tag name by index.
+    pub modules: &'a ModuleClasses<'gc>,
     pub codes: &'a [Rc<CompiledCode>],
     pub platform: Value<'gc>,
     /// The decoded mixin table's rows, indexed by row id -- the same
@@ -2145,9 +2164,6 @@ pub struct DecodeContext<'a, 'gc> {
     /// other copy of the same declaration would miss the entry every other
     /// class object of that row shares.
     pub mixins: &'a [Rc<crate::mixin::Mixin>],
-    /// The root class's `<:` levels, lowest first, as `build_root_class`
-    /// built them: what a `CLASS_ROOT_LEVEL` class tag names by position.
-    pub root_levels: &'a [ClassReference<'gc>],
     /// What each entry of the image's platform path section answered when
     /// `load` sent its members to the loading platform, by index: what a
     /// `VALUE_PLATFORM_PATH`, a `CLASS_PLATFORM_PATH` and a
@@ -2265,9 +2281,9 @@ fn decode_class_tag_after<'gc>(
         CLASS_BUILTIN => Ok(context
             .mutator
             .builtin_class(read_referenced_builtin_class(reader)?)),
-        CLASS_USER_ROOT => Ok(*context.root_class),
         CLASS_RECORD => decode_object_id(reader, tables),
-        CLASS_ROOT_LEVEL => read_root_level(reader, context.root_levels),
+        CLASS_MODULE => read_module_class(reader, context.modules),
+        CLASS_MODULE_LEVEL => read_module_level(reader, context.modules),
         CLASS_PLATFORM_PATH => {
             read_platform_path_class(reader, &context.mutator.heap, context.platform_paths)
         }
@@ -2275,8 +2291,7 @@ fn decode_class_tag_after<'gc>(
             let class = read_prebuilt_class(
                 reader,
                 context.mutator,
-                *context.root_class,
-                context.root_levels,
+                context.modules,
                 context.platform_paths,
             )?;
             context
@@ -2290,22 +2305,21 @@ fn decode_class_tag_after<'gc>(
 }
 
 /// The class a `CLASS_METACLASS` reference or a `HASHED_METACLASS` entry
-/// names the metaclass of: a builtin, the root class, a root level or a
-/// class named by platform path -- a class the loading world has before the
-/// graph. A second `CLASS_METACLASS` or a `CLASS_RECORD` here is refused,
+/// names the metaclass of: a builtin, a module's root class, a module level
+/// or a class named by platform path -- a class the loading world has before
+/// the graph. A second `CLASS_METACLASS` or a `CLASS_RECORD` here is refused,
 /// which bounds the nesting at one: a class record's metaclass is a record of
 /// its own and is named by its id.
 fn read_prebuilt_class<'gc>(
     reader: &mut Reader,
     mutator: &Mutator<'gc>,
-    root_class: ClassReference<'gc>,
-    root_levels: &[ClassReference<'gc>],
+    modules: &ModuleClasses<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match reader.read_u8()? {
         CLASS_BUILTIN => Ok(mutator.builtin_class(read_referenced_builtin_class(reader)?)),
-        CLASS_USER_ROOT => Ok(root_class),
-        CLASS_ROOT_LEVEL => read_root_level(reader, root_levels),
+        CLASS_MODULE => read_module_class(reader, modules),
+        CLASS_MODULE_LEVEL => read_module_level(reader, modules),
         CLASS_PLATFORM_PATH => read_platform_path_class(reader, &mutator.heap, platform_paths),
         tag => Err(DecodeError::InvalidTag {
             what: "prebuilt class",
@@ -2341,17 +2355,30 @@ fn read_platform_path_class<'gc>(
     }
 }
 
-/// A `CLASS_ROOT_LEVEL`'s position, after its tag, resolved against the
-/// levels `build_root_class` built.
-fn read_root_level<'gc>(
+/// A `CLASS_MODULE`'s module index, after its tag, resolved against the
+/// module classes `load` rebuilt: in range, or `BadModuleReference` before
+/// anything indexes by it.
+fn read_module_class<'gc>(
     reader: &mut Reader,
-    root_levels: &[ClassReference<'gc>],
+    modules: &ModuleClasses<'gc>,
 ) -> Result<ClassReference<'gc>, DecodeError> {
+    let module = reader.read_u32()?;
+    modules
+        .root(module)
+        .ok_or(DecodeError::BadModuleReference { module })
+}
+
+/// A `CLASS_MODULE_LEVEL`'s module index and position, after its tag,
+/// resolved the same way.
+fn read_module_level<'gc>(
+    reader: &mut Reader,
+    modules: &ModuleClasses<'gc>,
+) -> Result<ClassReference<'gc>, DecodeError> {
+    let module = reader.read_u32()?;
     let position = reader.read_u32()?;
-    root_levels
-        .get(position as usize)
-        .copied()
-        .ok_or(DecodeError::BadRootLevel(position))
+    modules
+        .level(module, position)
+        .ok_or(DecodeError::BadModuleLevel { module, position })
 }
 
 fn decode_optional_class<'gc>(
@@ -2503,18 +2530,22 @@ fn decode_closure_record<'gc>(
 /// ordinary record, `current_class` is regularly a class other than the
 /// root, and resolving everything against the root would either miss the
 /// selector or bind the frame to a same-named method of a different class.
-/// `None` -- a `TopLevel` activation -- has no class to ask, so the root
-/// class stands in, as it did for every frame before nesting.
+/// `None` -- a `TopLevel` activation -- has no class to ask, so the
+/// application's module, module 0, stands in, as its root class did for
+/// every frame before nesting.
 fn method_declaration<'gc>(
     context: &DecodeContext<'_, 'gc>,
     current_class: Option<&ClassReference<'gc>>,
     selector: Symbol,
 ) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
-    let class = current_class.unwrap_or(context.root_class);
+    let class = match current_class {
+        Some(class) => *class,
+        None => context.modules.root(0).ok_or(DecodeError::NotAClass)?,
+    };
     let found = context
         .mutator
         .heap
-        .class_application(*class)
+        .class_application(class)
         .and_then(|application| application.mixin.compiled_method(selector).cloned());
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
@@ -2590,9 +2621,12 @@ fn placeholder_frame<'gc>() -> Frame<'gc> {
     }
 }
 
-/// The smallest object record the wire admits: a `UserRoot` class tag (1),
-/// an identity hash (4), and a body tag (1). Every body adds at least four
-/// more bytes, so this is a floor, not a typical size.
+/// A floor under the smallest object record the wire admits: a class tag of
+/// at least one byte (every live one is followed by at least one more), an
+/// identity hash (4), and a body tag (1). Every body adds at least four more
+/// bytes, so this is a floor, not a typical size; kept at the one-byte tag
+/// the retired `CLASS_USER_ROOT` was, since the load peaks `memory.md`
+/// reports are derived from it and a lower bound stays a sound one.
 const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
 /// The smallest frame record the wire admits: a `nil` receiver (1), empty
@@ -2627,13 +2661,15 @@ pub(crate) fn bounded_count(
     Ok(count)
 }
 
-/// The module's root class object, rebuilt from mixin-table row 0 and the
-/// root-class section -- `instantiate::load_module` without the source.
+/// Module `module_index`'s root class object, rebuilt from the first row of
+/// its tree in the mixin table and its root section --
+/// `instantiate::load_module` without the source.
 ///
 /// The two do the same three things in the same order, so a loaded world's
 /// root class is indistinguishable from a freshly loaded module's, down to
-/// its identity hash (both allocate exactly one class object, immediately
-/// after the bootstrap's builtins): apply the root mixin over the
+/// its identity hash (both allocate the same class objects in the same
+/// order, module after module, after the bootstrap's builtins): apply the
+/// root mixin over the
 /// superclass's own application, then mint the class object with no
 /// enclosing object and no declaring class -- the module's root class is
 /// the outermost level, so neither exists.
@@ -2647,14 +2683,15 @@ pub(crate) fn bounded_count(
 /// `nested::build_applied_levels` -- the function `load_module` builds them
 /// with -- and in the same place in the order, before the root class object
 /// itself. Answers the root class and its levels, lowest first: the levels
-/// are what a `CLASS_ROOT_LEVEL` class tag names by position.
+/// are what a `CLASS_MODULE_LEVEL` class tag names by position.
 pub fn build_root_class<'gc>(
     mutator: &mut Mutator<'gc>,
     mixins: &mixins::Decoded,
+    module_index: usize,
     section: &RootSection,
 ) -> Result<(ClassReference<'gc>, Vec<ClassReference<'gc>>), DecodeError> {
     let root_mixin = mixins
-        .module_root(0)
+        .module_root(module_index)
         .cloned()
         .ok_or(DecodeError::NotAClass)?;
     let superclass = Some(mutator.builtin_class(section.superclass));
@@ -2663,7 +2700,7 @@ pub fn build_root_class<'gc>(
         .iter()
         .map(|&(index, kind)| (index as usize, Value::Object(mutator.builtin_class(kind))))
         .collect();
-    // `decode_root_section` held every index to row 0's clauses, and a
+    // `decode_root_section` held every index to the root row's clauses, and a
     // builtin class is always a class object, so this cannot fail; the
     // mapping keeps a future change to either from being a panic.
     let superclass = crate::interpreter::nested::build_applied_levels(
@@ -2682,27 +2719,27 @@ pub fn build_root_class<'gc>(
     Ok((root_class, levels))
 }
 
-/// The root-class section as read: the builtin the root class inherits from
+/// A module's root section as read: the builtin its root class inherits from
 /// -- `Object` or `Value`, the only two the root rule allows -- and the
 /// root's levels, lowest first, each as the position of the `<:` clause in
-/// row 0 that added it and the builtin that clause named.
+/// the module's root row that added it and the builtin that clause named.
 #[derive(Debug, PartialEq)]
 pub struct RootSection {
     pub superclass: BuiltinClass,
     pub levels: Vec<(u32, BuiltinClass)>,
 }
 
-/// The root-class section: the class the module's root class inherits from,
-/// as a builtin tag behind a presence flag, then the levels its `<:` clauses
-/// add. The
-/// inverse of `encode::encode_root_class`, which explains why the format
-/// admits only builtins here.
+/// Module `module_index`'s root section: the class its root class inherits
+/// from, as a builtin tag behind a presence flag, then the levels its `<:`
+/// clauses add. The inverse of `encode::encode_root_class`, which explains
+/// why the format admits only builtins here.
 ///
-/// Every level's clause position is checked against row 0's clauses and must
-/// rise from one level to the next: the levels are built in clause order, and
-/// no clause adds two. That bounds the count by row 0's clause count before
-/// anything is reserved for it. Resolving no tag against a live interpreter,
-/// this serves `inspect` as well as `load`.
+/// Every level's clause position is checked against the clauses of this
+/// module's own root row -- never another module's -- and must rise from one
+/// level to the next: the levels are built in clause order, and no clause
+/// adds two. That bounds the count by the row's clause count before anything
+/// is reserved for it. Resolving no tag against a live interpreter, this
+/// serves `inspect` as well as `load`.
 ///
 /// The reader refuses what the root rule forbids
 /// (`interpreter::instantiate::root_clause_defect`) -- a missing superclass,
@@ -2712,6 +2749,7 @@ pub struct RootSection {
 pub fn decode_root_section(
     reader: &mut Reader,
     mixins: &mixins::Decoded,
+    module_index: usize,
 ) -> Result<RootSection, DecodeError> {
     if !reader.read_boolean()? {
         return Err(DecodeError::RootWithoutSuperclass);
@@ -2724,8 +2762,13 @@ pub fn decode_root_section(
         });
     }
     let clause_count = mixins
-        .module_root(0)
+        .module_root(module_index)
         .map_or(0, |root| root.mixin_applications.len());
+    let row = mixins
+        .module_rows
+        .get(module_index)
+        .copied()
+        .unwrap_or_default();
     let count = reader.read_u32()? as usize;
     let mut levels = Vec::with_capacity(count.min(clause_count));
     let mut next_allowed: u32 = 0;
@@ -2736,7 +2779,7 @@ pub fn decode_root_section(
             || !levels.is_empty()
             || superclass != BuiltinClass::Object
         {
-            return Err(DecodeError::BadMixinApplicationClause { row: 0, index });
+            return Err(DecodeError::BadMixinApplicationClause { row, index });
         }
         next_allowed = index + 1;
         let kind = read_program_builtin_class(reader)?;
@@ -3388,7 +3431,7 @@ pub fn decode_graph_section<'gc>(
 pub fn decode_tag_named_hashes<'gc>(
     reader: &mut Reader,
     mutator: &mut Mutator<'gc>,
-    root_class: ClassReference<'gc>,
+    modules: &ModuleClasses<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<u32, DecodeError> {
     let count = bounded_count(
@@ -3396,13 +3439,13 @@ pub fn decode_tag_named_hashes<'gc>(
         MIN_TAG_NAMED_HASH_BYTES,
         reader,
     )?;
-    let root_levels = super::encode::root_levels(&mutator.heap, root_class);
     let mut restored: Vec<ObjectReference> = Vec::new();
     let mut max = 0;
     for _ in 0..count {
         let target = match reader.read_u8()? {
             HASHED_BUILTIN_CLASS => mutator.builtin_class(read_builtin_class(reader)?),
-            HASHED_ROOT_CLASS => root_class,
+            HASHED_MODULE_CLASS => read_module_class(reader, modules)?,
+            HASHED_MODULE_LEVEL => read_module_level(reader, modules)?,
             HASHED_PLATFORM => match mutator.platform_value() {
                 Value::Object(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
@@ -3415,8 +3458,7 @@ pub fn decode_tag_named_hashes<'gc>(
                 }
             }
             HASHED_METACLASS => {
-                let class =
-                    read_prebuilt_class(reader, mutator, root_class, &root_levels, platform_paths)?;
+                let class = read_prebuilt_class(reader, mutator, modules, platform_paths)?;
                 mutator
                     .heap
                     .class_metaclass(class)

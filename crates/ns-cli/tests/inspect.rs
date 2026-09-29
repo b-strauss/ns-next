@@ -19,16 +19,10 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 
     assert!(out.contains("format version 1"), "{out}");
     assert!(out.contains("stateless: no"), "{out}");
-    assert!(out.contains("source blob: absent"), "{out}");
+    assert!(out.contains("modules: 1"), "{out}");
+    assert!(out.contains("source absent"), "{out}");
     for section in [
-        "header",
-        "origin",
-        "symbols",
-        "code",
-        "mixins",
-        "root class",
-        "entry",
-        "graph",
+        "header", "symbols", "code", "mixins", "modules", "entry", "graph",
     ] {
         assert!(out.contains(section), "missing section `{section}`:\n{out}");
     }
@@ -51,7 +45,7 @@ fn inspect_reports_a_debug_variants_source_blob() {
 
     let (ok, out, error) = ns_next(&["inspect".as_ref(), image.as_os_str()]);
     assert!(ok, "{error}");
-    assert!(out.contains("source blob: present"), "{out}");
+    assert!(out.contains("source present"), "{out}");
 }
 
 #[test]

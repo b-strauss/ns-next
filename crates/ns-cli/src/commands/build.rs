@@ -124,13 +124,12 @@ pub(crate) fn execute(
     }
 
     let bytes = match interpreter.enter(|mutator| {
-        ns_runtime::image::build(
-            mutator.heap(),
-            debug_source.then_some(loaded.source.as_str()),
-            &loaded.origin,
-            crate::entry::class_reference(mutator, &class),
-            ns_runtime::Symbol::intern(&entry),
-        )
+        let modules = [ns_runtime::image::ModuleSource {
+            class: crate::entry::class_reference(mutator, &class),
+            origin: &loaded.origin,
+            source: debug_source.then_some(loaded.source.as_str()),
+        }];
+        ns_runtime::image::build(mutator.heap(), &modules, ns_runtime::Symbol::intern(&entry))
     }) {
         Ok(bytes) => bytes,
         Err(error) => {

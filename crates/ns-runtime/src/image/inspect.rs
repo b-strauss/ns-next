@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use crate::bytecode::{CodeKind, CompiledCode};
 use std::rc::Rc;
 
-use crate::image::{decode, mixins, opcodes, platform_paths, symbols};
+use crate::image::{decode, mixins, modules, opcodes, platform_paths, symbols};
 use crate::{ArbitraryInteger, SourceOrigin, Symbol};
 
 /// One named span of the file. `end` is exclusive.
@@ -30,11 +30,22 @@ pub struct Section {
     pub detail: String,
 }
 
+/// One module the module section describes.
+pub struct ModuleReport {
+    /// Where the module came from: `embedded <name>` or the file's path.
+    pub origin: String,
+    /// Whether the module carries its source text.
+    pub has_source: bool,
+    /// What its root class inherits: the superclass and each level its `<:`
+    /// clauses add.
+    pub root: String,
+}
+
 pub struct Report {
     pub format_version: u32,
-    pub has_source: bool,
     pub stateless: bool,
-    pub origin: String,
+    /// Every module the artifact carries, in module order.
+    pub modules: Vec<ModuleReport>,
     pub sections: Vec<Section>,
     pub symbols: Vec<String>,
     /// One line per code id, in id order, naming the declaration that owns it
@@ -229,9 +240,9 @@ fn read_class_tag(
 ) -> Result<String, decode::DecodeError> {
     Ok(match reader.read_u8()? {
         opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
-        opcodes::CLASS_USER_ROOT => "<root class>".to_string(),
         opcodes::CLASS_RECORD => format!("object {}", reader.read_u32()?),
-        opcodes::CLASS_ROOT_LEVEL => format!("<root class level {}>", reader.read_u32()?),
+        opcodes::CLASS_MODULE => read_module_class_tag(reader)?,
+        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader)?,
         opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, paths)?,
         opcodes::CLASS_METACLASS => {
             format!("metaclass of {}", read_prebuilt_class_tag(reader, paths)?)
@@ -254,8 +265,8 @@ fn read_prebuilt_class_tag(
 ) -> Result<String, decode::DecodeError> {
     Ok(match reader.read_u8()? {
         opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
-        opcodes::CLASS_USER_ROOT => "<root class>".to_string(),
-        opcodes::CLASS_ROOT_LEVEL => format!("<root class level {}>", reader.read_u32()?),
+        opcodes::CLASS_MODULE => read_module_class_tag(reader)?,
+        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader)?,
         opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, paths)?,
         tag => {
             return Err(decode::DecodeError::InvalidTag {
@@ -264,6 +275,20 @@ fn read_prebuilt_class_tag(
             })
         }
     })
+}
+
+/// A module's root class, after its `CLASS_MODULE` or `HASHED_MODULE_CLASS`
+/// tag.
+fn read_module_class_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(format!("<module {}>", reader.read_u32()?))
+}
+
+/// A module level, after its `CLASS_MODULE_LEVEL` or `HASHED_MODULE_LEVEL`
+/// tag.
+fn read_module_level_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    let module = reader.read_u32()?;
+    let position = reader.read_u32()?;
+    Ok(format!("<module {module} level {position}>"))
 }
 
 /// A class record's body, after its tag: a class applying a row of the mixin
@@ -473,7 +498,8 @@ fn walk_graph(
     for _ in 0..count {
         let who = match reader.read_u8()? {
             opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(reader)?),
-            opcodes::HASHED_ROOT_CLASS => "<root class>".to_string(),
+            opcodes::HASHED_MODULE_CLASS => read_module_class_tag(reader)?,
+            opcodes::HASHED_MODULE_LEVEL => read_module_level_tag(reader)?,
             opcodes::HASHED_PLATFORM => "<platform>".to_string(),
             opcodes::HASHED_PLATFORM_PATH => read_platform_path(reader, paths)?,
             opcodes::HASHED_METACLASS => {
@@ -507,26 +533,6 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "header",
-        start: offset,
-        end: reader.position(),
-        detail: String::new(),
-    });
-    offset = reader.position();
-
-    if header.has_source {
-        let source = reader.read_str().map_err(|error| error.to_string())?;
-        sections.push(Section {
-            name: "source",
-            start: offset,
-            end: reader.position(),
-            detail: format!("{} bytes", source.len()),
-        });
-        offset = reader.position();
-    }
-
-    let origin = decode::decode_source_origin(&mut reader).map_err(|error| error.to_string())?;
-    sections.push(Section {
-        name: "origin",
         start: offset,
         end: reader.position(),
         detail: String::new(),
@@ -640,19 +646,36 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 
     offset = reader.position();
 
-    // The root class's superclass and its `<:` levels, read without
-    // resolving a builtin tag to a live class, which would need a `Mutator`.
-    let root =
-        decode::decode_root_section(&mut reader, &decoded).map_err(|error| error.to_string())?;
-    let mut root_detail = format!("superclass {:?}", root.superclass);
-    for (index, kind) in &root.levels {
-        let _ = write!(root_detail, ", applies {kind:?} (clause {index})");
-    }
+    // Each module's origin, source and root section, read without resolving
+    // a builtin tag to a live class, which would need a `Mutator`. A count
+    // that disagrees with the mixin table's trees is refused here as it is
+    // by `load`: which tree a root section is checked against depends on
+    // the count, so a report past it would describe modules that are not
+    // there.
+    let decoded_modules = modules::decode_modules(&mut reader, &decoded, header.has_source)
+        .map_err(|error| error.to_string())?;
+    let module_reports = decoded_modules
+        .iter()
+        .map(|module| {
+            let mut root = format!("superclass {:?}", module.section.superclass);
+            for (index, kind) in &module.section.levels {
+                let _ = write!(root, ", applies {kind:?} (clause {index})");
+            }
+            ModuleReport {
+                origin: match &module.origin {
+                    SourceOrigin::Embedded(name) => format!("embedded {name}"),
+                    SourceOrigin::File(_) => format!("{:?}", module.origin),
+                },
+                has_source: module.source.is_some(),
+                root,
+            }
+        })
+        .collect::<Vec<_>>();
     sections.push(Section {
-        name: "root class",
+        name: "modules",
         start: offset,
         end: reader.position(),
-        detail: root_detail,
+        detail: format!("{} modules", module_reports.len()),
     });
     offset = reader.position();
 
@@ -710,12 +733,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 
     Ok(Report {
         format_version: crate::image::encode::FORMAT_VERSION,
-        has_source: header.has_source,
         stateless: header.stateless,
-        origin: match &origin {
-            SourceOrigin::Embedded(name) => format!("embedded {name}"),
-            SourceOrigin::File(_) => format!("{origin:?}"),
-        },
+        modules: module_reports,
         sections,
         symbols: symbol_list,
         code: code_lines,
@@ -743,16 +762,20 @@ pub fn render(report: &Report) -> String {
         "stateless: {}",
         if report.stateless { "yes" } else { "no" }
     );
-    let _ = writeln!(
-        out,
-        "source blob: {}",
-        if report.has_source {
-            "present"
-        } else {
-            "absent"
-        }
-    );
-    let _ = writeln!(out, "origin: {}", report.origin);
+    let _ = writeln!(out, "modules: {}", report.modules.len());
+    for (index, module) in report.modules.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "  {index}: {}, source {}, {}",
+            module.origin,
+            if module.has_source {
+                "present"
+            } else {
+                "absent"
+            },
+            module.root
+        );
+    }
     let _ = writeln!(out, "total: {} bytes", report.total_length);
 
     let _ = writeln!(out, "\nsections");

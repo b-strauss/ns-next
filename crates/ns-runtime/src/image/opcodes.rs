@@ -249,26 +249,34 @@ pub const RETIRED_OBJECT_BODIES: [u8; 2] = [4, 5];
 pub const MIXIN_ROW: u8 = 0;
 pub const MIXIN_BUILTIN: u8 = 1;
 
-/// How a class reference is named. A builtin, the module's root class and
-/// the levels the root's `<:` clauses add are not in the graph at all -- the
-/// bootstrap, the mixin table and the root-class section produce them -- so
-/// only `CLASS_RECORD` indexes the object table. `CLASS_ROOT_LEVEL` is
-/// followed by the level's position among the root's levels, lowest first.
+/// How a class reference is named. A builtin, a module's root class and the
+/// levels a module root's own `<:` clauses add are not in the graph at all --
+/// the bootstrap, the mixin table and the module section produce them -- so
+/// only `CLASS_RECORD` indexes the object table. `CLASS_MODULE` is followed by
+/// a `u32` module index; `CLASS_MODULE_LEVEL` by a `u32` module index and the
+/// level's `u32` position among that root's levels, lowest first.
 /// `CLASS_METACLASS` names the metaclass of one of those prebuilt classes,
 /// which is no record either, and is followed by that class's own reference
-/// -- `CLASS_BUILTIN`, `CLASS_USER_ROOT`, `CLASS_ROOT_LEVEL` or
+/// -- `CLASS_BUILTIN`, `CLASS_MODULE`, `CLASS_MODULE_LEVEL` or
 /// `CLASS_PLATFORM_PATH`, never a second `CLASS_METACLASS` or a
 /// `CLASS_RECORD` (whose metaclass is a record, `OBJECT_METACLASS`), which
 /// bounds the nesting at one. `CLASS_PLATFORM_PATH` names a class the loading
 /// platform answers along a path of public members, followed by a `u32`
 /// index into the image's platform path section: like a builtin, it exists
-/// before the graph is decoded. Next free number: 6.
+/// before the graph is decoded. Next free number: 8.
 pub const CLASS_BUILTIN: u8 = 0;
-pub const CLASS_USER_ROOT: u8 = 1;
 pub const CLASS_RECORD: u8 = 2;
-pub const CLASS_ROOT_LEVEL: u8 = 3;
 pub const CLASS_METACLASS: u8 = 4;
 pub const CLASS_PLATFORM_PATH: u8 = 5;
+pub const CLASS_MODULE: u8 = 6;
+pub const CLASS_MODULE_LEVEL: u8 = 7;
+
+/// Class tags that no longer name anything and are never reused: 1 was the
+/// one root class an image could carry, 3 a level of it by position alone.
+/// Once an image carries several modules, each names its module by index
+/// (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`); a stale image's tag-1 or tag-3
+/// reference meets an unknown tag instead of naming whichever module is first.
+pub const RETIRED_CLASS_TAGS: [u8; 2] = [1, 3];
 
 /// Builtin class tags (`encode::builtin_class_tag`, which a `CLASS_BUILTIN`
 /// reference, a `MIXIN_BUILTIN` level and a `HASHED_BUILTIN_CLASS` entry are
@@ -297,21 +305,30 @@ pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
 
 /// Which tag-named object an entry of the graph section's closing hash table
-/// names. The five are exactly the objects `CLASS_BUILTIN`, `CLASS_USER_ROOT`,
-/// `VALUE_PLATFORM`, `CLASS_METACLASS` and the platform path references
-/// name: none of them is a record, so without this table nothing in an image
-/// would carry a hash one of them was given (`docs/design/image-format.md`,
-/// "Identity hashes are preserved verbatim"). A builtin-class entry is
-/// followed by its builtin class tag. A metaclass entry names the metaclass
-/// of a prebuilt class -- a builtin, the root class, a root level or a class
-/// named by a platform path -- and is followed by that class's reference, the
-/// four tags `CLASS_METACLASS` allows. A platform path entry is followed by
-/// its `u32` index into the platform path section. Next free number: 5.
+/// names. They are exactly the objects `CLASS_BUILTIN`, `CLASS_MODULE`,
+/// `CLASS_MODULE_LEVEL`, `VALUE_PLATFORM`, `CLASS_METACLASS` and the platform
+/// path references name: none of them is a record, so without this table
+/// nothing in an image would carry a hash one of them was given
+/// (`docs/design/image-format.md`, "Identity hashes are preserved verbatim").
+/// A builtin-class entry is followed by its builtin class tag, a module-class
+/// entry by its `u32` module index, a module-level entry by its `u32` module
+/// index and `u32` level position. A metaclass entry names the metaclass of a
+/// prebuilt class -- a builtin, a module's root class, a module level or a
+/// class named by a platform path -- and is followed by that class's
+/// reference, the four tags `CLASS_METACLASS` allows. A platform path entry is
+/// followed by its `u32` index into the platform path section. Next free
+/// number: 7.
 pub const HASHED_BUILTIN_CLASS: u8 = 0;
-pub const HASHED_ROOT_CLASS: u8 = 1;
 pub const HASHED_PLATFORM: u8 = 2;
 pub const HASHED_METACLASS: u8 = 3;
 pub const HASHED_PLATFORM_PATH: u8 = 4;
+pub const HASHED_MODULE_CLASS: u8 = 5;
+pub const HASHED_MODULE_LEVEL: u8 = 6;
+
+/// Tag-named hash tags that no longer name anything and are never reused: 1
+/// was the one root class's entry, replaced by `HASHED_MODULE_CLASS` and its
+/// module index when an image came to carry several modules.
+pub const RETIRED_HASHED_TAGS: [u8; 1] = [1];
 
 /// A mixin-table slot record's kind: the accessor shape its slot declares
 /// (§6.3.2, §6.3.3). The two eager kinds are the mutability tags the record

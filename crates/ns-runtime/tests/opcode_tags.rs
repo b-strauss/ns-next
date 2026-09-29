@@ -249,11 +249,12 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(MIXIN_BUILTIN, 1);
 
     assert_eq!(CLASS_BUILTIN, 0);
-    assert_eq!(CLASS_USER_ROOT, 1);
     assert_eq!(CLASS_RECORD, 2);
-    assert_eq!(CLASS_ROOT_LEVEL, 3);
     assert_eq!(CLASS_METACLASS, 4);
     assert_eq!(CLASS_PLATFORM_PATH, 5);
+    assert_eq!(CLASS_MODULE, 6);
+    assert_eq!(CLASS_MODULE_LEVEL, 7);
+    assert_eq!(RETIRED_CLASS_TAGS, [1, 3]);
 
     assert_eq!(FRAME_METHOD, 0);
     assert_eq!(FRAME_CLOSURE, 1);
@@ -264,10 +265,52 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_MIXIN_APPLICATION_MESSAGE, 6);
 
     assert_eq!(HASHED_BUILTIN_CLASS, 0);
-    assert_eq!(HASHED_ROOT_CLASS, 1);
     assert_eq!(HASHED_PLATFORM, 2);
     assert_eq!(HASHED_METACLASS, 3);
     assert_eq!(HASHED_PLATFORM_PATH, 4);
+    assert_eq!(HASHED_MODULE_CLASS, 5);
+    assert_eq!(HASHED_MODULE_LEVEL, 6);
+    assert_eq!(RETIRED_HASHED_TAGS, [1]);
+}
+
+/// The live class tags, which no retired one may rejoin.
+const LIVE_CLASS_TAGS: [u8; 6] = [
+    CLASS_BUILTIN,
+    CLASS_RECORD,
+    CLASS_METACLASS,
+    CLASS_PLATFORM_PATH,
+    CLASS_MODULE,
+    CLASS_MODULE_LEVEL,
+];
+
+/// The live tag-named hash tags, which no retired one may rejoin.
+const LIVE_HASHED_TAGS: [u8; 6] = [
+    HASHED_BUILTIN_CLASS,
+    HASHED_PLATFORM,
+    HASHED_METACLASS,
+    HASHED_PLATFORM_PATH,
+    HASHED_MODULE_CLASS,
+    HASHED_MODULE_LEVEL,
+];
+
+/// A retired class or hash tag stays retired: 1 and 3 named the one root
+/// class and its levels before an image carried several modules, and a
+/// stale image's reference must meet an unknown tag rather than name
+/// whichever module took the number.
+#[test]
+fn retired_class_and_hashed_tags_are_never_reused() {
+    for retired in RETIRED_CLASS_TAGS {
+        assert!(
+            !LIVE_CLASS_TAGS.contains(&retired),
+            "class tag {retired} is retired"
+        );
+    }
+    for retired in RETIRED_HASHED_TAGS {
+        assert!(
+            !LIVE_HASHED_TAGS.contains(&retired),
+            "hashed tag {retired} is retired"
+        );
+    }
 }
 
 /// Within each family a number means one thing. Nothing but a copy-paste
@@ -298,14 +341,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_ACTIVATION,
         ],
         &[MIXIN_ROW, MIXIN_BUILTIN],
-        &[
-            CLASS_BUILTIN,
-            CLASS_USER_ROOT,
-            CLASS_RECORD,
-            CLASS_ROOT_LEVEL,
-            CLASS_METACLASS,
-            CLASS_PLATFORM_PATH,
-        ],
+        &LIVE_CLASS_TAGS,
         &[
             FRAME_METHOD,
             FRAME_CLOSURE,
@@ -315,13 +351,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_SUPERCLASS_MESSAGE,
             FRAME_MIXIN_APPLICATION_MESSAGE,
         ],
-        &[
-            HASHED_BUILTIN_CLASS,
-            HASHED_ROOT_CLASS,
-            HASHED_PLATFORM,
-            HASHED_METACLASS,
-            HASHED_PLATFORM_PATH,
-        ],
+        &LIVE_HASHED_TAGS,
     ];
     for family in families {
         let mut seen = family.to_vec();

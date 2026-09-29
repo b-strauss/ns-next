@@ -427,13 +427,13 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
             let Value::Object(class) = mutator.fetch(&class) else {
                 panic!("{block}: load_module answers a class object")
             };
-            image::build(
-                mutator.heap(),
-                None,
-                &SourceOrigin::File(PathBuf::from("t.ns")),
+            let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+            let modules = [image::ModuleSource {
                 class,
-                Symbol::intern("main"),
-            )
+                origin: &origin,
+                source: None,
+            }];
+            image::build(mutator.heap(), &modules, Symbol::intern("main"))
         })
         .expect("build");
     let report = image::inspect::inspect(&bytes).expect("inspect");
@@ -480,7 +480,9 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
 
     let mut loaded = image::load(&bytes).expect("the mutated artifact decodes");
     let instance = expect_ok(
-        loaded.interpreter.instantiate(&loaded.root_class, &[]),
+        loaded
+            .interpreter
+            .instantiate(&loaded.modules[0].class, &[]),
         "instantiate",
     );
     expect_too_deep(

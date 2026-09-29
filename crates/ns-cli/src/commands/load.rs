@@ -36,10 +36,8 @@ pub(crate) fn execute(
     };
     let ns_runtime::image::LoadedImage {
         mut interpreter,
-        root_class,
+        modules,
         roots,
-        origin: _,
-        source,
         entry,
         stateless,
     } = match ns_runtime::image::load(&bytes) {
@@ -50,16 +48,31 @@ pub(crate) fn execute(
         }
     };
     if print_source {
-        let Some(source) = source else {
+        // The header's one flag says whether every module carries its source
+        // or none does, so a module without one means the artifact has none.
+        let sources: Option<Vec<&str>> = modules
+            .iter()
+            .map(|module| module.source.as_deref())
+            .collect();
+        let Some(sources) = sources else {
             eprintln!(
                 "error: {} carries no source (it was not written with --debug-source)",
                 image.display()
             );
             return ExitCode::FAILURE;
         };
-        print!("{source}");
+        for source in sources {
+            print!("{source}");
+        }
         return ExitCode::SUCCESS;
     }
+    // `image::load` refuses an artifact whose module section declares no
+    // module (its mixin table must hold a tree), so module 0 exists.
+    let Some(application) = modules.into_iter().next() else {
+        eprintln!("error: {} carries no module", image.display());
+        return ExitCode::FAILURE;
+    };
+    let root_class = application.class;
     // `stateless` (the decoded header flag), not `roots.is_empty()`, decides
     // whether to instantiate: it says what the artifact *is*, where an empty
     // `roots` is only what a binary happens to look like. `image::snapshot`

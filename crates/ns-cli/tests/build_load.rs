@@ -202,7 +202,7 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 }
 
 /// For one source and one --debug-source setting, a build and a snapshot must
-/// agree byte for byte from `origin` through `root class`.
+/// agree byte for byte from `symbols` through `modules`.
 ///
 /// Not "the binary is a prefix of the image" -- that is false as soon as one
 /// records an entry and the other does not. The guarantee is about the
@@ -223,7 +223,7 @@ fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
     let binary_bytes = std::fs::read(&binary).expect("read binary");
     let image_bytes = std::fs::read(&image).expect("read image");
 
-    // The window starts at `origin`, not at byte 0: the header's flag byte
+    // The window starts at `symbols`, not at byte 0: the header's flag byte
     // legitimately differs (a build is stateless, a snapshot is not), so
     // starting from the header would fail on that difference instead of on
     // the property this test actually guards.
@@ -232,14 +232,14 @@ fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
         let start = report
             .sections
             .iter()
-            .find(|section| section.name == "origin")
-            .expect("origin section")
+            .find(|section| section.name == "symbols")
+            .expect("symbols section")
             .start;
         let end = report
             .sections
             .iter()
-            .find(|section| section.name == "root class")
-            .expect("root class section")
+            .find(|section| section.name == "modules")
+            .expect("modules section")
             .end;
         (start, end)
     };

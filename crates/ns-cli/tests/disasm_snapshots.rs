@@ -291,14 +291,14 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
         };
         let rewired = mutator.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
         assert!(mutator.heap_mut().set_class_application(class, rewired));
-        ns_runtime::image::build(
-            mutator.heap(),
-            None,
-            &SourceOrigin::File("bare.ns".into()),
+        let origin = SourceOrigin::File("bare.ns".into());
+        let modules = [ns_runtime::image::ModuleSource {
             class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build")
+            origin: &origin,
+            source: None,
+        }];
+        ns_runtime::image::build(mutator.heap(), &modules, Symbol::intern("main:args:"))
+            .expect("build")
     });
 
     let directory = ScratchDirectory::new("disasm-no-init");

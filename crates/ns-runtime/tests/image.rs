@@ -270,6 +270,39 @@ fn load(source: &str) -> (Interpreter, Root) {
     (interpreter, class)
 }
 
+/// `image::snapshot` of the one module `class`, `source` its debug source.
+fn snapshot_one<'gc>(
+    mutator: &Mutator<'gc>,
+    source: Option<&str>,
+    origin: &SourceOrigin,
+    class: ClassReference<'gc>,
+    platform: &Value<'gc>,
+    roots: &[Value<'gc>],
+) -> Result<Vec<u8>, String> {
+    let modules = [image::ModuleSource {
+        class,
+        origin,
+        source,
+    }];
+    image::snapshot(mutator, &modules, platform, roots)
+}
+
+/// `image::build` of the one module `class`, `source` its debug source.
+fn build_one<'gc>(
+    heap: &Heap<'gc>,
+    source: Option<&str>,
+    origin: &SourceOrigin,
+    class: ClassReference<'gc>,
+    entry: Symbol,
+) -> Result<Vec<u8>, String> {
+    let modules = [image::ModuleSource {
+        class,
+        origin,
+        source,
+    }];
+    image::build(heap, &modules, entry)
+}
+
 /// The class object `root` holds, for the heap accessors and the encoder,
 /// which take one. Fetched where it is used: a run may move it. Takes
 /// `&Mutator` and is called from inside an entry, since every caller already
@@ -1164,7 +1197,7 @@ fn a_large_integer_value_round_trips() {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -1344,7 +1377,7 @@ fn a_large_integer_is_a_value_not_a_record() {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -1399,7 +1432,7 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
         let normal = mutator.new_integer(ArbitraryInteger::from_i128(1_i128 << 63));
         let huge =
             mutator.new_integer(ArbitraryInteger::from_parts(false, (1..=100_000).collect()));
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -1444,7 +1477,7 @@ fn an_invalid_builtin_class_tag_at_the_root_section_is_a_decode_error_not_a_pani
     writer.write_u32(0); // no levels
     let bytes = writer.into_bytes();
     assert_eq!(
-        decode::decode_root_section(&mut decode::Reader::new(&bytes), &decoded),
+        decode::decode_root_section(&mut decode::Reader::new(&bytes), &decoded, 0),
         Err(decode::DecodeError::InvalidTag {
             what: "builtin class",
             tag: 200
@@ -1467,7 +1500,7 @@ fn a_root_superclass_naming_metaclass_is_refused() {
     let origin = Origin::File(PathBuf::from("t.ns"));
     let mut binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        image::build(
+        build_one(
             mutator.heap(),
             None,
             &origin,
@@ -1480,15 +1513,17 @@ fn a_root_superclass_naming_metaclass_is_refused() {
     let superclass_tag_at = {
         let mut reader = decode::Reader::new(&binary);
         let header = decode::read_header(&mut reader).expect("valid header");
-        if header.has_source {
-            reader.read_str().expect("source");
-        }
-        decode::decode_source_origin(&mut reader).expect("origin");
         let symbols = symbols::decode(&mut reader).expect("symbols");
         let mut table = decode::decode_code_table(&mut reader, &symbols).expect("code table");
         decode::verify_code_table(&table).expect("verify code table");
         decode::number_call_site_families(&mut table).expect("number call site families");
         mixins::decode(&mut reader, &symbols, &table.codes).expect("mixins");
+        // The module section: its count, then module 0's origin and source.
+        reader.read_u32().expect("module count");
+        decode::decode_source_origin(&mut reader).expect("origin");
+        if header.has_source {
+            reader.read_str().expect("source");
+        }
         // The root section opens with the "has superclass" boolean, then the
         // superclass's builtin-class tag byte.
         reader.position() + 1
@@ -1799,7 +1834,7 @@ fn a_mixin_table_with_no_root_row_is_a_decode_error() {
             superclass: BuiltinClass::Object,
             levels: Vec::new(),
         };
-        match decode::build_root_class(mutator, &empty, &section) {
+        match decode::build_root_class(mutator, &empty, 0, &section) {
             Err(decode::DecodeError::NotAClass) => assert_eq!(
                 decode::DecodeError::NotAClass.to_string(),
                 "the image's mixin table describes no root class"
@@ -1890,7 +1925,7 @@ ns_runtime::for_each_lowering! {
                 levels,
                 "{lowering:?}: every source level is a block in the code table"
             );
-            image::build(
+            build_one(
                 mutator.heap(),
                 None,
                 &Origin::File(PathBuf::from("t.ns")),
@@ -1904,7 +1939,7 @@ ns_runtime::for_each_lowering! {
             Err(error) => panic!("{lowering:?}: {levels} nested blocks must load: {error}"),
         };
         let instance = expect_ok(
-            loaded.interpreter.instantiate(&loaded.root_class, &[]),
+            loaded.interpreter.instantiate(&loaded.modules[0].class, &[]),
             "instantiate",
         );
         let answer = expect_ok(
@@ -1991,7 +2026,7 @@ fn round_trip_graph(
             &root_values,
             &platform_value,
             &ids,
-            class,
+            &image::ModuleClasses::of(mutator.heap(), &[class]),
             &mixin_ids,
             &mut symbols,
         )
@@ -2001,15 +2036,14 @@ fn round_trip_graph(
         let mut reader = decode::Reader::new(&bytes);
         let code_table = decode::decode_code_table(&mut reader, &symbol_table).expect("code table");
         let mixin_order = mixin_preorder(mutator.heap(), class);
-        let root_levels = encode::root_levels(mutator.heap(), class);
+        let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
         let decoded = {
             let mut context = decode::DecodeContext {
                 mutator,
-                root_class: &class,
+                modules: &module_classes,
                 codes: &code_table.codes,
                 platform: platform_value,
                 mixins: &mixin_order,
-                root_levels: &root_levels,
                 platform_paths: &[],
             };
             decode::decode_graph_section(&mut reader, &mut context, &symbol_table).expect("graph")
@@ -2341,7 +2375,7 @@ fn the_graph_section_encoding_is_deterministic() {
                 &roots,
                 &platform,
                 &ids,
-                class,
+                &image::ModuleClasses::of(mutator.heap(), &[class]),
                 &mixin_ids,
                 &mut symbols,
             )
@@ -2420,7 +2454,7 @@ impl GraphFixture {
         self.interpreter.enter(|mutator| {
             let class = class_reference(mutator, class);
             let platform = mutator.fetch(platform);
-            let root_levels = encode::root_levels(mutator.heap(), class);
+            let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
             let platform_paths: Vec<Value> = platform_paths
                 .iter()
                 .map(|path| mutator.fetch(path))
@@ -2428,11 +2462,10 @@ impl GraphFixture {
             let decoded = {
                 let mut context = decode::DecodeContext {
                     mutator,
-                    root_class: &class,
+                    modules: &module_classes,
                     codes,
                     platform,
                     mixins,
-                    root_levels: &root_levels,
                     platform_paths: &platform_paths,
                 };
                 decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, symbols)
@@ -2560,23 +2593,24 @@ fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
 
 #[test]
 fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
-    let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
-    writer.write_u8(200); // none of `Builtin` (0), `UserRoot` (1), `Record` (2)
-                          // Padded out to the shortest object record the wire
-                          // admits, so `bounded_count` admits the announced
-                          // record and the class tag itself is what the decoder
-                          // rejects.
-    writer.write_u32(1); // identity hash
-    writer.write_u8(OBJECT_STRING); // object body: String
-    let bytes = writer.into_bytes();
-    assert_eq!(
-        GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::InvalidTag {
-            what: "class",
-            tag: 200
-        }
-    );
+    // 200 is no class tag at all; 1 and 3 are retired, the one root class
+    // and its levels before an image carried several modules, and must name
+    // no module now rather than whichever came first.
+    for tag in [200].into_iter().chain(RETIRED_CLASS_TAGS) {
+        let mut writer = encode::Writer::new();
+        graph_counts(&mut writer, 1, 0);
+        writer.write_u8(tag);
+        // Padded out to the shortest object record the wire admits, so
+        // `bounded_count` admits the announced record and the class tag
+        // itself is what the decoder rejects.
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_STRING); // object body: String
+        let bytes = writer.into_bytes();
+        assert_eq!(
+            GraphFixture::new().decode_error(&bytes),
+            decode::DecodeError::InvalidTag { what: "class", tag }
+        );
+    }
 }
 
 #[test]
@@ -2992,7 +3026,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
             &roots,
             &platform,
             &ids,
-            class,
+            &image::ModuleClasses::of(mutator.heap(), &[class]),
             &mixin_ids,
             &mut symbols,
         )
@@ -3001,14 +3035,13 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let symbol_table = symbols.build();
         assert!(before > 0 && graph.len() > 8);
         let mixin_order = mixin_preorder(mutator.heap(), class);
-        let root_levels = encode::root_levels(mutator.heap(), class);
+        let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
         let mut context = decode::DecodeContext {
             mutator,
-            root_class: &class,
+            modules: &module_classes,
             codes: &[],
             platform,
             mixins: &mixin_order,
-            root_levels: &root_levels,
             platform_paths: &[],
         };
         for cut in 1..graph.len() {
@@ -3177,7 +3210,7 @@ fn inspect_refuses_an_unknown_frame_kind_tag() {
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -3231,7 +3264,7 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let inner = mutator.fetch(&inner);
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -3457,7 +3490,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         let max_hash = mutator.heap_mut().ensure_identity_hash(*object(&instance));
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        let bytes = image::snapshot(
+        let bytes = snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -3471,7 +3504,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
 
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &loaded.root_class);
+        let root_class = class_reference(mutator, &loaded.modules[0].class);
         assert!(
             !root_mixin_of(mutator.heap(), root_class).methods.is_empty(),
             "the image's methods are rebuilt, each carrying its body"
@@ -3523,7 +3556,7 @@ fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -3536,7 +3569,7 @@ fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
 
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &loaded.root_class);
+        let root_class = class_reference(mutator, &loaded.modules[0].class);
         let ids = mutator.heap().class_dispatch_ids(root_class);
         assert_ne!(ids.instances, DispatchId::NONE);
         let instance = mutator.fetch(&loaded.roots[0]);
@@ -3596,7 +3629,7 @@ fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
         let alpha = mutator.fetch(&alpha);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -3670,7 +3703,7 @@ fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
         let root = mutator.fetch(&root);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -3750,7 +3783,7 @@ fn a_lazy_slot_without_its_getter_is_refused() {
     let origin = Origin::File(PathBuf::from("t.ns"));
     let mut binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        image::build(
+        build_one(
             mutator.heap(),
             None,
             &origin,
@@ -3763,11 +3796,7 @@ fn a_lazy_slot_without_its_getter_is_refused() {
 
     let (mixin_table_at, symbols, codes) = {
         let mut reader = decode::Reader::new(&binary);
-        let header = decode::read_header(&mut reader).expect("valid header");
-        if header.has_source {
-            reader.read_str().expect("source");
-        }
-        decode::decode_source_origin(&mut reader).expect("origin");
+        decode::read_header(&mut reader).expect("valid header");
         let symbols = symbols::decode(&mut reader).expect("symbols");
         let mut table = decode::decode_code_table(&mut reader, &symbols).expect("code table");
         decode::verify_code_table(&table).expect("verify code table");
@@ -3807,7 +3836,7 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -3841,7 +3870,7 @@ fn load_refuses_a_version_mismatch() {
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -3940,7 +3969,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -4880,7 +4909,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -4937,7 +4966,7 @@ fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -4992,7 +5021,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -5109,7 +5138,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
         install_mixin(mutator, class, doctored);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(NEEDS_INITIALIZER),
             &Origin::File(PathBuf::from("t.ns")),
@@ -5176,7 +5205,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -5230,7 +5259,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let unhashed_value = mutator.fetch(&unhashed);
-        let bytes = image::snapshot(
+        let bytes = snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -5292,7 +5321,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         let integer_hash = mutator.heap_mut().ensure_identity_hash(integer);
         let class_hash = mutator.heap_mut().ensure_identity_hash(class);
         let platform_hash = mutator.heap_mut().ensure_identity_hash(*object(&platform));
-        let bytes = image::snapshot(
+        let bytes = snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -5309,7 +5338,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         report.graph_tag_named_hashes,
         vec![
             format!("Integer hash {integer_hash}"),
-            format!("<root class> hash {class_hash}"),
+            format!("<module 0> hash {class_hash}"),
             format!("<platform> hash {platform_hash}"),
         ],
         "inspect reads the table, in the encoder's fixed order"
@@ -5319,7 +5348,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     let loaded_platform = loaded.interpreter.platform();
     loaded.interpreter.enter(|mutator| {
         let loaded_platform = mutator.fetch(&loaded_platform);
-        let loaded_class = class_reference(mutator, &loaded.root_class);
+        let loaded_class = class_reference(mutator, &loaded.modules[0].class);
         let loaded_integer = mutator.builtin_class(BuiltinClass::Integer);
         let loaded_string = mutator.builtin_class(BuiltinClass::String);
         let heap = mutator.heap_mut();
@@ -5344,8 +5373,9 @@ fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
     let (mut interpreter, class) = load(EMPTY);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
+        let modules = image::ModuleClasses::of(mutator.heap(), &[class]);
         let mut reader = decode::Reader::new(bytes);
-        decode::decode_tag_named_hashes(&mut reader, mutator, class, &[])
+        decode::decode_tag_named_hashes(&mut reader, mutator, &modules, &[])
     })
 }
 
@@ -5355,7 +5385,8 @@ fn a_tag_named_hash_of_zero_is_refused() {
     // out; accepting it would give one world two encodings.
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(image::opcodes::HASHED_ROOT_CLASS);
+    writer.write_u8(image::opcodes::HASHED_MODULE_CLASS);
+    writer.write_u32(0); // module 0
     writer.write_u32(0);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
@@ -5392,15 +5423,48 @@ fn a_tag_named_hash_at_the_ceiling_is_refused() {
 
 #[test]
 fn an_unknown_tag_named_hash_tag_is_refused() {
+    // One past the last tag-named hash, and every retired one: a stale
+    // image's root-class entry names no module rather than module 0.
+    for tag in [HASHED_MODULE_LEVEL + 1]
+        .into_iter()
+        .chain(RETIRED_HASHED_TAGS)
+    {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1);
+        writer.write_u8(tag);
+        writer.write_u32(5);
+        assert_eq!(
+            decode_tag_named(&writer.into_bytes()),
+            Err(decode::DecodeError::InvalidTag {
+                what: "tag-named hash",
+                tag
+            })
+        );
+    }
+}
+
+#[test]
+fn a_tag_named_hash_past_the_modules_is_refused() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(HASHED_PLATFORM_PATH + 1); // one past the last tag-named hash
+    writer.write_u8(HASHED_MODULE_CLASS);
+    writer.write_u32(1); // the world carries module 0 alone
     writer.write_u32(5);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
-        Err(decode::DecodeError::InvalidTag {
-            what: "tag-named hash",
-            tag: HASHED_PLATFORM_PATH + 1
+        Err(decode::DecodeError::BadModuleReference { module: 1 })
+    );
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    writer.write_u8(HASHED_MODULE_LEVEL);
+    writer.write_u32(0);
+    writer.write_u32(0); // `EMPTY`'s root adds no level
+    writer.write_u32(5);
+    assert_eq!(
+        decode_tag_named(&writer.into_bytes()),
+        Err(decode::DecodeError::BadModuleLevel {
+            module: 0,
+            position: 0
         })
     );
 }
@@ -5422,7 +5486,8 @@ fn the_tag_named_hash_table_answers_its_largest_hash() {
     writer.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
     writer.write_u32(9);
-    writer.write_u8(image::opcodes::HASHED_ROOT_CLASS);
+    writer.write_u8(image::opcodes::HASHED_MODULE_CLASS);
+    writer.write_u32(0); // module 0
     writer.write_u32(4);
     assert_eq!(decode_tag_named(&writer.into_bytes()), Ok(9));
 }
@@ -5527,7 +5592,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(NESTED_MODULE),
             &Origin::File(PathBuf::from("t.ns")),
@@ -5540,7 +5605,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
 
     let mut loaded = image::load(&bytes).expect("load");
     let inner_class = loaded.interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &loaded.root_class);
+        let root_class = class_reference(mutator, &loaded.modules[0].class);
         let root_mixin = root_mixin_of(mutator.heap(), root_class);
         let inner_mixin = root_mixin.nested[0].clone();
 
@@ -5599,7 +5664,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(NESTED_MODULE),
             &Origin::File(PathBuf::from("t.ns")),
@@ -5671,7 +5736,7 @@ fn snapshot_world(
         let class = class_reference(mutator, class);
         let platform_value = mutator.fetch(platform);
         let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -5855,7 +5920,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     let inner = nested_class_of(&mut loaded, &reloaded_outer, "Inner");
     // Both read out after the accessor ran, which may have moved them.
     loaded.interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &loaded.root_class);
+        let root_class = class_reference(mutator, &loaded.modules[0].class);
         let inner = class_reference(mutator, &inner);
         assert_ne!(
             class_name(mutator.heap(), inner),
@@ -6055,7 +6120,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(NESTED_SUPERCLASS_ARGUMENTS),
             &Origin::File(PathBuf::from("t.ns")),
@@ -6213,7 +6278,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
         // An image is the only way such a body reaches an interpreter, so
         // the tampered mixin travels through one.
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -6228,7 +6293,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
     let outer = expect_ok(
         loaded
             .interpreter
-            .instantiate(&loaded.root_class, std::slice::from_ref(&platform)),
+            .instantiate(&loaded.modules[0].class, std::slice::from_ref(&platform)),
         "instantiate Args",
     );
     let derived = expect_ok(
@@ -6306,7 +6371,7 @@ fn snapshot_of(source: &str) -> Vec<u8> {
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -6316,6 +6381,381 @@ fn snapshot_of(source: &str) -> Vec<u8> {
         )
         .expect("snapshot")
     })
+}
+
+// ---------------------------------------------------------------------------
+// The module section: several modules in one image, each named by its index.
+// ---------------------------------------------------------------------------
+
+/// Loads a further module into `interpreter`, resolved as coming from `name`.
+fn load_another(interpreter: &mut Interpreter, source: &str, name: &str) -> Root {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        Rc::from(source),
+        SourceOrigin::File(PathBuf::from(name)),
+    )
+    .expect("resolve");
+    interpreter.load_module(&resolved)
+}
+
+/// Whether two values are one object.
+fn same_value<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
+    object(first).same(*object(second))
+}
+
+const FIRST_MODULE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class First = Object new (| public held ::= nil. public made ::= nil. |) () : ()
+"};
+
+const SECOND_MODULE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Second = Object new () (
+        public answer = ( ^2 )
+        public maker = ( ^[42] )
+    ) : ()
+"};
+
+/// `First` loaded, then `Second`, and an instance of `First`.
+fn two_module_world() -> (Interpreter, Root, Root, Root) {
+    let (mut interpreter, first) = load(FIRST_MODULE);
+    let second = load_another(&mut interpreter, SECOND_MODULE, "Second.ns");
+    let instance = expect_ok(interpreter.instantiate(&first, &[]), "First new");
+    (interpreter, first, second, instance)
+}
+
+/// A snapshot of `instance` carrying `First` and `Second`, in that order.
+fn two_module_image(
+    interpreter: &mut Interpreter,
+    first: &Root,
+    second: &Root,
+    instance: &Root,
+) -> Vec<u8> {
+    let first_origin = SourceOrigin::File("First.ns".into());
+    let second_origin = SourceOrigin::File("Second.ns".into());
+    let platform = interpreter.platform();
+    interpreter
+        .enter(|mutator| {
+            let modules = [
+                image::ModuleSource {
+                    class: class_reference(mutator, first),
+                    origin: &first_origin,
+                    source: None,
+                },
+                image::ModuleSource {
+                    class: class_reference(mutator, second),
+                    origin: &second_origin,
+                    source: None,
+                },
+            ];
+            let platform = mutator.fetch(&platform);
+            image::snapshot(mutator, &modules, &platform, &[mutator.fetch(instance)])
+        })
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Where the module section starts: its `u32` module count.
+fn module_section_start(bytes: &[u8]) -> usize {
+    image::inspect::inspect(bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|section| section.name == "modules")
+        .expect("a module section")
+        .start
+}
+
+#[test]
+fn an_image_of_two_modules_restores_both_and_the_graph_reaching_them() {
+    // First's instance holds Second's class and an instance of it; after a
+    // load, both module classes are rebuilt, and the instance answers its
+    // own class's method.
+    let (mut interpreter, first, second, instance) = two_module_world();
+    let second_instance = expect_ok(interpreter.instantiate(&second, &[]), "Second new");
+    expect_ok(
+        interpreter.send(
+            &instance,
+            Symbol::intern("held:"),
+            std::slice::from_ref(&second),
+        ),
+        "held:",
+    );
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("made:"), &[second_instance]),
+        "made:",
+    );
+    let bytes = two_module_image(&mut interpreter, &first, &second, &instance);
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(loaded.modules.len(), 2);
+    assert!(
+        matches!(&loaded.modules[1].origin, SourceOrigin::File(path) if path.ends_with("Second.ns"))
+    );
+    let root = loaded.roots[0].clone();
+    let made = send_to(&mut loaded, &root, "made");
+    let answer = send_to(&mut loaded, &made, "answer");
+    let held = send_to(&mut loaded, &root, "held");
+    let module_class = loaded.modules[1].class.clone();
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&answer), Value::SmallInteger(2)));
+        assert!(same_value(
+            &mutator.fetch(&held),
+            &mutator.fetch(&module_class)
+        ));
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report
+            .sections
+            .iter()
+            .find(|section| section.name == "modules")
+            .map(|section| section.detail.as_str()),
+        Some("2 modules")
+    );
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("<module 1>")),
+        "the graph names Second by its module index: {:?}",
+        report.graph_objects
+    );
+}
+
+#[test]
+fn a_module_count_that_disagrees_with_the_trees_is_refused() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    let mut bytes = two_module_image(&mut interpreter, &first, &second, &instance);
+    let count_at = module_section_start(&bytes);
+    bytes[count_at..count_at + 4].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(
+        load_error(&bytes),
+        decode::DecodeError::ModuleCountMismatch {
+            declared: 1,
+            trees: 2
+        }
+        .to_string()
+    );
+}
+
+#[test]
+fn a_module_count_past_the_bytes_left_is_refused() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    let mut bytes = two_module_image(&mut interpreter, &first, &second, &instance);
+    let count_at = module_section_start(&bytes);
+    bytes[count_at..count_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let error = load_error(&bytes);
+    assert!(
+        error == decode::DecodeError::UnexpectedEndOfFile.to_string()
+            || error
+                == decode::DecodeError::ModuleCountMismatch {
+                    declared: u32::MAX,
+                    trees: 2
+                }
+                .to_string(),
+        "unexpected error: {error}"
+    );
+    // The bound itself, with the count agreeing with the trees: a count the
+    // bytes left cannot hold is refused before anything is reserved for it.
+    let decoded = mixin_table_of(&bytes);
+    let mut section = encode::Writer::new();
+    section.write_u32(2);
+    let section = section.into_bytes();
+    assert!(matches!(
+        image::modules::decode_modules(&mut decode::Reader::new(&section), &decoded, false),
+        Err(decode::DecodeError::UnexpectedEndOfFile)
+    ));
+}
+
+#[test]
+fn a_root_section_clause_is_checked_against_its_own_modules_row() {
+    // Module 0's row declares a `<:` clause; module 1's declares none. Module
+    // 1's section naming clause 0 is refused against module 1's own row --
+    // module 0's would have accepted it.
+    let (mut interpreter, first) = load(indoc! {"
+        Newspeak3
+        'Test'
+        class First = Object new <: Value () () : ()
+    "});
+    let second = load_another(&mut interpreter, SECOND_MODULE, "Second.ns");
+    let first_origin = SourceOrigin::File("First.ns".into());
+    let second_origin = SourceOrigin::File("Second.ns".into());
+    let mut bytes = interpreter
+        .enter(|mutator| {
+            let modules = [
+                image::ModuleSource {
+                    class: class_reference(mutator, &first),
+                    origin: &first_origin,
+                    source: None,
+                },
+                image::ModuleSource {
+                    class: class_reference(mutator, &second),
+                    origin: &second_origin,
+                    source: None,
+                },
+            ];
+            image::build(mutator.heap(), &modules, Symbol::intern("main:args:"))
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(image::load(&bytes).is_ok(), "the fixture itself must load");
+    let decoded = mixin_table_of(&bytes);
+    let second_row = decoded.module_rows[1];
+    let level_count_at = {
+        let mut reader = decode::Reader::new(&bytes);
+        reader
+            .read_raw(module_section_start(&bytes))
+            .expect("the sections before");
+        reader.read_u32().expect("module count");
+        decode::decode_source_origin(&mut reader).expect("module 0's origin");
+        decode::decode_root_section(&mut reader, &decoded, 0).expect("module 0's root section");
+        decode::decode_source_origin(&mut reader).expect("module 1's origin");
+        // Module 1's root section: the presence flag, the superclass tag,
+        // then the level count.
+        reader.position() + 2
+    };
+    assert_eq!(
+        bytes[level_count_at..level_count_at + 4],
+        0u32.to_le_bytes(),
+        "Second applies no mixin"
+    );
+    bytes[level_count_at..level_count_at + 4].copy_from_slice(&1u32.to_le_bytes());
+    let mut level = encode::Writer::new();
+    level.write_u32(0); // clause 0 ...
+    level.write_u8(encode::builtin_class_tag(BuiltinClass::Value)); // ... naming Value
+    let insert_at = level_count_at + 4;
+    bytes.splice(insert_at..insert_at, level.into_bytes());
+    assert_eq!(
+        load_error(&bytes),
+        decode::DecodeError::BadMixinApplicationClause {
+            row: second_row,
+            index: 0
+        }
+        .to_string()
+    );
+}
+
+#[test]
+fn a_graph_reaching_a_module_the_image_does_not_carry_is_refused() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("held:"), &[second]),
+        "held:",
+    );
+    let platform = interpreter.platform();
+    let result = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &first);
+        let platform = mutator.fetch(&platform);
+        let origin = SourceOrigin::File("First.ns".into());
+        snapshot_one(
+            mutator,
+            None,
+            &origin,
+            class,
+            &platform,
+            &[mutator.fetch(&instance)],
+        )
+    });
+    match result {
+        Ok(_) => panic!("a graph reaching a module the image does not carry must be refused"),
+        Err(error) => {
+            assert!(error.contains("`Second`"), "unexpected error: {error}");
+            assert!(
+                error.contains("not part of any module the image carries"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    let maker = expect_ok(interpreter.instantiate(&second, &[]), "Second new");
+    let block = expect_ok(
+        interpreter.send(&maker, Symbol::intern("maker"), &[]),
+        "maker",
+    );
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("held:"), &[block]),
+        "held:",
+    );
+    let platform = interpreter.platform();
+    let result = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &first);
+        let platform = mutator.fetch(&platform);
+        let origin = SourceOrigin::File("First.ns".into());
+        snapshot_one(
+            mutator,
+            None,
+            &origin,
+            class,
+            &platform,
+            &[mutator.fetch(&instance)],
+        )
+    });
+    match result {
+        Ok(_) => panic!("a closure over code no carried module compiled must be refused"),
+        Err(error) => assert!(
+            error.contains("module the image carries"),
+            "unexpected error: {error}"
+        ),
+    }
+}
+
+/// A level a module root's `<:` clause added is no record, so its own
+/// identity hash travels in the closing table (`HASHED_MODULE_LEVEL`), as
+/// its metaclass's already did. The kernel gives a program no `superclass`
+/// accessor, so the hash is drawn from Rust, where a later reflective
+/// reach would draw it.
+#[test]
+fn a_module_levels_own_hash_survives_an_image() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class M = Object new <: Value () () : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "M new");
+    let platform = interpreter.platform();
+    let (bytes, hash) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let level = mutator
+            .heap()
+            .class_superclass(class)
+            .expect("the level `<: Value` added");
+        let hash = mutator.heap_mut().ensure_identity_hash(level);
+        let platform = mutator.fetch(&platform);
+        let bytes = snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[mutator.fetch(&instance)],
+        )
+        .expect("snapshot");
+        (bytes, hash)
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_tag_named_hashes
+            .contains(&format!("<module 0 level 0> hash {hash}")),
+        "the closing table records the level: {:?}",
+        report.graph_tag_named_hashes
+    );
+    let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let module_class = loaded.modules[0].class.clone();
+    let mut interpreter = loaded.interpreter;
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let level = heap
+            .class_superclass(class_reference(mutator, &module_class))
+            .expect("the loaded level");
+        assert_eq!(heap.identity_hash(level), hash);
+    });
 }
 
 /// The number of times `needle` occurs in `haystack`, overlapping matches
@@ -6332,17 +6772,19 @@ fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// The image's bytes from the symbol table onward, skipping the header, the
-/// verbatim source text and its origin -- which necessarily still contain
-/// every selector as plain source. The dedup property applies only from the
-/// symbol table on: everything that would otherwise be an inline `write_str`
-/// of a selector or name lives at or after it.
-fn bytes_from_symbol_table(bytes: &[u8]) -> &[u8] {
-    let mut reader = decode::Reader::new(bytes);
-    decode::read_header(&mut reader).expect("valid header");
-    reader.read_str().expect("source");
-    decode::decode_source_origin(&mut reader).expect("origin");
-    &bytes[reader.position()..]
+/// The image's bytes but the header and the module section -- whose
+/// verbatim source text necessarily still contains every selector as plain
+/// source. The dedup property applies to every other section: everything
+/// that would otherwise be an inline `write_str` of a selector or name lives
+/// in one of them.
+fn bytes_outside_the_module_section(bytes: &[u8]) -> Vec<u8> {
+    let report = image::inspect::inspect(bytes).expect("inspect");
+    report
+        .sections
+        .iter()
+        .filter(|section| section.name != "header" && section.name != "modules")
+        .flat_map(|section| bytes[section.start..section.end].iter().copied())
+        .collect()
 }
 
 #[test]
@@ -6353,9 +6795,9 @@ fn a_repeated_selector_is_stored_once() {
     // This selector is the method-dictionary key for one method and the
     // send target at three call sites -- four inline occurrences without
     // deduplication, one symbol-table entry with it. (The verbatim source
-    // text, stored earlier in the image, still contains the selector as
-    // plain text -- `bytes_from_symbol_table` excludes that section, which
-    // the symbol table does not cover.)
+    // text, stored in the module section, still contains the selector as
+    // plain text -- `bytes_outside_the_module_section` excludes that section,
+    // which the symbol table does not cover.)
     let bytes = snapshot_of(indoc! {"
         Newspeak3
         'T'
@@ -6367,7 +6809,10 @@ fn a_repeated_selector_is_stored_once() {
         ) : ()
     "});
     assert_eq!(
-        occurrences(bytes_from_symbol_table(&bytes), b"distinctiveSelector"),
+        occurrences(
+            &bytes_outside_the_module_section(&bytes),
+            b"distinctiveSelector"
+        ),
         1
     );
 }
@@ -6376,14 +6821,12 @@ fn a_repeated_selector_is_stored_once() {
 /// `TRIVIAL_MODULE` compiles exactly one method, so its mixin section holds
 /// one real reference to symbol id 0 -- which does not exist once the
 /// table it indexes into claims to be empty. Located via the real decode
-/// functions (header, source, origin) rather than a hardcoded byte offset,
-/// so this does not drift if an earlier section's encoding changes shape.
+/// function (the header's) rather than a hardcoded byte offset, so this
+/// does not drift if the header's encoding changes shape.
 fn corrupt_first_symbol_id(bytes: &mut [u8]) {
     let count_at = {
         let mut reader = decode::Reader::new(bytes);
         decode::read_header(&mut reader).expect("valid header");
-        reader.read_str().expect("source");
-        decode::decode_source_origin(&mut reader).expect("origin");
         reader.position()
     };
     bytes[count_at..count_at + 4].copy_from_slice(&0u32.to_le_bytes());
@@ -6680,7 +7123,9 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
     "});
     let mut loaded = image::load(&bytes).expect("load");
     let instance = expect_ok(
-        loaded.interpreter.instantiate(&loaded.root_class, &[]),
+        loaded
+            .interpreter
+            .instantiate(&loaded.modules[0].class, &[]),
         "instantiate",
     );
     let result = expect_ok(
@@ -6716,16 +7161,13 @@ const TABLE_NESTED_SOURCE: &str = indoc! {"
 fn mixin_table_of(bytes: &[u8]) -> mixins::Decoded {
     let mut reader = decode::Reader::new(bytes);
     decode::read_header(&mut reader).expect("valid header");
-    reader.read_str().expect("source");
-    decode::decode_source_origin(&mut reader).expect("origin");
     let symbols = symbols::decode(&mut reader).expect("symbol table");
     let codes = decode::decode_code_table(&mut reader, &symbols).expect("code table");
     mixins::decode(&mut reader, &symbols, &codes.codes).expect("mixin table")
 }
 
-/// A complete image whose mixin table is `mixin_table` verbatim: a real
-/// header, a real (trivially parseable) source and origin, a real symbol
-/// table holding `strings`, and an empty code table. Everything before the
+/// An image whose mixin table is `mixin_table` verbatim: a real header, a
+/// real symbol table holding `strings`, and an empty code table. Everything before the
 /// mixin table comes from the real encoders, so a fixture built this way
 /// exercises the mixin table's own validation rather than an accident in an
 /// earlier section. Nothing follows the mixin table, so every test using
@@ -6733,9 +7175,7 @@ fn mixin_table_of(bytes: &[u8]) -> mixins::Decoded {
 /// it is an error rather than an abort.
 fn image_with_mixin_table(strings: &[&str], mixin_table: &[u8]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    encode::write_header(&mut writer, encode::FLAG_HAS_SOURCE);
-    writer.write_str(TRIVIAL_MODULE);
-    encode::encode_source_origin(&mut writer, &Origin::File(PathBuf::from("t.ns")));
+    encode::write_header(&mut writer, 0);
     let mut builder = symbols::Builder::new();
     for string in strings {
         builder.intern(string);
@@ -6867,7 +7307,7 @@ fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
 }
 
 /// A row no earlier row reaches starts a tree of its own: the table then
-/// describes two modules while the image declares one, and `load` refuses
+/// describes two modules while the module section declares one, and `load` refuses
 /// the mismatch rather than dropping or misplacing the second tree.
 #[test]
 fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
@@ -6879,7 +7319,8 @@ fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
     let decoded = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
         .expect("a forest of two trees decodes");
     assert_eq!(decoded.module_rows, vec![0, 1]);
-    let bytes = image_with_mixin_table(&["X"], &table);
+    let mut bytes = image_with_mixin_table(&["X"], &table);
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // the module section's count
     let Err(error) = ns_runtime::image::load(&bytes) else {
         panic!("a second, undeclared tree must be refused");
     };
@@ -7006,7 +7447,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(NESTED_SUPERCLASS_ARGUMENTS),
             &Origin::File(PathBuf::from("t.ns")),
@@ -7186,7 +7627,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
             ))),
         );
         let platform = mutator.fetch(&platform);
-        let Err(error) = image::snapshot(
+        let Err(error) = snapshot_one(
             mutator,
             Some(TRIVIAL_MODULE),
             &Origin::File(PathBuf::from("t.ns")),
@@ -7473,7 +7914,7 @@ fn snapshot_module(module_source: &str, source: Option<&str>, extra_send: Option
         let class = class_reference(mutator, &class);
         let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             source,
             &Origin::File(PathBuf::from("t.ns")),
@@ -7497,7 +7938,7 @@ fn a_source_free_image_still_runs() {
         "nor any other fragment of it"
     );
     let mut loaded = image::load(&bytes).expect("load");
-    assert!(loaded.source.is_none());
+    assert!(loaded.modules[0].source.is_none());
     let instance = loaded.roots.first().cloned().expect("the root instance");
     let result = expect_ok(
         loaded
@@ -7541,7 +7982,7 @@ fn the_debug_variant_still_carries_source() {
     assert!(contains(&bytes, b"class Outer"));
     let mut loaded = image::load(&bytes).expect("load");
     assert_eq!(
-        loaded.source.as_deref(),
+        loaded.modules[0].source.as_deref(),
         Some(SOURCE_FREE_MODULE),
         "the debug variant hands its source back verbatim"
     );
@@ -7603,7 +8044,7 @@ fn the_debug_variants_source_is_never_parsed() {
     );
     let loaded = image::load(&bytes).expect("load");
     assert_eq!(
-        loaded.source.as_deref(),
+        loaded.modules[0].source.as_deref(),
         Some("this is not Newspeak at all (")
     );
 }
@@ -7639,7 +8080,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
         );
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        let result = image::snapshot(
+        let result = snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -7758,7 +8199,7 @@ fn an_activation_object_round_trips() {
         );
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -7825,7 +8266,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         let closure = mutator.fetch(&closure);
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -8019,7 +8460,7 @@ fn snapshot_of_without_source(source: &str) -> Vec<u8> {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("golden.ns")),
@@ -8133,7 +8574,7 @@ const ENTRY_SOURCE: &str = indoc! {"
 "};
 
 #[test]
-fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class() {
+fn a_built_binary_and_a_snapshot_of_the_same_source_agree_through_the_module_section() {
     // Build both from one compiled module so the only difference is the
     // artifact shape, then compare through the inspector rather than by raw
     // offset: a raw offset says two files differ, a section says which one.
@@ -8143,7 +8584,7 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
 
     let (binary, image) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let binary = image::build(
+        let binary = build_one(
             mutator.heap(),
             None,
             &origin,
@@ -8152,8 +8593,7 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
         )
         .expect("build");
         let platform = mutator.fetch(&platform);
-        let image =
-            image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
+        let image = snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
         (binary, image)
     });
 
@@ -8174,20 +8614,20 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
         "the describing sections must line up"
     );
 
-    // From `origin`, not from byte 0: the header's flags byte necessarily
+    // From `symbols`, not from byte 0: the header's flags byte necessarily
     // differs (`FLAG_STATELESS` is only ever set on `binary`), and that
     // difference is correct, not a defect the refactor should paper over.
     let start = binary_report
         .sections
         .iter()
-        .find(|section| section.name == "origin")
-        .expect("origin section")
+        .find(|section| section.name == "symbols")
+        .expect("symbols section")
         .start;
     let end = binary_report
         .sections
         .iter()
-        .find(|section| section.name == "root class")
-        .expect("root class section")
+        .find(|section| section.name == "modules")
+        .expect("modules section")
         .end;
     assert_eq!(
         &binary[start..end],
@@ -8217,7 +8657,7 @@ fn build_accepts_an_entry_selector_the_module_never_declares() {
 
     let binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        image::build(
+        build_one(
             mutator.heap(),
             None,
             &origin,
@@ -8243,7 +8683,7 @@ fn a_binary_loads_with_no_roots_and_its_entry() {
 
     let binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        image::build(
+        build_one(
             mutator.heap(),
             None,
             &origin,
@@ -8261,7 +8701,7 @@ fn a_binary_loads_with_no_roots_and_its_entry() {
         Some("main:args:")
     );
     loaded.interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &loaded.root_class);
+        let root_class = class_reference(mutator, &loaded.modules[0].class);
         assert!(
             !root_mixin_of(mutator.heap(), root_class).methods.is_empty(),
             "the binary's methods must be rebuilt, each carrying its body"
@@ -8287,7 +8727,7 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
     let image = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
+        snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
     });
 
     let loaded = image::load(&image).expect("load a stateful image with no roots");
@@ -8313,7 +8753,7 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
 
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        image::build(
+        build_one(
             mutator.heap(),
             None,
             &origin,
@@ -8359,7 +8799,7 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
 
     let binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        image::build(
+        build_one(
             mutator.heap(),
             None,
             &origin,
@@ -8406,7 +8846,7 @@ fn a_binary_with_a_graph_appended_is_refused() {
 
     let (binary, image_bytes) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let binary = image::build(
+        let binary = build_one(
             mutator.heap(),
             None,
             &origin,
@@ -8416,7 +8856,7 @@ fn a_binary_with_a_graph_appended_is_refused() {
         .expect("build");
         let platform = mutator.fetch(&platform);
         let image_bytes =
-            image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
+            snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
         (binary, image_bytes)
     });
     // The append below only exercises anything if the image actually
@@ -8467,7 +8907,7 @@ fn a_relabelled_snapshot_is_refused_for_missing_entry() {
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
+        snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
     });
 
     // Locate the flag byte from the header layout instead of hard-coding an
@@ -8529,7 +8969,7 @@ fn the_graph_walk_consumes_the_section_exactly() {
             };
             let class = class_reference(mutator, &class);
             let platform = mutator.fetch(&platform);
-            image::snapshot(mutator, None, &origin, class, &platform, &roots).expect("snapshot")
+            snapshot_one(mutator, None, &origin, class, &platform, &roots).expect("snapshot")
         });
 
         let report = image::inspect::inspect(&image).expect("inspect the image");
@@ -8587,7 +9027,7 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("keeper.ns")),
@@ -8699,7 +9139,7 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -8898,7 +9338,7 @@ fn a_builtin_metaclass_round_trips_by_tag() {
     let loaded_outer = loaded.roots[0].clone();
     let kept = send_to(&mut loaded, &loaded_outer, "kept");
     let other = send_to(&mut loaded, &loaded_outer, "other");
-    let loaded_class = loaded.root_class.clone();
+    let loaded_class = loaded.modules[0].class.clone();
     loaded.interpreter.enter(|mutator| {
         let (Value::Object(kept), Value::Object(other), Value::Object(loaded_class)) = (
             mutator.fetch(&kept),
@@ -8963,7 +9403,7 @@ fn a_metaclass_identity_hash_survives() {
     let mut loaded = image::load(&bytes).expect("load");
     let loaded_outer = loaded.roots[0].clone();
     let loaded_holder = nested_class_of(&mut loaded, &loaded_outer, "Holder");
-    let loaded_class = loaded.root_class.clone();
+    let loaded_class = loaded.modules[0].class.clone();
     loaded.interpreter.enter(|mutator| {
         let (Value::Object(holder), Value::Object(root_class)) =
             (mutator.fetch(&loaded_holder), mutator.fetch(&loaded_class))
@@ -8983,7 +9423,7 @@ fn a_metaclass_identity_hash_survives() {
 }
 
 /// The metaclass of a root level is named by tag, behind the level's own
-/// `CLASS_ROOT_LEVEL`, and its identity hash travels in the closing table:
+/// `CLASS_MODULE_LEVEL`, and its identity hash travels in the closing table:
 /// the root and its levels are built before the graph, metaclasses
 /// included, so both resolve to the loading world's own.
 #[test]
@@ -9004,7 +9444,7 @@ fn a_root_level_metaclass_round_trips_by_tag() {
         let metaclass = mutator.metaclass_of(level).expect("a metaclass");
         let hash = mutator.heap_mut().ensure_identity_hash(metaclass);
         let platform = mutator.fetch(&platform);
-        let bytes = image::snapshot(
+        let bytes = snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -9018,11 +9458,11 @@ fn a_root_level_metaclass_round_trips_by_tag() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.graph_roots,
-        vec!["class metaclass of <root class level 0>".to_string()]
+        vec!["class metaclass of <module 0 level 0>".to_string()]
     );
     let mut loaded = image::load(&bytes).expect("load");
     let root = loaded.roots[0].clone();
-    let loaded_class = loaded.root_class.clone();
+    let loaded_class = loaded.modules[0].class.clone();
     loaded.interpreter.enter(|mutator| {
         let (Value::Object(metaclass), Value::Object(root_class)) =
             (mutator.fetch(&root), mutator.fetch(&loaded_class))
@@ -9084,7 +9524,7 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
             (future, "Future"),
             (future_metaclass, "Future class"),
         ] {
-            let refused = image::snapshot(
+            let refused = snapshot_one(
                 mutator,
                 None,
                 &Origin::File(PathBuf::from("t.ns")),
@@ -9138,7 +9578,7 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
                 _ => false,
             })
             .expect("the kernel holds the mirror");
-        let refused = image::snapshot(
+        let refused = snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -9533,7 +9973,7 @@ fn a_binary_of_a_module_applying_mixins_builds_its_levels_after_loading() {
     let (mut interpreter, class) = load(MIXIN_APPLICATION_MODULE);
     let binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        image::build(
+        build_one(
             mutator.heap(),
             None,
             &Origin::File(PathBuf::from("t.ns")),
@@ -9547,7 +9987,7 @@ fn a_binary_of_a_module_applying_mixins_builds_its_levels_after_loading() {
     let host = expect_ok(
         loaded
             .interpreter
-            .instantiate(&loaded.root_class, std::slice::from_ref(&platform)),
+            .instantiate(&loaded.modules[0].class, std::slice::from_ref(&platform)),
         "instantiate Host",
     );
     assert_eq!(
@@ -9575,7 +10015,7 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
     let (binary, snapshot) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let origin = Origin::File(PathBuf::from("t.ns"));
-        let binary = image::build(
+        let binary = build_one(
             mutator.heap(),
             None,
             &origin,
@@ -9585,14 +10025,14 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
         .expect("build");
         let platform = mutator.fetch(&platform);
         let snapshot =
-            image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
+            snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
         (binary, snapshot)
     });
     for bytes in [binary, snapshot] {
         let mut loaded = image::load(&bytes).expect("load");
         loaded.interpreter.enter(|mutator| {
             let heap = mutator.heap();
-            let root = class_reference(mutator, &loaded.root_class);
+            let root = class_reference(mutator, &loaded.modules[0].class);
             let level = heap.class_superclass(root).expect("a superclass");
             let value = mutator.builtin_class(BuiltinClass::Value);
             assert!(Rc::ptr_eq(
@@ -9610,7 +10050,9 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
             assert!(heap.class_inherits_value(root));
         });
         let instance = expect_ok(
-            loaded.interpreter.instantiate(&loaded.root_class, &[]),
+            loaded
+                .interpreter
+                .instantiate(&loaded.modules[0].class, &[]),
             "instantiate Root",
         );
         let answer = expect_ok(
@@ -10261,7 +10703,7 @@ fn a_resolved_future_is_written_as_its_value() {
         assert!(reaches_a_future(mutator, holder), "the premise");
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(DATA_CYCLE),
             &Origin::File(PathBuf::from("t.ns")),
@@ -10357,7 +10799,7 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
         );
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        image::snapshot(
+        snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
@@ -10444,7 +10886,7 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
             heap.set_instance_field(*object(&holder), 0, Value::Object(future));
             let class = class_reference(mutator, &class);
             let platform = mutator.fetch(&platform);
-            match image::snapshot(
+            match snapshot_one(
                 mutator,
                 Some(source),
                 &Origin::File(PathBuf::from("t.ns")),
@@ -10489,14 +10931,38 @@ fn the_retired_class_record_tag_is_refused() {
 fn a_root_level_class_tag_past_the_roots_levels_is_a_decode_error_not_a_panic() {
     let bytes = one_array_object(|writer| {
         writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_ROOT_LEVEL); // class tag: a level of the root
-        writer.write_u32(0); // EMPTY's root applies no mixin
+        writer.write_u8(CLASS_MODULE_LEVEL); // class tag: a level of a module's root
+        writer.write_u32(0); // module 0 ...
+        writer.write_u32(5); // ... whose root, EMPTY's, applies no mixin
     });
     let mut bytes = bytes;
     bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
     let error = GraphFixture::new().decode_error(&bytes);
-    assert_eq!(error, decode::DecodeError::BadRootLevel(0));
-    assert_eq!(error.to_string(), "root class level 0 out of range");
+    assert_eq!(
+        error,
+        decode::DecodeError::BadModuleLevel {
+            module: 0,
+            position: 5
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the image names level 5 of module 0, which its module section does not rebuild"
+    );
+}
+
+#[test]
+fn a_module_class_tag_past_the_modules_is_refused() {
+    let mut bytes = one_array_object(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
+        writer.write_u8(CLASS_MODULE); // class tag: a module's root class
+        writer.write_u32(7); // the fixture carries module 0 alone
+    });
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::BadModuleReference { module: 7 }
+    );
 }
 
 /// A root level exists before the graph does, so the graph names it by its
@@ -10511,8 +10977,9 @@ fn a_root_level_class_tag_names_the_root_classs_own_level() {
     "};
     let mut bytes = one_array_object(|writer| {
         writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_ROOT_LEVEL); // class tag: a level of the root
-        writer.write_u32(0);
+        writer.write_u8(CLASS_MODULE_LEVEL); // class tag: a level of a module's root
+        writer.write_u32(0); // module 0
+        writer.write_u32(0); // its lowest level
     });
     bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
                                                   // A decoded graph's handles cannot leave the entry that decoded it, so
@@ -10604,6 +11071,7 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
         decode::decode_root_section(
             &mut decode::Reader::new(&root_section_bytes(Some(BuiltinClass::Object), levels)),
             &decoded,
+            0,
         )
     };
     assert_eq!(
@@ -10624,7 +11092,7 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
     huge.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
     huge.write_u32(u32::MAX); // a count no clause list could back
     assert_eq!(
-        decode::decode_root_section(&mut decode::Reader::new(&huge.into_bytes()), &decoded),
+        decode::decode_root_section(&mut decode::Reader::new(&huge.into_bytes()), &decoded, 0),
         Err(decode::DecodeError::UnexpectedEndOfFile)
     );
     let mirror = encode::builtin_class_tag(BuiltinClass::VmMirror);
@@ -10652,6 +11120,7 @@ fn a_root_section_the_root_rule_forbids_is_refused() {
         decode::decode_root_section(
             &mut decode::Reader::new(&root_section_bytes(superclass, levels)),
             &decoded,
+            0,
         )
     };
     let tag = encode::builtin_class_tag;
@@ -10699,8 +11168,8 @@ fn the_encoder_refuses_a_root_the_rule_forbids() {
         let platform = mutator.fetch(&platform);
         let origin = Origin::File(PathBuf::from("t.ns"));
         (
-            image::snapshot(mutator, None, &origin, class, &platform, &[]),
-            image::build(
+            snapshot_one(mutator, None, &origin, class, &platform, &[]),
+            build_one(
                 mutator.heap(),
                 None,
                 &origin,
@@ -11059,7 +11528,7 @@ fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
     let message = expect_error(
         loaded
             .interpreter
-            .instantiate(&loaded.root_class, std::slice::from_ref(&platform)),
+            .instantiate(&loaded.modules[0].class, std::slice::from_ref(&platform)),
         "ValueModuleDefiningIdentity new",
     );
     assert_eq!(
@@ -11605,7 +12074,7 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
                  from shipped source, and no platform path names it",
             ),
         ] {
-            let refused = image::snapshot(
+            let refused = snapshot_one(
                 mutator,
                 None,
                 &Origin::File(PathBuf::from("t.ns")),
@@ -11701,7 +12170,12 @@ fn decode_tag_named_with_the_transcript(bytes: &[u8]) -> (Result<u32, decode::De
         let class = class_reference(mutator, &class);
         let transcript = mutator.fetch(&transcript);
         let mut reader = decode::Reader::new(bytes);
-        let result = decode::decode_tag_named_hashes(&mut reader, mutator, class, &[transcript]);
+        let result = decode::decode_tag_named_hashes(
+            &mut reader,
+            mutator,
+            &image::ModuleClasses::of(mutator.heap(), &[class]),
+            &[transcript],
+        );
         (result, mutator.heap().identity_hash(*object(&transcript)))
     })
 }
@@ -11755,12 +12229,22 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
         let class_hash = mutator.heap_mut().ensure_identity_hash(array);
         let metaclass_hash = mutator.heap_mut().ensure_identity_hash(metaclass);
         let mut writer = encode::Writer::new();
-        encode::encode_tag_named_hashes(&mut writer, mutator, class, &platform, &[array]);
+        encode::encode_tag_named_hashes(
+            &mut writer,
+            mutator,
+            &image::ModuleClasses::of(mutator.heap(), &[class]),
+            &platform,
+            &[array],
+        );
         let bytes = writer.into_bytes();
         let entries = u32::from_le_bytes(bytes[..4].try_into().expect("a count"));
         let mut reader = decode::Reader::new(&bytes);
-        let decoded =
-            decode::decode_tag_named_hashes(&mut reader, mutator, class, &[Value::Object(array)]);
+        let decoded = decode::decode_tag_named_hashes(
+            &mut reader,
+            mutator,
+            &image::ModuleClasses::of(mutator.heap(), &[class]),
+            &[Value::Object(array)],
+        );
         assert_eq!(decoded, Ok(class_hash.max(metaclass_hash)));
         assert_eq!(entries, 2, "one entry for the class, one for its metaclass");
     });

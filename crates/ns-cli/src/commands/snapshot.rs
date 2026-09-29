@@ -52,14 +52,12 @@ pub(crate) fn execute(
         let platform = mutator.fetch(&platform);
         let root_values: Vec<ns_runtime::Value> =
             roots.iter().map(|root| mutator.fetch(root)).collect();
-        ns_runtime::image::snapshot(
-            mutator,
-            debug_source.then_some(loaded.source.as_str()),
-            &loaded.origin,
-            entry::class_reference(mutator, &class),
-            &platform,
-            &root_values,
-        )
+        let modules = [ns_runtime::image::ModuleSource {
+            class: entry::class_reference(mutator, &class),
+            origin: &loaded.origin,
+            source: debug_source.then_some(loaded.source.as_str()),
+        }];
+        ns_runtime::image::snapshot(mutator, &modules, &platform, &root_values)
     }) {
         Ok(bytes) => bytes,
         Err(error) => {

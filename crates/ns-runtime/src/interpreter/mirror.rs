@@ -646,14 +646,13 @@ mod tests {
             };
             let platform = mutator.platform_value();
             let holder = mutator.fetch(&instance);
-            crate::image::snapshot(
-                mutator,
-                None,
-                &crate::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            let origin = crate::SourceOrigin::File(std::path::PathBuf::from("t.ns"));
+            let modules = [crate::image::ModuleSource {
                 class,
-                &platform,
-                &[holder],
-            )
+                origin: &origin,
+                source: None,
+            }];
+            crate::image::snapshot(mutator, &modules, &platform, &[holder])
         });
         match refused {
             Err(message) => assert!(message.contains("VM mirror"), "{message}"),
