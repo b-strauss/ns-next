@@ -3534,6 +3534,20 @@ retired; value tag 9, literal tag 10 and builtin class tag 31 are new.
   values add to a failed load's peak ([memory.md](design/memory.md), "The
   interim cost, and the one question still open").
 
-**Measured:** not yet. The plan's Task 10 measures `bench_send.ns` and
-`bench_loop.ns` against `bb031c2`, the parent of `b02323d`, and records the
-numbers here.
+**Measured** against `master` (`db380dc`) in one sitting on a release build
+with the pinned `RUSTFLAGS`: three builds of each tree from clean target
+directories, five alternating rounds of `bench --iterations 30`, so fifteen
+medians per tree and benchmark, pooled. No change beyond the builds' own
+spread:
+
+| Benchmark | `master` | branch | Change | Spread between builds (`master` / branch) |
+|---|---|---|---|---|
+| `bench_send.ns` | 4.945 ms | 4.933 ms | -0.23% | 1.88% / 0.93% |
+| `bench_loop.ns` | 3.540 ms | 3.538 ms | -0.06% | 1.46% / 1.02% |
+| `bench_megamorphic.ns` | 7.571 ms | 7.540 ms | -0.41% | 2.36% / 0.27% |
+| `bench_block.ns` | 11.988 ms | 12.145 ms | +1.31% | 1.53% / 3.53% |
+
+`bench_block.ns`'s +1.31% lies inside both trees' spread, and most of it is one
+branch build. `dumpbin /disasm` of a release build with debug information shows
+`checked_floor_divide` inlined into `vm::run`, and no `vm::run::closure` or
+`run_stretch` became a function of its own.
