@@ -15,15 +15,24 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: road step 2's second plan, the eight-byte value**
+**Next: the Are We Fast Yet benchmarks, before road step 2's second plan**
+([OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM"): the
+Newspeak versions from `prior-art/somns/core-lib/Benchmarks` become runnable
+modules with pinned output, and each one widens the platform on demand. Its
+`Vector`, the harness's `platform system` and `platform mirrors`, and the
+numeric protocol it sends all come in that way. The first step is to find
+where each benchmark fails today; the plan is still to be written. Decided
+with the user on 2026-09-29, so that the eight-byte value and every later
+step are measured on real programs.
+
+**After it: road step 2's second plan, the eight-byte value**
 ([object-model.md](design/object-model.md), "Planned: an eight-byte value"):
 one tagged 64-bit word with a 61-bit `SmallInteger`, on today's arena. Its
 first plan, large integers, is built ("Large integers" below;
 [core-library.md](design/core-library.md), "Large integers"), so the word
 moves the `SmallInteger`/`LargeInteger` boundary rather than introducing it.
-The plan is still to be written. The whole road, decided with the user on
-2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a
-high-performance VM".
+The whole road, decided with the user on 2026-09-29, is in
+[OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
 each item with where it is explained. The sections below record the

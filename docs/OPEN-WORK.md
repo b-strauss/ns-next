@@ -34,6 +34,31 @@ and `prior-art/newspeak-benchmarks`.
 - **Step 2, first plan, large integers -- built**: `LargeInteger` for
   §5.1.1's unbounded integers, adapted from `num-bigint` and `num-integer`.
   [core-library.md](design/core-library.md), "Large integers".
+- **Before step 2's second plan, the Are We Fast Yet benchmarks** (decided
+  with the user on 2026-09-29, so that every later step is measured on real
+  programs rather than only on the microbenchmarks under `goldens/bench/`).
+  The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into the
+  tree, each a runnable module with its output pinned under both lowerings and
+  a measurement source. Each one widens the platform on demand, as
+  `CLAUDE.md` asks, so the Newspeak side grows with them. That includes:
+  - AWFY's `Vector`, a growable array over an `Array` with a first and a last
+    index (SOMns's `core-lib/Kernel.ns`), which `List` in
+    `CollectionsFactory.ns` answers only in part today (`add:`, `at:`,
+    `at:put:`, `size`, `do:`);
+  - the harness's `platform system` and `platform mirrors ObjectMirror`;
+  - whatever integer and float protocol each benchmark sends.
+
+  Copying them is a licensing decision. SOMns is MIT (Stefan Marr, and
+  Michael Haupt / HPI), so each file gets a header and
+  `THIRD-PARTY-NOTICES.md` an entry, as for `num-bigint`. Still to be
+  decided:
+  - which benchmarks come first (proposed, not decided: Richards and
+    DeltaBlue for sends and polymorphism; Towers, Queens and Sieve for loops
+    and arrays; NBody for floats);
+  - how they are run and measured.
+
+  The first step is to find where each benchmark fails today, which sets
+  the effort and the order.
 - **Step 2, second plan, the eight-byte value**, on today's arena: one tagged
   64-bit word -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`,
   `true` and `false`, and handles -- which moves the `SmallInteger`/
