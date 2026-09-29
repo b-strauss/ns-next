@@ -19,7 +19,7 @@ use crate::bytecode::{CodeKind, CompiledCode};
 use std::rc::Rc;
 
 use crate::image::{decode, mixins, opcodes, platform_paths, symbols};
-use crate::{ArbitraryInteger, Symbol};
+use crate::{ArbitraryInteger, SourceOrigin, Symbol};
 
 /// One named span of the file. `end` is exclusive.
 pub struct Section {
@@ -712,7 +712,10 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         format_version: crate::image::encode::FORMAT_VERSION,
         has_source: header.has_source,
         stateless: header.stateless,
-        origin: format!("{origin:?}"),
+        origin: match &origin {
+            SourceOrigin::Embedded(name) => format!("embedded {name}"),
+            SourceOrigin::File(_) => format!("{origin:?}"),
+        },
         sections,
         symbols: symbol_list,
         code: code_lines,

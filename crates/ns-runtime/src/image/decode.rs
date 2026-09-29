@@ -823,7 +823,8 @@ pub fn decode_entry(
 /// world reports as its own.
 pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeError> {
     match reader.read_u8()? {
-        0 => Ok(SourceOrigin::File(PathBuf::from(reader.read_str()?))),
+        ORIGIN_FILE => Ok(SourceOrigin::File(PathBuf::from(reader.read_str()?))),
+        ORIGIN_EMBEDDED => Ok(SourceOrigin::Embedded(reader.read_str()?)),
         tag => Err(DecodeError::InvalidTag {
             what: "source origin",
             tag,

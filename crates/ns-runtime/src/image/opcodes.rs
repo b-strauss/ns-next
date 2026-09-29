@@ -322,3 +322,7 @@ pub const SLOT_IMMUTABLE: u8 = 0;
 pub const SLOT_MUTABLE: u8 = 1;
 pub const SLOT_LAZY_IMMUTABLE: u8 = 2;
 pub const SLOT_LAZY_MUTABLE: u8 = 3;
+
+/// How a module's `SourceOrigin` is written. Next free number: 2.
+pub const ORIGIN_FILE: u8 = 0;
+pub const ORIGIN_EMBEDDED: u8 = 1;

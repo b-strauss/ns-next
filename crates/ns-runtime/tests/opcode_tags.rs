@@ -394,3 +394,9 @@ fn slot_kind_tags_are_fixed() {
     assert_eq!(SLOT_LAZY_IMMUTABLE, 2);
     assert_eq!(SLOT_LAZY_MUTABLE, 3);
 }
+
+#[test]
+fn source_origin_tags_are_fixed() {
+    assert_eq!(ORIGIN_FILE, 0);
+    assert_eq!(ORIGIN_EMBEDDED, 1);
+}

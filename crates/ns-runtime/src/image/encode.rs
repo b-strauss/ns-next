@@ -122,8 +122,12 @@ pub fn write_header(writer: &mut Writer, flags: u8) {
 pub fn encode_source_origin(writer: &mut Writer, origin: &SourceOrigin) {
     match origin {
         SourceOrigin::File(path) => {
-            writer.write_u8(0);
+            writer.write_u8(ORIGIN_FILE);
             writer.write_str(&path.to_string_lossy());
+        }
+        SourceOrigin::Embedded(name) => {
+            writer.write_u8(ORIGIN_EMBEDDED);
+            writer.write_str(name);
         }
     }
 }

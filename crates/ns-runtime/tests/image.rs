@@ -3867,8 +3867,37 @@ fn the_source_origin_round_trips_through_the_image() {
     encode::encode_source_origin(&mut writer, &Origin::File(PathBuf::from("some/where.ns")));
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
-    let SourceOrigin::File(path) = decode::decode_source_origin(&mut reader).expect("origin");
-    assert_eq!(path, PathBuf::from("some/where.ns"));
+    match decode::decode_source_origin(&mut reader) {
+        Ok(SourceOrigin::File(path)) => assert_eq!(path, PathBuf::from("some/where.ns")),
+        Ok(SourceOrigin::Embedded(name)) => panic!("decoded an embedded origin: {name}"),
+        Err(error) => panic!("decoding failed: {error}"),
+    }
+}
+
+#[test]
+fn an_embedded_origin_round_trips() {
+    let mut writer = encode::Writer::new();
+    encode::encode_source_origin(&mut writer, &Origin::Embedded("Manifest.ns".to_string()));
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    match decode::decode_source_origin(&mut reader) {
+        Ok(SourceOrigin::Embedded(name)) => assert_eq!(name, "Manifest.ns"),
+        Ok(SourceOrigin::File(path)) => panic!("decoded a file origin: {}", path.display()),
+        Err(error) => panic!("decoding failed: {error}"),
+    }
+}
+
+#[test]
+fn an_unknown_origin_tag_is_refused() {
+    let bytes = [2u8, 0, 0, 0, 0];
+    let mut reader = decode::Reader::new(&bytes);
+    assert!(matches!(
+        decode::decode_source_origin(&mut reader),
+        Err(decode::DecodeError::InvalidTag {
+            what: "source origin",
+            tag: 2
+        })
+    ));
 }
 
 #[test]
@@ -3884,6 +3913,7 @@ fn an_invalid_source_origin_tag_is_a_decode_error_not_a_panic() {
         }) => {}
         Err(error) => panic!("expected InvalidTag{{source origin, 200}}, got: {error}"),
         Ok(SourceOrigin::File(path)) => panic!("expected an error, got origin {}", path.display()),
+        Ok(SourceOrigin::Embedded(name)) => panic!("expected an error, got origin {name}"),
     }
 }
 

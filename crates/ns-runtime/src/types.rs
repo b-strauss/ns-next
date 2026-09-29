@@ -431,6 +431,10 @@ pub struct EditorResolution {
 #[derive(Debug, Clone)]
 pub enum SourceOrigin {
     File(PathBuf),
+    /// A source compiled into the binary, named by the file it was read from
+    /// at build time: `Manifest.ns`. An image names it so rather than by a
+    /// path, which would claim a file that exists nowhere at run time.
+    Embedded(String),
 }
 
 // ---------- Activation records ----------
