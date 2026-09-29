@@ -5711,9 +5711,10 @@ niche before its jump, and `vm::run` is large enough that `program_counter`
 and the code pointer are spilled to its stack frame. The design starts from
 how Primordial Soup, Strongtalk and Cog encode their instructions; SOMns,
 an AST interpreter on Truffle, has no instruction encoding to compare. One
-more input comes from the eight-byte value: an integer literal beyond 61
-bits keeps its digits in Rust-side literal data and `LoadLiteral` allocates
-its `LargeInteger` when it runs ([object-model.md](object-model.md),
+more input: an integer literal beyond the immediate range keeps its digits
+in Rust-side literal data (`Literal::LargeInteger`) and `LoadLiteral`
+allocates its `LargeInteger` when it runs, which under the eight-byte value
+is every literal beyond 61 bits ([object-model.md](object-model.md),
 "Planned: an eight-byte value", "Literals"). Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
 and a removed one retires its number.
 

@@ -13,10 +13,11 @@ An item's code references were checked against the tree on 2026-09-28.
 
 ## Next
 
-**The eight-byte value**, step 2 of the road below. Its plan is to be written
-from [object-model.md](design/object-model.md), "Planned: an eight-byte
-value", and [core-library.md](design/core-library.md), "Planned: large
-integers".
+**The eight-byte value**, road step 2's second plan (its first, large
+integers, is built). Its plan is to be written from
+[object-model.md](design/object-model.md), "Planned: an eight-byte value",
+against what [core-library.md](design/core-library.md), "Large integers",
+describes as built.
 
 ## The road to a high-performance VM
 
@@ -30,13 +31,15 @@ and `prior-art/newspeak-benchmarks`.
 
 - **Step 1, the memory layer -- built** (`crates/ns-memory`;
   [memory.md](design/memory.md), "The memory layer").
-- **Step 2, the eight-byte value**, on today's arena: one tagged 64-bit word
-  -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`, `true` and
-  `false`, and handles -- with `LargeInteger` for §5.1.1's unbounded
-  integers, written after `num-bigint` and `num-integer`. It removes the
+- **Step 2, first plan, large integers -- built**: `LargeInteger` for
+  §5.1.1's unbounded integers, adapted from `num-bigint` and `num-integer`.
+  [core-library.md](design/core-library.md), "Large integers".
+- **Step 2, second plan, the eight-byte value**, on today's arena: one tagged
+  64-bit word -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`,
+  `true` and `false`, and handles -- which moves the `SmallInteger`/
+  `LargeInteger` boundary from 64 bits to 61. It removes the
   store-forwarding stall every `Value` in memory costs today.
-  [object-model.md](design/object-model.md), "Planned: an eight-byte value";
-  [core-library.md](design/core-library.md), "Planned: large integers".
+  [object-model.md](design/object-model.md), "Planned: an eight-byte value".
 - **After road step 2, the compact instruction encoding**, designed against the
   new value, from the dispatch findings of "Where the 3% goes".
   [execution.md](design/execution.md), "Planned: the compact instruction
@@ -142,18 +145,40 @@ to be decided against the code:
   several superclasses) to measure; the per-mixin id it wants comes with the
   object space (step 3 of the road). [dispatch.md](design/dispatch.md),
   "Decisions".
+- **Divide-and-conquer decimal conversion.** `printString` of a
+  `LargeInteger` divides by `10^19` once per nineteen digits
+  (`arbitrary_integer/conversion.rs`, `to_decimal`), so an integer of *n*
+  digits prints in time quadratic in *n*; `num-bigint`'s divide-and-conquer
+  radix conversion, not taken, splits by a power of the radix and recurses.
+  Parsing a literal is quadratic the same way (`from_radix_digits`).
+  [core-library.md](design/core-library.md), "Large integers".
+- **Burnikel-Ziegler division copies the divisor at every block and level**
+  (`arbitrary_integer/division.rs`: `divide_blocks` passes `divisor.to_vec()`
+  per block, `divide_two_blocks_by_one` clones both divisor halves and
+  `divide_three_halves_by_two` the high one per call), as upstream
+  `num-bigint` does. Lending the slices instead removes
+  an allocation and a copy per recursive step; unmeasured.
+  [core-library.md](design/core-library.md), "Large integers".
 
 ## Planned: language and library
 
 - **The numeric tower and `Integer>>/`.** `Integer` answers `//` but not `/`
-  (only `Float` has `/`, `Kernel.ns:524`); `1 = 1.0` and `1.0 = 1` both answer
+  (only `Float` has `/`, `Kernel.ns:544`); `1 = 1.0` and `1.0 = 1` both answer
   false; `Number` (`Kernel.ns:463`) carries no behaviour. Settling it means
   `Number`'s shared behaviour, `Fraction`, cross-type comparison and a
-  matching hash (`3 asFloat hash = 3 hash`); `LargeInteger` comes earlier, with
-  the eight-byte value (step 2 of the road). Decided only that it must be
+  matching hash (`3 asFloat hash = 3 hash`). Decided only that it must be
   settled; `num-rational` is the reference for `Fraction` and for converting a
   `Float` to a fraction exactly. [core-library.md](design/core-library.md),
   "Gap: an integer has no `/`".
+- **`\\`, the remainder of `//`.** `Kernel.ns` declares `//`, rounded toward
+  negative infinity, on `Integer` and `LargeInteger`, but not the floor
+  modulo Primordial Soup pairs with it ("The remainder of this division is
+  given by `\\`", `prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:1958`),
+  so `7 \\ -2` ends in `doesNotUnderstand:`. It needs a leaf per integer
+  class, a remainder whose sign follows the divisor's (`num-integer`'s
+  `mod_floor`; `ArbitraryInteger::floor_divide` already computes it), and
+  goldens; nothing on `corpus/runnable.toml` asks for it yet.
+  [core-library.md](design/core-library.md), "Large integers".
 - **Pattern literals lowered to §5.1.9's `Pattern` sends** (`Pattern
   wildcard`, `Pattern literal:`, `Pattern keywords:patterns:`) instead of
   **nil**; needs a pattern AST in place of the kept source text and a library
@@ -249,7 +274,7 @@ program wrongly at exit status 0**:
   dependency is confirmed then. [frontend.md](design/frontend.md), "A string
   literal is not normalized to NFC".
 
-The others: `i64` integers (§5.1.1); no character literals and no
+The others: no character literals and no
 `Character` (§5.1.4); a modifier needs no whitespace after it (§6.3.3,
 §6.3.4); `outer N` without a message answers the enclosing object (§5.9);
 value objects are never copied across an actor boundary (§3.1.1).
@@ -401,9 +426,32 @@ where every reified frame will carry its full register file on the wire.
 - **The memory bound under a crafted artifact** is proportional but large,
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.
-- **An error message names a milestone**: `builtins/numbers.rs:54`, "Milestone
+- **An error message names a milestone**: `builtins/numbers.rs:58`, "Milestone
   1 has no Integer/Float coercion". Changing it changes recorded `stderr`, so it
   is a behaviour change.
+- **A list's reservation in the decoder is not counted in the load's
+  peak.** `reserve_for` (`image/decode.rs`) caps a capacity at the bytes
+  remaining, not at the bytes its elements need, so `decode_values` reserves
+  up to 16 bytes of `Value` per remaining byte for one record that claims a
+  huge count -- about 16x more on top of the documented placeholder figure,
+  about 32x in a release build in all and up to about 37x with decoded
+  `LargeInteger` values. Since the smallest value is one byte on the wire
+  (`VALUE_NIL`), capping by an element's minimum wire size changes nothing
+  for a `Value` list; bounding it takes a cap in bytes rather than elements
+  -- the bytes remaining divided by `size_of::<Value>()`, so the
+  reservation is at most 1x -- or no reservation up front, growing as
+  elements are read. The arenas' `Vec` doubling slack is not counted
+  either.
+  [memory.md](design/memory.md), "The interim cost, and the one question
+  still open".
+- **`inspect` and `disasm` render a `LargeInteger` in quadratic time**
+  (`image/inspect.rs`, `read_large_integer_text`; `bytecode.rs`,
+  `format_literal`), through `to_decimal_string`, so a crafted artifact
+  holding one integer of millions of digits makes `inspect` run for hours --
+  no panic, but effectively a hang. A linear rendering in hexadecimal, or a
+  digit cap with the count reported, would close it.
+  [image-format.md](design/image-format.md), "A `LargeInteger` is a value on
+  the wire, never a record".
 - **`Heap::traced_size` counts the canonical symbol table's empty slots**
   (`heap.rs`), which never shrink; worth revisiting once many heaps live in one
   process.
@@ -445,9 +493,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `builtins/numbers.rs:13`: the module note calls `Float`'s widening of an
-  `Integer` argument lossless, but the leaf converts with `as f64`
-  (`numbers.rs:204`), which rounds past 2^53.
 - `bytecode.rs:537`: `outer_reach_of` ends in `_ => 0`, so "every instruction
   that reaches another frame's registers is named" rests on prose; an
   exhaustive match would make the compiler enforce it.

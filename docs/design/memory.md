@@ -958,11 +958,38 @@ creator's frame record without registers.
   than trading one against the other. Against the bytes remaining at the graph
   section, not against the whole file:
 
-  | | `Object` | Frame-arena entry | Combined |
+  | | `Object` | Frame-arena entry | Placeholders |
   |---|---|---|---|
   | Record minimum | 6 B | 18 B | — |
-  | Release size | 56 B → 9.3x | 136 B → 7.6x | **~16.9x** |
-  | Debug size | 80 B → 13.3x | 160 B → 8.9x | ~22.2x |
+  | Release size | 56 B → 9.3x | 128 B → 7.1x | **~16.4x** |
+  | Debug size | 72 B → 12.0x | 152 B → 8.4x | ~20.4x |
+
+  **A decoded `LargeInteger` adds to that peak rather than fitting inside
+  it.** The placeholders are allocated against every byte left at the graph
+  section, and those same bytes can then be one array record full of
+  `VALUE_LARGE_INTEGER` values, each allocating its `Object` and its digits
+  before a later record fails to read. A value that allocates is at least 14
+  bytes on the wire -- the tag, the sign, a `u32` count and one digit; one
+  that fits `i64` is refused before its object is made -- and costs an
+  `Object` and 8 bytes a digit: 64 B → 4.6x in a release build, 80 B → 5.7x
+  in a debug one, for a combined peak of **~21.0x** and ~26.2x. A
+  further digit costs 8 wire bytes and 8 heap bytes, so one-digit values are
+  the worst case, and the digit count is bounded against the bytes left
+  before its `Vec` is allocated (`read_large_integer_parts`), which keeps the
+  term proportional to the input.
+
+  **Two things none of these figures count.** They count live bytes. First,
+  `reserve_for` (`image/decode.rs`) caps a list's capacity at the bytes
+  remaining, not at the bytes its elements need, so `decode_values` reserves
+  `min(count, remaining)` 16-byte `Value`s before its first element is read:
+  one array or instance record that claims a huge count reserves up to 16x
+  the bytes remaining, in either build, on top of the placeholders -- about
+  32x in a release build with no large integer involved, and, since that
+  record's elements can then be the large integers above, about 37x at
+  most (debug about 42x). Second, an arena `Vec` that doubles while the
+  decoder allocates holds both buffers for a moment. Both stay proportional
+  to the input; bounding `reserve_for`'s reservation in bytes rather than in
+  elements is open work ([OPEN-WORK.md](../OPEN-WORK.md)).
 
   The release `Object` size is pinned by a release-build test
   (`an_object_is_the_size_the_amplification_figure_assumes`, `heap.rs`),
@@ -975,8 +1002,8 @@ creator's frame record without registers.
   that at 32: `copied` replaced the two fields it made redundant, the
   parameter names and the home.
 
-  A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
-  152 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
+  A frame-arena entry is a `FrameSlot`: the `Frame` (120 B in a release build,
+  144 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
   The debug sizes are larger because every handle there carries, besides its
   index, the id of the heap that minted it and the move epoch the stress mode
   checks it against.
@@ -1141,8 +1168,8 @@ a copy and fresh pages, at every collection; that was about 5% of
 `bench_value.ns` ([execution.md](execution.md), "What exceptions cost").
 The price is retention: under the floor each arena keeps up to twice the
 floor after a collection, 8,192 slots in both -- about 458 KB of the object
-arena (56 bytes a slot) and about 1.1 MB of the frame arena (136 bytes an
-entry), some 1.6 MB in all in a release build.
+arena (56 bytes a slot) and about 1.0 MB of the frame arena (128 bytes an
+entry), some 1.5 MB in all in a release build.
 
 The image decoder never collects, because it never polls — it does not run in
 the run loop. The transient peak described under the decode amplification above
@@ -1584,7 +1611,8 @@ instruction encoding.
 built, so each changes when its road step lands, not before: the crate list
 gains `crates/ns-memory`, the one crate with `unsafe`, and "the crate forbids
 unsafe code" names `ns-runtime` (road step 1, done); "An image is untrusted input"
-takes new amplification figures for the eight-byte value (road step 2) and
+takes new amplification figures for the eight-byte value (road step 2's
+second plan) and
 for variably sized objects (road step 3), with the decoder's first pass
 checking each record's declared size against the bytes remaining; the bound
 is the largest of the per-record-kind ratios (a class object 10x against
@@ -1610,15 +1638,9 @@ step 4); and "The VM mirror is a capability" gains, as a consequence, that a
 program's `become:` refuses value objects and class objects, which covers
 every object a platform path names (road step 5;
 [object-model.md](object-model.md), "Planned: `become:` through
-forwarders"). Road step
-2 also retires `Literal::MalformedInteger` and its wire tag 8, since every
-integer literal becomes representable, which changes the example "Compiling
-an already-resolved module can never raise a `NewspeakError`" gives; "Never
-`{:?}` a `Value`" names `Value::Object`, which constructors and accessors
-replace; and the `prior-art/` paragraph counts ten reference implementations
-instead of seven once `num-bigint`, `num-integer` and `num-rational`, all
-MIT OR Apache-2.0, join as submodules, with a third-party notices file for
-the code adapted from them. Road step 3 leaves "decided per activation from
+forwarders"). The
+eight-byte value also changes "Never `{:?}` a `Value`", which names
+`Value::Object`, which constructors and accessors replace. Road step 3 leaves "decided per activation from
 the block's `outer_reach`" as it stands, since the divorce keeps that rule,
 but the frame arena's wording goes.
 

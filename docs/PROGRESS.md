@@ -15,10 +15,15 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: step 2 of the road to a high-performance VM, the eight-byte value
-with `LargeInteger`** ([object-model.md](design/object-model.md), "Planned: an
-eight-byte value"). The whole road, decided with the user on 2026-09-29, is in
-[OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
+**Next: road step 2's second plan, the eight-byte value**
+([object-model.md](design/object-model.md), "Planned: an eight-byte value"):
+one tagged 64-bit word with a 61-bit `SmallInteger`, on today's arena. Its
+first plan, large integers, is built ("Large integers" below;
+[core-library.md](design/core-library.md), "Large integers"), so the word
+moves the `SmallInteger`/`LargeInteger` boundary rather than introducing it.
+The plan is still to be written. The whole road, decided with the user on
+2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
 each item with where it is explained. The sections below record the
@@ -2224,8 +2229,8 @@ path has to exist before the rewrite rather than after.
   `SendPublic` as the fallback, which carries a call site of its own.
 - `e586db9`, `88d86d9` — the goldens: `goldens/arithmetic/` for the fast
   path beside the two ways the guard declines on ordinary values and floor
-  division on the fast path, and two under `goldens/errors/` pinning that an
-  `i64` overflow and a zero divisor still carry the primitive's own message.
+  division on the fast path, and `goldens/errors/` pinning that a zero
+  divisor still carries the primitive's own message.
 - This entry — the measurement and the documents.
 
 **Measurement.** Two sittings by the protocol, eight sources, both binaries
@@ -3341,8 +3346,7 @@ program raised when it ran. A radix number with a fraction or an exponent is a
 float with the canonical value (`16r1.8` is 1.5, `2r1e3` is 1000); `16r1Fe2`
 had read `e2` as hex digits and answered 8162 at exit status 0. A superclass
 clause's receiver and `outer`'s class must be names, and §6's
-`typeParameterDecl` is checked rather than skipped. The one literal still
-deferred to execution is an integer beyond `i64`.
+`typeParameterDecl` is checked rather than skipped.
 
 ## `main:args:` receives the program's arguments (2026-09-28)
 
@@ -3491,3 +3495,45 @@ word slices, on Windows through `windows-sys` and on POSIX through `libc`
 malformed range, is a value, never a panic. Nothing uses the crate yet: road
 step 3, the object space, is its first user. The POSIX half is checked with
 clippy for Linux and macOS targets, since nothing here runs either.
+
+## Large integers (2026-09-29)
+
+Plan: [ns-next-large-integers](superpowers/plans/2026-09-29-0911-ns-next-large-integers.md);
+[core-library.md](design/core-library.md), "Large integers".
+
+Road step 2's first plan ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM"): §5.1.1's integers "are not limited in size". An
+integer that fits `i64` is a `SmallInteger`, any other a `LargeInteger`, a
+kernel subclass of `Integer`, and `Mutator::new_integer` decides which, so
+each integer has one representation; `3 class` stays `Integer`. The
+arithmetic in `crates/ns-runtime/src/arbitrary_integer/` is adapted under MIT
+from `num-bigint` and `num-integer`, now submodules under `prior-art/` beside
+`num-rational`, with the licence texts in `THIRD-PARTY-NOTICES.md` and a
+header in every adapted file. The recorded deviation "Integers are `i64`" is
+gone, and with it the golden that recorded an overflow error; ten new
+goldens pin the new behaviour. Literal tag 8 (`MalformedInteger`) is
+retired; value tag 9, literal tag 10 and builtin class tag 31 are new.
+
+- `b02323d` — `//` rounds toward negative infinity, as Primordial Soup's
+  `Integer>>//` does, where it had rounded as Euclidean division; `7 // -2`
+  answers `-4`.
+- `5c25deb` — `ArbitraryInteger`: addition, subtraction, long, Karatsuba and
+  Toom-3 multiplication, algorithm D, floor division and the radix and `f64`
+  conversions, with `THIRD-PARTY-NOTICES.md` and the three submodules.
+- `9e7eb94` — multiplication by the number-theoretic transform above 512
+  digits and Burnikel-Ziegler division above 64, decided with the user the
+  same day.
+- `0837ea1` — the `LargeInteger` class and the promotion of an `Integer`
+  result that does not fit `i64`, which retired the overflow error.
+- `d56c9de` — `LargeInteger`'s own arithmetic and ordering, and every
+  integer and float leaf accepting an argument of either integer class.
+- `8f7fd91` — every integer literal is representable, as
+  `Literal::LargeInteger`, and an image carries a `LargeInteger` inline as a
+  value, only in its canonical encoding.
+- `fa5f0d3` — the decoder's comment states that decoded `LargeInteger`
+  values add to a failed load's peak ([memory.md](design/memory.md), "The
+  interim cost, and the one question still open").
+
+**Measured:** not yet. The plan's Task 10 measures `bench_send.ns` and
+`bench_loop.ns` against `bb031c2`, the parent of `b02323d`, and records the
+numbers here.
