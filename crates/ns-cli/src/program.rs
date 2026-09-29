@@ -197,8 +197,6 @@ fn build_manifest(program: &Program, loaded: &mut Loaded) -> Result<ns_runtime::
 /// The modules as `image::package` takes them, in module order. Takes the
 /// classes rather than `Loaded`, because the caller holds `Loaded`'s
 /// interpreter mutably while it encodes.
-// Nothing packages an application yet; `build` will.
-#[allow(dead_code)]
 pub(crate) fn module_sources<'program, 'gc>(
     program: &'program Program,
     classes: &[ns_runtime::Root],

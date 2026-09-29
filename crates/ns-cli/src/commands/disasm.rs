@@ -51,8 +51,8 @@ fn resolve_mixin_path(
 /// Whether `bytes` begins with the image format's magic.
 ///
 /// Sniffing the content rather than the file extension is deliberate: an
-/// artifact has no required extension, `snapshot`/`build` write whatever path
-/// they are given, and a `.ns` file cannot begin with these four bytes because
+/// artifact has no required extension, `build` writes whatever path
+/// it is given, and a `.ns` file cannot begin with these four bytes because
 /// every module starts with the `Newspeak3` language identifier.
 fn looks_like_an_artifact(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[0..4] == ns_runtime::image::encode::MAGIC

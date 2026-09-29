@@ -7,4 +7,3 @@ pub(crate) mod parse;
 pub(crate) mod parse_corpus;
 pub(crate) mod run;
 pub(crate) mod run_corpus;
-pub(crate) mod snapshot;

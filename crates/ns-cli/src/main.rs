@@ -71,40 +71,13 @@ enum Command {
         #[arg(last = true)]
         arguments: Vec<String>,
     },
-    /// Run a file, then serialize the resulting (quiesced) world to an
-    /// image file.
-    Snapshot {
-        file: PathBuf,
-        out: PathBuf,
-        /// A selector to send before snapshotting, with as many of the
-        /// platform and the program's arguments as it takes; its result
-        /// becomes a second root.
-        #[arg(long)]
-        send: Option<String>,
-        /// Store the module's source text in the image (the debug
-        /// variant). Off by default: a loaded world runs from the image's
-        /// code table and mixin table, so the source is never needed to
-        /// run it -- only to read it back as `.ns`.
-        #[arg(long)]
-        debug_source: bool,
-        /// The lowering to compile the source with.
-        #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
-        lowering: LoweringArgument,
-        /// The program's arguments, after `--`: `main:args:` receives them
-        /// as its second argument, an `Array` of `String`s (§8.4).
-        #[arg(last = true)]
-        arguments: Vec<String>,
-    },
-    /// Deserialize an artifact and start it. An image already holds its
-    /// instance; a stateless binary is instantiated here and sent the entry
-    /// selector it recorded. --send overrides that selector, with as many
-    /// of the platform and the program's arguments as it takes.
+    /// Decode an image `build` wrote and send its application `main:
+    /// platform args:`, with this process's platform: the first platform
+    /// the application ever sees.
     Load {
         image: PathBuf,
-        #[arg(long)]
-        send: Option<String>,
         /// Print the source text a `--debug-source` image carries, instead
-        /// of loading and reporting it. Fails on a source-free image,
+        /// of starting it. Fails on a source-free image,
         /// which by design has none.
         #[arg(long)]
         print_source: bool,
@@ -176,17 +149,14 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
-    /// Compile a file into a stateless deployment binary: code and
-    /// structure, no instance state. Nothing is instantiated -- the primary
-    /// factory and every initializer run when the binary is loaded.
+    /// Assemble the application exactly as `run` does -- its factory and
+    /// every initializer run, with no platform in existence -- and write it
+    /// just before `main:args:`, as an image whose one root is the
+    /// application. A `.ns` source file or a `.json` project file.
     Build {
         file: PathBuf,
         out: PathBuf,
-        /// The selector to record as the entry point. Defaults to
-        /// `main:args:` when the root class declares it.
-        #[arg(long)]
-        entry: Option<String>,
-        /// Store the module's source text in the binary (the debug variant).
+        /// Store every module's source text in the image (the debug variant).
         #[arg(long)]
         debug_source: bool,
         /// The lowering to compile the source with.
@@ -234,27 +204,11 @@ fn execute(command: Command) -> ExitCode {
             cache_statistics,
             arguments,
         } => commands::run::execute(&file, lowering.into(), cache_statistics, &arguments),
-        Command::Snapshot {
-            file,
-            out,
-            send,
-            debug_source,
-            lowering,
-            arguments,
-        } => commands::snapshot::execute(
-            &file,
-            &out,
-            send.as_deref(),
-            debug_source,
-            lowering.into(),
-            &arguments,
-        ),
         Command::Load {
             image,
-            send,
             print_source,
             arguments,
-        } => commands::load::execute(&image, send.as_deref(), print_source, &arguments),
+        } => commands::load::execute(&image, print_source, &arguments),
         Command::Bench {
             file,
             send,
@@ -287,9 +241,8 @@ fn execute(command: Command) -> ExitCode {
         Command::Build {
             file,
             out,
-            entry,
             debug_source,
             lowering,
-        } => commands::build::execute(&file, &out, entry.as_deref(), debug_source, lowering.into()),
+        } => commands::build::execute(&file, &out, debug_source, lowering.into()),
     }
 }

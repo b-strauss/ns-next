@@ -112,9 +112,8 @@ pub(crate) fn class_reference<'gc>(
     }
 }
 
-/// The argument list `instantiate_root` (used by `snapshot` and
-/// `load`) and `bench` pass to `interpreter.instantiate`,
-/// built from the root class's own declared primary factory pattern
+/// The argument list `bench` passes to `interpreter.instantiate`, built
+/// from the root class's own declared primary factory pattern
 /// (`Mixin::factory`) rather than assumed.
 ///
 /// Deciding *that* a command-line entry point sends the platform, rather
@@ -167,10 +166,8 @@ pub(crate) fn factory_arguments_for<'gc>(
 
 /// The mixin name behind a class object, for `factory_arguments_for`'s error
 /// message. `class` is always `ObjectData::Class` at every call site -- it
-/// comes either from `bootstrap` or, when `load` starts a
-/// stateless binary, from `image::load`'s rebuilt root class -- so the
-/// fallback is unreachable in practice and exists only to keep this a total
-/// function.
+/// comes from `bootstrap` -- so the fallback is unreachable in practice and
+/// exists only to keep this a total function.
 fn class_name<'gc>(heap: &ns_runtime::Heap<'gc>, class: ns_runtime::ClassReference<'gc>) -> String {
     heap.class_application(class)
         .map(|application| application.mixin.name.to_string())
@@ -196,7 +193,7 @@ fn selector_arity(selector: &str) -> usize {
     }
 }
 
-/// The argument list an entry send (`snapshot`/`load`'s `--send`)
+/// The argument list an entry send (`bench`'s `--send`)
 /// supplies, sized to what the selector actually takes.
 ///
 /// A method activation addresses its arguments and temporaries as one run
@@ -237,25 +234,4 @@ pub(crate) fn entry_arguments(
              to supply the platform and the program's arguments"
         )),
     }
-}
-
-/// Instantiates the root `class` with the arguments `factory_arguments_for`
-/// builds for it, reporting a failure the way every command that starts a
-/// program does. `Err` carries the exit code to return.
-pub(crate) fn instantiate_root(
-    interpreter: &mut ns_runtime::Interpreter,
-    class: &ns_runtime::Root,
-) -> Result<ns_runtime::Root, ExitCode> {
-    let platform = interpreter.platform();
-    let factory_arguments = interpreter
-        .enter(|mutator| {
-            factory_arguments_for(mutator.heap(), class_reference(mutator, class), &platform)
-        })
-        .map_err(|message| {
-            eprintln!("error: {message}");
-            ExitCode::FAILURE
-        })?;
-    interpreter
-        .instantiate(class, &factory_arguments)
-        .map_err(report_instantiation)
 }

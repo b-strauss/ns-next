@@ -169,53 +169,10 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 /// was built from prints. The artifact carries the same compiled bodies; if
 /// these ever differ, the image's code table is not what the compiler emitted.
 #[test]
-fn disasm_of_an_image_matches_disasm_of_its_source() {
-    let source = common::golden("language/arithmetic");
-    let directory = ScratchDirectory::new("disasm-img");
-    let image = directory.join("world.img");
-
-    let snapshot = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .arg("snapshot")
-        .arg(&source)
-        .arg(&image)
-        .output()
-        .expect("run ns-next snapshot");
-    assert!(
-        snapshot.status.success(),
-        "{}",
-        String::from_utf8_lossy(&snapshot.stderr)
-    );
-
-    let from_image = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .arg("disasm")
-        .arg(&image)
-        .arg("main:args:")
-        .output()
-        .expect("run ns-next disasm on an image");
-    assert!(
-        from_image.status.success(),
-        "{}",
-        String::from_utf8_lossy(&from_image.stderr)
-    );
-
-    let from_source = disasm("language/arithmetic", &["main:args:"]);
-    assert_eq!(
-        String::from_utf8_lossy(&from_image.stdout).replace("\r\n", "\n"),
-        from_source
-    );
-}
-
-/// The same property as `disasm_of_an_image_matches_disasm_of_its_source`,
-/// but for a stateless binary rather than an image. Only the image form was
-/// covered before this test existed, yet the whole reason `disasm` reads an
-/// artifact at all is the binary that ships *without* source -- a regression
-/// that broke `disasm` for `FLAG_STATELESS` specifically (a decode path the
-/// image form never exercises) could have passed the image test above.
-#[test]
 fn disasm_of_a_binary_matches_disasm_of_its_source() {
     let source = common::golden("language/arithmetic");
     let directory = ScratchDirectory::new("disasm-bin");
-    let binary = directory.join("app.nsb");
+    let binary = directory.join("app.nsi");
 
     let build = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("build")
@@ -257,13 +214,13 @@ fn disasm_of_a_binary_matches_disasm_of_its_source() {
 /// would present it.
 #[test]
 fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
-    use ns_runtime::{Interpreter, Mixin, SourceOrigin, Symbol, Value};
+    use ns_runtime::{Interpreter, Mixin, SourceOrigin, Value};
     use std::rc::Rc;
 
     let source = indoc! {"
         Newspeak3
         'T'
-        class Bare usingPlatform: p = Object new () (
+        class Bare = Object new () (
             public main: p args: a = ( ^0 )
         ) : ()
     "};
@@ -276,6 +233,9 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     .expect("resolve");
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.load_module(&resolved);
+    let Ok(instance) = interpreter.instantiate(&class, &[]) else {
+        panic!("`Bare new` raises nothing")
+    };
     // Nothing runs from here on, so the whole rewrite happens in one entry.
     let bytes = interpreter.enter(|mutator| {
         let Value::Object(class) = mutator.fetch(&class) else {
@@ -297,12 +257,11 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
             origin: &origin,
             source: None,
         }];
-        ns_runtime::image::build(mutator.heap(), &modules, Symbol::intern("main:args:"))
-            .expect("build")
+        ns_runtime::image::package(mutator, &modules, mutator.fetch(&instance)).expect("package")
     });
 
     let directory = ScratchDirectory::new("disasm-no-init");
-    let binary = directory.join("bare.nsb");
+    let binary = directory.join("bare.nsi");
     std::fs::write(&binary, bytes).expect("write artifact");
 
     let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))

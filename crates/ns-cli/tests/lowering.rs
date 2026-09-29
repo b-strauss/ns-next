@@ -50,14 +50,14 @@ fn has_branch(artifact: &std::path::Path) -> bool {
     listing.contains("Jump") || listing.contains("Branch")
 }
 
-/// The harnesses compare the two lowerings through `run`, `build` and
-/// `snapshot`. A command that dropped `--lowering` would compile the optimized
+/// The harnesses compare the two lowerings through `run` and `build`. A
+/// command that dropped `--lowering` would compile the optimized
 /// code under both names, every comparison would pass, and nothing would say
 /// so -- no program's output depends on the lowering, by design. What does
 /// depend on it is the code an artifact carries, so these tests read that.
 /// `run` writes no artifact; it is covered because it hands the flag to the
-/// same `source::bootstrap` call `build` and `snapshot` do, which is the one
-/// place a source is compiled.
+/// same `program::load_program` call `build` does, which is the one place a
+/// program is compiled.
 #[test]
 fn build_compiles_with_the_lowering_it_is_given() {
     let directory = ScratchDirectory::new("lowering-build");
@@ -79,50 +79,6 @@ fn build_compiles_with_the_lowering_it_is_given() {
         !has_branch(&reference),
         "the reference lowering inlines nothing"
     );
-}
-
-/// The same for a snapshot, which a loaded world then runs exactly as `run`
-/// does under the same lowering.
-#[test]
-fn snapshot_compiles_with_the_lowering_it_is_given() {
-    let directory = ScratchDirectory::new("lowering-snapshot");
-    let source = golden("language/while_loop");
-    let optimized = directory.join("optimized.img");
-    let reference = directory.join("reference.img");
-    let (ok, _, error) = ns_next(&[
-        "snapshot".as_ref(),
-        source.as_os_str(),
-        optimized.as_os_str(),
-    ]);
-    assert!(ok, "{error}");
-    let (ok, _, error) = ns_next(&[
-        "snapshot".as_ref(),
-        source.as_os_str(),
-        reference.as_os_str(),
-        "--lowering".as_ref(),
-        "reference".as_ref(),
-    ]);
-    assert!(ok, "{error}");
-    assert!(has_branch(&optimized), "the optimized loop is inlined");
-    assert!(
-        !has_branch(&reference),
-        "the reference lowering inlines nothing"
-    );
-
-    let loaded = ns_next(&[
-        "load".as_ref(),
-        reference.as_os_str(),
-        "--send".as_ref(),
-        "main:args:".as_ref(),
-    ]);
-    let ran = ns_next(&[
-        "run".as_ref(),
-        source.as_os_str(),
-        "--lowering".as_ref(),
-        "reference".as_ref(),
-    ]);
-    assert!(ran.0, "{}", ran.2);
-    assert_eq!(loaded, ran, "load of the reference snapshot against run");
 }
 
 /// An artifact carries the code it was built with, so asking `disasm` to

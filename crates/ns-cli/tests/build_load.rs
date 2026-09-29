@@ -1,14 +1,32 @@
-//! `ns-next build` -- the stateless deployment binary.
+//! `ns-next build` then `ns-next load` -- the started image, end to end
+//! through the binary.
 
 mod common;
-use common::{golden, ns_next, ScratchDirectory};
+use common::{golden, goldens_root, ns_next, ScratchDirectory};
 use indoc::indoc;
 use std::path::Path;
 
+/// `build` then `load` of `program`, compared with `run` of it: the three
+/// outputs `run` gives, after asserting that the artifact gives the same.
+fn assert_build_load_matches_run(name: &str, program: &Path) -> (bool, String, String) {
+    let directory = ScratchDirectory::new(name);
+    let out = directory.join("app.nsi");
+    let (built, _, build_error) =
+        ns_next(&["build".as_ref(), program.as_os_str(), out.as_os_str()]);
+    assert!(built, "{name}: {build_error}");
+    let run = ns_next(&["run".as_ref(), program.as_os_str()]);
+    let load = ns_next(&["load".as_ref(), out.as_os_str()]);
+    assert_eq!(
+        load, run,
+        "{name}: load of the build must answer what run answers"
+    );
+    run
+}
+
 #[test]
-fn build_writes_a_stateless_binary_that_inspect_recognizes() {
+fn build_writes_a_started_image_that_inspect_recognizes() {
     let directory = ScratchDirectory::new("build");
-    let out = directory.join("app.nsb");
+    let out = directory.join("app.nsi");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         golden("language/arithmetic").as_os_str(),
@@ -18,91 +36,19 @@ fn build_writes_a_stateless_binary_that_inspect_recognizes() {
 
     let (ok, listing, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
     assert!(ok, "{error}");
-    assert!(listing.contains("stateless: yes"), "{listing}");
+    assert!(listing.contains("start: yes"), "{listing}");
+    assert!(listing.contains("stateless: no"), "{listing}");
     assert!(listing.contains("main:args:"), "{listing}");
-    // The whole point of the artifact: no instance state travelled with it.
-    assert!(!listing.contains("graph"), "{listing}");
-}
-
-#[test]
-fn build_refuses_an_entry_the_root_class_does_not_have() {
-    let directory = ScratchDirectory::new("bad-entry");
-    let out = directory.join("app.nsb");
-    let (ok, _, error) = ns_next(&[
-        "build".as_ref(),
-        golden("language/arithmetic").as_os_str(),
-        out.as_os_str(),
-        "--entry".as_ref(),
-        "noSuchSelector".as_ref(),
-    ]);
-    assert!(!ok);
-    assert!(error.contains("noSuchSelector"), "{error}");
-    assert!(!out.exists(), "a refused build must write no file");
-}
-
-/// `build` accepts an entry only where `mixins::encode` has interned its
-/// selector (`commands/build.rs`, `root_class_answers`): a method or nested
-/// class of the module's own. The root class inherits from `Object` and
-/// declares no `printString`, which only `Object`'s kernel method answers --
-/// a method `Kernel.ns` declares and no table of the module names -- so the
-/// walk stops at `Object`'s builtin level and the build is refused.
-#[test]
-fn build_refuses_an_entry_only_a_builtin_answers() {
-    let directory = ScratchDirectory::new("builtin-entry");
-    let out = directory.join("app.nsb");
-    let (ok, _, error) = ns_next(&[
-        "build".as_ref(),
-        golden("language/arithmetic").as_os_str(),
-        out.as_os_str(),
-        "--entry".as_ref(),
-        "printString".as_ref(),
-    ]);
-    assert!(!ok);
-    assert!(error.contains("does not answer `printString`"), "{error}");
-    assert!(!out.exists(), "a refused build must write no file");
-}
-
-#[test]
-fn build_refuses_an_entry_arity_the_cli_cannot_supply() {
-    let directory = ScratchDirectory::new("bad-arity");
-    let out = directory.join("app.nsb");
-    let (ok, _, error) = ns_next(&[
-        "build".as_ref(),
-        golden("language/arithmetic").as_os_str(),
-        out.as_os_str(),
-        "--entry".as_ref(),
-        "a:b:c:".as_ref(),
-    ]);
-    assert!(!ok);
-    assert!(error.contains("argument"), "{error}");
-}
-
-#[test]
-fn build_requires_an_entry_when_the_root_class_declares_no_main() {
-    // TestActor.ns answers `return42` and declares no `main:args:`.
-    let directory = ScratchDirectory::new("no-main");
-    let out = directory.join("app.nsb");
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");
-    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
-    assert!(!ok);
-    assert!(error.contains("--entry"), "{error}");
+    // The application travels as the graph's one root.
+    assert!(listing.contains("graph"), "{listing}");
 }
 
 #[test]
 fn a_built_binary_runs_exactly_as_its_source_does() {
-    let directory = ScratchDirectory::new("equivalence");
-    let out = directory.join("app.nsb");
-    let source = golden("language/arithmetic");
-
-    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
+    let (ok, out, error) =
+        assert_build_load_matches_run("equivalence", &golden("language/arithmetic"));
     assert!(ok, "{error}");
-
-    let (run_ok, run_out, run_error) = ns_next(&["run".as_ref(), source.as_os_str()]);
-    let (load_ok, load_out, load_error) = ns_next(&["load".as_ref(), out.as_os_str()]);
-
-    assert_eq!(load_ok, run_ok, "exit status differs");
-    assert_eq!(load_out, run_out, "stdout differs");
-    assert_eq!(load_error, run_error, "stderr differs");
+    assert_eq!(out, "42\n");
 }
 
 /// The CLI's `--lowering` flag value for `lowering`: `build_load.rs` drives
@@ -117,11 +63,11 @@ fn cli_lowering_flag(lowering: ns_runtime::Lowering) -> &'static str {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A module applying mixins (`newspeak-spec.pdf` §6.2) built into a binary
-    /// answers exactly what its source answers: the binary carries each
-    /// declaration's `<:` clauses -- their selectors and compiled messages -- so
-    /// the loaded world builds every applied level itself and initializes it
-    /// with its own clause's message, evaluated with the applying class's
+    /// A module applying mixins (`newspeak-spec.pdf` §6.2) built into an
+    /// image answers exactly what its source answers: the image carries each
+    /// declaration's `<:` clauses -- their selectors and compiled messages --
+    /// so the loaded world builds every applied level itself and initializes
+    /// it with its own clause's message, evaluated with the applying class's
     /// factory argument.
     fn a_built_binary_applying_mixins_runs_exactly_as_its_source_does(lowering) {
         let lowering = cli_lowering_flag(lowering);
@@ -147,14 +93,15 @@ ns_runtime::for_each_lowering! {
                         public chain = ( ^'Applied ', super chain )
                     )
                     public main: platform args: arguments = (
-                        platform transcript show: (Applied from: 4) chain; newLine.
-                        platform transcript show: (Applied from: 2) chain; newLine.
+                        | t = platform transcript. |
+                        t show: (Applied from: 4) chain; newLine.
+                        t show: (Applied from: 2) chain; newLine.
                     )
                 ) : ()
             "},
         )
         .expect("write the module");
-        let out = directory.join(&format!("applying.{lowering}.nsb"));
+        let out = directory.join(&format!("applying.{lowering}.nsi"));
         let (built, _, build_error) = ns_next(&[
             "build".as_ref(),
             source.as_os_str(),
@@ -181,116 +128,371 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             (load_ok, load_out, load_error),
             (run_ok, run_out, run_error),
-            "{lowering}: the binary answers what the source answers"
+            "{lowering}: the image answers what the source answers"
         );
     }
 }
 
+/// instance_init.ns writes through its initializer, which `build` runs; the
+/// loaded application sees the slots it filled, and `load` runs no
+/// initializer again.
 #[test]
-fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
-    // instance_init.ns writes through its initializer, so if the factory and
-    // initializers did not run on load the entry send would see nil slots.
-    let directory = ScratchDirectory::new("init");
-    let out = directory.join("app.nsb");
-    let source = golden("language/instance_init");
-    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
+fn a_loaded_application_does_not_rerun_its_initializers() {
+    let (ok, out, error) = assert_build_load_matches_run("init", &golden("language/instance_init"));
     assert!(ok, "{error}");
-
-    let (run_ok, run_out, _) = ns_next(&["run".as_ref(), source.as_os_str()]);
-    let (load_ok, load_out, _) = ns_next(&["load".as_ref(), out.as_os_str()]);
-    assert_eq!((load_ok, load_out), (run_ok, run_out));
+    assert_eq!(
+        out,
+        common::expectation_of(&golden("language/instance_init")).stdout
+    );
 }
 
-/// For one source and one --debug-source setting, a build and a snapshot must
-/// agree byte for byte from `symbols` through `modules`.
-///
-/// Not "the binary is a prefix of the image" -- that is false as soon as one
-/// records an entry and the other does not. The guarantee is about the
-/// sections that describe code and structure, and it is what keeps the shared
-/// section writers honest.
+/// The initializer draws an identity hash while `build` assembles the
+/// application. A loader that re-ran it would draw a fresh one past the
+/// hashes the image records, so `stamp` would differ from what `run` prints.
 #[test]
-fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
-    let directory = ScratchDirectory::new("prefix");
+fn an_initializer_is_not_rerun_by_load_and_draws_the_same_hash() {
+    let directory = ScratchDirectory::new("instance-init");
+    let source = directory.join("stamp.ns");
+    std::fs::write(
+        &source,
+        indoc! {"
+            Newspeak3
+            'T'
+            class Stamp = Object new (| stamp = Object new hash. |) (
+                public main: platform args: arguments = (
+                    platform transcript show: stamp printString; newLine
+                )
+            ) : ()
+        "},
+    )
+    .expect("write source");
+    let (ok, out, error) = assert_build_load_matches_run("instance-init", &source);
+    assert!(ok, "{error}");
+    assert!(!out.is_empty(), "run printed the stamp");
+}
+
+/// The failing direction, asserted on rather than merely swept: `run`
+/// writes nothing to stdout and stderr opens with the uncaught-error line.
+/// The sweep in `golden_round_trips.rs` proves the two paths agree; this
+/// proves what they agree *on*, so a change that made both report nothing
+/// could not pass. The line is written by the shared `report_entry_send` on
+/// both paths; this is what pins that it stays shared.
+#[test]
+fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
+    let directory = ScratchDirectory::new("raises");
+    let source = directory.join("raises.ns");
+    std::fs::write(
+        &source,
+        indoc! {"
+            Newspeak3
+            'T'
+            class Raises = Object new (
+            ) (
+                public main: platform args: arguments = (
+                    ^nil frobnicate
+                )
+            ) : ()
+        "},
+    )
+    .expect("write source");
+    let (ok, out, error) = assert_build_load_matches_run("raises", &source);
+    assert!(!ok, "the program raises, so `run` exits non-zero");
+    assert_eq!(out, "", "it prints nothing before raising");
+    assert!(
+        error.starts_with("Uncaught Newspeak error: "),
+        "the error text is what both paths must agree on: {error}"
+    );
+}
+
+/// A version-matching image whose body has been corrupted is a reported
+/// error, never a panic and never a stack trace. Most flips are answered by
+/// the decoder or by one of the two verification passes before anything
+/// runs; a flip that leaves the image self-consistent (a literal's value, an
+/// identity hash, a selector) starts the application, which then either
+/// runs or raises the way any program can.
+#[test]
+fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
+    let directory = ScratchDirectory::new("corruption");
+    let image = directory.join("app.nsi");
+    let source = golden("language/blocks_and_return");
+    let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), image.as_os_str()]);
+    assert!(ok, "{error}");
+    let original = std::fs::read(&image).expect("read image");
+    // Past the 8-byte header (magic + version), every 7th byte, each flipped
+    // two ways: enough coverage to sweep every section without turning one
+    // test into thousands of processes.
+    let (mut swept, mut rejected) = (0, 0);
+    for offset in (8..original.len()).step_by(7) {
+        for delta in [1u8, 0x80] {
+            let mut bytes = original.clone();
+            bytes[offset] ^= delta;
+            std::fs::write(&image, &bytes).expect("write image");
+            let (ok, _out, error) = ns_next(&["load".as_ref(), image.as_os_str()]);
+            assert!(
+                !error.contains("panicked") && !error.contains("RUST_BACKTRACE"),
+                "byte {offset} ^ {delta:#x} panicked the loader: {error}"
+            );
+            let refused = error.starts_with("error: ");
+            let raised = error.starts_with("Uncaught Newspeak error: ")
+                || error.starts_with("internal: non-local return escaped the entry send");
+            assert!(
+                ok || refused || raised,
+                "byte {offset} ^ {delta:#x} failed without an error message: {error}"
+            );
+            swept += 1;
+            rejected += usize::from(refused);
+        }
+    }
+    // Many flips land in a field that is still self-consistent, so most of
+    // the sweep is expected to load; this only pins that the sweep is really
+    // reaching the checks rather than passing vacuously.
+    assert!(
+        swept > 100 && rejected * 4 >= swept,
+        "{rejected} of {swept} corrupted images were rejected"
+    );
+}
+
+/// The image `build` writes by default carries no program text, and the
+/// application in it still runs. `--debug-source` opts the source back in,
+/// and `load --print-source` is what reads it out again -- which is how an
+/// image can be exported back to `.ns` while no decompiler exists.
+#[test]
+fn a_built_image_is_source_free_unless_debug_source_is_asked_for() {
     let source = golden("language/arithmetic");
-    let binary = directory.join("app.nsb");
-    let image = directory.join("world.img");
+    let text = std::fs::read_to_string(&source).expect("read golden");
+    // Every line carrying program text, not one hand-picked needle: a
+    // partial leak (one method body, one initializer statement) has to fail
+    // this too. Lines under 12 characters are structural punctuation --
+    // `)`, `) : ()`, `Newspeak3` -- which a binary stream reproduces by
+    // chance, so checking them would report leaks that are not leaks.
+    // See `no_line_of_the_source_survives_in_a_source_free_image` in
+    // `ns-runtime`'s image tests for the same property with a module built
+    // to probe it, and for what this does *not* claim (identifiers survive
+    // in the symbol table by necessity -- dispatch is by name).
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.len() >= 12)
+        .collect();
+    assert!(lines.len() >= 4, "the golden must have text to look for");
 
-    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), binary.as_os_str()]);
+    let plain_directory = ScratchDirectory::new("source-free");
+    let plain = plain_directory.join("app.nsi");
+    let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), plain.as_os_str()]);
     assert!(ok, "{error}");
-    let (ok, _, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    let plain_bytes = std::fs::read(&plain).expect("read image");
+    for line in &lines {
+        assert!(
+            !contains(&plain_bytes, line.as_bytes()),
+            "the default image contains the source line {line:?}"
+        );
+    }
+    // ...and it still starts, not just a smaller file.
+    let (ok, out, error) = ns_next(&["load".as_ref(), plain.as_os_str()]);
     assert!(ok, "{error}");
+    assert_eq!(out, "42\n");
+    // A source-free image has nothing to print, and says so.
+    let (ok, _out, error) = ns_next(&[
+        "load".as_ref(),
+        plain.as_os_str(),
+        "--print-source".as_ref(),
+    ]);
+    assert!(!ok);
+    assert!(error.contains("carries no source"), "{error}");
 
-    let binary_bytes = std::fs::read(&binary).expect("read binary");
-    let image_bytes = std::fs::read(&image).expect("read image");
-
-    // The window starts at `symbols`, not at byte 0: the header's flag byte
-    // legitimately differs (a build is stateless, a snapshot is not), so
-    // starting from the header would fail on that difference instead of on
-    // the property this test actually guards.
-    let window = |bytes: &[u8]| {
-        let report = ns_runtime::image::inspect::inspect(bytes).expect("inspect");
-        let start = report
-            .sections
-            .iter()
-            .find(|section| section.name == "symbols")
-            .expect("symbols section")
-            .start;
-        let end = report
-            .sections
-            .iter()
-            .find(|section| section.name == "modules")
-            .expect("modules section")
-            .end;
-        (start, end)
-    };
-    let (binary_start, binary_end) = window(&binary_bytes);
-    let (image_start, image_end) = window(&image_bytes);
-    assert_eq!(
-        (binary_start, binary_end),
-        (image_start, image_end),
-        "the describing sections start or end at different offsets"
-    );
-    assert_eq!(
-        &binary_bytes[binary_start..binary_end],
-        &image_bytes[image_start..image_end],
-        "describing bytes differ; run `ns-next inspect` on both to see which section"
-    );
-}
-
-#[test]
-fn load_send_overrides_the_recorded_entry() {
-    // The recorded entry (`return42`) and the `--send` override
-    // (`signalError`) must be *different* selectors with observably
-    // different outcomes: `return42` exits cleanly, `signalError` sends
-    // `Error signal:` and fails. Using the same selector on both sides
-    // would pass whether or not `--send` actually takes precedence.
-    let directory = ScratchDirectory::new("override");
-    let out = directory.join("app.nsb");
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");
-    let (ok, _, error) = ns_next(&[
+    let debug_directory = ScratchDirectory::new("debug-source");
+    let debug = debug_directory.join("app.nsi");
+    let (ok, _out, error) = ns_next(&[
         "build".as_ref(),
         source.as_os_str(),
-        out.as_os_str(),
-        "--entry".as_ref(),
-        "return42".as_ref(),
+        debug.as_os_str(),
+        "--debug-source".as_ref(),
     ]);
     assert!(ok, "{error}");
-
-    // If `--send` did not override the recorded entry, this would silently
-    // run `return42` instead and exit successfully with no error message --
-    // so both the failing exit and the message are asserted, not just one.
-    let (ok, _, error) = ns_next(&[
+    let debug_bytes = std::fs::read(&debug).expect("read image");
+    // The control: the very lines missing above are all present here, so
+    // the sweep cannot be passing because the needles were mangled.
+    for line in &lines {
+        assert!(
+            contains(&debug_bytes, line.as_bytes()),
+            "the debug variant is missing the source line {line:?}"
+        );
+    }
+    assert!(
+        debug_bytes.len() > plain_bytes.len(),
+        "the debug variant is the bigger of the two"
+    );
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
-        out.as_os_str(),
-        "--send".as_ref(),
-        "signalError".as_ref(),
+        debug.as_os_str(),
+        "--print-source".as_ref(),
     ]);
-    assert!(
-        !ok,
-        "expected `--send signalError` to override the recorded `return42` entry"
+    assert!(ok, "{error}");
+    assert_eq!(
+        out.replace("\r\n", "\n"),
+        text.replace("\r\n", "\n"),
+        "the debug variant round-trips the module's source verbatim"
     );
-    assert!(
-        error.contains("Uncaught Newspeak error"),
-        "expected signalError's error to surface, got: {error}"
-    );
+    // And the debug variant still starts, exactly as the plain one does.
+    let (ok, out, error) = ns_next(&["load".as_ref(), debug.as_os_str()]);
+    assert!(ok, "{error}");
+    assert_eq!(out, "42\n");
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+/// The slot initializers ask a builtin class, the module class and its
+/// metaclass for their hashes while `build` assembles the application; the
+/// load answers the same three questions against the objects it rebuilt
+/// from tags. Without the image's tag-named hashes, all three would print
+/// `false`.
+///
+/// `stamp` is drawn and never checked: it gives the identity-hash counter a
+/// fourth, ordinary draw after the three tag-named ones, so that a load
+/// which forgot the recorded hashes would draw different numbers rather than
+/// the same first three by coincidence (image-format.md, "Identity hashes
+/// are preserved verbatim").
+#[test]
+fn a_hash_given_to_a_tag_named_object_survives_build_and_load() {
+    let directory = ScratchDirectory::new("tag-named-hashes");
+    let source = directory.join("hashes.ns");
+    std::fs::write(
+        &source,
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Hashes = Object new (
+                | integer = Integer hash. module = self class hash. meta = self class class hash. stamp = Object new hash. |
+            ) (
+                public main: platform args: arguments = (
+                    platform transcript
+                        show: (integer = Integer hash) printString; show: ' ';
+                        show: (module = self class hash) printString; show: ' ';
+                        show: (meta = self class class hash) printString; newLine
+                )
+            ) : ()
+        "},
+    )
+    .expect("write source");
+    let (ok, out, error) = assert_build_load_matches_run("tag-named-hashes", &source);
+    assert!(ok, "{error}");
+    assert_eq!(out, "true true true\n");
+}
+
+/// Module order is what keeps identity hashes identical between `run` and
+/// `load` (the root first, then the project's modules as written, then the
+/// manifest): the root and a module each draw a hash while `build`
+/// assembles the application, and the module class's own hash is drawn only
+/// in `main:args:`, after the load. A loader that rebuilt the modules in
+/// another order, or re-drew a recorded hash, would print a different line.
+#[test]
+fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
+    let directory = ScratchDirectory::new("two-module-hashes");
+    std::fs::write(
+        directory.join("App.ns"),
+        indoc! {"
+            Newspeak3
+            'Test'
+            class App packageUsing: manifest = Object new (
+                | private Stamper = manifest Stamper.
+                  stamp = Object new hash.
+                  stamper = Stamper new. |
+            ) (
+                public main: platform args: arguments = (
+                    platform transcript
+                        show: stamp printString; show: ' ';
+                        show: stamper stamp printString; show: ' ';
+                        show: Stamper hash printString; newLine
+                )
+            ) : ()
+        "},
+    )
+    .expect("write the root");
+    std::fs::write(
+        directory.join("Stamper.ns"),
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Stamper = Object new (| public stamp = Object new hash. |) () : ()
+        "},
+    )
+    .expect("write the module");
+    let project = directory.join("project.json");
+    std::fs::write(
+        &project,
+        indoc! {r#"
+            {
+              "root": "App.ns",
+              "modules": ["Stamper.ns"]
+            }
+        "#},
+    )
+    .expect("write the project file");
+    let (ok, out, error) = assert_build_load_matches_run("two-module-hashes", &project);
+    assert!(ok, "{error}");
+    let hashes: Vec<&str> = out.trim_end().split(' ').collect();
+    assert_eq!(hashes.len(), 3, "three hashes: {out}");
+}
+
+#[test]
+fn a_project_builds_and_loads_as_it_runs() {
+    let project =
+        goldens_root().join("manifest/a_project_reaches_its_modules_through_the_manifest.json");
+    let (ok, out, error) = assert_build_load_matches_run("project", &project);
+    assert!(ok, "{error}");
+    assert_eq!(out, "hello, modules\n2\n");
+}
+
+/// `image::snapshot` is a host's image, not an application `build`
+/// packaged: it carries no start, so there is nothing for `load` to send
+/// `main:args:` to.
+#[test]
+fn load_refuses_an_image_that_is_not_started() {
+    use ns_runtime::{Interpreter, SourceOrigin, Value};
+    use std::rc::Rc;
+
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Plain = Object new () (
+            public main: platform args: arguments = ( platform transcript show: 'ran'; newLine )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        Rc::from(source),
+        SourceOrigin::File("plain.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let Value::Object(class) = mutator.fetch(&class) else {
+            panic!("load_module answers a class object")
+        };
+        let origin = SourceOrigin::File("plain.ns".into());
+        let modules = [ns_runtime::image::ModuleSource {
+            class,
+            origin: &origin,
+            source: None,
+        }];
+        let platform = mutator.fetch(&platform);
+        ns_runtime::image::snapshot(mutator, &modules, &platform, &[]).expect("snapshot")
+    });
+    let directory = ScratchDirectory::new("not-started");
+    let image = directory.join("world.img");
+    std::fs::write(&image, bytes).expect("write image");
+
+    let (ok, out, error) = ns_next(&["load".as_ref(), image.as_os_str()]);
+    assert!(!ok, "a snapshot is not started: {out}");
+    assert_eq!(out, "", "nothing ran");
+    assert!(error.contains("not a started image"), "{error}");
 }

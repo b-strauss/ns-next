@@ -6,9 +6,9 @@ use common::{golden, ns_next, ScratchDirectory};
 #[test]
 fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
     let directory = ScratchDirectory::new("arithmetic");
-    let image = directory.join("world.img");
+    let image = directory.join("app.nsi");
     let (ok, _, error) = ns_next(&[
-        "snapshot".as_ref(),
+        "build".as_ref(),
         golden("language/arithmetic").as_os_str(),
         image.as_os_str(),
     ]);
@@ -19,10 +19,18 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 
     assert!(out.contains("format version 1"), "{out}");
     assert!(out.contains("stateless: no"), "{out}");
+    assert!(out.contains("start: yes"), "{out}");
     assert!(out.contains("modules: 1"), "{out}");
     assert!(out.contains("source absent"), "{out}");
     for section in [
-        "header", "symbols", "code", "mixins", "modules", "entry", "graph",
+        "header",
+        "symbols",
+        "code",
+        "mixins",
+        "modules",
+        "entry",
+        "platform paths",
+        "graph",
     ] {
         assert!(out.contains(section), "missing section `{section}`:\n{out}");
     }
@@ -34,9 +42,9 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 #[test]
 fn inspect_reports_a_debug_variants_source_blob() {
     let directory = ScratchDirectory::new("debug-source");
-    let image = directory.join("world.img");
+    let image = directory.join("app.nsi");
     let (ok, _, error) = ns_next(&[
-        "snapshot".as_ref(),
+        "build".as_ref(),
         golden("language/arithmetic").as_os_str(),
         image.as_os_str(),
         "--debug-source".as_ref(),
@@ -124,6 +132,7 @@ fn inspect_full_renders_every_mixin_and_every_body() {
     // Expanded mixin rows: the slot's name, not just how many there are.
     assert!(full.contains("result"), "{full}");
     assert!(full.contains("new/0"), "{full}");
+    assert!(full.contains("main:args: -> code"), "{full}");
 
     // Every body, disassembled, labelled with the id the code table names.
     assert!(full.contains("bodies"), "{full}");
