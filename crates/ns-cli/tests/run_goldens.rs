@@ -38,7 +38,7 @@ fn main() {
             every_golden_is_a_complete_pair,
         ),
     ];
-    for source in common::golden_sources() {
+    for source in common::golden_programs() {
         let name = common::golden_name(&source);
         let expectation = common::expectation_of(&source);
         // A skipped golden is a recorded intention, not a failure: it is
@@ -188,7 +188,7 @@ fn the_guards_on_skipped_refuse_what_they_promise_to() -> Result<(), Failed> {
 /// exactly that event, and it fails here.
 fn every_golden_is_a_complete_pair() -> Result<(), Failed> {
     let mut missing_expectation = Vec::new();
-    for source in common::golden_sources() {
+    for source in common::golden_programs() {
         let expectation = source.with_extension("toml");
         if !expectation.exists() {
             missing_expectation.push(source.display().to_string());
@@ -196,7 +196,7 @@ fn every_golden_is_a_complete_pair() -> Result<(), Failed> {
     }
     let mut orphaned_expectation = Vec::new();
     for path in common::golden_files("toml") {
-        if !path.with_extension("ns").exists() {
+        if !path.with_extension("ns").exists() && !path.with_extension("json").exists() {
             orphaned_expectation.push(path.display().to_string());
         }
     }

@@ -1,0 +1,5 @@
+Newspeak3
+'Test'
+class Counter = Object new (| public count ::= 0. |) (
+    public bump = ( count:: count + 1 )
+) : ()

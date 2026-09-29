@@ -170,7 +170,8 @@ commands share, live in `source.rs` and `entry.rs`.
 ## The goldens
 
 `goldens/` is this runtime's recorded behaviour. A golden is a `.ns` program
-and a `.toml` beside it holding the outcome that program must produce:
+or a `.json` project file ([image-format.md](image-format.md)), and a `.toml`
+beside it holding the outcome that program must produce:
 `status`, `stdout` and `stderr`, each defaulting to the success case (`0`,
 empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
@@ -223,14 +224,17 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 | `kernel/` | the core library in `Kernel.ns`: what a user subclass of a builtin inherits, the one outcome the move defined, a recursion through kernel methods the two lowerings count alike, and §3.1.1's value semantics — a value's derived equality and hash, its lack of identity, and every one of its value conditions, those decided at class creation included, each refused at instantiation, and a class object that is a value because its enclosing object is |
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
 | `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
+| `manifest/` | projects: a root assembled with `packageUsing:` and the manifest of the other modules |
 | `mixin/` | §6.2's mixin application: lookup and `super` through the applied levels, `outer` from an applied mixin, the order of several `<:` clauses, the initializer order, the level's factory selector, the errors a clause raises, and a module that declares itself a value with `<: Value` |
 | `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
 | `spec/` | one named rule of `newspeak-spec.pdf`, its section in the file name |
 
 A golden lives in a category directory, one level down, and the set is found
 by reading `goldens/` and then each category — no list, no count, so adding
-one needs no edit anywhere. Anything at another depth is refused by name
-rather than skipped, because a golden nothing discovers is not a golden at
+one needs no edit anywhere. A project golden's modules live in the directory
+named like it (`<name>.json` and `<name>/`), the one place a golden nests; that
+directory's contents are not goldens and are not walked. Anything else at
+another depth is refused by name rather than skipped, because a golden nothing discovers is not a golden at
 all. `every_golden_is_a_complete_pair` covers the other half: an orphan on
 either side is a golden that stopped being discovered because one half was
 renamed, moved or re-extended. Deleting both halves together is not caught,

@@ -20,8 +20,10 @@ pub fn goldens_root() -> PathBuf {
 /// list, so that adding one needs no edit anywhere. Sorted, so a failure names
 /// the same golden on every platform and run.
 ///
-/// The layout is exactly two levels -- `goldens/<category>/<name>.<extension>`
-/// -- and anything else is refused rather than skipped. A golden the walk does
+/// The layout is two levels -- `goldens/<category>/<name>.<extension>` -- and
+/// anything else is refused rather than skipped. The one exception is the
+/// directory `<name>/` beside a project golden `<name>.json`, which holds that
+/// project's modules; its contents are not goldens and are not walked. A golden the walk does
 /// not accept but silently drops is not a golden at all: no sweep runs it and
 /// the pairing check cannot see it, so a wrong recorded answer would pass
 /// unnoticed. The category is the organizing principle, so a file outside one
@@ -43,14 +45,16 @@ pub fn golden_files(extension: &str) -> Vec<PathBuf> {
             .unwrap_or_else(|error| panic!("read {}: {error}", category.display()));
         for entry in entries {
             let path = entry.expect("golden entry").path();
-            assert!(
-                !path.is_dir(),
-                "{} is a directory inside the category {} -- a golden lives one level \
-                 below {}, never deeper",
-                path.display(),
-                category.display(),
-                root.display()
-            );
+            if path.is_dir() {
+                assert!(
+                    path.with_extension("json").is_file(),
+                    "{} is a directory inside the category {} with no {}.json beside it --                      only a project golden's modules may live one level deeper",
+                    path.display(),
+                    category.display(),
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                continue;
+            }
             if path.extension().and_then(|found| found.to_str()) == Some(extension) {
                 files.push(path);
             }
@@ -65,9 +69,17 @@ pub fn golden_files(extension: &str) -> Vec<PathBuf> {
     files
 }
 
-/// Every golden's source.
+/// Every golden's source: the `.ns` programs only.
 pub fn golden_sources() -> Vec<PathBuf> {
     golden_files("ns")
+}
+
+/// Every golden program, a `.ns` source or a `.json` project file, sorted.
+pub fn golden_programs() -> Vec<PathBuf> {
+    let mut programs = golden_files("ns");
+    programs.extend(golden_files("json"));
+    programs.sort();
+    programs
 }
 
 /// One golden's source by its path below `goldens/`, without the extension --

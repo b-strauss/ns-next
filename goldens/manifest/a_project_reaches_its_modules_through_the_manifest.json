@@ -1,0 +1,7 @@
+{
+  "root": "a_project_reaches_its_modules_through_the_manifest/App.ns",
+  "modules": [
+    "a_project_reaches_its_modules_through_the_manifest/Greeting.ns",
+    "a_project_reaches_its_modules_through_the_manifest/Counter.ns"
+  ]
+}
