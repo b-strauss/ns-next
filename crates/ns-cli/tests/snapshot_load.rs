@@ -147,9 +147,9 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
         indoc! {"
             Newspeak3
             'T'
-            class Raises usingPlatform: platform = Object new (
+            class Raises = Object new (
             ) (
-                public main: p args: a = (
+                public main: platform args: arguments = (
                     ^nil frobnicate
                 )
             ) : ()

@@ -56,6 +56,8 @@ well_known_symbols! {
     IDENTICAL => "==",
     VALUE_ON_UNWIND => "valueOnUnwind:",
     SIGNAL => "signal",
+    PACKAGE_USING => "packageUsing:",
+    MAIN_ARGUMENTS => "main:args:",
 }
 
 struct Interner {

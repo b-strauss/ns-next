@@ -132,7 +132,7 @@ ns_runtime::for_each_lowering! {
             indoc! {"
                 Newspeak3
                 'Test'
-                class Applying usingPlatform: p = Object new (| t = p transcript. |) (
+                class Applying = Object new () (
                     class Base withBase: b = Object new (| base = b. |) (
                         public chain = ( ^'Base ', base printString )
                     )
@@ -147,8 +147,8 @@ ns_runtime::for_each_lowering! {
                         public chain = ( ^'Applied ', super chain )
                     )
                     public main: platform args: arguments = (
-                        t show: (Applied from: 4) chain; newLine.
-                        t show: (Applied from: 2) chain; newLine.
+                        platform transcript show: (Applied from: 4) chain; newLine.
+                        platform transcript show: (Applied from: 2) chain; newLine.
                     )
                 ) : ()
             "},

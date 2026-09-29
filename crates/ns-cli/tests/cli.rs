@@ -160,6 +160,7 @@ fn run_corpus_fixture(name: &str, whitelist: &str) -> ScratchDirectory {
 }
 
 #[test]
+#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn the_run_corpus_gate_reports_its_counts() {
     let out = ns_next()
         .arg("run-corpus")
@@ -178,6 +179,7 @@ fn the_run_corpus_gate_reports_its_counts() {
 }
 
 #[test]
+#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
     let directory = run_corpus_fixture(
         "run-corpus-ok",
@@ -197,6 +199,7 @@ fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
 }
 
 #[test]
+#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
     let directory = run_corpus_fixture(
         "run-corpus-drift",

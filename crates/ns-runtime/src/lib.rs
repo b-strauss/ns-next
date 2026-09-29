@@ -68,6 +68,7 @@ pub use heap::{
     ActivationHeader, ActivationReference, ClassReference, CollectorStatistics, FrameReference,
     Heap, HeapStatistics, ObjectReference, RegisterBase, Root,
 };
+pub use interpreter::core_library::MANIFEST_SOURCE;
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,
     HostSignal, Interpreter, MethodSide, Mutator,

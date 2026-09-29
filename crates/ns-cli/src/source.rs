@@ -49,6 +49,22 @@ pub(crate) fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     })
 }
 
+/// Parses and resolves a source compiled into the binary -- the manifest --
+/// exactly as a file's source, under an embedded origin. A shipped source
+/// that does not parse is a build defect of this binary, not input.
+pub(crate) fn load_embedded(name: &str, source: &str) -> LoadedSource {
+    let module = ns_syntax::parse(source)
+        .unwrap_or_else(|_| panic!("internal: the embedded {name} does not parse"));
+    let origin = ns_runtime::SourceOrigin::Embedded(name.to_string());
+    let resolved = ns_runtime::resolve(module, source.into(), origin.clone())
+        .unwrap_or_else(|_| panic!("internal: the embedded {name} does not resolve"));
+    LoadedSource {
+        source: source.to_string(),
+        origin,
+        resolved,
+    }
+}
+
 /// Bootstraps an interpreter that compiles with `lowering` and loads the
 /// module's root class, which compiles every body onto the declaration it
 /// belongs to -- before anything is instantiated, so the root class's

@@ -17,6 +17,11 @@ pub(crate) const PLATFORM_FACTORY_SOURCE: &str =
 pub(crate) const COLLECTIONS_FACTORY_SOURCE: &str =
     include_str!("../../core-library/CollectionsFactory.ns");
 
+/// Not one of the shipped modules above, and never in their table: the
+/// manifest a project's root receives is compiled into the program like a
+/// user module, holds no mirror, and may be carried by an image.
+pub const MANIFEST_SOURCE: &str = include_str!("../../core-library/Manifest.ns");
+
 /// One shipped module. Every entry here is shipped source; a user module
 /// joins the table, marked as such by the host, with the step that loads
 /// one.

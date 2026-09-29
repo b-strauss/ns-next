@@ -7,8 +7,7 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 mod entry;
-// Used from `program.rs` once it exists; until then only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
+mod program;
 mod project;
 mod source;
 
@@ -54,16 +53,13 @@ enum Command {
         #[arg(long)]
         whitelist: Option<PathBuf>,
     },
-    /// Parse, resolve, bootstrap, load, instantiate, and run a .ns file
-    /// end to end.
+    /// Run a program end to end: a `.ns` source file, whose root is
+    /// instantiated with `new`, or a `.json` project file, whose root is
+    /// instantiated with `packageUsing:` a manifest of its other modules.
+    /// Either way the application is sent `main: platform args:`.
     Run {
+        /// A `.ns` source file or a `.json` project file.
         file: PathBuf,
-        /// The entry selector to send after instantiation, e.g.
-        /// `main:args:` (the default, per the spec's Core Library
-        /// convention) or `--send someSelector` for a fixture that isn't
-        /// a full `main:args:`-shaped application.
-        #[arg(long, default_value = "main:args:")]
-        send: String,
         /// The lowering to compile the source with.
         #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
         lowering: LoweringArgument,
@@ -80,8 +76,9 @@ enum Command {
     Snapshot {
         file: PathBuf,
         out: PathBuf,
-        /// A selector to send (with the arguments `run` supplies for its
-        /// arity) before snapshotting; its result becomes a second root.
+        /// A selector to send before snapshotting, with as many of the
+        /// platform and the program's arguments as it takes; its result
+        /// becomes a second root.
         #[arg(long)]
         send: Option<String>,
         /// Store the module's source text in the image (the debug
@@ -100,8 +97,8 @@ enum Command {
     },
     /// Deserialize an artifact and start it. An image already holds its
     /// instance; a stateless binary is instantiated here and sent the entry
-    /// selector it recorded. --send overrides that selector, with the
-    /// arguments `run` supplies for its arity.
+    /// selector it recorded. --send overrides that selector, with as many
+    /// of the platform and the program's arguments as it takes.
     Load {
         image: PathBuf,
         #[arg(long)]
@@ -128,8 +125,8 @@ enum Command {
     /// stderr when it detects one.
     Bench {
         file: PathBuf,
-        /// The entry selector to time, sized exactly as `run --send` sizes
-        /// it.
+        /// The entry selector to time, sent with as many of the platform and
+        /// the program's arguments as it takes.
         #[arg(long, default_value = "main:args:")]
         send: String,
         /// How many timed runs to take the median of, after one discarded
@@ -233,11 +230,10 @@ fn execute(command: Command) -> ExitCode {
         } => commands::run_corpus::execute(&directory, whitelist.as_deref()),
         Command::Run {
             file,
-            send,
             lowering,
             cache_statistics,
             arguments,
-        } => commands::run::execute(&file, &send, lowering.into(), cache_statistics, &arguments),
+        } => commands::run::execute(&file, lowering.into(), cache_statistics, &arguments),
         Command::Snapshot {
             file,
             out,

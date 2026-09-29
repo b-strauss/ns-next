@@ -53,7 +53,9 @@ pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {
     }
 }
 
-fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
+/// Renders a failed instantiation -- the root's or the manifest's -- with
+/// the texts the goldens pin.
+pub(crate) fn report_instantiation(signal: ns_runtime::HostSignal) -> ExitCode {
     match signal {
         ns_runtime::HostSignal::Error(error) => {
             eprintln!(
@@ -68,6 +70,36 @@ fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// `main:args:`'s arguments (§8.4): the platform, and the program's
+/// arguments -- the words after `--` -- as an `Array` of `String`s, empty
+/// when there are none.
+pub(crate) fn main_arguments(
+    interpreter: &mut ns_runtime::Interpreter,
+    program_arguments: &[String],
+) -> Vec<ns_runtime::Root> {
+    let platform = interpreter.platform();
+    let arguments = interpreter.enter(|mutator| {
+        let strings = program_arguments
+            .iter()
+            .map(|argument| ns_runtime::Value::Object(mutator.new_string(argument.clone())))
+            .collect();
+        let array = mutator.new_array(strings);
+        mutator.stash(ns_runtime::Value::Object(array))
+    });
+    vec![platform, arguments]
+}
+
+/// The one entry send every started program receives: `main: platform
+/// args: arguments`, the only way the platform reaches a program.
+pub(crate) fn send_main(
+    interpreter: &mut ns_runtime::Interpreter,
+    application: &ns_runtime::Root,
+    program_arguments: &[String],
+) -> ns_runtime::HostResult {
+    let arguments = main_arguments(interpreter, program_arguments);
+    interpreter.send(application, ns_runtime::Symbol::MAIN_ARGUMENTS, &arguments)
+}
+
 /// The class object a module's root-class `Root` holds: `load_module` and
 /// `image::load` only ever root a class object there.
 pub(crate) fn class_reference<'gc>(
@@ -80,7 +112,7 @@ pub(crate) fn class_reference<'gc>(
     }
 }
 
-/// The argument list `instantiate_root` (used by `run`, `snapshot` and
+/// The argument list `instantiate_root` (used by `snapshot` and
 /// `load`) and `bench` pass to `interpreter.instantiate`,
 /// built from the root class's own declared primary factory pattern
 /// (`Mixin::factory`) rather than assumed.
@@ -164,7 +196,7 @@ fn selector_arity(selector: &str) -> usize {
     }
 }
 
-/// The argument list an entry send (`run`/`snapshot`/`load`'s `--send`)
+/// The argument list an entry send (`snapshot`/`load`'s `--send`)
 /// supplies, sized to what the selector actually takes.
 ///
 /// A method activation addresses its arguments and temporaries as one run
@@ -225,5 +257,5 @@ pub(crate) fn instantiate_root(
         })?;
     interpreter
         .instantiate(class, &factory_arguments)
-        .map_err(report_signal)
+        .map_err(report_instantiation)
 }

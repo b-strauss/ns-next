@@ -1,0 +1,22 @@
+Newspeak3
+'Core-Library'
+(* What a project's root receives as `packageUsing:`'s argument: every
+   module the project file names, answered by the name its source declares
+   (docs/design/image-format.md, "Planned: one artifact, packaged before
+   `main:args:`"). Newspeak on Squeak's `Namespacing.ns` and Primordial
+   Soup's `CompilerApp.ns` answer the same way, from `doesNotUnderstand:`
+   over a map. Not privileged: it holds no mirror and is compiled into the
+   program like any module, so an application may keep it. *)
+class Manifest names: moduleNames definitions: moduleDefinitions = (
+    | private names = moduleNames.
+      private definitions = moduleDefinitions. |
+) (
+    protected doesNotUnderstand: message = (
+        | index |
+        index:: 1.
+        [index <= names size] whileTrue: [
+            ((names at: index) = message selector) ifTrue: [^definitions at: index].
+            index:: index + 1].
+        ^super doesNotUnderstand: message
+    )
+) : ()

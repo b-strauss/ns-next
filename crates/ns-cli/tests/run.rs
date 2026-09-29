@@ -3,22 +3,37 @@ mod common;
 use common::ScratchDirectory;
 use indoc::indoc;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 fn ns_next() -> Command {
     Command::new(env!("CARGO_BIN_EXE_ns-next"))
 }
 
-/// The workspace's `corpus/modules` directory -- resolved from
-/// `CARGO_MANIFEST_DIR` rather than a bare relative path, since the test
-/// binary's working directory is this crate's own directory, not the
-/// workspace root (`tests/corpus.rs`, `tests/snapshot_load.rs` and others
-/// already establish this convention).
-fn corpus_module(name: &str) -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../corpus/modules")
-        .join(name)
+fn run(file: &Path) -> Output {
+    ns_next().arg("run").arg(file).output().unwrap()
 }
+
+/// A project's root: `packageUsing:` its manifest, reaching the module
+/// `Greeter` through it.
+const APP: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class App packageUsing: manifest = Object new (
+        | Greeter = manifest Greeter. |
+    ) (
+        public main: platform args: arguments = (
+            platform transcript show: Greeter new greeting; newLine
+        )
+    ) : ()
+"};
+
+const GREETER: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Greeter = Object new () (
+        public greeting = ( ^'hello from a module' )
+    ) : ()
+"};
 
 #[test]
 fn run_sends_main_arguments_and_prints_via_platform_transcript() {
@@ -29,17 +44,17 @@ fn run_sends_main_arguments_and_prints_via_platform_transcript() {
         indoc! {"
             Newspeak3
             'Test'
-            class Hello usingPlatform: platform = Object new (
+            class Hello = Object new (
             ) (
-                public main: p args: a = (
-                    p transcript show: 'hi'; newLine
+                public main: platform args: arguments = (
+                    platform transcript show: 'hi'; newLine
                 )
             ) : ()
         "},
     )
     .unwrap();
 
-    let out = ns_next().arg("run").arg(&file).output().unwrap();
+    let out = run(&file);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -47,108 +62,6 @@ fn run_sends_main_arguments_and_prints_via_platform_transcript() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout, "hi\n", "unexpected stdout: {stdout:?}");
-}
-
-#[test]
-fn a_zero_argument_factory_no_longer_rejects_instantiation() {
-    // `ADummyPush.ns`'s primary factory is `new`, i.e. zero arguments, so
-    // `run` must instantiate it with none: supplying `usingPlatform:`'s one
-    // argument regardless would fail instantiation before `foo` is ever
-    // looked up. `foo` itself carries no access modifier and so defaults to
-    // protected (`newspeak-spec.pdf` §6.3.1) -- unreachable from an ordinary
-    // external send under spec-correct dispatch (§5.5's
-    // doesNotUnderstand:/proxy argument is exactly why that hard stop
-    // exists), so the module still ends in "does not understand #foo". What
-    // this pins is *when* it fails: not during instantiation with a
-    // CLI-level argument-count mismatch, only afterward, at the entry send,
-    // for the ordinary reason any protected method rejects an outside
-    // sender.
-    let out = ns_next()
-        .arg("run")
-        .arg(corpus_module("ADummyPush.ns"))
-        .arg("--send")
-        .arg("foo")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !stderr.contains("wrong number of factory arguments"),
-        "instantiation should no longer reject ADummyPush's zero-argument \
-         factory: {stderr}"
-    );
-    assert!(
-        stderr.contains("does not understand #foo"),
-        "expected the ordinary protected-access rejection, got: {stderr}"
-    );
-}
-
-#[test]
-fn a_zero_argument_factory_reaches_its_public_entry_method() {
-    // The same zero-argument-factory shape as `ADummyPush.ns`, end to end,
-    // with a public entry method (`entry::entry_arguments` sizes the entry
-    // send's argument list to the selector's arity, so `foo:` still gets
-    // the platform as its one argument -- only the *factory* call is now
-    // zero-argument) so the fix's effect is directly observable on stdout.
-    let directory = ScratchDirectory::new("zero-arg-factory");
-    let file = directory.join("NoPlatform.ns");
-    std::fs::write(
-        &file,
-        indoc! {"
-            Newspeak3
-            'Test'
-            class NoPlatform new = Object new (
-            ) (
-                public foo: p = (
-                    p transcript show: '99'; newLine
-                )
-            ) : ()
-        "},
-    )
-    .unwrap();
-
-    let out = ns_next()
-        .arg("run")
-        .arg(&file)
-        .arg("--send")
-        .arg("foo:")
-        .output()
-        .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stderr was: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "99");
-}
-
-#[test]
-fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
-    let directory = ScratchDirectory::new("multi-arg-factory");
-    let file = directory.join("TwoArgs.ns");
-    std::fs::write(
-        &file,
-        indoc! {"
-            Newspeak3
-            'Test'
-            class TwoArgs usingPlatform: platform ide: webIde = Object new (
-            ) (
-            ) : ()
-        "},
-    )
-    .unwrap();
-
-    let out = ns_next().arg("run").arg(&file).output().unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("usingPlatform:ide:"),
-        "stderr did not name the declared selector: {stderr}"
-    );
-    assert!(
-        stderr.contains('2'),
-        "stderr did not name the declared arity: {stderr}"
-    );
 }
 
 #[test]
@@ -165,118 +78,222 @@ fn run_reports_a_parse_error_and_exits_nonzero() {
     )
     .unwrap();
 
-    let out = ns_next().arg("run").arg(&file).output().unwrap();
+    let out = run(&file);
     assert_eq!(out.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&out.stderr).is_empty());
 }
 
 #[test]
-fn run_supports_a_custom_entry_selector_via_send() {
-    let directory = ScratchDirectory::new("custom-send");
-    let file = directory.join("Greet.ns");
+fn a_source_file_whose_root_takes_the_platform_is_refused_before_anything_runs() {
+    let directory = ScratchDirectory::new("old-root");
+    let file = directory.join("Old.ns");
     std::fs::write(
         &file,
         indoc! {"
             Newspeak3
             'Test'
-            class Greet usingPlatform: platform = Object new (
-            ) (
-                public greet: p = (
-                    p transcript show: 'custom'; newLine
-                )
+            class Old usingPlatform: platform = Object new () (
+                public main: platform args: arguments = ( platform transcript show: 'ran' )
             ) : ()
         "},
     )
     .unwrap();
 
-    let out = ns_next()
-        .arg("run")
-        .arg(&file)
-        .arg("--send")
-        .arg("greet:")
-        .output()
-        .unwrap();
+    let out = run(&file);
+    assert!(!out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot start `Old`: its primary factory is `usingPlatform:`"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("new"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_project_assembles_its_root_with_the_manifest() {
+    let directory = ScratchDirectory::new("project");
+    std::fs::write(directory.join("App.ns"), APP).unwrap();
+    std::fs::write(directory.join("Greeter.ns"), GREETER).unwrap();
+    let project = directory.join("app.json");
+    std::fs::write(
+        &project,
+        r#"{ "root": "App.ns", "modules": ["Greeter.ns"] }"#,
+    )
+    .unwrap();
+
+    let out = run(&project);
     assert!(
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout, "custom\n", "unexpected stdout: {stdout:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "hello from a module\n"
+    );
 }
 
-/// A frame-shift probe, end to end: a *unary* entry point with a declared
-/// temporary. Handing `--send probe` `[platform, nil]` regardless of arity
-/// would shift `t` onto a surplus argument and print `NOTNIL-BUG` with exit
-/// status 0. Both halves of the defence are needed for this to pass: the
-/// CLI sizes the argument list to the selector, and `push_step` refuses
-/// a mismatch outright if anything ever gets it wrong.
-const UNARY_PROBE: &str = indoc! {"
-    Newspeak3
-    'Test'
-    class Probe usingPlatform: p = Object new (
-        |
-            private plat = p.
-        |
-    ) (
-        public probe = (
-            | t |
-            nil = t ifTrue: [ plat transcript show: 'nil-ok'; newLine ]
-                ifFalse: [ plat transcript show: 'NOTNIL-BUG'; newLine ]
-        )
-    ) : ()
-"};
-
 #[test]
-fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
-    let directory = ScratchDirectory::new("unary-send");
-    let file = directory.join("Probe.ns");
-    std::fs::write(&file, UNARY_PROBE).unwrap();
+fn a_project_module_is_reached_through_a_backslash_path() {
+    let directory = ScratchDirectory::new("project-backslash");
+    std::fs::create_dir_all(directory.join("lib")).unwrap();
+    std::fs::write(directory.join("App.ns"), APP).unwrap();
+    std::fs::write(directory.join("lib").join("Greeter.ns"), GREETER).unwrap();
+    let project = directory.join("app.json");
+    std::fs::write(
+        &project,
+        r#"{ "root": "App.ns", "modules": ["lib\\Greeter.ns"] }"#,
+    )
+    .unwrap();
 
-    let out = ns_next()
-        .arg("run")
-        .arg(&file)
-        .arg("--send")
-        .arg("probe")
-        .output()
-        .unwrap();
+    let out = run(&project);
     assert!(
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
-    assert_eq!(stdout, "nil-ok\n", "unexpected stdout");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "hello from a module\n"
+    );
 }
 
 #[test]
-fn an_entry_selector_the_cli_cannot_fill_is_refused_before_the_send() {
-    let directory = ScratchDirectory::new("wide-send");
-    let file = directory.join("Wide.ns");
+fn a_projects_root_must_take_the_manifest() {
+    let directory = ScratchDirectory::new("project-new-root");
+    std::fs::write(
+        directory.join("App.ns"),
+        indoc! {"
+            Newspeak3
+            'Test'
+            class App = Object new () (
+                public main: platform args: arguments = ( platform transcript show: 'ran' )
+            ) : ()
+        "},
+    )
+    .unwrap();
+    std::fs::write(directory.join("Greeter.ns"), GREETER).unwrap();
+    let project = directory.join("app.json");
+    std::fs::write(
+        &project,
+        r#"{ "root": "App.ns", "modules": ["Greeter.ns"] }"#,
+    )
+    .unwrap();
+
+    let out = run(&project);
+    assert!(!out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot start `App`: its primary factory is `new`"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("packageUsing:"), "stderr: {stderr}");
+}
+
+#[test]
+fn two_modules_of_one_name_are_refused() {
+    let directory = ScratchDirectory::new("project-twins");
+    let twin = indoc! {"
+        Newspeak3
+        'Test'
+        class Twin = Object new () () : ()
+    "};
+    std::fs::write(directory.join("App.ns"), APP).unwrap();
+    std::fs::write(directory.join("A.ns"), twin).unwrap();
+    std::fs::write(directory.join("B.ns"), twin).unwrap();
+    let project = directory.join("app.json");
+    std::fs::write(
+        &project,
+        r#"{ "root": "App.ns", "modules": ["A.ns", "B.ns"] }"#,
+    )
+    .unwrap();
+
+    let out = run(&project);
+    assert!(!out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("`Twin`"), "stderr: {stderr}");
+    assert!(stderr.contains("A.ns"), "stderr: {stderr}");
+    assert!(stderr.contains("B.ns"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_missing_module_file_is_refused() {
+    let directory = ScratchDirectory::new("project-missing");
+    std::fs::write(directory.join("App.ns"), APP).unwrap();
+    let project = directory.join("app.json");
+    std::fs::write(
+        &project,
+        r#"{ "root": "App.ns", "modules": ["Nowhere.ns"] }"#,
+    )
+    .unwrap();
+
+    let out = run(&project);
+    assert!(!out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Nowhere.ns"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_module_shadowed_by_an_object_member_is_refused() {
+    let directory = ScratchDirectory::new("project-shadowed");
+    std::fs::write(
+        directory.join("App.ns"),
+        indoc! {"
+            Newspeak3
+            'Test'
+            class App packageUsing: manifest = Object new () (
+                public main: platform args: arguments = ( platform transcript show: 'ran' )
+            ) : ()
+        "},
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("Array.ns"),
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Array = Object new () () : ()
+        "},
+    )
+    .unwrap();
+    let project = directory.join("app.json");
+    std::fs::write(&project, r#"{ "root": "App.ns", "modules": ["Array.ns"] }"#).unwrap();
+
+    let out = run(&project);
+    assert!(!out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("`Array`"), "stderr: {stderr}");
+    assert!(stderr.contains("public member"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_program_without_main_is_an_uncaught_does_not_understand() {
+    let directory = ScratchDirectory::new("no-main");
+    let file = directory.join("Quiet.ns");
     std::fs::write(
         &file,
         indoc! {"
             Newspeak3
             'Test'
-            class Wide usingPlatform: p = Object new (
-            ) (
-                public a: x b: y c: z = (
-                    ^x
-                )
-            ) : ()
+            class Quiet = Object new () () : ()
         "},
     )
     .unwrap();
 
-    let out = ns_next()
-        .arg("run")
-        .arg(&file)
-        .arg("--send")
-        .arg("a:b:c:")
-        .output()
-        .unwrap();
+    let out = run(&file);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("a:b:c:"), "stderr: {stderr}");
-    assert!(stderr.contains("3 argument(s)"), "stderr: {stderr}");
+    assert!(
+        stderr.starts_with("Uncaught Newspeak error: "),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("does not understand #main:args:"),
+        "stderr: {stderr}"
+    );
 }
