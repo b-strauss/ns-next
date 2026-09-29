@@ -5023,9 +5023,9 @@ only the top entry's register window can grow in place. The answer is that
 editing a method takes its affected activations off the stack first — reified
 and divorced while still running, the operation Cog's `divorceAllFrames`
 performs on every stack page before a snapshot — and a divorced frame's `temporaries`
-is a growable `Vec`. Under the planned object space a frame object never
-grows; the activation is divorced into a newly allocated, larger frame
-object and the VM rewrites every reference to the old one by a walk of every
+is a growable `Vec`. Under the planned object space a frame object will never
+grow; the activation will be divorced into a newly allocated, larger frame
+object and the VM will rewrite every reference to the old one by a walk of every
 root the collector traces (`trace.rs`) and every heap object, the new frame allocated old and born remembered
 ([object-model.md](object-model.md), "Planned: the object layout").
 Continuing an activation from its divorced frame needs a

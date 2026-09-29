@@ -350,8 +350,8 @@ module a value.
   equality, which asks the classes first. Every value class's `=` is
   class-tight now, `Float`'s like `String`'s and `Symbol`'s. **Only
   equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`
-  and `>` still take an `Integer` argument and widen it losslessly
-  (`builtins/numbers.rs`'s module note), so `1.5 < 2` answers; an `Integer`
+  and `>` still take an `Integer` argument and convert it to the nearest
+  `double`, exact up to 2^53 (`builtins/numbers.rs:204`), so `1.5 < 2` answers; an `Integer`
   receiver still requires an `Integer`, so `1 < 2.0` is the type-mismatch
   error it always was, and `1 + 1.5` likewise. That asymmetry is exactly
   what the numeric tower closes. So this is a stopgap, not the answer: see
@@ -692,8 +692,8 @@ and each result that fits again is answered as an immediate `Integer`.
 literal just past 61 bits -- and answer through `LargeInteger`'s arithmetic.
 A `Float`'s leaves convert a `LargeInteger` argument to the nearest
 `double`, as Primordial Soup's `LargeInteger::AsDouble`
-(`vm/large_integer.cc:1242`) serves, where they widen an `Integer` argument
-losslessly today; a `LargeInteger`'s leaves meet a `Float` argument as an
+(`vm/large_integer.cc:1242`) serves, as they convert an `Integer` argument
+to the nearest `double` today, exact up to 2^53; a `LargeInteger`'s leaves meet a `Float` argument as an
 `Integer`'s do, with a type mismatch. That is a derived choice, pinned by
 goldens, which the numeric tower may revisit. The Smalltalk-family engines write this themselves --
 Primordial Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
@@ -799,7 +799,8 @@ has to meet is written down in Primordial Soup's `testFloatHash`
 equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
 class-tight `=` is the stopgap that keeps the contract by answering
 `false`, and only `=` is class-tight: a `Float`'s arithmetic and ordering
-still widen an `Integer` argument losslessly, while an `Integer`'s raise a
+still convert an `Integer` argument to the nearest `double`, exact up to
+2^53, while an `Integer`'s raise a
 type mismatch (`builtins/numbers.rs`'s module note); with large integers a
 `Float` converts a `LargeInteger` argument to the nearest `double`
 ("Planned: large integers" above).
@@ -919,8 +920,12 @@ on, and none does: each root keeps it in a private slot. The planned
 forwarders") will keep it that way: every instance a platform path names is
 a value (`Platform`, `Transcript`, `KernelNamespace` and `Collections` are
 declared `= Value new`) and every class it names is a class object, and a
-program's `become:` refuses both in either direction, so no program can
-redirect a reference shipped code holds for itself. Six things keep it
+program's `become:` will refuse both in either direction; the kernel-made
+non-value objects a program can reach, such as a VM error's `Error` and its
+`Message`, lie on no path from shipped code to the mirror, which runs only
+through class objects and the value roots of `Kernel`, `PlatformFactory` and
+`CollectionsFactory`, so no program will be able to redirect a reference
+that leads shipped code to the mirror. Six things keep it
 that way,
 and loosening any one of them lets a program claim every primitive:
 

@@ -1012,9 +1012,9 @@ Three things the representation settles before any taste enters:
   than a wrong but safe read, so it would take with it the checked access, the
   origin guards, the epoch check and the brand's proof that every access is
   safe. That is a different runtime, not a choice of collector. The planned
-  object space owns its memory as the address-based engines do but keeps
-  handles as byte offsets read through bounds-checked slices, which keeps all
-  four ("Planned: the object space").
+  object space will own its memory as the address-based engines do but keep
+  handles as byte offsets read through bounds-checked slices, which will keep
+  all four ("Planned: the object space").
 - **Reference counting is out**, because cycles need tracing and `become:`
   needs forwarding.
 - **Conservative scanning is out**, decided earlier and on its own grounds
@@ -1548,19 +1548,22 @@ unsafe code" names `ns-runtime` (road step 1); "An image is untrusted input"
 takes new amplification figures for the eight-byte value (road step 2) and
 for variably sized objects (road step 3), with the decoder's first pass
 checking each record's declared size against the bytes remaining; the bound
-is the larger of the per-record-kind ratio (a class object about 6x, a frame
-object about 5x) and the per-value ratio, and the per-value ratio dominates
--- a one-byte `VALUE_NIL` element becomes an 8-byte word,
-8x, and a UTF-8 byte widened to the 32-bit string form 4x
+is the largest of the per-record-kind ratios (a class object about 6.7x, a
+frame object about 5x) and the per-value ratio -- a one-byte `VALUE_NIL`
+element becomes an 8-byte word, 8x, and a UTF-8 byte widened to the 32-bit
+string form 4x -- and the first pass refuses a second symbol record naming
+the same symbol-table entry before allocating, charging each entry's text
+once
 ([image-format.md](image-format.md), "Planned: the image under the new
 representation"); the handle
 paragraphs describe a 64-bit byte offset and the frame arena's end (road step
 3); "A cache records what the lookup decided" reads `ClassData.builtin` as a
 field of the class object, which `act` still reads afresh on every send (road
 step 3); the gates' stress loop gains `SCAVENGE`, "nothing collects during a
-load" becomes "a load collects only between entries, right after the
-bootstrap and before the graph pass" -- the placeholders are still allocated
-after the last tenure, so the peak argument stands -- and the crate list's
+load" becomes "the decoder allocates only after a tenure between entries;
+the platform-path sends may collect at their safepoints like any run; the
+graph pass allocates after the last tenure and never polls a safepoint" --
+so the peak argument stands -- and the crate list's
 sentence on the mark-compact collector names the scavenger beside it (road
 step 4); and "The VM mirror is a capability" gains, as a consequence, that a
 program's `become:` refuses value objects and class objects, which covers
@@ -1766,8 +1769,8 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   collectors. Its handles are raw addresses, so adopting it would replace the
   checked access, the origin guards, the epoch check and the brand's proof along
   with the collector. Owning the memory is not what costs them: the planned
-  object space owns its memory and keeps all four, because its handles are
-  byte offsets read through bounds-checked slices ("Planned: the object
+  object space will own its memory and keep all four, because its handles
+  will be byte offsets read through bounds-checked slices ("Planned: the object
   space").
 - **`unsafe` is acceptable on a performance-critical path where the abstraction
   over it is safe again** (decided with the user on 2026-09-21), so an option is

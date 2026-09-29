@@ -292,8 +292,8 @@ value objects are never copied across an actor boundary (§3.1.1).
   15.6% faster under mimalloc ([memory.md](design/memory.md), "Payloads
   belong to the Rust allocator, and what that costs"), but whether that is
   this residual was not isolated. The object space (step 3 of the road)
-  removes both the frame arena and the per-payload frees, so its collector is
-  measured afresh.
+  will remove both the frame arena and the per-payload frees, so its collector
+  will be measured afresh.
 - **`bench_block.ns` 4.4% slower since the value conditions.** Not isolated.
   Hypothesis (a), the seeded symbol, is refuted; (b), the extra `Value`-level
   class object, and (c), hardware counters, are to run.
@@ -384,8 +384,8 @@ reachable only from a crafted artifact.
   safe output, accepted; it stays safe because every access is bounds-checked
   per object, today per `Vec` and in the planned object space against the
   object's own word count ([memory.md](design/memory.md), "Planned: the
-  object space"). The register-less pairing disappears with road step 3,
-where every reified frame carries its full register file on the wire.
+  object space"). The register-less pairing will disappear with road step 3,
+where every reified frame will carry its full register file on the wire.
 [image-format.md](design/image-format.md).
 - **The memory bound under a crafted artifact** is proportional but large,
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
@@ -434,6 +434,9 @@ where every reified frame carries its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
+- `builtins/numbers.rs:13`: the module note calls `Float`'s widening of an
+  `Integer` argument lossless, but the leaf converts with `as f64`
+  (`numbers.rs:204`), which rounds past 2^53.
 - `bytecode.rs:537`: `outer_reach_of` ends in `_ => 0`, so "every instruction
   that reaches another frame's registers is named" rests on prose; an
   exhaustive match would make the compiler enforce it.

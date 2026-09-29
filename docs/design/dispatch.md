@@ -900,8 +900,8 @@ dispatches on it in between. A decoded image rebuilds its applications
 through `apply_mixin` ([image-format.md](image-format.md), "What is *not*
 serialized"), so an id never comes from its bytes. The id is not a handle,
 so the tracer does not see it and a move carries it along. The planned
-`become:` swaps no ids: a forwarder carries a reserved id that makes every
-send to it miss, and its target keeps its own id
+`become:` will swap no ids: a forwarder will carry a reserved id that makes
+every send to it miss, and its target will keep its own id
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders"). In a debug build
 `Heap::dispatch_id` recomputes the id from the class on every read and
@@ -1445,8 +1445,8 @@ interpreter's measurement cannot see:
 `bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_block.ns`; an
 allocation per class object; and a copy that must be restamped wherever a
 class's application changes (`Heap::set_class_application`, the decoder's
-one stamping pass). The planned `become:` needs no restamp: its forwarder
-carries a reserved id and the target keeps its own
+one stamping pass). The planned `become:` will need no restamp: its forwarder
+will carry a reserved id and the target will keep its own
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders"). A debug build's
 check in `Heap::dispatch_id` catches a stale copy in every test that
@@ -1464,9 +1464,10 @@ Spur and Primordial Soup would make every site that sees nested-class
 instances from two enclosing objects polymorphic. Two things follow for the
 caches. The application cache (`Mutator.applications`) is keyed by the
 mixin's id and the superclass application's id rather than by two
-`Rc::as_ptr` addresses, since a class object holds its application's id in a
-field and the mixins and `MixinApplication`s live in Rust-side tables indexed
-by their ids; with ids that are never reused while a key can name them, the
+`Rc::as_ptr` addresses, since the mixins and `MixinApplication`s will live in
+Rust-side tables indexed by their ids, and a class object will name its
+application by a full-width index into that table, separate from the 22-bit
+guard id; with ids that are never reused while a key can name them, the
 cache is free to become weak
 ([memory.md](memory.md), "Weak references"). And a forwarder
 ([object-model.md](object-model.md), "Planned: `become:` through
@@ -1488,7 +1489,9 @@ from a table indexed by its tag, and for the constant tag by the constant,
 since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the ids can run
 out where today's `u32` counter practically cannot; running out keeps
 today's rule, an application without an id running uncached (`NONE`, "The
-dispatch id" above). An application id is reclaimed once no class object, no inline-cache or
+dispatch id" above), and still reachable through its class objects' full-width
+index, which is reclaimed under the same conditions as the application
+itself. An application id is reclaimed once no class object, no inline-cache or
 global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
 table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it, which the
 collector can tell. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The debug build's check in
@@ -1584,8 +1587,8 @@ target rather than a class.
     mixin-relative slot index — the site stays monomorphic when a mixin is
     applied under several superclasses, at a second load per private hit;
     worth measuring against the built guard once a program has that shape
-    (none of the measured sources did). The per-mixin id it needs arrives
-    with the object layout, which gives mixins and applications ids of their
+    (none of the measured sources did). The per-mixin id it needs will arrive
+    with the object layout, which will give mixins and applications ids of their
     own in place of `Rc` addresses ("Planned: the guard in the header word"
     above).
   - **A block's `family_size` is its own subtree's**, which bounds every site

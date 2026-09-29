@@ -1394,8 +1394,8 @@ taken for the constants: ns-next has no characters, and
 `nil`, `true` and `false` stay immediates as they are today rather than
 becoming heap singletons as in Spur and Soup. A `SmallFloat64` is Spur's
 encoding (`floatObjectOf:`, `smallFloatValueOf:`): an eight-bit subset of
-the exponent -- IEEE exponents 897 to 1151, about 2^-126 to 2^128, and 896
-with a non-zero mantissa, plus ±0.0 (`isSmallFloatValueBits`, `:41232`) --
+the exponent -- IEEE exponents 896 with a non-zero mantissa through 1151,
+about 2^-127 to just under 2^129, plus ±0.0 (`isSmallFloatValueBits`, `:41232`) --
 with the sign rotated down beside the tag. Every other float -- NaN,
 the infinities, denormals and magnitudes outside that range -- is a boxed
 `Float` object. Soup boxes every float, which costs an allocation per
@@ -1520,7 +1520,10 @@ verbatim").
 
 **Application ids are 22 bits wide** as well. Running out keeps today's
 rule: an application without an id runs uncached ([dispatch.md](dispatch.md),
-"The dispatch id"). An application id is reclaimed once no class object, no inline-cache or
+"The dispatch id"). It stays reachable, because a class object names its
+application by a full-width index into the Rust-side table of
+`MixinApplication`s, separate from the 22-bit guard id, which may be `NONE`;
+the index is reclaimed under the same conditions as the application itself. An application id is reclaimed once no class object, no inline-cache or
 global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
 table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it; the collector can
 tell both, so reusing an id is safe. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable.
@@ -1573,13 +1576,16 @@ Spur's forwarders take their first slot.
 everything of today's `ClassData` that holds per class object: its enclosing
 object, declaring class, superclass, for a metaclass the class it describes
 (`this_class`), its builtin tag (`ClassData.builtin`, which `act` re-reads
-on every send), its value-class refusal, for a level a `<:` clause added the
+on every send), its value-class refusal (a `SmallInteger` index into a Rust-side table of
+refusals, or `nil`, since today's `ValueClassRefusal` holds a Rust `String`
+and a `Symbol`, `types.rs:105-112`), for a level a `<:` clause added the
 clause that added it (`ClassData.applied_clause`: the applying declaration's
-mixin id, the clause index and the named builtin tag, each a `SmallInteger`
-or `nil`, since the `Rc<Mixin>` it holds today cannot live in the space), and
-its application id as a
-`SmallInteger`, which indexes a Rust-side table of `MixinApplication`s; the
-behaviour stays Rust. The application cache is keyed by the mixin's id and
+mixin id, the clause index and the named builtin tag packed into one
+`SmallInteger`, or `nil`, since the `Rc<Mixin>` it holds today cannot live
+in the space), and its application as a `SmallInteger` full-width index into
+a Rust-side table of `MixinApplication`s, separate from the 22-bit guard id
+in instances' headers; the behaviour stays Rust. Eight fields, so a class
+object is 80 bytes with its header and class word. The application cache is keyed by the mixin's id and
 the superclass application's id rather than by `Rc` addresses, which lets it
 become weak ([memory.md](memory.md), "Weak
 references"). A closure keeps its code id, captured frame and feedback base
@@ -1660,7 +1666,9 @@ an out-of-range index that a valid program produces raises an ordinary
 Newspeak error, never a panic. `InitializeSlot` and `ReturnSlotIfFilled`
 read and write `slot_base + own_index` in `self` with no send and no guard
 (`bytecode.rs`), so they also compare the receiver header's application id
-with the running level's application -- one compare, cold on a mismatch --
+with the one the activation recorded from that header when it was entered --
+not with the running level's own application, which differs from the
+receiver's on every inherited level -- one compare, cold on a mismatch --
 and raise an ordinary Newspeak error on a mismatch: after a `self become:`
 inside an initializer or a lazy slot's initializer, the rest of that
 activation would otherwise write the old layout into an object of another
@@ -1740,10 +1748,15 @@ is a value -- `Platform`, `Transcript` and `KernelNamespace` in
 `PlatformFactory.ns` and `Collections` in `CollectionsFactory.ns` are all
 declared `= Value new` -- and every class a platform path names is a class
 object, so a program's `become:` refuses each of them in either direction
-without a rule of its own. No other object the shipped core-library modules
-hold is reachable by a program: an exception's activation is a frame
-object, refused above, and the shipped roots and the mirror are unreachable;
-an `Array`, a `List` or an exception a program made is its own. So
+without a rule of its own. A program can reach, and `become:`, kernel-made
+non-value objects -- a VM error's `Error` or `MessageNotUnderstood` and its
+`Message` -- and that is harmless: `become:` never moves contents between
+classes, the kernel activations holding them are frame objects and refused,
+and shipped code reaches the mirror only lexically, through its class
+objects' enclosing chain and the roots of `Kernel`, `PlatformFactory` and
+`CollectionsFactory`, each declared `= Object <: Value` and so a value, and
+the mirror itself is unreachable. Every object on a path from shipped code
+to the mirror is refused. So
 only instances of non-value classes and arrays are ever forwarded by a
 program.
 
