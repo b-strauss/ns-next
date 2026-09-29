@@ -426,9 +426,6 @@ where every reified frame will carry its full register file on the wire.
 - **The memory bound under a crafted artifact** is proportional but large,
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.
-- **An error message names a milestone**: `builtins/numbers.rs:58`, "Milestone
-  1 has no Integer/Float coercion". Changing it changes recorded `stderr`, so it
-  is a behaviour change.
 - **A list's reservation in the decoder is not counted in the load's
   peak.** `reserve_for` (`image/decode.rs`) caps a capacity at the bytes
   remaining, not at the bytes its elements need, so `decode_values` reserves

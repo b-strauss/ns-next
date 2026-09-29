@@ -43,19 +43,24 @@ use crate::types::*;
 use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 
 /// A numeric operation on an argument it does not accept (this module's
-/// note says which those are).
+/// note says which those are). The message names what the receiver takes:
+/// an `Integer` or `LargeInteger` receiver takes either integer class, a
+/// `Float` receiver any of the three number classes.
 fn type_mismatch<'gc>(
     heap: &Heap<'gc>,
     receiver: &Value<'gc>,
     selector: Symbol,
     got: Option<&Value<'gc>>,
 ) -> NewspeakError<'gc> {
+    let required = match receiver {
+        Value::Float(_) => "a numeric",
+        _ => "an integer",
+    };
     NewspeakError {
         selector,
         receiver: *receiver,
         message: format!(
-            "{selector} requires a numeric argument of the receiver's own type \
-             (Milestone 1 has no Integer/Float coercion), got {}",
+            "{selector} requires {required} argument, got {}",
             heap.describe_argument(got)
         ),
     }

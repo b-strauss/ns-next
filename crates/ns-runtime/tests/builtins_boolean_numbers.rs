@@ -243,11 +243,7 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
                 "a type mismatch must not be reported as an overflow: {}",
                 error.message
             );
-            assert!(
-                error.message.contains("coercion"),
-                "expected the message to name the missing Integer/Float coercion, got: {}",
-                error.message
-            );
+            assert_eq!(error.message, "+ requires an integer argument, got 1.5");
         }
         Ok(value) => {
             let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
@@ -281,8 +277,10 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
     match result {
         Err(HostSignal::Error(error)) => {
             assert!(
-                error.message.contains("coercion"),
-                "expected the message to name the missing Integer/Float coercion, got: {}",
+                error
+                    .message
+                    .starts_with("+ requires an integer argument, got "),
+                "expected the message to name what an integer takes, got: {}",
                 error.message
             );
         }
@@ -309,7 +307,7 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
 
     match result {
         Err(HostSignal::Error(error)) => {
-            assert!(error.message.contains("coercion"), "got: {}", error.message)
+            assert_eq!(error.message, "< requires an integer argument, got 1.5")
         }
         Ok(value) => interpreter.enter(|mutator| match mutator.fetch(&value) {
             Value::Boolean(false) => {
@@ -320,6 +318,31 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
                 mutator.heap().describe(&other)
             ),
         }),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
+    }
+}
+
+/// A `Float` receiver takes any number, so its mismatch asks for a number
+/// rather than for an integer, as an integer receiver's does.
+#[test]
+fn a_float_receiver_asks_for_a_numeric_argument() {
+    let mut interpreter = Interpreter::bootstrap();
+
+    let receiver = interpreter.stash(Value::Float(1.5));
+    let result = interpreter.send(
+        &receiver,
+        Symbol::intern("*"),
+        &[interpreter.stash(Value::Nil)],
+    );
+
+    match result {
+        Err(HostSignal::Error(error)) => {
+            assert_eq!(error.message, "* requires a numeric argument, got nil")
+        }
+        Ok(value) => {
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            panic!("expected a Newspeak error for `1.5 * nil`, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
