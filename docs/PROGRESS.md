@@ -3517,9 +3517,10 @@ retired; value tag 9, literal tag 10 and builtin class tag 31 are new.
 - `b02323d` — `//` rounds toward negative infinity, as Primordial Soup's
   `Integer>>//` does, where it had rounded as Euclidean division; `7 // -2`
   answers `-4`.
-- `5c25deb` — `ArbitraryInteger`: addition, subtraction, long, Karatsuba and
-  Toom-3 multiplication, algorithm D, floor division and the radix and `f64`
-  conversions, with `THIRD-PARTY-NOTICES.md` and the three submodules.
+- `5c25deb` — `ArbitraryInteger`: addition, subtraction, long,
+  half-Karatsuba, Karatsuba and Toom-3 multiplication, algorithm D, floor
+  division and the radix and `f64` conversions, with
+  `THIRD-PARTY-NOTICES.md` and the three submodules.
 - `9e7eb94` — multiplication by the number-theoretic transform above 512
   digits and Burnikel-Ziegler division above 64, decided with the user the
   same day.

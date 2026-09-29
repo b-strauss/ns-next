@@ -159,6 +159,17 @@ to be decided against the code:
   `num-bigint` does. Lending the slices instead removes
   an allocation and a copy per recursive step; unmeasured.
   [core-library.md](design/core-library.md), "Large integers".
+- **`Heap::large_integer` copies a `LargeInteger`'s digits out on every
+  leaf send**, for the receiver and for an argument alike
+  (`builtins/numbers.rs`: `execute_large_integer`, `integer_operand`; and
+  `builtins/value.rs`'s derived equality and hash), as every heap accessor
+  copies out ([memory.md](design/memory.md), "The seam"). For `<`, `=`
+  and `hash`, and `printString` of a short integer, the copy (an allocation
+  and a pass over every digit) dominates the cost, since the operation
+  itself reads the digits once. Road step 3, the object space, removes it
+  by keeping the digits inline in the object, where a leaf can read them
+  in place.
+  [core-library.md](design/core-library.md), "Large integers".
 
 ## Planned: language and library
 
@@ -427,18 +438,24 @@ where every reified frame will carry its full register file on the wire.
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.
 - **A list's reservation in the decoder is not counted in the load's
-  peak.** `reserve_for` (`image/decode.rs`) caps a capacity at the bytes
-  remaining, not at the bytes its elements need, so `decode_values` reserves
-  up to 16 bytes of `Value` per remaining byte for one record that claims a
-  huge count -- about 16x more on top of the documented placeholder figure,
-  about 32x in a release build in all and up to about 37x (derived, not
-  measured) with decoded `LargeInteger` values. Since the smallest value is one byte on the wire
-  (`VALUE_NIL`), capping by an element's minimum wire size changes nothing
-  for a `Value` list; bounding it takes a cap in bytes rather than elements
-  -- the bytes remaining divided by `size_of::<Value>()`, so the
-  reservation is at most 1x -- or no reservation up front, growing as
-  elements are read. The arenas' `Vec` doubling slack is not counted
-  either.
+  peak.** `reserve_for` (`image/decode.rs:1062`) caps a capacity at the
+  bytes remaining, not at the bytes its elements need, so `decode_values`
+  (`image/decode.rs:2401`) reserves up to 16 bytes of `Value` per remaining
+  byte for one record that claims a huge count -- about 16x more on top of
+  the documented placeholder figure, about 32x in a release build in all
+  and up to about 37x (derived, not measured) with decoded `LargeInteger`
+  values. The same holds for every other caller whose element is larger
+  in memory than on the wire: a closure's copied values
+  (`image/decode.rs:2467`) and a frame's arguments and temporaries (through
+  `decode_values`, `image/decode.rs:2515`), a body's instructions
+  (`image/decode.rs:1742`) and an instruction's register operands
+  (`decode_registers`, `image/decode.rs:1771`). The fix belongs in
+  `reserve_for` itself, for every caller at once: a cap in bytes rather
+  than elements, `count.min(reader.remaining() / size_of::<T>())`, so no
+  reservation exceeds the bytes still unread. Capping by an element's
+  minimum wire size instead changes nothing for a `Value` list, since the
+  smallest value is one byte (`VALUE_NIL`). The arenas' `Vec` doubling
+  slack is not counted either.
   [memory.md](design/memory.md), "The interim cost, and the one question
   still open".
 - **`Heap::traced_size` counts the canonical symbol table's empty slots**
