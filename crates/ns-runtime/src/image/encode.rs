@@ -109,11 +109,12 @@ pub const FLAG_HAS_SOURCE: u8 = 1;
 /// optional, which is what makes it startable from the file alone.
 pub const FLAG_STATELESS: u8 = 2;
 
-/// Every bit this build assigns a meaning to.
 /// The image is an application packaged just before `main:args:`: `load`
 /// starts it by sending `main: platform args:` to the graph's one root
 /// (`docs/design/image-format.md`).
 pub const FLAG_START: u8 = 4;
+
+/// Every bit this build assigns a meaning to.
 pub const KNOWN_FLAGS: u8 = FLAG_HAS_SOURCE | FLAG_STATELESS | FLAG_START;
 
 pub fn write_header(writer: &mut Writer, flags: u8) {

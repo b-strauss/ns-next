@@ -12349,3 +12349,38 @@ fn every_truncation_of_a_packaged_application_is_reported_rather_than_panicking(
     }
     image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
 }
+
+#[test]
+fn a_start_image_with_other_than_one_root_is_refused() {
+    let (mut interpreter, class) = load(ENTRY_SOURCE);
+    let platform = interpreter.platform();
+    let first = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let second = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let flag_offset = encode::MAGIC.len() + std::mem::size_of::<u32>();
+    for root_count in [0, 2] {
+        let mut bytes = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let platform = mutator.fetch(&platform);
+            let roots = [mutator.fetch(&first), mutator.fetch(&second)];
+            snapshot_one(
+                mutator,
+                None,
+                &origin,
+                class,
+                &platform,
+                &roots[..root_count],
+            )
+            .expect("snapshot")
+        });
+        bytes[flag_offset] |= encode::FLAG_START;
+        let error = match image::load(&bytes) {
+            Ok(_) => panic!("a start image with {root_count} roots loaded"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("exactly one root") && error.contains(&root_count.to_string()),
+            "{error}"
+        );
+    }
+}

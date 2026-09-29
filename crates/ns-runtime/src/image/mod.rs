@@ -478,6 +478,12 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             decode::decode_graph_section(&mut reader, &mut context, &symbols)
                 .map_err(|error| error.to_string())?
         };
+        if header.start && graph.roots.len() != 1 {
+            return Err(decode::DecodeError::StartedImageRootCount {
+                count: graph.roots.len(),
+            }
+            .to_string());
+        }
         if !header.stateless {
             let tag_named_max = decode::decode_tag_named_hashes(
                 &mut reader,

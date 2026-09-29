@@ -46,6 +46,11 @@ pub enum DecodeError {
     ContradictoryHeaderFlags {
         flags: u8,
     },
+    /// A start image names its application by being the graph's one root; any
+    /// other count leaves the host nothing, or nothing certain, to start.
+    StartedImageRootCount {
+        count: usize,
+    },
     /// A frame's `program_counter` is not an instruction index of the body that
     /// runs in it. The VM stores the index of the instruction it is executing,
     /// so every real activation's `program_counter` is in range; a crafted one
@@ -444,6 +449,10 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "image header sets flag bits {:#04x} this build does not know",
                 flags & !super::encode::KNOWN_FLAGS
+            ),
+            DecodeError::StartedImageRootCount { count } => write!(
+                f,
+                "a started image has exactly one root, the application, but this one has {count}"
             ),
             DecodeError::ContradictoryHeaderFlags { flags } => write!(
                 f,
