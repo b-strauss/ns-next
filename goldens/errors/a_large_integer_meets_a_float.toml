@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: + requires a numeric argument of the receiver's own type (Milestone 1 has no Integer/Float coercion), got 1.5
+'''

@@ -25,6 +25,7 @@ class Overflow usingPlatform: p = Object new (
         p transcript show: (big hash = (max + 1) hash) printString; newLine.
         p transcript show: (big == (max + 1)) printString; newLine.
         p transcript show: (big = max) printString; newLine.
-        p transcript show: (max = big) printString; newLine
+        p transcript show: (max = big) printString; newLine.
+        p transcript show: ((big - 1) = max) printString; newLine
     )
 ) : ()

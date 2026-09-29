@@ -1,0 +1,8 @@
+status = 1
+stdout = '''
+true an Object
+true an Object
+'''
+stderr = '''
+Uncaught Newspeak error: an object does not understand #+
+'''

@@ -1,0 +1,44 @@
+Newspeak3
+'Arithmetic'
+(* `LargeInteger`'s arithmetic and ordering, with a `LargeInteger` on either
+   side and an `Integer` on the other, and a result that fits again answered
+   as an `Integer`. The operands are built by arithmetic, not literals, so
+   this does not depend on large literals (their own golden). *)
+class LargeArithmetic usingPlatform: p = Object new (
+) (
+    public main: p args: a = (
+        | two big other small back count |
+        two:: 2.
+        small:: 9223372036854775807.
+        count:: 0.
+        big:: 1.
+        [count < 200] whileTrue: [big:: big * two. count:: count + 1].
+        p transcript show: big printString; newLine.
+        other:: 0 - (big // (small * small)).
+        p transcript show: other printString; newLine.
+        p transcript show: (big + other) printString; newLine.
+        p transcript show: (big - other) printString; newLine.
+        p transcript show: (big * other) printString; newLine.
+        p transcript show: (big // -7) printString; newLine.
+        p transcript show: (other // 7) printString; newLine.
+        p transcript show: (big // other) printString; newLine.
+        p transcript show: (other // big) printString; newLine.
+        p transcript show: (big < other) printString; newLine.
+        p transcript show: (big > other) printString; newLine.
+        p transcript show: (big <= big) printString; newLine.
+        p transcript show: (other >= big) printString; newLine.
+        p transcript show: (5 < big) printString; newLine.
+        p transcript show: (5 > other) printString; newLine.
+        p transcript show: (5 + big) printString; newLine.
+        p transcript show: (5 - big) printString; newLine.
+        p transcript show: (5 // big) printString; newLine.
+        p transcript show: (-5 // big) printString; newLine.
+        back:: (small + 1) - 1.
+        p transcript show: (back = small) printString; newLine.
+        p transcript show: back class printString; newLine.
+        p transcript show: (big // big) class printString; newLine.
+        p transcript show: other negated printString; newLine.
+        p transcript show: other abs printString; newLine.
+        p transcript show: (small + 1) negated class printString; newLine
+    )
+) : ()
