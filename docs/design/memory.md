@@ -986,7 +986,8 @@ creator's frame record without registers.
   the bytes remaining, in either build, on top of the placeholders -- about
   32x in a release build with no large integer involved, and, since that
   record's elements can then be the large integers above, about 37x at
-  most (debug about 42x). Second, an arena `Vec` that doubles while the
+  most (debug about 42x) -- a sum of the terms above (16.4 + 16 + 4.6, and
+  20.4 + 16 + 5.7), derived rather than measured. Second, an arena `Vec` that doubles while the
   decoder allocates holds both buffers for a moment. Both stay proportional
   to the input; bounding `reserve_for`'s reservation in bytes rather than in
   elements is open work ([OPEN-WORK.md](../OPEN-WORK.md)).

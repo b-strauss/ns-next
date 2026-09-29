@@ -434,8 +434,8 @@ where every reified frame will carry its full register file on the wire.
   remaining, not at the bytes its elements need, so `decode_values` reserves
   up to 16 bytes of `Value` per remaining byte for one record that claims a
   huge count -- about 16x more on top of the documented placeholder figure,
-  about 32x in a release build in all and up to about 37x with decoded
-  `LargeInteger` values. Since the smallest value is one byte on the wire
+  about 32x in a release build in all and up to about 37x (derived, not
+  measured) with decoded `LargeInteger` values. Since the smallest value is one byte on the wire
   (`VALUE_NIL`), capping by an element's minimum wire size changes nothing
   for a `Value` list; bounding it takes a cap in bytes rather than elements
   -- the bytes remaining divided by `size_of::<Value>()`, so the
