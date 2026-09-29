@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class CachePolymorphicSites usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class CachePolymorphicSites = Object new () (
 	class One = Object new () ( public value = ( ^1 ) )
 	class Two = Object new () ( public value = ( ^2 ) )
 	class Three = Object new () ( public value = ( ^3 ) )
@@ -8,7 +8,7 @@ class CachePolymorphicSites usingPlatform: thePlatform = Object new (| transcrip
 	class Five = Object new () ( public value = ( ^5 ) )
 	class Six = Object new () ( public value = ( ^6 ) )
 	public main: platform args: args = (
-		| sum all round |
+		| transcript = platform transcript. sum all round |
 		sum:: 0.
 		round:: 0.
 		all:: {One new. Two new. Three new. Four new. Five new. Six new. [7]}.

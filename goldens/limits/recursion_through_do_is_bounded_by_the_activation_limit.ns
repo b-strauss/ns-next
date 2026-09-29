@@ -5,7 +5,7 @@ Newspeak3
    ends at the activation limit like any other recursion. It used to end at a
    second limit, on re-entries of the run loop from Rust, which no longer
    exists (`docs/design/execution.md`, "No re-entry from Rust"). *)
-class DoDeep usingPlatform: platform = Object new (
+class DoDeep = Object new (
 ) (
     d: n = ( {1} do: [:e | d: n + 1] )
     public main: p args: a = ( d: 0 )

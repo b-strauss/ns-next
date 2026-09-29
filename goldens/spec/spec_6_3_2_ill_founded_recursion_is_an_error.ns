@@ -4,11 +4,12 @@ Newspeak3
    `first` and `second` each need the other's value, which is not, and
    forcing a future while its own block runs is an ordinary error, caught
    here like any other. *)
-class Spec632IllFoundedRecursion usingPlatform: p = Object new (
-    | t = p transcript. private Error = p kernel Error. |
+class Spec632IllFoundedRecursion = Object new (
+    
 ) (
     class Probe = Object new (|| public first = second + 1. public second = first + 1. ||) () : ()
     public main: platform args: arguments = (
+        | t = platform transcript. Error = platform kernel Error. |
         t show: ([Probe new. 'no error'] on: Error do: [:error | error messageText]); newLine
     )
 ) : ()

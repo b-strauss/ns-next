@@ -9,13 +9,14 @@ Newspeak3
    error. Before the core library moved into Kernel.ns a declining primitive
    continued the receiver's own lookup and reached this handler instead
    (`docs/design/core-library.md`, "The one observable difference"). *)
-class HandlerPassedBy usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
+class HandlerPassedBy = Object new (
+    
 ) (
     class Handled = Array new () (
         protected doesNotUnderstand: message = ( ^'handled here' )
     )
     public main: p args: a = (
+        | transcript = p transcript. |
         transcript show: 'before'; newLine.
         transcript show: Handled new size printString; newLine
     )

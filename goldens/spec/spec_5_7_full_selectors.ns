@@ -6,7 +6,7 @@ Newspeak3
    at. Neither selector is declared by any lexically enclosing
    declaration, so both sends are "equivalent to a self send", and Base,
    Inner's superclass, answers them. *)
-class Spec57FullSelectors usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec57FullSelectors = Object new () (
     class Base = Object new () (
         public foo: x = ( ^x + 100 )
         public at = ( ^'unary at of Base' )
@@ -21,6 +21,7 @@ class Spec57FullSelectors usingPlatform: p = Object new (| t = p transcript. |) 
         public test = ( ^Inner new )
     )
     public main: platform args: args = (
+        | t = platform transcript. |
         t show: Outer new test keyword printString; newLine.
         t show: Outer new test unary; newLine.
     )

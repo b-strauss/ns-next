@@ -11,12 +11,11 @@ Newspeak3
    block signals is offered to it once more, and with nothing further out
    the run ends with the `#handles:` error rather than the `Error`'s own
    text. *)
-class OnANonClassEndsTheRunWithItsHandlesError usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error.
-      private MessageNotUnderstood = thePlatform kernel MessageNotUnderstood. |
+class OnANonClassEndsTheRunWithItsHandlesError = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. MessageNotUnderstood = platform kernel MessageNotUnderstood. |
         [
             transcript show: ([Error signal: 'first'] on: MessageNotUnderstood do: [:e | 'caught ' , e message selector printString]); newLine.
             Error signal: 'second'.

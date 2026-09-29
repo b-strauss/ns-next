@@ -4,7 +4,7 @@ Newspeak3
    side and an `Integer` on the other, and a result that fits again answered
    as an `Integer`. The operands are built by arithmetic, not literals, so
    this does not depend on large literals (their own golden). *)
-class LargeArithmetic usingPlatform: p = Object new (
+class LargeArithmetic = Object new (
 ) (
     public main: p args: a = (
         | two big other small back count |

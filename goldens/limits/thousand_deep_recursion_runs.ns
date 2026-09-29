@@ -2,7 +2,7 @@ Newspeak3
 'T'
 (* `KernelWeakTests.ns`'s `deepStack: 1000`, which Newspeak's own tests expect
    to run: 1000 levels through an `ifFalse:` block. Sum of 2n for n = 1..1000. *)
-class Deep usingPlatform: platform = Object new (
+class Deep = Object new (
 ) (
     deepStack: n = ( ^0 = n ifTrue: [0] ifFalse: [n + (deepStack: n - 1) + n] )
     public main: p args: a = (

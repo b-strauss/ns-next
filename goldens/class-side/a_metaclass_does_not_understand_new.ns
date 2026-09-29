@@ -5,9 +5,10 @@ Newspeak3
    class's own metaclass only. A metaclass is no class a declaration
    evaluates to, so it has no metaclass of its own holding a factory:
    `Foo class new` is not understood. *)
-class AMetaclassDoesNotUnderstandNew usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class AMetaclassDoesNotUnderstandNew = Object new () (
 	class Foo = Object new () ()
 	public main: platform args: args = (
+		| transcript = platform transcript. |
 		transcript show: 'before'; newLine.
 		Foo class new.
 		transcript show: 'not reached'; newLine.

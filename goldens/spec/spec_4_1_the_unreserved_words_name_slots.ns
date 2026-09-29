@@ -8,7 +8,7 @@ Newspeak3
    slot answers its getter and its setter, sent to self and to an explicit
    receiver, like any other; the one named class answers #class in place of
    the inherited method. *)
-class Spec41TheUnreservedWordsNameSlots usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec41TheUnreservedWordsNameSlots = Object new () (
     class Holder = Object new (|
         public public ::= 'a'.
         public protected ::= 'b'.
@@ -26,7 +26,7 @@ class Spec41TheUnreservedWordsNameSlots usingPlatform: p = Object new (| t = p t
         )
     ) : ()
     public main: platform args: arguments = (
-        | holder |
+        | t = platform transcript. holder |
         holder:: Holder new.
         t show: holder all; newLine.
         t show: holder public, holder protected, holder private, holder lazy, holder class; newLine.

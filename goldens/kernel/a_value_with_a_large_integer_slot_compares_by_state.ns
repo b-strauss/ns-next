@@ -8,7 +8,7 @@ Newspeak3
    The module is a value (`Object <: Value`) because §3.1.1 asks a value
    class's enclosing object to be one; the transcript lives in `Script`,
    which is no value -- the arrangement `a_value_has_no_identity.ns` uses. *)
-class ValueSlots usingPlatform: platformAtCreation = Object <: Value () (
+class ValueSlots = Object <: Value () (
     class Box of: initialContents = Value new (
         | public contents = initialContents. |
     ) ()

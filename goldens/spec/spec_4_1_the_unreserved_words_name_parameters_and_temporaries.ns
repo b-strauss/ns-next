@@ -8,7 +8,7 @@ Newspeak3
    a slotDef (5.3's temporaries) and follows 6.3.2's rule: class and lazy
    need no modifier, an access modifier's word names one behind a
    modifier. *)
-class Spec41TheUnreservedWordsNameParametersAndTemporaries usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec41TheUnreservedWordsNameParametersAndTemporaries = Object new () (
     class Box value: public = Object new (| public held = public. |) ()
     class Holder = Object new () (
         public class: class protected: protected private: private lazy: lazy = (
@@ -28,7 +28,7 @@ class Spec41TheUnreservedWordsNameParametersAndTemporaries usingPlatform: p = Ob
         )
     ) : ()
     public main: platform args: arguments = (
-        | holder |
+        | t = platform transcript. holder |
         holder:: Holder new.
         t show: (Box value: 42) held printString; newLine.
         t show: (holder class: 1 protected: 2 private: 3 lazy: 4) printString; newLine.

@@ -16,8 +16,8 @@ Newspeak3
    asAnArgument: the same through a keyword send's first argument.
    asASetterValue: `sink:: t` answers the value t had before `sink:` ran,
    so 1, and 9 without the copy. *)
-class AFallbackClosureWritesALocalASendReads usingPlatform: platform = Object new (
-	| transcript = platform transcript.
+class AFallbackClosureWritesALocalASendReads = Object new (
+	|
 	  keeper ::= nil. |
 ) (
 	class Keeper = Object new (
@@ -44,6 +44,7 @@ class AFallbackClosureWritesALocalASendReads usingPlatform: platform = Object ne
 		^sink:: t
 	)
 	public main: platform args: arguments = (
+		| transcript = platform transcript. |
 		keeper:: Keeper new.
 		transcript show: self asAnOperand printString; newLine.
 		keeper:: Keeper new.

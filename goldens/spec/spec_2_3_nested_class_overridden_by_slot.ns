@@ -5,7 +5,7 @@ Newspeak3
    to nested classes are message sends, nested classes can be
    overridden." ... "Here we have overridden a nested class declaration
    with a slot." *)
-class Spec23NestedClassOverriddenBySlot usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec23NestedClassOverriddenBySlot = Object new () (
     class Outer = () (
        public class Inner = ()()
     )
@@ -15,6 +15,7 @@ class Spec23NestedClassOverriddenBySlot usingPlatform: p = Object new (| t = p t
     class GrandChildOfOuter = ChildOfOuter( | public Inner = String. |) (
     )
     public main: platform args: args = (
+        | t = platform transcript. |
         (* GrandChildOfOuter new foo. -- returns a String, not an Inner *)
         t show: (GrandChildOfOuter new foo class == String) printString; newLine.
     )

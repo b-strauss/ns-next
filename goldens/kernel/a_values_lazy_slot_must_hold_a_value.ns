@@ -5,7 +5,7 @@ Newspeak3
    by its getter. So the refusal comes on the getter's send, not at
    instantiation -- the line before it still prints -- and names the class
    and the slot as an eager slot's refusal does. *)
-class ValueLazySlotHoldsAValue usingPlatform: platformAtCreation = Object <: Value () (
+class ValueLazySlotHoldsAValue = Object <: Value () (
     class Point x: xValue = Value new (| public x = xValue. |) (
         lazy public both = {x. x}.
     ) : ()

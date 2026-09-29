@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class BenchSend usingPlatform: platform = Object new (
+class BenchSend = Object new (
 	| n ::= 0. sum ::= 0. |
 ) (
 	tick: x = ( ^x + 1 )

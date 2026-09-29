@@ -26,7 +26,7 @@ Newspeak3
      level's method; its markerTag is the same virtual send, so it too
      answers the upper level's 'upper': the topmost application wins a
      selector even when the lower one's own method sends it. *)
-class MixinSameMixinAppliedTwiceInOneChain usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinSameMixinAppliedTwiceInOneChain = Object new (| t ::= nil. |) (
     class Base withBase: value = Object new (|
         baseFirst = outer MixinSameMixinAppliedTwiceInOneChain note: 'Base' receives: value, '1'.
         baseSecond = value, '2'.
@@ -60,7 +60,9 @@ class MixinSameMixinAppliedTwiceInOneChain usingPlatform: p = Object new (| t = 
         ^value
     )
     public main: platform args: arguments = (
-        | twice = Twice new. |
+        | twice |
+        t:: platform transcript.
+        twice:: Twice new.
         t show: 'who: ', twice who; newLine.
         t show: 'chain: ', twice chain; newLine.
         t show: 'lower Marker level reads markerTag as: ', twice belowSees; newLine.

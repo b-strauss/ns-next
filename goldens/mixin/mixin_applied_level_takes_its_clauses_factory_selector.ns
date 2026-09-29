@@ -14,7 +14,7 @@ Newspeak3
    available in the message clause"), so Tagged label: 'y' has tag 'y'. Each
    instance prints its own tag; an implementation that sent the level new
    instead would fail 6.1's primary factory check, or leave the tag nil. *)
-class MixinAppliedLevelTakesItsClausesFactorySelector usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinAppliedLevelTakesItsClausesFactorySelector = Object new () (
     class Marker withTag: aTag = Object new (| public tag = aTag. |) (
         public describe = ( ^'tagged ', tag )
     ) : ()
@@ -24,6 +24,7 @@ class MixinAppliedLevelTakesItsClausesFactorySelector usingPlatform: p = Object 
         public describeLabel = ( ^'Tagged, ', describe )
     ) : ()
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: 'Applied new is ', Applied new describe; newLine.
         t show: 'Applied new tag is ', Applied new tag; newLine.
         t show: (Tagged label: 'y') describeLabel; newLine.

@@ -6,10 +6,11 @@ Newspeak3
    <Integer>. No typechecker exists (4.3), so type parameters and annotations
    are parsed and dropped, and the class runs as it would without them; the
    canonical grammar's class List[E] is accepted the same way. *)
-class Spec6AGenericClassDeclaresItsTypeParameters usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec6AGenericClassDeclaresItsTypeParameters = Object new () (
     class Map <[K, V]> new: capacity <Integer> = Object new (| public size <Integer> = capacity. |) () : ()
     class List[E] = Object new () ( public first ^<E> = ( ^1 ) ) : ()
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: (Map new: 4) size printString; newLine.
         t show: List new first printString; newLine
     )

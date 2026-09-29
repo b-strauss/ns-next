@@ -25,8 +25,7 @@ Newspeak3
    Host, since the application of Applied's mixin in applied's class is
    Applied, whose enclosing object is the Host. Each object identifies
    itself differently, so the two chains cannot be confused. *)
-class MixinClassNestedInAnAppliedMixinReachesTheMixinsEnclosingChain usingPlatform: p = Object new (|
-    t = p transcript.
+class MixinClassNestedInAnAppliedMixinReachesTheMixinsEnclosingChain = Object new (|
     library = Library named: 'the library'.
 |) (
     class Library named: name = Object new (| libraryName = name. |) (
@@ -56,7 +55,7 @@ class MixinClassNestedInAnAppliedMixinReachesTheMixinsEnclosingChain usingPlatfo
     libraryMarker = ( ^library Marker )
     public identify = ( ^'the module' )
     public main: platform args: arguments = (
-        | applied = (Host named: 'the host') Applied new. |
+        | t = platform transcript. applied = (Host named: 'the host') Applied new. |
         t show: applied Inner new innerSees; newLine.
         t show: applied Probe new probeSees; newLine.
     )

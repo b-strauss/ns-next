@@ -27,7 +27,7 @@ Newspeak3
    The module is a value (`Object <: Value`) because §3.1.1 asks a value
    class's enclosing object to be one; the transcript lives in `Script`,
    which is no value. *)
-class NestedClassIsNotState usingPlatform: platformAtCreation = Object <: Value () (
+class NestedClassIsNotState = Object <: Value () (
     public class Point x: anX y: aY = Value new (
         | public x = anX. public y = aY. |
     ) (

@@ -7,7 +7,7 @@ Newspeak3
    another's protocol. The platform's class answers `new`: what holds the
    VM mirror is the `PlatformFactory` instance enclosing it, which no
    program is handed, so a second platform is as harmless as the first. *)
-class PlatformValues usingPlatform: platformAtCreation = Object new () (
+class PlatformValues = Object new () (
     public main: platform args: arguments = (
         | t c |
         t:: platform transcript.

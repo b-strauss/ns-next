@@ -3,7 +3,7 @@ Newspeak3
 (* §5.1.1 bounds no literal: "integers are not limited in size". A decimal
    and a radix literal beyond `i64`, a negative one, and the two `i64` edges,
    which stay `Integer`s. *)
-class Literals usingPlatform: p = Object new (
+class Literals = Object new (
 ) (
     public main: p args: a = (
         p transcript show: 99999999999999999999 printString; newLine.

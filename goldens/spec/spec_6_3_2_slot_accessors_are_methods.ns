@@ -12,7 +12,7 @@ Newspeak3
    So Child's x and x: override the accessors Base's slot defines: Base's
    readX and writeX: reach them, while creating a Child initializes x
    without running Child's x:. *)
-class Spec632SlotAccessorsAreMethods usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec632SlotAccessorsAreMethods = Object new () (
     class Base = Object new (| public x ::= 1. |) (
         public readX = ( ^x )
         public writeX: value = ( ^x: value )
@@ -22,7 +22,7 @@ class Spec632SlotAccessorsAreMethods usingPlatform: p = Object new (| t = p tran
         public x: value = ( log:: 'the overriding setter ran'. ^self )
     )
     public main: platform args: args = (
-        | base child |
+        | t = platform transcript. base child |
         child:: Child new.
         t show: child log; newLine.
         t show: child readX printString; newLine.

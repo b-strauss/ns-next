@@ -35,7 +35,7 @@ Newspeak3
    The module is a value (`Object <: Value`) because §3.1.1 asks a value
    class's enclosing object to be one; the transcript lives in `Script`,
    which is no value. *)
-class ValueIdentity usingPlatform: platformAtCreation = Object <: Value () (
+class ValueIdentity = Object <: Value () (
     public class Text = String new () ()
     class Script on: aTranscript = Object new (
         | transcript = aTranscript. |

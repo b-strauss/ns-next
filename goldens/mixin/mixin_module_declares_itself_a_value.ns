@@ -13,11 +13,11 @@ Newspeak3
 
    The module stays a value under 3.1.1's strict reading: its one slot is
    immutable and holds a String, and the platform is never kept in a slot --
-   it arrives as the factory's argument and again as `main:args:`'s, and the
-   transcript is read from it where it is used.
+   it arrives only as `main:args:`'s argument, and the transcript is read
+   from it where it is used.
 
    1. A second instance of the module's class, made from the same class with
-      the same platform, is `=` to this one: Value's equality is derived from
+      `new`, is `=` to this one: Value's equality is derived from
       state -- the same class and equal slots -- not from identity.
    2. It is `==` too: Value's `==` answers what its `=` does (3.1.1: "that
       method must return the same results as `Value`'s equality method"),
@@ -25,7 +25,7 @@ Newspeak3
    3. The two hash alike, as equal values must.
    4. The module otherwise runs as any other: a nested class that is no value
       reads the module's slot through `outer` and answers a String. *)
-class MixinModuleDeclaresItselfAValue usingPlatform: platformAtCreation = Object <: Value (
+class MixinModuleDeclaresItselfAValue = Object <: Value (
     | public greeting = 'hello'. |
 ) (
     class Greeter = Object new () (
@@ -33,7 +33,7 @@ class MixinModuleDeclaresItselfAValue usingPlatform: platformAtCreation = Object
     ) : ()
     public main: platform args: arguments = (
         | twin |
-        twin:: self class usingPlatform: platform.
+        twin:: self class new.
         platform transcript show: (twin = self) printString; newLine.
         platform transcript show: (twin == self) printString; newLine.
         platform transcript show: (twin hash = self hash) printString; newLine.

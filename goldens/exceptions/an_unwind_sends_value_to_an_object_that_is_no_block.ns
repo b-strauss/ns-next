@@ -4,8 +4,8 @@ Newspeak3
    and Primordial Soup's do, so any object that answers `value` will do --
    on the normal path, where `ensure:` sends it itself, and on an unwind,
    where the unwinder runs it. *)
-class AnUnwindSendsValue usingPlatform: thePlatform = Object new (
-    | private transcript = thePlatform transcript. |
+class AnUnwindSendsValue = Object new (
+    | private transcript ::= nil. |
 ) (
     class Noisy named: text = (
         | private name = text. |
@@ -27,6 +27,7 @@ class AnUnwindSendsValue usingPlatform: thePlatform = Object new (
         ^0
     )
     public main: platform args: arguments = (
+        transcript:: platform transcript.
         transcript show: self endsNormally printString; newLine.
         transcript show: self isUnwound printString; newLine.
         transcript show: self isCurtailed printString; newLine.

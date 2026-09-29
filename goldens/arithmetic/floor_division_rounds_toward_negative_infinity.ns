@@ -6,7 +6,7 @@ Newspeak3
    four have literal operands, which the inlined `IntegerBinary` computes
    itself; the last four go through a local, so the fast path and the send
    are both pinned under both lowerings. *)
-class FloorDivision usingPlatform: p = Object new (
+class FloorDivision = Object new (
 ) (
     public main: p args: a = (
         | seven two |

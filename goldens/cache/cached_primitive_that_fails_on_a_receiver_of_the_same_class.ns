@@ -19,7 +19,7 @@ Newspeak3
    declares a value class, `Text` below `String`, and a value class's
    enclosing object must be a value; the transcript is therefore read where
    it is used, never held in a slot. *)
-class CacheFailingPrimitive usingPlatform: thePlatform = Object <: Value () (
+class CacheFailingPrimitive = Object <: Value () (
     class Text = String new () (
     )
     public main: platform args: args = (

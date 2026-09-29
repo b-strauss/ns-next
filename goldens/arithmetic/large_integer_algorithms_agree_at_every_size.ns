@@ -5,7 +5,7 @@ Newspeak3
    squares, half-Karatsuba for the lopsided product, Burnikel-Ziegler, Knuth's
    algorithm D and one-digit division for the quotients. Each line is a
    decimal digit count and the last six digits, which Python computed. *)
-class Squares usingPlatform: platform = Object new (
+class Squares = Object new (
 ) (
     lastSixOf: integer = ( ^integer - (integer // 1000000 * 1000000) )
     report: integer on: transcript = (

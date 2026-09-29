@@ -7,13 +7,14 @@ Newspeak3
    both lowerings count one activation per level and print the same
    progress before the same overflow (`docs/design/compiler.md`, "How the
    limit counts"). *)
-class DeepThroughTheBooleans usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
+class DeepThroughTheBooleans = Object new (
+    | transcript ::= nil. |
 ) (
     down: depth = (
         depth = (depth // 20000 * 20000)
             ifTrue: [transcript show: depth printString; newLine].
         ^(depth >= 0) and: [(depth < 0) or: [down: depth + 1]]
     )
-    public main: p args: a = ( down: 0 )
+    public main: p args: a = (
+        transcript:: p transcript. down: 0 )
 ) : ()

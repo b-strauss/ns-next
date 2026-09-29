@@ -6,7 +6,7 @@ Newspeak3
    string holding a double quote, as the Newspeak corpus writes it. §5.1.4's
    character literals are gone, as it announces: "a" is a string, equal to
    'a'. A quote of the other kind needs no escape at all. *)
-class DoubleQuoted usingPlatform: platform = Object new () (
+class DoubleQuoted = Object new () (
     public main: p args: a = (
         | t |
         t:: p transcript.

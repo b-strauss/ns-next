@@ -5,7 +5,7 @@ Newspeak3
    side of its own; its superclass `Widget` does, but `SpecialWidget
    describe` must not reach it -- an ordinary `doesNotUnderstand:`, at a
    non-zero exit status, which this golden records as such. *)
-class ClassSideNotInherited usingPlatform: platform = Object new (| transcript ::= platform transcript. |) (
+class ClassSideNotInherited = Object new () (
     public class Widget new = Object new () (
     ) : (
         public describe = ( ^'a widget class' )
@@ -13,6 +13,7 @@ class ClassSideNotInherited usingPlatform: platform = Object new (| transcript :
     public class SpecialWidget new = Widget new () (
     )
     public main: platform args: args = (
+        | transcript ::= platform transcript. |
         transcript show: SpecialWidget describe; newLine.
     )
 ) : ()

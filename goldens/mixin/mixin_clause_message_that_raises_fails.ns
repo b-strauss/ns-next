@@ -8,7 +8,7 @@ Newspeak3
    run, before Marker's initializer or Applied's own runs. The error is
    uncaught -- exit status 1, the does-not-understand error naming
    #fooBar -- and nothing after it prints. *)
-class MixinClauseMessageThatRaisesFails usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinClauseMessageThatRaisesFails = Object new (| t ::= nil. |) (
     class Base withBase: value = Object new (
         | baseSlot = outer MixinClauseMessageThatRaisesFails log: 'Base initializer receives ', value. |
     ) () : ()
@@ -21,6 +21,7 @@ class MixinClauseMessageThatRaisesFails usingPlatform: p = Object new (| t = p t
     ) () : ()
     public log: line = ( t show: line; newLine. ^line )
     public main: platform args: arguments = (
+        t:: platform transcript.
         Applied new.
         log: 'the factory answered'.
     )

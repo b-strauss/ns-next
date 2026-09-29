@@ -190,6 +190,8 @@ Every golden that is not skipped, the ones recorded as raising included, also
 goes through the snapshot and the build/load round trip, which hold an image's
 and a binary's three streams against what `run` answers on the source.
 
+A golden's root class is instantiated with `new` and reaches the platform only as `main:args:`'s first argument (§8.4), as every program does ([image-format.md](image-format.md), "Planned: one artifact, packaged before `main:args:`").
+
 A fifth key, `arguments`, lists the program's arguments, which every runner
 passes after `--` to each command that sends the entry -- `run`, and `load` in
 both round trips -- so `main:args:` receives them (§8.4,

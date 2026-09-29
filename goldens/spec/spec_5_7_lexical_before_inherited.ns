@@ -13,7 +13,7 @@ Newspeak3
    An enclosing class's *inherited* member is reached by an explicit
    outer send: 5.9 runs lookupProtected on the class of the enclosing
    object, which finds OuterBase's n. *)
-class Spec57LexicalBeforeInherited usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec57LexicalBeforeInherited = Object new () (
     class Sup = Object new () (
         public m = ( ^42 )
     )
@@ -34,6 +34,7 @@ class Spec57LexicalBeforeInherited usingPlatform: p = Object new (| t = p transc
         public test = ( ^Nested new viaOuter )
     )
     public main: platform args: args = (
+        | t = platform transcript. |
         t show: Outer new test printString; newLine.
         t show: Enclosing new test; newLine.
     )

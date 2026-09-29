@@ -4,7 +4,7 @@ Newspeak3
    value is stored and checked (docs/design/object-model.md, "Simultaneous
    slots", rule 4): `pair`'s initializer builds a Pair around `third`'s
    future, and the Pair holds 3. *)
-class Spec632AFuturePassedIntoAValue usingPlatform: p = Object <: Value (
+class Spec632AFuturePassedIntoAValue = Object <: Value (
 ) (
     class Pair first: firstValue second: secondValue = Value new (
         | public first = firstValue. public second = secondValue. |

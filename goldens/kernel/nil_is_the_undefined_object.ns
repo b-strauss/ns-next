@@ -3,7 +3,7 @@ Newspeak3
 (* §5.1.3: "The reserved word nil denotes the unique instance of class
    UndefinedObject", which Object's accessor names like every other
    predefined class (§3.2). *)
-class Undefined usingPlatform: platform = Object new () (
+class Undefined = Object new () (
     public main: p args: a = (
         p transcript show: (nil class == UndefinedObject) printString; newLine.
         p transcript show: (UndefinedObject == self UndefinedObject) printString; newLine

@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class NonlocalReturnDepth usingPlatform: platform = Object new (| private List = platform collections List. |) (
+class NonlocalReturnDepth = Object new (| private List ::= nil. |) (
 	m = (
 		self deeper: [^1].
 		^2
@@ -39,6 +39,7 @@ class NonlocalReturnDepth usingPlatform: platform = Object new (| private List =
 		^'home fell through with ', r
 	)
 	public main: p args: a = (
+		List:: p collections List.
 		p transcript show: self m printString; newLine.
 		p transcript show: self outermost printString; newLine.
 		p transcript show: (self selfRecur: 5 with: nil); newLine.

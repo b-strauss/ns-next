@@ -6,8 +6,8 @@ Newspeak3
    A writer and a reader handed back together must go on seeing each
    other's value. findFirstAbove: returns out of a block whose home
    activation is still running and whose home has captured variables. *)
-class ClosuresThatOutliveTheirMethod usingPlatform: platform = Object new (
-	| transcript = platform transcript. private List = platform collections List. |
+class ClosuresThatOutliveTheirMethod = Object new (
+	| private List ::= nil. |
 ) (
 	writerAndReader = (
 		| value ::= 0. |
@@ -24,7 +24,8 @@ class ClosuresThatOutliveTheirMethod usingPlatform: platform = Object new (
 		^0
 	)
 	public main: platform args: arguments = (
-		| pair |
+		| transcript = platform transcript. pair |
+		List:: platform collections List.
 		pair:: self writerAndReader.
 		(pair at: 1) value: 42.
 		transcript show: (pair at: 2) value printString; newLine.

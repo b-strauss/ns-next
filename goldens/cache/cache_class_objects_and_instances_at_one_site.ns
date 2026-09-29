@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class CacheClassObjectsAndInstancesAtOneSite usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class CacheClassObjectsAndInstancesAtOneSite = Object new () (
 	class Maker make = Object new () (
 		public describe = ( ^'a made maker' )
 	)
@@ -17,7 +17,7 @@ class CacheClassObjectsAndInstancesAtOneSite usingPlatform: thePlatform = Object
 		public printString = ( ^'the custom class' )
 	)
 	public main: platform args: args = (
-		| receivers |
+		| transcript = platform transcript. receivers |
 		receivers:: {Maker. Plain. Custom new. Maker. Plain. Custom new}.
 		receivers do: [:each | transcript show: each make describe; newLine].
 		{Plain. Custom. Custom new. Maker. Plain new. Plain. Custom}

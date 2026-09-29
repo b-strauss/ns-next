@@ -7,8 +7,9 @@ Newspeak3
    computes it (NewspeakParsing.ns, radixNum), since the section gives the
    exponent no base. Non-integral numbers are binary floats here (a recorded
    deviation), which print without a fractional part when they have none. *)
-class Spec511ARadixNumberMayHaveAFractionAndAnExponent usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec511ARadixNumberMayHaveAFractionAndAnExponent = Object new () (
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: 16r1.8 printString; newLine.
         t show: 2r1e3 printString; newLine.
         t show: 16r1Fe2 printString; newLine.

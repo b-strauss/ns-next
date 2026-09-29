@@ -33,8 +33,8 @@ Newspeak3
    inequalities showing a content hash is a hash of the content and not a
    constant, and one line for the one float pair whose bits differ while
    their values are equal. *)
-class ValueHashes usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
+class ValueHashes = Object new (
+    | transcript ::= nil. |
 ) (
     report: label for: first and: second = (
         transcript show: label; show: ' '; show: (first = second) printString;
@@ -48,6 +48,7 @@ class ValueHashes usingPlatform: platform = Object new (
         transcript show: value printString; newLine
     )
     public main: ignoredPlatform args: arguments = (
+        transcript:: ignoredPlatform transcript.
         report: 'Integer' for: 1 + 2 and: 3.
         report: 'Float' for: 1.0 + 1.5 and: 2.5.
         report: 'String' for: 'ab' , 'c' and: 'abc'.

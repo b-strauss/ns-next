@@ -16,7 +16,7 @@ Newspeak3
      still reaches Extra.
    - By the same token only Base's and Composite's initializers run for
      User new; Extra's runs only for Composite new. *)
-class MixinAppliedMixinsOwnClausesAreNotApplied usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinAppliedMixinsOwnClausesAreNotApplied = Object new (| t ::= nil. |) (
     class Base = Object new (| baseSlot = outer MixinAppliedMixinsOwnClausesAreNotApplied note: 'Base'. |) (
         public chain = ( ^'Base' )
     ) : ()
@@ -33,6 +33,7 @@ class MixinAppliedMixinsOwnClausesAreNotApplied usingPlatform: p = Object new (|
     )
     public main: platform args: arguments = (
         | user composite |
+        t:: platform transcript.
         t show: 'User new:'; newLine.
         user:: User new.
         t show: 'User new chain: ', user chain; newLine.

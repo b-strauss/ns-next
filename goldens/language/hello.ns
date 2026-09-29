@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class Hello usingPlatform: platform = Object new (
+class Hello = Object new (
 ) (
 	public main: p args: a = (
 		p transcript show: 'hello'; newLine

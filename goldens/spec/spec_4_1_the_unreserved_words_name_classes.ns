@@ -8,7 +8,7 @@ Newspeak3
    outerReceiver, an outer token and an identifier). public class = ( ... )
    stays a method named class, since no identifier follows the class
    token. *)
-class Spec41TheUnreservedWordsNameClasses usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec41TheUnreservedWordsNameClasses = Object new () (
     class Names = Object new () (
         class public = Object new () (
             public class Inner = Object new () (
@@ -26,6 +26,7 @@ class Spec41TheUnreservedWordsNameClasses usingPlatform: p = Object new (| t = p
         public class = ( ^'a method named class' )
     ) : ()
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: Names new all; newLine.
         t show: Holder new class; newLine
     )

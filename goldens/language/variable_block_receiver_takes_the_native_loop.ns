@@ -1,6 +1,6 @@
 Newspeak3
 'T'
-class WhileVar usingPlatform: platform = Object new (
+class WhileVar = Object new (
     | n ::= 0. |
 ) (
     public main: p args: a = (

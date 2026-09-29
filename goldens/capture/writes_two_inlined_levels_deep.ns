@@ -15,8 +15,8 @@ Newspeak3
    7 + 1. The loops run once and leave nil, which is why the array's second
    element is what `at: 2` answers. Reading t after the assignment instead
    would answer 31, 41 and 51. *)
-class WritesTwoInlinedLevelsDeep usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+class WritesTwoInlinedLevelsDeep = Object new (
+	
 ) (
 	nestedLoopsInTheMethod = (
 		| t ::= 2. outerDone ::= false. innerDone ::= false. |
@@ -35,6 +35,7 @@ class WritesTwoInlinedLevelsDeep usingPlatform: platform = Object new (
 		   t + (true ifTrue: [true ifTrue: [t:: 50. 1] ifFalse: [0]] ifFalse: [0])]
 	)
 	public main: platform args: arguments = (
+		| transcript = platform transcript. |
 		transcript show: self nestedLoopsInTheMethod printString; newLine.
 		transcript show: self nestedLoopsInABlock value printString; newLine.
 		transcript show: self nestedConditionalsInABlock value printString; newLine

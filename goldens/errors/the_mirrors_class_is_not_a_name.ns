@@ -5,7 +5,7 @@ Newspeak3
    predefined classes" (newspeak-spec.pdf 3.2). A bare `VmMirror` is, by
    5.7, `self VmMirror`, which finds nothing on the receiver's inheritance
    chain (2.3.1) and is an ordinary `doesNotUnderstand:`. *)
-class MirrorsClassIsNotAName usingPlatform: platformAtCreation = Object new () (
+class MirrorsClassIsNotAName = Object new () (
     public main: platform args: arguments = (
         platform transcript show: VmMirror printString; newLine
     )

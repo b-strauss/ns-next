@@ -4,12 +4,12 @@ Newspeak3
    recurses itself overruns the reserve too, and that ends the run
    unsignalled: the outer `on: Error do:` never runs, while the pending
    `ensure:` block does, as for any run that ends. *)
-class AHandlerOverrunningTheReserveEndsTheRun usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class AHandlerOverrunningTheReserveEndsTheRun = Object new (
+    
 ) (
     recurse = ( ^self recurse )
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: 'start'; newLine.
         [[[self recurse]
             on: Error do: [:e | transcript show: e messageText; newLine. self recurse]]

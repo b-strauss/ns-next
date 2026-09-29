@@ -4,7 +4,7 @@ Newspeak3
    only during the clause, provisionally, and the clause's end stores each
    value through 3.1.1's check (docs/design/object-model.md, "The
    lowering"). A slot whose value is no value is still refused. *)
-class Spec632AValueClassInitializesSimultaneously usingPlatform: p = Object <: Value (
+class Spec632AValueClassInitializesSimultaneously = Object <: Value (
 ) (
     class Pair = Value new (|| public first = second - 1. public second = 3. ||) () : ()
     class Holder = Value new (|| public list = {1}. ||) () : ()

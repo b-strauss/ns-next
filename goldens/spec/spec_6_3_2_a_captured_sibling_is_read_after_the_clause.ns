@@ -4,9 +4,9 @@ Newspeak3
    `second`, declared after it. The block runs after the clause, when every
    slot of it holds its value, so it must see 2 -- not the nil the register
    held when the block was made. *)
-class Spec632ACapturedSibling usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec632ACapturedSibling = Object new () (
     public main: platform args: arguments = (
-        || first = [second + 1]. second = 2. ||
+        || t = platform transcript. first = [second + 1]. second = 2. ||
         t show: first value printString; newLine
     )
 ) : ()

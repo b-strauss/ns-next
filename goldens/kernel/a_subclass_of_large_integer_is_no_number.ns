@@ -7,7 +7,7 @@ Newspeak3
    instance's class, since `Object` declares no accessor for it. The module
    is a value because `MyLarge`, a subclass of `Value`, asks its enclosing
    object to be one (§3.1.1). *)
-class LargeFallThrough usingPlatform: platformAtCreation = Object <: Value () (
+class LargeFallThrough = Object <: Value () (
     class MyLarge = largeIntegerClass new () ()
     class Script on: aTranscript = Object new (
         | transcript = aTranscript. |

@@ -11,7 +11,7 @@ Newspeak3
    The refusal is deferred to instantiation: the module loads, its class
    exists and can be inspected, and only an instance is refused -- which
    `run` asks for first, so `main:args:` never runs. *)
-class RootPrefixedWithSelf usingPlatform: platformAtCreation = self Object new () (
+class RootPrefixedWithSelf = self Object new () (
     public main: platform args: arguments = (
         platform transcript show: 'unreachable'; newLine
     )

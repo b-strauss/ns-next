@@ -6,11 +6,11 @@ Newspeak3
    here both resumed signals are handled, and answer 1 + 1. After a `pass`
    whose outer handler resumes, both handlers are enabled again: the inner
    one sees the second exception too, and passes it on as well. *)
-class AResumedHandlerIsEnabledAgain usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Exception = thePlatform kernel Exception. |
+class AResumedHandlerIsEnabledAgain = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Exception = platform kernel Exception. |
         transcript show: ([(Exception signal: 'one') + (Exception signal: 'two')]
                               on: Exception do: [:e | e resume: 1]) printString; newLine.
         transcript show: ([[(Exception signal: 'a') + (Exception signal: 'b')]

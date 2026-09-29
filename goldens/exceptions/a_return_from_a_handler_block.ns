@@ -4,15 +4,17 @@ Newspeak3
    wrote it, through `signal`, the handler's activation and the protected
    block, by the same unwinder: the `ensure:` block on the way runs, and
    the statement after the `on:do:` does not. *)
-class AReturnFromAHandlerBlock usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class AReturnFromAHandlerBlock = Object new (
+    | transcript ::= nil.
+      private Error ::= nil. |
 ) (
     tryIt = (
         [[Error signal: 'r'] ensure: [transcript show: 'ensured'; newLine]] on: Error do: [:e | ^'returned'].
         ^'not reached'
     )
     public main: platform args: arguments = (
+        transcript:: platform transcript.
+        Error:: platform kernel Error.
         transcript show: self tryIt; newLine.
     )
 ) : ()

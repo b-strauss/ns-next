@@ -5,12 +5,12 @@ Newspeak3
    (docs/design/execution.md, "The depth limit"). The second recursion is
    caught the same way, because the reserve is given back once the first
    signal is over: were it not, the second would overrun it. *)
-class TheDepthLimitIsCaught usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class TheDepthLimitIsCaught = Object new (
+    
 ) (
     recurse = ( ^self recurse )
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: ([self recurse] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([self recurse] on: Error do: [:e | e class name]); newLine.
         transcript show: 'done'; newLine.

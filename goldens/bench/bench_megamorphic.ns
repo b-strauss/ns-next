@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class BenchMegamorphic usingPlatform: platform = Object new (
+class BenchMegamorphic = Object new (
 	| n ::= 0. sum ::= 0. |
 ) (
 	class KindA = Object new () ( public value = ( ^1 ) )

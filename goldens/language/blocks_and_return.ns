@@ -1,12 +1,12 @@
 Newspeak3
 'Test'
-class BlocksAndReturn usingPlatform: platform = Object new (| private List = platform collections List. |) (
+class BlocksAndReturn = Object new () (
 	find: target in: coll = (
 		coll do: [:each | each = target ifTrue: [^'found']].
 		^'not found'
 	)
 	public main: p args: a = (
-		| c |
+		| List = p collections List. c |
 		c:: List new.
 		c add: 1; add: 2; add: 3.
 		p transcript show: (self find: 2 in: c); newLine.

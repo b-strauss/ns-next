@@ -8,7 +8,7 @@ Newspeak3
    proceed up the inheritance chain of self". `Derived`'s chain declares
    `Array` in `Base` before it reaches `Object`, whose accessor for the
    predefined class (3.2) is therefore overridden. *)
-class InheritedBuiltinName usingPlatform: platformAtCreation = Object new () (
+class InheritedBuiltinName = Object new () (
     class Base = Object new () (
         public Array = ( ^'inherited' )
     )

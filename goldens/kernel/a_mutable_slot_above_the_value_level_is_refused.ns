@@ -8,7 +8,7 @@ Newspeak3
 
    `Counting` alone is no value and keeps its mutable slot legally; only an
    instance of `Counted` is refused, where it would come into being. *)
-class MutableSlotAboveValue usingPlatform: platformAtCreation = Object <: Value () (
+class MutableSlotAboveValue = Object <: Value () (
     public class Counting = Object new (
         | public count ::= 0. |
     ) ()

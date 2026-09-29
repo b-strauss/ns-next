@@ -3,11 +3,11 @@ Newspeak3
 (* `Array new: size` answers an array of `size` nils, which `at:put:`
    fills (docs/design/core-library.md, "The collections module"). `Array
    new` is `Array new: 0`. *)
-class ArrayNewAnswersAnArrayOfNils usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript. |
+class ArrayNewAnswersAnArrayOfNils = Object new (
+    
 ) (
     public main: platform args: arguments = (
-        | sized |
+        | transcript = platform transcript. sized |
         sized:: Array new: 3.
         transcript show: sized size printString; newLine.
         transcript show: (sized at: 1) printString; show: ' '; show: (sized at: 3) printString; newLine.

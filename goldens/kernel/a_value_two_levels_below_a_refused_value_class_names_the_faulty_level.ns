@@ -10,7 +10,7 @@ Newspeak3
    over `Stamped`'s refusal. The level that refusal already names must
    survive the hand-over -- the enclosing object at fault is `Counter`'s,
    not `Stamped`'s, whose enclosing object is this value module. *)
-class ValueTwoLevelsBelowARefusedValueClass usingPlatform: platformAtCreation = Object <: Value () (
+class ValueTwoLevelsBelowARefusedValueClass = Object <: Value () (
     public class Holder = Object new (
         | public count ::= 0. |
     ) (

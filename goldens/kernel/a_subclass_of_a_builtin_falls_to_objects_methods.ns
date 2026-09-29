@@ -10,7 +10,7 @@ Newspeak3
    which is no value. `MyArray` and `MyBlock` stay here, at module level,
    and are no values themselves -- only a value class is asked about its
    enclosing object. *)
-class FallThrough usingPlatform: platformAtCreation = Object <: Value () (
+class FallThrough = Object <: Value () (
     class MyBoolean = Boolean new () ()
     class MyInteger = Integer new () ()
     class MyFloat = Float new () ()

@@ -6,7 +6,7 @@ Newspeak3
    line's operands are literal small integers, so the inlined `IntegerBinary`
    runs `checked_add`, which declines, and the ordinary `+` send promotes:
    inlining must not take the promotion away from the primitive. *)
-class Overflow usingPlatform: p = Object new (
+class Overflow = Object new (
 ) (
     public main: p args: a = (
         | max min big |

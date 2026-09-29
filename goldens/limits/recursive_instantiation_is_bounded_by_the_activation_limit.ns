@@ -5,7 +5,7 @@ Newspeak3
    initializer activations and ends at the activation limit. It used to end at
    the limit on re-entries of the run loop from Rust, which no longer exists
    (`docs/design/execution.md`, "No re-entry from Rust"). *)
-class Tower usingPlatform: platform = Object new (
+class Tower = Object new (
 ) (
     public class Floor = Object new (
         | above = Floor new. |

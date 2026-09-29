@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class CachePrivateLexicalSite usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class CachePrivateLexicalSite = Object new () (
 	class Outer named: label = Object new (| name = label. |) (
 		private secret = ( ^'private of ', name )
 		public class Inner = Object new () (
@@ -11,6 +11,7 @@ class CachePrivateLexicalSite usingPlatform: thePlatform = Object new (| transcr
 		public secret = ( ^'public of sub ', name )
 	)
 	public main: platform args: args = (
+		| transcript = platform transcript. |
 		{Outer named: 'a'. Sub named: 'b'. Outer named: 'c'. Sub named: 'd'}
 			do: [:each | transcript show: each Inner new reveal; newLine].
 		transcript show: (Sub named: 'e') secret; newLine.

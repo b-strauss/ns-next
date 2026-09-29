@@ -9,7 +9,7 @@ Newspeak3
    is decided where a class object is created and so needs `after_clause`,
    which the root never reaches. `run` instantiates the root before sending
    `main:args:`, so the method never runs. *)
-class ValueModuleDefiningIdentity usingPlatform: platformAtCreation = Object <: Value () (
+class ValueModuleDefiningIdentity = Object <: Value () (
     public == other = ( ^false )
     public main: platform args: arguments = (
         platform transcript show: 'ran'; newLine

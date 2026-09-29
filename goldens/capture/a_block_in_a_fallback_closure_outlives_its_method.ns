@@ -17,8 +17,8 @@ Newspeak3
    block, then the block is evaluated -- three steps apart, with the
    method's activation gone after the first. x is 4 and nothing writes
    it, so the answer is 4. *)
-class ABlockInAFallbackClosureOutlivesItsMethod usingPlatform: platform = Object new (
-	| transcript = platform transcript.
+class ABlockInAFallbackClosureOutlivesItsMethod = Object new (
+	|
 	  held ::= nil. |
 ) (
 	class Keeper = Object new (
@@ -33,7 +33,7 @@ class ABlockInAFallbackClosureOutlivesItsMethod usingPlatform: platform = Object
 		^nil
 	)
 	public main: platform args: arguments = (
-		| keeper |
+		| transcript = platform transcript. keeper |
 		keeper:: Keeper new.
 		self nestedInAFallback: keeper.
 		keeper runKept.

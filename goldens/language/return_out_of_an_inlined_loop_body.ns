@@ -2,7 +2,7 @@ Newspeak3
 'T'
 (* A `^` inside an inlined loop body unwinds out of the whole loop, and a
    closure built inside an inlined branch still reaches the enclosing frame. *)
-class InlinedReturn usingPlatform: platform = Object new (
+class InlinedReturn = Object new (
 ) (
     count: limit = (
         | i |

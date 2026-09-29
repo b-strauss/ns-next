@@ -4,7 +4,7 @@ Newspeak3
    method with the same name and accessibility" in its enclosing class, so a
    `private class Hidden` defines a private accessor, which §5.5's
    `lookupPublic` never answers. *)
-class PrivateNested usingPlatform: platform = Object new (
+class PrivateNested = Object new (
 ) (
     class Holder = Object new () (
         private class Hidden = Object new () ()

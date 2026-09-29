@@ -4,11 +4,11 @@ Newspeak3
    corpus does (`private Exception = platform kernel Exception.`) and as
    Primordial Soup's `Kernel wrapping:` facet provides them; `Object`
    declares no accessor for them. *)
-class TheKernelNamespace usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private kernel = thePlatform kernel. |
+class TheKernelNamespace = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. kernel = platform kernel. |
         transcript show: kernel Exception printString; newLine.
         transcript show: kernel Error printString; newLine.
         transcript show: kernel MessageNotUnderstood printString; newLine.

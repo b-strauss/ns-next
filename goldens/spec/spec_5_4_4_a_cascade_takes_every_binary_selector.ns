@@ -5,8 +5,9 @@ Newspeak3
    ">", which have tokens of their own for the declaration syntax, among
    them. Each part goes to the last message's receiver, and the cascade
    answers what its last part answers. *)
-class Spec544ACascadeTakesEveryBinarySelector usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec544ACascadeTakesEveryBinarySelector = Object new () (
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: (3 printString; = 3) printString; newLine.
         t show: (3 + 1; < 4) printString; newLine.
         t show: (3 + 1; > 4) printString; newLine.

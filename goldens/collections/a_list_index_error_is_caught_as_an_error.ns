@@ -4,13 +4,11 @@ Newspeak3
    capacity the List's array has spare: an empty List's array has four
    slots, and `at: 1` still fails. An index that is no Integer is out of
    range too. *)
-class AListIndexErrorIsCaughtAsAnError usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private List = thePlatform collections List.
-      private Error = thePlatform kernel Error. |
+class AListIndexErrorIsCaughtAsAnError = Object new (
+    
 ) (
     public main: platform args: arguments = (
-        | list |
+        | transcript = platform transcript. List = platform collections List. Error = platform kernel Error. list |
         list:: List new.
         list add: 1; add: 2.
         transcript show: ([list at: 3] on: Error do: [:e | e messageText]); newLine.

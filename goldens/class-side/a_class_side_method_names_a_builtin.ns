@@ -6,7 +6,7 @@ Newspeak3
    object; 2.3.1 then follows the receiver's inheritance chain, which for a
    class object falls through to `Object`'s methods, and those include the
    "accessors for predefined classes" of 3.2. *)
-class ClassSideNamesBuiltin usingPlatform: platformAtCreation = Object new () (
+class ClassSideNamesBuiltin = Object new () (
     class Maker = Object new () (
     ) : (
         public make = ( ^Array new )

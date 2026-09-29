@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class ClassSideOuter usingPlatform: p = Object new (| t ::= p transcript. |) (
+class ClassSideOuter = Object new () (
     label = ( ^'top' )
     public class Widget = Object new () (
         label = ( ^'widget' )
@@ -12,6 +12,7 @@ class ClassSideOuter usingPlatform: p = Object new (| t ::= p transcript. |) (
         public whichOuter = ( ^outer ClassSideOuter label )
     )
     public main: platform args: args = (
+        | t ::= platform transcript. |
         t show: 'class side: ', Widget whichOuter; newLine.
         t show: 'nested class side: ', Widget new Part whichOuter; newLine.
     )

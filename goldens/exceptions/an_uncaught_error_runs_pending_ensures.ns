@@ -4,11 +4,11 @@ Newspeak3
    terminates it: every pending `ensure:` block runs, innermost first, on
    the way to the bottom of the stack, and the host then reports the error
    as it always has. *)
-class AnUncaughtErrorRunsPendingEnsures usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class AnUncaughtErrorRunsPendingEnsures = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: 'before'; newLine.
         [[Error signal: 'boom'] ensure: [transcript show: 'cleanup'; newLine]]
             ensure: [transcript show: 'outer cleanup'; newLine].

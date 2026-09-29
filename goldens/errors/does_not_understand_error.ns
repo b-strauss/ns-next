@@ -1,6 +1,6 @@
 Newspeak3
 'T'
-class Dnu usingPlatform: platform = Object new (
+class Dnu = Object new (
 ) (
     public main: p args: a = (
         3 fooBar

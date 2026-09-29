@@ -6,8 +6,8 @@ Newspeak3
    the `ensure:` activation. The inner probe's block sends `printString`
    and `show:` while the unwind is in progress, pushing activations above
    the stack the unwind has already popped. *)
-class EnsureRuns usingPlatform: thePlatform = Object new (
-    | private transcript = thePlatform transcript. |
+class EnsureRuns = Object new (
+    | private transcript ::= nil. |
 ) (
     returnsFromTheProtectedBlock = (
         [^1] ensure: [transcript show: 'ensured'; newLine].
@@ -42,6 +42,7 @@ class EnsureRuns usingPlatform: thePlatform = Object new (
         ^0
     )
     public main: platform args: arguments = (
+        transcript:: platform transcript.
         transcript show: self returnsFromTheProtectedBlock printString; newLine.
         transcript show: self answersTheProtectedBlocksValue printString; newLine.
         transcript show: self sendsAMessageThatReturnsThroughItsOwnEnsure printString; newLine.

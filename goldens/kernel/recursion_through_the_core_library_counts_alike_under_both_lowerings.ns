@@ -8,8 +8,8 @@ Newspeak3
    print the same progress before the same overflow. That holds with the
    core library in Newspeak only because a primitive method runs its leaf
    without an activation of its own. *)
-class DeepThroughTheKernel usingPlatform: platform = Object new (
-    | transcript = platform transcript. |
+class DeepThroughTheKernel = Object new (
+    | transcript ::= nil. |
 ) (
     down: depth = (
         depth = (depth // 20000 * 20000)
@@ -17,5 +17,6 @@ class DeepThroughTheKernel usingPlatform: platform = Object new (
             ifFalse: [nil].
         ^depth < 0 ifTrue: [0] ifFalse: [down: depth + 1]
     )
-    public main: p args: a = ( down: 0 )
+    public main: p args: a = (
+        transcript:: p transcript. down: 0 )
 ) : ()

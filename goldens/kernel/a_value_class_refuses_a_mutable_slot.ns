@@ -14,7 +14,7 @@ Newspeak3
    The module is a value (`Object <: Value`) because §3.1.1 asks a value
    class's enclosing object to be one; the transcript is therefore read
    from `platform` where it is used, never held in a slot. *)
-class ValueMutableSlot usingPlatform: platformAtCreation = Object <: Value () (
+class ValueMutableSlot = Object <: Value () (
     public class Counter = Value new (
         | public count ::= 1. |
     ) ()

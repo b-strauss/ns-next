@@ -129,7 +129,7 @@ fn inspect_full_renders_every_mixin_and_every_body() {
 
     // Expanded mixin rows: the slot's name, not just how many there are.
     assert!(full.contains("result"), "{full}");
-    assert!(full.contains("usingPlatform:/1"), "{full}");
+    assert!(full.contains("new/0"), "{full}");
 
     // Every body, disassembled, labelled with the id the code table names.
     assert!(full.contains("bodies"), "{full}");

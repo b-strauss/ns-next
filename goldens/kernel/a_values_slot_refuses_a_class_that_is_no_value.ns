@@ -11,7 +11,7 @@ Newspeak3
    The module is a value (`Object <: Value`) because §3.1.1 asks a value
    class's enclosing object to be one; the transcript is therefore read
    from `platform` where it is used, never held in a slot. *)
-class ValueSlotRefusesAPlainClass usingPlatform: platformAtCreation = Object <: Value () (
+class ValueSlotRefusesAPlainClass = Object <: Value () (
     public class Wrapper = Object new () (
         public class Plain = Object new () ()
     )

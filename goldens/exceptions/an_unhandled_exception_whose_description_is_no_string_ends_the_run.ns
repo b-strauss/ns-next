@@ -4,15 +4,17 @@ Newspeak3
    selector it reports: an unhandled one still ends the run, its
    description rendered as a value is in an error message, and nothing
    after the signal runs. *)
-class AnUnhandledExceptionWhoseDescriptionIsNoStringEndsTheRun usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class AnUnhandledExceptionWhoseDescriptionIsNoStringEndsTheRun = Object new (
+    |
+      private Error ::= nil. |
 ) (
     public class Odd = Error new () (
         public description = ( ^42 )
         protected hostSelector = ( ^'no symbol' )
     )
     public main: platform args: arguments = (
+        | transcript = platform transcript. |
+        Error:: platform kernel Error.
         transcript show: 'before'; newLine.
         Odd new signal.
         transcript show: 'not reached'; newLine.

@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class SuperclassArgs usingPlatform: p = Object new (| t ::= p transcript. |) (
+class SuperclassArgs = Object new () (
 	public class Base withBase: b = Object new (| baseValue ::= b. |) (
 		public base = ( ^baseValue )
 	)
@@ -11,7 +11,7 @@ class SuperclassArgs usingPlatform: p = Object new (| t ::= p transcript. |) (
 		public leaf = ( ^leafValue )
 	)
 	public main: platform args: args = (
-		| x |
+		| t ::= platform transcript. x |
 		x:: Leaf new.
 		t show: x base printString; newLine.
 		t show: x middle printString; newLine.

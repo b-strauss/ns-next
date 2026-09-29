@@ -6,7 +6,7 @@ Newspeak3
    `Describer new <: Value` is a value class, and making a value variant of
    an ordinary class is what `<: Value` is for. Requiring `Describer` itself
    to inherit `Value` would refuse a program 3.1.1 allows. *)
-class ValueOverASlotlessClass usingPlatform: platformAtCreation = Object <: Value () (
+class ValueOverASlotlessClass = Object <: Value () (
     public class Describer = Object new () (
         public describe = ( ^'described' )
     )

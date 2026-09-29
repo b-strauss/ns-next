@@ -6,7 +6,7 @@ Newspeak3
    another kind answers for the value a future stands for: Float's `=`,
    a value object's `=`, and the handler class `on:do:` tests an error
    against, each met while the sibling is still its future. *)
-class Spec632EveryEqualitySeesAFuture usingPlatform: p = Object <: Value (
+class Spec632EveryEqualitySeesAFuture = Object <: Value (
 ) (
     class Pair first: a second: b = Value new (| public first = a. public second = b. |) () : ()
     class Probe on: platform = Object new (||

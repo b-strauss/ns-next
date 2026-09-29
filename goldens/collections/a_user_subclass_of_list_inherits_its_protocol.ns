@@ -3,9 +3,9 @@ Newspeak3
 (* A class of the program may inherit from List, which the collections
    facet hands out although it is a private class of its module: it keeps
    the whole protocol and reaches the protected `size_` by a self send. *)
-class AUserSubclassOfListInheritsItsProtocol usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private List = thePlatform collections List. |
+class AUserSubclassOfListInheritsItsProtocol = Object new (
+    |
+      private List ::= nil. |
 ) (
     class Stack = List new () (
         public push: element = ( ^self add: element )
@@ -13,7 +13,8 @@ class AUserSubclassOfListInheritsItsProtocol usingPlatform: thePlatform = Object
         public depth = ( ^size_ )
     )
     public main: platform args: arguments = (
-        | stack |
+        | transcript = platform transcript. stack |
+        List:: platform collections List.
         stack:: Stack new.
         stack push: 1; push: 2; push: 3.
         transcript show: stack top printString; show: ' '; show: stack size printString; show: ' '; show: stack depth printString; newLine.

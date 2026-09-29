@@ -19,8 +19,8 @@ Newspeak3
    the top of an inlined loop body that also creates [x], so all three
    blocks answer the last value written, 2. Textual order alone would
    copy and answer 0 1 2. *)
-class ABlocksOwnRegistersAndVector usingPlatform: platform = Object new (
-	| transcript = platform transcript. private List = platform collections List. |
+class ABlocksOwnRegistersAndVector = Object new (
+	| transcript ::= nil. private List ::= nil. |
 ) (
 	fullLayout = (
 		| outerCopied ::= 3. |
@@ -45,6 +45,8 @@ class ABlocksOwnRegistersAndVector usingPlatform: platform = Object new (
 	)
 	public main: platform args: arguments = (
 		| block |
+		transcript:: platform transcript.
+		List:: platform collections List.
 		block:: self fullLayout.
 		transcript show: (block value: 5) printString; newLine.
 		transcript show: (block value: 2) printString; newLine.

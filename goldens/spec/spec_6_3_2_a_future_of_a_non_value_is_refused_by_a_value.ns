@@ -7,7 +7,7 @@ Newspeak3
    Array, which no slot of a value may hold. So the Pair's initializer
    refuses it with the ordinary refusal, naming the Array and not the
    future, caught here like any other error. *)
-class Spec632AFutureOfANonValueIsRefusedByAValue usingPlatform: p = Object <: Value (
+class Spec632AFutureOfANonValueIsRefusedByAValue = Object <: Value (
 ) (
     class Pair first: firstValue second: secondValue = Value new (
         | public first = firstValue. public second = secondValue. |

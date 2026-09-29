@@ -11,7 +11,7 @@ Newspeak3
    would otherwise stop and trust it by induction. It must not: `Counter`
    carries a recorded refusal of its own, and `Stamped` inherits that
    fault rather than the walk trusting `Counter` blindly. *)
-class ValueSubclassOfARefusedValueClass usingPlatform: platformAtCreation = Object <: Value () (
+class ValueSubclassOfARefusedValueClass = Object <: Value () (
     public class Holder = Object new (
         | public count ::= 0. |
     ) (

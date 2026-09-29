@@ -30,7 +30,7 @@ Newspeak3
 
    Applied and Plain are instantiated first, so that Sub's instantiation
    follows both an application's and an ordinary class's. *)
-class MixinOrdinarySubclassOfAnApplyingClass usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinOrdinarySubclassOfAnApplyingClass = Object new (| t ::= nil. |) (
     class Root withRoot: value = Object new (
         | rootSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Root initializer receives ', value. |
     ) () : ()
@@ -61,6 +61,7 @@ class MixinOrdinarySubclassOfAnApplyingClass usingPlatform: p = Object new (| t 
         ^clause, '(', argument, ')'
     )
     public main: platform args: arguments = (
+        t:: platform transcript.
         log: '-- Applied from: a'.
         Applied from: 'a'.
         log: '-- Plain w: p'.

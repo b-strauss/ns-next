@@ -11,13 +11,13 @@ Newspeak3
 
    So trace is still empty after the instance is created, and carries
    exactly one mark after the getter has been sent twice. *)
-class Spec633LazySlot usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec633LazySlot = Object new () (
     class Holder = Object new (| public trace ::= ''. |) (
         lazy public computed = mark.
         mark = ( trace:: trace, '!'. ^42 )
     ) : ()
     public main: platform args: arguments = (
-        | holder |
+        | t = platform transcript. holder |
         holder:: Holder new.
         t show: 'before: ', holder trace; newLine.
         t show: holder computed printString; newLine.

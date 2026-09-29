@@ -1,11 +1,13 @@
 Newspeak3
 'Test'
-class InstanceInit usingPlatform: platform = Object new (
-	| out = platform transcript. greeting ::= 'hi'. count ::= 0. |
+class InstanceInit = Object new (
+	| greeting ::= 'hi'. count ::= 0. initialized ::= false. |
 	count:: greeting size.
-	out show: 'init ran'; newLine.
+	initialized:: true.
 ) (
 	public main: p args: a = (
+		| out = p transcript. |
+		initialized ifTrue: [out show: 'init ran'; newLine].
 		out show: greeting; show: ' '; show: count printString; newLine
 	)
 ) : ()

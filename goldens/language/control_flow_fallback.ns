@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class ControlFlowFallback usingPlatform: platform = Object new (
+class ControlFlowFallback = Object new (
 ) (
 	me = ( ^self )
 	public ifTrue: t ifFalse: f = ( ^f value )

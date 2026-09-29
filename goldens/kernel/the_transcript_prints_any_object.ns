@@ -7,7 +7,7 @@ Newspeak3
    does not (decided with the user on 2026-09-27;
    `docs/design/core-library.md`, "The platform"). `print:` answers the
    transcript, so it cascades like `show:`. *)
-class TranscriptPrint usingPlatform: platformAtCreation = Object new () (
+class TranscriptPrint = Object new () (
     public main: platform args: arguments = (
         | t |
         t:: platform transcript.

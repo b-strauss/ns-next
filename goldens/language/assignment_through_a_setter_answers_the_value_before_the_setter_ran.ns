@@ -12,7 +12,7 @@ Newspeak3
    pins the refusal). Each line is the value `e` had before the setter ran:
    `1`, `true` for the `and:`, and one loop iteration, since the second test
    finds `false`. *)
-class SetterValue usingPlatform: platform = Object new (
+class SetterValue = Object new (
     | blk ::= nil. |
 ) (
     x: v = ( blk value )

@@ -6,9 +6,9 @@ Newspeak3
    a literal stands -- after another selector, as a tuple's element -- it is
    the sign. A "-" starts a selector and continues none, so +-4 is "+" and -4.
    Only decimalNum has a sign; radixNum has one after its "r". *)
-class Spec42AMinusBeforeADigitIsASignOnlyWhereALiteralStands usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec42AMinusBeforeADigitIsASignOnlyWhereALiteralStands = Object new () (
     public main: platform args: arguments = (
-        | three numbers |
+        | t = platform transcript. three numbers |
         three:: 3.
         t show: (three -4) printString; newLine.
         t show: (three-4) printString; newLine.

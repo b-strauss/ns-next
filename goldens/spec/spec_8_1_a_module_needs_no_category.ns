@@ -2,7 +2,7 @@ Newspeak3
 (* newspeak-spec.pdf 8.1: compilationUnit is languageId toplevelClass,
    toplevelClass is classCategory classDeclaration, and classCategory is
    [string] -- a module may leave its category out. *)
-class Spec81AModuleNeedsNoCategory usingPlatform: p = Object new () (
+class Spec81AModuleNeedsNoCategory = Object new () (
     public main: platform args: arguments = (
         platform transcript show: 'no category'; newLine
     )

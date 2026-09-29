@@ -1,9 +1,9 @@
 Newspeak3
 'Test'
-class IdentityHash usingPlatform: p = Object new (| t ::= p transcript. |) (
+class IdentityHash = Object new () (
     public class Thing = Object new () ()
     public main: platform args: args = (
-        | a b |
+        | t ::= platform transcript. a b |
         a:: Thing new.
         b:: Thing new.
         t show: b hash printString; newLine.

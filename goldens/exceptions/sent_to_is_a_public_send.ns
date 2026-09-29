@@ -6,10 +6,8 @@ Newspeak3
    protected one, which end in `doesNotUnderstand:`. A message built without
    `arguments:` is sent with none; one whose selector is no Symbol cannot be
    sent, and `sentTo:` raises an `Error` rather than answering nil. *)
-class SentToIsAPublicSend usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error.
-      private Message = thePlatform kernel Message. |
+class SentToIsAPublicSend = Object new (
+    
 ) (
     class Holder = Object new () (
         private secret = ( ^'the private one' )
@@ -17,7 +15,7 @@ class SentToIsAPublicSend usingPlatform: thePlatform = Object new (
         public open = ( ^'the public one' )
     )
     public main: platform args: arguments = (
-        | holder |
+        | transcript = platform transcript. Error = platform kernel Error. Message = platform kernel Message. holder |
         holder:: Holder new.
         transcript show: ((Message new selector: #open; arguments: {}) sentTo: holder); newLine.
         transcript show: ([(Message new selector: #secret; arguments: {}) sentTo: holder] on: Error do: [:e | e messageText]); newLine.

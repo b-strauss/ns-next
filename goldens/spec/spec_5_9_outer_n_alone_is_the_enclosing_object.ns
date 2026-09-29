@@ -5,7 +5,7 @@ Newspeak3
    object, and so does this runtime (decided with the user on 2026-09-27). N
    is any identifier naming a lexically enclosing class, a lowercase one
    included. *)
-class Spec59OuterNAloneIsTheEnclosingObject usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec59OuterNAloneIsTheEnclosingObject = Object new () (
     class Inner = Object new () (
         public enclosing = ( ^outer Spec59OuterNAloneIsTheEnclosingObject )
     ) : ()
@@ -17,7 +17,7 @@ class Spec59OuterNAloneIsTheEnclosingObject usingPlatform: p = Object new (| t =
         public name = ( ^'holder' )
     ) : ()
     public main: platform args: arguments = (
-        | h |
+        | t = platform transcript. h |
         t show: (Inner new enclosing == self) printString; newLine.
         h:: holder new.
         t show: (h Deep new up == h) printString; newLine.

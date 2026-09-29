@@ -3,8 +3,8 @@ Newspeak3
 (* The same invariant when the write happens inside a callee, through a
    closure built in an earlier statement: a cascade receiver and an
    assignment's value handed on through a setter send. *)
-class CalleeClobber usingPlatform: platform = Object new (
-    | c ::= nil. private List = platform collections List. |
+class CalleeClobber = Object new (
+    | c ::= nil. private List ::= nil. |
 ) (
     first: x second: y = ( ^x )
     hook: v = ( c value. ^v )
@@ -19,6 +19,7 @@ class CalleeClobber usingPlatform: platform = Object new (
         ^orig size
     )
     public main: p args: a = (
+        List:: p collections List.
         p transcript show: self setterValue printString; newLine.
         p transcript show: self argThroughASend printString; newLine.
         p transcript show: self cascadeReceiver printString; newLine

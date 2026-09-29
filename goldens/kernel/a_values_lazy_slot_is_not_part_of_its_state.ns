@@ -5,7 +5,7 @@ Newspeak3
    are state derived from the rest -- Bracha's transient fields, purged on
    synchronization. Two values of one class, one of which has filled its
    lazy slot, are equal and hash alike. *)
-class LazyValueState usingPlatform: p = Object <: Value () (
+class LazyValueState = Object <: Value () (
     class Point x: anX = Value new (| public x = anX. |) (
         lazy public doubled = x + x.
     ) : ()

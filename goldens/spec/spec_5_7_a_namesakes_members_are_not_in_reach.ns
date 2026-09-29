@@ -13,7 +13,7 @@ Newspeak3
    stops at Dup itself, and the send answers doesNotUnderstand:. Together
    the two goldens pin that the answer depends on neither the name nor the
    order the declarations are collected in. *)
-class Spec57NamesakesMembersAreNotInReach usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec57NamesakesMembersAreNotInReach = Object new () (
     class Beta = Object new () (
         marker = ( ^'Beta''s marker' )
         class Dup = Object new () (
@@ -27,6 +27,7 @@ class Spec57NamesakesMembersAreNotInReach usingPlatform: p = Object new (| t = p
         ) : ()
     ) : ()
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: Beta new probe; newLine
     )
 ) : ()

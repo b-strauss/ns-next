@@ -4,10 +4,7 @@ Newspeak3
    initializer that signals, and whose exception a handler returns from,
    evaluated to nothing: the slot stays nil and the next read evaluates it
    again. The second read's attempt succeeds and is kept. *)
-class Spec633LazyAbandoned usingPlatform: p = Object new (|
-    t = p transcript.
-    Error = p kernel Error.
-|) (
+class Spec633LazyAbandoned = Object new () (
     class Holder failing: errorClass = Object new (|
         public attempts ::= 0.
         ErrorClass = errorClass.
@@ -20,7 +17,7 @@ class Spec633LazyAbandoned usingPlatform: p = Object new (|
         )
     ) : ()
     public main: platform args: arguments = (
-        | holder |
+        | t = platform transcript. Error = platform kernel Error. holder |
         holder:: Holder failing: Error.
         t show: ([holder computed] on: Error do: [:error | error return: 0]) printString; newLine.
         t show: holder computed printString; newLine.

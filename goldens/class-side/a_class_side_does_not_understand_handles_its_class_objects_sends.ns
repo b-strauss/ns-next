@@ -6,13 +6,14 @@ Newspeak3
    answers every unhandled send its class object gets, explicit-receiver,
    implicit-receiver and keyword alike, while `new` still finds the
    inherited factory and instantiates normally. *)
-class AClassSideDoesNotUnderstandHandlesItsClassObjectsSends usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class AClassSideDoesNotUnderstandHandlesItsClassObjectsSends = Object new () (
 	class Foo = Object new () (
 	) : (
 		protected doesNotUnderstand: message = ( ^'caught ', message selector printString )
 		public tryImplicit = ( ^zap )
 	)
 	public main: platform args: args = (
+		| transcript = platform transcript. |
 		transcript show: Foo bar; newLine.
 		transcript show: Foo tryImplicit; newLine.
 		transcript show: (Foo zork: 1 with: 2); newLine.

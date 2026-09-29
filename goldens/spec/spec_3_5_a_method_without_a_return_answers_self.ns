@@ -12,7 +12,7 @@ Newspeak3
    The complement of 5.1.8, where a closure's fall-through value is "the
    value of the last statement in the closure body" -- the one place a
    body's value differs between a method and a closure. *)
-class Spec35MethodWithoutAReturn usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec35MethodWithoutAReturn = Object new () (
     class Base = Object new () (
         public store: value = ( )
     ) : ()
@@ -20,7 +20,7 @@ class Spec35MethodWithoutAReturn usingPlatform: p = Object new (| t = p transcri
     computes = ( 1 + 1 )
     empty = ( )
     public main: platform args: arguments = (
-        | derived |
+        | t = platform transcript. derived |
         t show: (self computes == self) printString; newLine.
         t show: (self empty == self) printString; newLine.
         derived:: Derived new.

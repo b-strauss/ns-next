@@ -6,7 +6,7 @@ Newspeak3
    instance of GrandChildOfOuter, then" -- each example's comment is kept
    beside the line that checks it. (g Inner: Array) sends the slot's
    setter to g, which 6.3.2 has answer "the receiver of the message". *)
-class Spec23SuperclassOfANestedClass usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec23SuperclassOfANestedClass = Object new () (
     class Outer = () (
        public class Inner = ()()
     )
@@ -17,7 +17,7 @@ class Spec23SuperclassOfANestedClass usingPlatform: p = Object new (| t = p tran
     class GrandChildOfOuter = ChildOfOuter( | public Inner ::= String. |) (
     )
     public main: platform args: args = (
-        | g first |
+        | t = platform transcript. g first |
         g:: GrandChildOfOuter new.
         (* g Inner. (* returns String *) *)
         t show: (g Inner == String) printString; newLine.

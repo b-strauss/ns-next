@@ -2,11 +2,11 @@ Newspeak3
 'Test'
 (* A `MessageNotUnderstood` is an `Error`, so `on: Error do:` catches a
    send nothing understands, `nil`'s included. *)
-class ADoesNotUnderstandIsCaughtAsAnError usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class ADoesNotUnderstandIsCaughtAsAnError = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: ([nil zork] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([nil zork] on: Error do: [:e | e class name]); newLine.
         transcript show: ([nil zork] on: Error do: [:e | e receiver]) printString; newLine.

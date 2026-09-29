@@ -4,12 +4,11 @@ Newspeak3
    whenever it is full, so ten elements take two moves; `add:` answers the
    element and `at:put:` the value (docs/design/core-library.md, "The
    collections module"). *)
-class AListGrowsPastItsFirstArray usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private List = thePlatform collections List. |
+class AListGrowsPastItsFirstArray = Object new (
+    
 ) (
     public main: platform args: arguments = (
-        | list count total |
+        | transcript = platform transcript. List = platform collections List. list count total |
         list:: List new.
         transcript show: list size printString; newLine.
         count:: 0.

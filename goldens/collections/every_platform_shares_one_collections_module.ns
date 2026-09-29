@@ -4,11 +4,11 @@ Newspeak3
    built on first use, so a List made through a second platform is an
    instance of the same class. The facet is a value: any two are equal,
    one a program makes from the facet's class included. *)
-class EveryPlatformSharesOneCollectionsModule usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript. |
+class EveryPlatformSharesOneCollectionsModule = Object new (
+    
 ) (
     public main: platform args: arguments = (
-        | second |
+        | transcript = platform transcript. second |
         second:: platform class new.
         transcript show: (second collections == platform collections) printString; newLine.
         transcript show: (second collections List == platform collections List) printString; newLine.

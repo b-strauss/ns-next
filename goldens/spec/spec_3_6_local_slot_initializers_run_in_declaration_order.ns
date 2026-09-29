@@ -12,9 +12,9 @@ Newspeak3
    body declares slots but has no statement still answers nil, checked the
    same way. The class-level counterpart, a slot initializer, is what the
    instance initializer already does. *)
-class Spec36LocalSlotInitializersRunInDeclarationOrder usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec36LocalSlotInitializersRunInDeclarationOrder = Object new () (
     public main: platform args: arguments = (
-        | first = 3. second ::= first + 4. third |
+        | t = platform transcript. first = 3. second ::= first + 4. third |
         t show: first printString; newLine.
         t show: second printString; newLine.
         t show: (third == nil) printString; newLine.

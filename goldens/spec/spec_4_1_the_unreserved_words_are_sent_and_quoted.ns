@@ -5,7 +5,7 @@ Newspeak3
    like any identifier: sent to an explicit receiver, in a cascade, and as
    the keyword parts' stems, and 4.2's sym makes each a symbol after a
    pound. *)
-class Spec41TheUnreservedWordsAreSentAndQuoted usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec41TheUnreservedWordsAreSentAndQuoted = Object new () (
     class Holder = Object new (| public trace ::= ''. |) (
         public public = ( trace:: trace, 'public ' )
         public protected = ( trace:: trace, 'protected ' )
@@ -14,7 +14,7 @@ class Spec41TheUnreservedWordsAreSentAndQuoted usingPlatform: p = Object new (| 
         public class: value = ( trace:: trace, 'class: ', value, ' ' )
     ) : ()
     public main: platform args: arguments = (
-        | holder words |
+        | t = platform transcript. holder words |
         holder:: Holder new.
         holder public.
         holder protected; private; lazy; class: 'x'.

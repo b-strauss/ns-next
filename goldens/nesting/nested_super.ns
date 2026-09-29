@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class Outer usingPlatform: p = Object new (| t ::= p transcript. |) (
+class Outer = Object new () (
     label = ( ^'outer' )
     public class Base = Object new () (
         public describe = ( ^outer Outer label )
@@ -9,6 +9,7 @@ class Outer usingPlatform: p = Object new (| t ::= p transcript. |) (
         public describe = ( ^(super describe), '/derived' )
     )
     public main: platform args: args = (
+        | t ::= platform transcript. |
         t show: Derived new describe; newLine
     )
 )

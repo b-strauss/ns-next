@@ -4,10 +4,10 @@ Newspeak3
    ... is the same as the slot's", and 5.5's lookupPublic answers a public
    method -- so a public slot's accessors answer an explicit receiver,
    and the setter "returns the receiver of the message". *)
-class Spec632PublicSlotExplicitReceiver usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec632PublicSlotExplicitReceiver = Object new () (
     class Holder = Object new (| public z ::= 7. |) ()
     public main: platform args: args = (
-        | holder |
+        | t = platform transcript. holder |
         holder:: Holder new.
         t show: holder z printString; newLine.
         t show: ((holder z: 9) == holder) printString; newLine.

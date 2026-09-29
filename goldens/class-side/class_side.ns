@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class ClassSide usingPlatform: platform = Object new (| transcript ::= platform transcript. |) (
+class ClassSide = Object new () (
 	public class Widget new = Object new () (
 	) : (
 		public describe = ( ^'a widget class' )
@@ -12,6 +12,7 @@ class ClassSide usingPlatform: platform = Object new (| transcript ::= platform 
 		public describe = ( ^'a special widget class' )
 	)
 	public main: platform args: args = (
+		| transcript ::= platform transcript. |
 		transcript show: self class describe; newLine.
 		transcript show: (self class greet: 'world'); newLine.
 		transcript show: Widget describe; newLine.

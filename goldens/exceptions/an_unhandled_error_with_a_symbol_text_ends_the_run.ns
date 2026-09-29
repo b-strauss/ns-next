@@ -2,11 +2,11 @@ Newspeak3
 'Test'
 (* An unhandled exception ends the run whatever its text is: a Symbol's is
    reported as its text, and nothing after the signal runs. *)
-class AnUnhandledErrorWithASymbolTextEndsTheRun usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class AnUnhandledErrorWithASymbolTextEndsTheRun = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: 'before'; newLine.
         Error signal: #sym.
         transcript show: 'not reached'; newLine.

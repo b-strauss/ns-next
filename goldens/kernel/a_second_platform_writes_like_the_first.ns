@@ -7,7 +7,7 @@ Newspeak3
    The platform hands out the module's classes by methods, and each answers
    the class its own members are instances of; the collections facet hands
    out its module's classes as the platform hands out its own. *)
-class ASecondPlatformWritesLikeTheFirst usingPlatform: platformAtCreation = Object new () (
+class ASecondPlatformWritesLikeTheFirst = Object new () (
     public main: platform args: arguments = (
         | second |
         second:: platform class new.

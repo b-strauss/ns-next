@@ -12,7 +12,7 @@ Newspeak3
    that defect: a program's meaning depending on the name of a class it
    never mentions. A member set belongs to its declaration instead
    (docs/design/dispatch.md, "Resolution"), so the two Dups never meet. *)
-class Spec57MemberSetPerDeclaration usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec57MemberSetPerDeclaration = Object new () (
     class Alpha = Object new () (
         marker = ( ^'an enclosing marker' )
         class Dup = Object new () (
@@ -26,6 +26,7 @@ class Spec57MemberSetPerDeclaration usingPlatform: p = Object new (| t = p trans
         ) : ()
     ) : ()
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: Alpha new probe; newLine
     )
 ) : ()

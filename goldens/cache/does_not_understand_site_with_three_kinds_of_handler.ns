@@ -6,14 +6,14 @@ Newspeak3
    handler, which ends the run. A cache that recorded one handler must not
    answer another receiver with it (`docs/design/dispatch.md`, "3b — The
    caches"). *)
-class CacheDoesNotUnderstandHandlers usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class CacheDoesNotUnderstandHandlers = Object new () (
     class Catcher = Object new () (
         public doesNotUnderstand: message = ( ^'caught ', message selector printString )
     )
     class Recorder = Object new (| public doesNotUnderstand ::= nil. |) (
     )
     public main: platform args: args = (
-        | recorder |
+        | transcript = platform transcript. recorder |
         recorder:: Recorder new.
         {Catcher new. recorder. Catcher new. recorder} do: [:each |
             transcript show: (each zork == each) printString; newLine].

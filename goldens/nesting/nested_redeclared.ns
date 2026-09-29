@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class NestedRedeclared usingPlatform: p = Object new (| t ::= p transcript. |) (
+class NestedRedeclared = Object new () (
     class Base = Object new () (
         public class Inner = Object new () (
             public label = ( ^'base-inner' )
@@ -24,6 +24,7 @@ class NestedRedeclared usingPlatform: p = Object new (| t ::= p transcript. |) (
         )
     )
     public main: platform args: args = (
+        | t ::= platform transcript. |
         t show: Derived new superFirst; newLine.
         t show: Derived new ownFirst; newLine.
     )

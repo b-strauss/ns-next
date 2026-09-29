@@ -42,7 +42,9 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
     let source = golden("language/instance_init");
     let (ok, out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
-    assert!(out.starts_with("init ran\n"), "{out}");
+    // The initializer prints nothing itself any more: it only records that it
+    // ran, and `main:args:` reports that.
+    assert!(out.starts_with("wrote "), "{out}");
     let (ok, out, error) = ns_next(&[
         "load".as_ref(),
         image.as_os_str(),
@@ -51,8 +53,8 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
     ]);
     assert!(ok, "{error}");
     assert_eq!(
-        out, "hi 2\n",
-        "slots (including the transcript stream object) survived; the initializer did not run again"
+        out, "init ran\nhi 2\n",
+        "the slots the initializer filled at snapshot time survived the image"
     );
 }
 

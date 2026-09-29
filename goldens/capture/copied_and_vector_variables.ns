@@ -14,8 +14,8 @@ Newspeak3
    immutableCaptured: an immutable local is never written (3.6).
    vectorVariableWithInitializer: a declared initializer runs before the
    block exists and the block then writes, so the method reads 30. *)
-class CopiedAndVectorVariables usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+class CopiedAndVectorVariables = Object new (
+	
 ) (
 	setOnceThenCaptured = (
 		| x ::= 0. |
@@ -46,6 +46,7 @@ class CopiedAndVectorVariables usingPlatform: platform = Object new (
 		^x
 	)
 	public main: platform args: arguments = (
+		| transcript = platform transcript. |
 		transcript show: self setOnceThenCaptured value printString; newLine.
 		transcript show: self writtenAfterCapture value printString; newLine.
 		transcript show: self writtenByTheBlock printString; newLine.

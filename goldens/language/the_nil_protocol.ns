@@ -5,7 +5,7 @@ Newspeak3
    as Squeak's and the canonical Newspeak corpus's are: handed it when it
    takes an argument and nothing when it takes none. `nil ifNotNil:`
    answers nil, `3 ifNil:` answers 3. *)
-class NilProtocol usingPlatform: platform = Object new () (
+class NilProtocol = Object new () (
     public main: p args: a = (
         | t |
         t:: p transcript.

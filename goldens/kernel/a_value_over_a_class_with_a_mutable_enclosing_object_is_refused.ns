@@ -8,7 +8,7 @@ Newspeak3
    `Stamped`. Every level's enclosing object is asked, not only the class's
    own. Decided where `Stamped` is created, refused where an instance is
    made -- both here in the one send, `Stamped new`. *)
-class ValueOverAMutableLevel usingPlatform: platformAtCreation = Object <: Value () (
+class ValueOverAMutableLevel = Object <: Value () (
     public class Holder = Object new (
         | public count ::= 0. |
     ) (

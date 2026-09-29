@@ -7,7 +7,7 @@ Newspeak3
    created, as SOMns checks a value class's conditions (InstantiationNode),
    but refused only where an instance is made -- `Odd new`, right after the
    line before it prints. *)
-class ValueDefiningIdentity usingPlatform: platformAtCreation = Object <: Value () (
+class ValueDefiningIdentity = Object <: Value () (
     public class Odd = Value new () (
         public == other = ( ^false )
     )

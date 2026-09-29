@@ -11,7 +11,7 @@ Newspeak3
 
    The module is a value because §3.1.1 asks a value class's enclosing
    object to be one; the recursion lives in `Script`, which is no value. *)
-class DeepThroughASubclass usingPlatform: platformAtCreation = Object <: Value () (
+class DeepThroughASubclass = Object <: Value () (
     class MyTrue = True new () ()
     class Script on: aTranscript = Object new (
         | transcript = aTranscript. flag = MyTrue new. |

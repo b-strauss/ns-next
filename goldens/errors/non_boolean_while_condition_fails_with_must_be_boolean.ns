@@ -2,7 +2,7 @@ Newspeak3
 'T'
 (* The condition body runs exactly once, then its non-Boolean value is sent
    `mustBeBoolean`. *)
-class WhileMbb usingPlatform: platform = Object new (
+class WhileMbb = Object new (
 ) (
     public main: p args: a = (
         p transcript show: 'before'; newLine.

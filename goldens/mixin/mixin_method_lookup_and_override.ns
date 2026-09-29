@@ -15,7 +15,7 @@ Newspeak3
      Base -- not Trait's own declared superclass Object, which does not
      understand #layered. The mixin carries the methods, not the
      superclass. *)
-class MixinMethodLookupAndOverride usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinMethodLookupAndOverride = Object new () (
     class Base = Object new () (
         public onlyInBase = ( ^'Base answers onlyInBase' )
         public shadowed = ( ^'Base answers shadowed' )
@@ -32,7 +32,7 @@ class MixinMethodLookupAndOverride usingPlatform: p = Object new (| t = p transc
         public describe = ( ^'Combined overrides describe, then ', super describe )
     ) : ()
     public main: platform args: arguments = (
-        | combined = Combined new. |
+        | t = platform transcript. combined = Combined new. |
         t show: combined greet; newLine.
         t show: combined describe; newLine.
         t show: combined onlyInBase; newLine.

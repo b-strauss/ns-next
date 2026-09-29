@@ -6,7 +6,7 @@ Newspeak3
    lookupPublic(n, superclass(C)) otherwise." A private declaration is
    therefore passed over, not a stop: PrivateShadow new foo reaches
    PublicBase's public foo. *)
-class Spec55PublicLookupSkipsPrivate usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec55PublicLookupSkipsPrivate = Object new () (
     class PublicBase = Object new () (
         public foo = ( ^1 )
     )
@@ -14,6 +14,7 @@ class Spec55PublicLookupSkipsPrivate usingPlatform: p = Object new (| t = p tran
         private foo = ( ^2 )
     )
     public main: platform args: args = (
+        | t = platform transcript. |
         t show: PrivateShadow new foo printString; newLine.
     )
 ) : ()

@@ -7,7 +7,7 @@ Newspeak3
    its initializer on its first read only. A mutable one has a setter: set
    back to nil it is evaluated again on the next read, set to a value it
    answers that value without evaluating anything. *)
-class Spec633LazyForms usingPlatform: p = Object new () (
+class Spec633LazyForms = Object new () (
     class Holder = Object new (| public trace ::= ''. |) (
         lazy public first = mark: 'a'.
         public lazy second = mark: 'b'.

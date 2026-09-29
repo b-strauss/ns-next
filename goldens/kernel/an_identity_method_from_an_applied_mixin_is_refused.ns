@@ -5,7 +5,7 @@ Newspeak3
    defines. `Identity` alone is no value and may declare `==`; `Mixed`
    applies it over `Value`, and this is decided where `Mixed` is created but
    refused only where an instance is made -- `Mixed new`. *)
-class IdentityFromAMixin usingPlatform: platformAtCreation = Object <: Value () (
+class IdentityFromAMixin = Object <: Value () (
     public class Identity = Object new () (
         public == other = ( ^true )
     )

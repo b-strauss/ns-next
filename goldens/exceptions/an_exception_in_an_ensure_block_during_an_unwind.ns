@@ -6,9 +6,9 @@ Newspeak3
    returns. Caught by a handler further out than the unwind's own target,
    its `return:` unwinds past that target, and the first unwind is
    abandoned: the method's `^` never answers. *)
-class AnExceptionInAnEnsureBlockDuringAnUnwind usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class AnExceptionInAnEnsureBlockDuringAnUnwind = Object new (
+    | transcript ::= nil.
+      private Error ::= nil. |
 ) (
     unwinding = (
         [^'unwound'] ensure: [
@@ -20,6 +20,8 @@ class AnExceptionInAnEnsureBlockDuringAnUnwind usingPlatform: thePlatform = Obje
         ^'not reached'
     )
     public main: platform args: arguments = (
+        transcript:: platform transcript.
+        Error:: platform kernel Error.
         transcript show: self unwinding; newLine.
         transcript show: ([self escaping] on: Error do: [:e | 'abandoned by ' , e messageText]); newLine.
     )

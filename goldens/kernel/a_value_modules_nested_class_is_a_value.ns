@@ -14,7 +14,7 @@ Newspeak3
    under the unequal value, two values holding the nested classes in a
    slot, and the nested classes' metaclasses. `==` answers what `=` does:
    a value class object has no identity (3.1.1). *)
-class AValueModulesNestedClass usingPlatform: platformAtCreation = Object <: Value () (
+class AValueModulesNestedClass = Object <: Value () (
     public class Box x: anX = Value new (
         | public x = anX. |
     ) (

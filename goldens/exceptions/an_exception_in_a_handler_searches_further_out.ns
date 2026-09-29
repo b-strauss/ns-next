@@ -5,12 +5,11 @@ Newspeak3
    outer handler's value answers from the outer `on:do:`; resumed, the
    second exception's value comes back into the inner handler, whose own
    value then answers from the inner `on:do:`. *)
-class AnExceptionInAHandlerSearchesFurtherOut usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Exception = thePlatform kernel Exception.
-      private Error = thePlatform kernel Error. |
+class AnExceptionInAHandlerSearchesFurtherOut = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Exception = platform kernel Exception. Error = platform kernel Error. |
         transcript show: ([[Error signal: 'first'] on: Error do: [:e | Error signal: 'second']]
                               on: Error do: [:e | 'outer caught ' , e messageText]); newLine.
         transcript show: ([[Exception signal: 'first'] on: Exception do: [:e | (Exception signal: 'second') , ' resumed']]

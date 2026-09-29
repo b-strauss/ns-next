@@ -14,8 +14,8 @@ Newspeak3
    fallback closure is created inside a block, keeps working after that
    block's activation has returned, and shares both the block's parameter
    and the method's variable, so the second call answers 15. *)
-class FallbackClosuresShareVariables usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+class FallbackClosuresShareVariables = Object new (
+	
 ) (
 	class Keeper = Object new (
 		| kept ::= nil. |
@@ -41,7 +41,7 @@ class FallbackClosuresShareVariables usingPlatform: platform = Object new (
 		^[:increment | keeper ifTrue: [total:: total + increment]. total]
 	)
 	public main: platform args: arguments = (
-		| maker keeper |
+		| transcript = platform transcript. maker keeper |
 		transcript show: (self writeThenCapture: Keeper new) printString; newLine.
 		transcript show: (self readLater: Keeper new) printString; newLine.
 		keeper:: Keeper new.

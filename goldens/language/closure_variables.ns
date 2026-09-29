@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class ClosureVariables usingPlatform: platform = Object new (| private List = platform collections List. |) (
+class ClosureVariables = Object new () (
 	sumOf: coll = (
 		| s |
 		s:: 0.
@@ -21,7 +21,7 @@ class ClosureVariables usingPlatform: platform = Object new (| private List = pl
 		^[:x | [:y | base + x + y]]
 	)
 	public main: p args: a = (
-		| coll c d add |
+		| List = p collections List. coll c d add |
 		coll:: List new.
 		coll add: 1; add: 2; add: 3.
 		p transcript show: (self sumOf: coll) printString; newLine.

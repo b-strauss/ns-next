@@ -4,11 +4,11 @@ Newspeak3
    the one unwinder, which runs an `ensure:` block on the way -- once, since
    the unwinder marks it run -- and an `ifCurtailed:` block, which runs only
    on an unwind; both before the value is printed. *)
-class EnsureRunsOnceThroughAHandlerReturn usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error. |
+class EnsureRunsOnceThroughAHandlerReturn = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: ([[Error signal] ensure: [transcript show: 'ensured'; newLine]]
                               on: Error do: [:e | e return: 1]) printString; newLine.
         transcript show: ([[Error signal] ifCurtailed: [transcript show: 'curtailed'; newLine]]

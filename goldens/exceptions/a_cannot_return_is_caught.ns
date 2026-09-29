@@ -4,9 +4,8 @@ Newspeak3
    from a block whose home has returned, run inside `on: Error do:`, is
    caught, its text the one an uncaught one ends the run with, and the
    program carries on after the handler. *)
-class ACannotReturnIsCaught usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Error = thePlatform kernel Error.
+class ACannotReturnIsCaught = Object new (
+    |
       stored ::= nil. |
 ) (
     stash = (
@@ -14,6 +13,7 @@ class ACannotReturnIsCaught usingPlatform: thePlatform = Object new (
         ^'stashed'
     )
     public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: self stash; newLine.
         transcript show: ([stored value] on: Error do: [:e | e messageText]); newLine.
         transcript show: 'after'; newLine.

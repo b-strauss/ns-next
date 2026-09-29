@@ -4,7 +4,7 @@ Newspeak3
    value it had when it was evaluated. One case per consumer -- keyword
    arguments, a binary send's right operand mutating the left,
    dynamic-array elements, and an inlined arm. *)
-class OperandOrder usingPlatform: platform = Object new (
+class OperandOrder = Object new (
 ) (
     first: x second: y = ( ^x )
     keywordArgs = ( | t | t:: 1. ^self first: t second: (t:: 9) )

@@ -8,11 +8,12 @@ Newspeak3
    to it is that run time error, raised when Applied is instantiated: an
    uncaught error naming the clause's class, the selector it sends and the
    factory Marker has, exit status 1, and nothing after it prints. *)
-class MixinClauseNamingTheWrongFactoryFails usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinClauseNamingTheWrongFactoryFails = Object new () (
     class Marker withTag: aTag = Object new (| public tag = aTag. |) (
     ) : ()
     class Applied = Object new <: Marker new.
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: 'before Applied new'; newLine.
         Applied new.
         t show: 'after Applied new'; newLine.

@@ -13,7 +13,7 @@ Newspeak3
    The member is a class named `String` rather than one named `Object`: a
    nested class `Object = Object new` finds itself in its own clause by the
    same rule and is refused as a cyclic class definition. *)
-class EnclosingBuiltinName usingPlatform: platformAtCreation = Object new () (
+class EnclosingBuiltinName = Object new () (
     class String = Object new () (
         public tag = ( ^'local' )
     )

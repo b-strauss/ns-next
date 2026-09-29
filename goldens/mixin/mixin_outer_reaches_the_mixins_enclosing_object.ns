@@ -12,8 +12,7 @@ Newspeak3
    own method still answers the Host. Each of the three objects identifies
    itself differently, so reaching the Host, or the module, from Marker's
    method would print a different first line. *)
-class MixinOuterReachesTheMixinsEnclosingObject usingPlatform: p = Object new (|
-    t = p transcript.
+class MixinOuterReachesTheMixinsEnclosingObject = Object new (|
     library = Library named: 'the library'.
 |) (
     class Library named: name = Object new (| libraryName = name. |) (
@@ -31,7 +30,7 @@ class MixinOuterReachesTheMixinsEnclosingObject usingPlatform: p = Object new (|
     libraryMarker = ( ^library Marker )
     public identify = ( ^'the module' )
     public main: platform args: arguments = (
-        | applied = (Host named: 'the host') Applied new. |
+        | t = platform transcript. applied = (Host named: 'the host') Applied new. |
         t show: applied markerSees; newLine.
         t show: applied appliedSees; newLine.
     )

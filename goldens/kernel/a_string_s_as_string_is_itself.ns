@@ -2,7 +2,7 @@ Newspeak3
 'Kernel'
 (* asString converts to a string, so a string answers itself: the very
    object, not a copy. *)
-class StringAsString usingPlatform: platform = Object new () (
+class StringAsString = Object new () (
     public main: p args: a = (
         | text |
         text:: 'abc'.

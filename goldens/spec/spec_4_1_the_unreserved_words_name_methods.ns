@@ -7,7 +7,7 @@ Newspeak3
    names a method only behind one, while class and lazy need none -- and
    private lazy = ( ... ) is a private method named lazy, since 6.3.3's
    lazySlotDecl, tried before it, does not match. Both sides alike. *)
-class Spec41TheUnreservedWordsNameMethods usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec41TheUnreservedWordsNameMethods = Object new () (
     class Holder = Object new () (
         public public = ( ^'public ' )
         public protected = ( ^'protected ' )
@@ -25,7 +25,7 @@ class Spec41TheUnreservedWordsNameMethods usingPlatform: p = Object new (| t = p
         public read = ( ^lazy )
     ) : ()
     public main: platform args: arguments = (
-        | holder |
+        | t = platform transcript. holder |
         holder:: Holder new.
         t show: holder all; newLine.
         t show: holder public, holder protected, holder private, holder class; newLine.

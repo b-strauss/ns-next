@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class WhileLoop usingPlatform: platform = Object new (
+class WhileLoop = Object new (
 	| n ::= 0. sum ::= 0. |
 ) (
 	public main: p args: a = (

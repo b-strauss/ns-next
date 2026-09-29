@@ -2,7 +2,7 @@ Newspeak3
 'T'
 (* A native loop whose condition goes non-Boolean after two rounds sends
    `mustBeBoolean` to it, after exactly two bodies. *)
-class WhileVarMbb usingPlatform: platform = Object new (
+class WhileVarMbb = Object new (
     | n ::= 0. |
 ) (
     public main: p args: a = (

@@ -3,11 +3,11 @@ Newspeak3
 (* A `MessageNotUnderstood` a program signals itself carries no message,
    and ends the run as any other unhandled exception: the host receives the
    exception's description, the class's name when it has no text. *)
-class AMessageNotUnderstoodAProgramSignalsEndsTheRun usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private MessageNotUnderstood = thePlatform kernel MessageNotUnderstood. |
+class AMessageNotUnderstoodAProgramSignalsEndsTheRun = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. MessageNotUnderstood = platform kernel MessageNotUnderstood. |
         transcript show: 'start'; newLine.
         MessageNotUnderstood new signal.
         transcript show: 'not reached'; newLine.

@@ -30,7 +30,7 @@ Newspeak3
    What is applied is First's mixin, not First's superclass (the result "is
    a class I with mixin M and superclass S"), so neither First's own
    superclass clause nor Noisy's initializer runs: no line mentions them. *)
-class MixinInitializerOrder usingPlatform: p = Object new (| t = p transcript. |) (
+class MixinInitializerOrder = Object new (| t ::= nil. |) (
     class Root withRoot: value = Object new (
         | rootSlot = outer MixinInitializerOrder log: 'Root initializer receives ', value. |
     ) () : ()
@@ -58,6 +58,7 @@ class MixinInitializerOrder usingPlatform: p = Object new (| t = p transcript. |
         ^clause, '(', argument, ')'
     )
     public main: platform args: arguments = (
+        t:: platform transcript.
         Applied from: 'x'.
         log: 'the factory answered'.
     )

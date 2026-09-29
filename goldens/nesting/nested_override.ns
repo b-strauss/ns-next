@@ -15,7 +15,7 @@ Newspeak3
    class whose enclosing object is mutable, as `g` is here, is refused where
    an instance is made (newspeak-spec.pdf 3.1.1), which would be `n1 new`
    itself rather than the line above it. *)
-class NestedOverride usingPlatform: p = Object new (| t ::= p transcript. private List = p collections List. |) (
+class NestedOverride = Object new (| private List ::= nil. |) (
     class Outer = Object new () (
         class Inner = Object new () (
             public printString = ( ^'Inner instance' )
@@ -28,7 +28,8 @@ class NestedOverride usingPlatform: p = Object new (| t ::= p transcript. privat
         public setInner: v = ( Inner:: v )
     )
     public main: platform args: args = (
-        | g n1 n2 |
+        | t ::= platform transcript. g n1 n2 |
+        List:: platform collections List.
         g:: GrandChildOfOuter new.
         n1:: g Nested.
         t show: n1 new printString; newLine.

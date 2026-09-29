@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class BenchLoop usingPlatform: platform = Object new (
+class BenchLoop = Object new (
 	| n ::= 0. sum ::= 0. |
 ) (
 	public main: p args: a = (

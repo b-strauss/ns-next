@@ -6,7 +6,7 @@ Newspeak3
    the super send of 5.10: its lookup starts above `Derived`, the class
    that declares the clause, and finds `Base`'s nested class `Helper`, not
    the `Helper` `Derived` declares itself. *)
-class SuperPrefixedClause usingPlatform: platformAtCreation = Object new () (
+class SuperPrefixedClause = Object new () (
     class Base = Object new () (
         public class Helper = Object new () (
             public tag = ( ^'from Base' )

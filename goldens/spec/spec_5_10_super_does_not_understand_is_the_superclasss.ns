@@ -5,7 +5,7 @@ Newspeak3
    ... Otherwise, the #doesNotUnderstand: method defined for S is invoked".
    S is the superclass of the current class, A: nothing above B defines
    foo, so A's doesNotUnderstand: answers -- not B's, the receiver's own. *)
-class Spec510SuperDoesNotUnderstandIsTheSuperclasss usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec510SuperDoesNotUnderstandIsTheSuperclasss = Object new () (
     class A = Object new () (
         protected doesNotUnderstand: message = ( ^'A handled it' )
     )
@@ -14,6 +14,7 @@ class Spec510SuperDoesNotUnderstandIsTheSuperclasss usingPlatform: p = Object ne
         public foo = ( ^super foo )
     )
     public main: platform args: args = (
+        | t = platform transcript. |
         t show: B new foo; newLine.
     )
 ) : ()

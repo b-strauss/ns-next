@@ -7,7 +7,7 @@ Newspeak3
    public one named public, and an access modifier's word names a lazy slot
    only behind a modifier. Each starts nil and runs its initializer on its
    first read only. *)
-class Spec633TheUnreservedWordsNameLazySlots usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec633TheUnreservedWordsNameLazySlots = Object new () (
     class Holder = Object new (| public trace ::= ''. |) (
         lazy public public = mark: 'a'.
         public lazy protected = mark: 'b'.
@@ -18,7 +18,7 @@ class Spec633TheUnreservedWordsNameLazySlots usingPlatform: p = Object new (| t 
         public all = ( ^public, protected, private, lazy, class )
     ) : ()
     public main: platform args: arguments = (
-        | holder |
+        | t = platform transcript. holder |
         holder:: Holder new.
         t show: 'before: ', holder trace; newLine.
         t show: holder all; newLine.

@@ -15,8 +15,8 @@ Newspeak3
    before the capture, the case a copy is right for. readOnlyInABranch:
    an inlined ifTrue: block is not a block at run time, so reading x
    there captures nothing. *)
-class CaptureInInlinedLoops usingPlatform: platform = Object new (
-	| transcript = platform transcript. private List = platform collections List. |
+class CaptureInInlinedLoops = Object new (
+	| transcript ::= nil. private List ::= nil. |
 ) (
 	loopBody = (
 		| index ::= 0. x ::= 0. blocks ::= nil. |
@@ -52,6 +52,8 @@ class CaptureInInlinedLoops usingPlatform: platform = Object new (
 		transcript newLine
 	)
 	public main: platform args: arguments = (
+		transcript:: platform transcript.
+		List:: platform collections List.
 		self show: self loopBody.
 		self show: self loopCondition.
 		self show: self loopConditionWhileFalse.

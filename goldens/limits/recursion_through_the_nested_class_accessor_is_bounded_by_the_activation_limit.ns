@@ -8,7 +8,7 @@ Newspeak3
    limit. `Link` has no slots, so its instantiation activates nothing. It used
    to end at the limit on re-entries of the run loop from Rust, which no
    longer exists (`docs/design/execution.md`, "No re-entry from Rust"). *)
-class Chain usingPlatform: platform = Object new (
+class Chain = Object new (
 ) (
     public class Link = Object new (
     ) (

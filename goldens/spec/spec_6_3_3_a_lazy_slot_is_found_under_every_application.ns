@@ -12,7 +12,7 @@ Newspeak3
    A mutable lazy slot keeps its setter (6.3.2): writing a value makes the
    getter answer it without evaluating the initializer, and writing nil
    empties the slot again, so the next read evaluates it once more. *)
-class Spec633LazyApplications usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec633LazyApplications = Object new () (
     class Counting = Object new (| public evaluations ::= 0. |) (
         lazy public counter ::= count.
         count = ( evaluations:: evaluations + 1. ^evaluations * 10 )
@@ -21,7 +21,7 @@ class Spec633LazyApplications usingPlatform: p = Object new (| t = p transcript.
     class Direct = Object new <: Counting.
     class Shifted = Wide new <: Counting.
     public main: platform args: arguments = (
-        | direct shifted round |
+        | t = platform transcript. direct shifted round |
         direct:: Direct new.
         shifted:: Shifted new.
         round:: 1.

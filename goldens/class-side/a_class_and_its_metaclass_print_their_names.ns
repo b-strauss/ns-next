@@ -3,9 +3,10 @@ Newspeak3
 (* A class prints as its name and a metaclass as its class's name followed
    by ` class`, as Primordial Soup's `Class>>printString` and
    `Metaclass>>printString` do. `Metaclass` itself is a class. *)
-class AClassAndItsMetaclassPrint usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class AClassAndItsMetaclassPrint = Object new () (
 	class Foo = Object new () ()
 	public main: platform args: args = (
+		| transcript = platform transcript. |
 		transcript show: Foo printString; newLine.
 		transcript show: Foo class printString; newLine.
 		transcript show: Foo class class printString; newLine.

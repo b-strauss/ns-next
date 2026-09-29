@@ -14,8 +14,8 @@ Newspeak3
    capture, 1. aBlockLocalOnlyWritten: the variable belongs to a block, not
    to the method, and the two blocks below it carry that block's vector, so
    9. *)
-class ANestedBlockThatOnlyWrites usingPlatform: platform = Object new (
-	| transcript = platform transcript. |
+class ANestedBlockThatOnlyWrites = Object new (
+	
 ) (
 	writeThroughTwoBlocks = (
 		| count ::= 0. maker ::= nil. |
@@ -34,7 +34,7 @@ class ANestedBlockThatOnlyWrites usingPlatform: platform = Object new (
 		   slot ]
 	)
 	public main: platform args: arguments = (
-		| pair |
+		| transcript = platform transcript. pair |
 		transcript show: self writeThroughTwoBlocks printString; newLine.
 		pair:: self writerAndReaderThreeDeep.
 		(pair at: 1) value value.

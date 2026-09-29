@@ -16,10 +16,11 @@ Newspeak3
    (self twice: 2) + 3 if keyword bound tighter than binary. A regression
    here is silent wrong output at exit status 0 in every program that does
    arithmetic. *)
-class Spec543Precedence usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec543Precedence = Object new () (
     public ten = ( ^10 )
     public twice: value = ( ^value * 2 )
     public main: platform args: arguments = (
+        | t = platform transcript. |
         t show: (5 + 4 * 2) printString; newLine.
         t show: (2 + self ten) printString; newLine.
         t show: (self twice: 2 + 3) printString; newLine.

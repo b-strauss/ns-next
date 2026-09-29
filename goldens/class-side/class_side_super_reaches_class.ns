@@ -7,7 +7,7 @@ Newspeak3
    `build`'s current class, `Simple class`, has `Class` itself as its
    superclass. `super printString` inside `build` therefore reaches
    `Class>>printString`, which answers `self`'s (`Simple`'s) name. *)
-class ClassSideSuperReachesClass usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class ClassSideSuperReachesClass = Object new () (
 	class Base = Object new () (
 	) : (
 	)
@@ -17,6 +17,7 @@ class ClassSideSuperReachesClass usingPlatform: thePlatform = Object new (| tran
 		public build = ( ^super printString )
 	)
 	public main: platform args: args = (
+		| transcript = platform transcript. |
 		transcript show: Simple build; newLine.
 	)
 ) : ()

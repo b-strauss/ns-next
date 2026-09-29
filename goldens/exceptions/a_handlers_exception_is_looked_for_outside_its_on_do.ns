@@ -7,12 +7,11 @@ Newspeak3
    and its handler, although those are still on the stack. So the inner
    `on: Halt` below is passed by, the outermost one catches the halt, and
    without one the halt is unhandled and ends the run -- last. *)
-class AHandlersExceptionIsLookedForOutsideItsOnDo usingPlatform: thePlatform = Object new (
-    | transcript = thePlatform transcript.
-      private Halt = thePlatform kernel Halt.
-      private Error = thePlatform kernel Error. |
+class AHandlersExceptionIsLookedForOutsideItsOnDo = Object new (
+    
 ) (
     public main: platform args: arguments = (
+        | transcript = platform transcript. Halt = platform kernel Halt. Error = platform kernel Error. |
         transcript show: ([Error signal: 'one'] on: Error do: [:e |
                               [self halt. 'not reached'] on: Halt do: [:h | 'the handler''s own']]); newLine.
         transcript show: ([[[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']]

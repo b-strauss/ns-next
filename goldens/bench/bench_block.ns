@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class BenchBlock usingPlatform: platform = Object new (
+class BenchBlock = Object new (
 	| n ::= 0. sum ::= 0. |
 ) (
 	bump: x = (

@@ -5,9 +5,9 @@ Newspeak3
    and an empty sequential one may be written || -- inside a method as in a
    class header. (`first` and `second` do not refer to each other;
    `spec_6_3_2_*` pins what a simultaneous clause does when they do.) *)
-class Spec518ACodeBodyDeclaresSimultaneousTemporaries usingPlatform: p = Object new (| t = p transcript. |) (
+class Spec518ACodeBodyDeclaresSimultaneousTemporaries = Object new () (
     public main: platform args: arguments = (
-        || first = 3. second = 4. ||
+        || t = platform transcript. first = 3. second = 4. ||
         t show: (first + second) printString; newLine.
         t show: ([:x | || x + 1] value: 1) printString; newLine
     )
