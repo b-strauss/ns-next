@@ -59,8 +59,9 @@ impl CallSite {
 /// The integer leaves the compiler emits inline, guarded, with the ordinary
 /// send as the fallback: every binary member of `IntegerPrimitive`. Each one
 /// is computed with a `checked_*` operation, so the cases that have no
-/// integer result -- overflow, a zero divisor -- answer `None` and take the
-/// fallback, leaving every error and its text to `builtins/numbers.rs`.
+/// `i64` result -- one that does not fit, a zero divisor -- answer `None` and
+/// take the fallback, leaving the `LargeInteger` promotion and every error
+/// and its text to `builtins/numbers.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerOperation {
     Add,
@@ -326,10 +327,11 @@ pub enum Instruction {
     },
     /// An integer leaf's inlined fast path. Performs `operation` on `left` and
     /// `right` into `destination` when both hold `Value::SmallInteger` and the
-    /// result does not overflow; otherwise jumps to `target`, where the ordinary
-    /// send stands. Every error -- overflow, a non-integer operand, a user
-    /// subclass -- is raised by that send's primitive, never here, so there is
-    /// one source for each of them.
+    /// result fits `i64`; otherwise jumps to `target`, where the ordinary
+    /// send stands. A result that does not fit is promoted to a `LargeInteger`,
+    /// and every error -- a non-integer operand, a zero divisor, a user
+    /// subclass -- is raised, by that send's primitive, never here, so there
+    /// is one source for each of them.
     ///
     /// Reads and writes only registers of the activation executing it -- never
     /// another frame's by reference -- so `outer_reach_of` does not name it.

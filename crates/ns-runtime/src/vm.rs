@@ -645,10 +645,11 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             // The inlined fast path for an integer leaf. Not dispatch: it either
             // computes the one answer the primitive would have computed, or
             // declines and jumps to the ordinary send standing at `target`. Every
-            // case it declines -- a non-integer operand, an overflow, a zero
-            // divisor -- is that send's primitive to decide, so no error and no
-            // error text is raised here. It cannot fail for any operand, which is
-            // what lets a decoded image reach it safely.
+            // case it declines -- a non-integer operand, a result that does not
+            // fit, a zero divisor -- is that send's primitive to decide, so
+            // nothing is promoted and no error or error text is raised here. It
+            // cannot fail for any operand, which is what lets a decoded image
+            // reach it safely.
             Instruction::IntegerBinary {
                 operation,
                 destination,

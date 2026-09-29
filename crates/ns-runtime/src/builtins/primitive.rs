@@ -17,6 +17,7 @@ pub enum Primitive {
     Value(ValuePrimitive),
     Behavior(BehaviorPrimitive),
     Integer(IntegerPrimitive),
+    LargeInteger(LargeIntegerPrimitive),
     Float(FloatPrimitive),
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
@@ -88,6 +89,21 @@ impl Primitive {
                 | IntegerPrimitive::Negated
                 | IntegerPrimitive::Absolute
                 | IntegerPrimitive::PrintString,
+            ) => false,
+            Primitive::LargeInteger(LargeIntegerPrimitive::Equal) => true,
+            Primitive::LargeInteger(
+                LargeIntegerPrimitive::Add
+                | LargeIntegerPrimitive::Subtract
+                | LargeIntegerPrimitive::Multiply
+                | LargeIntegerPrimitive::FloorDivide
+                | LargeIntegerPrimitive::Less
+                | LargeIntegerPrimitive::Greater
+                | LargeIntegerPrimitive::LessOrEqual
+                | LargeIntegerPrimitive::GreaterOrEqual
+                | LargeIntegerPrimitive::Hash
+                | LargeIntegerPrimitive::Negated
+                | LargeIntegerPrimitive::Absolute
+                | LargeIntegerPrimitive::PrintString,
             ) => false,
             Primitive::Float(FloatPrimitive::Equal) => true,
             Primitive::Float(
@@ -197,6 +213,27 @@ pub enum IntegerPrimitive {
     LessOrEqual,
     GreaterOrEqual,
     Equal,
+    Negated,
+    Absolute,
+    PrintString,
+}
+
+/// `LargeInteger`'s leaves: `Integer`'s protocol for a receiver whose
+/// payload is `ObjectData::LargeInteger`. A family of its own rather than
+/// `Integer`'s leaves widened, so `IntegerPrimitive` keeps meaning "the
+/// receiver is a `SmallInteger`", which is what a JIT tier emits inline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LargeIntegerPrimitive {
+    Add,
+    Subtract,
+    Multiply,
+    FloorDivide,
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    Equal,
+    Hash,
     Negated,
     Absolute,
     PrintString,
@@ -484,6 +521,76 @@ pub const MIRROR: &[MirrorEntry] = &[
         "integerAsString:ifFail:",
         "asString",
         Primitive::Integer(IntegerPrimitive::PrintString),
+    ),
+    mirror(
+        "largeInteger:add:ifFail:",
+        "+",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Add),
+    ),
+    mirror(
+        "largeInteger:subtract:ifFail:",
+        "-",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Subtract),
+    ),
+    mirror(
+        "largeInteger:multiply:ifFail:",
+        "*",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Multiply),
+    ),
+    mirror(
+        "largeInteger:floorDivide:ifFail:",
+        "//",
+        Primitive::LargeInteger(LargeIntegerPrimitive::FloorDivide),
+    ),
+    mirror(
+        "largeInteger:lessThan:ifFail:",
+        "<",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Less),
+    ),
+    mirror(
+        "largeInteger:greaterThan:ifFail:",
+        ">",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Greater),
+    ),
+    mirror(
+        "largeInteger:lessOrEqual:ifFail:",
+        "<=",
+        Primitive::LargeInteger(LargeIntegerPrimitive::LessOrEqual),
+    ),
+    mirror(
+        "largeInteger:greaterOrEqual:ifFail:",
+        ">=",
+        Primitive::LargeInteger(LargeIntegerPrimitive::GreaterOrEqual),
+    ),
+    mirror(
+        "largeInteger:equals:ifFail:",
+        "=",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Equal),
+    ),
+    mirror(
+        "largeIntegerHash:ifFail:",
+        "hash",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Hash),
+    ),
+    mirror(
+        "largeIntegerNegated:ifFail:",
+        "negated",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Negated),
+    ),
+    mirror(
+        "largeIntegerAbsolute:ifFail:",
+        "abs",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Absolute),
+    ),
+    mirror(
+        "largeIntegerPrintString:ifFail:",
+        "printString",
+        Primitive::LargeInteger(LargeIntegerPrimitive::PrintString),
+    ),
+    mirror(
+        "largeIntegerAsString:ifFail:",
+        "asString",
+        Primitive::LargeInteger(LargeIntegerPrimitive::PrintString),
     ),
     mirror(
         "float:add:ifFail:",

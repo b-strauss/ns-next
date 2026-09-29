@@ -1,4 +1,5 @@
-//! `Integer` (`i64`) and `Float` (`f64`) native methods.
+//! `Integer` (`i64`), `LargeInteger` (`ArbitraryInteger`) and `Float`
+//! (`f64`) native methods.
 //!
 //! # Known gap: no numeric tower
 //!
@@ -28,18 +29,17 @@
 //!   keeps the `=`/`hash` contract.
 //!
 //! Implementing the tower means widening the whole `Value` numeric domain
-//! (`LargeInteger`/`Fraction` belong in the same change) and is out of scope
-//! here. Until then these operations fail loudly rather than silently, and
-//! with a type-mismatch message of their own: reporting a mixed-type
-//! argument as an "Integer overflow" would be actively misleading.
+//! (`Fraction` belongs in the same change) and is out of scope here. Until
+//! then these operations fail loudly rather than silently, with a
+//! type-mismatch message that names the argument.
 
-use crate::builtins::primitive::{FloatPrimitive, IntegerPrimitive, Primitive};
+use crate::builtins::primitive::{
+    FloatPrimitive, IntegerPrimitive, LargeIntegerPrimitive, Primitive,
+};
 use crate::types::*;
-use crate::{Heap, Mutator, Symbol};
+use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 
-/// A mixed-type numeric operation (see this module's known-gap note). Kept
-/// distinct from the overflow error below so the message never claims an
-/// overflow that did not happen.
+/// A mixed-type numeric operation (see this module's known-gap note).
 fn type_mismatch<'gc>(
     heap: &Heap<'gc>,
     receiver: &Value<'gc>,
@@ -98,8 +98,9 @@ pub(crate) fn float_hash(value: f64) -> i64 {
 /// `//` on two `i64`s, rounded toward negative infinity (Primordial Soup's
 /// `Integer>>//`; `num-integer`'s `div_floor`). `None` for a zero divisor
 /// and for `i64::MIN // -1`, whose quotient does not fit -- the leaf
-/// answers the one and raises the other, and `IntegerBinary` falls back to
-/// the send for both, so this is the only copy of the rule.
+/// answers `i64::MIN // -1` with a `LargeInteger` and raises for a zero
+/// divisor, and `IntegerBinary` falls back to the send for both, so this is
+/// the only copy of the rule.
 #[inline]
 pub(crate) fn checked_floor_divide(dividend: i64, divisor: i64) -> Option<i64> {
     let quotient = dividend.checked_div(divisor)?;
@@ -109,6 +110,12 @@ pub(crate) fn checked_floor_divide(dividend: i64, divisor: i64) -> Option<i64> {
     } else {
         Some(quotient)
     }
+}
+
+/// An `i64` operation's result that does not fit `i64`, as the
+/// `LargeInteger` §5.1.1 asks for: "integers are not limited in size".
+fn promote<'gc>(mutator: &mut Mutator<'gc>, wide: i128) -> Value<'gc> {
+    mutator.new_integer(ArbitraryInteger::from_i128(wide))
 }
 
 pub(crate) fn execute_integer<'gc>(
@@ -132,23 +139,20 @@ pub(crate) fn execute_integer<'gc>(
             arguments.first(),
         )
     };
-    let overflow = |operator: &str| NewspeakError {
-        selector: Symbol::intern(operator),
-        receiver: Value::SmallInteger(receiver_integer),
-        message: format!(
-            "Integer overflow computing {receiver_integer} {operator} {}",
-            mutator.heap.describe_argument(arguments.first())
-        ),
+    // `+`/`-`/`*`: a non-Integer argument is a type mismatch. A result that
+    // fits is answered without allocating; one that does not is recomputed
+    // in `i128`, where two `i64`s' sum, difference or product always fits,
+    // and handed back as the inner `Err` for the caller to promote -- the
+    // closure holds `mutator` shared, so it cannot allocate the
+    // `LargeInteger` itself.
+    let arithmetic = |operator: &str,
+                      checked: fn(i64, i64) -> Option<i64>,
+                      wide: fn(i128, i128) -> i128| match argument_integer() {
+        None => Err(mismatch(operator)),
+        Some(argument) => Ok(checked(receiver_integer, argument)
+            .map(Value::SmallInteger)
+            .ok_or_else(|| wide(i128::from(receiver_integer), i128::from(argument)))),
     };
-    // `+`/`-`/`*`: a non-Integer argument is a type mismatch; only a genuine
-    // `checked_*` failure is an overflow.
-    let arithmetic =
-        |operator: &str, operation: fn(i64, i64) -> Option<i64>| match argument_integer() {
-            None => Err(mismatch(operator)),
-            Some(argument) => operation(receiver_integer, argument)
-                .map(Value::SmallInteger)
-                .ok_or_else(|| overflow(operator)),
-        };
     // Ordering comparisons: an argument of the wrong type is an error, not a
     // silent `false`.
     let compare = |operator: &str, operation: fn(i64, i64) -> bool| match argument_integer() {
@@ -156,9 +160,18 @@ pub(crate) fn execute_integer<'gc>(
         Some(argument) => Ok(Value::Boolean(operation(receiver_integer, argument))),
     };
     match primitive {
-        IntegerPrimitive::Add => Some(arithmetic("+", i64::checked_add)),
-        IntegerPrimitive::Subtract => Some(arithmetic("-", i64::checked_sub)),
-        IntegerPrimitive::Multiply => Some(arithmetic("*", i64::checked_mul)),
+        IntegerPrimitive::Add => Some(
+            arithmetic("+", i64::checked_add, |left, right| left + right)
+                .map(|answer| answer.unwrap_or_else(|wide| promote(mutator, wide))),
+        ),
+        IntegerPrimitive::Subtract => Some(
+            arithmetic("-", i64::checked_sub, |left, right| left - right)
+                .map(|answer| answer.unwrap_or_else(|wide| promote(mutator, wide))),
+        ),
+        IntegerPrimitive::Multiply => Some(
+            arithmetic("*", i64::checked_mul, |left, right| left * right)
+                .map(|answer| answer.unwrap_or_else(|wide| promote(mutator, wide))),
+        ),
         IntegerPrimitive::FloorDivide => Some(match argument_integer() {
             None => Err(mismatch("//")),
             Some(0) => Err(NewspeakError {
@@ -166,9 +179,12 @@ pub(crate) fn execute_integer<'gc>(
                 receiver: Value::SmallInteger(receiver_integer),
                 message: "division by zero".to_string(),
             }),
-            Some(divisor) => checked_floor_divide(receiver_integer, divisor)
-                .map(Value::SmallInteger)
-                .ok_or_else(|| overflow("//")),
+            // With the zero divisor refused above, the one quotient that
+            // does not fit is `i64::MIN // -1`'s, which is `-i64::MIN`.
+            Some(divisor) => Ok(match checked_floor_divide(receiver_integer, divisor) {
+                Some(quotient) => Value::SmallInteger(quotient),
+                None => promote(mutator, -i128::from(receiver_integer)),
+            }),
         }),
         IntegerPrimitive::Less => Some(compare("<", |left, right| left < right)),
         IntegerPrimitive::Greater => Some(compare(">", |left, right| left > right)),
@@ -184,21 +200,77 @@ pub(crate) fn execute_integer<'gc>(
             arguments,
         )
         .map(|answer| Ok(Value::Boolean(answer))),
-        IntegerPrimitive::Negated => Some(
-            receiver_integer
-                .checked_neg()
-                .map(Value::SmallInteger)
-                .ok_or_else(|| overflow("negated")),
-        ),
-        IntegerPrimitive::Absolute => Some(
-            receiver_integer
-                .checked_abs()
-                .map(Value::SmallInteger)
-                .ok_or_else(|| overflow("abs")),
-        ),
+        // `i64::MIN` is the one receiver whose negation and absolute value
+        // do not fit.
+        IntegerPrimitive::Negated => Some(Ok(match receiver_integer.checked_neg() {
+            Some(negated) => Value::SmallInteger(negated),
+            None => mutator.new_integer(ArbitraryInteger::from_i64(receiver_integer).negated()),
+        })),
+        IntegerPrimitive::Absolute => Some(Ok(match receiver_integer.checked_abs() {
+            Some(absolute) => Value::SmallInteger(absolute),
+            None => mutator.new_integer(ArbitraryInteger::from_i64(receiver_integer).absolute()),
+        })),
         IntegerPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_integer.to_string()),
         ))),
+    }
+}
+
+/// `LargeInteger>>hash`, and the derived hash of a value slot holding one:
+/// the sign and magnitude's content hash, folded to 32 bits as
+/// `content_hash` folds every content hash, which `builtins::value`'s sum
+/// over a value's slots relies on to stay inside an `i64`.
+pub(crate) fn large_integer_hash(integer: &ArbitraryInteger) -> i64 {
+    crate::hash::content_hash((integer.is_negative(), integer.magnitude()))
+}
+
+/// `LargeInteger>>=`'s rule: only a `LargeInteger` of the same value is
+/// equal. A `SmallInteger` never is, because `new_integer` never makes a
+/// `LargeInteger` of a value that fits.
+pub(crate) fn large_integer_equals<'gc>(
+    heap: &Heap<'gc>,
+    receiver: &ArbitraryInteger,
+    argument: Option<&Value<'gc>>,
+) -> bool {
+    match argument {
+        Some(Value::Object(object)) => heap
+            .large_integer(*object)
+            .is_some_and(|other| other == *receiver),
+        _ => false,
+    }
+}
+
+pub(crate) fn execute_large_integer<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: LargeIntegerPrimitive,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    // The payload, never the class: a user subclass's instance, or a
+    // `LargeInteger new`, is no number and declines to `Object`'s methods.
+    let Value::Object(object) = receiver else {
+        return None;
+    };
+    let receiver_integer = mutator.heap.large_integer(object)?;
+    match primitive {
+        LargeIntegerPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
+            mutator,
+            Primitive::LargeInteger(primitive),
+            large_integer_equals(&mutator.heap, &receiver_integer, arguments.first()),
+            receiver,
+            arguments,
+        )
+        .map(|answer| Ok(Value::Boolean(answer))),
+        LargeIntegerPrimitive::Hash => Some(Ok(Value::SmallInteger(large_integer_hash(
+            &receiver_integer,
+        )))),
+        LargeIntegerPrimitive::PrintString => Some(Ok(Value::Object(
+            mutator.new_string(receiver_integer.to_decimal_string()),
+        ))),
+        // The arithmetic and the ordering on a `LargeInteger` receiver are
+        // still to come; until then they decline to `Integer`'s methods
+        // through `super`.
+        _ => None,
     }
 }
 

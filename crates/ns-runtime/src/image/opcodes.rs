@@ -271,7 +271,7 @@ pub const CLASS_PLATFORM_PATH: u8 = 5;
 /// 2026-09-26 when the four moved into a shipped module (now
 /// `PlatformFactory.ns`), whose objects an image names by their platform
 /// paths. A stale image's reference to one names no builtin rather than
-/// whichever class took the number. Next free number: 31.
+/// whichever class took the number. Next free number: 32.
 pub const RETIRED_BUILTIN_CLASS_TAGS: [u8; 6] = [8, 10, 13, 18, 19, 29];
 
 /// What a frame was activated for, numbered in the order `types::FrameKind`

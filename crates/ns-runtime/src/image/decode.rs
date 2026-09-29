@@ -852,6 +852,7 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         27 => BuiltinClass::Message,
         28 => BuiltinClass::Halt,
         30 => BuiltinClass::Future,
+        31 => BuiltinClass::LargeInteger,
         _ => return None,
     })
 }

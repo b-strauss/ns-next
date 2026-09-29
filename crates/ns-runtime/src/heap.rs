@@ -1281,6 +1281,17 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// The integer a `LargeInteger` object holds; `None` for any other
+    /// object. Copies out, as every accessor does (`docs/design/memory.md`,
+    /// "The seam").
+    pub fn large_integer(&self, object: ObjectReference<'gc>) -> Option<crate::ArbitraryInteger> {
+        self.check_object_origin(object);
+        match &self.objects[object.index as usize].data {
+            ObjectData::LargeInteger(integer) => Some(integer.clone()),
+            _ => None,
+        }
+    }
+
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
@@ -1551,6 +1562,9 @@ impl<'gc> Heap<'gc> {
                 self.check_object_origin(*object);
                 match &self.objects[object.index as usize].data {
                     ObjectData::String(string) => format!("the String {string:?}"),
+                    // Bare digits, as a `SmallInteger` describes: which of the
+                    // two an integer is, is no business of an error message.
+                    ObjectData::LargeInteger(integer) => integer.to_decimal_string(),
                     ObjectData::Symbol(symbol) => format!("the Symbol #{symbol}"),
                     ObjectData::Array(items) => format!("an Array of {}", items.len()),
                     ObjectData::Closure(_) => "a Block".to_string(),
@@ -3063,7 +3077,7 @@ impl<'gc> Heap<'gc> {
                     replace(copied);
                 }
                 // No `Value` field at all.
-                ObjectData::String(_) | ObjectData::Symbol(_) => {}
+                ObjectData::String(_) | ObjectData::Symbol(_) | ObjectData::LargeInteger(_) => {}
                 // Every handle a class object holds -- its enclosing object,
                 // its declaring class, its superclass, itself -- is an
                 // `ObjectReference`, not a `Value`: no future can stand in

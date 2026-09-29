@@ -1302,10 +1302,11 @@ fn an_inlined_integer_operation_answers_what_the_primitive_answers() {
 
 /// The three cases the fast path declines although both operands are
 /// integers. Each must reach the ordinary send standing at the guard's
-/// target and raise that primitive's own error, unchanged -- `vm.rs` raises
-/// none of its own.
+/// target and get that primitive's own answer, unchanged -- a
+/// `LargeInteger` for a result that does not fit (§5.1.1), the primitive's
+/// error for a zero divisor -- since `vm.rs` neither promotes nor raises.
 #[test]
-fn an_inlined_integer_operation_leaves_overflow_and_division_by_zero_to_the_primitive() {
+fn an_inlined_integer_operation_leaves_promotion_and_division_by_zero_to_the_primitive() {
     let source = indoc! {"
         Newspeak3
         'T'
@@ -1326,11 +1327,10 @@ fn an_inlined_integer_operation_leaves_overflow_and_division_by_zero_to_the_prim
         "add:to:",
         &[maximum, one.clone()],
     );
-    let error = expect_error(&mut interpreter, result, "overflowing addition");
-    assert!(
-        error.message.contains("Integer overflow"),
-        "{}",
-        error.message
+    let sum = expect_ok(result, "overflowing addition");
+    assert_eq!(
+        large_integer_text(&mut interpreter, &sum),
+        "9223372036854775808"
     );
 
     let zero = interpreter.stash(Value::SmallInteger(0));
@@ -1338,8 +1338,8 @@ fn an_inlined_integer_operation_leaves_overflow_and_division_by_zero_to_the_prim
     let error = expect_error(&mut interpreter, result, "division by zero");
     assert_eq!(error.message, "division by zero");
 
-    // `i64::MIN // -1` has no `i64` result either, and `checked_div_euclid`
-    // declines it for the same reason a zero divisor is declined.
+    // `i64::MIN // -1` has no `i64` result either, and `checked_floor_divide`
+    // declines it as it declines a zero divisor.
     let minimum = interpreter.stash(Value::SmallInteger(i64::MIN));
     let minus_one = interpreter.stash(Value::SmallInteger(-1));
     let result = send(
@@ -1348,12 +1348,26 @@ fn an_inlined_integer_operation_leaves_overflow_and_division_by_zero_to_the_prim
         "divide:by:",
         &[minimum, minus_one],
     );
-    let error = expect_error(&mut interpreter, result, "overflowing division");
-    assert!(
-        error.message.contains("Integer overflow"),
-        "{}",
-        error.message
+    let quotient = expect_ok(result, "overflowing division");
+    assert_eq!(
+        large_integer_text(&mut interpreter, &quotient),
+        "9223372036854775808"
     );
+}
+
+/// The decimal text of the `LargeInteger` `root` holds, read off the heap so
+/// that a `SmallInteger` or any other object fails rather than printing.
+fn large_integer_text(interpreter: &mut Interpreter, root: &Root) -> String {
+    interpreter.enter(|mutator| {
+        let Value::Object(object) = mutator.fetch(root) else {
+            panic!("expected a LargeInteger object")
+        };
+        mutator
+            .heap()
+            .large_integer(object)
+            .unwrap_or_else(|| panic!("expected ObjectData::LargeInteger"))
+            .to_decimal_string()
+    })
 }
 
 /// A non-integer operand is the guard's other failure, and the primitive

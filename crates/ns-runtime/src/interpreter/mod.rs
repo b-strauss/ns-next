@@ -1442,6 +1442,20 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::String(string))
     }
 
+    /// The one way an `ArbitraryInteger` becomes a `Value`, so that every
+    /// integer has one representation: one that fits `i64` is a
+    /// `SmallInteger`, never a `LargeInteger` object, which `Integer>>=`,
+    /// `hash` and the image's canonical-encoding check all rely on.
+    pub fn new_integer(&mut self, integer: crate::ArbitraryInteger) -> Value<'gc> {
+        match integer.to_i64() {
+            Some(small) => Value::SmallInteger(small),
+            None => {
+                let class = self.builtin_class(BuiltinClass::LargeInteger);
+                Value::Object(self.new_instance_object(class, ObjectData::LargeInteger(integer)))
+            }
+        }
+    }
+
     /// The one object `symbol` is in this heap, allocated the first time
     /// anything asks for it.
     pub fn new_symbol(&mut self, symbol: Symbol) -> Value<'gc> {

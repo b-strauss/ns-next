@@ -65,6 +65,11 @@ pub enum ObjectData<'gc> {
     /// machinery walks and unwinds to. It stores the `FrameReference`, never
     /// an `ActivationReference`, since only a reified frame outlives its pop.
     Activation(FrameReference<'gc>),
+    /// An instance of `LargeInteger`: §5.1.1's integer that does not fit
+    /// `i64`. It never holds a value that does -- `Mutator::new_integer` is
+    /// the one way to make one and decides that -- so each integer has one
+    /// representation. Holds no handle.
+    LargeInteger(crate::ArbitraryInteger),
 }
 
 /// §3.1.1's enclosing-object condition on a value class -- every enclosing
@@ -282,6 +287,10 @@ pub enum BuiltinClass {
     /// §6.3.2's pull future, kernel-private as `Activation` is; its
     /// instances are made by the runtime (`interpreter/future.rs`).
     Future,
+    /// §5.1.1's unbounded integers: an `Integer` that does not fit `i64`. A
+    /// subclass of `Integer`, whose instances are the immediates, so
+    /// `3 class` stays `Integer`.
+    LargeInteger,
 }
 
 impl BuiltinClass {
@@ -294,7 +303,7 @@ impl BuiltinClass {
     /// superclass-first order: the kernel phase sorts the kinds by their
     /// depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 25] = [
+    pub const ALL: [BuiltinClass; 26] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -320,6 +329,7 @@ impl BuiltinClass {
         BuiltinClass::Message,
         BuiltinClass::Halt,
         BuiltinClass::Future,
+        BuiltinClass::LargeInteger,
     ];
 }
 
@@ -705,7 +715,7 @@ pub struct ResolveError {
 }
 
 /// A Newspeak-level error (an uncaught exception, `doesNotUnderstand:`, a
-/// primitive failure such as integer overflow). Distinct from a Rust
+/// primitive failure such as a division by zero). Distinct from a Rust
 /// `panic!`, which signals an `ns-runtime` bug, not a bad Newspeak program.
 #[derive(Debug, Clone)]
 pub struct NewspeakError<'gc> {

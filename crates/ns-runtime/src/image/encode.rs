@@ -212,6 +212,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Message => 27,
         BuiltinClass::Halt => 28,
         BuiltinClass::Future => 30,
+        BuiltinClass::LargeInteger => 31,
     }
 }
 
@@ -1123,7 +1124,7 @@ impl<'gc> GraphTable<'gc> {
                     );
                 }
                 ObjectData::Activation(frame) => stack.push(Pending::Frame(*frame)),
-                ObjectData::String(_) | ObjectData::Symbol(_) => {}
+                ObjectData::String(_) | ObjectData::Symbol(_) | ObjectData::LargeInteger(_) => {}
             }
         }
         stack[before..].reverse();
@@ -1623,6 +1624,13 @@ fn encode_object<'gc>(
         ObjectData::Activation(frame) => {
             writer.write_u8(OBJECT_ACTIVATION);
             writer.write_u32(context.table.frame_id(context.heap, *frame));
+        }
+        // No object record can carry one: an integer is written as a value
+        // (`VALUE_LARGE_INTEGER`, still to come), so that an image cannot
+        // give two equal integers two identities. Until then an image whose
+        // graph reaches one is refused rather than written wrong.
+        ObjectData::LargeInteger(_) => {
+            return Err("image encoding cannot serialize a LargeInteger yet".to_string());
         }
     }
     Ok(())

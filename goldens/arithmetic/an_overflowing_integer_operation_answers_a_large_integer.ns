@@ -1,0 +1,30 @@
+Newspeak3
+'Arithmetic'
+(* §5.1.1: "integers are not limited in size". An `Integer` operation whose
+   result does not fit becomes a `LargeInteger`, and one whose result fits
+   again is an `Integer`, so each integer has one representation. The first
+   line's operands are literal small integers, so the inlined `IntegerBinary`
+   runs `checked_add`, which declines, and the ordinary `+` send promotes:
+   inlining must not take the promotion away from the primitive. *)
+class Overflow usingPlatform: p = Object new (
+) (
+    public main: p args: a = (
+        | max min big |
+        p transcript show: (9223372036854775807 + 1) printString; newLine.
+        max:: 9223372036854775807.
+        min:: max negated - 1.
+        p transcript show: (min - 1) printString; newLine.
+        p transcript show: (max * max) printString; newLine.
+        p transcript show: min negated printString; newLine.
+        p transcript show: min abs printString; newLine.
+        p transcript show: (min // -1) printString; newLine.
+        big:: max + 1.
+        p transcript show: big class printString; newLine.
+        p transcript show: max class printString; newLine.
+        p transcript show: (big = (max + 1)) printString; newLine.
+        p transcript show: (big hash = (max + 1) hash) printString; newLine.
+        p transcript show: (big == (max + 1)) printString; newLine.
+        p transcript show: (big = max) printString; newLine.
+        p transcript show: (max = big) printString; newLine
+    )
+) : ()

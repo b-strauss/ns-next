@@ -61,31 +61,30 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
     });
 }
 
+/// §5.1.1: "integers are not limited in size", so an overflowing `+`
+/// answers a `LargeInteger` rather than raising.
 #[test]
-fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
+fn integer_addition_overflow_answers_a_large_integer() {
     let mut interpreter = Interpreter::bootstrap();
-
     let max = interpreter.stash(Value::SmallInteger(i64::MAX));
-    let result = interpreter.send(
-        &max,
-        Symbol::intern("+"),
-        &[interpreter.stash(Value::SmallInteger(1))],
+    let sum = expect_ok(
+        interpreter.send(
+            &max,
+            Symbol::intern("+"),
+            &[interpreter.stash(Value::SmallInteger(1))],
+        ),
+        "i64::MAX + 1",
     );
-
-    match result {
-        Err(HostSignal::Error(error)) => {
-            assert!(
-                error.message.to_lowercase().contains("overflow"),
-                "expected an overflow-shaped error message, got: {}",
-                error.message
-            );
-        }
-        Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
-            panic!("expected a Newspeak error for i64::MAX + 1, got Ok({got})")
-        }
-        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
-    }
+    let printed = expect_ok(
+        interpreter.send(&sum, Symbol::intern("printString"), &[]),
+        "printString",
+    );
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            as_string(mutator.heap(), &mutator.fetch(&printed)),
+            "9223372036854775808"
+        );
+    });
 }
 
 #[test]
@@ -375,31 +374,29 @@ fn float_arithmetic_still_widens_an_integer_argument() {
     });
 }
 
-/// A genuine overflow must still be reported as an overflow -- the I7 change
-/// only split the *type mismatch* case out of that message.
+/// §5.1.1, as for `+`: an overflowing `*` answers a `LargeInteger`.
 #[test]
-fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
+fn integer_multiplication_overflow_answers_a_large_integer() {
     let mut interpreter = Interpreter::bootstrap();
-
     let max = interpreter.stash(Value::SmallInteger(i64::MAX));
-    let result = interpreter.send(
-        &max,
-        Symbol::intern("*"),
-        &[interpreter.stash(Value::SmallInteger(2))],
-    );
-
-    match result {
-        Err(HostSignal::Error(error)) => assert!(
-            error.message.to_lowercase().contains("overflow"),
-            "expected an overflow-shaped message, got: {}",
-            error.message
+    let product = expect_ok(
+        interpreter.send(
+            &max,
+            Symbol::intern("*"),
+            &[interpreter.stash(Value::SmallInteger(2))],
         ),
-        Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
-            panic!("expected a Newspeak error, got Ok({got})")
-        }
-        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
-    }
+        "i64::MAX * 2",
+    );
+    let printed = expect_ok(
+        interpreter.send(&product, Symbol::intern("printString"), &[]),
+        "printString",
+    );
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            as_string(mutator.heap(), &mutator.fetch(&printed)),
+            "18446744073709551614"
+        );
+    });
 }
 
 /// End to end: a radix integer literal in real source evaluates, rather than

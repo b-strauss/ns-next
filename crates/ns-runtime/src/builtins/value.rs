@@ -298,6 +298,13 @@ fn compare_node<'gc>(
                     Some(&second),
                 )));
             }
+            if let Some(integer) = mutator.heap().large_integer(left) {
+                return Some(Pair::Decided(numbers::large_integer_equals(
+                    mutator.heap(),
+                    &integer,
+                    Some(&second),
+                )));
+            }
             if let Some(payload) = mutator.heap().str_value(left) {
                 return Some(Pair::Decided(text::text_equals(
                     mutator.heap(),
@@ -348,6 +355,9 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
             }
             if let Some(symbol) = mutator.heap().symbol_value(object) {
                 return Some(Node::Leaf(text::symbol_hash(symbol)));
+            }
+            if let Some(integer) = mutator.heap().large_integer(object) {
+                return Some(Node::Leaf(numbers::large_integer_hash(&integer)));
             }
             if let Some(payload) = mutator.heap().str_value(object) {
                 return Some(Node::Leaf(text::string_hash(&payload)));
