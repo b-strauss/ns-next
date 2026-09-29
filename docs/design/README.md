@@ -30,6 +30,49 @@ it is explained.
 modules it describes, so a claim can be checked by opening a file. A document
 that cannot name its code is describing an intention, and should say so.
 
+## Principles
+
+Four rules decide between design options before any aspect's own reasoning
+does.
+
+**The specification is a requirement.** Behaviour the specification requires
+is needed regardless; a deviation is a defect, and the only open question about
+fixing it is when. Code that is "correct within the current model" is not
+correct when the model itself deviates. Before calling something a deviation,
+check the specification's text and, where cheap, the runtime's behaviour with a
+probe program. Valid syntax behaves consistently: no construct is left out of a
+fix, an optimization or a rule because it is rare, since rarity describes
+today's programs, not the language. When a rule is safe in one syntactic
+position, do the analysis for its sibling positions instead of excluding them.
+
+**Performance decides among options that preserve the semantics.** It is the
+project's highest priority, and options are compared by the performance the
+finished system reaches -- after the inline caches and the JIT tiers -- not by
+what the next step gains; an interim speedup the end state replaces is a
+separate, lesser question. Correctness the compiler checks and lower run-time
+cost both outrank how pleasant the Rust is to write, and a higher engineering
+effort is accepted for them. Observable behaviour is never traded for speed:
+the model is the inlined conditional, which optimizes the common case behind a
+guard and falls back to a real send ([compiler.md](compiler.md)).
+
+**Newspeak's own semantics come before a runtime rule.** When the question is
+"how do we stop a program from doing X", first arrange the shipped classes --
+lexical nesting, access control, enclosing-object authority, facets instead of
+whole modules -- so that X is unreachable or harmless, and add a check to the
+VM or the instantiation path only when the language cannot express the
+guarantee. The factory pattern ([core-library.md](core-library.md), "The
+platform") is this rule applied. Guarantees about untrusted input -- decoding
+an image, load-time checks -- are the exception: the language cannot protect a
+loader from its bytes, so they stay runtime checks.
+
+**`unsafe` is allowed behind a safe abstraction.** On a performance-critical
+path `unsafe` Rust is acceptable when the abstraction over it is safe again and
+the unsafe code is confined to where it is needed, as `crates/ns-memory` is
+([memory.md](memory.md), "The memory layer"). `#![forbid(unsafe_code)]` in the
+other crates is an engineering choice, not an axiom: an option is never ruled
+out merely because it needs `unsafe`; the argument against it has to name the
+guarantee it gives up or the complexity it adds.
+
 ## The map
 
 | Aspect | Document | Status | Planned next |
@@ -218,7 +261,7 @@ NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the 
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report
 NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules # the same report
 ./editors/jetbrains/gradlew -p editors/jetbrains check   # the plugin's own gate, per commit that touches it
-./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin   # once at the end of a batch: downloads several IDEs
+./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin   # once at the end of a batch that touched the plugin: downloads several IDEs
 ```
 
 The three stress modes, six gate invocations, are Git Bash syntax and do

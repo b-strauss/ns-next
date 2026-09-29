@@ -441,12 +441,26 @@ NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
 
-# --- once at the end of a batch of work (downloads several IDEs) ---
+# --- once at the end of a batch of work that touched editors/jetbrains
+# (downloads several IDEs; skipped for a batch that left the plugin alone) ---
 ./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin
 
 # build every crate
 cargo build --workspace
 ```
+
+A commit that changes only Markdown runs none of these gates: nothing compiled
+or executed reads a Markdown file, so a green run proves nothing that was in
+doubt. Check that the diff really is Markdown only (`git diff --stat`) and
+commit. The exemption is by file set, not by size: a change to a Rust source,
+a test, a fixture, a golden or `Cargo.toml` runs the gates however small it is.
+The plugin's per-commit `check` stays tied to `crates/ns-lsp` and
+`crates/ns-syntax`, since its lexer is compared against `ns-syntax`'s; when it
+is unclear whether a change reaches the plugin, run it.
+
+When a subagent implements part of a batch, its instructions carry this
+staggering explicitly; an agent that copies only the per-commit list above
+would otherwise either skip the batch gates or run them per commit.
 
 `cargo clippy --workspace --all-targets` still compiles `ns-lsp` on every commit,
 so a change to the resolver or to `ns-syntax` that breaks the API the server uses
@@ -504,6 +518,15 @@ heading looks unrelated — §3.2 decides how the primary factory is found, from
 about metaclasses — and reading only the topical section is how a rule gets missed. The
 PDF stays the authority and is what a citation names; the Markdown is how to find the
 passage (`docs/references/PROVENANCE.md`).
+
+**Design decisions follow the principles in `docs/design/README.md`.** In short:
+a deviation from the specification is a defect, never an optional cost, and no
+valid construct is carved out of a rule because it is rare; performance decides
+among options that preserve the semantics, judged by the finished system rather
+than the next step; a guarantee is made by arranging Newspeak classes (nesting,
+access control, facets) before a runtime rule is added for it; and `unsafe`
+is acceptable behind a safe abstraction, so "it needs `unsafe`" alone never
+rules an option out.
 
 **Ground a design decision in prior art before proposing options.** `prior-art/` holds
 ten reference implementations as submodules. Four answer "what does Newspeak do here":
@@ -565,6 +588,18 @@ appears both there and under `corpus/`, and why neither copy may be deleted.
   Implementation plans live in `docs/superpowers/plans/`, are named
   `YYYY-MM-DD-HHMM-<name>.md` so several from one day sort chronologically, and
   are execution records — left as written once complete.
+- Documentation other than a plan describes the current state, not how it got
+  there: `docs/PROGRESS.md` and `docs/OPEN-WORK.md` included. A statement that
+  is no longer true is deleted or rewritten as current fact, never kept and
+  labelled historical; git and the commit message carry the history. A reason
+  that is still true stays, since it is a fact about the thing, not about the
+  edit.
+- Before a branch is merged, a fresh session must be able to start from the
+  documentation alone: every new module appears in `docs/design/README.md`'s
+  map and in the status block of each document describing its subsystem, the
+  status blocks still name the code as it now is, and `docs/PROGRESS.md`'s
+  "Where the next session starts" agrees with its milestone table and with
+  `docs/OPEN-WORK.md`.
 - A Newspeak module written inline in a test is an `indoc! {"…"}` (or
   `formatdoc! {"…"}` for a template), its lines indented with spaces along with
   the Rust around it and the closing `"}` on a line of its own -- not a

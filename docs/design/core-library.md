@@ -433,6 +433,12 @@ like the first
 (`goldens/kernel/a_second_platform_writes_like_the_first`). The platform
 hands out instances of the facets by lazy slots and their classes by class
 accessors, methods whose whole body is `^outer PlatformFactory <Name>`.
+Because the root is unreachable, no program can instantiate it over forged
+arguments, so the pattern needs no runtime refusal beside it: the guarantee
+is made by how the shipped classes are arranged, not by a check in the VM
+([README.md](README.md), "Principles"). A new shipped module starts from
+this shape, not from the prior-art one in which the root is the namespace
+handed out.
 
 **The factory's nested classes are private, and its one public member
 makes the facet.** A class accessor and a lazy slot's initializer reach a

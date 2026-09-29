@@ -1455,7 +1455,11 @@ slices (`Reservation`, `Protection` and `MemoryError` in
 committed and how they are protected, in `page_map.rs`; the operating-system
 calls in `platform/windows.rs` and `platform/posix.rs`). It is the only crate
 in the workspace with `unsafe` code, and `ns-runtime` keeps
-`#![forbid(unsafe_code)]`. This is step 1 of the road in
+`#![forbid(unsafe_code)]`. That is the shape `unsafe` takes in this workspace
+([README.md](README.md), "Principles"): confined to one small layer whose
+interface is safe again -- a malformed range is an error value, and a slice is
+lent only over memory that is committed and accessible -- so everything above
+it keeps the compiler-checked guarantee. This is step 1 of the road in
 [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". Nothing
 uses the crate yet: road step 3, "Planned: the object space", is its first
 user, and what says how the heap will use it is in the future tense below.
