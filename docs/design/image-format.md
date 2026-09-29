@@ -359,7 +359,18 @@ and one representation after a load (`a_non_canonical_large_integer_is_refused`,
 ([memory.md](memory.md), "The interim cost, and the one question still
 open"). `inspect` renders one as `large-int <decimal>`, through the same
 bounded read (`decode::read_large_integer_parts`), without the canonical
-checks, since a structural walk reports what the bytes say.
+checks, since a structural walk reports what the bytes say. The decimal is
+bounded too, in `inspect` and in `disasm`'s literals alike
+(`ArbitraryInteger::to_bounded_text`): decimal conversion is quadratic in
+the digit count, so an artifact holding one integer of millions of digits
+would keep either tool busy for hours. Up to `DECIMAL_RENDERING_LIMIT`, 64
+digits (about 1,233 decimal digits, rendered in microseconds), the full
+decimal is printed; past it, the digit count and the hexadecimal of the
+first and last two digits, `large-int <100000 words>
+0x186a0000000000001869f...00000000000000020000000000000001`, which costs
+the same at any length
+(`inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal`,
+`crates/ns-runtime/tests/image.rs`).
 
 **Mixin table.** One row per declaration: the name, its own slots, the primary
 factory selector and arity, the compiled methods as selector → code id, the ids

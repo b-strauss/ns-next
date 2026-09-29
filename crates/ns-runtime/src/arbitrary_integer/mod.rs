@@ -22,6 +22,16 @@ use addition::{add_magnitudes, compare_magnitudes, subtract_magnitudes};
 use division::{divide_by_digit, divide_remainder, shift_left, shift_right_in_place};
 use multiplication::multiply_magnitudes;
 
+/// The most digits `to_bounded_text` renders in decimal. 64 digits are
+/// 4,096 bits, about 1,233 decimal digits, which the quadratic conversion
+/// finishes in microseconds; an integer longer than that is past anything a
+/// reader of a listing would read digit by digit anyway.
+pub const DECIMAL_RENDERING_LIMIT: usize = 64;
+
+/// How many digits at each end `to_bounded_text` shows of an integer past
+/// `DECIMAL_RENDERING_LIMIT`.
+const HEXADECIMAL_END_DIGITS: usize = 2;
+
 /// An integer of any size: a sign and a magnitude of 64-bit digits, least
 /// significant first. Canonical: no zero top digit, and zero is the empty
 /// magnitude with `negative == false`, so derived equality is value equality.
@@ -181,6 +191,36 @@ impl ArbitraryInteger {
         } else {
             digits
         }
+    }
+
+    /// The value as a tool shows it: the decimal text up to
+    /// `DECIMAL_RENDERING_LIMIT` digits, and above it the digit count with
+    /// the hexadecimal of the first and last `HEXADECIMAL_END_DIGITS` digits.
+    ///
+    /// `inspect` and `disasm` render integers an artifact names, and an
+    /// artifact is untrusted: decimal conversion is quadratic in the digit
+    /// count, so one crafted integer of millions of digits would keep either
+    /// tool busy for hours. The elided form costs the same at any length, and
+    /// the limit leaves every integer a program plausibly writes in decimal.
+    pub fn to_bounded_text(&self) -> String {
+        let length = self.magnitude.len();
+        if length <= DECIMAL_RENDERING_LIMIT {
+            return self.to_decimal_string();
+        }
+        let sign = if self.negative { "-" } else { "" };
+        let hexadecimal = |digits: &[u64]| -> String {
+            digits
+                .iter()
+                .rev()
+                .map(|digit| format!("{digit:016x}"))
+                .collect()
+        };
+        // The top digit is non-zero (canonical), so printing it unpadded
+        // shows no leading zeros.
+        let top = self.magnitude[length - 1];
+        let high = hexadecimal(&self.magnitude[length - HEXADECIMAL_END_DIGITS..length - 1]);
+        let low = hexadecimal(&self.magnitude[..HEXADECIMAL_END_DIGITS]);
+        format!("<{length} words> {sign}0x{top:x}{high}...{low}")
     }
 
     /// `text` is an optional `-` and digits of `radix` (2..=36, either case).
@@ -467,6 +507,18 @@ mod tests {
                 assert!(remainder.absolute() < divisor.absolute());
             }
         }
+    }
+
+    #[test]
+    fn bounded_text_is_decimal_up_to_the_limit_and_elided_above_it() {
+        let at_limit = long_operand(super::DECIMAL_RENDERING_LIMIT, 6, true);
+        assert_eq!(at_limit.to_bounded_text(), at_limit.to_decimal_string());
+        let digits = (1..=u64::try_from(super::DECIMAL_RENDERING_LIMIT).unwrap() + 1).collect();
+        let past_limit = ArbitraryInteger::from_parts(true, digits);
+        assert_eq!(
+            past_limit.to_bounded_text(),
+            "<65 words> -0x410000000000000040...00000000000000020000000000000001"
+        );
     }
 
     #[test]

@@ -444,14 +444,6 @@ where every reified frame will carry its full register file on the wire.
   either.
   [memory.md](design/memory.md), "The interim cost, and the one question
   still open".
-- **`inspect` and `disasm` render a `LargeInteger` in quadratic time**
-  (`image/inspect.rs`, `read_large_integer_text`; `bytecode.rs`,
-  `format_literal`), through `to_decimal_string`, so a crafted artifact
-  holding one integer of millions of digits makes `inspect` run for hours --
-  no panic, but effectively a hang. A linear rendering in hexadecimal, or a
-  digit cap with the count reported, would close it.
-  [image-format.md](design/image-format.md), "A `LargeInteger` is a value on
-  the wire, never a record".
 - **`Heap::traced_size` counts the canonical symbol table's empty slots**
   (`heap.rs`), which never shrink; worth revisiting once many heaps live in one
   process.

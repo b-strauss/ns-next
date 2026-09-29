@@ -800,7 +800,7 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Float(float) => format!("{float:?}"),
         Literal::String(string) => format!("'{string}'"),
         Literal::Symbol(symbol) => format!("#{symbol}"),
-        Literal::LargeInteger(integer) => format!("large-int {}", integer.to_decimal_string()),
+        Literal::LargeInteger(integer) => format!("large-int {}", integer.to_bounded_text()),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
     }
 }
@@ -1100,6 +1100,19 @@ method foo: (args 1, registers 4)
                 "#sym",
                 "large-int 99999999999999999999"
             ]
+        );
+    }
+
+    /// `disasm` shows a literal a binary names, and a binary is untrusted:
+    /// a literal of 100,000 digits would take the quadratic decimal
+    /// conversion hours, so it is rendered elided instead.
+    #[test]
+    fn a_huge_large_integer_literal_renders_elided() {
+        let digits = (1..=100_000).collect();
+        let literal = Literal::LargeInteger(crate::ArbitraryInteger::from_parts(false, digits));
+        assert_eq!(
+            format_literal(&literal),
+            "large-int <100000 words> 0x186a0000000000001869f...00000000000000020000000000000001"
         );
     }
 }

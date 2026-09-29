@@ -1371,6 +1371,57 @@ fn a_large_integer_is_a_value_not_a_record() {
     );
 }
 
+/// `inspect` renders an integer in decimal only up to
+/// `DECIMAL_RENDERING_LIMIT` digits, and elides one past it: an artifact is
+/// untrusted, and the quadratic decimal conversion of an integer of 100,000
+/// digits would keep `inspect` busy for hours.
+#[test]
+fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let started = std::time::Instant::now();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let normal = mutator.new_integer(ArbitraryInteger::from_i128(1_i128 << 63));
+        let huge =
+            mutator.new_integer(ArbitraryInteger::from_parts(false, (1..=100_000).collect()));
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance, normal, huge],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.graph_roots[1..],
+        [
+            "large-int 9223372036854775808",
+            "large-int <100000 words> 0x186a0000000000001869f...00000000000000020000000000000001",
+        ]
+    );
+    // In decimal this takes hours; elided, a debug build needs well under a
+    // second for the snapshot and the walk together.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
 /// A builtin class tag names no builtin at the root-class section either:
 /// `decode_root_section` reads its superclass through the same
 /// `read_program_builtin_class`, so an out-of-range byte is refused there as

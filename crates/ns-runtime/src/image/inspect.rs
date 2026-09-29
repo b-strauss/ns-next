@@ -355,10 +355,12 @@ fn read_value(
 
 /// A `LargeInteger`'s digits, rendered as they are: a structural walk shows
 /// what the file says, so it does not refuse a non-canonical integer the
-/// way the loader does. The digit count is bounded all the same.
+/// way the loader does. The digit count is bounded all the same, and
+/// `to_bounded_text` keeps the rendering of a huge one from taking the
+/// quadratic decimal conversion.
 fn read_large_integer_text(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
     let (negative, magnitude) = decode::read_large_integer_parts(reader)?;
-    Ok(ArbitraryInteger::from_parts(negative, magnitude).to_decimal_string())
+    Ok(ArbitraryInteger::from_parts(negative, magnitude).to_bounded_text())
 }
 
 fn read_values(
