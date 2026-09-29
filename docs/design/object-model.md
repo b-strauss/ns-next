@@ -1379,7 +1379,7 @@ a 32-bit arena index already fits the word.
 
 | Low bits | Meaning |
 |---|---|
-| `000` | an object handle: today the arena index, from road step 3 the object's byte offset in the space, so that the space's base plus the word is its address |
+| `000` | an object handle: today the arena index shifted left by three, so its low bits are `000`, from road step 3 the object's byte offset in the space, so that the space's base plus the word is its address |
 | `001` | a `SmallInteger` of 61 bits |
 | `010` | a constant -- `nil`, `true`, `false`, with room for more |
 | `100` | a `SmallFloat64` |
@@ -1460,7 +1460,7 @@ value it stores carries the current heap id and epoch before it becomes a
 word. Under generations (road step 4) a
 scavenge walks only the young objects and the remembered ones, so an old
 object whose store missed the barrier would keep a stale young word; that is
-what `NS_NEXT_STRESS_SCAVENGE`, with the from-space made no-access, catches
+what `NS_NEXT_STRESS_SCAVENGE`, with the vacated survivor space and the vacated eden region made no-access, catches
 ([memory.md](memory.md), "Planned: generations"). The check
 therefore stays exact where the mistake it catches can be made, with the
 brand checking the rest at compile time.
@@ -1521,10 +1521,9 @@ verbatim").
 **Application ids are 22 bits wide** as well. Running out keeps today's
 rule: an application without an id runs uncached ([dispatch.md](dispatch.md),
 "The dispatch id"). An application id is reclaimed once no class object, no inline-cache or
-global-cache entry (its guard, or a `Lexical` key's application id) and no
-application-cache entry, key or value, names it, and a mixin id once the `Mixin` itself is dropped -- its
+global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
 table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it; the collector can
-tell both, so reusing an id is safe.
+tell both, so reusing an id is safe. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable.
 
 **The class word** is an ordinary value naming the object's class object.
 An immediate has no header; its class and its guard come from a small table
@@ -1583,10 +1582,14 @@ references"). A closure keeps its code id, captured frame and feedback base
 in fixed fields and its copied values inline; a code id indexes a Rust-side
 table of compiled code that is append-only per heap, its entries never freed
 or reused, since compiled code is shared by mixins and reclaiming it belongs
-with live editing. A reified frame keeps its
+with live editing. Each entry also records the code's owning `MixinMethod`,
+where it has one, so a method frame's code id names its method too -- the
+declaration the encoder writes today (`image/encode.rs`) and `frame_body`
+reads. A reified frame keeps its
 sender, home, receiver, current class, program counter, code id, kind, the
-kind's operand -- the closure of a block frame, the class of an initializer
-or superclass-clause frame, a handle the trace and the barrier see --
+kind's operand -- the closure of a block frame, or the class of an
+initializer, superclass-clause, superclass-message or mixin-application-message
+frame, a handle the trace and the barrier see --
 `uncontinuable`, and the index of the activation it is married to, if any
 (today `FrameSlot`'s `live`), in fixed fields and its registers inline, and the kernel-private
 `Activation` objects the exception machinery holds become these frame
@@ -1598,7 +1601,7 @@ registers into it stays decided per activation from the block's
 debugger and edit-and-continue find room for the registers in every reified
 frame. Edit-and-continue adding locals divorces the affected activation
 into a newly allocated, larger frame object, the VM rewriting every reference
-to the old frame by a walk of the whole heap, since `become:` never forwards
+to the old frame by a walk of the whole heap and of every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets -- since `become:` never forwards
 a frame; execution continues from the divorced frame, which needs a divorced
 frame put back on the stack, the piece suspend and resume need too
 ([execution.md](execution.md), "How this meets the liveness requirements"). The cost is a few more words per
@@ -1662,12 +1665,13 @@ using a hit and take the resolve path when it is forwarded, as Spur's
 explicit read barrier in super sends does (`ensureReceiverUnforwarded`,
 `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`: "To
 maintain the invariant that all receivers are unforwarded we need an
-explicit read barrier in the super send cases"). The send path follows a
-forwarded receiver in the `resolve_*` entries of `interpreter/resolve.rs`
-(`resolve_public`, `resolve_lexical`, `resolve_super`), which the inline
-caches' `miss` and the uncached `decide_send`, `decide_lexical_send` and
-`decide_super_send` (`interpreter/mod.rs`) all reach, so the two lowerings
-cannot diverge; it cleans up the receiver, the stack and the
+explicit read barrier in the super send cases"). A forwarded receiver is
+unforwarded in one shared step at the top of each send entry, before resolve
+and act -- `decide_send` (`interpreter/mod.rs`), `decide_lexical_send` and
+`decide_super_send` (`interpreter/sends.rs:26`, `:78`), and the caches'
+`miss` and their hit check for super and private lexical sends -- so the
+receiver `act` gets is the followed one and the two lowerings cannot
+diverge; that step cleans up the receiver, the stack and the
 registers, as Spur's `handleForwardedSendFaultForTag:` does. The scavenger
 and the compaction rewrite every reference they meet to the target, and the
 forwarder is garbage afterwards.
@@ -1713,8 +1717,20 @@ SOMns, a Newspeak with values and actors, has no `become:` at all, and
 Primordial Soup forwards only in its MirrorBuilder's installation of an edit
 (`installAll`, `prior-art/primordialsoup/newspeak/Mirrors.ns:309-326`),
 which is where the VM-internal migration below happens too. Refusing values
-was decided with the user on 2026-09-29. So only instances of non-value
-classes and arrays are ever forwarded by a program.
+was decided with the user on 2026-09-29. A program's `become:` also refuses,
+in either direction, every object a platform path names -- the platform, its
+transcript, its kernel and collections facets -- which are the objects the
+shipped core-library modules (`Kernel.ns`, `PlatformFactory.ns`,
+`CollectionsFactory.ns`) hold for themselves and a program can also reach:
+a two-way `become:` would otherwise redirect references shipped code holds to
+objects the program holds, and hand program objects to shipped code's later
+sends, which is how "The VM mirror is a capability" in `CLAUDE.md` would
+erode. The shipped roots and the mirror no program reaches at all, and the
+shipped classes are class objects, refused above; an `Array`, a `List` or an
+exception a program made is its own, and shipped code holds one only while
+the program hands it over. This refusal is derived from that invariant. So
+only instances of non-value classes and arrays are ever forwarded by a
+program.
 
 **Everything stays editable.** The refusal is of a program's own `become:`,
 not of editing. A class object keeps its identity when its class is edited:
@@ -1723,7 +1739,8 @@ change, a new superclass, a new value refusal -- and every reference to it
 stays valid; when the slots change, its instances migrate by allocating the
 new shape, copying the fields and forwarding the old instances with
 `become:`, which instances admit. A live frame gains locals by being divorced
-into a newly allocated, larger frame object, with a whole-heap walk by the
+into a newly allocated, larger frame object, with a walk of the whole heap and of
+every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets by the
 VM rewriting every reference to the old frame, since `become:` never forwards
 a frame, and execution continuing from the divorced frame ("Planned: the
 object layout" above).

@@ -2,7 +2,7 @@
 
 > **Status:** built. Both artifacts round-trip, and both can be inspected without
 > being loaded. **Planned:** the decoder builds the planned eight-byte values
-> and variably sized objects from an unchanged, id-based wire format ("Planned:
+> and variably sized objects from a wire format that stays id-based ("Planned:
 > the image under the new representation"), and suspend and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs`, `encode.rs`, `decode.rs`,
 > `mixins.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`. CLI: `ns-next snapshot`,
@@ -635,10 +635,10 @@ register-less frame; the reads then answer `nil` and the writes are dropped
 Tightening the check is not available: nothing on the wire distinguishes a
 legitimately register-less frame from a crafted one. It is the same class as
 the `own_index` gap below — wrong but safe output from a mutated program,
-never a panic. Under the planned object layout the gap closes: every reified frame has
-room for its registers and the encoder writes its full register file, so a
-frame record's register file must match its body and `verify_graph` can
-refuse one that does not ("Planned: the image under the new representation" below).
+never a panic. Under the planned object layout the gap will close: every reified frame
+will have room for its registers and the encoder will write its full
+register file, so a frame record's register file will have to match its body
+and `verify_graph` will be able to refuse one that does not ("Planned: the image under the new representation" below).
 
 **`Instruction::InitializeSlot`'s and `ReturnSlotIfFilled`'s `own_index` is not
 one of the counts these passes bound.** `verify_mixins` checks a body's kind and
@@ -1150,8 +1150,7 @@ the new flag, the entry field and the trailing-byte check
 Would change: the decoder builds the planned representation -- eight-byte
 values and one space of variably sized objects ([object-model.md](object-model.md),
 "Planned: an eight-byte value", "Planned: the object layout";
-[memory.md](memory.md), "Planned: the object space") -- from a wire format that
-stays id-based. Nothing on the wire becomes an address or an offset, so an
+[memory.md](memory.md), "Planned: the object space") -- from a wire format that stays id-based. Nothing on the wire becomes an address or an offset, so an
 artifact stays independent of word size and layout, as Primordial Soup's
 snapshots are (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image,
 which is old space's bytes relocated on load, is the model this does not take.
@@ -1202,6 +1201,15 @@ which is old space's bytes relocated on load, is the model this does not take.
   question still open", where the figures are, and `CLAUDE.md`'s paragraph on
   untrusted images). `bounded_count` keeps bounding every pre-allocation by
   the bytes remaining.
+- **Every load tenures before the decoder allocates.** Under generations
+  ([memory.md](memory.md), "Planned: generations") the decoder allocates
+  everything old, and every load runs `Interpreter::bootstrap()` first
+  (`image/mod.rs:308`) and then decodes the root class
+  (`decode::build_root_class`, `image/mod.rs:323`), a stateless binary as much
+  as an image, so every load scavenges and tenures right after the bootstrap,
+  before the decoder allocates anything; a stateful load does it again after
+  its platform paths, before the graph pass. The decoder's stores are then
+  old-to-old and need no barrier.
 - **Identity hashes** are preserved as they are today, per record and in the
   tag-named table; what changes is their width. The header word holds 22 bits
   ([object-model.md](object-model.md), "Planned: the object layout"), so the

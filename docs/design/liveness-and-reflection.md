@@ -112,7 +112,7 @@ forwarders", road step 5).
    statement→program-counter table. A running activation is an entry in a
    stack where an entry in the middle cannot grow, so it is divorced into a
    newly allocated, larger frame object, the VM rewrites every reference to
-   the old frame by a heap walk, and execution continues from the divorced
+   the old frame by a walk of the whole heap and of every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets, and execution continues from the divorced
    frame, which needs a divorced frame put back on the stack
    ([execution.md](execution.md), "How this meets the liveness
    requirements"; [object-model.md](object-model.md), "Planned: the object

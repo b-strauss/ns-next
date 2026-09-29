@@ -1170,15 +1170,12 @@ to a newly allocated one, and the new mixin would hit the old entry and be
 given a **different, perfectly valid** application, reporting nothing — the
 failure class the handle invariants exist to prevent. Weakness becomes
 decidable only once a mixin carries an id of its own instead of an address,
-and the object layout (road step 3) gives mixins and applications ids
+and the object layout (road step 3) will give mixins and applications ids
 ([object-model.md](object-model.md), "Planned: the object layout"). The same
 per-mixin id is wanted by dispatch's open option of guarding a private
-lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What
-makes the weak cache sound is the reuse rule: an application id is reclaimed once no class object, no inline-cache or global-cache entry
-(its guard, or a `Lexical` key's application id) and no application-cache
-entry, key or value, names it, and a mixin id once the `Mixin` itself is dropped -- its table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no
-application-cache entry, key or value, names it. The cache's unbounded growth under live editing
-([liveness-and-reflection.md](liveness-and-reflection.md)) ends with it.
+lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What will make the weak cache sound is the reuse rule: an application id will be reclaimed once no class object, no inline-cache or global-cache entry
+(its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it. A class's change of application will restamp every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The cache's unbounded growth under live editing
+([liveness-and-reflection.md](liveness-and-reflection.md)) will end with it.
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
 value — so it is neither a root nor a forwarding target.
@@ -1381,11 +1378,12 @@ so the planned object space needs no growth-in-place case. What
 changes an object's size is reflective and rare -- edit-and-continue adding
 locals to a live activation, a MirrorBuilder adding or removing slots of live
 instances (requirements 2 and 3 of
-[liveness-and-reflection.md](liveness-and-reflection.md)) -- and takes a new
-object: for instances, a `become:` forwards the old one to it
+[liveness-and-reflection.md](liveness-and-reflection.md)) -- and will take a new
+object: for instances, a `become:` will forward the old one to it
 ([object-model.md](object-model.md), "Planned: `become:` through
-forwarders"); for a frame, the activation is divorced into the larger frame
-object and the VM rewrites the references to the old one by a heap walk
+forwarders"); for a frame, the activation will be divorced into the larger
+frame object and the VM will rewrite the references to the old one by a walk
+of the whole heap and of every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets
 ("Planned: the object layout", there).
 
 **No existing arena crate does what the space needs.** Every arena crate
@@ -1422,17 +1420,23 @@ high-performance VM".
   shrinks, protect a range as no-access or read-write, and lend each
   accessible, committed range as its own `&[u64]` and `&mut [u64]`; dropping
   the reservation releases it. `protect` and `decommit` take the reservation
-  by `&mut`, so no lent slice outlives a change of what is accessible. The
-  heap keeps one slice per space -- each survivor space, eden and the old
-  space -- and picks it by an offset's range, so an offset into a protected
-  or uncommitted range finds no slice: that selection is the bounds check the
+  by `&mut`, so no lent slice can be alive across a change of what is
+  accessible. The heap does not store slices borrowed from its own
+  reservation, which would make it self-referential; it re-borrows them each
+  time it needs them -- one call answering the split slices per space, each
+  survivor space, eden and the old space, for one entry or one step -- and
+  picks the slice by an offset's range, so an offset into a protected or
+  uncommitted range finds no slice: that selection is the bounds check the
   accessors rely on.
 - **Two implementations behind one interface, from the start**: Windows
   (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, through `windows-sys`) and
   POSIX (`mmap` with `PROT_NONE` to reserve, `mprotect` to commit and protect,
-  a re-mapping of the range with `mmap(MAP_FIXED | MAP_PRIVATE | MAP_ANON |
-  MAP_NORESERVE, PROT_NONE)` to decommit, which gives the memory back on Linux
-  and macOS alike where `madvise(MADV_DONTNEED)` does not on macOS, and `munmap`, through `libc`). Both crates are declarations only, with no
+  a re-mapping of the range with `mmap(MAP_FIXED | MAP_PRIVATE | MAP_ANON,
+  PROT_NONE)` to decommit, which gives the memory back on Linux and macOS
+  alike where `madvise(MADV_DONTNEED)` does not on macOS; it is mapped without
+  `MAP_NORESERVE`, since a `PROT_NONE` private mapping is not charged anyway,
+  so a later commit by `mprotect` is accounted and can fail as a value rather
+  than as an out-of-memory kill on first touch, and `munmap`, through `libc`). Both crates are declarations only, with no
   run-time code of their own. Primordial Soup has the same split behind the
   same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
   `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits
@@ -1538,7 +1542,11 @@ representation"); the handle
 paragraphs describe a 64-bit byte offset and the frame arena's end (road step
 3); "A cache records what the lookup decided" reads `ClassData.builtin` as a
 field of the class object, which `act` still reads afresh on every send (road
-step 3); and the gates' stress loop gains `SCAVENGE` (road step 4). Road step
+step 3); and the gates' stress loop gains `SCAVENGE` (road step 4); "The VM mirror is
+a capability" gains the refusal of a program's `become:` on every object a
+platform path names (road step 5;
+[object-model.md](object-model.md), "Planned: `become:` through
+forwarders"). Road step
 2 also retires `Literal::MalformedInteger` and its wire tag 8, since every
 integer literal becomes representable, which changes the example "Compiling
 an already-resolved module can never raise a `NewspeakError`" gives; "Never
@@ -1612,11 +1620,14 @@ Road step 4.
   allocation") -- is born remembered, and the next scavenge scans it.
 - **A full collection** is the mark-compact over both generations. The image
   decoder allocates everything old, the boxed floats and large integers it
-  creates included, since a decoded graph is long-lived. A stateful load runs
-  the bootstrap and the platform paths before the graph decodes, which leaves
-  young objects the graph may reference, so the load tenures everything -- a
-  scavenge -- before the graph pass; the decoder's old-to-old stores then
-  need no barrier.
+  creates included, since a decoded graph is long-lived. Every load runs
+  `Interpreter::bootstrap()` first (`image/mod.rs:308`), and a stateless and a
+  stateful load alike then decode the root class (`decode::build_root_class`,
+  `image/mod.rs:323`) before anything else, so every load tenures everything --
+  a scavenge -- right after the bootstrap, before the decoder allocates
+  anything; a stateful load runs the platform paths next, which leave young
+  objects the graph may reference, and tenures again before the graph pass.
+  The decoder's old-to-old stores then need no barrier.
 - **The weak symbol table is pruned at every scavenge** as well as at every
   full collection, since a young symbol can die in either. At a scavenge a
   young entry whose symbol was not copied becomes `None`, a copied one is

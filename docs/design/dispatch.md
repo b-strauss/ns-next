@@ -1478,19 +1478,24 @@ application instead, so they check the receiver's header for the forwarded
 format before using a hit, as Spur's explicit barrier in super sends does
 (`ensureReceiverUnforwarded`,
 `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). A
-forwarded receiver is followed in the `resolve_*` entries of
-`interpreter/resolve.rs`, which `miss` and the uncached `decide_send`,
-`decide_lexical_send` and `decide_super_send` (`interpreter/mod.rs`) all
-reach, so the two lowerings cannot diverge. An immediate's guard comes
+forwarded receiver is unforwarded in one shared step at the top of each send
+entry, before resolve and act -- `decide_send` (`interpreter/mod.rs`),
+`decide_lexical_send` and `decide_super_send` (`interpreter/sends.rs:26`,
+`:78`), and the caches' `miss` and their hit check for super and private
+lexical sends -- so the receiver `act` gets is the followed one and the two
+lowerings cannot diverge. An immediate's guard comes
 from a table indexed by its tag, and for the constant tag by the constant,
 since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the ids can run
 out where today's `u32` counter practically cannot; running out keeps
 today's rule, an application without an id running uncached (`NONE`, "The
 dispatch id" above). An application id is reclaimed once no class object, no inline-cache or
-global-cache entry (its guard, or a `Lexical` key's application id) and no
-application-cache entry, key or value, names it, and a mixin id once the `Mixin` itself is dropped -- its
+global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
 table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it, which the
-collector can tell.
+collector can tell. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The debug build's check in
+`Heap::dispatch_id`, which recomputes an object's id from its class and
+asserts that the header agrees, answers the reserved id for an object of the
+forwarded format instead of reading its class word, which then names the
+target rather than a class.
 
 ### Considered and rejected
 

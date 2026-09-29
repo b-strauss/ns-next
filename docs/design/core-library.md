@@ -684,7 +684,10 @@ header's negative bit, as Primordial Soup's `kNegativeBit`
 `Integer`'s is: `Integer`'s methods keep their immediate fast path, and the
 inlined `IntegerBinary`, and answer a `LargeInteger` where an immediate
 result would overflow; `LargeInteger` overrides them with leaves of its own,
-and each result that fits again is answered as an immediate `Integer`. The Smalltalk-family engines write this themselves --
+and each result that fits again is answered as an immediate `Integer`.
+`Integer`'s leaves, and `IntegerBinary`'s fallback send, accept a
+`LargeInteger` argument too -- `3 + (2 raisedTo: 100)` -- and answer through
+`LargeInteger`'s arithmetic. The Smalltalk-family engines write this themselves --
 Primordial Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
 subtraction, multiplication, division and modulo, the bitwise operations,
 shifts, comparison, `printString` and conversion to and from `double` -- and
@@ -901,7 +904,11 @@ the mirror and hands it to the factories of the shipped core-library
 modules alone, `Kernel vmMirror:` and `PlatformFactory
 usingVmMirror:kernel:`, whose roots no program reaches ("The platform"
 above); a user module would receive it only if a shipped module passed it
-on, and none does: each root keeps it in a private slot. Six things keep it
+on, and none does: each root keeps it in a private slot. The planned
+`become:` ([object-model.md](object-model.md), "Planned: `become:` through
+forwarders") will keep it that way by refusing, in either direction, every
+object a platform path names, besides the class objects it refuses anyway, so
+no program can redirect a reference shipped code holds for itself. Six things keep it
 that way,
 and loosening any one of them lets a program claim every primitive:
 
