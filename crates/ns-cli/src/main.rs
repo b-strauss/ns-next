@@ -7,6 +7,9 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 mod entry;
+// Used from `program.rs` once it exists; until then only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod project;
 mod source;
 
 #[derive(Parser)]
