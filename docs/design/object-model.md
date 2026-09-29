@@ -1680,9 +1680,21 @@ their arguments on failure.
 structurally on its hottest paths -- class objects, whose fields lookup and
 `outer` read, closures, whose captured frame the VM reads, and frame
 objects, whose sender and home the unwinder reads -- and symbols, whose
-canonicity §5.1.6 requires and which the weak symbol table reads. So only
-instances and arrays are ever forwarded, and value objects (strings, large
-integers, boxed floats) only if the open question below admits them.
+canonicity §5.1.6 requires and which the weak symbol table reads -- and
+every other value object: strings, large integers, boxed floats and every
+instance of a value class. §3.1.1 makes a value immutable, and a `become:`
+on one would change, for every holder, what it holds -- a mutation of the
+value, even within one heap; with actors it would also reach only the
+references in its own heap and leave copies elsewhere unchanged. Spur
+refuses immutable objects the same way (`PrimErrNoModification` in
+`become:with:twoWay:copyHash:`,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:45699`, `:45737`);
+SOMns, a Newspeak with values and actors, has no `become:` at all, and
+Primordial Soup forwards only in its MirrorBuilder's installation of an edit
+(`installAll`, `prior-art/primordialsoup/newspeak/Mirrors.ns:309-326`),
+which is where the VM-internal migration below happens too. Refusing values
+was decided with the user on 2026-09-29. So only instances of non-value
+classes and arrays are ever forwarded by a program.
 
 **Everything stays editable.** The refusal is of a program's own `become:`,
 not of editing. A class object keeps its identity when its class is edited:
@@ -1708,14 +1720,6 @@ on every `become:`: Primordial Soup's one-way `Heap::BecomeForward`
 leaf on the VM mirror, which is what the MirrorBuilder in
 [liveness-and-reflection.md](liveness-and-reflection.md) needs to add or
 remove slots of a class with live instances.
-
-**Open: `become:` on a value object.** §3.1.1 gives a value no identity and
-lets it be copied freely, across actors too, so a program's own `become:` on
-one would reach only the references in its own heap and leave copies
-elsewhere unchanged, making the value differ from itself. The VM-internal
-migration of a value class's instances is part of the design above; whether
-a program's own `become:` refuses value objects or admits them is not
-decided.
 
 ## Decisions
 
@@ -1802,6 +1806,10 @@ decided.
 - **Strings will store code points in one of two widths**, Latin-1 or 32
   bits, with UTF-8 only at the boundaries (planned; decided with the user on
   2026-09-29; "Planned: the object layout" above).
+- **A program's own `become:` will refuse value objects** (decided with the
+  user on 2026-09-29; "Planned: `become:` through forwarders" above): a value
+  is immutable, and forwarding it would change what every holder holds. Editing
+  a value class still migrates its instances inside the VM.
 - **Reified frames will become heap objects** in the same space, and the
   frame arena will go (planned; decided with the user on 2026-09-29).
   Closures and class objects follow them there, a derived part of the same

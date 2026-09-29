@@ -242,15 +242,6 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 ## Open design questions
 
-- **A program's own `become:` on a value object.** §3.1.1 gives a value no
-  identity and lets it be copied freely, across actors too, so a program's
-  `become:` on one would reach only the references in its own heap and leave
-  copies elsewhere unchanged. Editing a value class is not affected: its
-  instances migrate inside the VM, which no program can observe. Refuse, or
-  admit values as `become:`'s reflective exception: not decided.
-  [object-model.md](design/object-model.md), "Open: `become:` on a value
-  object".
-
 - **The class side's own scope.** Instance-side methods and class-side
   declarations share one member set; canonical Newspeak scopes the class side
   apart (`compileClassSide:`). The specification is silent; left as is until a
