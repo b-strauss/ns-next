@@ -1340,7 +1340,7 @@ Would change: the object representation becomes the one the reference
 engines with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with
 Primordial Soup beside them -- adapted where Newspeak's nesting requires it,
 and the JIT tiers follow on it. Decided with the user on 2026-09-29; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
-to a high-performance VM". Three `Planned:` sections below and four in
+to a high-performance VM". Three `Planned:` sections below and three in
 [memory.md](memory.md) describe its representation steps. The road, each
 step landing green on its own:
 

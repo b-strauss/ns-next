@@ -1483,7 +1483,7 @@ should be is left to road step 3.
   macOS, which does no commit accounting, first touch can still end in the
   out-of-memory killer, as for any process. Windows always accounts a commit,
   so there it always fails as a value. `munmap` releases, all through `libc`). The POSIX half is checked with
-  clippy for Linux and macOS targets, not run. Both crates are declarations only, with no
+  clippy for Linux and macOS targets, not run. `windows-sys` and `libc` are declaration-only crates, with no
   run-time code of their own. Primordial Soup has the same split behind the
   same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
   `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits

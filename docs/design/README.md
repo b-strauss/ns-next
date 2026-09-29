@@ -47,7 +47,7 @@ that cannot name its code is describing an intention, and should say so.
 
 ## Architecture
 
-Four crates, with the name-resolution pass as the seam the bytecode compiler
+Five crates, with the name-resolution pass as the seam the bytecode compiler
 plugs into, and the JetBrains plugin beside them:
 
 ```
@@ -57,6 +57,7 @@ crates/
                 core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary
   ns-lsp/       the `ns-next-lsp` binary: the editor's language server
+  ns-memory/    reserved, committed and protected memory; the only crate with unsafe
 editors/
   jetbrains/    the JetBrains plugin: a Kotlin lexer mirroring ns-syntax's,
                 highlighting, and the connection to ns-next-lsp over the

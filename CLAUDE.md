@@ -48,7 +48,7 @@ Rust 1.98.0, edition 2021, five crates:
 - `crates/ns-memory` — the memory layer: one contiguous reservation per heap,
   committed, decommitted and protected by page range, lent as word slices, on
   Windows (`windows-sys`) and POSIX (`libc`). The only crate with `unsafe`;
-  every other crate forbids it. Nothing uses it yet: road step 3, the object
+  `ns-runtime` and `ns-lsp` forbid it, and no other crate contains any. Nothing uses it yet: road step 3, the object
   space, is its first user (`docs/design/memory.md`, "The memory layer").
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
