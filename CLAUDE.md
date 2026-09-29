@@ -472,30 +472,7 @@ in the same commit, or the comparison fails.
 Never judge performance from a debug build — `cargo build --workspace --release` is the
 one to measure; a release build is also the only one that runs the size tests
 `a_signal_fits_in_the_niche_of_its_one_unboxed_error` and the `Object` size test
-(`cargo nextest run --workspace --release`). Every binary a measurement compares — the current tree included — is
-built with the same explicit flags, which pin every function start to a 64-byte
-boundary: in PowerShell,
-`$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`
-before the build and `Remove-Item Env:RUSTFLAGS` after it (`RUSTFLAGS` replaces the
-configuration's flags, so `+crt-static` must be repeated; a Linux or macOS build carries
-the alignment flag alone). Step 2c measured identical machine code 1–2% apart through a
-64-byte phase shift of every hot function; pinned, that phase shift is gone. The pin is
-not the whole story, though: `bench_block.ns` has since measured **16% apart between two
-builds of the same tree** with the pin in place, each build stable to about 1%, so for
-that source one build per commit measures the build rather than the commit — build
-several of each tree and pool them, or the comparison is noise. The shipped build does
-not carry the pin: it costs about 110 KB (5.6%) and
-measured no faster. `docs/design/execution.md`'s measurement protocol ("What removing the
-re-entries moved") spells it out. `vm::run`'s stretch (`run_stretch`, the loop over the
-frame's locals between two safepoints) sits near LLVM's inlining threshold and is forced
-inline into `run`; before timing a change to a send's path, check with `dumpbin /disasm`
-(from the Visual Studio Build Tools, not on `PATH`) on a release build with debug
-information that no `vm::run::closure` and no `run_stretch` became a function of its own
-(`docs/design/execution.md`, "What the inline caches moved" and "What the loop over
-locals moved"). An instruction arm is not free: one more arm that calls a function
-measured about 3% on `bench_loop.ns` and `bench_send.ns`, which a profile
-places at a store-forwarding stall on the send path (the same section,
-"Where the 3% goes").
+(`cargo nextest run --workspace --release`).
 
 Every corpus module must parse; there is no list of exceptions. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
