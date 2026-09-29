@@ -1495,8 +1495,16 @@ mod tests {
     /// until near 2^42 digits the widest safe packing stays above it.
     #[test]
     fn the_packing_width_shrinks_with_the_length() {
+        // Computed with Python 3.14 by a linear scan rather than the binary
+        // search under test, with exact integers so that no overflow stands
+        // in for a failed bound:
+        //     max(bits for bits in range(43, 63)
+        //         if (2**bits - 1)**2 * -(-length * 64 // bits)
+        //            < SECOND_PRIME * THIRD_PRIME)
+        // for length = 1, 2**10, 2**20 and 2**30.
         assert_eq!(bits_per_digit_for(1), 62);
-        assert!(bits_per_digit_for(1 << 20) >= 43);
-        assert!(bits_per_digit_for(1 << 20) <= bits_per_digit_for(1 << 10));
+        assert_eq!(bits_per_digit_for(1 << 10), 58);
+        assert_eq!(bits_per_digit_for(1 << 20), 53);
+        assert_eq!(bits_per_digit_for(1 << 30), 48);
     }
 }
