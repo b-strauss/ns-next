@@ -40,6 +40,8 @@ pub(crate) fn execute(
         roots,
         entry,
         stateless,
+        // A packaged application is started by the packaged run path, not here.
+        start: _,
     } = match ns_runtime::image::load(&bytes) {
         Ok(loaded) => loaded,
         Err(error) => {

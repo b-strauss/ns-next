@@ -158,6 +158,42 @@ pub fn snapshot<'gc>(
     platform: &Value<'gc>,
     roots: &[Value<'gc>],
 ) -> Result<Vec<u8>, String> {
+    write_image(mutator, modules, platform, roots, 0)
+}
+
+/// Serializes an application assembled but not yet started: its instance is
+/// the graph's one root, and `FLAG_START` tells `load` to send it
+/// `main: platform args:`.
+///
+/// No platform exists for it yet, so none is named: the platform value is
+/// `nil` here, which means no platform path is discovered and a graph that
+/// reaches the platform or anything shipped meets the encoder's refusal of a
+/// shipped object no path names. An application that reached the platform
+/// could only have been handed it, and nothing hands one out before
+/// `main:args:`.
+pub fn package<'gc>(
+    mutator: &Mutator<'gc>,
+    modules: &[ModuleSource<'_, 'gc>],
+    application: Value<'gc>,
+) -> Result<Vec<u8>, String> {
+    write_image(
+        mutator,
+        modules,
+        &Value::Nil,
+        &[application],
+        encode::FLAG_START,
+    )
+}
+
+/// The one writer of a graph-carrying image; `flags` is what tells `load` how
+/// to treat it.
+fn write_image<'gc>(
+    mutator: &Mutator<'gc>,
+    modules: &[ModuleSource<'_, 'gc>],
+    platform: &Value<'gc>,
+    roots: &[Value<'gc>],
+    flags: u8,
+) -> Result<Vec<u8>, String> {
     let heap = &mutator.heap;
     // A frame married to a running activation keeps its registers and
     // `program_counter` on the activation stack, and the format has no record
@@ -202,7 +238,7 @@ pub fn snapshot<'gc>(
     let mut path_writer = encode::Writer::new();
     platform_paths::encode_section(&mut path_writer, &used_paths.paths, &mut describing.symbols);
     let mut writer = encode::Writer::new();
-    write_describing(&mut writer, modules, 0, describing, heap)?;
+    write_describing(&mut writer, modules, flags, describing, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
     // world is resumed by loading it and sending to `roots`, not by starting
     // it fresh -- but the field is written unconditionally so every artifact
@@ -274,6 +310,10 @@ pub struct LoadedImage {
     /// roots slice is a real, tested case that flag-less inference would
     /// misread as a binary.
     pub stateless: bool,
+    /// `header.start` (`FLAG_START`): the image is an application packaged
+    /// just before `main:args:`, and its one root is to be sent
+    /// `main: platform args:`.
+    pub start: bool,
 }
 
 /// Decodes an artifact: symbols, code table, mixin table, module section,
@@ -485,6 +525,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         roots,
         entry,
         stateless: header.stateless,
+        start: header.start,
     })
 }
 

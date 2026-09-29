@@ -8539,12 +8539,12 @@ fn an_out_of_range_entry_symbol_id_is_a_decode_error_not_a_panic() {
 }
 
 #[test]
-fn an_unknown_header_flag_is_still_rejected_now_that_two_are_known() {
-    // Bit 2 is not assigned. A flag this build does not implement means a
+fn an_unknown_header_flag_is_still_rejected_now_that_three_are_known() {
+    // Bit 3 is not assigned. A flag this build does not implement means a
     // section it cannot see, so continuing would read the next field out of
     // whatever that section occupies.
     let mut writer = ns_runtime::image::encode::Writer::new();
-    ns_runtime::image::encode::write_header(&mut writer, 0b100);
+    ns_runtime::image::encode::write_header(&mut writer, 0b1000);
     let bytes = writer.into_bytes();
     let mut reader = ns_runtime::image::decode::Reader::new(&bytes);
     assert!(ns_runtime::image::decode::read_header(&mut reader).is_err());
@@ -12248,4 +12248,104 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
         assert_eq!(decoded, Ok(class_hash.max(metaclass_hash)));
         assert_eq!(entries, 2, "one entry for the class, one for its metaclass");
     });
+}
+
+#[test]
+fn a_packaged_application_loads_as_a_started_image_with_one_root() {
+    let bytes = packaged_application();
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert!(loaded.start);
+    assert_eq!(loaded.roots.len(), 1);
+    let root = loaded.roots[0].clone();
+    let count = send_to(&mut loaded, &root, "count");
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&count), Value::SmallInteger(41)));
+    });
+}
+
+fn packaged_application() -> Vec<u8> {
+    let (mut interpreter, class) = load(indoc! {"
+        Newspeak3
+        'Test'
+        class App = Object new (| public count ::= 41. |) (
+            public main: platform args: arguments = ( count:: count + 1. ^count )
+        ) : ()
+    "});
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
+    let origin = SourceOrigin::File("App.ns".into());
+    interpreter
+        .enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                origin: &origin,
+                source: None,
+            }];
+            image::package(mutator, &modules, mutator.fetch(&application))
+        })
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+#[test]
+fn package_refuses_an_application_that_reaches_the_platform() {
+    let (mut interpreter, class) = load(indoc! {"
+        Newspeak3
+        'Test'
+        class App = Object new (| public held ::= nil. |) () : ()
+    "});
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(&application, Symbol::intern("held:"), &[platform]),
+        "held:",
+    );
+    let origin = SourceOrigin::File("App.ns".into());
+    let refused = interpreter.enter(|mutator| {
+        let modules = [image::ModuleSource {
+            class: class_reference(mutator, &class),
+            origin: &origin,
+            source: None,
+        }];
+        image::package(mutator, &modules, mutator.fetch(&application))
+    });
+    let error = match refused {
+        Ok(_) => panic!("an application holding the platform was packaged"),
+        Err(error) => error,
+    };
+    assert!(error.contains("platform"), "{error}");
+}
+
+#[test]
+fn a_snapshot_is_not_started() {
+    let bytes = snapshot_of(indoc! {"
+        Newspeak3
+        'Test'
+        class App = Object new () () : ()
+    "});
+    let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert!(!loaded.start);
+}
+
+#[test]
+fn a_stateless_start_header_is_contradictory() {
+    let mut writer = ns_runtime::image::encode::Writer::new();
+    ns_runtime::image::encode::write_header(&mut writer, 0b110);
+    let bytes = writer.into_bytes();
+    let mut reader = ns_runtime::image::decode::Reader::new(&bytes);
+    let error = match ns_runtime::image::decode::read_header(&mut reader) {
+        Ok(_) => panic!("contradictory flags were accepted"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("contradict"), "{error}");
+}
+
+#[test]
+fn every_truncation_of_a_packaged_application_is_reported_rather_than_panicking() {
+    let bytes = packaged_application();
+    for cut in 0..bytes.len() {
+        assert!(
+            image::load(&bytes[..cut]).is_err(),
+            "a packaged application truncated to {cut} bytes must be refused, not panic"
+        );
+    }
+    image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
 }

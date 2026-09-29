@@ -44,6 +44,7 @@ pub struct ModuleReport {
 pub struct Report {
     pub format_version: u32,
     pub stateless: bool,
+    pub start: bool,
     /// Every module the artifact carries, in module order.
     pub modules: Vec<ModuleReport>,
     pub sections: Vec<Section>,
@@ -734,6 +735,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     Ok(Report {
         format_version: crate::image::encode::FORMAT_VERSION,
         stateless: header.stateless,
+        start: header.start,
         modules: module_reports,
         sections,
         symbols: symbol_list,
@@ -762,6 +764,7 @@ pub fn render(report: &Report) -> String {
         "stateless: {}",
         if report.stateless { "yes" } else { "no" }
     );
+    let _ = writeln!(out, "start: {}", if report.start { "yes" } else { "no" });
     let _ = writeln!(out, "modules: {}", report.modules.len());
     for (index, module) in report.modules.iter().enumerate() {
         let _ = writeln!(

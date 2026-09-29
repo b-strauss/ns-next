@@ -430,3 +430,11 @@ fn source_origin_tags_are_fixed() {
     assert_eq!(ORIGIN_FILE, 0);
     assert_eq!(ORIGIN_EMBEDDED, 1);
 }
+
+#[test]
+fn header_flags_are_fixed() {
+    use ns_runtime::image::encode;
+    assert_eq!(encode::FLAG_HAS_SOURCE, 1);
+    assert_eq!(encode::FLAG_STATELESS, 2);
+    assert_eq!(encode::FLAG_START, 4);
+}

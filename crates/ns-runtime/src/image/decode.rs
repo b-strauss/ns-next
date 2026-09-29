@@ -41,6 +41,11 @@ pub enum DecodeError {
     UnknownHeaderFlags {
         flags: u8,
     },
+    /// The header sets two flags that cannot both hold: a stateless artifact
+    /// has no graph, and a start image is its graph's one root.
+    ContradictoryHeaderFlags {
+        flags: u8,
+    },
     /// A frame's `program_counter` is not an instruction index of the body that
     /// runs in it. The VM stores the index of the instruction it is executing,
     /// so every real activation's `program_counter` is in range; a crafted one
@@ -440,6 +445,10 @@ impl std::fmt::Display for DecodeError {
                 "image header sets flag bits {:#04x} this build does not know",
                 flags & !super::encode::KNOWN_FLAGS
             ),
+            DecodeError::ContradictoryHeaderFlags { flags } => write!(
+                f,
+                "image header sets flags {flags:#04x}, which contradict each other: a stateless artifact has no graph to start"
+            ),
             DecodeError::ProgramCounterOutOfRange { program_counter, instructions } => write!(
                 f,
                 "frame pc {program_counter} is not an instruction index in a body of {instructions} instruction(s)"
@@ -807,6 +816,8 @@ pub struct Header {
     pub has_source: bool,
     /// No graph section follows; the file ends after the entry field.
     pub stateless: bool,
+    /// The graph's one root is an application to start (`FLAG_START`).
+    pub start: bool,
 }
 
 pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
@@ -828,9 +839,15 @@ pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
     if flags & !super::encode::KNOWN_FLAGS != 0 {
         return Err(DecodeError::UnknownHeaderFlags { flags });
     }
+    // A stateless artifact carries no graph, and a start image is defined by
+    // the root in its graph.
+    if flags & super::encode::FLAG_STATELESS != 0 && flags & super::encode::FLAG_START != 0 {
+        return Err(DecodeError::ContradictoryHeaderFlags { flags });
+    }
     Ok(Header {
         has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
         stateless: flags & super::encode::FLAG_STATELESS != 0,
+        start: flags & super::encode::FLAG_START != 0,
     })
 }
 
