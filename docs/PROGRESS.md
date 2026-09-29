@@ -15,15 +15,21 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: the Are We Fast Yet benchmarks, before road step 2's second plan**
+**Next: one artifact, packaged before `main:args:`**
+([image-format.md](design/image-format.md), "Planned: one artifact, packaged
+before `main:args:`"): `run` and `build` assemble an application from one
+source file or a JSON project file whose modules reach it through a
+manifest, and `build` serializes it just before `main:args:`. Designed with
+the user on 2026-09-29; the plan is still to be written. It comes first
+because the Are We Fast Yet harness is a program of several modules.
+
+**Then: the Are We Fast Yet benchmarks, before road step 2's second plan**
 ([OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM"): the
 Newspeak versions from `prior-art/somns/core-lib/Benchmarks` become runnable
-modules with pinned output, and each one widens the platform on demand. Its
-`Vector`, the harness's `platform system` and `platform mirrors`, and the
-numeric protocol it sends all come in that way. The first step is to find
-where each benchmark fails today; the plan is still to be written. Decided
-with the user on 2026-09-29, so that the eight-byte value and every later
-step are measured on real programs.
+programs with pinned output, in three stages by what they need, each
+widening the platform on demand. Decided with the user on 2026-09-29, so
+that the eight-byte value and every later step are measured on real
+programs.
 
 **After it: road step 2's second plan, the eight-byte value**
 ([object-model.md](design/object-model.md), "Planned: an eight-byte value"):

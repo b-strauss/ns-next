@@ -13,11 +13,13 @@ An item's code references were checked against the tree on 2026-09-28.
 
 ## Next
 
-**The eight-byte value**, road step 2's second plan (its first, large
-integers, is built). Its plan is to be written from
-[object-model.md](design/object-model.md), "Planned: an eight-byte value",
-against what [core-library.md](design/core-library.md), "Large integers",
-describes as built.
+**One artifact, packaged before `main:args:`**, the prerequisite of the Are
+We Fast Yet benchmarks below: `run` and `build` assemble an application from
+one source file (`new`) or a JSON project file (`packageUsing:` a manifest),
+`build` serializes it just before `main:args:`, and the stateless binary,
+`snapshot` and `--send` go away. Its plan is to be written from
+[image-format.md](design/image-format.md), "Planned: one artifact, packaged
+before `main:args:`".
 
 ## The road to a high-performance VM
 
@@ -40,25 +42,38 @@ and `prior-art/newspeak-benchmarks`.
   The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into the
   tree, each a runnable module with its output pinned under both lowerings and
   a measurement source. Each one widens the platform on demand, as
-  `CLAUDE.md` asks, so the Newspeak side grows with them. That includes:
+  `CLAUDE.md` asks, so the Newspeak side grows with them. It waits for the
+  packaged artifact ("Next", above): the harness becomes an application
+  whose factory is `packageUsing:` and which reaches each benchmark as
+  `manifest Sieve` rather than through SOMns's `system loadModule:`, and
+  `CD.ns`'s one `loadModule:nextTo:` line goes the same way. That includes:
   - AWFY's `Vector`, a growable array over an `Array` with a first and a last
     index (SOMns's `core-lib/Kernel.ns`), which `List` in
     `CollectionsFactory.ns` answers only in part today (`add:`, `at:`,
     `at:put:`, `size`, `do:`);
-  - the harness's `platform system` and `platform mirrors ObjectMirror`;
+  - the harness's `platform system` (`ticks`) and, if it still picks a
+    benchmark by name, `platform mirrors ObjectMirror`;
   - whatever integer and float protocol each benchmark sends.
 
   Copying them is a licensing decision. SOMns is MIT (Stefan Marr, and
   Michael Haupt / HPI), so each file gets a header and
-  `THIRD-PARTY-NOTICES.md` an entry, as for `num-bigint`. Still to be
-  decided:
-  - which benchmarks come first (proposed, not decided: Richards and
-    DeltaBlue for sends and polymorphism; Towers, Queens and Sieve for loops
-    and arrays; NBody for floats);
-  - how they are run and measured.
+  `THIRD-PARTY-NOTICES.md` an entry, as for `num-bigint`. They come in
+  three stages by what they need, one plan each (decided with the user on
+  2026-09-29), in the order a survey of where each fails today set -- every
+  one of the fourteen fails on its first send of a missing selector:
+  1. Sieve, Permute, Queens, Towers, Bounce, Storage and List, with the
+     harness: `Integer`'s `to:do:`, `downTo:do:`, `timesRepeat:`, `%` and
+     `&`; `Array`'s `new:withAll:` and `putAll:`; `Object`'s `error:` and
+     `subclassResponsibility`; `&&`.
+  2. Mandelbrot, NBody and Richards: `Float`'s `//`, mixed integer and float
+     arithmetic, `sqrt`, `<<`, `bitXor:`, and `platform system`'s
+     `printString:` and `printNewline`.
+  3. DeltaBlue, Havlak, Json and CD: `Vector`, `Dictionary`,
+     `IdentityDictionary`, `Set`, `IdentitySet`, the string protocol Json
+     sends (`charAt:`, `substringFrom:to:`, `endsWith:`, …), `sin`, `cos`,
+     and CD's second module, `RedBlackTree.ns`.
 
-  The first step is to find where each benchmark fails today, which sets
-  the effort and the order.
+  Still to be decided: how they are measured.
 - **Step 2, second plan, the eight-byte value**, on today's arena: one tagged
   64-bit word -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`,
   `true` and `false`, and handles -- which moves the `SmallInteger`/

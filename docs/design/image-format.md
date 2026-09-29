@@ -1,9 +1,12 @@
 # Image format — serialization and deployment artifacts
 
 > **Status:** built. Both artifacts round-trip, and both can be inspected without
-> being loaded. **Planned:** the decoder builds the planned eight-byte values
-> and variably sized objects from a wire format that stays id-based ("Planned:
-> the image under the new representation"), and suspend and resume.
+> being loaded. **Planned:** one artifact, packaged before `main:args:`, with
+> programs of several modules assembled through a manifest ("Planned: one
+> artifact, packaged before `main:args:`"); the decoder builds the planned
+> eight-byte values and variably sized objects from a wire format that stays
+> id-based ("Planned: the image under the new representation"); and suspend
+> and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs`, `encode.rs`, `decode.rs`,
 > `mixins.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`. CLI: `ns-next snapshot`,
 > `ns-next load`, `ns-next build`, `ns-next inspect`, and `ns-next disasm` on an
@@ -1194,6 +1197,126 @@ row's `send` is the build's `--entry`; and mutation and truncation tests cover
 the new flag, the entry field and the trailing-byte check
 (`crates/ns-runtime/tests/image.rs`).
 
+## Planned: one artifact, packaged before `main:args:`
+
+Would change: `build` packages the application and serializes it just before
+the send of `main:args:`, the way Newspeak on Squeak (`DeploymentManager.ns`,
+`appClass packageUsing: ide namespacing manifest`, then `Serializer new
+serialize: app`) and Primordial Soup (`CompilerApp.ns`,
+`createSnapshotsFromNamespace:outputs:`) do; the stateless binary, the
+`snapshot` command and `--send` go away, and a program made of several modules
+is assembled through a manifest. Decided with the user on 2026-09-29, before
+the Are We Fast Yet benchmarks, whose harness is such a program.
+
+**The model.** An application is the instance of a root class that is sent
+`main: platform args:` (§8.4). The platform enters there and nowhere else: no
+root class is instantiated with it, so nothing assembled before `main:args:`
+can hold it, and an artifact written at that point cannot reach it. A later
+image with heap state is the same artifact written at another point of the
+same run -- mid-execution rather than before `main:args:`, resumed rather than
+started ("Planned: suspend and resume").
+
+**Two ways to assemble, one entry.**
+
+- **A single source file**: `ns-next run app.ns [-- args]`. The root class's
+  primary factory must be `new`, written out or left implicit (§6: "If the
+  signature is omitted it defaults to `new`"); any other factory is refused
+  before anything runs, naming the factory found. The root is sent `new`, then `main: platform args:`.
+- **A project file**: `ns-next run app.json [-- args]`. The root class's
+  primary factory must be `packageUsing:`. Every module is parsed, resolved
+  and compiled first; the root is sent `packageUsing: manifest`, then `main:
+  platform args:`.
+
+The project file is JSON (the user's choice; it brings `serde_json` into
+`ns-cli`, where until now only `ns-lsp` used it):
+
+```json
+{
+  "root": "Harness.ns",
+  "modules": ["Sieve.ns", "../shared/RedBlackTree.ns"]
+}
+```
+
+- `root` is the application's source file; `modules` the other modules the
+  manifest holds. `modules` may be absent or empty. The root module is not in
+  the manifest.
+- A module's name in the manifest is the name its source file declares for
+  its class, as in both upstream systems (Primordial Soup's
+  `namespace at: klass name put: klass`; Squeak's `Root` namespace).
+- The project file's own path, given to a command, is absolute or relative
+  to the working directory. A path inside it is absolute or relative to the
+  project file. Either separator, `/` or `\`, is accepted in every path,
+  relative or absolute, on every operating system.
+- Refused before anything runs: an unknown field, a missing or unreadable
+  file, a module that does not parse or resolve, two modules declaring the
+  same name, and a root whose factory is not `packageUsing:`.
+
+**The manifest** is an instance of a small Newspeak class,
+`core-library/Manifest.ns`, embedded in the binary. It is neither privileged
+nor shipped: it has no VM mirror, is resolved like a user module and compiled
+into the program beside the modules, so an application that keeps its
+manifest in a slot serializes it like any other object. The host instantiates
+it with an `Array` of names (`Symbol`s) and an `Array` of module definitions
+(§6.4: the class objects, not instances). Its `doesNotUnderstand:` answers the
+module definition whose name is the message's selector, searching linearly,
+and passes anything else to `super`, so `manifest Missing` is an ordinary
+`doesNotUnderstand:` at run time -- the lookup both upstream `Manifest`
+classes make over a map (`Namespacing.ns`, `CompilerApp.ns`). No program can
+name the class; it holds only what the host hands it.
+
+**The commands.**
+
+- `run <file.ns | project.json> [-- args]`: assemble as above, send `main:
+  platform args:`.
+- `build <file.ns | project.json> <out>`: assemble the same way, then write
+  the image instead of sending `main:args:`. The application's code runs at
+  build time -- its factory and every initializer -- with no platform in
+  existence. An error raised while assembling fails the build with the
+  status and message `run` reports for the same error, so a golden whose
+  assembly fails round-trips as that failure.
+- `load <artifact> [-- args]`: decode, verify, send `main: platform args:` to
+  the graph's root.
+- `bench <file.ns | project.json> [-- args]`: assemble anew for every sample,
+  as today, and time only `main:args:`.
+- `disasm` and `inspect` are unchanged, except that every artifact `inspect`
+  reads has an object graph.
+- Removed: `snapshot`, and `--send` on `run`, `load` and `bench`.
+
+**The format.** One artifact: the image's sections with the application as
+the graph's root and a header flag saying the image is to be started, which
+`load` answers by sending `main:args:` to the root. The entry needs no field,
+because it is always `main:args:`. `FLAG_STATELESS`'s bit and the entry-selector
+field retire, and the class tags that name "the module's root class"
+(`CLASS_USER_ROOT`, `CLASS_ROOT_LEVEL`, `HASHED_ROOT_CLASS`) assume one module
+per artifact: a project's modules are several top-level mixins, so a
+top-level class is named by its index in the mixin table under new tags, and
+the old ones retire ("A wire tag is assigned once", `CLAUDE.md`). The
+platform-path encoding stays, with its runtime-level tests, for the image with
+heap state; the encoder refuses a startable image whose graph reaches a
+shipped module's instance or class, which none built this way can.
+
+**The goldens and `run-corpus`.**
+
+- Every golden's root becomes `class X = (…)` or `class X new = (…)`, its use
+  of the platform moved from slot initializers into `main:args:` (locals, or
+  slots `main:args:` fills). The recorded `status`, `stdout` and `stderr` do
+  not change; a golden whose output would is a finding to settle, not a
+  golden to update. A golden that exists to exercise the platform in module
+  state moves to a runtime-level test.
+- New goldens cover the manifest: an application of two modules, `manifest
+  Missing`, and a manifest kept in a slot through `build` and `load`.
+- `run-corpus`'s six corpus modules cannot change and declare no
+  `main:args:`. For each row it writes a wrapper application and a project
+  file into a temporary directory; the wrapper's `main:args:` instantiates the
+  corpus module from its manifest -- `new`, or `usingPlatform: platform` --
+  and sends the row's `send`. All four lanes, source and built artifact under
+  both lowerings, then go through `run` and `build`/`load` alone.
+
+**Tests beside the goldens**: CLI tests for every refusal above and for both
+separators in relative and absolute paths; the round trip `build` then `load`
+per golden and lowering, as today; mutation and truncation tests for the new
+flag and the new class tags.
+
 ## Planned: the image under the new representation
 
 Would change: the decoder builds the planned representation -- eight-byte
@@ -1418,9 +1541,8 @@ builtins.
   Both can be true — different toolchain, or the measured runs were selectors
   rather than source — but the claim should be re-checked rather than left
   standing.
-- **Whether an image should record its entry too**, making `load` of a stateful
-  image self-starting, at the cost of the two artifacts' bytes differing in one
-  more place.
-- **What a multi-module artifact would look like.** Upstream's manifest lets one
-  artifact carry a linked set. One root module per artifact is assumed
-  throughout, and nothing in the format anticipates more.
+- **Whether an image should record its entry too**, and **what a multi-module
+  artifact would look like**: both answered by "Planned: one artifact,
+  packaged before `main:args:`" -- every artifact is started with
+  `main:args:`, and a project's modules are several top-level mixins in one
+  artifact. Open until it is built.
