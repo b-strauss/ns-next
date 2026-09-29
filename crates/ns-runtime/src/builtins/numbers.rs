@@ -95,6 +95,22 @@ pub(crate) fn float_hash(value: f64) -> i64 {
     crate::hash::content_hash(normalized.to_bits())
 }
 
+/// `//` on two `i64`s, rounded toward negative infinity (Primordial Soup's
+/// `Integer>>//`; `num-integer`'s `div_floor`). `None` for a zero divisor
+/// and for `i64::MIN // -1`, whose quotient does not fit -- the leaf
+/// answers the one and raises the other, and `IntegerBinary` falls back to
+/// the send for both, so this is the only copy of the rule.
+#[inline]
+pub(crate) fn checked_floor_divide(dividend: i64, divisor: i64) -> Option<i64> {
+    let quotient = dividend.checked_div(divisor)?;
+    let remainder = dividend % divisor;
+    if remainder != 0 && ((remainder < 0) != (divisor < 0)) {
+        Some(quotient - 1)
+    } else {
+        Some(quotient)
+    }
+}
+
 pub(crate) fn execute_integer<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: IntegerPrimitive,
@@ -150,8 +166,7 @@ pub(crate) fn execute_integer<'gc>(
                 receiver: Value::SmallInteger(receiver_integer),
                 message: "division by zero".to_string(),
             }),
-            Some(divisor) => receiver_integer
-                .checked_div_euclid(divisor)
+            Some(divisor) => checked_floor_divide(receiver_integer, divisor)
                 .map(Value::SmallInteger)
                 .ok_or_else(|| overflow("//")),
         }),
@@ -240,5 +255,22 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_floor_divide;
+
+    #[test]
+    fn floor_division_rounds_toward_negative_infinity() {
+        assert_eq!(checked_floor_divide(7, 2), Some(3));
+        assert_eq!(checked_floor_divide(7, -2), Some(-4));
+        assert_eq!(checked_floor_divide(-7, 2), Some(-4));
+        assert_eq!(checked_floor_divide(-7, -2), Some(3));
+        assert_eq!(checked_floor_divide(6, -2), Some(-3));
+        assert_eq!(checked_floor_divide(i64::MIN, 1), Some(i64::MIN));
+        assert_eq!(checked_floor_divide(i64::MIN, -1), None);
+        assert_eq!(checked_floor_divide(1, 0), None);
     }
 }

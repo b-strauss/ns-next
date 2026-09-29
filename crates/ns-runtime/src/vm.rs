@@ -673,14 +673,15 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     IntegerOperation::Multiply => left_integer
                         .checked_mul(right_integer)
                         .map(Value::SmallInteger),
-                    // `checked_div_euclid` answers `None` for a zero divisor as
-                    // well as for `i64::MIN // -1`, so both take the fallback and
-                    // the primitive raises its own "division by zero" or overflow
-                    // error. No zero check is written here, because writing one
-                    // would be the second copy.
-                    IntegerOperation::FloorDivide => left_integer
-                        .checked_div_euclid(right_integer)
-                        .map(Value::SmallInteger),
+                    // `checked_floor_divide` answers `None` for a zero divisor
+                    // as well as for `i64::MIN // -1`, so both take the
+                    // fallback and the primitive decides what they answer. It
+                    // is `builtins::numbers`' own function, so the rounding
+                    // rule has one copy.
+                    IntegerOperation::FloorDivide => {
+                        crate::builtins::numbers::checked_floor_divide(left_integer, right_integer)
+                            .map(Value::SmallInteger)
+                    }
                     IntegerOperation::Less => Some(Value::Boolean(left_integer < right_integer)),
                     IntegerOperation::Greater => Some(Value::Boolean(left_integer > right_integer)),
                     IntegerOperation::LessOrEqual => {
