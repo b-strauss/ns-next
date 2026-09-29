@@ -1292,6 +1292,16 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `object` is a `LargeInteger`: `large_integer` answers the
+    /// same question, but by copying every digit out.
+    pub fn is_large_integer(&self, object: ObjectReference<'gc>) -> bool {
+        self.check_object_origin(object);
+        matches!(
+            self.objects[object.index as usize].data,
+            ObjectData::LargeInteger(_)
+        )
+    }
+
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {

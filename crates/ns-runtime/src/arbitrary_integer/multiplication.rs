@@ -13,6 +13,7 @@ use std::cmp::Ordering;
 
 use super::addition::{
     add_in_place, add_in_place_with_carry, compare_magnitudes, subtract_in_place,
+    subtract_magnitudes,
 };
 use super::number_theoretic_transform::multiply_accumulate_by_transform;
 use super::{trim_zero_top_digits, ArbitraryInteger};
@@ -292,18 +293,8 @@ pub(super) fn multiply_schoolbook(left: &[u64], right: &[u64]) -> Vec<u64> {
 /// for zero.
 fn subtract_with_sign(left: &[u64], right: &[u64]) -> (Ordering, Vec<u64>) {
     match compare_magnitudes(left, right) {
-        Ordering::Greater => {
-            let mut difference = left.to_vec();
-            subtract_in_place(&mut difference, right);
-            trim_zero_top_digits(&mut difference);
-            (Ordering::Greater, difference)
-        }
-        Ordering::Less => {
-            let mut difference = right.to_vec();
-            subtract_in_place(&mut difference, left);
-            trim_zero_top_digits(&mut difference);
-            (Ordering::Less, difference)
-        }
+        Ordering::Greater => (Ordering::Greater, subtract_magnitudes(left, right)),
+        Ordering::Less => (Ordering::Less, subtract_magnitudes(right, left)),
         Ordering::Equal => (Ordering::Equal, Vec::new()),
     }
 }

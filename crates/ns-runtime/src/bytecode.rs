@@ -327,10 +327,10 @@ pub enum Instruction {
     /// An integer leaf's inlined fast path. Performs `operation` on `left` and
     /// `right` into `destination` when both hold `Value::SmallInteger` and the
     /// result fits `i64`; otherwise jumps to `target`, where the ordinary
-    /// send stands. A result that does not fit is promoted to a `LargeInteger`,
-    /// and every error -- a non-integer operand, a zero divisor, a user
-    /// subclass -- is raised, by that send's primitive, never here, so there
-    /// is one source for each of them.
+    /// send stands. That send's primitive promotes a result that does not fit
+    /// to a `LargeInteger` and raises every error -- a non-integer operand, a
+    /// zero divisor, a user subclass -- never this instruction, so there is
+    /// one source for each of them.
     ///
     /// Reads and writes only registers of the activation executing it -- never
     /// another frame's by reference -- so `outer_reach_of` does not name it.

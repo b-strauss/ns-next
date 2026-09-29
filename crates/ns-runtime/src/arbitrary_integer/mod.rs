@@ -2,7 +2,7 @@
 // 765fd9b3eb9397471d41b9f613e530f6d9d6383f, src/lib.rs.
 // Copyright (c) 2014 The Rust Project Developers. MIT licence; see
 // THIRD-PARTY-NOTICES.md at the repository root. Changed for ns-next: names
-// written out, `BigUint` replaced by digit slices, no `unsafe`.
+// written out, the generic `div_floor` specialized to `ArbitraryInteger`.
 
 //! Integers of any size, as a sign and a magnitude: the arithmetic behind
 //! `LargeInteger`, with no heap and no `Value`. The digit algorithms are
@@ -248,12 +248,12 @@ impl ArbitraryInteger {
     }
 
     /// Twice the value; Toom-3's `* 2`.
-    pub(super) fn doubled(&self) -> ArbitraryInteger {
+    fn doubled(&self) -> ArbitraryInteger {
         ArbitraryInteger::from_parts(self.negative, shift_left(&self.magnitude, 1))
     }
 
     /// Half the value, which must be even; Toom-3's `>> 1`.
-    pub(super) fn halved_exactly(&self) -> ArbitraryInteger {
+    fn halved_exactly(&self) -> ArbitraryInteger {
         debug_assert!(self.magnitude.first().is_none_or(|&low| low & 1 == 0));
         let mut magnitude = self.magnitude.to_vec();
         shift_right_in_place(&mut magnitude, 1);
@@ -262,7 +262,7 @@ impl ArbitraryInteger {
 
     /// A third of the value, which must be a multiple of three; Toom-3's
     /// `/ 3`.
-    pub(super) fn divided_exactly_by_three(&self) -> ArbitraryInteger {
+    fn divided_exactly_by_three(&self) -> ArbitraryInteger {
         let (quotient, remainder) = divide_by_digit(&self.magnitude, 3);
         debug_assert!(remainder == 0);
         ArbitraryInteger::from_parts(self.negative, quotient)
@@ -288,12 +288,12 @@ impl PartialOrd for ArbitraryInteger {
 }
 
 /// Drops zero top digits, so that a magnitude is canonical.
-pub(super) fn trim_zero_top_digits(digits: &mut Vec<u64>) {
+fn trim_zero_top_digits(digits: &mut Vec<u64>) {
     digits.truncate(significant_length(digits));
 }
 
 /// The length of `digits` without its zero top digits.
-pub(super) fn significant_length(digits: &[u64]) -> usize {
+fn significant_length(digits: &[u64]) -> usize {
     digits
         .iter()
         .rposition(|&digit| digit != 0)

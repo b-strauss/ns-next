@@ -1059,7 +1059,7 @@ impl<'gc> GraphTable<'gc> {
         let Value::Object(object) = value else { return };
         // A value, not a record: `encode_value` writes its digits wherever it
         // is referenced, so it takes no object id (§3.1.1).
-        if heap.large_integer(*object).is_some() {
+        if heap.is_large_integer(*object) {
             return;
         }
         if is_same_object(value, platform) {
