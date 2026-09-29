@@ -396,25 +396,24 @@ fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
 }
 
 #[test]
-fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
+fn an_integer_literal_beyond_i64_evaluates_to_a_large_integer() {
     let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
         ) (
-          public foo = ( ^99999999999999999999 )
+          public foo = ( ^99999999999999999999 printString )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
     let instance = new_instance(&mut interpreter, &class);
-    let result = send(&mut interpreter, &instance, "foo", &[]);
-    let error = expect_error(&mut interpreter, result, "foo");
-    assert!(
-        error.message.contains("out of i64 range"),
-        "{}",
-        error.message
-    );
-    assert_eq!(error.selector, Symbol::intern("parse"));
+    let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_of(mutator.heap(), &mutator.fetch(&result)),
+            "99999999999999999999"
+        );
+    });
 }
 
 #[test]

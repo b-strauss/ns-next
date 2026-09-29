@@ -19,7 +19,7 @@ use crate::bytecode::{CodeKind, CompiledCode};
 use std::rc::Rc;
 
 use crate::image::{decode, mixins, opcodes, platform_paths, symbols};
-use crate::Symbol;
+use crate::{ArbitraryInteger, Symbol};
 
 /// One named span of the file. `end` is exclusive.
 pub struct Section {
@@ -348,8 +348,17 @@ fn read_value(
         opcodes::VALUE_CLASS_TAG => format!("class {}", read_class_tag(reader, paths)?),
         opcodes::VALUE_PLATFORM => "<platform>".to_string(),
         opcodes::VALUE_PLATFORM_PATH => read_platform_path(reader, paths)?,
+        opcodes::VALUE_LARGE_INTEGER => format!("large-int {}", read_large_integer_text(reader)?),
         tag => return Err(decode::DecodeError::InvalidTag { what: "value", tag }),
     })
+}
+
+/// A `LargeInteger`'s digits, rendered as they are: a structural walk shows
+/// what the file says, so it does not refuse a non-canonical integer the
+/// way the loader does. The digit count is bounded all the same.
+fn read_large_integer_text(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    let (negative, magnitude) = decode::read_large_integer_parts(reader)?;
+    Ok(ArbitraryInteger::from_parts(negative, magnitude).to_decimal_string())
 }
 
 fn read_values(

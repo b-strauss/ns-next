@@ -17,20 +17,19 @@ use crate::Symbol;
 /// object each time they execute (a literal string is a fresh `Object` on every
 /// evaluation).
 ///
-/// `MalformedInteger` carries the raw text of an integer literal the lexer
-/// accepted but `interpreter::literals::parse_integer_literal` rejects (out of
-/// `i64` range, a fractional radix literal). That is a Newspeak-program
-/// error the language raises *when the literal is evaluated*; compilation cannot
-/// raise a `NewspeakError`, so the VM re-runs `parse_integer_literal` when the
-/// instruction executes and raises the identical error then.
+/// `LargeInteger` is an integer literal beyond `i64` (§5.1.1 bounds none), and
+/// never holds one that fits: that is a `SmallInteger`. Its digits live in the
+/// code, which holds no handle and so survives every move and every heap;
+/// `LoadLiteral` allocates the `LargeInteger` object each time it runs, which
+/// is sound because a value has no identity.
 ///
-/// `UnresolvedIdentifier` is the same deferral for the other program-level
-/// error a *resolved* module can still carry: an identifier with no binding
-/// -- a module root's clause receiver, which the root rule decides and
-/// which never runs (see
-/// `interpreter::literals::unresolved_identifier_error`). Neither variant is a
-/// lowered `ast::Literal`; both are payloads of a `LoadLiteral` that raises
-/// instead of producing a value.
+/// `UnresolvedIdentifier` is the one program-level error a *resolved* module
+/// can still carry: an identifier with no binding -- a module root's clause
+/// receiver, which the root rule decides and which never runs (see
+/// `interpreter::literals::unresolved_identifier_error`). Compilation cannot
+/// raise a `NewspeakError`, so it is deferred: it is no lowered
+/// `ast::Literal` but the payload of a `LoadLiteral` that raises instead of
+/// producing a value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -39,7 +38,7 @@ pub enum Literal {
     Float(f64),
     String(String),
     Symbol(Symbol),
-    MalformedInteger(String),
+    LargeInteger(crate::ArbitraryInteger),
     UnresolvedIdentifier(String),
 }
 
@@ -801,7 +800,7 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Float(float) => format!("{float:?}"),
         Literal::String(string) => format!("'{string}'"),
         Literal::Symbol(symbol) => format!("#{symbol}"),
-        Literal::MalformedInteger(text) => format!("malformed-int '{text}'"),
+        Literal::LargeInteger(integer) => format!("large-int {}", integer.to_decimal_string()),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
     }
 }
@@ -1085,7 +1084,9 @@ method foo: (args 1, registers 4)
             Literal::Float(2.5),
             Literal::String("s".to_string()),
             Literal::Symbol(Symbol::intern("sym")),
-            Literal::MalformedInteger("16r1.8".to_string()),
+            Literal::LargeInteger(
+                crate::ArbitraryInteger::parse("99999999999999999999", 10).unwrap(),
+            ),
         ];
         let rendered: Vec<String> = literals.iter().map(format_literal).collect();
         assert_eq!(
@@ -1097,7 +1098,7 @@ method foo: (args 1, registers 4)
                 "2.5",
                 "'s'",
                 "#sym",
-                "malformed-int '16r1.8'"
+                "large-int 99999999999999999999"
             ]
         );
     }

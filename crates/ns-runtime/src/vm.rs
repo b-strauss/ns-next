@@ -20,9 +20,7 @@ use crate::interpreter::future::{
 };
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
-use crate::interpreter::literals::{
-    malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
-};
+use crate::interpreter::literals::unresolved_identifier_error;
 use crate::interpreter::locals::{
     filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
     store_instance_field, store_vector, write_local, write_outer_local,
@@ -1176,10 +1174,11 @@ fn send_destination(instruction: &Instruction) -> u16 {
     }
 }
 
-/// Materializes a literal -- including the two deferred error cases,
-/// `MalformedInteger` and `UnresolvedIdentifier`. Both raise through
-/// `literals.rs`'s own constructors rather than rebuilding the error here:
-/// error text lives in `interpreter/`, never in the VM.
+/// Materializes a literal -- including the one deferred error case,
+/// `UnresolvedIdentifier`, which raises through `literals.rs`'s own
+/// constructor rather than rebuilding the error here: error text lives in
+/// `interpreter/`, never in the VM. A `LargeInteger` is a fresh object each
+/// time it runs, since a value needs no identity.
 fn make_value<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -1192,10 +1191,7 @@ fn make_value<'gc>(
         Literal::Float(float) => Value::Float(*float),
         Literal::String(string) => Value::Object(mutator.new_string(string.clone())),
         Literal::Symbol(symbol) => mutator.new_symbol(*symbol),
-        Literal::MalformedInteger(text) => match parse_integer_literal(text) {
-            Ok(integer) => Value::SmallInteger(integer),
-            Err(message) => return Err(malformed_integer_error(message)),
-        },
+        Literal::LargeInteger(integer) => mutator.new_integer(integer.clone()),
         Literal::UnresolvedIdentifier(name) => {
             let receiver = mutator.heap.activation_receiver(activation);
             return Err(unresolved_identifier_error(name, receiver));

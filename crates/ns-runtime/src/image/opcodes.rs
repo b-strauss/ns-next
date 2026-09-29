@@ -130,7 +130,7 @@ pub const OPCODE_INITIALIZE_SLOT_PROVISIONALLY: u8 = 39;
 pub const RETIRED_OPCODES: [u8; 10] = [2, 7, 8, 9, 10, 11, 21, 22, 23, 24];
 
 // Literals, carried by `OPCODE_LOAD_LITERAL`.
-// Next free number: 10.
+// Next free number: 11.
 
 /// `nil`.
 pub const LITERAL_NIL: u8 = 0;
@@ -144,13 +144,13 @@ pub const LITERAL_FLOAT: u8 = 3;
 pub const LITERAL_STRING: u8 = 4;
 /// A symbol literal, `#name`.
 pub const LITERAL_SYMBOL: u8 = 5;
-/// An integer the lexer accepted and the parser rejects. Carried as its
-/// original text because the error it raises is produced at execution time, by
-/// `interpreter::literals::malformed_integer_error`.
-pub const LITERAL_MALFORMED_INTEGER: u8 = 8;
 /// An identifier that names nothing, a module root's clause receiver; it
 /// raises its error when it runs.
 pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
+/// An integer beyond `i64`, in `VALUE_LARGE_INTEGER`'s wire form: a sign
+/// byte, a `u32` digit count, that many `u64` digits, least significant
+/// first. Its digits, never its source text, so the decoder parses nothing.
+pub const LITERAL_LARGE_INTEGER: u8 = 10;
 
 /// Literal tags that no longer name anything and are never reused: 6 was the
 /// character literal, retired 2026-09-25 when `"c"` became a one-character
@@ -161,7 +161,10 @@ pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
 /// neither the specification nor the canonical grammar has (a tuple,
 /// `{ ... }`, is §5.1.7's array); its elements nested, so a stale artifact's
 /// tag-7 bytes would otherwise decode as whatever literal took the number.
-pub const RETIRED_LITERALS: [u8; 2] = [6, 7];
+/// 8 was `MalformedInteger`, an integer literal beyond `i64`, until every
+/// integer literal became representable (2026-09-29); it carried the
+/// literal's text, which today's `LITERAL_LARGE_INTEGER` does not.
+pub const RETIRED_LITERALS: [u8; 3] = [6, 7, 8];
 
 // ---------------------------------------------------------------------------
 // Graph-section tags. Same rule as above: assigned once, never renumbered.
@@ -174,8 +177,8 @@ pub const RETIRED_LITERALS: [u8; 2] = [6, 7];
 // what a file says, so the numbering lives here and all three read it.
 // ---------------------------------------------------------------------------
 
-/// How a `Value` is encoded. Scalars carry their payload inline; the last
-/// four name something outside the value itself. Next free number: 9.
+/// How a `Value` is encoded. Scalars carry their payload inline; 5 to 8
+/// name something outside the value itself. Next free number: 10.
 pub const VALUE_NIL: u8 = 0;
 pub const VALUE_FALSE: u8 = 1;
 pub const VALUE_TRUE: u8 = 2;
@@ -191,6 +194,12 @@ pub const VALUE_PLATFORM: u8 = 7;
 /// followed by a `u32` index into the image's platform path section
 /// (`image::platform_paths`).
 pub const VALUE_PLATFORM_PATH: u8 = 8;
+/// A `LargeInteger`, carried inline as a value rather than as an object
+/// record, since a value has no identity (§3.1.1): a sign byte, a `u32`
+/// digit count, that many `u64` digits, least significant first. Only the
+/// canonical encoding is accepted -- no zero top digit, no negative zero,
+/// and nothing that fits `i64`, which travels as `VALUE_SMALL_INTEGER`.
+pub const VALUE_LARGE_INTEGER: u8 = 9;
 
 /// An object record's body, following its class tag and identity hash.
 /// Next free number: 10.

@@ -47,7 +47,6 @@ well_known_symbols! {
     MUST_BE_BOOLEAN => "mustBeBoolean",
     DOES_NOT_UNDERSTAND => "doesNotUnderstand:",
     CARET => "^",
-    PARSE => "parse",
     OBJECT => "Object",
     USING_PLATFORM => "usingPlatform:",
     CLASS_SIDE => "class side",
