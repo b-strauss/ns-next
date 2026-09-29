@@ -136,12 +136,14 @@ impl Reservation {
         self.check_pages(&range)?;
         // SAFETY: the range is ours and page-aligned, and `&mut self` means no
         // slice into it is alive.
-        unsafe { platform::decommit(self.address(range.start), range.len()) }.map_err(|code| {
-            MemoryError::Refused {
+        let outcome = unsafe { platform::decommit(self.address(range.start), range.len()) };
+        if let Err(code) = outcome {
+            self.record_failure(range, None);
+            return Err(MemoryError::Refused {
                 operation: Operation::Decommit,
                 code,
-            }
-        })?;
+            });
+        }
         self.pages.set(range, None);
         Ok(())
     }
@@ -159,12 +161,17 @@ impl Reservation {
         }
         // SAFETY: the range is ours, page-aligned and committed, and `&mut self`
         // means no slice into it is alive.
-        unsafe { platform::protect(self.address(range.start), range.len(), protection) }.map_err(
-            |code| MemoryError::Refused {
+        let outcome =
+            unsafe { platform::protect(self.address(range.start), range.len(), protection) };
+        if let Err(code) = outcome {
+            if protection == Protection::NoAccess {
+                self.record_failure(range, Some(Protection::NoAccess));
+            }
+            return Err(MemoryError::Refused {
                 operation: Operation::Protect,
                 code,
-            },
-        )?;
+            });
+        }
         self.pages.set(range, Some(protection));
         Ok(())
     }
@@ -226,7 +233,21 @@ impl Reservation {
     fn check_words(&self, range: &Range<usize>) -> Option<()> {
         let aligned = range.start.is_multiple_of(8) && range.end.is_multiple_of(8);
         let inside = range.start < range.end && range.end <= self.size;
-        (aligned && inside && self.pages.is_accessible(range.clone())).then_some(())
+        // `from_raw_parts` requires a byte length of at most `isize::MAX`,
+        // which a reservation on a 32-bit target can exceed.
+        let lendable = range.len() <= isize::MAX as usize;
+        (aligned && lendable && inside && self.pages.is_accessible(range.clone())).then_some(())
+    }
+
+    /// Records the state of `range` after a system call on it failed. The rule:
+    /// after a failure the map may under-report access but never over-report
+    /// it. A failed `mprotect` may have changed some pages before it failed,
+    /// and a failed `mmap(MAP_FIXED)` may already have discarded the old
+    /// mapping, so the caller passes the most restrictive state the call
+    /// could have left, and `words` never lends memory the map calls
+    /// accessible but the system no longer does.
+    fn record_failure(&mut self, range: Range<usize>, conservative: Option<Protection>) {
+        self.pages.set(range, conservative);
     }
 
     /// A non-empty range inside the reservation, on page boundaries.
@@ -252,5 +273,24 @@ impl Drop for Reservation {
         // SAFETY: `base` is this reservation's own base, and `&mut self` in
         // `drop` means nothing refers into it any more.
         unsafe { platform::release(self.base.as_ptr(), self.size) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the rule only: a range recorded after a failed call is no longer
+    /// lent. It does not provoke an operating-system failure.
+    #[test]
+    fn a_range_recorded_after_a_failure_is_not_lent() {
+        let page = Reservation::page_size();
+        let mut reservation = Reservation::reserve(4 * page).expect("reserve");
+        reservation.commit(0..2 * page).expect("commit");
+        reservation.record_failure(0..page, Some(Protection::NoAccess));
+        assert!(reservation.words(0..8).is_none());
+        assert!(reservation.words(page..page + 8).is_some());
+        reservation.record_failure(page..2 * page, None);
+        assert!(reservation.words(page..page + 8).is_none());
     }
 }
