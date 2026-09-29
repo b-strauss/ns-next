@@ -12,7 +12,10 @@ Rust 1.98.0, edition 2021, five crates:
   `interpreter/resolve.rs`), the core library -- `core-library/Kernel.ns`,
   Newspeak source the bootstrap compiles into the builtin classes
   (`interpreter/kernel.rs`), in §3.2's and §3.1.1's hierarchy (`Top`, then
-  `Object`, then `Value` over the value classes and `Behavior` over `Class`
+  `Object`, then `Value` over the value classes -- among them `Integer` and
+  its subclass `LargeInteger`, the integers beyond `i64`, whose arithmetic
+  lives in `arbitrary_integer/`, adapted from `num-bigint` and
+  `num-integer` -- and `Behavior` over `Class`
   and `Metaclass`; every class object's class is its own metaclass, its class
   side applied to `Class`, and every metaclass's class is `Metaclass`,
   `interpreter/metaclass.rs`), with §8.6's exception classes (`Exception`,
@@ -92,8 +95,8 @@ handed; which leaf runs, and whether the receiver is the mirror, are decided the
 **Compiling an already-resolved module can never raise a `NewspeakError`.** Compilation
 is a total, deterministic lowering; a compiler-invariant violation is `panic!` /
 `debug_assert!`. A *program-level* error the language raises at evaluation time is
-deferred to execution instead (see `Literal::MalformedInteger` and
-`Literal::UnresolvedIdentifier`), so a method that is never run never fails.
+deferred to execution instead (see `Literal::UnresolvedIdentifier`), so a method
+that is never run never fails.
 
 **An expression's value register must still hold that value when its consumer executes.**
 A named local's register is live storage. `lower_operand` copies it when anything lowered
@@ -139,11 +142,17 @@ leak — `image::load` owns its `Interpreter` in a local, so every `Err` path dr
 it and both arenas with it — but the peak is amplified against the bytes remaining
 at the graph section, and both `bounded_count` calls divide the *same* remainder,
 so one file maxes out both arenas rather than trading one against the other:
-about **16.9x in a release build** (an `Object` is 56 bytes, which a release-build test
-pins, against a 6-byte minimum record, a frame-arena entry 136 against 18) and about
-22.2x in a debug
-build, where both are larger because every handle carries its heap's id and its
-move epoch. `bounded_count` is what keeps this proportional to
+about **16.4x in a release build** (an `Object` is 56 bytes, which a release-build test
+pins, against a 6-byte minimum record, a frame-arena entry 128 against 18) and about
+20.4x in a debug build, where both are larger because every handle carries its
+heap's id and its move epoch. Decoded `LargeInteger` values add to that peak rather
+than fitting inside it, because the same bytes can then be one array record of them:
+each allocates a 56-byte `Object` and an 8-byte digit per 14 wire bytes, 4.6x (debug
+5.7x), for about **21.0x** in a release build and 26.2x in a debug one. Not counted:
+`reserve_for` reserves up to 16 bytes of `Value` per remaining byte for a record
+claiming a huge count (about 32x in all, and about 37x with large integers, a derived
+sum rather than a measurement), and an arena's `Vec` doubling slack -- both open work
+in `docs/OPEN-WORK.md`. `bounded_count` is what keeps this proportional to
 the input at all rather than to a `u32` — do not add a pre-allocation that is not
 bounded that way. `docs/design/memory.md` has the breakdown.
 
@@ -497,7 +506,7 @@ PDF stays the authority and is what a citation names; the Markdown is how to fin
 passage (`docs/references/PROVENANCE.md`).
 
 **Ground a design decision in prior art before proposing options.** `prior-art/` holds
-seven reference implementations as submodules. Four answer "what does Newspeak do here":
+ten reference implementations as submodules. Four answer "what does Newspeak do here":
 the canonical Newspeak on Squeak, its cross-language benchmark suite, Ryan Macnak's
 Primordial Soup (a Newspeak VM in C++, with its own bytecode set, image format and
 collector) and Stefan Marr's SOMns (a Newspeak on Truffle/Graal). Two are there because
@@ -510,14 +519,19 @@ need (`execution.md`). One is there for the optimizing end still ahead: `strongt
 the type-feedback Smalltalk VM that became HotSpot, for inline caches in the bytecode,
 polymorphic inline caches, recompilation along recorded receiver types and
 deoptimization back into interpreted activations -- and, through Gilad Bracha's
-optional types and first-class mixins, an ancestor of Newspeak itself.
+optional types and first-class mixins, an ancestor of Newspeak itself. Three are the
+`rust-num` crates: `num-bigint` and `num-integer`, whose arithmetic
+`crates/ns-runtime/src/arbitrary_integer/` adapts -- MIT OR Apache-2.0, taken under
+MIT, with the licence texts in `THIRD-PARTY-NOTICES.md` and a header in every adapted
+file naming its source -- and `num-rational`, the model for a future `Fraction`.
 
 When a question is "how should this work", read how a working system answered it and
 cite that, rather than reasoning from first principles alone. Nothing under
 `prior-art/` is compiled, tested or linked, and no gate depends on it; a plain clone
 does not even fetch it (`git submodule update --init <name>` — by name, since
 `opensmalltalk-vm` alone is ~255 MB). Copying code out of any of them is a licensing
-decision, not a technical one, and `nova` is MPL-2.0, the most restrictive of the seven.
+decision, not a technical one; it has been made once, for `num-bigint` and
+`num-integer`. `nova` is MPL-2.0, the most restrictive of the ten.
 See `prior-art/PROVENANCE.md`, which also explains why `newspeaklanguage/newspeak`
 appears both there and under `corpus/`, and why neither copy may be deleted.
 
