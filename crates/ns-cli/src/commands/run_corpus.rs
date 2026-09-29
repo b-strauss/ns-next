@@ -3,13 +3,15 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::program::selector_of;
 use crate::source::collect_ns_files;
 
 /// One row of `corpus/runnable.toml`: a corpus module that is expected to
 /// run, with everything needed to check that it still does.
 ///
-/// `send` is per entry rather than hardcoded to `main:args:` because the
-/// corpus modules that run today have no `main:args:` -- they are library
+/// `send` is the unary selector the generated wrapper application sends to
+/// the module's instance. It is per entry because the corpus modules that run
+/// today have no `main:args:` -- they are library
 /// modules whose reachable entry point is a public method or a public
 /// nested class's implicit accessor. A gate that assumed one selector
 /// could not list any of them.
@@ -53,11 +55,12 @@ struct RunOutcome {
     stderr: String,
 }
 
-/// One way of running a row. Every row runs all four: from source and as a
-/// built binary, under each lowering -- the optimized one every program runs
-/// under, and the reference lowering it is checked against
-/// (`docs/design/compiler.md`, "The reference lowering"). No switch selects
-/// them, because a gate must not be optional.
+/// One way of running a row. Every row runs all four through the generated
+/// wrapper application: `run` of its project file and `build` then `load` of
+/// it, under each lowering -- the optimized one every program runs under, and
+/// the reference lowering it is checked against (`docs/design/compiler.md`,
+/// "The reference lowering"). No switch selects them, because a gate must not
+/// be optional.
 struct Lane {
     name: &'static str,
     lowering: &'static str,
@@ -91,20 +94,27 @@ const LANES: [Lane; 4] = [
 /// recorded outcome: the exit status and stdout, and stderr -- empty for a
 /// row expected to exit 0, and in every later lane equal to the first lane's.
 /// The first lane that disagrees decides the row, and the message names it.
-/// `executed` is set once the first lane's module has run at all, which is
-/// what `ran` counts.
+/// `executed` is set once the first lane's application has run at all, which
+/// is what `ran` counts. One wrapper serves all four lanes.
 fn check_row(
     executable: &Path,
     file: &Path,
     entry: &RunnableEntry,
     executed: &mut bool,
 ) -> Result<(), String> {
+    let stem = file
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "row".to_string());
+    let scratch = ScratchDirectory::new(&stem)?;
+    let project = write_wrapper(scratch.path(), file, &entry.send)?;
+    let artifact = scratch.path().join("app.nsi");
     let mut first_stderr: Option<String> = None;
     for lane in &LANES {
         let outcome = if lane.binary {
-            run_one_binary(executable, file, &entry.send, lane.lowering)
+            run_one_binary(executable, &project, &artifact, lane.lowering)
         } else {
-            run_one(executable, file, &entry.send, lane.lowering)
+            run_one(executable, &project, lane.lowering)
         }
         .map_err(|error| format!("{}: {error}", lane.name))?;
         *executed = true;
@@ -149,23 +159,71 @@ fn check_row(
     Ok(())
 }
 
-/// Runs one module through a *child* `ns-next run`.
+/// Writes the application that starts a corpus module and answers its project
+/// file's path. The corpus modules are upstream's and declare no `main:args:`,
+/// so a generated application instantiates the module the way its own primary
+/// factory asks -- `new`, or `usingPlatform:` with the platform `main:args:`
+/// receives -- and sends it the row's selector. `main:args:` answers what that
+/// send answered and prints nothing itself, so a row's recorded stdout is the
+/// module's alone.
+///
+/// Only a unary selector is sent: a keyword or binary one would need
+/// arguments the wrapper would have to invent.
+fn write_wrapper(scratch: &Path, module: &Path, send: &str) -> Result<PathBuf, String> {
+    let is_unary = send
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_')
+        && send
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_');
+    if !is_unary {
+        return Err(format!("run-corpus sends a unary selector, not `{send}`"));
+    }
+    let source = std::fs::read_to_string(module)
+        .map_err(|error| format!("could not read {}: {error}", module.display()))?;
+    let parsed =
+        ns_syntax::parse(&source).map_err(|_| format!("{} does not parse", module.display()))?;
+    let class_name = &parsed.root_class.name.name;
+    let factory = parsed.root_class.factory.as_ref().map(selector_of);
+    let instance = match factory.as_deref() {
+        None | Some("new") => "Module new".to_string(),
+        Some("usingPlatform:") => "Module usingPlatform: platform".to_string(),
+        Some(other) => {
+            return Err(format!(
+                "the corpus module's primary factory `{other}` is neither `new` nor `usingPlatform:`"
+            ));
+        }
+    };
+    let wrapper = format!(
+        "Newspeak3\n'RunCorpus'\nclass RunCorpusEntry packageUsing: manifest = Object new (\n    \
+         | private Module = manifest {class_name}. |\n) (\n    \
+         public main: platform args: arguments = (\n        ({instance}) {send}\n    )\n) : ()\n"
+    );
+    std::fs::write(scratch.join("RunCorpusEntry.ns"), wrapper)
+        .map_err(|error| format!("could not write the wrapper: {error}"))?;
+    let absolute = std::path::absolute(module)
+        .map_err(|error| format!("could not resolve {}: {error}", module.display()))?;
+    let project = scratch.join("project.json");
+    let contents = serde_json::json!({
+        "root": "RunCorpusEntry.ns",
+        "modules": [absolute.to_string_lossy()],
+    });
+    std::fs::write(&project, contents.to_string())
+        .map_err(|error| format!("could not write the project file: {error}"))?;
+    Ok(project)
+}
+
+/// Runs the application through a *child* `ns-next run`.
 ///
 /// A child process rather than an in-process call on purpose: the module's
 /// stdout, which Newspeak code writes straight to the process's stdout
 /// through `platform transcript`, is what gets compared, and running it in
 /// this process would interleave it with the gate's own output.
-fn run_one(
-    executable: &Path,
-    file: &Path,
-    send: &str,
-    lowering: &str,
-) -> Result<RunOutcome, String> {
+fn run_one(executable: &Path, project: &Path, lowering: &str) -> Result<RunOutcome, String> {
     let out = std::process::Command::new(executable)
         .arg("run")
-        .arg(file)
-        .arg("--send")
-        .arg(send)
+        .arg(project)
         .arg("--lowering")
         .arg(lowering)
         .output()
@@ -215,37 +273,24 @@ impl Drop for ScratchDirectory {
     }
 }
 
-/// Runs one module the way a deployed binary would: `build` it with
-/// `--entry <send>` into a scratch file, then `load` it with no `--send` so
-/// the artifact's own recorded entry is what starts it. That is deliberate,
-/// not an oversight -- supplying `--send` again here would exercise the same
-/// override path `build_load.rs` already covers, not the round trip this
-/// gate exists to check: that the entry survives being written into the
-/// artifact and read back out of it.
+/// Runs the application the way a deployed one would: `build` it into the
+/// scratch artifact, then `load` that, so the round trip through the artifact
+/// is what is checked, not a second `run`.
 ///
-/// The scratch file lives under the system temporary directory, never under
-/// `corpus/`, so a `run-corpus` invocation leaves the working tree exactly
-/// as it found it; `ScratchDirectory`'s `Drop` removes it once this row is done
-/// whether the row passed or failed.
+/// The artifact lives in the row's scratch directory under the system
+/// temporary directory, never under `corpus/`, so a `run-corpus` invocation
+/// leaves the working tree exactly as it found it; `ScratchDirectory`'s `Drop`
+/// removes it once the row is done whether it passed or failed.
 fn run_one_binary(
     executable: &Path,
-    file: &Path,
-    send: &str,
+    project: &Path,
+    artifact: &Path,
     lowering: &str,
 ) -> Result<RunOutcome, String> {
-    let stem = file
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "row".to_string());
-    let scratch = ScratchDirectory::new(&stem)?;
-    let artifact = scratch.path().join("app.nsb");
-
     let build = std::process::Command::new(executable)
         .arg("build")
-        .arg(file)
-        .arg(&artifact)
-        .arg("--entry")
-        .arg(send)
+        .arg(project)
+        .arg(artifact)
         .arg("--lowering")
         .arg(lowering)
         .output()
@@ -259,7 +304,7 @@ fn run_one_binary(
 
     let out = std::process::Command::new(executable)
         .arg("load")
-        .arg(&artifact)
+        .arg(artifact)
         .output()
         .map_err(|error| format!("could not load {}: {error}", executable.display()))?;
     Ok(RunOutcome {
@@ -275,13 +320,12 @@ fn run_one_binary(
 /// counts as running only once someone has recorded what running it
 /// produces. Growth is therefore deliberate and a regression is loud.
 ///
-/// Every entry runs the four ways `LANES` lists -- from source and as a built
-/// binary, under each lowering -- and each is checked against the recorded
-/// exit status and stdout; stderr is empty for a row expected to exit 0 and
-/// identical across lanes. A row's `send` doubles as the build's `--entry`,
-/// which is why `runnable.toml` needs no field of its own for the binary
-/// lanes. Each row still counts once in `ran`/`failed`: the first lane that
-/// fails decides the row.
+/// Every entry runs the four ways `LANES` lists -- `run` of the generated
+/// wrapper's project file and `build` then `load` of it, under each lowering --
+/// and each is checked against the recorded exit status and stdout; stderr is
+/// empty for a row expected to exit 0 and identical across lanes. Each row
+/// still counts once in `ran`/`failed`: the first lane that fails decides the
+/// row.
 ///
 /// What that is worth, stated honestly: with `expected_stdout` empty on
 /// every real row -- no corpus module that currently runs writes to the

@@ -139,8 +139,9 @@ const TALKATIVE: &str = indoc! {"
     Newspeak3
     'X'
     class Talkative usingPlatform: p = Object new (
+        | private platform = p. |
     ) (
-        public main: platform args: a = (
+        public talk = (
             platform transcript show: 'hi'; newLine
         )
     ) : ()
@@ -160,7 +161,6 @@ fn run_corpus_fixture(name: &str, whitelist: &str) -> ScratchDirectory {
 }
 
 #[test]
-#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn the_run_corpus_gate_reports_its_counts() {
     let out = ns_next()
         .arg("run-corpus")
@@ -179,11 +179,10 @@ fn the_run_corpus_gate_reports_its_counts() {
 }
 
 #[test]
-#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
     let directory = run_corpus_fixture(
         "run-corpus-ok",
-        "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"main:args:\"\n\
+        "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"talk\"\n\
          expected_status = 0\nexpected_stdout = \"hi\\n\"\nreason = \"fixture\"\n",
     );
     let modules = directory.join("modules");
@@ -199,11 +198,10 @@ fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
 }
 
 #[test]
-#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
     let directory = run_corpus_fixture(
         "run-corpus-drift",
-        "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"main:args:\"\n\
+        "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"talk\"\n\
          expected_status = 0\nexpected_stdout = \"something else\"\nreason = \"fixture\"\n",
     );
     let modules = directory.join("modules");
@@ -219,7 +217,6 @@ fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
 }
 
 #[test]
-#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
     let directory = run_corpus_fixture(
         "run-corpus-regressed",
@@ -234,6 +231,71 @@ fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // The lane must fail because the module does not understand the
+    // selector, not because the wrapper could not be built or started.
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("noSuchSelector"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn run_corpus_instantiates_a_new_module_with_new() {
+    let directory = run_corpus_fixture(
+        "run-corpus-new",
+        "[[entry]]\nfile = \"Quiet.ns\"\nsend = \"answer\"\n\
+         expected_status = 0\nexpected_stdout = \"\"\nreason = \"fixture\"\n",
+    );
+    let modules = directory.join("modules");
+    std::fs::write(
+        modules.join("Quiet.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class Quiet = Object new (
+            ) (
+                public answer = ( ^42 )
+            ) : ()
+        "},
+    )
+    .unwrap();
+    let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("ran 1, failed 0, skipped 1"), "{stdout}");
+}
+
+#[test]
+fn run_corpus_refuses_a_module_whose_factory_it_cannot_fill() {
+    let directory = run_corpus_fixture(
+        "run-corpus-picky",
+        "[[entry]]\nfile = \"Picky.ns\"\nsend = \"answer\"\n\
+         expected_status = 0\nexpected_stdout = \"\"\nreason = \"fixture\"\n",
+    );
+    let modules = directory.join("modules");
+    std::fs::write(
+        modules.join("Picky.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class Picky usingPlatform: p ide: i = Object new (
+            ) (
+                public answer = ( ^42 )
+            ) : ()
+        "},
+    )
+    .unwrap();
+    let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("FAIL Picky.ns:"), "stderr: {stderr}");
+    assert!(stderr.contains("usingPlatform:ide:"), "stderr: {stderr}");
 }
 
 /// An empty whitelist must report zero rather than pass silently: `ran 0`
