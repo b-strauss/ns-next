@@ -307,7 +307,7 @@ mod tests {
             Err(HostSignal::Error(error)) => {
                 assert_eq!(error.selector, Symbol::intern("+"));
                 assert!(
-                    error.message.starts_with("+ requires a numeric argument"),
+                    error.message.starts_with("+ requires an integer argument"),
                     "{}",
                     error.message
                 );

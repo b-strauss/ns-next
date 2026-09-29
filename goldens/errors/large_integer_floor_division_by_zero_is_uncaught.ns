@@ -1,0 +1,10 @@
+Newspeak3
+'T'
+(* A `LargeInteger` receiver refuses a zero divisor with the same "division
+   by zero" an `Integer` receiver raises, not a message of its own. *)
+class LargeIntegerDivisionByZero usingPlatform: platform = Object new (
+) (
+    public main: p args: a = (
+        p transcript show: ((9223372036854775807 + 1) // 0) printString; newLine
+    )
+) : ()

@@ -11,7 +11,7 @@ use crate::types::{
     BuiltinClass, ClassData, ClassReference, ClosureData, FrameKind, FrameReference, ObjectData,
     ObjectReference, SourceOrigin, Value,
 };
-use crate::{Mutator, Symbol};
+use crate::{ArbitraryInteger, Mutator, Symbol};
 
 use super::opcodes::*;
 use super::platform_paths::{self, PlatformPaths};
@@ -67,6 +67,10 @@ impl Writer {
     }
 
     pub fn write_i64(&mut self, value: i64) {
+        self.buffer.extend_from_slice(&value.to_le_bytes());
+    }
+
+    pub fn write_u64(&mut self, value: u64) {
         self.buffer.extend_from_slice(&value.to_le_bytes());
     }
 
@@ -212,6 +216,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Message => 27,
         BuiltinClass::Halt => 28,
         BuiltinClass::Future => 30,
+        BuiltinClass::LargeInteger => 31,
     }
 }
 
@@ -762,6 +767,19 @@ pub fn integer_operation_tag(operation: IntegerOperation) -> u8 {
     }
 }
 
+/// A `LargeInteger`'s wire form, shared by the value and the literal tag:
+/// a sign byte, the digit count, the digits least significant first.
+fn write_large_integer(writer: &mut Writer, integer: &ArbitraryInteger) {
+    writer.write_u8(u8::from(integer.is_negative()));
+    writer.write_u32(u32_field(
+        "large integer digit count",
+        integer.magnitude().len(),
+    ));
+    for digit in integer.magnitude() {
+        writer.write_u64(*digit);
+    }
+}
+
 fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols::Builder) {
     match literal {
         Literal::Nil => writer.write_u8(LITERAL_NIL),
@@ -785,9 +803,9 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
             writer.write_u8(LITERAL_SYMBOL);
             writer.write_u32(symbols.intern(symbol.as_str()));
         }
-        Literal::MalformedInteger(text) => {
-            writer.write_u8(LITERAL_MALFORMED_INTEGER);
-            writer.write_str(text);
+        Literal::LargeInteger(integer) => {
+            writer.write_u8(LITERAL_LARGE_INTEGER);
+            write_large_integer(writer, integer);
         }
         Literal::UnresolvedIdentifier(name) => {
             writer.write_u8(LITERAL_UNRESOLVED_IDENTIFIER);
@@ -1039,6 +1057,11 @@ impl<'gc> GraphTable<'gc> {
         // graph holds.
         let value = &future::seen_through(heap, *value);
         let Value::Object(object) = value else { return };
+        // A value, not a record: `encode_value` writes its digits wherever it
+        // is referenced, so it takes no object id (§3.1.1).
+        if heap.is_large_integer(*object) {
+            return;
+        }
         if is_same_object(value, platform) {
             return;
         }
@@ -1123,7 +1146,7 @@ impl<'gc> GraphTable<'gc> {
                     );
                 }
                 ObjectData::Activation(frame) => stack.push(Pending::Frame(*frame)),
-                ObjectData::String(_) | ObjectData::Symbol(_) => {}
+                ObjectData::String(_) | ObjectData::Symbol(_) | ObjectData::LargeInteger(_) => {}
             }
         }
         stack[before..].reverse();
@@ -1359,7 +1382,8 @@ fn encode_optional_class<'gc>(
 
 /// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
 /// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton, 8 = an
-/// object a platform path names, a class object's included.
+/// object a platform path names, a class object's included, 9 = a
+/// `LargeInteger`'s digits.
 ///
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
@@ -1374,6 +1398,14 @@ fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeCo
     let Value::Object(object) = value else {
         unreachable!("encode_scalar_value handles every non-Obj case")
     };
+    // Written by value wherever it is referenced: two references to one
+    // `LargeInteger` object load as two equal integers, which is all a value
+    // without identity can promise.
+    if let Some(integer) = context.heap.large_integer(*object) {
+        writer.write_u8(VALUE_LARGE_INTEGER);
+        write_large_integer(writer, &integer);
+        return;
+    }
     if is_same_object(value, context.platform) {
         writer.write_u8(VALUE_PLATFORM);
         return;
@@ -1623,6 +1655,13 @@ fn encode_object<'gc>(
         ObjectData::Activation(frame) => {
             writer.write_u8(OBJECT_ACTIVATION);
             writer.write_u32(context.table.frame_id(context.heap, *frame));
+        }
+        // No object record carries one: the graph walk gives a
+        // `LargeInteger` no object id (`GraphTable::visit_value`), and
+        // `encode_value` writes its digits instead, so that an image cannot
+        // give two equal integers two identities.
+        ObjectData::LargeInteger(_) => {
+            unreachable!("a LargeInteger is written as a value, never as an object record")
         }
     }
     Ok(())

@@ -45,6 +45,7 @@ Top                     (private; no superclass, declares nothing)
     │   ├── Boolean     ├── True
     │   │               └── False
     │   ├── Number      ├── Integer
+    │   │               │   └── LargeInteger
     │   │               └── Float
     │   ├── String
     │   ├── Symbol
@@ -111,7 +112,8 @@ and `printString`, beside its thirteen
 accessors for the predefined classes, `Object` to `Block`, each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
 below); `Integer`'s `+ - * // < >
-<= >= =`, `negated`, `abs`, `printString` and `asString`; `Float`'s
+<= >= =`, `negated`, `abs`, `printString` and `asString`; `LargeInteger`'s
+the same and `hash` ("Large integers" below); `Float`'s
 `+ - * / < > =`, `hash`, `printString` and `asString`; `String`'s `size`,
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
 `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
@@ -350,10 +352,11 @@ module a value.
   equality, which asks the classes first. Every value class's `=` is
   class-tight now, `Float`'s like `String`'s and `Symbol`'s. **Only
   equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`
-  and `>` still take an `Integer` argument and convert it to the nearest
-  `double`, exact up to 2^53 (`builtins/numbers.rs:204`), so `1.5 < 2` answers; an `Integer`
-  receiver still requires an `Integer`, so `1 < 2.0` is the type-mismatch
-  error it always was, and `1 + 1.5` likewise. That asymmetry is exactly
+  and `>` still take an integer argument of either class and convert it to
+  the nearest `double`, exact up to 2^53 (`argument_float` in
+  `builtins/numbers.rs`), so `1.5 < 2` answers; an integer receiver still
+  requires an integer argument, so `1 < 2.0` is the type-mismatch error it
+  always was, and `1 + 1.5` likewise. That asymmetry is exactly
   what the numeric tower closes. So this is a stopgap, not the answer: see
   "Gap: an integer has no `/`" below, where the tower it needs is
   recorded.
@@ -650,83 +653,153 @@ them — or worse, aliasing them onto `List`, which is neither a dictionary nor
 a set — would be a collections library built without a caller. Modules
 needing them stay off the whitelist.
 
-## Deviation: `i64` integers
+## Large integers
 
-Integers are `i64`. Overflow raises a Newspeak error rather than promoting to a
-bignum. Arbitrary-precision integers are not built. §5.1.1 says the opposite in
-one sentence — "*Note that integers are not limited in size*" — and puts no
-bound on the *n* in the digit sum it defines a literal by, so a literal past
-`i64`'s range is an ordinary `Integer` there and a deferred
-`Literal::MalformedInteger` here.
+§5.1.1: "*Note that integers are not limited in size*", and it puts no bound
+on the *n* in the digit sum it defines a literal by. So an `Integer` is
+unbounded, and **every integer has exactly one representation**: a
+`SmallInteger` (`Value::SmallInteger(i64)`, class `Integer`) when it fits
+`i64`, a `LargeInteger` object otherwise. `Mutator::new_integer` is the only
+way to make a `Value` from an `ArbitraryInteger`, and it decides which, so
+every leaf, which answers through it, answers an immediate again once a
+result fits. The eight-byte value (road step 2's second plan,
+[object-model.md](object-model.md), "Planned: an eight-byte value") moves the
+boundary from 64 bits to 61; the rule stays.
 
-This is observable to any program that overflows, which is why it is a recorded
-deviation rather than an implementation detail. It is closed by "Planned:
-large integers" below.
+**The class.** `LargeInteger` is a kernel class, a subclass of `Integer`,
+which stays the class of the immediate integers: §5.1.1 asks only that an
+integer "obeys the protocol of class `Integer`", so `3 class` keeps
+answering `Integer`. `Object` declares no accessor for it -- a program meets
+it only as an integer's class (`interpreter/kernel.rs`'s
+`objects_class_accessors_are_exactly_the_nameable_builtins`) -- and an image
+names it by builtin class tag 31. It is a value object (§3.1.1): `==` is
+`Value`'s, `^self = other`, and `=` and `hash` come from its sign and
+magnitude, never from an identity hash, so a value whose slot holds one
+compares and hashes by state too
+(`goldens/kernel/a_value_with_a_large_integer_slot_compares_by_state.ns`).
+With one representation per integer, the class-tight `=` loses nothing: no
+`LargeInteger` is ever the same number as an `Integer`. An instance of a
+subclass of it, or `LargeInteger new`, holds no digits; every leaf
+declines it on the missing payload, never on the class, and the send falls
+to `Object`'s methods
+(`goldens/kernel/a_subclass_of_large_integer_is_no_number.ns`).
 
-## Planned: large integers
+**The leaves.** `LargeInteger` forwards `+ - * // < > <= >= =`, `hash`,
+`negated`, `abs`, `printString` and `asString` to fourteen rows of its own,
+`largeInteger:add:ifFail:` to `largeIntegerAsString:ifFail:`
+(`builtins/numbers.rs`, `execute_large_integer`). `Integer`'s leaves keep
+their immediate path and promote where it has no answer: a sum, difference
+or product that does not fit `i64` is recomputed in `i128`, where two
+`i64`s' always fits, and `i64::MIN // -1`, `i64::MIN negated` and
+`i64::MIN abs` answer `2^63`. The inlined `IntegerBinary` never allocates:
+it declines a result that does not fit and falls back to the send, whose
+leaf promotes ([compiler.md](compiler.md), "Arithmetic inlining";
+`goldens/arithmetic/an_overflowing_integer_operation_answers_a_large_integer.ns`).
+Both classes' arithmetic and ordering accept an argument of either integer
+class (`integer_operand`), so `5 + big` and `big + 5` both answer
+(`goldens/arithmetic/large_integer_arithmetic.ns`). A `Float`'s leaves
+convert a `LargeInteger` argument to the nearest `double`
+(`ArbitraryInteger::to_f64`, rounded to nearest with ties to even, infinite
+beyond `f64::MAX`), as Primordial Soup's `LargeInteger::AsDouble`
+(`prior-art/primordialsoup/vm/large_integer.cc:1242`) serves, and as they
+convert an `Integer` argument; an integer's leaves meet a `Float` argument
+with a type mismatch, whichever integer class the receiver is
+(`goldens/arithmetic/a_float_meets_a_large_integer.ns`,
+`goldens/errors/a_large_integer_meets_a_float.ns`). That is a derived
+choice, pinned by goldens, which the numeric tower may revisit ("Gap: an
+integer has no `/`" below). `//` by zero raises "division by zero" from
+either class's leaf
+(`goldens/errors/large_integer_floor_division_by_zero_is_uncaught.ns`).
 
-Would change: an `Integer` is unbounded, as §5.1.1 requires. A
-`SmallInteger` that overflows becomes a `LargeInteger`, and a result that
-fits again becomes a `SmallInteger`, so every `Integer` has exactly one
-representation. It comes with the eight-byte value -- road step 2
-([object-model.md](object-model.md), "Planned: an eight-byte value") -- because narrowing `SmallInteger` to 61 bits is what
-moves the overflow boundary in the first place. The deviation above goes
-with it, and the goldens recording an overflow error change to record the
-promoted result.
+**`//` rounds toward negative infinity**, so `7 // -2` and `-7 // 2` are
+both `-4`: Primordial Soup's `Integer>>//`, commented "Integer division,
+rounded toward negative infinity. The remainder of this division is given by
+`\\`" (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:1958`),
+and `num-integer`'s `div_floor`. `checked_floor_divide`
+(`builtins/numbers.rs`) is the one copy of the rule for two `i64`s, which
+the leaf and `IntegerBinary` share, and `ArbitraryInteger::floor_divide` the
+one for everything else
+(`goldens/arithmetic/floor_division_rounds_toward_negative_infinity.ns`).
+The remainder, `\\`, is not declared yet ([OPEN-WORK.md](../OPEN-WORK.md)).
 
-`LargeInteger` is a kernel class, a subclass of `Integer`, which stays the
-class of the immediate integers: §5.1.1 asks only that an integer "obeys the
-protocol of class `Integer`", so `3 class` keeps answering `Integer`. A
-`LargeInteger` holds its magnitude as 64-bit digits, least significant first,
-and its sign apart -- on today's arena in a digit payload of its own, then
-inline in a 64-bit-indexed object of the object space with the sign in the
+**The payload.** A `LargeInteger`'s object carries
+`ObjectData::LargeInteger(ArbitraryInteger)`: a sign and a magnitude of
+64-bit digits, least significant first, in a `Box<[u64]>` in the Rust heap
+beside the arena. It is canonical -- no zero top digit, and zero never
+negative -- so derived equality is value equality, and it holds no handle,
+so the tracer has nothing to follow in it. The object space (road step 3)
+moves the digits inline, into a 64-bit-indexed object with the sign in the
 header's negative bit, as Primordial Soup's `kNegativeBit`
-(`prior-art/primordialsoup/vm/object.h:48`); one class, not Spur's two ([object-model.md](object-model.md),
-"Planned: the object layout"). Its arithmetic is leaves on the VM mirror, as
-`Integer`'s is: `Integer`'s methods keep their immediate fast path, and the
-inlined `IntegerBinary`, and answer a `LargeInteger` where an immediate
-result would overflow; `LargeInteger` overrides them with leaves of its own,
-and each result that fits again is answered as an immediate `Integer`.
-`Integer`'s leaves, and `IntegerBinary`'s fallback send, accept a
-`LargeInteger` argument too -- `3 + 4611686018427387904`, the second a
-literal just past 61 bits -- and answer through `LargeInteger`'s arithmetic.
-A `Float`'s leaves convert a `LargeInteger` argument to the nearest
-`double`, as Primordial Soup's `LargeInteger::AsDouble`
-(`vm/large_integer.cc:1242`) serves, as they convert an `Integer` argument
-to the nearest `double` today, exact up to 2^53; a `LargeInteger`'s leaves meet a `Float` argument as an
-`Integer`'s do, with a type mismatch. That is a derived choice, pinned by
-goldens, which the numeric tower may revisit. The Smalltalk-family engines write this themselves --
-Primordial Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
-subtraction, multiplication, division and modulo, the bitwise operations,
-shifts, comparison, `printString` and conversion to and from `double` -- and
-ns-next does too, because a crate's numbers live in its own `Vec` in the
-Rust heap, which is the payload split the object space removes, and every
-operation would copy between the two. SOMns delegates to
-`java.math.BigInteger` (`prior-art/somns/src/som/primitives/arithmetic/AdditionPrim.java`),
-which lives in the same JVM heap as its other objects; a Rust crate's heap
-is not ours.
+(`prior-art/primordialsoup/vm/object.h:48`); one class, not Spur's two
+([object-model.md](object-model.md), "Planned: the object layout"). That is
+why the arithmetic is ns-next's own rather than a crate's: a crate's numbers
+live in its own `Vec` in the Rust heap, which is the payload split the
+object space removes, and every operation would copy between the two. The
+Smalltalk-family engines write it themselves too -- Primordial Soup's
+`vm/large_integer.cc`, about 1,600 lines -- while SOMns delegates to
+`java.math.BigInteger`
+(`prior-art/somns/src/som/primitives/arithmetic/AdditionPrim.java`), which
+lives in the same JVM heap as its other objects; a Rust crate's heap is not
+ours. So `crates/ns-runtime/src/arbitrary_integer/` works on `&[u64]` and
+`&mut [u64]`, which is what the object space lends, and knows nothing of the
+heap or of `Value`.
 
-**The algorithms are taken from `num-bigint` and `num-integer`**, both MIT OR
-Apache-2.0, so their code may be adapted into ns-next's MIT tree provided the
-copyright notice and licence text travel with it: a header in each file that
-carries adapted code and an entry in a
-third-party notices file the repository gains with it.
-What is taken is the arithmetic over digit slices -- 64-bit digits with
-128-bit intermediates, schoolbook multiplication below `num-bigint`'s
-thresholds and Karatsuba and Toom-3 above them, Knuth's algorithm D for
-division, and the conversion to decimal text by repeated division by the
-largest power of ten a digit holds -- and `num-integer`'s floor
-division and modulo, which `//` and `\\` need for negative operands and
-across the `SmallInteger`/`LargeInteger` boundary. It works on `&[u64]` and
-`&mut [u64]`, which is what the object space lends. `num-bigint`'s own
-representation and its trait layer are not taken.
+**The algorithms are adapted from `num-bigint` and `num-integer`**, one file
+per concern: `addition.rs` (carries, borrows and comparison),
+`multiplication.rs`, `number_theoretic_transform.rs`, `division.rs` and
+`conversion.rs` from `num-bigint`, and floor division in `mod.rs` from
+`num-integer`. Only portable bodies are taken, with 128-bit intermediates:
+upstream's x86 carries through `core::arch` and its `div` through `asm!`
+would need `unsafe`, which `ns-runtime` forbids. Multiplication chooses by
+the shorter operand's length, at `num-bigint`'s thresholds, which it chose
+by benchmark, testing the rows in order:
 
-`num-bigint`, `num-integer` and `num-rational` become submodules under
-`prior-art/`, recorded in `prior-art/PROVENANCE.md`, read and never built
-like the others. `num-rational` is there for the numeric tower ("Gap: an
-integer has no `/`" below): its `Ratio` is the model for `Fraction`, and its
-exact conversion of a float into a fraction is what a correct comparison
-between an `Integer` and a `Float` needs.
+| Shorter operand | Algorithm |
+|---|---|
+| up to 32 digits | long multiplication |
+| the longer at least twice as long | half-Karatsuba: only the longer is split in halves |
+| up to 256 digits | Karatsuba |
+| up to 512 digits | Toom-3 |
+| above 512 digits | the number-theoretic transform |
+
+The transform computes the product's digit convolution modulo primes above
+2^63, in Montgomery form, and combines the residues by the Chinese
+remainder theorem: modulo **two primes** when the operands, repacked into
+values of at least 43 bits, keep every term of the convolution below the
+two primes' product (`bits_per_digit_for`), and modulo **three primes** on
+whole digits otherwise. Division by a one-digit divisor is a single pass
+(in half-digit steps for a divisor that fits 32 bits, so it needs no `u128`
+division); otherwise it is Knuth's **algorithm D**, and above 64 digits in
+the divisor and 128 in the dividend it is **Burnikel and Ziegler's**
+recursive division, whose blocks of at most 64 digits go to algorithm D.
+Decimal text is made by repeated division by `10^19`, the largest power of
+ten a digit holds, and parsed a digit's worth of radix digits at a time.
+
+The transform and Burnikel-Ziegler were taken on a decision with the user
+(2026-09-29), beyond the four algorithms -- schoolbook, Karatsuba, Toom-3
+and algorithm D -- first chosen, so that multiplying and dividing very long
+operands does not stay at Toom-3's and algorithm D's cost. **Not taken:**
+`num-bigint`'s divide-and-conquer radix conversion, so `printString` of an
+integer of *n* digits costs time quadratic in *n*
+([OPEN-WORK.md](../OPEN-WORK.md)). The adapted code is checked against
+`i128`, against schoolbook multiplication across every threshold
+(`every_algorithm_agrees_with_schoolbook` in `multiplication.rs`, beside
+the transform's and the division's own cross-checks), against values
+computed in Python and pasted into the tests, and by
+`goldens/arithmetic/large_integer_algorithms_agree_at_every_size.ns`.
+
+**The licensing.** Both projects are MIT OR Apache-2.0; ns-next takes them
+under MIT, whose terms require the notice to travel with the code.
+`THIRD-PARTY-NOTICES.md` at the repository root carries both licence texts
+and the upstream commits, and every file under `arbitrary_integer/` that
+holds adapted code opens with a header naming the upstream file, the
+commit, the copyright and what was changed for ns-next. `num-bigint`,
+`num-integer` and `num-rational` are submodules under `prior-art/`,
+recorded in `prior-art/PROVENANCE.md`, read and never built like the
+others. `num-rational` is there for the numeric tower ("Gap: an integer has
+no `/`" below): its `Ratio` is the model for `Fraction`, and its exact
+conversion of a float into a fraction is what a correct comparison between
+an `Integer` and a `Float` needs; nothing is taken from it yet.
 
 ## Deviation: a non-integral literal is a binary float
 
@@ -791,23 +864,21 @@ answer while an `Integer`'s hash is the integer and a `Float`'s is a hash of
 its bits. What resolves it is one piece of work, not two: a numeric tower
 under `Number` — the class that now exists to hold it — with cross-type
 comparison and a hash that matches it, `/` answering an exact quotient, and
-the `Fraction` that needs; `LargeInteger` arrives before it, with the
-eight-byte value ("Planned: large integers" above), and leaves `Integer>>/`,
-`Fraction` and the cross-type comparison to the tower. The contract such a tower
+the `Fraction` that needs. `LargeInteger` exists without it ("Large
+integers" above) and leaves `Integer>>/`, `Fraction` and the cross-type
+comparison to the tower. The contract such a tower
 has to meet is written down in Primordial Soup's `testFloatHash`
 (`prior-art/primordialsoup/newspeak/KernelTests.ns`): `3 asFloat hash` must
 equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
 class-tight `=` is the stopgap that keeps the contract by answering
 `false`, and only `=` is class-tight: a `Float`'s arithmetic and ordering
-still convert an `Integer` argument to the nearest `double`, exact up to
-2^53, while an `Integer`'s raise a
-type mismatch (`builtins/numbers.rs`'s module note); with large integers a
-`Float` converts a `LargeInteger` argument to the nearest `double`
-("Planned: large integers" above).
+convert an integer argument of either class, `Integer` or `LargeInteger`,
+to the nearest `double`, exact up to 2^53, while an integer's raise a type
+mismatch (`builtins/numbers.rs`'s module note; "Large integers" above).
 
 ## The core library as Newspeak source over a VM mirror
 
-The shape of a real collections library, of arbitrary-precision integers, and of
+The shape of a real collections library and of
 the mirror-based reflection protocol the platform would hand out are all open;
 the last of those is sketched in
 [liveness-and-reflection.md](liveness-and-reflection.md). Beyond that, "widen
@@ -2405,12 +2476,16 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   name is the self send §5.7 makes it, so a class that declares or inherits
   the name reaches its own. `LoadBuiltinClass` and its wire tag 2 are
   retired — "The predefined classes are accessors on `Object`" above.
-- **Integers will be unbounded, through a `LargeInteger` written here**
-  (planned; decided with the user on 2026-09-29, with the eight-byte value): §5.1.1
+- **Integers are unbounded, through a `LargeInteger` written here**
+  (decided with the user on 2026-09-29, built the same day): §5.1.1
   requires it, and a bignum crate would keep its digits outside the object
-  space. The algorithms are adapted from `num-bigint` and `num-integer`, with
-  their attribution ("Planned: large integers" above). Until then an integer
-  is an `i64`, and overflow is an error rather than a silent wraparound.
+  space. Every integer has one representation, `3 class` stays `Integer`,
+  and `//` rounds toward negative infinity, as Primordial Soup's does. The
+  algorithms are adapted from `num-bigint` and `num-integer` under MIT, with
+  their attribution in `THIRD-PARTY-NOTICES.md` and a header per file,
+  including the number-theoretic transform and Burnikel-Ziegler division
+  (decided with the user the same day); divide-and-conquer radix conversion
+  is not taken ("Large integers" above).
 - **Strings will store code points in one of two widths**, Latin-1 or 32
   bits (planned; decided with the user on 2026-09-29; [object-model.md](object-model.md),
   "Planned: the object layout").

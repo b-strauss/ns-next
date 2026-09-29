@@ -1403,6 +1403,10 @@ instance's guard cost two arena loads, a class object's one load and an add:
   largest payload. Cog's class table is the alternative to a box, and buys
   nothing here: this id is per application, not per class object.
 
+These sizes and amplification figures are this measurement's record; the
+current ones are in [memory.md](memory.md), "The interim cost, and the one
+question still open".
+
 **Neither variant is faster than `393311f` by the protocol's gate.** C2+'s
 means moved −0.4% to −2.8% in 14 of its 16 source-and-sitting cells, and
 `bench_block.ns` +0.1% / +0.2%, but no source is entirely below

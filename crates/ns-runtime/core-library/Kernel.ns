@@ -517,6 +517,26 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public printString = ( ^vmMirror integerPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror integerAsString: self ifFail: [^super asString] )
     )
+    (* §5.1.1: "integers are not limited in size". An `Integer` whose value
+       does not fit a `SmallInteger`; every leaf answers an `Integer` when
+       the result fits again, so each integer has one representation.
+       `3 class` stays `Integer` -- the section asks only for its protocol. *)
+    public class LargeInteger = Integer new () (
+        public + other = ( ^vmMirror largeInteger: self add: other ifFail: [^super + other] )
+        public - other = ( ^vmMirror largeInteger: self subtract: other ifFail: [^super - other] )
+        public * other = ( ^vmMirror largeInteger: self multiply: other ifFail: [^super * other] )
+        public // other = ( ^vmMirror largeInteger: self floorDivide: other ifFail: [^super // other] )
+        public < other = ( ^vmMirror largeInteger: self lessThan: other ifFail: [^super < other] )
+        public > other = ( ^vmMirror largeInteger: self greaterThan: other ifFail: [^super > other] )
+        public <= other = ( ^vmMirror largeInteger: self lessOrEqual: other ifFail: [^super <= other] )
+        public >= other = ( ^vmMirror largeInteger: self greaterOrEqual: other ifFail: [^super >= other] )
+        public = other = ( ^vmMirror largeInteger: self equals: other ifFail: [^super = other] )
+        public hash = ( ^vmMirror largeIntegerHash: self ifFail: [^super hash] )
+        public negated = ( ^vmMirror largeIntegerNegated: self ifFail: [^super negated] )
+        public abs = ( ^vmMirror largeIntegerAbsolute: self ifFail: [^super abs] )
+        public printString = ( ^vmMirror largeIntegerPrintString: self ifFail: [^super printString] )
+        public asString = ( ^vmMirror largeIntegerAsString: self ifFail: [^super asString] )
+    )
     public class Float = Number new () (
         public + other = ( ^vmMirror float: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror float: self subtract: other ifFail: [^super - other] )

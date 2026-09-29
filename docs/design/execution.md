@@ -2272,6 +2272,10 @@ record minima 6 and 18 bytes, a frame-arena entry 136 bytes in release and
 | C2 | 64 B / 104 B | 18.2x / 26.2x | 4.598 MB | 466.559 MB |
 | C2+ | 56 B / 80 B | 16.9x / 22.2x | 4.590 MB | 454.727 MB |
 
+The sizes and amplification figures in this table are the measurement's
+record; the current ones are in [memory.md](memory.md), "The interim cost,
+and the one question still open".
+
 C2 costs `bench_block.ns`, which allocates heavily, 11.9 MB (2.6%) at its
 peak, its 8 bytes an object; C2+ is within 0.03 MB of `393311f`. Boxing
 `ClassData` gave back exactly what the header's id took in release, and more
@@ -5711,9 +5715,10 @@ niche before its jump, and `vm::run` is large enough that `program_counter`
 and the code pointer are spilled to its stack frame. The design starts from
 how Primordial Soup, Strongtalk and Cog encode their instructions; SOMns,
 an AST interpreter on Truffle, has no instruction encoding to compare. One
-more input comes from the eight-byte value: an integer literal beyond 61
-bits keeps its digits in Rust-side literal data and `LoadLiteral` allocates
-its `LargeInteger` when it runs ([object-model.md](object-model.md),
+more input: an integer literal beyond the immediate range keeps its digits
+in Rust-side literal data (`Literal::LargeInteger`) and `LoadLiteral`
+allocates its `LargeInteger` when it runs, which under the eight-byte value
+is every literal beyond 61 bits ([object-model.md](object-model.md),
 "Planned: an eight-byte value", "Literals"). Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
 and a removed one retires its number.
 

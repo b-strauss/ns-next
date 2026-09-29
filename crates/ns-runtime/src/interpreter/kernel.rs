@@ -91,6 +91,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Message => "Message",
         BuiltinClass::Halt => "Halt",
         BuiltinClass::Future => "Future",
+        BuiltinClass::LargeInteger => "LargeInteger",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -1034,7 +1035,8 @@ mod tests {
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
     /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
-    /// `Future` and the exception classes and `Message`, which a program
+    /// `Future`, `LargeInteger`, which a program meets only as an integer's
+    /// class, and the exception classes and `Message`, which a program
     /// reaches through `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
@@ -1525,7 +1527,8 @@ mod tests {
     /// mirror's class have none, which is one of the locks that keep the
     /// mirror a capability. Neither have the exception classes, which a
     /// program reaches through `platform kernel`, nor `Activation` and
-    /// `Future`, which it does not reach at all. `PlatformFactory.ns`'s class names are listed
+    /// `Future`, which it does not reach at all, nor `LargeInteger`, which a
+    /// program meets only as an integer's class. `PlatformFactory.ns`'s class names are listed
     /// too: `Object` must never grow an accessor for one of them, since a
     /// program reaches them through the platform it is handed.
     #[test]
@@ -1567,6 +1570,7 @@ mod tests {
                 "Activation",
                 "Future",
                 "KernelNamespace",
+                "LargeInteger",
             ] {
                 assert!(
                     application
@@ -1632,6 +1636,7 @@ mod tests {
                 (BuiltinClass::False, Some(BuiltinClass::Boolean)),
                 (BuiltinClass::Number, Some(BuiltinClass::Value)),
                 (BuiltinClass::Integer, Some(BuiltinClass::Number)),
+                (BuiltinClass::LargeInteger, Some(BuiltinClass::Integer)),
                 (BuiltinClass::Float, Some(BuiltinClass::Number)),
                 (BuiltinClass::String, Some(BuiltinClass::Value)),
                 (BuiltinClass::Symbol, Some(BuiltinClass::Value)),
@@ -1672,6 +1677,7 @@ mod tests {
                 (BuiltinClass::String, true),
                 (BuiltinClass::Symbol, true),
                 (BuiltinClass::Integer, true),
+                (BuiltinClass::LargeInteger, true),
                 (BuiltinClass::Float, true),
                 (BuiltinClass::True, true),
                 (BuiltinClass::UndefinedObject, true),

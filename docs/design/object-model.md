@@ -22,7 +22,14 @@ Object { class: ClassReference, identity_hash: u32, dispatch_id: DispatchId, dat
 
 ObjectData = Instance(Vec<Value>) | String(String) | Symbol(Symbol)
            | Array(Vec<Value>) | Closure(ClosureData) | Class(Box<ClassData>)
+           | Activation(FrameReference) | LargeInteger(ArbitraryInteger)
 ```
+
+A `SmallInteger` is every integer that fits `i64`; any other is an object of
+the kernel class `LargeInteger`, whose `ArbitraryInteger` payload holds a sign
+and 64-bit digits and no handle. `Mutator::new_integer` decides which, so each
+integer has one representation ([core-library.md](core-library.md), "Large
+integers").
 
 `dispatch_id` is the id an inline cache guards the object's sends on, a copy
 stamped from its application's ids, and a class object's data is boxed to keep `Object` at 56
@@ -1347,9 +1354,9 @@ step landing green on its own:
 1. **The memory layer** -- a crate of its own that reserves one contiguous
    address range and commits it on demand ([memory.md](memory.md),
    "The memory layer").
-2. **An eight-byte value**, on today's arena, with `LargeInteger`
-   ("Planned: an eight-byte value" below; [core-library.md](core-library.md),
-   "Planned: large integers").
+2. **An eight-byte value**, on today's arena ("Planned: an eight-byte value"
+   below). Its first plan, `LargeInteger`, is built
+   ([core-library.md](core-library.md), "Large integers").
    - **After road step 2, the compact instruction encoding**, designed
      against the new value ([execution.md](execution.md), "Planned: the
      compact instruction encoding").
@@ -1420,28 +1427,28 @@ arrays, argument buffers and copied closure values take half the memory, with
 Small-integer arithmetic works on the tagged words with one overflow test, as
 Cog's and Soup's does, which is what a JIT's tiers build on.
 
-**Integers become unbounded.** A `SmallInteger` that overflows its 61 bits
-becomes a `LargeInteger`, and a result that fits again becomes a
-`SmallInteger` ([core-library.md](core-library.md), "Planned: large
-integers"). That is what §5.1.1's "integers are not limited in size"
-requires, so the deviation row for `i64` integers in
-[README.md](README.md) goes, and the goldens that record an overflow error
-change to record the promoted result, each established against the
-specification before it is updated. A `LargeInteger` and a boxed `Float`
-are value objects (§3.1.1), so their `==` and their hash come from their
-state, as every value's do, never from the header's identity hash.
+**Integers are already unbounded; the word moves the boundary.** Every
+integer that fits `i64` is a `SmallInteger` today, and every other one a
+`LargeInteger` ([core-library.md](core-library.md), "Large integers"). Under
+the word a `SmallInteger` has 61 bits, so `Mutator::new_integer`'s test
+becomes "fits 61 bits": an integer between 2^60 and 2^63 that is an
+immediate today becomes a `LargeInteger`, and every leaf's immediate path
+checks for the 61-bit range where it checks for `i64` now. The rule that
+each integer has exactly one representation stays. A boxed `Float`, like a
+`LargeInteger`, is a value object (§3.1.1), so its `==` and its hash come
+from its state, as every value's do, never from the header's identity
+hash.
 
-**Literals.** An integer literal beyond 61 bits keeps its digits in the
-Rust-side literal data of its code (`Literal`, which holds no handle), and
-`LoadLiteral` allocates the `LargeInteger` each time it runs -- a value
-needs no identity, so a fresh one per execution is correct. The compact
+**Literals.** An integer literal beyond `i64` keeps its digits in the
+Rust-side literal data of its code (`Literal::LargeInteger`, which holds no
+handle), and `LoadLiteral` allocates the `LargeInteger` each time it runs --
+a value needs no identity, so a fresh one per execution is correct
+([compiler.md](compiler.md), "Compilation cannot fail"). Under the word the
+boundary moves: a literal that fits `i64` but not 61 bits has to become a
+`LargeInteger` too, since each integer has one representation. The compact
 instruction encoding takes this as an input ([execution.md](execution.md),
 "Planned: the compact instruction encoding"). A float literal outside the
-`SmallFloat64` range does the same with a boxed `Float`. Since every
-integer literal is then representable, `Literal::MalformedInteger` and its
-wire tag 8 retire ([compiler.md](compiler.md);
-[image-format.md](image-format.md), "Planned: the image under the new
-representation").
+`SmallFloat64` range does the same with a boxed `Float`.
 
 **The debug build keeps its exact check.** Today a debug handle carries its
 heap's id and its move epoch in full, and every accessor compares both
@@ -1468,11 +1475,14 @@ brand checking the rest at compile time.
 **What changes.** Every pattern on `Value::…` -- about 1,050 sites, some 550
 in the crates' sources and the rest in their tests -- goes through
 constructors and accessors; `heap.rs`'s handle code, `trace.rs`, the image
-codec and the leaves change with it. The image gains wire tags for a
-`LargeInteger`, each the next free number; a float, boxed or not, stays an
-`f64` on the wire and carries no record, since it has no identity, and the
-decoder decides whether it is immediate ([image-format.md](image-format.md),
-"Planned: the image under the new representation").
+codec and the leaves change with it. The image already carries a
+`LargeInteger` inline, under value tag 9 and literal tag 10, and a
+`SmallInteger` as an `i64`, so no integer tag changes: what the word adds
+is the decoder deciding by the 61-bit range whether an integer is
+immediate. A float, boxed or not, stays an `f64` on the wire and carries no
+record, since it has no identity, and the decoder decides whether it is
+immediate too ([image-format.md](image-format.md), "Planned: the image
+under the new representation").
 
 ## Planned: the object layout
 
@@ -1892,9 +1902,12 @@ remove slots of a class with live instances.
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
-- **The value will be one tagged 64-bit word with unbounded integers through
-  `LargeInteger`** (planned; decided with the user on 2026-09-29; "Planned: an eight-byte value" above). Spur's tags and the
-  immediate floats in Spur's range are derived.
+- **The value will be one tagged 64-bit word, with a 61-bit
+  `SmallInteger` over the `LargeInteger` that already makes integers
+  unbounded** (planned; decided with the user on 2026-09-29; "Planned: an
+  eight-byte value" above; [core-library.md](core-library.md), "Large
+  integers", built). Spur's tags and the immediate floats in Spur's range
+  are derived.
   It lands on today's arena, before the object layout, so each step is
   checked against the goldens on its own.
 - **An object will be a header word, a class word and its fields** (planned;

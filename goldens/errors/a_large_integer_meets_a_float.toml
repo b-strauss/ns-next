@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: + requires an integer argument, got 1.5
+'''

@@ -17,7 +17,7 @@ use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
     CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal as BytecodeLiteral,
 };
-use crate::interpreter::literals::{parse_float_literal, parse_integer_literal};
+use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
 use crate::types::Binding;
 
 /// One entry of the compile-time scope stack. The resolver counts every
@@ -1262,9 +1262,9 @@ impl<'a> Lowerer<'a> {
             // language accepts and rejects at *evaluation* time. A module
             // root's clause receivers, which the resolver leaves unbound for
             // the root rule, land here too and are never run. Compilation
-            // cannot raise a `NewspeakError`, so the error is deferred
-            // exactly like `MalformedInteger`: the VM raises `literals`' own
-            // error when the instruction executes.
+            // cannot raise a `NewspeakError`, so the error is deferred as
+            // `UnresolvedIdentifier`: the VM raises `literals`' own error when
+            // the instruction executes.
             Some(Binding::MirrorSend | Binding::EnclosingObject { .. }) | None => {
                 let destination = self.allocate_scratch();
                 self.emit(Instruction::LoadLiteral {
@@ -1951,13 +1951,16 @@ pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {
 
 pub(super) fn lower_literal(literal: &ast::Literal) -> BytecodeLiteral {
     match literal {
-        // Parsed once, here, with `parse_integer_literal`, the parser the VM
-        // re-runs for a `MalformedInteger`. A literal it rejects is a
-        // Newspeak-program error the language raises at evaluation time, so
-        // it is deferred (`MalformedInteger`), never a compile-time panic.
+        // Parsed once, here. The parser admits only integer literals that
+        // denote a value (§5.1.1 bounds none; `check_radix_number` refuses a
+        // radix or digit that denotes nothing), so a refusal is a compiler
+        // invariant, not a program error.
         ast::Literal::Integer { text, .. } => match parse_integer_literal(text) {
-            Ok(integer) => BytecodeLiteral::SmallInteger(integer),
-            Err(_) => BytecodeLiteral::MalformedInteger(text.clone()),
+            Ok(IntegerLiteral::Small(integer)) => BytecodeLiteral::SmallInteger(integer),
+            Ok(IntegerLiteral::Large(integer)) => BytecodeLiteral::LargeInteger(integer),
+            Err(message) => {
+                panic!("the parser admitted an integer literal that denotes nothing: {message}")
+            }
         },
         ast::Literal::Float { text, .. } => BytecodeLiteral::Float(parse_float_literal(text)),
         ast::Literal::String { value, .. } => BytecodeLiteral::String(value.clone()),
@@ -2517,7 +2520,7 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_range_integer_literal_lowers_to_malformed_integer_not_a_panic() {
+    fn an_integer_literal_beyond_i64_lowers_to_a_large_integer_literal() {
         let (method, bindings) = resolve_method(
             indoc! {"
                 Newspeak3
@@ -2536,7 +2539,9 @@ mod tests {
             code.instructions,
             vec![Instruction::LoadLiteral {
                 destination: 0,
-                literal: BytecodeLiteral::MalformedInteger("99999999999999999999".to_string()),
+                literal: BytecodeLiteral::LargeInteger(
+                    crate::ArbitraryInteger::parse("99999999999999999999", 10).unwrap()
+                ),
             }]
         );
     }

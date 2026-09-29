@@ -12,15 +12,16 @@ world can be serialized to a versioned image and loaded back.
 Working today: the specification's grammar (§4.2 to §8.1), Newspeak's real name
 resolution, nested classes, §6.2's mixin application with a class object per enclosing
 instance, metaclasses, value objects, simultaneous and lazy slots, §8.6's exceptions,
-the bytecode compiler and a register VM with inline caches, a second, deliberately
-naive lowering the compiler is checked against, a mark-compact garbage collector, a
-core library written in Newspeak over one VM mirror, and a source-free image format.
+integers of any size, the bytecode compiler and a register VM with inline caches, a
+second, deliberately naive lowering the compiler is checked against, a mark-compact
+garbage collector, a core library written in Newspeak over one VM mirror, and a
+source-free image format.
 Every `.ns` file in the vendored corpus parses.
 
 Not built yet, and the limits worth knowing before trying it on real code:
 
-- **Integers are `i64`.** Overflow raises a Newspeak error; there are no bignums, an
-  `Integer` answers `//` but not `/`, and a non-integral literal is a binary float.
+- **No numeric tower.** An `Integer` answers `//` but not `/` or `\\`, `1 = 1.0` is
+  `false`, and a non-integral literal is a binary float.
 - **The platform is minimal**, and widens only when a whitelisted corpus module needs
   something: a transcript, the kernel's classes and exceptions, and a collections
   module with `List`. Six of the 211 corpus modules run end to end; the rest ask for

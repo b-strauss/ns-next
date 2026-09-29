@@ -15,8 +15,8 @@ use crate::types::{
     BuiltinClass, ClassReference, ClosureData, Frame, FrameKind, FrameReference, Object,
     ObjectData, ObjectReference, SourceOrigin, Value,
 };
-use crate::Mutator;
 use crate::Symbol;
+use crate::{ArbitraryInteger, Mutator};
 
 use super::opcodes::*;
 use super::{mixins, symbols};
@@ -399,6 +399,12 @@ pub enum DecodeError {
         expected: usize,
         found: usize,
     },
+    /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
+    /// never writes: one that fits `i64`, a zero top digit, or a negative
+    /// zero. Accepting one would give an integer a second representation
+    /// after a load -- a `LargeInteger` object equal to a `SmallInteger`,
+    /// which every arithmetic fast path would treat as a different value.
+    NonCanonicalInteger,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -652,6 +658,9 @@ impl std::fmt::Display for DecodeError {
                 "an instance of a class the platform names carries {found} field(s), but the loading \
                  binary lays that class out with {expected}"
             ),
+            DecodeError::NonCanonicalInteger => {
+                write!(f, "an integer is not in its one canonical encoding")
+            }
         }
     }
 }
@@ -732,6 +741,14 @@ impl<'a> Reader<'a> {
             .try_into()
             .expect("read_raw(8) returns 8 bytes");
         Ok(i64::from_le_bytes(bytes))
+    }
+
+    pub fn read_u64(&mut self) -> Result<u64, DecodeError> {
+        let bytes: [u8; 8] = self
+            .read_raw(8)?
+            .try_into()
+            .expect("read_raw(8) returns 8 bytes");
+        Ok(u64::from_le_bytes(bytes))
     }
 
     pub fn read_f64(&mut self) -> Result<f64, DecodeError> {
@@ -852,6 +869,7 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         27 => BuiltinClass::Message,
         28 => BuiltinClass::Halt,
         30 => BuiltinClass::Future,
+        31 => BuiltinClass::LargeInteger,
         _ => return None,
     })
 }
@@ -2024,6 +2042,49 @@ fn decode_instruction(
     })
 }
 
+/// The inverse of `encode::write_large_integer`. Refuses every encoding but
+/// the canonical one, so an integer has one representation after a load as
+/// before it: one that fits `i64` must travel as `VALUE_SMALL_INTEGER`
+/// (or `LITERAL_SMALL_INTEGER`), and neither a zero top digit nor a negative
+/// zero is written by the encoder.
+fn read_large_integer(reader: &mut Reader) -> Result<ArbitraryInteger, DecodeError> {
+    let (negative, magnitude) = read_large_integer_parts(reader)?;
+    if magnitude.last() == Some(&0) || (magnitude.is_empty() && negative) {
+        return Err(DecodeError::NonCanonicalInteger);
+    }
+    let integer = ArbitraryInteger::from_parts(negative, magnitude);
+    if integer.to_i64().is_some() {
+        return Err(DecodeError::NonCanonicalInteger);
+    }
+    Ok(integer)
+}
+
+/// A `LargeInteger`'s sign and digits as the wire has them, unchecked
+/// beyond their shape: what `read_large_integer` validates, and what
+/// `inspect`, a structural walk that refuses nothing canonical-encoding
+/// related, renders as it is. The count is bounded against the bytes left
+/// before anything is allocated for it.
+pub(crate) fn read_large_integer_parts(
+    reader: &mut Reader,
+) -> Result<(bool, Vec<u64>), DecodeError> {
+    let negative = match reader.read_u8()? {
+        0 => false,
+        1 => true,
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "large integer sign",
+                tag,
+            })
+        }
+    };
+    let count = bounded_count(reader.read_u32()? as usize, 8, reader)?;
+    let mut magnitude = Vec::with_capacity(count);
+    for _ in 0..count {
+        magnitude.push(reader.read_u64()?);
+    }
+    Ok((negative, magnitude))
+}
+
 fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Literal, DecodeError> {
     Ok(match reader.read_u8()? {
         LITERAL_NIL => Literal::Nil,
@@ -2032,8 +2093,8 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
         LITERAL_FLOAT => Literal::Float(reader.read_f64()?),
         LITERAL_STRING => Literal::String(reader.read_str()?),
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
-        LITERAL_MALFORMED_INTEGER => Literal::MalformedInteger(reader.read_str()?),
         LITERAL_UNRESOLVED_IDENTIFIER => Literal::UnresolvedIdentifier(reader.read_str()?),
+        LITERAL_LARGE_INTEGER => Literal::LargeInteger(read_large_integer(reader)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",
@@ -2293,7 +2354,7 @@ fn decode_optional_class<'gc>(
 
 fn decode_value<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext<'_, 'gc>,
+    context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
 ) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
@@ -2306,13 +2367,34 @@ fn decode_value<'gc>(
         VALUE_CLASS_TAG => Ok(Value::Object(decode_class_tag(reader, context, tables)?)),
         VALUE_PLATFORM => Ok(context.platform),
         VALUE_PLATFORM_PATH => read_platform_path(reader, context.platform_paths),
+        // Allocating here is sound: the decoder never polls a safepoint, so
+        // nothing moves the placeholders `tables` holds.
+        //
+        // It adds to the load's peak rather than fitting inside it. The
+        // placeholders are allocated first, against every byte left at the
+        // graph section (`decode_graph_section`), and those same bytes can
+        // then be one array record full of these values, each allocating
+        // its `Object` and its digits before a later record fails to read.
+        // A value is at least 14 bytes on the wire (tag, sign, count, one
+        // digit) and costs `size_of::<Object>()` plus 8 bytes a digit. With
+        // an `Object` of 56 bytes in a release build and 72 in a debug one,
+        // that is 64/14 = 4.6x and 80/14 = 5.7x of those bytes, on top of
+        // the placeholders' 9.3x + 7.1x (release) and 12.0x + 8.4x (debug):
+        // about 21.0x and 26.2x in all. It stays proportional to the input
+        // because the digit count is bounded against the bytes left before
+        // anything is allocated for it (`read_large_integer_parts`), and each
+        // further digit costs its own 8 wire bytes.
+        VALUE_LARGE_INTEGER => {
+            let integer = read_large_integer(reader)?;
+            Ok(context.mutator.new_integer(integer))
+        }
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
 }
 
 fn decode_values<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext<'_, 'gc>,
+    context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
 ) -> Result<Vec<Value<'gc>>, DecodeError> {
     let count = reader.read_u32()? as usize;
@@ -2362,7 +2444,7 @@ fn decode_frame_reference<'gc>(
 
 fn decode_closure_record<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext<'_, 'gc>,
+    context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
 ) -> Result<ClosureData<'gc>, DecodeError> {
     let code_id = reader.read_u32()?;
@@ -2425,7 +2507,7 @@ fn method_declaration<'gc>(
 
 fn decode_frame<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext<'_, 'gc>,
+    context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
 ) -> Result<Frame<'gc>, DecodeError> {
@@ -3368,7 +3450,7 @@ pub fn decode_tag_named_hashes<'gc>(
 /// record, which `check_class_references` establishes afterwards.
 fn decode_class_record<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext<'_, 'gc>,
+    context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     placeholder_application: &Rc<crate::mixin::MixinApplication>,
 ) -> Result<(crate::types::ClassData<'gc>, Rc<crate::mixin::Mixin>), DecodeError> {

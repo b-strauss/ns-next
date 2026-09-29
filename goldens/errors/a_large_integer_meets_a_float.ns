@@ -1,0 +1,11 @@
+Newspeak3
+'T'
+(* A `LargeInteger` receiver meets a `Float` argument as an `Integer` one
+   does, with its leaf's type mismatch: neither an overflow nor a fall
+   through to `doesNotUnderstand:`. *)
+class LargeIntegerMeetsFloat usingPlatform: platform = Object new (
+) (
+    public main: p args: a = (
+        p transcript show: (9223372036854775807 + 1 + 1.5) printString; newLine
+    )
+) : ()

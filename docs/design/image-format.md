@@ -17,7 +17,8 @@ which could not be cross-architecture. No native code, no JIT output, no raw
 pointers, no baked-in tagging or host endianness.
 
 **Canonical encodings.** Little-endian integers, IEEE-754 `binary64` for floats,
-UTF-8 for strings and symbols, `SmallInteger` fixed at the `i64` range. Symbols are
+UTF-8 for strings and symbols, an integer as an `i64` when it fits one and
+otherwise as a sign and its 64-bit digits, least significant first. Symbols are
 re-interned on load rather than assumed to keep their ids.
 
 **The bootstrap is the base image.** There is no pre-built base image file.
@@ -291,10 +292,15 @@ Literals:
   nested, until the syntax went (2026-09-27, [frontend.md](frontend.md)):
   neither the specification nor the canonical grammar has it, and a tuple,
   `{ ... }`, is the array literal (§5.1.7).
-- 8 `MalformedInteger`: an integer literal the lexer accepts and the parser
-  rejects, out of `i64` range; it raises its error when it runs.
+- 8: retired. It was `MalformedInteger`, an integer literal beyond `i64`
+  that raised its error when it ran, until every integer literal became
+  representable (2026-09-29); it carried the literal's text, which tag 10
+  does not.
 - 9 `UnresolvedIdentifier`: an identifier that names nothing, a module
   root's clause receiver; it raises its error when it runs.
+- 10 `LargeInteger`: an integer literal beyond `i64`, in the same wire form
+  as value tag 9 below -- a sign byte, a `u32` digit count and that many
+  `u64` digits, least significant first -- so the decoder parses no text.
 
 **A call-site number is a property of the code, never a byte on the wire.**
 It is feedback-table bookkeeping, not program meaning: the decoder assigns
@@ -334,6 +340,37 @@ disagreeing with the loader. A closure frame (`FRAME_CLOSURE`) names the closure
 object it runs by object id: the closure's data sits inline in its object, so
 that the tracer can rewrite its two frame handles in place
 ([memory.md](memory.md), "What the collector traces").
+
+**A `LargeInteger` is a value on the wire, never a record.** Value tag 9,
+`VALUE_LARGE_INTEGER`, carries it inline wherever a value goes -- a field,
+an element, a register, a copied value -- as a sign byte (0 or 1), a `u32`
+digit count and that many `u64` digits, least significant first; literal
+tag 10 carries a literal in the same form. It has no identity (§3.1.1), so
+the graph walk gives it no object id and two references to one object load
+as two equal integers, which is all a value promises. Only the canonical
+encoding decodes: a count bounded against the bytes left before its digits
+are allocated, a sign byte of 0 or 1, no zero top digit, no negative zero,
+and nothing that fits `i64`, which travels as `VALUE_SMALL_INTEGER` or
+`LITERAL_SMALL_INTEGER`; anything else is `DecodeError::NonCanonicalInteger`
+(or `InvalidTag` for the sign), so each integer has one encoding on the wire
+and one representation after a load (`a_non_canonical_large_integer_is_refused`,
+`crates/ns-runtime/tests/image.rs`). The decoder makes the object through
+`Mutator::new_integer`, which adds to a failed load's peak
+([memory.md](memory.md), "The interim cost, and the one question still
+open"). `inspect` renders one as `large-int <decimal>`, through the same
+bounded read (`decode::read_large_integer_parts`), without the canonical
+checks, since a structural walk reports what the bytes say. The decimal is
+bounded too, in `inspect` and in `disasm`'s literals alike
+(`ArbitraryInteger::to_bounded_text`): decimal conversion is quadratic in
+the digit count, so an artifact holding one integer of millions of digits
+would keep either tool busy for hours. Up to `DECIMAL_RENDERING_LIMIT`, 64
+digits (about 1,233 decimal digits, rendered in microseconds), the full
+decimal is printed; past it, the digit count and the hexadecimal of the
+first and last two digits, `large-int <100000 words>
+0x186a0000000000001869f...00000000000000020000000000000001`, which costs
+the same at any length
+(`inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal`,
+`crates/ns-runtime/tests/image.rs`).
 
 **Mixin table.** One row per declaration: the name, its own slots, the primary
 factory selector and arity, the compiled methods as selector → code id, the ids
@@ -400,9 +437,12 @@ level or a class a platform path names — is named by class tag 4,
 is one level deep. The encoder refuses a class record whose class object has no
 metaclass rather than write a header the decoder could not pair. A metaclass
 record is a record like any other — no shorter than the minimum record, one
-placeholder in the first pass — so the decode amplification is unchanged,
-about 16.9x in a release build ([memory.md](memory.md)); a tag-named
-metaclass is no record at all and allocates nothing.
+placeholder in the first pass — so it adds nothing to the decode
+amplification, whose placeholders come to about 16.4x of the bytes left at
+the graph section in a release build and whose decoded `LargeInteger`
+values bring it to about 21.0x ([memory.md](memory.md), "The interim cost,
+and the one question still open"); a tag-named metaclass is no record at all
+and allocates nothing.
 
 **Root class.** The class the root inherits from, as a builtin tag behind a
 presence flag that is always set, then the root's own `<:` levels, lowest first, each as its clause's position in
@@ -922,6 +962,15 @@ future exists runs in the loaded world
 `goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose snapshot
 round trip carries a data cycle through resolved futures).
 
+**`LargeInteger` carries builtin tag 31**, the next free number. A
+program never names the class -- `Object` declares no accessor for it --
+but reaches it as an integer's class (`(9223372036854775807 + 1) class`)
+and may keep it in a slot or subclass it, so an image may name tag 31
+wherever it names a class. A `LargeInteger` itself is never a record
+("A `LargeInteger` is a value on the wire" above); an instance of the class
+that holds no digits, which only `LargeInteger new` makes, is an ordinary
+instance record.
+
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
 in the shipped `CollectionsFactory.ns`
@@ -1155,18 +1204,13 @@ artifact stays independent of word size and layout, as Primordial Soup's
 snapshots are (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image,
 which is old space's bytes relocated on load, is the model this does not take.
 
-- **Integers.** `VALUE_SMALL_INTEGER` keeps carrying an `i64`; the decoder
-  answers a SmallInteger when the value fits 61 bits and a `LargeInteger`
-  otherwise. An integer beyond the `i64` range, as a value and as a literal,
-  takes a new value tag and a new literal tag, each the next free number when
-  it lands, carrying a sign and its magnitude's 64-bit digits. The decoder
-  refuses a new-tag integer that fits `i64`, which must travel as
-  `VALUE_SMALL_INTEGER`, one with a zero top digit, and a negative zero (a
-  zero magnitude with the sign negative, which in the object space would be
-  the header's negative bit set on a zero magnitude), so every integer keeps
-  exactly one encoding on the wire and one representation on decode. Since every integer
-  literal is then representable, the malformed-integer literal tag 8
-  (`Literal::MalformedInteger`) retires.
+- **Integers.** The wire stays as it is: `VALUE_SMALL_INTEGER` carries an
+  `i64`, and an integer beyond it travels as value tag 9 or literal tag 10
+  ("A `LargeInteger` is a value on the wire, never a record" above). What
+  changes is the decoder's answer: a `SmallInteger` when the value fits 61
+  bits and a `LargeInteger` otherwise, so an `i64` between 2^60 and 2^63
+  decodes to a `LargeInteger`, and in the object space a negative
+  `LargeInteger` sets the header's negative bit.
 - **Floats** stay `VALUE_FLOAT`, an `f64` on the wire, and the decoder answers
   an immediate SmallFloat64 or a boxed `Float` from the value alone. A boxed
   `Float` is a value with no identity, so it needs no record of its own.
@@ -1201,7 +1245,9 @@ which is old space's bytes relocated on load, is the model this does not take.
   frame object, about 96 bytes against a record of about 19, some 5x -- and
   per value, the words a decoded value occupies against the bytes that
   encode it -- a one-byte `VALUE_NIL` element becomes an 8-byte word, 8x,
-  and a UTF-8 byte widened to the 32-bit string form 4x. The class kind's
+  a UTF-8 byte widened to the 32-bit string form 4x, and a
+  `VALUE_LARGE_INTEGER` of one digit, 14 bytes, becomes an object of a
+  header, a class word and its digit. The class kind's
   10x is the largest, and the bound is whichever ratio is largest once the
   layouts are final, since the first pass allocates each object's full size
   before validation. A symbol record names a symbol-table entry rather than

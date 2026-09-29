@@ -17,20 +17,19 @@ use crate::Symbol;
 /// object each time they execute (a literal string is a fresh `Object` on every
 /// evaluation).
 ///
-/// `MalformedInteger` carries the raw text of an integer literal the lexer
-/// accepted but `interpreter::literals::parse_integer_literal` rejects (out of
-/// `i64` range, a fractional radix literal). That is a Newspeak-program
-/// error the language raises *when the literal is evaluated*; compilation cannot
-/// raise a `NewspeakError`, so the VM re-runs `parse_integer_literal` when the
-/// instruction executes and raises the identical error then.
+/// `LargeInteger` is an integer literal beyond `i64` (§5.1.1 bounds none), and
+/// never holds one that fits: that is a `SmallInteger`. Its digits live in the
+/// code, which holds no handle and so survives every move and every heap;
+/// `LoadLiteral` allocates the `LargeInteger` object each time it runs, which
+/// is sound because a value has no identity.
 ///
-/// `UnresolvedIdentifier` is the same deferral for the other program-level
-/// error a *resolved* module can still carry: an identifier with no binding
-/// -- a module root's clause receiver, which the root rule decides and
-/// which never runs (see
-/// `interpreter::literals::unresolved_identifier_error`). Neither variant is a
-/// lowered `ast::Literal`; both are payloads of a `LoadLiteral` that raises
-/// instead of producing a value.
+/// `UnresolvedIdentifier` is the one program-level error a *resolved* module
+/// can still carry: an identifier with no binding -- a module root's clause
+/// receiver, which the root rule decides and which never runs (see
+/// `interpreter::literals::unresolved_identifier_error`). Compilation cannot
+/// raise a `NewspeakError`, so it is deferred: it is no lowered
+/// `ast::Literal` but the payload of a `LoadLiteral` that raises instead of
+/// producing a value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -39,7 +38,7 @@ pub enum Literal {
     Float(f64),
     String(String),
     Symbol(Symbol),
-    MalformedInteger(String),
+    LargeInteger(crate::ArbitraryInteger),
     UnresolvedIdentifier(String),
 }
 
@@ -59,8 +58,9 @@ impl CallSite {
 /// The integer leaves the compiler emits inline, guarded, with the ordinary
 /// send as the fallback: every binary member of `IntegerPrimitive`. Each one
 /// is computed with a `checked_*` operation, so the cases that have no
-/// integer result -- overflow, a zero divisor -- answer `None` and take the
-/// fallback, leaving every error and its text to `builtins/numbers.rs`.
+/// `i64` result -- one that does not fit, a zero divisor -- answer `None` and
+/// take the fallback, leaving the `LargeInteger` promotion and every error
+/// and its text to `builtins/numbers.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerOperation {
     Add,
@@ -326,9 +326,10 @@ pub enum Instruction {
     },
     /// An integer leaf's inlined fast path. Performs `operation` on `left` and
     /// `right` into `destination` when both hold `Value::SmallInteger` and the
-    /// result does not overflow; otherwise jumps to `target`, where the ordinary
-    /// send stands. Every error -- overflow, a non-integer operand, a user
-    /// subclass -- is raised by that send's primitive, never here, so there is
+    /// result fits `i64`; otherwise jumps to `target`, where the ordinary
+    /// send stands. That send's primitive promotes a result that does not fit
+    /// to a `LargeInteger` and raises every error -- a non-integer operand, a
+    /// zero divisor, a user subclass -- never this instruction, so there is
     /// one source for each of them.
     ///
     /// Reads and writes only registers of the activation executing it -- never
@@ -799,7 +800,7 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Float(float) => format!("{float:?}"),
         Literal::String(string) => format!("'{string}'"),
         Literal::Symbol(symbol) => format!("#{symbol}"),
-        Literal::MalformedInteger(text) => format!("malformed-int '{text}'"),
+        Literal::LargeInteger(integer) => format!("large-int {}", integer.to_bounded_text()),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
     }
 }
@@ -1083,7 +1084,9 @@ method foo: (args 1, registers 4)
             Literal::Float(2.5),
             Literal::String("s".to_string()),
             Literal::Symbol(Symbol::intern("sym")),
-            Literal::MalformedInteger("16r1.8".to_string()),
+            Literal::LargeInteger(
+                crate::ArbitraryInteger::parse("99999999999999999999", 10).unwrap(),
+            ),
         ];
         let rendered: Vec<String> = literals.iter().map(format_literal).collect();
         assert_eq!(
@@ -1095,8 +1098,21 @@ method foo: (args 1, registers 4)
                 "2.5",
                 "'s'",
                 "#sym",
-                "malformed-int '16r1.8'"
+                "large-int 99999999999999999999"
             ]
+        );
+    }
+
+    /// `disasm` shows a literal a binary names, and a binary is untrusted:
+    /// a literal of 100,000 digits would take the quadratic decimal
+    /// conversion hours, so it is rendered elided instead.
+    #[test]
+    fn a_huge_large_integer_literal_renders_elided() {
+        let digits = (1..=100_000).collect();
+        let literal = Literal::LargeInteger(crate::ArbitraryInteger::from_parts(false, digits));
+        assert_eq!(
+            format_literal(&literal),
+            "large-int <100000 words> 0x186a0000000000001869f...00000000000000020000000000000001"
         );
     }
 }

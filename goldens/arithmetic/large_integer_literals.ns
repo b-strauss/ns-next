@@ -1,0 +1,19 @@
+Newspeak3
+'Arithmetic'
+(* §5.1.1 bounds no literal: "integers are not limited in size". A decimal
+   and a radix literal beyond `i64`, a negative one, and the two `i64` edges,
+   which stay `Integer`s. *)
+class Literals usingPlatform: p = Object new (
+) (
+    public main: p args: a = (
+        p transcript show: 99999999999999999999 printString; newLine.
+        p transcript show: -99999999999999999999 printString; newLine.
+        p transcript show: 16rFFFFFFFFFFFFFFFFFFFF printString; newLine.
+        p transcript show: 2r10000000000000000000000000000000000000000000000000000000000000000000000 printString; newLine.
+        p transcript show: 9223372036854775808 class printString; newLine.
+        p transcript show: 9223372036854775807 class printString; newLine.
+        p transcript show: -9223372036854775808 class printString; newLine.
+        p transcript show: -9223372036854775809 class printString; newLine.
+        p transcript show: (99999999999999999999 = 99999999999999999999) printString; newLine
+    )
+) : ()

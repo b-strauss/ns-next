@@ -1,0 +1,15 @@
+Newspeak3
+'Arithmetic'
+(* A `Float`'s leaves convert a `LargeInteger` argument to the nearest
+   `double`, as they convert an `Integer` one; `=` stays class-tight. `big`
+   is 2^64, and `1.5 + 2^64` rounds to 2^64. *)
+class FloatMeetsLarge usingPlatform: p = Object new (
+) (
+    public main: p args: a = (
+        | big |
+        big:: 9223372036854775807 + 1 * 2.
+        p transcript show: (1.5 + big) printString; newLine.
+        p transcript show: (1.5 < big) printString; newLine.
+        p transcript show: (1.5 = big) printString; newLine
+    )
+) : ()

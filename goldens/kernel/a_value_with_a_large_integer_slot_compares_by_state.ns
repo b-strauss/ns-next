@@ -1,0 +1,32 @@
+Newspeak3
+'Kernel'
+(* §3.1.1: a value's equality and hash come from its state. A slot holding a
+   `LargeInteger` is compared by the integer's value, not by the object that
+   holds it: the two `Box`es below hold two distinct `LargeInteger` objects of
+   one value.
+
+   The module is a value (`Object <: Value`) because §3.1.1 asks a value
+   class's enclosing object to be one; the transcript lives in `Script`,
+   which is no value -- the arrangement `a_value_has_no_identity.ns` uses. *)
+class ValueSlots usingPlatform: platformAtCreation = Object <: Value () (
+    class Box of: initialContents = Value new (
+        | public contents = initialContents. |
+    ) ()
+    class Script on: aTranscript = Object new (
+        | transcript = aTranscript. |
+    ) (
+        public run = (
+            | first second third |
+            first:: Box of: 9223372036854775807 + 1.
+            second:: Box of: 9223372036854775807 + 1.
+            third:: Box of: 9223372036854775807 * 2.
+            transcript show: (first = second) printString; newLine.
+            transcript show: (first hash = second hash) printString; newLine.
+            transcript show: (first == second) printString; newLine.
+            transcript show: (first = third) printString; newLine
+        )
+    )
+    public main: platform args: arguments = (
+        (Script on: platform transcript) run
+    )
+) : ()

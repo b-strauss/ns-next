@@ -66,6 +66,9 @@ pub(crate) fn execute<'gc>(
         Primitive::Integer(primitive) => {
             numbers::execute_integer(mutator, primitive, receiver, arguments).map(wrap_error)
         }
+        Primitive::LargeInteger(primitive) => {
+            numbers::execute_large_integer(mutator, primitive, receiver, arguments).map(wrap_error)
+        }
         Primitive::Float(primitive) => {
             numbers::execute_float(mutator, primitive, receiver, arguments).map(wrap_error)
         }

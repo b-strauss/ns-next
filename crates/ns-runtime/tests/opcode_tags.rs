@@ -75,8 +75,8 @@ fn literal_tags_are_fixed() {
     assert_eq!(LITERAL_FLOAT, 3);
     assert_eq!(LITERAL_STRING, 4);
     assert_eq!(LITERAL_SYMBOL, 5);
-    assert_eq!(LITERAL_MALFORMED_INTEGER, 8);
     assert_eq!(LITERAL_UNRESOLVED_IDENTIFIER, 9);
+    assert_eq!(LITERAL_LARGE_INTEGER, 10);
 }
 
 /// Two tags sharing a number would make the encoder ambiguous and the decoder
@@ -134,15 +134,15 @@ fn no_two_tags_share_a_number() {
         LITERAL_FLOAT,
         LITERAL_STRING,
         LITERAL_SYMBOL,
-        LITERAL_MALFORMED_INTEGER,
         LITERAL_UNRESOLVED_IDENTIFIER,
+        LITERAL_LARGE_INTEGER,
     ];
     let mut sorted = literals;
     sorted.sort_unstable();
     let mut deduplicated = sorted.to_vec();
     deduplicated.dedup();
     assert_eq!(deduplicated.len(), literals.len(), "duplicate literal tag");
-    assert_eq!(RETIRED_LITERALS, [6, 7]);
+    assert_eq!(RETIRED_LITERALS, [6, 7, 8]);
     for retired in RETIRED_LITERALS {
         assert!(
             !literals.contains(&retired),
@@ -234,6 +234,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(VALUE_CLASS_TAG, 6);
     assert_eq!(VALUE_PLATFORM, 7);
     assert_eq!(VALUE_PLATFORM_PATH, 8);
+    assert_eq!(VALUE_LARGE_INTEGER, 9);
 
     assert_eq!(OBJECT_INSTANCE, 0);
     assert_eq!(OBJECT_STRING, 1);
@@ -284,6 +285,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             VALUE_CLASS_TAG,
             VALUE_PLATFORM,
             VALUE_PLATFORM_PATH,
+            VALUE_LARGE_INTEGER,
         ],
         &[
             OBJECT_INSTANCE,
@@ -362,6 +364,7 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Message), 27);
     assert_eq!(builtin_class_tag(BuiltinClass::Halt), 28);
     assert_eq!(builtin_class_tag(BuiltinClass::Future), 30);
+    assert_eq!(builtin_class_tag(BuiltinClass::LargeInteger), 31);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);

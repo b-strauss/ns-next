@@ -15,8 +15,9 @@ use ns_runtime::image::opcodes::*;
 use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    BuiltinClass, ClassData, ClassReference, DispatchId, FrameKind, Heap, HostResult, HostSignal,
-    Interpreter, Mixin, MixinApplication, Mutator, ObjectData, Root, SourceOrigin, Symbol, Value,
+    ArbitraryInteger, BuiltinClass, ClassData, ClassReference, DispatchId, FrameKind, Heap,
+    HostResult, HostSignal, Interpreter, Mixin, MixinApplication, Mutator, ObjectData, Root,
+    SourceOrigin, Symbol, Value,
 };
 use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
@@ -575,7 +576,9 @@ fn every_instruction_once() -> CompiledCode {
             },
             Instruction::LoadLiteral {
                 destination: 0,
-                literal: Literal::MalformedInteger("16r1.8".into()),
+                literal: Literal::LargeInteger(
+                    ArbitraryInteger::parse("99999999999999999999", 10).unwrap(),
+                ),
             },
             Instruction::LoadLiteral {
                 destination: 0,
@@ -1099,12 +1102,13 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 }
 
 /// An unknown literal tag is refused, and so is every retired one: tag 6
-/// was the character literal (`RETIRED_LITERALS`), and a stale artifact's
-/// character -- its tag and its code point -- meets an unknown tag rather
-/// than decoding as whatever literal takes the next free number.
+/// was the character literal and tag 8 an integer literal beyond `i64`
+/// carried as text (`RETIRED_LITERALS`), and a stale artifact's payload --
+/// its tag and whatever followed it -- meets an unknown tag rather than
+/// decoding as whatever literal takes the next free number.
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
-    let mut payloads = vec![vec![LITERAL_UNRESOLVED_IDENTIFIER + 1]];
+    let mut payloads = vec![vec![LITERAL_LARGE_INTEGER + 1]];
     for tag in RETIRED_LITERALS {
         payloads.push(vec![tag, 0x41, 0x00, 0x00, 0x00]);
     }
@@ -1131,6 +1135,291 @@ fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
             Ok(_) => panic!("expected an invalid {what} tag, got Ok"),
         }
     }
+}
+
+/// A `LargeInteger` in a slot survives a snapshot as a value, and one that
+/// fits `i64` comes back an `Integer`: `-2^63` is `9223372036854775807 + 1`
+/// negated, which the arithmetic already answers as a `SmallInteger`, and
+/// the round trip keeps it one.
+#[test]
+fn a_large_integer_value_round_trips() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | large = 9223372036854775807 + 1. small = 0 - (9223372036854775807 + 1). |
+        ) (
+          public largeText = ( ^large printString )
+          public largeClass = ( ^large class printString )
+          public smallText = ( ^small printString )
+          public smallClass = ( ^small class printString )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    for (selector, expected) in [
+        ("largeText", "9223372036854775808"),
+        ("largeClass", "LargeInteger"),
+        ("smallText", "-9223372036854775808"),
+        ("smallClass", "Integer"),
+    ] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            let Value::Object(string) = mutator.fetch(&answer) else {
+                panic!("{selector}: expected a string")
+            };
+            assert_eq!(
+                mutator.heap().str_value(string).as_deref(),
+                Some(expected),
+                "{selector}"
+            );
+        });
+    }
+}
+
+/// A literal beyond `i64` in a compiled body survives the code table's
+/// round trip digit for digit: the literal tag carries the digits, not the
+/// source text, so the decoder never re-parses anything.
+#[test]
+fn a_large_integer_literal_round_trips() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo = ( ^99999999999999999999 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let original = method_code(mutator.heap(), class, "foo");
+        let expected =
+            Literal::LargeInteger(ArbitraryInteger::parse("99999999999999999999", 10).unwrap());
+        assert!(
+            original.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instruction::LoadLiteral { literal, .. } if *literal == expected
+            )),
+            "the compiler emits the literal the round trip is about"
+        );
+        let (table, _, ids) = round_trip_code_table(mutator.heap(), class);
+        let decoded = &table.codes[ids.id_of(&original) as usize];
+        assert_eq!(**decoded, *original);
+    });
+}
+
+/// The payload of a `LargeInteger`, after its tag, that the decoder must
+/// refuse, each with the error it answers. (a) to (c) and the `i64::MIN`
+/// case are well formed but not the one encoding the encoder writes: an
+/// integer that fits `i64` travels as a small integer, the magnitude has no
+/// zero top digit, and zero has no sign. (d) claims more digits than the
+/// bytes left can hold and is refused before anything is allocated for it.
+fn non_canonical_large_integer_payloads() -> Vec<(&'static str, Vec<u8>, decode::DecodeError)> {
+    fn payload(negative: u8, count: u32, digits: &[u64], trailing: usize) -> Vec<u8> {
+        let mut writer = encode::Writer::new();
+        writer.write_u8(negative);
+        writer.write_u32(count);
+        for digit in digits {
+            writer.write_u64(*digit);
+        }
+        writer.write_raw(&vec![0; trailing]);
+        writer.into_bytes()
+    }
+    vec![
+        (
+            "(a) digits that fit i64",
+            payload(0, 1, &[5], 0),
+            decode::DecodeError::NonCanonicalInteger,
+        ),
+        (
+            "(b) a zero top digit",
+            payload(0, 2, &[1, 0], 0),
+            decode::DecodeError::NonCanonicalInteger,
+        ),
+        (
+            "(c) a negative zero",
+            payload(1, 0, &[], 0),
+            decode::DecodeError::NonCanonicalInteger,
+        ),
+        (
+            "(d) a count far beyond the bytes left",
+            payload(0, u32::MAX, &[], 10),
+            decode::DecodeError::UnexpectedEndOfFile,
+        ),
+        (
+            "a positive zero",
+            payload(0, 0, &[], 0),
+            decode::DecodeError::NonCanonicalInteger,
+        ),
+        (
+            "i64::MIN, which fits",
+            payload(1, 1, &[1 << 63], 0),
+            decode::DecodeError::NonCanonicalInteger,
+        ),
+        (
+            "a sign byte that is neither 0 nor 1",
+            payload(2, 1, &[1 << 63], 0),
+            decode::DecodeError::InvalidTag {
+                what: "large integer sign",
+                tag: 2,
+            },
+        ),
+    ]
+}
+
+#[test]
+fn a_non_canonical_large_integer_is_refused() {
+    for (case, payload, expected) in non_canonical_large_integer_payloads() {
+        let bytes = one_array_object(|writer| {
+            writer.write_u8(VALUE_LARGE_INTEGER);
+            writer.write_raw(&payload);
+        });
+        assert_eq!(
+            GraphFixture::new().decode_error(&bytes),
+            expected,
+            "value {case}"
+        );
+
+        let bytes = one_method_code_table(false, 1, |writer| {
+            writer.write_u8(OPCODE_LOAD_LITERAL);
+            writer.write_u16(0); // destination
+            writer.write_u8(LITERAL_LARGE_INTEGER);
+            writer.write_raw(&payload);
+        });
+        let mut reader = decode::Reader::new(&bytes);
+        match decode::decode_code_table(&mut reader, &symbols::Table::empty()) {
+            Err(error) => assert_eq!(error, expected, "literal {case}"),
+            Ok(_) => panic!("literal {case}: expected {expected}, got Ok"),
+        }
+    }
+    assert_eq!(
+        decode::DecodeError::NonCanonicalInteger.to_string(),
+        "an integer is not in its one canonical encoding"
+    );
+}
+
+/// A `LargeInteger` has no identity (§3.1.1), so the image carries it as a
+/// value wherever it is referenced and never gives it an object record: two
+/// slots holding the same object each carry the digits.
+#[test]
+fn a_large_integer_is_a_value_not_a_record() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | first = 9223372036854775807 + 1. second = first. |
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        !report
+            .graph_objects
+            .iter()
+            .any(|object| object.starts_with("class LargeInteger")),
+        "no LargeInteger record: {:?}",
+        report.graph_objects
+    );
+    let occurrences: usize = report
+        .graph_objects
+        .iter()
+        .map(|object| object.matches("large-int 9223372036854775808").count())
+        .sum();
+    assert_eq!(
+        occurrences, 2,
+        "both slots carry the value: {:?}",
+        report.graph_objects
+    );
+}
+
+/// `inspect` renders an integer in decimal only up to
+/// `DECIMAL_RENDERING_LIMIT` digits, and elides one past it: an artifact is
+/// untrusted, and the quadratic decimal conversion of an integer of 100,000
+/// digits would keep `inspect` busy for hours.
+#[test]
+fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let started = std::time::Instant::now();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let normal = mutator.new_integer(ArbitraryInteger::from_i128(1_i128 << 63));
+        let huge =
+            mutator.new_integer(ArbitraryInteger::from_parts(false, (1..=100_000).collect()));
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance, normal, huge],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.graph_roots[1..],
+        [
+            "large-int 9223372036854775808",
+            "large-int <100000 words> 0x186a0000000000001869f...00000000000000020000000000000001",
+        ]
+    );
+    // In decimal this takes hours; elided, a debug build needs well under a
+    // second for the snapshot and the walk together.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "took {:?}",
+        started.elapsed()
+    );
 }
 
 /// A builtin class tag names no builtin at the root-class section either:

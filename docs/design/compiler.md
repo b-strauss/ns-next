@@ -34,10 +34,11 @@ that lowering is mostly a transliteration rather than a translation.
 **Loads and moves**
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
-  `Nil | Boolean | SmallInteger | Float | String | Symbol | Array |
-  MalformedInteger | UnresolvedIdentifier`, with integer and float text parsed at compile time rather
-  than at each execution. The last two are the deferred cases; see "Compilation
-  cannot fail".
+  `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
+  UnresolvedIdentifier`, with integer and float text parsed at compile time rather
+  than at each execution. `LargeInteger` carries an integer literal beyond `i64`
+  as its digits (an `ArbitraryInteger`); `UnresolvedIdentifier` is the deferred
+  case, see "Compilation cannot fail".
 - `LoadSelf { destination }`.
 - `LoadEnclosingObject { destination, depth }` — `outer N` with no message
   after it, `Binding::EnclosingObject`: the kth enclosing object, found as a
@@ -470,15 +471,17 @@ The instruction computes only when both operands are `Value::SmallInteger`
 and, for the four arithmetic operations, when the `checked_*` operation
 yields a result; on either failure it branches to the fallback. The five
 comparisons cannot fail once the operands are integers. So a non-integer
-operand, an overflow and a zero divisor all leave by the same door, and what
-they reach is the send the compiler would have emitted anyway.
+operand, a result that does not fit `i64` and a zero divisor all leave by the
+same door, and what they reach is the send the compiler would have emitted
+anyway.
 
 **That is the point of the fallback, and the reason it is a real send rather
-than an error raised in the VM.** Every error message an integer operation
-can produce — `doesNotUnderstand:`, the overflow the specification requires
-instead of wrapping ([core-library.md](core-library.md), "Deviation: `i64`
-integers"), division by zero — is worded and raised in `builtins/numbers.rs`,
-and stays there. The VM arm never raises anything. A second copy of those
+than an error raised in the VM.** What the fast path declines is decided in
+`builtins/numbers.rs` and stays there: the promotion of a result that does
+not fit `i64` to a `LargeInteger` (§5.1.1, [core-library.md](core-library.md),
+"Large integers"), and every error message an integer operation can produce
+— `doesNotUnderstand:`, division by zero, a type mismatch. The VM arm never
+allocates and never raises anything. A second copy of those
 errors in `vm.rs` is exactly the drift `CLAUDE.md`'s "`vm.rs` holds no
 dispatch logic" exists to prevent, and it would have to be kept in step with
 the reference lowering, which compiles the plain send and reaches the
@@ -520,12 +523,14 @@ raised passes every other test there is.
 `goldens/arithmetic/integer_leaves_fast_path_and_fallback_agree.ns` runs
 the fast path beside the two ways the guard declines on ordinary values —
 a `Float` receiver and a non-integer argument to `=` — and floor division on
-the fast path, and `goldens/errors/` holds the two the primitive turns into
-errors, an `i64`
-overflow on `+` and `//` by zero, with the primitive's own message as the
-recorded `stderr`. The reference lowering compiles every one of these as a
-plain send and is held to the same recorded answers, which is what makes it
-the oracle for this step.
+the fast path;
+`goldens/arithmetic/an_overflowing_integer_operation_answers_a_large_integer.ns`
+pins the promotion the fallback carries, and `goldens/errors/` holds `//` by
+zero, which the primitive turns into an error
+(`inlined_integer_floor_division_by_zero_is_uncaught.ns`), with the
+primitive's own message as the recorded `stderr`. The reference lowering
+compiles every one of these as a plain send and is held to the same recorded
+answers, which is what makes it the oracle for this step.
 
 ## Mirror sends
 
@@ -676,22 +681,20 @@ Compilation is a total, deterministic lowering; a compiler-invariant violation i
 
 A program-level error the language raises at evaluation time is therefore
 **deferred to execution**: it is reported when, and only if, execution reaches
-it, so a method that is never run never fails. Two literals carry that deferral:
+it, so a method that is never run never fails. One literal carries that
+deferral, `Literal::UnresolvedIdentifier`: an identifier the resolver left
+unbound, a module root's clause receiver, which the root rule decides and
+which never runs ([object-model.md](object-model.md), "The root rule").
+Every other name is bound, a predefined class name included.
 
-- `Literal::MalformedInteger` — an integer literal out of `i64` range, the one
-  kind of number the parser accepts and the runtime cannot represent (a radix
-  or digit that denotes nothing is a parse error, and a fraction or exponent
-  makes a float). The compiler
-  lowers it to `MalformedInteger`; the VM re-runs `parse_integer_literal` when the
-  instruction executes and raises its error text, and only if execution actually
-  reaches it. With `LargeInteger` (road step 2) every integer literal becomes
-  representable, so this literal and its wire tag 8 are planned to retire
-  ([object-model.md](object-model.md), "Planned: an eight-byte value").
-- `Literal::UnresolvedIdentifier` — an identifier the resolver left unbound:
-  a module root's clause receiver, which the root rule decides and which
-  never runs ([object-model.md](object-model.md),
-  "The root rule"). Every other name is bound, a predefined class name
-  included.
+Every integer literal is representable (§5.1.1), so none is deferred. One
+that fits `i64` lowers to `Literal::SmallInteger`, any other to
+`Literal::LargeInteger`, which carries its value as an `ArbitraryInteger`,
+never its text; `LoadLiteral` makes a fresh `LargeInteger` of it through
+`Mutator::new_integer` each time it runs. A radix or digit that denotes
+nothing is a parse error, and a fraction or exponent makes a float, so
+`parse_integer_literal` (`interpreter/literals.rs`) refusing a literal the
+parser accepted is a compiler invariant, and `lower_literal` panics on it.
 
 ## Reading the output
 
@@ -749,8 +752,7 @@ that kind, identically wrong under both engines.
 
 `compiler/reference.rs`, written from the AST and the resolver's bindings. It
 shares with `lower.rs` only what must have one definition or is purely
-mechanical: the bytecode types, `lower_literal` (with its deferred
-`MalformedInteger`), `selector_of`, the parameter counting, the span helpers,
+mechanical: the bytecode types, `lower_literal`, `selector_of`, the parameter counting, the span helpers,
 and `nested::superclass_clause_expression` and
 `superclass_clause_message_arguments_expression` — the one definition of what a superclass
 clause evaluates.
@@ -1141,10 +1143,10 @@ signatures is a design change to the image module's interface, not a migration.
   a leaf's failure; and `SendMirror` needs no wire tag, since only
   `Kernel.ns`, which no image carries, contains one ("Mirror sends").
 - **The integer leaves are inlined under a run-time type guard whose
-  fallback is the ordinary send**, so every error an integer operation can
-  raise — a `doesNotUnderstand:`, an overflow, a zero divisor — is still
-  raised by the primitive in `builtins/` and by nothing else
-  ("Arithmetic inlining").
+  fallback is the ordinary send**, so the promotion to a `LargeInteger` and
+  every error an integer operation can raise — a `doesNotUnderstand:`, a zero
+  divisor — are still decided by the primitive in `builtins/` and by nothing
+  else ("Arithmetic inlining").
 - **`whileTrue:` with a non-Boolean condition sends `mustBeBoolean`** rather than
   falling back to a re-send, because a re-send would duplicate the condition's
   side effects and the inlined loop would diverge from the native one.
