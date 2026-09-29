@@ -86,9 +86,10 @@ enum Command {
         #[arg(last = true)]
         arguments: Vec<String>,
     },
-    /// Time the entry send: bootstrap, load and compile once, then discard
-    /// a warm-up run and time `--iterations` further runs, reporting the
-    /// median (with minimum and maximum) time for the entry send alone.
+    /// Time `main: platform args:`: load and compile once, then discard a
+    /// warm-up run and time `--iterations` further runs, reporting the
+    /// median (with minimum and maximum) time for the entry send alone. Each
+    /// sample assembles a fresh application the way `run` does, untimed.
     ///
     /// Only the entry send is timed -- parsing, resolving, bootstrapping,
     /// and compiling all happen once beforehand and are excluded, because
@@ -97,11 +98,8 @@ enum Command {
     /// numbers are not comparable to anything and this subcommand warns on
     /// stderr when it detects one.
     Bench {
+        /// A `.ns` file or a `.json` project file, assembled as `run` does.
         file: PathBuf,
-        /// The entry selector to time, sent with as many of the platform and
-        /// the program's arguments as it takes.
-        #[arg(long, default_value = "main:args:")]
-        send: String,
         /// How many timed runs to take the median of, after one discarded
         /// warm-up run.
         #[arg(long, default_value_t = 10)]
@@ -211,14 +209,12 @@ fn execute(command: Command) -> ExitCode {
         } => commands::load::execute(&image, print_source, &arguments),
         Command::Bench {
             file,
-            send,
             iterations,
             cache_statistics,
             collector_statistics,
             arguments,
         } => commands::bench::execute(
             &file,
-            &send,
             iterations,
             cache_statistics,
             collector_statistics,

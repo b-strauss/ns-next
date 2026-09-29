@@ -279,6 +279,30 @@ fn benchmark_reports_the_entry_sends_median() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout.contains("median"), "{stdout}");
+    assert!(stdout.contains("timing: `main:args:` only"), "{stdout}");
+}
+
+#[test]
+fn benchmark_takes_a_project_file() {
+    let out = ns_next()
+        .arg("bench")
+        .arg(
+            common::goldens_root()
+                .join("manifest")
+                .join("a_project_reaches_its_modules_through_the_manifest.json"),
+        )
+        .arg("--iterations")
+        .arg("2")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("median"), "{stdout}");
 }
 
 /// `bench` must reject a zero iteration count rather than dividing by it

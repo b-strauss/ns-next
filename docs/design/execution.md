@@ -1090,6 +1090,10 @@ printing the sum it accumulates:
   `class Cell = Base x: 1 ( | v ::= 1. | )`, each instantiation followed by
   `u`.
 
+Those measurements timed the same entry send `bench` times today, `main:args:`
+of the root's instance, so figures taken before `bench` assembled an
+application like `run` stay comparable with figures taken after.
+
 They are not fixtures; the first two are written out in the step's
 [plan](../superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md),
 "Measurement protocol", and the other two are `bench_new.ns` with the classes
@@ -1533,7 +1537,7 @@ and is the same program. The three print `20000`:
 ```
 Newspeak3
 'Bench'
-class BenchNew usingPlatform: platform = Object new (
+class BenchNew = Object new (
 	| sum ::= 0. |
 ) (
 	class Cell = Object new (
@@ -1553,7 +1557,7 @@ class BenchNew usingPlatform: platform = Object new (
 ```
 Newspeak3
 'Bench'
-class BenchNew2 usingPlatform: platform = Object new (
+class BenchNew2 = Object new (
 	| sum ::= 0. |
 ) (
 	class Base = Object new (
@@ -1578,7 +1582,7 @@ class BenchNew2 usingPlatform: platform = Object new (
 ```
 Newspeak3
 'Bench'
-class BenchNewArg usingPlatform: platform = Object new (
+class BenchNewArg = Object new (
 	| sum ::= 0. |
 ) (
 	class Base x: a = Object new (
@@ -1605,7 +1609,7 @@ class BenchNewArg usingPlatform: platform = Object new (
 ```
 Newspeak3
 'Bench'
-class BenchDo usingPlatform: platform = Object new (
+class BenchDo = Object new (
 	| sum ::= 0. |
 ) (
 	public main: p args: a = (

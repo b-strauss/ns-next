@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use crate::entry;
-use crate::source::{self, LoadedSource};
+use crate::program::{self, Loaded, Program};
 
 /// The timing summary.
 struct BenchmarkStatistics {
@@ -35,76 +35,53 @@ fn signal_message(signal: ns_runtime::HostSignal) -> String {
     }
 }
 
-/// One instantiate-and-send sample. Instantiation happens but is
+/// One assemble-and-send sample. Assembling the application happens but is
 /// deliberately *not* part of the timed span: it is fixed, once-per-run
-/// setup (an empty slot vector filled in and a fresh identity hash), not
-/// the repeated dispatch this benchmark measures. It cannot be hoisted
-/// outside the loop either, though -- a `main:args:`-shaped fixture mutates
-/// its own instance variables (loop counters, accumulators), so sending the
-/// same instance a second time would time a cheaper run against
+/// setup, not the repeated dispatch this benchmark measures. It cannot be
+/// hoisted outside the loop either, though -- a program mutates its own
+/// instance variables (loop counters, accumulators), so sending the same
+/// application a second time would time a cheaper run against
 /// already-mutated state instead of the same workload every iteration.
 fn timed_send(
-    interpreter: &mut ns_runtime::Interpreter,
-    class: &ns_runtime::Root,
-    factory_arguments: &[ns_runtime::Root],
-    selector: ns_runtime::Symbol,
-    entry_arguments: &[ns_runtime::Root],
+    program: &Program,
+    loaded: &mut Loaded,
+    arguments: &[ns_runtime::Root],
 ) -> Result<std::time::Duration, String> {
-    let instance = interpreter
-        .instantiate(class, factory_arguments)
-        .map_err(signal_message)?;
+    // `instantiate_application` has already reported its failure on stderr.
+    let application = program::instantiate_application(program, loaded)
+        .map_err(|_| String::from("instantiation failed"))?;
     let start = std::time::Instant::now();
-    let outcome = interpreter.send(&instance, selector, entry_arguments);
+    let outcome =
+        loaded
+            .interpreter
+            .send(&application, ns_runtime::Symbol::MAIN_ARGUMENTS, arguments);
     let elapsed = start.elapsed();
     outcome.map(|_| elapsed).map_err(signal_message)
 }
 
-/// Bootstraps and loads the module (which compiles it), discards one warm-up
+/// Loads the program (which compiles every module), discards one warm-up
 /// `timed_send`, times `iterations` further ones, and reduces the samples to
-/// `BenchmarkStatistics`. Bootstrapping, loading and compiling all happen
-/// before the loop -- once-per-process costs, excluded from the per-send timing
-/// for the same reason instantiation is.
+/// `BenchmarkStatistics`. Loading and compiling happen before the loop --
+/// once-per-process costs, excluded from the per-send timing for the same
+/// reason assembling is.
 fn benchmark_entry(
-    loaded: &LoadedSource,
-    send: &str,
+    program: &Program,
     iterations: u32,
     cache_statistics: bool,
     collector_statistics: bool,
     program_arguments: &[String],
 ) -> Result<BenchmarkStatistics, String> {
-    let (mut interpreter, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
-    let platform = interpreter.platform();
-    let factory_arguments = interpreter.enter(|mutator| {
-        entry::factory_arguments_for(
-            mutator.heap(),
-            entry::class_reference(mutator, &class),
-            &platform,
-        )
-    })?;
-    let entry_arguments_list =
-        entry::entry_arguments(&mut interpreter, send, &platform, program_arguments)?;
-    let selector = ns_runtime::Symbol::intern(send);
+    let mut loaded = program::load_program(program, ns_runtime::Lowering::Optimized);
+    let arguments = entry::main_arguments(&mut loaded.interpreter, program_arguments);
 
     // Warm-up: discarded. It exercises the same allocation and lookup
     // paths the timed runs will, so the first timed sample does not carry
     // a one-time cost (e.g. a lazily-populated cache) the rest do not.
-    timed_send(
-        &mut interpreter,
-        &class,
-        &factory_arguments,
-        selector,
-        &entry_arguments_list,
-    )?;
+    timed_send(program, &mut loaded, &arguments)?;
 
     let mut timings = Vec::with_capacity(iterations as usize);
     for _ in 0..iterations {
-        timings.push(timed_send(
-            &mut interpreter,
-            &class,
-            &factory_arguments,
-            selector,
-            &entry_arguments_list,
-        )?);
+        timings.push(timed_send(program, &mut loaded, &arguments)?);
     }
     timings.sort();
     let min = timings[0];
@@ -121,8 +98,9 @@ fn benchmark_entry(
     };
     // After every timed run, so it reports what the timed sends actually
     // filled, not only the discarded warm-up.
-    let cache_statistics = cache_statistics.then(|| interpreter.cache_statistics());
-    let collector_statistics = collector_statistics.then(|| interpreter.collector_statistics());
+    let cache_statistics = cache_statistics.then(|| loaded.interpreter.cache_statistics());
+    let collector_statistics =
+        collector_statistics.then(|| loaded.interpreter.collector_statistics());
     Ok(BenchmarkStatistics {
         iterations,
         median,
@@ -137,7 +115,6 @@ fn benchmark_entry(
 /// timed and why, and `benchmark_entry`/`timed_send` for how.
 pub(crate) fn execute(
     file: &Path,
-    send: &str,
     iterations: u32,
     cache_statistics: bool,
     collector_statistics: bool,
@@ -153,18 +130,17 @@ pub(crate) fn execute(
         eprintln!("error: --iterations must be at least 1");
         return ExitCode::FAILURE;
     }
-    let loaded = match source::load_source(file) {
-        Ok(loaded) => loaded,
+    let program = match program::read_program(file) {
+        Ok(program) => program,
         Err(code) => return code,
     };
     println!(
-        "timing: the entry send `{send}` only, after instantiation -- parsing, resolving, \
+        "timing: `main:args:` only, after assembling the application -- parsing, resolving, \
          bootstrapping, and compiling all happened once beforehand and are excluded. \
          {iterations} timed run(s), after one discarded warm-up run."
     );
     match benchmark_entry(
-        &loaded,
-        send,
+        &program,
         iterations,
         cache_statistics,
         collector_statistics,
