@@ -20,3 +20,12 @@
 	path = prior-art/strongtalk
 	url = https://github.com/b-strauss/strongtalk.git
 	branch = gcc-linux
+[submodule "prior-art/num-bigint"]
+	path = prior-art/num-bigint
+	url = https://github.com/rust-num/num-bigint.git
+[submodule "prior-art/num-integer"]
+	path = prior-art/num-integer
+	url = https://github.com/rust-num/num-integer.git
+[submodule "prior-art/num-rational"]
+	path = prior-art/num-rational
+	url = https://github.com/rust-num/num-rational.git

@@ -31,6 +31,9 @@ that carry design weight.
 | `nova/` | [trynova/nova](https://github.com/trynova/nova) | A JavaScript engine in Rust. Not a Newspeak, and here for one specific reason: it is the model [memory.md](../docs/design/memory.md) names for the arena of typed handles, which ns-next now has. Its `GcScope`/`NoGcScope` root discipline is the comparison memory.md weighs and rejects in favour of a gc-arena-style lifetime brand ("Considered and rejected: Nova's scopes"). Rust is the point — a C++ engine's conventions do not carry over, because the borrow checker is available as an enforcement mechanism and their solutions do not use one. |
 | `opensmalltalk-vm/` | [OpenSmalltalk/opensmalltalk-vm](https://github.com/OpenSmalltalk/opensmalltalk-vm) | Cog and Spur, the Smalltalk VM lineage. The model [execution.md](../docs/design/execution.md) names for activations living on a stack and reified into first-class contexts only on demand, and the closest thing to a reference answer for what that costs and what it complicates. |
 | `strongtalk/` | [b-strauss/strongtalk](https://github.com/b-strauss/strongtalk) | The Animorphic Smalltalk system that Sun open-sourced in 2006, in a GitHub copy of the project's Google Code repository; its VM became the basis of HotSpot. The reference for the optimizing end still ahead: an interpreter whose sends carry inline caches in the bytecode (`vm/interpreter/interpretedIC.*`), polymorphic inline caches (`vm/code/compiledPIC.*`), a recompiler that inlines along the recorded receiver types (`vm/recompiler/`, `vm/compiler/inliner.*`), and deoptimization of optimized frames back into interpreted activations (`vm/runtime/vframe.*`, `DeltaProcess::deoptimize_*` in `vm/runtime/process.cpp`), which is what keeps optimized code debuggable. It is also Newspeak's ancestor: Gilad Bracha's optional type system and first-class mixins are documented under `documentation/`. |
+| `num-bigint/` | [rust-num/num-bigint](https://github.com/rust-num/num-bigint) | The arithmetic `crates/ns-runtime/src/arbitrary_integer/` adapts: addition and subtraction with carries, long, Karatsuba and Toom-3 multiplication, Knuth's algorithm D, and the radix and `f64` conversions (MIT OR Apache-2.0; taken under MIT, notices in `THIRD-PARTY-NOTICES.md`). |
+| `num-integer/` | [rust-num/num-integer](https://github.com/rust-num/num-integer) | The floor division `arbitrary_integer/` adapts (MIT OR Apache-2.0; taken under MIT, notices in `THIRD-PARTY-NOTICES.md`). |
+| `num-rational/` | [rust-num/num-rational](https://github.com/rust-num/num-rational) | The model for a future `Fraction` and for exact float-to-rational conversion (`docs/design/core-library.md`, "Gap: an integer has no `/`"). Nothing is taken from it yet. |
 
 ## Pinned versions
 
@@ -45,6 +48,9 @@ A submodule records one commit. These are the ones this repository points at.
 | `nova` | `4eea7c6fae180a8a2eed45c3f6acd0d9256522b1` | 2026-06-13 | 2026-09-10 |
 | `opensmalltalk-vm` | `3ea6bd17fabb5aca6fcbd175185d2fccdd50d919` | 2026-09-07 | 2026-09-10 |
 | `strongtalk` | `e4ce7b69ad20e1013f07a53dfc11fdf57b6748cf` | 2010-01-06 | 2026-09-15 |
+| `num-bigint` | `41f0b035d12971c5c7f7501917e31f0f6439c26c` | 2026-08-21 | 2026-09-29 |
+| `num-integer` | `765fd9b3eb9397471d41b9f613e530f6d9d6383f` | 2026-08-11 | 2026-09-29 |
+| `num-rational` | `cf95d6719c585d4721645c7ace5dfe1dd5f063e2` | 2026-07-07 | 2026-09-29 |
 
 `strongtalk` is pinned on its `gcc-linux` branch, not its default `master`, and
 `.gitmodules` names that branch so `git submodule update --remote` follows it.
@@ -103,17 +109,24 @@ code. `ns-next`'s own license is at `LICENSE`.
   `prior-art/strongtalk/sourceLicense.html`. Contributions made after the
   release are under the New BSD license, per `contributorLicenses.html`
   beside it.
+- `num-bigint`, `num-integer` and `num-rational` — each MIT OR Apache-2.0, at
+  the licensee's choice, The Rust Project Developers; see `LICENSE-MIT` and
+  `LICENSE-APACHE` in each tree.
 
 Reading these to understand a design is fine. Copying code out of any of them
-into `ns-next` is a licensing decision, not a technical one, and none of it has
-been made here.
+into `ns-next` is a licensing decision, not a technical one. It has been made
+once: `crates/ns-runtime/src/arbitrary_integer/` adapts code from `num-bigint`
+and `num-integer`, taken under MIT, and `THIRD-PARTY-NOTICES.md` at the
+repository root carries both licence texts. Each adapted file names its source
+in a header. Nothing has been copied from any other submodule.
 
 ## Checkout size
 
 Worth knowing before running `git submodule update --init` without an argument:
 `opensmalltalk-vm` is about **255 MB** checked out, several times larger than
 everything else here combined (`strongtalk` 38 MB, `newspeak` 17 MB, `nova`
-8 MB, `somns` 5.7 MB, `primordialsoup` 2.8 MB, `newspeak-benchmarks` 389 KB).
+8 MB, `somns` 5.7 MB, `primordialsoup` 2.8 MB, `num-bigint` 777 KB,
+`newspeak-benchmarks` 389 KB, `num-rational` 192 KB, `num-integer` 163 KB).
 It is mostly generated C sources and platform build trees, none of which is the
 interesting part — the Cog and Spur design lives in the Smalltalk-side sources and the
 comments. Initialize it by name when you want it rather than pulling everything.

@@ -8,6 +8,7 @@
 //! applications, and the source-free image format.
 //! See `docs/design/` -- start at its `README.md`.
 
+mod arbitrary_integer;
 pub mod builtins;
 pub mod bytecode;
 pub mod compiler;
@@ -24,6 +25,7 @@ pub(crate) mod trace;
 pub mod types;
 pub mod vm;
 
+pub use arbitrary_integer::ArbitraryInteger;
 pub use compiler::Lowering;
 
 /// Test helper: turns one test body into a module holding an `optimized` and
