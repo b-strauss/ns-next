@@ -693,10 +693,11 @@ fn round_trip_code_table<'gc>(
 ) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
     let mut writer = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
-    let ids = encode::encode_code_table(&mut writer, heap, class, &mut symbols)
+    let ids = encode::encode_code_table(&mut writer, heap, &[class], &mut symbols)
         .expect("encode code table");
     let mut mixin_writer = encode::Writer::new();
-    mixins::encode(&mut mixin_writer, heap, class, &mut symbols, &ids).expect("encode mixin table");
+    mixins::encode(&mut mixin_writer, heap, &[class], &mut symbols, &ids)
+        .expect("encode mixin table");
     let bytes = writer.into_bytes();
     let mixin_bytes = mixin_writer.into_bytes();
     let table = symbols.build();
@@ -736,7 +737,8 @@ fn every_instruction_variant_round_trips() {
         let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
         assert_eq!(**decoded, *synthetic);
         assert_eq!(
-            ids.id_of(&synthetic),
+            ids.id_of(&synthetic)
+                .unwrap_or_else(|error| panic!("{error}")),
             root.initializer.expect("initializer id")
         );
     });
@@ -884,7 +886,7 @@ fn a_decoded_mixin_carries_the_bodies_its_row_names() {
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
-        let root = decoded_mixins.root().expect("a root row");
+        let root = decoded_mixins.module_root(0).expect("a root row");
         assert_eq!(root.compiled_methods().count(), 3);
         for method in root.compiled_methods() {
             let selector = method.selector;
@@ -1225,7 +1227,9 @@ fn a_large_integer_literal_round_trips() {
             "the compiler emits the literal the round trip is about"
         );
         let (table, _, ids) = round_trip_code_table(mutator.heap(), class);
-        let decoded = &table.codes[ids.id_of(&original) as usize];
+        let decoded = &table.codes[ids
+            .id_of(&original)
+            .unwrap_or_else(|error| panic!("{error}")) as usize];
         assert_eq!(**decoded, *original);
     });
 }
@@ -1539,7 +1543,7 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
         let class = class_reference(mutator, &class);
         let mut writer = encode::Writer::new();
         let mut symbols = symbols::Builder::new();
-        encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
+        encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
             .expect("encode code table");
         (symbols.build(), writer.into_bytes())
     });
@@ -1956,7 +1960,7 @@ fn mixin_ids_for<'gc>(
     ids: &encode::CodeIds,
 ) -> HashMap<usize, u32> {
     let mut scratch = encode::Writer::new();
-    mixins::encode(&mut scratch, mutator.heap(), class, symbols, ids).expect("mixin table")
+    mixins::encode(&mut scratch, mutator.heap(), &[class], symbols, ids).expect("mixin table")
 }
 
 /// Loads `source`, lets `make_roots` build the roots, encodes code table +
@@ -1978,7 +1982,7 @@ fn round_trip_graph(
         let platform_value = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
+        let ids = encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
             .expect("encode code table");
         let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
         encode::encode_graph_section(
@@ -2327,8 +2331,9 @@ fn the_graph_section_encoding_is_deterministic() {
             let platform = mutator.fetch(&platform);
             let mut symbols = symbols::Builder::new();
             let mut writer = encode::Writer::new();
-            let ids = encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
-                .expect("encode code table");
+            let ids =
+                encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
+                    .expect("encode code table");
             let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
             encode::encode_graph_section(
                 &mut writer,
@@ -2976,7 +2981,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let platform = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
+        let ids = encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
             .expect("encode code table");
         let before = writer.into_bytes().len();
         let mut writer = encode::Writer::new();
@@ -5483,7 +5488,7 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
         // The *decoded* nested mixin, not the live one: its bodies are the
         // ones the mixin table attached, which is what a loaded world's
         // class objects apply.
-        let inner_mixin = &decoded_mixins.root().expect("a root row").nested[0];
+        let inner_mixin = &decoded_mixins.module_root(0).expect("a root row").nested[0];
         let value_method = inner_mixin
             .compiled_method(Symbol::intern("value"))
             .expect("Inner declares `value`");
@@ -6482,7 +6487,7 @@ fn a_decoded_lazy_slot_keeps_its_getter() {
         &[getter_shape(2, AccessModifier::Public)],
     )
     .expect("decode");
-    let root = decoded.root().expect("a root row");
+    let root = decoded.module_root(0).expect("a root row");
     assert!(root.slots[1].lazy, "the slot record says lazy");
     let getter = root
         .compiled_method(Symbol::intern("later"))
@@ -6569,7 +6574,7 @@ fn a_decoded_slot_defines_its_accessors() {
         &[],
     )
     .expect("decode");
-    let root = decoded.root().expect("a root row");
+    let root = decoded.module_root(0).expect("a root row");
     let accessor = |selector: &str| match root.methods.get(&Symbol::intern(selector)) {
         Some(ns_runtime::mixin::MethodEntry::SlotAccessor(accessor)) => Some(*accessor),
         _ => None,
@@ -6619,7 +6624,7 @@ fn a_method_named_like_an_immutable_slots_setter_decodes() {
         &[(2, 0)],
     )
     .expect("an immutable slot defines no setter to collide with");
-    let root = decoded.root().expect("a root row");
+    let root = decoded.module_root(0).expect("a root row");
     assert!(root.compiled_method(Symbol::intern("x:")).is_some());
 }
 
@@ -6745,7 +6750,7 @@ fn image_with_mixin_table(strings: &[&str], mixin_table: &[u8]) -> Vec<u8> {
 fn a_nested_mixin_round_trips_through_the_table() {
     let bytes = snapshot_of(TABLE_NESTED_SOURCE);
     let decoded = mixin_table_of(&bytes);
-    let root = decoded.root().expect("a root row").clone();
+    let root = decoded.module_root(0).expect("a root row").clone();
     assert_eq!(root.name, Symbol::intern("Outer"));
     assert_eq!(
         root.slots
@@ -6818,7 +6823,7 @@ fn a_mixin_tree_just_inside_the_nesting_ceiling_still_decodes() {
     let mut reader = decode::Reader::new(&bytes);
     let decoded = mixins::decode(&mut reader, &table_with(&["X"]), &[]).expect("128 levels decode");
     assert_eq!(decoded.mixins.len(), 128);
-    let mut level = decoded.root().expect("a root row").clone();
+    let mut level = decoded.module_root(0).expect("a root row").clone();
     let mut depth = 1;
     while let Some(next) = level.nested.first().cloned() {
         level = next;
@@ -6861,6 +6866,122 @@ fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
     );
 }
 
+/// A row no earlier row reaches starts a tree of its own: the table then
+/// describes two modules while the image declares one, and `load` refuses
+/// the mismatch rather than dropping or misplacing the second tree.
+#[test]
+fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(2);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    write_mixin_row(&mut writer, 0, &[], &[]); // reached by no row
+    let table = writer.into_bytes();
+    let decoded = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
+        .expect("a forest of two trees decodes");
+    assert_eq!(decoded.module_rows, vec![0, 1]);
+    let bytes = image_with_mixin_table(&["X"], &table);
+    let Err(error) = ns_runtime::image::load(&bytes) else {
+        panic!("a second, undeclared tree must be refused");
+    };
+    assert_eq!(
+        error,
+        decode::DecodeError::ModuleCountMismatch {
+            declared: 1,
+            trees: 2
+        }
+        .to_string()
+    );
+    assert_eq!(
+        error,
+        "the image declares 1 module(s) but its mixin table holds 2 tree(s)"
+    );
+}
+
+/// Several modules' declarations share one mixin table and one code table:
+/// each module's `mixin::preorder` tree, one after another in module order,
+/// and each tree's first row is that module's root.
+#[test]
+fn two_modules_encode_as_two_trees_in_module_order() {
+    let (mut interpreter, first) = load(indoc! {"
+        Newspeak3
+        'Test'
+        class First = Object new () (
+            class Inner = Object new () ( public answer = ( ^1 ) ) : ()
+        ) : ()
+    "});
+    let second_source = indoc! {"
+        Newspeak3
+        'Test'
+        class Second = Object new () ( public answer = ( ^2 ) ) : ()
+    "};
+    let second_module = ns_syntax::parse(second_source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        second_module,
+        Rc::from(second_source),
+        SourceOrigin::File(PathBuf::from("Second.ns")),
+    )
+    .expect("resolve");
+    let second = interpreter.load_module(&resolved);
+    interpreter.enter(|mutator| {
+        let roots = [
+            class_reference(mutator, &first),
+            class_reference(mutator, &second),
+        ];
+        let rows = mixins::plan(mutator.heap(), &roots).expect("plan");
+        let names: Vec<&str> = rows.iter().map(|row| row.mixin.name.as_str()).collect();
+        // First's tree -- itself, its nested Inner, Inner's and its own
+        // class sides in preorder -- then Second's.
+        assert_eq!(names.first(), Some(&"First"));
+        let second_at = names
+            .iter()
+            .position(|name| *name == "Second")
+            .expect("a row for Second");
+        assert!(names[..second_at].contains(&"Inner"));
+        assert!(!names[second_at..].contains(&"Inner"));
+        let mut symbols = symbols::Builder::new();
+        let mut code = encode::Writer::new();
+        let ids = encode::encode_code_table(&mut code, mutator.heap(), &roots, &mut symbols)
+            .expect("encode code table");
+        let mut writer = encode::Writer::new();
+        mixins::encode(&mut writer, mutator.heap(), &roots, &mut symbols, &ids)
+            .expect("encode mixin table");
+        let table = symbols.build();
+        let code_bytes = code.into_bytes();
+        let decoded_code = decode::decode_code_table(&mut decode::Reader::new(&code_bytes), &table)
+            .expect("decode code table");
+        let bytes = writer.into_bytes();
+        let decoded = mixins::decode(
+            &mut decode::Reader::new(&bytes),
+            &table,
+            &decoded_code.codes,
+        )
+        .expect("decode mixin table");
+        assert_eq!(decoded.module_rows, vec![0, second_at as u32]);
+        assert_eq!(
+            decoded.module_root(0).map(|mixin| mixin.name.as_str()),
+            Some("First")
+        );
+        assert_eq!(
+            decoded.module_root(1).map(|mixin| mixin.name.as_str()),
+            Some("Second")
+        );
+        assert!(decoded.module_root(2).is_none());
+    });
+}
+
+/// A graph can reach a closure over a body no module the image carries
+/// compiled; asking for its id is an encoding error the caller reports, not
+/// a panic.
+#[test]
+fn a_body_the_code_table_does_not_hold_has_no_id() {
+    let ids = encode::CodeIds::default();
+    let orphan = Rc::new(every_instruction_once());
+    assert!(
+        ids.id_of(&orphan).is_err(),
+        "an unknown body must be an error, not a panic"
+    );
+}
+
 /// The factory selector must come from the table, not from
 /// `Mixin::declaration`: `instantiate::clause_message_body` checks the selector
 /// a clause names against the superclass's primary factory selector. Read off a
@@ -6893,7 +7014,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     });
 
     let decoded = mixin_table_of(&bytes);
-    let root = decoded.root().expect("a root row").clone();
+    let root = decoded.module_root(0).expect("a root row").clone();
     let base = root
         .nested
         .iter()
@@ -7006,7 +7127,7 @@ fn the_deepest_module_the_parser_accepts_round_trips() {
         nested + 2,
         "a root the parser does not count, {nested} nested classes, and the innermost class's class side"
     );
-    let mut level = decoded.root().expect("a root row").clone();
+    let mut level = decoded.module_root(0).expect("a root row").clone();
     let mut depth = 1;
     while let Some(next) = level.nested.first().cloned() {
         level = next;

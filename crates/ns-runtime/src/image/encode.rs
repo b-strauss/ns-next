@@ -178,15 +178,23 @@ fn u16_field(what: &str, value: usize) -> u16 {
 /// `Rc<CompiledCode>` pointer -> code-table id, assigned by
 /// `encode_code_table`; `encode_closure_record` uses it for a
 /// closure's code reference.
+#[derive(Default)]
 pub struct CodeIds {
     ids: HashMap<usize, u32>,
 }
 
 impl CodeIds {
-    pub fn id_of(&self, code: &Rc<CompiledCode>) -> u32 {
-        *self.ids.get(&(Rc::as_ptr(code) as usize)).expect(
-            "every CompiledCode reachable from the mixin tree was assigned an id by encode_code_table",
-        )
+    /// A body no module the image carries compiled has no id: a graph that
+    /// reaches a closure over another module's code. An `Err` here, not a
+    /// panic, because what the graph reaches is the program's to decide.
+    pub fn id_of(&self, code: &Rc<CompiledCode>) -> Result<u32, String> {
+        self.ids
+            .get(&(Rc::as_ptr(code) as usize))
+            .copied()
+            .ok_or_else(|| {
+                "image encoding cannot serialize a closure over code that no module the                  image carries compiled"
+                    .to_string()
+            })
     }
 }
 
@@ -378,28 +386,26 @@ pub fn encode_entry(writer: &mut Writer, entry: Option<u32>) {
     }
 }
 
-/// The code table: every `CompiledCode` reachable from the mixin tree under
-/// `root_class` -- every mixin's methods, every mixin's initializer, every
+/// The code table: every `CompiledCode` reachable from the mixin trees under
+/// `module_roots` -- every mixin's methods, every mixin's initializer, every
 /// superclass clause and clause-message body, every `<:` clause's message
 /// body, and every nested block body --
 /// with nested block code *before* the code that creates it. Flat and
 /// unnamed: *which* body belongs to which declaration is the mixin table's
 /// business (`image::mixins`), which addresses this table by id.
 ///
-/// Collected in `mixin::preorder` order -- the same order the mixin table's
-/// rows are written in -- so the same module always encodes to the same
+/// Collected in `mixin::preorder` order, module after module -- the same
+/// order the mixin table's rows are written in -- so the same module always encodes to the same
 /// bytes.
 pub fn encode_code_table<'gc>(
     writer: &mut Writer,
     heap: &Heap<'gc>,
-    root_class: ClassReference<'gc>,
+    module_roots: &[ClassReference<'gc>],
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
-    let mut ids = CodeIds {
-        ids: HashMap::new(),
-    };
-    let rows = mixins::plan(heap, root_class)?;
+    let mut ids = CodeIds::default();
+    let rows = mixins::plan(heap, module_roots)?;
     for row in &rows {
         for method in &row.methods {
             collect_code(&method.code, &mut order, &mut ids);
@@ -632,7 +638,11 @@ fn encode_instruction(
             for parameter in parameters.iter() {
                 writer.write_u32(symbols.intern(parameter.as_str()));
             }
-            writer.write_u32(ids.id_of(code));
+            // In the table by construction, not by the input's say:
+            // `collect_code` numbers a nested block before its parent.
+            writer.write_u32(ids.id_of(code).expect(
+                "internal: collect_code assigned every nested block an id before its parent",
+            ));
             encode_registers(writer, copied);
         }
         Instruction::MakeArray {
@@ -1464,7 +1474,7 @@ fn encode_closure_record<'gc>(
     writer: &mut Writer,
     closure: &ClosureData<'gc>,
     context: &EncodeContext<'_, 'gc>,
-) {
+) -> Result<(), String> {
     // Destructured, not read field by field: a new `ClosureData` field must
     // say here whether it belongs on the wire, rather than silently being
     // left off it.
@@ -1474,12 +1484,13 @@ fn encode_closure_record<'gc>(
         copied,
         feedback_base: _, // never on the wire; see `decode_closure_record`
     } = closure;
-    writer.write_u32(context.code_ids.id_of(code));
+    writer.write_u32(context.code_ids.id_of(code)?);
     writer.write_u32(context.table.frame_id(context.heap, *captured_frame));
     writer.write_u16(u16_field("closure copied value count", copied.len()));
     for value in copied.iter() {
         encode_value(writer, value, context);
     }
+    Ok(())
 }
 
 /// A class object's record: which declaration it applies, and the three
@@ -1643,7 +1654,7 @@ fn encode_object<'gc>(
         }
         ObjectData::Closure(closure) => {
             writer.write_u8(OBJECT_CLOSURE);
-            encode_closure_record(writer, closure, context);
+            encode_closure_record(writer, closure, context)?;
         }
         ObjectData::Class(data) if data.this_class.is_some() => {
             writer.write_u8(OBJECT_METACLASS);

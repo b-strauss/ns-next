@@ -100,26 +100,30 @@ pub struct Row {
     pub methods: Vec<Rc<MixinMethod>>,
 }
 
-/// Flattens the tree under `root_class` into rows, in `mixin::preorder`
-/// order.
+/// Flattens the tree under each of `module_roots` into rows, in
+/// `mixin::preorder` order, one tree after another in module order. Row ids
+/// and the depth ceiling cover the whole forest: a class object's record
+/// names its declaration by row id whichever module declared it.
 ///
 /// Called by both `encode::encode_code_table` (which needs the rows to know
 /// which `CompiledCode` is reachable, and in what order) and `encode` below
 /// (which needs them to write the table). Recomputing it is one walk of the
 /// tree and one `HashMap`; sharing a cached copy between the two would trade
 /// that for a lifetime that has to thread through `snapshot`.
-pub fn plan<'gc>(heap: &Heap<'gc>, root_class: ClassReference<'gc>) -> Result<Vec<Row>, String> {
-    let root_mixin = heap
-        .class_application(root_class)
-        .map(|application| application.mixin.clone());
-    // Not a class object: no declarations to describe, so the table is
-    // empty rather than an error -- `encode_code_table` has always tolerated
-    // this, and the graph section is what actually refuses such a root.
-    let Some(root_mixin) = root_mixin else {
-        return Ok(Vec::new());
-    };
+pub fn plan<'gc>(
+    heap: &Heap<'gc>,
+    module_roots: &[ClassReference<'gc>],
+) -> Result<Vec<Row>, String> {
     let mut order = Vec::new();
-    crate::mixin::preorder(&root_mixin, &mut order);
+    for root_class in module_roots {
+        // Not a class object: no declarations to describe, so it contributes
+        // no rows rather than an error -- `encode_code_table` has always
+        // tolerated this, and the graph section is what actually refuses
+        // such a root.
+        if let Some(application) = heap.class_application(*root_class) {
+            crate::mixin::preorder(&application.mixin, &mut order);
+        }
+    }
     let ids: HashMap<usize, u32> = order
         .iter()
         .enumerate()
@@ -159,7 +163,7 @@ pub fn plan<'gc>(heap: &Heap<'gc>, root_class: ClassReference<'gc>) -> Result<Ve
     Ok(rows)
 }
 
-/// The tree's depth in `Mixin` links, counting the root as level 1.
+/// The forest's depth in `Mixin` links, counting each tree's root as level 1.
 ///
 /// One reverse pass: `plan` emits rows in `mixin::preorder`, so every
 /// child's row id is greater than its parent's and a row's children are
@@ -240,11 +244,11 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 pub fn encode<'gc>(
     writer: &mut Writer,
     heap: &Heap<'gc>,
-    root_class: ClassReference<'gc>,
+    module_roots: &[ClassReference<'gc>],
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {
-    let rows = plan(heap, root_class)?;
+    let rows = plan(heap, module_roots)?;
     writer.write_u32(u32_field("mixin table entry count", rows.len()));
     for row in &rows {
         let mixin = &row.mixin;
@@ -293,7 +297,11 @@ pub fn encode<'gc>(
             writer.write_boolean(clause.has_arguments);
             write_optional_id(
                 writer,
-                clause.message_code.as_ref().map(|code| codes.id_of(code)),
+                clause
+                    .message_code
+                    .as_ref()
+                    .map(|code| codes.id_of(code))
+                    .transpose()?,
             );
         }
         writer.write_u32(u32_field("mixin's method count", row.methods.len()));
@@ -301,7 +309,7 @@ pub fn encode<'gc>(
             writer.write_u32(symbols.intern(method.selector.as_str()));
             writer.write_u8(access_tag(method.access));
             writer.write_u16(u16_arity("method", method.argument_count));
-            writer.write_u32(codes.id_of(&method.code));
+            writer.write_u32(codes.id_of(&method.code)?);
         }
         writer.write_u32(u32_field("mixin's nested count", row.nested.len()));
         for id in &row.nested {
@@ -313,21 +321,24 @@ pub fn encode<'gc>(
             mixin
                 .initializer_code
                 .as_ref()
-                .map(|code| codes.id_of(code)),
+                .map(|code| codes.id_of(code))
+                .transpose()?,
         );
         write_optional_id(
             writer,
             mixin
                 .superclass_clause_code
                 .as_ref()
-                .map(|code| codes.id_of(code)),
+                .map(|code| codes.id_of(code))
+                .transpose()?,
         );
         write_optional_id(
             writer,
             mixin
                 .superclass_message_code
                 .as_ref()
-                .map(|code| codes.id_of(code)),
+                .map(|code| codes.id_of(code))
+                .transpose()?,
         );
     }
     Ok(rows
@@ -381,12 +392,15 @@ pub struct MixinCode {
 }
 
 /// The decoded mixin table: the rebuilt declarations, in row-id order (which
-/// is `mixin::preorder` order of `mixins[0]`), and each one's code bindings
-/// at the same index.
+/// is `mixin::preorder` order of each module's root, one tree after another),
+/// and each one's code bindings at the same index.
 #[derive(Debug)]
 pub struct Decoded {
     pub mixins: Vec<Rc<Mixin>>,
     pub code: Vec<MixinCode>,
+    /// Each tree's first row, in table order: the row of each module's root
+    /// declaration, as `check_preorder` found the trees.
+    pub module_rows: Vec<u32>,
 }
 
 impl Decoded {
@@ -394,13 +408,14 @@ impl Decoded {
         Decoded {
             mixins: Vec::new(),
             code: Vec::new(),
+            module_rows: Vec::new(),
         }
     }
 
-    /// The tree's root -- row 0, which `decode` has already established
-    /// every other row hangs under. `None` for an empty table.
-    pub fn root(&self) -> Option<&Rc<Mixin>> {
-        self.mixins.first()
+    /// Module `module_index`'s root declaration, the first row of its tree.
+    pub fn module_root(&self, module_index: usize) -> Option<&Rc<Mixin>> {
+        let row = *self.module_rows.get(module_index)?;
+        self.mixins.get(row as usize)
     }
 }
 
@@ -450,10 +465,12 @@ struct RawSlot {
 ///
 /// 1. read every row, validating each count against the remaining input and
 ///    each symbol and code id against its table;
-/// 2. verify that the rows are exactly `mixin::preorder` of row 0 -- one
-///    explicit-stack walk that simultaneously establishes the rows form a
-///    tree (no row is its own ancestor, no row has two parents, no row is
-///    unreachable) and that the tree is not deeper than `MAX_MIXIN_DEPTH`;
+/// 2. verify that the rows are exactly `mixin::preorder` of each tree's
+///    first row, tree after tree -- one explicit-stack walk that
+///    simultaneously establishes the rows form a forest (no row is its own
+///    ancestor, no row has two parents, no row reaches back into an earlier
+///    tree), that no tree is deeper than `MAX_MIXIN_DEPTH`, and where each
+///    tree starts;
 /// 3. build the `Rc<Mixin>`s from the last row to the first. Step 2 proved
 ///    every child's id is greater than its parent's, so a row's children are
 ///    always already built when it is reached, and no back-patching pass or
@@ -472,10 +489,10 @@ pub fn decode(
         return Ok(Decoded::empty());
     }
     check_ids(&raw)?;
-    check_preorder(&raw)?;
+    let module_rows = check_preorder(&raw)?;
     check_member_names(&raw)?;
     check_lazy_slot_getters(&raw)?;
-    Ok(build(raw, codes))
+    Ok(build(raw, codes, module_rows))
 }
 
 fn read_row(
@@ -695,8 +712,8 @@ fn check_lazy_slot_getters(raw: &[RawRow]) -> Result<(), DecodeError> {
     Ok(())
 }
 
-/// The rows must be exactly `mixin::preorder(row 0)`: row `i` is the `i`th
-/// declaration that walk reaches.
+/// The rows must be exactly `mixin::preorder` of each tree's root, tree
+/// after tree: row `i` is the `i`th declaration those walks reach.
 ///
 /// Row position is how a class object's record names the declaration it
 /// applies (`decode::decode_class_record` indexes the rows by id), so this
@@ -704,38 +721,45 @@ fn check_lazy_slot_getters(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// also, as a by-product, the whole
 /// structural sanity check: an index is accepted only when it equals the
 /// step counter, so every row is visited exactly once (no shared child, no
-/// cycle -- a cycle would revisit an index already behind the counter) and
-/// the walk ends having visited all of them (no unreachable row, no second
-/// root). Iterative, over an explicit stack, because the depth is the
-/// image's to choose.
-fn check_preorder(raw: &[RawRow]) -> Result<(), DecodeError> {
-    let mut stack: Vec<(u32, usize)> = vec![(0, 1)];
+/// cycle, no reach back into an earlier tree -- each would revisit an index
+/// already behind the counter). Iterative, over an explicit stack, because
+/// the depth is the image's to choose.
+///
+/// A table describing several modules is several such trees, one after
+/// another in module order, so the walk starts a new tree wherever the
+/// previous one ended; each tree's first row is a module's root, which is
+/// how the module section names it. A row nothing reaches therefore starts
+/// a tree of its own, and is refused where the trees are counted against
+/// the modules the image declares.
+fn check_preorder(raw: &[RawRow]) -> Result<Vec<u32>, DecodeError> {
+    let mut module_rows = Vec::new();
     let mut expected: u32 = 0;
-    while let Some((id, depth)) = stack.pop() {
-        if id != expected {
-            return Err(DecodeError::MixinTableNotATree { row: id });
-        }
-        if depth > MAX_MIXIN_DEPTH {
-            return Err(DecodeError::NestingTooDeep {
-                what: "mixin nesting",
-                limit: MAX_MIXIN_DEPTH,
-            });
-        }
-        expected += 1;
-        let row = &raw[id as usize];
-        // `preorder` visits the nested declarations first and the class
-        // side last, so they go onto the stack in the opposite order.
-        if let Some(class_side) = row.class_side {
-            stack.push((class_side, depth + 1));
-        }
-        for id in row.nested.iter().rev() {
-            stack.push((*id, depth + 1));
+    while (expected as usize) < raw.len() {
+        module_rows.push(expected);
+        let mut stack: Vec<(u32, usize)> = vec![(expected, 1)];
+        while let Some((id, depth)) = stack.pop() {
+            if id != expected {
+                return Err(DecodeError::MixinTableNotATree { row: id });
+            }
+            if depth > MAX_MIXIN_DEPTH {
+                return Err(DecodeError::NestingTooDeep {
+                    what: "mixin nesting",
+                    limit: MAX_MIXIN_DEPTH,
+                });
+            }
+            expected += 1;
+            let row = &raw[id as usize];
+            // `preorder` visits the nested declarations first and the class
+            // side last, so they go onto the stack in the opposite order.
+            if let Some(class_side) = row.class_side {
+                stack.push((class_side, depth + 1));
+            }
+            for id in row.nested.iter().rev() {
+                stack.push((*id, depth + 1));
+            }
         }
     }
-    if (expected as usize) != raw.len() {
-        return Err(DecodeError::MixinTableNotATree { row: expected });
-    }
-    Ok(())
+    Ok(module_rows)
 }
 
 /// The factory entry each row holds as a *metaclass* mixin: for a row some
@@ -772,7 +796,7 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
 /// Nothing here reconciles a body with what it is attached to:
 /// `decode::verify_mixins` does, on the load path only, so `inspect` can
 /// still display an artifact whose halves disagree.
-fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
+fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) -> Decoded {
     let code_at = |id: u32| codes[id as usize].clone();
     let mut factory_entries = metaclass_factory_entries(&raw);
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
@@ -899,5 +923,6 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             .into_iter()
             .map(|code| code.expect("every row was built"))
             .collect(),
+        module_rows,
     }
 }

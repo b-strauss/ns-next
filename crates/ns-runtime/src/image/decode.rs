@@ -143,14 +143,23 @@ pub enum DecodeError {
     /// superclass is fixed before the class object that inherits it exists
     /// -- and refusing is what keeps the rebuild a finite walk.
     SuperclassCycle,
-    /// The mixin table's rows are not `mixin::preorder` of row 0: a row is
-    /// named as a child by two rows or by none, a row is its own ancestor,
-    /// or the children are named out of the order the walk visits them in.
+    /// The mixin table's rows are not `mixin::preorder` of each tree's first
+    /// row, tree after tree: a row is named as a child by two rows, a row is
+    /// its own ancestor or reaches back into an earlier tree, or the children
+    /// are named out of the order the walk visits them in.
     /// Row position is the whole correspondence between a row and the
     /// declaration it describes, so a table that does not reproduce that
     /// walk is refused outright rather than paired up wrongly.
     MixinTableNotATree {
         row: u32,
+    },
+    /// The mixin table holds a different number of declaration trees than
+    /// the image declares modules. Each tree's first row is a module's root,
+    /// so a surplus tree -- a row nothing reaches -- would be a module no
+    /// part of the image names, and a missing one a module without a root.
+    ModuleCountMismatch {
+        declared: u32,
+        trees: u32,
     },
     /// One mixin-table row declares a member twice: a method, a slot's
     /// accessor or a nested class under a name another of them already has.
@@ -483,6 +492,10 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "the image's mixin table is not a declaration tree: row {row} is reached out of \
                  declaration order, twice, or not at all"
+            ),
+            DecodeError::ModuleCountMismatch { declared, trees } => write!(
+                f,
+                "the image declares {declared} module(s) but its mixin table holds {trees} tree(s)"
             ),
             DecodeError::DuplicateSelector(selector) => write!(
                 f,
@@ -2640,7 +2653,10 @@ pub fn build_root_class<'gc>(
     mixins: &mixins::Decoded,
     section: &RootSection,
 ) -> Result<(ClassReference<'gc>, Vec<ClassReference<'gc>>), DecodeError> {
-    let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
+    let root_mixin = mixins
+        .module_root(0)
+        .cloned()
+        .ok_or(DecodeError::NotAClass)?;
     let superclass = Some(mutator.builtin_class(section.superclass));
     let applied: Vec<(usize, Value<'gc>)> = section
         .levels
@@ -2708,7 +2724,7 @@ pub fn decode_root_section(
         });
     }
     let clause_count = mixins
-        .root()
+        .module_root(0)
         .map_or(0, |root| root.mixin_applications.len());
     let count = reader.read_u32()? as usize;
     let mut levels = Vec::with_capacity(count.min(clause_count));

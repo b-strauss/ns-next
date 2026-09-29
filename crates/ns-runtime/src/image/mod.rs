@@ -66,25 +66,28 @@ fn encode_describing<'gc>(
     root_class: ClassReference<'gc>,
     heap: &Heap<'gc>,
 ) -> Result<Describing, String> {
+    let module_roots = std::slice::from_ref(&root_class);
     // A root that can never be instantiated could only fail as an artifact,
     // and refusing it here keeps the format from needing a way to say so.
-    if let Some(application) = heap.class_application(root_class) {
-        if let Some(defect) = &application.mixin.root_clause_defect {
-            return Err(format!(
-                "image encoding cannot serialize {}: {}",
-                application.mixin.name,
-                defect.describe()
-            ));
+    for module_root in module_roots {
+        if let Some(application) = heap.class_application(*module_root) {
+            if let Some(defect) = &application.mixin.root_clause_defect {
+                return Err(format!(
+                    "image encoding cannot serialize {}: {}",
+                    application.mixin.name,
+                    defect.describe()
+                ));
+            }
         }
     }
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut code, heap, root_class, &mut symbols)?;
+    let ids = encode::encode_code_table(&mut code, heap, module_roots, &mut symbols)?;
     // After the code table, whose ids its rows name; before the graph (or the
     // entry field), whose class objects and selector respectively might name
     // its rows.
     let mut mixin_writer = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_writer, heap, root_class, &mut symbols, &ids)?;
+    let mixin_ids = mixins::encode(&mut mixin_writer, heap, module_roots, &mut symbols, &ids)?;
     Ok(Describing {
         symbols,
         code,
@@ -317,6 +320,15 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
         let mixins = mixins::decode(&mut reader, &symbols, &table.codes)
             .map_err(|error| error.to_string())?;
+        // One module until the image records how many it carries: a second
+        // tree would be declarations no part of the image names.
+        if mixins.module_rows.len() != 1 {
+            return Err(decode::DecodeError::ModuleCountMismatch {
+                declared: 1,
+                trees: u32::try_from(mixins.module_rows.len()).unwrap_or(u32::MAX),
+            }
+            .to_string());
+        }
         decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
         let root_section =
             decode::decode_root_section(&mut reader, &mixins).map_err(|error| error.to_string())?;
