@@ -2368,8 +2368,22 @@ fn decode_value<'gc>(
         VALUE_PLATFORM => Ok(context.platform),
         VALUE_PLATFORM_PATH => read_platform_path(reader, context.platform_paths),
         // Allocating here is sound: the decoder never polls a safepoint, so
-        // nothing moves the placeholders `tables` holds. The object is
-        // proportional to the digits just read, one per 14 or more bytes.
+        // nothing moves the placeholders `tables` holds.
+        //
+        // It adds to the load's peak rather than fitting inside it. The
+        // placeholders are allocated first, against every byte left at the
+        // graph section (`decode_graph_section`), and those same bytes can
+        // then be one array record full of these values, each allocating
+        // its `Object` and its digits before a later record fails to read.
+        // A value is at least 14 bytes on the wire (tag, sign, count, one
+        // digit) and costs `size_of::<Object>()` plus 8 bytes a digit. With
+        // an `Object` of 56 bytes in a release build and 72 in a debug one,
+        // that is 64/14 = 4.6x and 80/14 = 5.7x of those bytes, on top of
+        // the placeholders' 9.3x + 7.1x (release) and 12.0x + 8.4x (debug):
+        // about 21.0x and 26.2x in all. It stays proportional to the input
+        // because the digit count is bounded against the bytes left before
+        // anything is allocated for it (`read_large_integer_parts`), and each
+        // further digit costs its own 8 wire bytes.
         VALUE_LARGE_INTEGER => {
             let integer = read_large_integer(reader)?;
             Ok(context.mutator.new_integer(integer))
