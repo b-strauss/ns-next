@@ -94,12 +94,13 @@ fn protecting_an_uncommitted_range_is_not_committed() {
     );
 }
 
+#[cfg(target_pointer_width = "64")]
 #[test]
 fn every_reservation_is_released_when_it_is_dropped() {
-    // 64 GiB a time, 4 TiB in all: more than a 47-bit address space holds
-    // unless each one is given back.
-    for _ in 0..64 {
-        let reservation = Reservation::reserve(64 << 30).expect("reserve");
+    // 1 TiB a time, 200 TiB in all: more than a 47-bit (128 TiB) address
+    // space holds unless each one is given back before the next is made.
+    for _ in 0..200 {
+        let reservation = Reservation::reserve(1 << 40).expect("reserve");
         drop(reservation);
     }
 }
