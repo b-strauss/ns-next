@@ -37,14 +37,36 @@ fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
 
 #[test]
 fn a_loaded_world_does_not_rerun_its_instance_initializer() {
+    // The initializer draws an identity hash. A loader that re-ran it would
+    // draw a fresh one past the hashes the image records, so `stamp` would
+    // differ from what `run` prints.
     let directory = ScratchDirectory::new("instance-init");
     let image = directory.join("world.img");
-    let source = golden("language/instance_init");
+    let source = directory.join("stamp.ns");
+    std::fs::write(
+        &source,
+        indoc! {"
+            Newspeak3
+            'T'
+            class Stamp = Object new (
+                | stamp = Object new hash. |
+            ) (
+                public main: platform args: arguments = (
+                    platform transcript show: stamp printString; newLine
+                )
+            ) : ()
+        "},
+    )
+    .expect("write source");
+    let (ok, expected, error) = ns_next(&["run".as_ref(), source.as_os_str()]);
+    assert!(ok, "{error}");
+    assert!(!expected.is_empty(), "run printed the stamp");
     let (ok, out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
-    // The initializer prints nothing itself any more: it only records that it
-    // ran, and `main:args:` reports that.
-    assert!(out.starts_with("wrote "), "{out}");
+    assert!(
+        out.starts_with("wrote ") && out.lines().count() == 1,
+        "the snapshot instantiates without running the entry send: {out}"
+    );
     let (ok, out, error) = ns_next(&[
         "load".as_ref(),
         image.as_os_str(),
@@ -53,8 +75,8 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
     ]);
     assert!(ok, "{error}");
     assert_eq!(
-        out, "init ran\nhi 2\n",
-        "the slots the initializer filled at snapshot time survived the image"
+        out, expected,
+        "the stamp the initializer drew at snapshot time survived the image"
     );
 }
 
