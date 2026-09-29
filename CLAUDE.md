@@ -517,7 +517,13 @@ is hand-rolled on purpose.
 heading looks unrelated — §3.2 decides how the primary factory is found, from a page
 about metaclasses — and reading only the topical section is how a rule gets missed. The
 PDF stays the authority and is what a citation names; the Markdown is how to find the
-passage (`docs/references/PROVENANCE.md`).
+passage (`docs/references/PROVENANCE.md`). The older papers beside it -- the dyla paper
+on method lookup, the modules paper and the rest -- predate the specification and may
+describe earlier designs: they are background only. Look every rule up in the
+specification even when a paper seems to state it, cite the specification first and a
+paper only after it, and where the two disagree follow the specification (and where the
+specification is silent, the canonical implementation, per `PROVENANCE.md`). Before
+calling it silent, say how widely it was searched.
 
 **Design decisions follow the principles in `docs/design/README.md`.** In short:
 a deviation from the specification is a defect, never an optional cost, and no
