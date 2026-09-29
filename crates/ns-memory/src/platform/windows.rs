@@ -98,5 +98,10 @@ pub(crate) unsafe fn protect(
 pub(crate) unsafe fn release(address: *mut u8, _bytes: usize) {
     // SAFETY: the caller guarantees this is our reservation's base and that it
     // is no longer used; `MEM_RELEASE` requires a size of zero.
-    unsafe { VirtualFree(address.cast::<c_void>(), 0, MEM_RELEASE) };
+    let answer = unsafe { VirtualFree(address.cast::<c_void>(), 0, MEM_RELEASE) };
+    debug_assert!(
+        answer != 0,
+        "VirtualFree(MEM_RELEASE) failed: {}",
+        last_error()
+    );
 }

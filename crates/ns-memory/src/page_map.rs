@@ -62,6 +62,7 @@ impl PageMap {
     }
 
     /// Whether every byte of `range` is committed read-write.
+    #[allow(dead_code)] // the slice-lending accessors that ask it come with the object space
     pub(crate) fn is_accessible(&self, range: Range<usize>) -> bool {
         self.covered(range, |protection| protection == Protection::ReadWrite)
     }

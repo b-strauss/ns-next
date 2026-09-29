@@ -103,5 +103,6 @@ pub(crate) unsafe fn protect(
 /// `address` is the base of a reservation of `bytes` this crate made, and nothing refers into it.
 pub(crate) unsafe fn release(address: *mut u8, bytes: usize) {
     // SAFETY: the caller guarantees this is our whole reservation and unused.
-    unsafe { libc::munmap(address.cast(), bytes) };
+    let answer = unsafe { libc::munmap(address.cast(), bytes) };
+    debug_assert!(answer == 0, "munmap failed: {}", errno());
 }
