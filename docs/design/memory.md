@@ -20,7 +20,9 @@
 > movable handle carries a lifetime brand, so that holding one across a
 > safepoint is a compile error (step 2c). The canonical symbol table is
 > weak; everything else the collector traces is strong.
-> **Planned:** memory the heap owns ("Planned: the memory layer"), one space
+> The memory layer, `crates/ns-memory` ("The memory layer"), is built and
+> nothing uses it yet.
+> **Planned:** memory the heap owns through it, one space
 > of variably sized objects with their fields inline in place of the two
 > arenas ("Planned: the object space"), a nursery ("Planned: generations")
 > and allocation by a bump in eden ("Planned: inline allocation").
@@ -1379,7 +1381,7 @@ owning it makes possible, none of which the measurement covers:
 So the question is not where payloads live but whether they are separate at
 all, and a payload region beside the arena would keep both the second load
 and the per-object free. The plan puts the fields inline after a header word and a class word,
-in memory the heap owns ("Planned: the memory layer", "Planned: the
+in memory the heap owns ("The memory layer", "Planned: the
 object space" below).
 
 **A payload is size-stable on every hot path.** Both reference runtimes
@@ -1413,19 +1415,29 @@ wants another: a tracer decides per object, and what lives is moved.
 `allocator-api2` bump allocator behind `Vec<Value, _>` never reclaims.
 Compaction is not an allocator feature -- it needs to know the references --
 so it stays ours. The one level where a crate fits is pages, which the
-planned memory layer reaches through `windows-sys` and `libc`.
+memory layer reaches through `windows-sys` and `libc`.
 
-## Planned: the memory layer
+## The memory layer
 
-Would change: a new crate, `crates/ns-memory`, reserves and commits the
-memory the object space lives in; it is the only crate in the workspace with
-`unsafe` code, and `ns-runtime` keeps `#![forbid(unsafe_code)]`. This is
-step 1 of the road in [OPEN-WORK.md](../OPEN-WORK.md), "The road to a
-high-performance VM".
+`crates/ns-memory` reserves one contiguous address range, commits, decommits
+and protects page ranges of it, and lends accessible committed ranges as word
+slices (`Reservation`, `Protection` and `MemoryError` in
+`crates/ns-memory/src/lib.rs`; `PageMap`, its record of which pages are
+committed and how they are protected, in `page_map.rs`; the operating-system
+calls in `platform/windows.rs` and `platform/posix.rs`). It is the only crate
+in the workspace with `unsafe` code, and `ns-runtime` keeps
+`#![forbid(unsafe_code)]`. This is step 1 of the road in
+[OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". Nothing
+uses the crate yet: road step 3, "Planned: the object space", is its first
+user, and what says how the heap will use it is in the future tense below.
+`Reservation` is not `Send` or `Sync`, since it holds a `NonNull`; whether it
+should be is left to road step 3.
 
-- **One contiguous reservation per heap**, holding the nursery and the old space alike, reserved once at a size chosen at
+- **One contiguous reservation per heap**: `Reservation::reserve` rounds the
+  size up to the platform's reservation granularity and commits nothing. The
+  heap will hold the nursery and the old space alike in it, reserved once at a size chosen at
   start-up with a generous default, since reserved address space costs
-  nothing, and committed as the space grows. A handle is an offset from the
+  nothing, and committed as the space grows. A handle will be an offset from the
   reservation's base, so the base must be fixed and the reservation
   contiguous, as HotSpot's compressed oops require; Spur's segments at
   scattered addresses (`addSegmentOfSize:`,
@@ -1434,21 +1446,31 @@ high-performance VM".
   commits (`prior-art/strongtalk/vm/runtime/virtualspace.cpp:27-31`, `:73-135`;
   `VirtualAlloc` with `MEM_RESERVE`, then `MEM_COMMIT`,
   `prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414`).
-- **Operations**: reserve, commit a range, decommit a range when a space
-  shrinks, protect a range as no-access or read-write, and lend each
-  accessible, committed range as its own `&[u64]` and `&mut [u64]`; dropping
-  the reservation releases it. `protect` and `decommit` take the reservation
-  by `&mut`, so no lent slice can be alive across a change of what is
-  accessible. The heap does not store slices borrowed from its own
-  reservation, which would make it self-referential; it re-borrows them each
+- **Operations**: `reserve`, `commit` a range, `decommit` a range when a space
+  shrinks, `protect` a range as no-access or read-write, and lend each
+  accessible, committed range as its own `&[u64]` (`words`) and `&mut [u64]`
+  (`words_mut`, and `split_words_mut` for several disjoint ranges at once);
+  dropping the reservation releases it. Ranges are byte offsets from the
+  base: commit, decommit and protect take page-aligned, non-empty ranges
+  inside the reservation, the slices 8-byte-aligned ones that are committed
+  read-write throughout and no longer than `isize::MAX` bytes, and a
+  malformed range is `MemoryError::InvalidRange` (or `None` from a slice
+  accessor) with no system call made. `protect` and `decommit` take the
+  reservation by `&mut`, so no lent slice can be alive across a change of what is
+  accessible. After a failed `decommit`, or a failed `protect` to no-access,
+  the page map records the most restrictive state the call could have left
+  (`record_failure`): it may under-report access after a failure but never
+  over-report it, so a lent slice never covers memory a partly failed call
+  changed. The heap will not store slices borrowed from its own
+  reservation, which would make it self-referential; it will re-borrow them each
   time it needs them -- one call answering the split slices per space, each
   survivor space, eden and the old space, per step between two safepoints,
   and again after any commit, since a collection protects and old-space
   growth commits inside an entry -- and
-  picks the slice by an offset's range, so an offset into a protected or
+  pick the slice by an offset's range, so an offset into a protected or
   uncommitted range finds no slice: that selection is the bounds check the
   accessors rely on.
-- **Two implementations behind one interface, from the start**: Windows
+- **Two implementations behind one interface**: Windows
   (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, through `windows-sys`) and
   POSIX (`mmap` with `PROT_NONE` to reserve, `mprotect` to commit and protect,
   a re-mapping of the range with `mmap(MAP_FIXED | MAP_PRIVATE | MAP_ANON,
@@ -1460,15 +1482,17 @@ high-performance VM".
   fail there as a value; under Linux's default heuristic overcommit and on
   macOS, which does no commit accounting, first touch can still end in the
   out-of-memory killer, as for any process. Windows always accounts a commit,
-  so there it always fails as a value. `munmap` releases, all through `libc`). Both crates are declarations only, with no
+  so there it always fails as a value. `munmap` releases, all through `libc`). The POSIX half is checked with
+  clippy for Linux and macOS targets, not run. Both crates are declarations only, with no
   run-time code of their own. Primordial Soup has the same split behind the
   same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
   `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits
   everything at once, which a single large reservation cannot.
 - **A failure is a value, never a panic**: a reservation or a commit the
-  operating system refuses answers an error the heap reports as running out of
+  operating system refuses answers a `MemoryError::Refused` carrying the
+  operation and the system's error number, which the heap will report as running out of
   memory.
-- **In a debug build a vacated range is protected as no-access**, as Soup does
+- **In a debug build a vacated range will be protected as no-access**, as Soup does
   around its scavenges and mark-sweeps
   (`from_.NoAccess()`, `prior-art/primordialsoup/vm/heap.cc:341-344`,
   `:653-655`). Since an offset into a protected range finds no slice, a stale
@@ -1476,7 +1500,9 @@ high-performance VM".
   a panic in the debug build's stress runs. This catches a stale offset into
   an evacuated nursery space or the compacted-away tail above the new top; a
   stale offset below the new top lands in live, compacted memory, which is
-  what the epoch check on the Rust-side handles is for.
+  what the epoch check on the Rust-side handles is for. The crate supplies
+  `Protection::NoAccess` and the slice refusal; the heap's use of them is
+  planned ("Planned: the object space").
 - **Executable memory for the JIT tiers** comes to the same crate when they
   do, with its `unsafe` entry into generated code.
 
@@ -1485,7 +1511,7 @@ high-performance VM".
 Would change: `Heap`'s two arenas of fixed-size slots, `objects` and
 `frames`, give way to one space of variably sized objects, each a header word,
 a class word and its fields inline ([object-model.md](object-model.md),
-"Planned: the object layout"), in memory from "Planned: the memory layer".
+"Planned: the object layout"), in memory from "The memory layer".
 Road step 3; it follows the eight-byte value (road step 2) and the compact
 instruction encoding.
 
@@ -1556,7 +1582,7 @@ instruction encoding.
 **What changes in `CLAUDE.md`, and when.** Its invariants describe what is
 built, so each changes when its road step lands, not before: the crate list
 gains `crates/ns-memory`, the one crate with `unsafe`, and "the crate forbids
-unsafe code" names `ns-runtime` (road step 1); "An image is untrusted input"
+unsafe code" names `ns-runtime` (road step 1, done); "An image is untrusted input"
 takes new amplification figures for the eight-byte value (road step 2) and
 for variably sized objects (road step 3), with the decoder's first pass
 checking each record's declared size against the bytes remaining; the bound
@@ -1790,13 +1816,13 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   over it is safe again** (decided with the user on 2026-09-21), so an option is
   not dismissed for needing `unsafe` alone -- the argument has to be about what
   the option dismantles.
-- **The `unsafe` the object space needs will live in a crate of its own**,
-  `crates/ns-memory` (planned; decided with the user on 2026-09-29), and
+- **The `unsafe` the object space needs lives in a crate of its own**,
+  `crates/ns-memory` (decided with the user on 2026-09-29), and
   `ns-runtime` keeps `#![forbid(unsafe_code)]`: a crate boundary is one the compiler checks,
   where a crate-level `deny` with a scoped `allow` admits the next `allow`
   without anyone noticing. The executable memory and the entry into generated
   code of the JIT tiers are to go to the same crate. Its operating-system calls
-  are to come from `windows-sys` and `libc`, declaration-only crates, rather than
+  come from `windows-sys` and `libc`, declaration-only crates, rather than
   hand-written declarations whose constants differ per platform and would be
   wrong only on the platforms nobody here runs.
 - **The canonical symbol table is the system's only weak structure.** §5.1.6
@@ -1826,7 +1852,7 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   generations, `become:` and inline allocation are steps 1 to 6 of the road in
   [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM".
 - **One reservation per heap, contiguous and committed as it grows**
-  (planned), because
+  (built as `Reservation`; the heap's use of it is planned), because
   a handle is an offset from a fixed base, so the base cannot move and the
   space cannot be scattered; for Windows and POSIX from the start (decided
   with the user on 2026-09-29).

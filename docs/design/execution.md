@@ -5781,7 +5781,7 @@ Each step gets its own design when it comes up.
   speculation, the inline caches and the allocation fast path emitted into
   the code, values kept in registers, for x64 and arm64, since images are
   portable across architectures. Executable memory comes from `ns-memory`
-  ([memory.md](memory.md), "Planned: the memory layer").
+  ([memory.md](memory.md), "The memory layer").
 - **Step 9, an optimizing JIT with type feedback, inlining and deoptimization**,
   Strongtalk's and HotSpot's class: recompiling hot code along the receiver
   types the caches recorded, inlining the sends that make Newspeak slow when

@@ -13,13 +13,10 @@ An item's code references were checked against the tree on 2026-09-28.
 
 ## Next
 
-**The memory layer**, step 1 of the road below: a crate of its own,
-`crates/ns-memory`, that reserves one contiguous address range, commits and
-decommits it as the heap grows and shrinks, protects cleared ranges in a debug
-build, and lends each accessible committed range as a word slice, on Windows
-and POSIX.
-Its plan is to be written from [memory.md](design/memory.md), "Planned: the
-memory layer".
+**The eight-byte value**, step 2 of the road below. Its plan is to be written
+from [object-model.md](design/object-model.md), "Planned: an eight-byte
+value", and [core-library.md](design/core-library.md), "Planned: large
+integers".
 
 ## The road to a high-performance VM
 
@@ -31,10 +28,8 @@ road step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
 Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`)
 and `prior-art/newspeak-benchmarks`.
 
-- **Step 1, the memory layer.** `crates/ns-memory`, the one crate with
-  `unsafe`, over `windows-sys` and `libc`; `ns-runtime` keeps
-  `#![forbid(unsafe_code)]`. [memory.md](design/memory.md), "Planned: the
-  memory layer".
+- **Step 1, the memory layer -- built** (`crates/ns-memory`;
+  [memory.md](design/memory.md), "The memory layer").
 - **Step 2, the eight-byte value**, on today's arena: one tagged 64-bit word
   -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`, `true` and
   `false`, and handles -- with `LargeInteger` for §5.1.1's unbounded

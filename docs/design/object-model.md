@@ -1346,7 +1346,7 @@ step landing green on its own:
 
 1. **The memory layer** -- a crate of its own that reserves one contiguous
    address range and commits it on demand ([memory.md](memory.md),
-   "Planned: the memory layer").
+   "The memory layer").
 2. **An eight-byte value**, on today's arena, with `LargeInteger`
    ("Planned: an eight-byte value" below; [core-library.md](core-library.md),
    "Planned: large integers").

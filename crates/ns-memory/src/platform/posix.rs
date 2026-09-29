@@ -3,7 +3,7 @@
 //! gives the pages back on Linux and macOS alike, where `madvise` with
 //! `MADV_DONTNEED` does not on macOS; it is mapped without `MAP_NORESERVE`, so
 //! a later commit is accounted where the kernel accounts commit
-//! (docs/design/memory.md, "Planned: the memory layer").
+//! (docs/design/memory.md, "The memory layer").
 
 use std::ptr::NonNull;
 

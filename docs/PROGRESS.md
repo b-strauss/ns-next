@@ -15,12 +15,9 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: step 1 of the road to a high-performance VM, the memory layer**
-(`crates/ns-memory`). Its plan is to be written from
-[memory.md](design/memory.md), "Planned: the memory layer". Step 2, the
-eight-byte value with `LargeInteger`, follows
-([object-model.md](design/object-model.md), "Planned: an eight-byte
-value"). The whole road, decided with the user on 2026-09-29, is in
+**Next: step 2 of the road to a high-performance VM, the eight-byte value
+with `LargeInteger`** ([object-model.md](design/object-model.md), "Planned: an
+eight-byte value"). The whole road, decided with the user on 2026-09-29, is in
 [OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
@@ -3479,3 +3476,18 @@ delivered where it is decided: tried and halted"): inlined all the way to the
 register write it made `bench_loop.ns` 17% faster but doubled `vm::run`, and
 it showed that any 16-byte `Value` passing through memory stalls. The user
 halted it in favour of the eight-byte value ([OPEN-WORK.md](OPEN-WORK.md)).
+
+## The memory layer (2026-09-29)
+
+Plan: [ns-next-memory-layer](superpowers/plans/2026-09-29-0327-ns-next-memory-layer.md).
+
+Road step 1 ([OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance
+VM"): `crates/ns-memory` reserves one contiguous address range, commits,
+decommits and protects page ranges, and lends committed read-write ranges as
+word slices, on Windows through `windows-sys` and on POSIX through `libc`
+([memory.md](design/memory.md), "The memory layer"). It is the only crate with
+`unsafe`, and every `unsafe` block states why it holds; `ns-runtime` keeps
+`#![forbid(unsafe_code)]`. A failure the operating system reports, and a
+malformed range, is a value, never a panic. Nothing uses the crate yet: road
+step 3, the object space, is its first user. The POSIX half is checked with
+clippy for Linux and macOS targets, since nothing here runs either.

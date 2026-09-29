@@ -2,7 +2,7 @@
 //!
 //! One `Reservation` is one contiguous address range, reserved once and
 //! committed as a space grows, so that a handle can be a byte offset from a
-//! fixed base (docs/design/memory.md, "Planned: the memory layer"). This is
+//! fixed base (docs/design/memory.md, "The memory layer"). This is
 //! the only crate in the workspace with `unsafe` code: every operating-system
 //! call is in `platform`, and everything this crate hands out is safe to use.
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -38,7 +38,7 @@ pub enum Operation {
 
 /// Why an operation on a reservation did not happen. Nothing here panics:
 /// running out of memory is something the heap reports, not a crash
-/// (docs/design/memory.md, "Planned: the memory layer").
+/// (docs/design/memory.md, "The memory layer").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
     /// The range is empty, not aligned as the operation requires, or not
