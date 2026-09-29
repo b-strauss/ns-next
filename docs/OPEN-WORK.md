@@ -230,9 +230,10 @@ program wrongly at exit status 0**:
 - A string literal keeps its source's code points instead of their Unicode
   normal form C (§5.1.5), so a decomposed and a precomposed `é` differ.
   Nothing in the workspace normalizes; closing it means normalizing where
-  source text becomes a string. It is not on the road yet, and it needs
-  Unicode normalization data, from a crate or from generated tables -- a
-  dependency decision that is the user's. [frontend.md](design/frontend.md), "A string
+  source text becomes a string. It is not on the road yet. The Unicode
+  normalization data is to come from the `unicode-normalization` crate
+  (noted with the user on 2026-09-29 for when it is taken up), which as a new
+  dependency is confirmed then. [frontend.md](design/frontend.md), "A string
   literal is not normalized to NFC".
 
 The others: `i64` integers (§5.1.1); no character literals and no
