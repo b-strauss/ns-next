@@ -41,11 +41,6 @@ pub enum DecodeError {
     UnknownHeaderFlags {
         flags: u8,
     },
-    /// The header sets two flags that cannot both hold: a stateless artifact
-    /// has no graph, and a start image is its graph's one root.
-    ContradictoryHeaderFlags {
-        flags: u8,
-    },
     /// A start image names its application by being the graph's one root; any
     /// other count leaves the host nothing, or nothing certain, to start.
     StartedImageRootCount {
@@ -391,10 +386,9 @@ pub enum DecodeError {
     /// answer the mis-classed object, so the image is refused instead of
     /// trusted (`docs/design/image-format.md`, "Verification").
     SymbolOfWrongClass(String),
-    /// Bytes remain after the last section. Refused rather than ignored: with
-    /// two artifact shapes in one format, silently accepting a tail means a
-    /// binary with a graph appended -- or an image truncated to a binary and
-    /// then padded -- loads as something its author did not write.
+    /// Bytes remain after the last section. Refused rather than ignored:
+    /// silently accepting a tail means a padded image loads as something its
+    /// author did not write.
     TrailingBytes {
         count: usize,
     },
@@ -453,10 +447,6 @@ impl std::fmt::Display for DecodeError {
             DecodeError::StartedImageRootCount { count } => write!(
                 f,
                 "a started image has exactly one root, the application, but this one has {count}"
-            ),
-            DecodeError::ContradictoryHeaderFlags { flags } => write!(
-                f,
-                "image header sets flags {flags:#04x}, which contradict each other: a stateless artifact has no graph to start"
             ),
             DecodeError::ProgramCounterOutOfRange { program_counter, instructions } => write!(
                 f,
@@ -823,8 +813,6 @@ pub struct Header {
     /// it is carried so a loaded world can be shown, and eventually exported,
     /// as `.ns`.
     pub has_source: bool,
-    /// No graph section follows; the file ends after the entry field.
-    pub stateless: bool,
     /// The graph's one root is an application to start (`FLAG_START`).
     pub start: bool,
 }
@@ -848,30 +836,10 @@ pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
     if flags & !super::encode::KNOWN_FLAGS != 0 {
         return Err(DecodeError::UnknownHeaderFlags { flags });
     }
-    // A stateless artifact carries no graph, and a start image is defined by
-    // the root in its graph.
-    if flags & super::encode::FLAG_STATELESS != 0 && flags & super::encode::FLAG_START != 0 {
-        return Err(DecodeError::ContradictoryHeaderFlags { flags });
-    }
     Ok(Header {
         has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
-        stateless: flags & super::encode::FLAG_STATELESS != 0,
         start: flags & super::encode::FLAG_START != 0,
     })
-}
-
-/// The inverse of `encode::encode_entry`: a presence byte and, when set, the
-/// symbol id it names, resolved against the image's own symbol table so an
-/// out-of-range id is a `DecodeError` rather than an index panic.
-pub fn decode_entry(
-    reader: &mut Reader,
-    symbols: &symbols::Table,
-) -> Result<Option<Symbol>, DecodeError> {
-    match reader.read_u8()? {
-        0 => Ok(None),
-        1 => Ok(Some(symbols.get(reader.read_u32()?)?)),
-        tag => Err(DecodeError::InvalidTag { what: "entry", tag }),
-    }
 }
 
 /// The inverse of `encode::encode_source_origin`: the provenance a loaded
@@ -2208,21 +2176,6 @@ pub struct DecodedGraph<'gc> {
     /// no root reaches can still be some closure's captured frame.
     pub objects: Vec<ObjectReference<'gc>>,
     pub frames: Vec<FrameReference<'gc>>,
-}
-
-impl<'gc> DecodedGraph<'gc> {
-    /// What a stateless binary carries in place of a graph section: nothing.
-    /// `load` skips `verify_graph` on this value rather than calling it --
-    /// an empty frame list would make `verify_graph` a no-op anyway, but
-    /// skipping it says directly that there is nothing to verify.
-    pub fn empty() -> Self {
-        DecodedGraph {
-            roots: Vec::new(),
-            max_identity_hash: 0,
-            objects: Vec::new(),
-            frames: Vec::new(),
-        }
-    }
 }
 
 /// The two placeholder-allocated tables, indexed by the ids in the stream.

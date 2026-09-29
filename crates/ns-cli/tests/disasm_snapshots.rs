@@ -169,15 +169,15 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 /// was built from prints. The artifact carries the same compiled bodies; if
 /// these ever differ, the image's code table is not what the compiler emitted.
 #[test]
-fn disasm_of_a_binary_matches_disasm_of_its_source() {
+fn disasm_of_an_image_matches_disasm_of_its_source() {
     let source = common::golden("language/arithmetic");
     let directory = ScratchDirectory::new("disasm-bin");
-    let binary = directory.join("app.nsi");
+    let image = directory.join("app.nsi");
 
     let build = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("build")
         .arg(&source)
-        .arg(&binary)
+        .arg(&image)
         .output()
         .expect("run ns-next build");
     assert!(
@@ -186,21 +186,21 @@ fn disasm_of_a_binary_matches_disasm_of_its_source() {
         String::from_utf8_lossy(&build.stderr)
     );
 
-    let from_binary = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let from_image = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
-        .arg(&binary)
+        .arg(&image)
         .arg("main:args:")
         .output()
-        .expect("run ns-next disasm on a binary");
+        .expect("run ns-next disasm on an image");
     assert!(
-        from_binary.status.success(),
+        from_image.status.success(),
         "{}",
-        String::from_utf8_lossy(&from_binary.stderr)
+        String::from_utf8_lossy(&from_image.stderr)
     );
 
     let from_source = disasm("language/arithmetic", &["main:args:"]);
     assert_eq!(
-        String::from_utf8_lossy(&from_binary.stdout).replace("\r\n", "\n"),
+        String::from_utf8_lossy(&from_image.stdout).replace("\r\n", "\n"),
         from_source
     );
 }
@@ -261,12 +261,12 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     });
 
     let directory = ScratchDirectory::new("disasm-no-init");
-    let binary = directory.join("bare.nsi");
-    std::fs::write(&binary, bytes).expect("write artifact");
+    let image = directory.join("bare.nsi");
+    std::fs::write(&image, bytes).expect("write artifact");
 
     let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
-        .arg(&binary)
+        .arg(&image)
         .arg("--initializer")
         .output()
         .expect("run ns-next disasm");
@@ -282,7 +282,7 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     // is refused.
     let method = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
-        .arg(&binary)
+        .arg(&image)
         .arg("main:args:")
         .output()
         .expect("run ns-next disasm");

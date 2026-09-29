@@ -419,9 +419,9 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     // reference lowering compiles it to a `SendPublic`, which the mutation
     // below turns into a `SendInlinable` -- the two share one operand layout.
     let (mut interpreter, class) = load(&source, Lowering::Reference);
-    // Nothing has run in this interpreter, so the class read from its root
-    // is current, and building the artifact runs nothing either -- both
-    // happen in one entry.
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    // Packaging runs nothing, so the class and the instance read from their
+    // roots are current for the whole entry.
     let mut bytes = interpreter
         .enter(|mutator| {
             let Value::Object(class) = mutator.fetch(&class) else {
@@ -433,9 +433,9 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
                 origin: &origin,
                 source: None,
             }];
-            image::build(mutator.heap(), &modules, Symbol::intern("main"))
+            image::package(mutator, &modules, mutator.fetch(&application))
         })
-        .expect("build");
+        .expect("package");
     let report = image::inspect::inspect(&bytes).expect("inspect");
     let id = report
         .symbols
@@ -479,12 +479,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     );
 
     let mut loaded = image::load(&bytes).expect("the mutated artifact decodes");
-    let instance = expect_ok(
-        loaded
-            .interpreter
-            .instantiate(&loaded.modules[0].class, &[]),
-        "instantiate",
-    );
+    let instance = loaded.roots[0].clone();
     expect_too_deep(
         loaded
             .interpreter

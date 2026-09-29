@@ -37,14 +37,14 @@ fn build_writes_a_started_image_that_inspect_recognizes() {
     let (ok, listing, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
     assert!(ok, "{error}");
     assert!(listing.contains("start: yes"), "{listing}");
-    assert!(listing.contains("stateless: no"), "{listing}");
+    assert!(!listing.contains("stateless"), "{listing}");
     assert!(listing.contains("main:args:"), "{listing}");
     // The application travels as the graph's one root.
     assert!(listing.contains("graph"), "{listing}");
 }
 
 #[test]
-fn a_built_binary_runs_exactly_as_its_source_does() {
+fn a_built_image_runs_exactly_as_its_source_does() {
     let (ok, out, error) =
         assert_build_load_matches_run("equivalence", &golden("language/arithmetic"));
     assert!(ok, "{error}");
@@ -69,7 +69,7 @@ ns_runtime::for_each_lowering! {
     /// so the loaded world builds every applied level itself and initializes
     /// it with its own clause's message, evaluated with the applying class's
     /// factory argument.
-    fn a_built_binary_applying_mixins_runs_exactly_as_its_source_does(lowering) {
+    fn a_built_image_applying_mixins_runs_exactly_as_its_source_does(lowering) {
         let lowering = cli_lowering_flag(lowering);
         let directory = ScratchDirectory::new("mixin-application");
         let source = directory.join("applying.ns");
@@ -263,7 +263,7 @@ fn a_built_image_is_source_free_unless_debug_source_is_asked_for() {
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail
     // this too. Lines under 12 characters are structural punctuation --
-    // `)`, `) : ()`, `Newspeak3` -- which a binary stream reproduces by
+    // `)`, `) : ()`, `Newspeak3` -- which an image's byte stream reproduces by
     // chance, so checking them would report leaks that are not leaks.
     // See `no_line_of_the_source_survives_in_a_source_free_image` in
     // `ns-runtime`'s image tests for the same property with a module built

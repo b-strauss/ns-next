@@ -62,8 +62,8 @@ fn has_branch(artifact: &std::path::Path) -> bool {
 fn build_compiles_with_the_lowering_it_is_given() {
     let directory = ScratchDirectory::new("lowering-build");
     let source = golden("language/while_loop");
-    let optimized = directory.join("optimized.nsb");
-    let reference = directory.join("reference.nsb");
+    let optimized = directory.join("optimized.nsi");
+    let reference = directory.join("reference.nsi");
     let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), optimized.as_os_str()]);
     assert!(ok, "{error}");
     let (ok, _, error) = ns_next(&[
@@ -86,7 +86,7 @@ fn build_compiles_with_the_lowering_it_is_given() {
 #[test]
 fn disasm_refuses_a_lowering_for_an_artifact() {
     let directory = ScratchDirectory::new("lowering-artifact");
-    let out = directory.join("app.nsb");
+    let out = directory.join("app.nsi");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         golden("language/while_loop").as_os_str(),

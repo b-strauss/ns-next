@@ -6,9 +6,8 @@ use std::process::ExitCode;
 /// `ns-next load`: decode an image `build` wrote and start it -- send its
 /// one root `main: platform args:` with this interpreter's platform, which
 /// is the first the application ever sees. An image that was not packaged
-/// for a start is refused, since there is nothing to start: an
-/// `image::snapshot` a host wrote, and, until the format retires it, a
-/// stateless binary. A malformed image is a message, never a panic.
+/// for a start (an `image::snapshot` a host wrote) is refused, since there
+/// is nothing to start. A malformed image is a message, never a panic.
 pub(crate) fn execute(image: &Path, print_source: bool, program_arguments: &[String]) -> ExitCode {
     let bytes = match std::fs::read(image) {
         Ok(bytes) => bytes,

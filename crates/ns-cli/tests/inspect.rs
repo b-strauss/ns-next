@@ -18,7 +18,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
     assert!(ok, "{error}");
 
     assert!(out.contains("format version 1"), "{out}");
-    assert!(out.contains("stateless: no"), "{out}");
+    assert!(!out.contains("stateless"), "{out}");
     assert!(out.contains("start: yes"), "{out}");
     assert!(out.contains("modules: 1"), "{out}");
     assert!(out.contains("source absent"), "{out}");
@@ -28,13 +28,12 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
         "code",
         "mixins",
         "modules",
-        "entry",
         "platform paths",
         "graph",
     ] {
         assert!(out.contains(section), "missing section `{section}`:\n{out}");
     }
-    // The module's own entry selector is in the symbol table because every
+    // The application's entry selector is in the symbol table because every
     // send instruction names its selector.
     assert!(out.contains("main:args:"), "{out}");
 }
@@ -77,7 +76,7 @@ fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
 #[test]
 fn inspect_names_every_body_in_the_code_table() {
     let directory = ScratchDirectory::new("code-table");
-    let out = directory.join("app.nsb");
+    let out = directory.join("app.nsi");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         golden("language/arithmetic").as_os_str(),
@@ -109,7 +108,7 @@ fn inspect_names_every_body_in_the_code_table() {
 #[test]
 fn inspect_full_renders_every_mixin_and_every_body() {
     let directory = ScratchDirectory::new("full");
-    let out = directory.join("app.nsb");
+    let out = directory.join("app.nsi");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         golden("language/arithmetic").as_os_str(),

@@ -3,7 +3,7 @@
 //!
 //! This exists because an artifact is otherwise opaque. `disasm` shows one
 //! compiled body; nothing else shows the file. Two things need that. A failed
-//! prefix-equality check between a `build` and a `snapshot` of the same source
+//! prefix-equality check between two images of the same source
 //! reports a differing byte offset, which says nothing on its own and
 //! everything once the offset is attributed to a section. And the claim that
 //! the platform is cut out of an artifact -- the reason an image is kilobytes
@@ -43,7 +43,6 @@ pub struct ModuleReport {
 
 pub struct Report {
     pub format_version: u32,
-    pub stateless: bool,
     pub start: bool,
     /// Every module the artifact carries, in module order.
     pub modules: Vec<ModuleReport>,
@@ -63,17 +62,15 @@ pub struct Report {
     /// `render_full`.
     pub bodies: Vec<String>,
     /// The platform paths the graph names objects by, in section order, each
-    /// its members separated by spaces. Empty for a stateless binary.
+    /// its members separated by spaces.
     pub platform_paths: Vec<String>,
-    /// The object graph, read record by record rather than rebuilt. Empty for
-    /// a stateless binary, which carries none.
+    /// The object graph, read record by record rather than rebuilt.
     pub graph_objects: Vec<String>,
     pub graph_frames: Vec<String>,
     pub graph_roots: Vec<String>,
     /// The identity hashes the graph section records for the objects it
     /// names by tag. Rendered only by `render_full`.
     pub graph_tag_named_hashes: Vec<String>,
-    pub entry: Option<String>,
     pub total_length: usize,
 }
 
@@ -680,61 +677,35 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     });
     offset = reader.position();
 
-    let entry =
-        decode::decode_entry(&mut reader, &symbol_table).map_err(|error| error.to_string())?;
+    let paths = platform_paths::decode_section(&mut reader, &symbol_table)
+        .map_err(|error| error.to_string())?;
     sections.push(Section {
-        name: "entry",
+        name: "platform paths",
         start: offset,
         end: reader.position(),
-        detail: match &entry {
-            Some(symbol) => symbol.to_string(),
-            None => "none".to_string(),
-        },
+        detail: format!("{} paths", paths.len()),
     });
     offset = reader.position();
-
-    // A stateless artifact ends here: it carries code and structure but no
-    // object graph, so reading one past the entry field would run off the
-    // end of the file.
-    let mut graph = GraphView {
-        objects: Vec::new(),
-        frames: Vec::new(),
-        roots: Vec::new(),
-        tag_named: Vec::new(),
-    };
-    let mut paths = Vec::new();
-    if !header.stateless {
-        paths = platform_paths::decode_section(&mut reader, &symbol_table)
-            .map_err(|error| error.to_string())?;
-        sections.push(Section {
-            name: "platform paths",
-            start: offset,
-            end: reader.position(),
-            detail: format!("{} paths", paths.len()),
-        });
-        offset = reader.position();
-        graph =
-            walk_graph(&mut reader, &symbol_table, &paths).map_err(|error| error.to_string())?;
-        sections.push(Section {
-            name: "graph",
-            start: offset,
-            // The walk consumes the section record by record, so this is the
-            // real end rather than a stand-in. That it lands on the file.s
-            // last byte is what `graph_walk_consumes_the_whole_section` pins.
-            end: reader.position(),
-            detail: format!(
-                "{} objects, {} frames, {} roots, {} tag-named hashes",
-                graph.objects.len(),
-                graph.frames.len(),
-                graph.roots.len(),
-                graph.tag_named.len()
-            ),
-        });
-    }
+    let graph =
+        walk_graph(&mut reader, &symbol_table, &paths).map_err(|error| error.to_string())?;
+    sections.push(Section {
+        name: "graph",
+        start: offset,
+        // The walk consumes the section record by record, so this is the
+        // real end rather than a stand-in. That it lands on the file.s
+        // last byte is what `graph_walk_consumes_the_whole_section` pins.
+        end: reader.position(),
+        detail: format!(
+            "{} objects, {} frames, {} roots, {} tag-named hashes",
+            graph.objects.len(),
+            graph.frames.len(),
+            graph.roots.len(),
+            graph.tag_named.len()
+        ),
+    });
 
     Ok(Report {
         format_version: crate::image::encode::FORMAT_VERSION,
-        stateless: header.stateless,
         start: header.start,
         modules: module_reports,
         sections,
@@ -751,7 +722,6 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         graph_frames: graph.frames,
         graph_roots: graph.roots,
         graph_tag_named_hashes: graph.tag_named,
-        entry: entry.map(|selector| selector.to_string()),
         total_length: bytes.len(),
     })
 }
@@ -759,11 +729,6 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 pub fn render(report: &Report) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "format version {}", report.format_version);
-    let _ = writeln!(
-        out,
-        "stateless: {}",
-        if report.stateless { "yes" } else { "no" }
-    );
     let _ = writeln!(out, "start: {}", if report.start { "yes" } else { "no" });
     let _ = writeln!(out, "modules: {}", report.modules.len());
     for (index, module) in report.modules.iter().enumerate() {
@@ -840,9 +805,8 @@ pub fn render_full(report: &Report) -> String {
         let _ = writeln!(out, "  {index:>4} {mixin}");
     }
 
-    // Only an image has one. A binary's whole point is that it does not, so
-    // printing an empty heading there would invite the reader to look for
-    // state that is deliberately absent.
+    // An image with no graph records prints no empty heading that would
+    // invite the reader to look for state that is not there.
     if !report.graph_objects.is_empty()
         || !report.graph_frames.is_empty()
         || !report.graph_tag_named_hashes.is_empty()

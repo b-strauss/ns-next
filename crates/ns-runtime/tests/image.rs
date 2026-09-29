@@ -287,20 +287,15 @@ fn snapshot_one<'gc>(
     image::snapshot(mutator, &modules, platform, roots)
 }
 
-/// `image::build` of the one module `class`, `source` its debug source.
-fn build_one<'gc>(
-    heap: &Heap<'gc>,
+/// `image::snapshot` of the one module `class` with no roots: code and
+/// structure, and a graph section holding nothing.
+fn module_only_image<'gc>(
+    mutator: &Mutator<'gc>,
     source: Option<&str>,
     origin: &SourceOrigin,
     class: ClassReference<'gc>,
-    entry: Symbol,
 ) -> Result<Vec<u8>, String> {
-    let modules = [image::ModuleSource {
-        class,
-        origin,
-        source,
-    }];
-    image::build(heap, &modules, entry)
+    snapshot_one(mutator, source, origin, class, &Value::Nil, &[])
 }
 
 /// The class object `root` holds, for the heap accessors and the encoder,
@@ -1500,14 +1495,7 @@ fn a_root_superclass_naming_metaclass_is_refused() {
     let origin = Origin::File(PathBuf::from("t.ns"));
     let mut binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build")
+        module_only_image(mutator, None, &origin, class).expect("snapshot")
     });
 
     let superclass_tag_at = {
@@ -1925,14 +1913,8 @@ ns_runtime::for_each_lowering! {
                 levels,
                 "{lowering:?}: every source level is a block in the code table"
             );
-            build_one(
-                mutator.heap(),
-                None,
-                &Origin::File(PathBuf::from("t.ns")),
-                class,
-                Symbol::intern("nest"),
-            )
-            .expect("build")
+            module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class)
+            .expect("snapshot")
         });
         let mut loaded = match image::load(&bytes) {
             Ok(loaded) => loaded,
@@ -3783,14 +3765,7 @@ fn a_lazy_slot_without_its_getter_is_refused() {
     let origin = Origin::File(PathBuf::from("t.ns"));
     let mut binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build")
+        module_only_image(mutator, None, &origin, class).expect("snapshot")
     });
     assert!(image::load(&binary).is_ok(), "the fixture itself must load");
 
@@ -3965,29 +3940,32 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let platform = interpreter.platform();
-    let bytes = interpreter.enter(|mutator| {
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
-        snapshot_one(
-            mutator,
-            Some(source),
-            &Origin::File(PathBuf::from("t.ns")),
+        let modules = [image::ModuleSource {
             class,
-            &platform,
-            &[instance],
+            origin: &origin,
+            source: Some(source),
+        }];
+        (
+            image::snapshot(mutator, &modules, &platform, &[instance]).expect("snapshot"),
+            image::package(mutator, &modules, instance).expect("package"),
         )
-        .expect("snapshot")
     });
-    for cut in 0..bytes.len() {
-        // Never `{:?}` the `Ok` side: `LoadedImage` has no `Debug` impl at
-        // all (its `Interpreter` field has none either).
-        assert!(
-            image::load(&bytes[..cut]).is_err(),
-            "a truncated image must never load"
-        );
+    for bytes in [snapshot, packaged, packaged_application()] {
+        for cut in 0..bytes.len() {
+            // Never `{:?}` the `Ok` side: `LoadedImage` has no `Debug` impl at
+            // all (its `Interpreter` field has none either).
+            assert!(
+                image::load(&bytes[..cut]).is_err(),
+                "a truncated image must never load"
+            );
+        }
+        image::load(&bytes).expect("the untruncated image still loads");
     }
-    image::load(&bytes).expect("the untruncated image still loads");
 }
 
 // ---------------------------------------------------------------------------
@@ -6596,7 +6574,7 @@ fn a_root_section_clause_is_checked_against_its_own_modules_row() {
                     source: None,
                 },
             ];
-            image::build(mutator.heap(), &modules, Symbol::intern("main:args:"))
+            image::snapshot(mutator, &modules, &Value::Nil, &[])
         })
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(image::load(&bytes).is_ok(), "the fixture itself must load");
@@ -8501,44 +8479,6 @@ fn regenerate_the_golden_fixture() {
 }
 
 #[test]
-fn the_entry_field_round_trips_present_and_absent() {
-    use ns_runtime::image::{decode, encode, symbols};
-
-    let mut symbol_builder = symbols::Builder::new();
-    let id = symbol_builder.intern("main:args:");
-    let mut writer = encode::Writer::new();
-    symbol_builder.write(&mut writer);
-    encode::encode_entry(&mut writer, Some(id));
-    encode::encode_entry(&mut writer, None);
-    let bytes = writer.into_bytes();
-
-    let mut reader = decode::Reader::new(&bytes);
-    let table = symbols::decode(&mut reader).expect("symbol table");
-    let present = decode::decode_entry(&mut reader, &table).expect("present entry");
-    let absent = decode::decode_entry(&mut reader, &table).expect("absent entry");
-
-    assert_eq!(
-        present.map(|selector| selector.to_string()).as_deref(),
-        Some("main:args:")
-    );
-    assert_eq!(absent, None);
-}
-
-#[test]
-fn an_out_of_range_entry_symbol_id_is_a_decode_error_not_a_panic() {
-    use ns_runtime::image::{decode, encode, symbols};
-
-    let mut writer = encode::Writer::new();
-    symbols::Builder::new().write(&mut writer);
-    encode::encode_entry(&mut writer, Some(9999));
-    let bytes = writer.into_bytes();
-
-    let mut reader = decode::Reader::new(&bytes);
-    let table = symbols::decode(&mut reader).expect("symbol table");
-    assert!(decode::decode_entry(&mut reader, &table).is_err());
-}
-
-#[test]
 fn an_unknown_header_flag_is_still_rejected_now_that_three_are_known() {
     // Bit 3 is not assigned. A flag this build does not implement means a
     // section it cannot see, so continuing would read the next field out of
@@ -8550,20 +8490,7 @@ fn an_unknown_header_flag_is_still_rejected_now_that_three_are_known() {
     assert!(ns_runtime::image::decode::read_header(&mut reader).is_err());
 }
 
-/// `image::build` (the stateless binary) and `image::snapshot` (the world
-/// snapshot) share one encoder for the sections that describe code and
-/// structure. This is the property that sharing is supposed to guarantee:
-/// built from the same compiled module, the two artifacts must agree byte
-/// for byte from `origin` through `root class`, and differ only from the
-/// entry field on -- present-and-mandatory for one, absent for the other.
-///
-/// The module declares `main:args:` itself, so the entry selector `build`
-/// interns is already in the symbol table by the time it does -- the mixin
-/// table names every method's selector, and `Builder::intern` dedupes by
-/// content. An entry selector absent from the module would still round-trip,
-/// but it would grow `build`'s symbol table past `snapshot`'s and the
-/// byte-equality assertion below would fail for a reason that has nothing to
-/// do with the refactor under test.
+/// A module with an application's `main:args:`, for the tests that need one.
 const ENTRY_SOURCE: &str = indoc! {"
     Newspeak3
     'T'
@@ -8573,153 +8500,12 @@ const ENTRY_SOURCE: &str = indoc! {"
     ) : ()
 "};
 
+/// `image::snapshot` is a library API: a caller can hand it an empty `roots`
+/// slice. The image loads with no roots and is not started, so `ns-next load`
+/// refuses it rather than instantiating an unrelated instance in place of the
+/// one this image deliberately carries none of.
 #[test]
-fn a_built_binary_and_a_snapshot_of_the_same_source_agree_through_the_module_section() {
-    // Build both from one compiled module so the only difference is the
-    // artifact shape, then compare through the inspector rather than by raw
-    // offset: a raw offset says two files differ, a section says which one.
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let platform = interpreter.platform();
-    let origin = Origin::File(PathBuf::from("t.ns"));
-
-    let (binary, image) = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let binary = build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build");
-        let platform = mutator.fetch(&platform);
-        let image = snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
-        (binary, image)
-    });
-
-    let binary_report = image::inspect::inspect(&binary).expect("inspect binary");
-    let image_report = image::inspect::inspect(&image).expect("inspect image");
-
-    let up_to = |report: &image::inspect::Report| {
-        report
-            .sections
-            .iter()
-            .take_while(|section| section.name != "entry")
-            .map(|section| (section.name, section.start, section.end))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        up_to(&binary_report),
-        up_to(&image_report),
-        "the describing sections must line up"
-    );
-
-    // From `symbols`, not from byte 0: the header's flags byte necessarily
-    // differs (`FLAG_STATELESS` is only ever set on `binary`), and that
-    // difference is correct, not a defect the refactor should paper over.
-    let start = binary_report
-        .sections
-        .iter()
-        .find(|section| section.name == "symbols")
-        .expect("symbols section")
-        .start;
-    let end = binary_report
-        .sections
-        .iter()
-        .find(|section| section.name == "modules")
-        .expect("modules section")
-        .end;
-    assert_eq!(
-        &binary[start..end],
-        &image[start..end],
-        "describing bytes must be equal"
-    );
-
-    assert!(binary_report.stateless);
-    assert!(!image_report.stateless);
-    assert_eq!(binary_report.entry.as_deref(), Some("main:args:"));
-}
-
-/// `image::build` itself does not require the entry selector to already be
-/// declared in the module -- validating that a selector exists (and has the
-/// right arity) is `ns-next build`'s job, not this encoder's. An entry the
-/// module never declares is exactly the case that breaks byte-identity
-/// against a `snapshot` of the same source (see `Describing`'s doc comment:
-/// interning it grows `build`'s symbol table past what the describing
-/// sections alone produced). This test is what keeps that distinction from
-/// blurring: the coupling affects only whether the two artifacts *agree*,
-/// never whether `build` on its own is *correct* -- so nobody should "fix"
-/// `build` later to chase an identity this format never promised here.
-#[test]
-fn build_accepts_an_entry_selector_the_module_never_declares() {
-    let (mut interpreter, class) = load(TRIVIAL_MODULE);
-    let origin = Origin::File(PathBuf::from("t.ns"));
-
-    let binary = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("neverDeclared"),
-        )
-        .expect("build does not itself validate the entry selector against the module")
-    });
-
-    let report = image::inspect::inspect(&binary).expect("inspect");
-    assert!(report.stateless);
-    assert_eq!(report.entry.as_deref(), Some("neverDeclared"));
-}
-
-/// `load` on a binary must hand back an empty `roots` (a binary carries no
-/// instance to resume) and the recorded entry -- the two things a later
-/// `run` needs to instantiate `root_class` and start it, since there is no
-/// graph section to read a starting point out of.
-#[test]
-fn a_binary_loads_with_no_roots_and_its_entry() {
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let origin = Origin::File(PathBuf::from("t.ns"));
-
-    let binary = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build")
-    });
-
-    let mut loaded = image::load(&binary).expect("load a binary");
-    assert!(loaded.stateless);
-    assert!(loaded.roots.is_empty(), "a binary carries no instance");
-    assert_eq!(
-        loaded.entry.map(|selector| selector.to_string()).as_deref(),
-        Some("main:args:")
-    );
-    loaded.interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &loaded.modules[0].class);
-        assert!(
-            !root_mixin_of(mutator.heap(), root_class).methods.is_empty(),
-            "the binary's methods must be rebuilt, each carrying its body"
-        );
-    });
-}
-
-/// `image::snapshot` is a library API: a caller can hand it an empty
-/// `roots` slice and still get back a *stateful* image (`header.stateless`
-/// unset), not a binary -- only `image::build` sets that flag. `load` must
-/// tell the two apart by the decoded flag, not by `roots.is_empty()`, since
-/// that observed shape is the same for both: a stateful image with no root
-/// values must still report itself as stateful, so a caller (`ns-next
-/// load`) does not mistake it for a binary and instantiate a fresh,
-/// unrelated instance in place of the one this artifact deliberately
-/// carried none of.
-#[test]
-fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
+fn a_snapshot_with_empty_roots_loads_with_no_roots_and_is_not_started() {
     let (mut interpreter, class) = load(ENTRY_SOURCE);
     let platform = interpreter.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
@@ -8730,204 +8516,9 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
         snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
     });
 
-    let loaded = image::load(&image).expect("load a stateful image with no roots");
-    assert!(
-        !loaded.stateless,
-        "a snapshot, even with an empty roots slice, is not a binary"
-    );
+    let loaded = image::load(&image).expect("load an image with no roots");
     assert!(loaded.roots.is_empty());
-    assert!(
-        loaded.entry.is_none(),
-        "snapshot never records an entry selector"
-    );
-}
-
-/// A binary that cannot say how it starts is not a deployment artifact, and
-/// accepting one would push the failure to a later, less obvious place --
-/// wherever the caller eventually looks for something to send. `load`
-/// refuses it up front instead.
-#[test]
-fn a_stateless_artifact_without_an_entry_is_refused() {
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let origin = Origin::File(PathBuf::from("t.ns"));
-
-    let mut bytes = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build")
-    });
-
-    // The entry field is the last thing in a binary, so truncating at its
-    // section start and writing a bare `0` (absent) byte in its place turns
-    // a valid binary into one with no entry, without hand-building a header.
-    let entry_start = image::inspect::inspect(&bytes)
-        .expect("inspect")
-        .sections
-        .iter()
-        .find(|section| section.name == "entry")
-        .expect("entry section")
-        .start;
-    bytes.truncate(entry_start);
-    bytes.push(0);
-
-    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has
-    // no `Debug` impl, so neither type has one -- `expect_err` requires
-    // `T: Debug` on the `Ok` side.
-    let error = match image::load(&bytes) {
-        Ok(_) => panic!("a binary must carry an entry"),
-        Err(error) => error,
-    };
-    assert!(error.contains("entry"), "unexpected error: {error}");
-}
-
-/// The stateless binary is untrusted input exactly like the snapshot image
-/// is -- no fixture is a binary that a fuzzer or a half-written file
-/// produced, so this sweep is the only thing standing between a truncated
-/// binary and a panic. Mirrors
-/// `every_truncation_of_an_image_is_reported_rather_than_panicking`, the
-/// existing model for the image shape.
-#[test]
-fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let origin = Origin::File(PathBuf::from("t.ns"));
-
-    let binary = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build")
-    });
-
-    for cut in 0..binary.len() {
-        // `is_err()`, not a message check, is deliberate here and only here:
-        // the failure mode varies by cut (a truncated header, a truncated
-        // symbol table, a truncated entry field, ...) and the point of this
-        // sweep is that every one of those is a decode error rather than a
-        // panic, not that they share one message. Never `{:?}` the `Ok`
-        // side either: `LoadedImage` carries an `Interpreter`, which has no
-        // `Debug` impl, so neither type has one.
-        assert!(
-            image::load(&binary[..cut]).is_err(),
-            "a binary truncated to {cut} bytes must be refused, not panic"
-        );
-    }
-    image::load(&binary).expect("the untruncated binary still loads");
-}
-
-/// The shape the trailing-byte check exists for, stated as the case
-/// that motivated it rather than only as a generic tail: a binary followed
-/// by an unrelated image's graph section, byte for byte what a caller gets
-/// by concatenating the two artifact kinds instead of choosing one.
-///
-/// The message assertion is load-bearing, not decorative: this binary sets
-/// `FLAG_STATELESS` and carries a present entry selector, so the earlier
-/// "stateless artifact must record an entry" check does not fire and
-/// `load` reaches the graph-section boundary before failing. A test that
-/// only checked `is_err()` would keep passing if that boundary check were
-/// deleted and some *other* check downstream happened to reject the same
-/// bytes for an unrelated reason -- see the sibling test below, which
-/// guards against exactly that failure mode.
-#[test]
-fn a_binary_with_a_graph_appended_is_refused() {
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let platform = interpreter.platform();
-    let origin = Origin::File(PathBuf::from("t.ns"));
-
-    let (binary, image_bytes) = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let binary = build_one(
-            mutator.heap(),
-            None,
-            &origin,
-            class,
-            Symbol::intern("main:args:"),
-        )
-        .expect("build");
-        let platform = mutator.fetch(&platform);
-        let image_bytes =
-            snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
-        (binary, image_bytes)
-    });
-    // The append below only exercises anything if the image actually
-    // extends past where the binary ends -- a snapshot's graph section
-    // guarantees that here, but assert it so a future change to either
-    // artifact's layout fails loudly instead of silently appending nothing.
-    assert!(
-        image_bytes.len() > binary.len(),
-        "the snapshot must be longer than the binary for this append to test anything"
-    );
-
-    let mut frankenstein = binary.clone();
-    frankenstein.extend_from_slice(&image_bytes[binary.len().min(image_bytes.len())..]);
-
-    let error = match image::load(&frankenstein) {
-        Ok(_) => panic!("a binary with a graph section appended must be refused"),
-        Err(error) => error,
-    };
-    assert!(
-        error.contains("trailing byte"),
-        "expected the trailing-byte check to fire, got: {error}"
-    );
-}
-
-/// `image::snapshot` never records an entry selector -- it is not a
-/// startable artifact, so it has none to record (see the doc comment on
-/// `snapshot`'s `encode_entry(&mut w, None)` call). Flipping
-/// `FLAG_STATELESS` on such a snapshot therefore hits `load`'s
-/// `header.stateless && entry.is_none()` check and is refused for *that*
-/// reason -- well before the graph section, and the trailing bytes it
-/// would leave behind, are ever reached.
-///
-/// This is deliberately not a route to the trailing-byte check: a snapshot
-/// relabelled stateless fails on the missing entry first, so it never
-/// proves the trailing-byte check does anything. That path is already
-/// covered above by `a_binary_with_a_graph_appended_is_refused`, which uses
-/// a real binary (stateless flag set *and* an entry present) with a graph
-/// appended -- reproducing it here with a different input would add
-/// runtime without adding coverage. What this input does demonstrate, and
-/// what the assertion below checks, is that a relabelled snapshot is
-/// refused specifically because it has no entry to start from.
-#[test]
-fn a_relabelled_snapshot_is_refused_for_missing_entry() {
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let platform = interpreter.platform();
-    let origin = Origin::File(PathBuf::from("t.ns"));
-
-    let mut bytes = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
-        snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
-    });
-
-    // Locate the flag byte from the header layout instead of hard-coding an
-    // offset, so a header change fails this assertion loudly rather than
-    // quietly flipping the wrong byte.
-    let flag_offset = encode::MAGIC.len() + std::mem::size_of::<u32>();
-    assert_eq!(
-        flag_offset, 8,
-        "header layout: magic (4) + FORMAT_VERSION (4)"
-    );
-    bytes[flag_offset] |= encode::FLAG_STATELESS;
-
-    let error = match image::load(&bytes) {
-        Ok(_) => panic!("a snapshot relabelled stateless must still be refused"),
-        Err(error) => error,
-    };
-    assert!(
-        error.contains("entry"),
-        "expected the missing-entry check to fire, got: {error}"
-    );
+    assert!(!loaded.start);
 }
 
 /// `inspect` walks the graph section record by record rather than rebuilding
@@ -9964,25 +9555,20 @@ fn a_snapshot_of_a_world_with_applied_levels_loads_and_runs() {
     });
 }
 
-/// A stateless binary carries no class record at all, so the loaded world
-/// rebuilds every level from the row's clauses the first time the accessor
-/// runs the clause -- which answers one class per clause, and a decoded row
-/// that lost its clauses would refuse that answer.
+/// An image with no roots carries no class record for the module's levels, so
+/// the loaded world rebuilds every level from the row's clauses the first time
+/// the accessor runs the clause -- which answers one class per clause, and a
+/// decoded row that lost its clauses would refuse that answer. (The module
+/// needs the platform, so `package` would refuse an instance of it.)
 #[test]
-fn a_binary_of_a_module_applying_mixins_builds_its_levels_after_loading() {
+fn an_image_of_a_module_applying_mixins_builds_its_levels_after_loading() {
     let (mut interpreter, class) = load(MIXIN_APPLICATION_MODULE);
-    let binary = interpreter.enter(|mutator| {
+    let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        build_one(
-            mutator.heap(),
-            None,
-            &Origin::File(PathBuf::from("t.ns")),
-            class,
-            Symbol::intern("Applied"),
-        )
-        .expect("build")
+        module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class)
+            .expect("snapshot")
     });
-    let mut loaded = image::load(&binary).expect("load");
+    let mut loaded = image::load(&bytes).expect("load");
     let platform = loaded.interpreter.platform();
     let host = expect_ok(
         loaded
@@ -10012,23 +9598,23 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
     "};
     let (mut interpreter, class) = load(source);
     let platform = interpreter.platform();
-    let (binary, snapshot) = interpreter.enter(|mutator| {
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Root");
+    let (packaged, snapshot) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let origin = Origin::File(PathBuf::from("t.ns"));
-        let binary = build_one(
-            mutator.heap(),
-            None,
-            &origin,
+        let modules = [image::ModuleSource {
             class,
-            Symbol::intern("answer"),
-        )
-        .expect("build");
+            origin: &origin,
+            source: None,
+        }];
+        let packaged =
+            image::package(mutator, &modules, mutator.fetch(&application)).expect("package");
         let platform = mutator.fetch(&platform);
         let snapshot =
             snapshot_one(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
-        (binary, snapshot)
+        (packaged, snapshot)
     });
-    for bytes in [binary, snapshot] {
+    for bytes in [packaged, snapshot] {
         let mut loaded = image::load(&bytes).expect("load");
         loaded.interpreter.enter(|mutator| {
             let heap = mutator.heap();
@@ -11152,8 +10738,8 @@ fn a_root_section_the_root_rule_forbids_is_refused() {
     );
 }
 
-/// A root the rule forbids can never be instantiated, so neither artifact
-/// kind is written for it, and both say why with the instantiation's text.
+/// A root the rule forbids can never be instantiated, so no image is written
+/// for it, and both writers say why with the instantiation's text.
 #[test]
 fn the_encoder_refuses_a_root_the_rule_forbids() {
     let source = indoc! {"
@@ -11163,25 +10749,26 @@ fn the_encoder_refuses_a_root_the_rule_forbids() {
     "};
     let (mut interpreter, class) = load(source);
     let platform = interpreter.platform();
-    let (snapshot, build) = interpreter.enter(|mutator| {
+    let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let origin = Origin::File(PathBuf::from("t.ns"));
+        let modules = [image::ModuleSource {
+            class,
+            origin: &origin,
+            source: None,
+        }];
         (
             snapshot_one(mutator, None, &origin, class, &platform, &[]),
-            build_one(
-                mutator.heap(),
-                None,
-                &origin,
-                class,
-                Symbol::intern("main:args:"),
-            ),
+            // The refusal comes before the graph is looked at, so the
+            // application need not exist: no instance of this class can.
+            image::package(mutator, &modules, Value::Nil),
         )
     });
     let expected = "image encoding cannot serialize Root: a module's root class may inherit only \
                     Object or Value, or write Object <: Value, and its superclass clause names Array";
     assert_eq!(snapshot.err().as_deref(), Some(expected));
-    assert_eq!(build.err().as_deref(), Some(expected));
+    assert_eq!(packaged.err().as_deref(), Some(expected));
 }
 
 /// `MIXIN_APPLICATION_MODULE`'s `Applied`, edited by `edit`, reloaded as a
@@ -12315,6 +11902,23 @@ fn package_refuses_an_application_that_reaches_the_platform() {
 }
 
 #[test]
+fn a_retired_stateless_flag_is_refused_as_unknown() {
+    use ns_runtime::image::decode::{read_header, DecodeError, Reader};
+    use ns_runtime::image::encode::{write_header, Writer, RETIRED_HEADER_FLAGS};
+    let mut writer = Writer::new();
+    write_header(&mut writer, RETIRED_HEADER_FLAGS);
+    let bytes = writer.into_bytes();
+    let error = match read_header(&mut Reader::new(&bytes)) {
+        Ok(_) => panic!("the retired flag was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        DecodeError::UnknownHeaderFlags { flags: 2 }.to_string()
+    );
+}
+
+#[test]
 fn a_snapshot_is_not_started() {
     let bytes = snapshot_of(indoc! {"
         Newspeak3
@@ -12323,31 +11927,6 @@ fn a_snapshot_is_not_started() {
     "});
     let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
     assert!(!loaded.start);
-}
-
-#[test]
-fn a_stateless_start_header_is_contradictory() {
-    let mut writer = ns_runtime::image::encode::Writer::new();
-    ns_runtime::image::encode::write_header(&mut writer, 0b110);
-    let bytes = writer.into_bytes();
-    let mut reader = ns_runtime::image::decode::Reader::new(&bytes);
-    let error = match ns_runtime::image::decode::read_header(&mut reader) {
-        Ok(_) => panic!("contradictory flags were accepted"),
-        Err(error) => error.to_string(),
-    };
-    assert!(error.contains("contradict"), "{error}");
-}
-
-#[test]
-fn every_truncation_of_a_packaged_application_is_reported_rather_than_panicking() {
-    let bytes = packaged_application();
-    for cut in 0..bytes.len() {
-        assert!(
-            image::load(&bytes[..cut]).is_err(),
-            "a packaged application truncated to {cut} bytes must be refused, not panic"
-        );
-    }
-    image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
 }
 
 #[test]
