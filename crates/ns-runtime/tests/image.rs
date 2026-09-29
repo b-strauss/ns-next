@@ -6976,10 +6976,14 @@ fn two_modules_encode_as_two_trees_in_module_order() {
 fn a_body_the_code_table_does_not_hold_has_no_id() {
     let ids = encode::CodeIds::default();
     let orphan = Rc::new(every_instruction_once());
-    assert!(
-        ids.id_of(&orphan).is_err(),
-        "an unknown body must be an error, not a panic"
-    );
+    match ids.id_of(&orphan) {
+        Err(error) => assert_eq!(
+            error,
+            "image encoding cannot serialize a closure over code that no module the image \
+             carries compiled"
+        ),
+        Ok(id) => panic!("an unknown body must be an error, got id {id}"),
+    }
 }
 
 /// The factory selector must come from the table, not from

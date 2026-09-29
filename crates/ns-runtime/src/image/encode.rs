@@ -192,7 +192,8 @@ impl CodeIds {
             .get(&(Rc::as_ptr(code) as usize))
             .copied()
             .ok_or_else(|| {
-                "image encoding cannot serialize a closure over code that no module the                  image carries compiled"
+                "image encoding cannot serialize a closure over code that no module the \
+                 image carries compiled"
                     .to_string()
             })
     }
