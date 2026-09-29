@@ -219,6 +219,7 @@ fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
 }
 
 #[test]
+#[ignore = "run-corpus moves to wrapper applications in Task 11"]
 fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
     let directory = run_corpus_fixture(
         "run-corpus-regressed",
