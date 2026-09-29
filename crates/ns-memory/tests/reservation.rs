@@ -104,3 +104,91 @@ fn every_reservation_is_released_when_it_is_dropped() {
         drop(reservation);
     }
 }
+
+#[test]
+fn committed_memory_reads_as_zero_and_keeps_what_is_written() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    let words = reservation.words_mut(0..page()).expect("accessible");
+    assert!(words.iter().all(|word| *word == 0));
+    words[0] = 0xDEAD_BEEF;
+    words[words.len() - 1] = 7;
+    let read = reservation.words(0..page()).expect("accessible");
+    assert_eq!(read[0], 0xDEAD_BEEF);
+    assert_eq!(read[read.len() - 1], 7);
+}
+
+#[test]
+fn a_slice_covers_only_committed_read_write_memory() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    assert!(reservation.words(0..2 * page()).is_none());
+    assert!(reservation.words(page()..2 * page()).is_none());
+    assert!(reservation.words(8..16).is_some());
+}
+
+#[test]
+fn a_misaligned_or_empty_word_range_finds_no_slice() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    assert!(reservation.words(1..9).is_none());
+    assert!(reservation.words(0..9).is_none());
+    assert!(reservation.words(8..8).is_none());
+    let backwards = std::ops::Range { start: 16, end: 8 };
+    assert!(reservation.words(backwards).is_none());
+}
+
+#[test]
+fn a_no_access_range_finds_no_slice_and_keeps_its_contents() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    reservation.words_mut(0..8).expect("accessible")[0] = 42;
+    reservation
+        .protect(0..page(), Protection::NoAccess)
+        .expect("protect");
+    assert!(reservation.words(0..8).is_none());
+    reservation
+        .protect(0..page(), Protection::ReadWrite)
+        .expect("protect");
+    assert_eq!(reservation.words(0..8).expect("accessible")[0], 42);
+}
+
+#[test]
+fn decommitted_memory_reads_as_zero_when_committed_again() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    reservation.words_mut(0..8).expect("accessible")[0] = 42;
+    reservation.decommit(0..page()).expect("decommit");
+    assert!(reservation.words(0..8).is_none());
+    reservation.commit(0..page()).expect("commit");
+    assert_eq!(reservation.words(0..8).expect("accessible")[0], 0);
+}
+
+#[test]
+fn committing_again_keeps_the_contents() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    reservation.words_mut(0..8).expect("accessible")[0] = 42;
+    reservation.commit(0..2 * page()).expect("commit");
+    assert_eq!(reservation.words(0..8).expect("accessible")[0], 42);
+}
+
+#[test]
+fn disjoint_ranges_are_lent_at_once_and_overlapping_ones_are_not() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..2 * page()).expect("commit");
+    let [first, second] = reservation
+        .split_words_mut([0..page(), page()..2 * page()])
+        .expect("disjoint and accessible");
+    first[0] = 1;
+    second[0] = 2;
+    assert_eq!(reservation.words(0..8).expect("accessible")[0], 1);
+    assert_eq!(
+        reservation.words(page()..page() + 8).expect("accessible")[0],
+        2
+    );
+    assert!(reservation.split_words_mut([0..16, 8..24]).is_none());
+    assert!(reservation
+        .split_words_mut([0..page(), 2 * page()..3 * page()])
+        .is_none());
+}

@@ -169,6 +169,66 @@ impl Reservation {
         Ok(())
     }
 
+    /// The words of `range` -- byte offsets, 8-byte aligned -- when every
+    /// byte of it is committed read-write, and `None` otherwise. An offset
+    /// into a protected or uncommitted range finds no slice: that is the
+    /// bounds check the object space's accessors rely on.
+    pub fn words(&self, range: Range<usize>) -> Option<&[u64]> {
+        self.check_words(&range)?;
+        // SAFETY: `check_words` found the range inside the reservation,
+        // 8-byte aligned (the base is page-aligned) and entirely committed
+        // read-write; `&self` keeps `protect` and `decommit` away while the
+        // slice lives, and committed memory is initialized (zero or written).
+        Some(unsafe {
+            std::slice::from_raw_parts(self.address(range.start).cast::<u64>(), range.len() / 8)
+        })
+    }
+
+    /// As `words`, mutably.
+    pub fn words_mut(&mut self, range: Range<usize>) -> Option<&mut [u64]> {
+        self.check_words(&range)?;
+        // SAFETY: as for `words`, and `&mut self` makes the slice unique.
+        Some(unsafe {
+            std::slice::from_raw_parts_mut(self.address(range.start).cast::<u64>(), range.len() / 8)
+        })
+    }
+
+    /// Several disjoint ranges lent mutably at once -- the heap's spaces for
+    /// one step -- or `None` when any is inaccessible or two overlap.
+    pub fn split_words_mut<const COUNT: usize>(
+        &mut self,
+        ranges: [Range<usize>; COUNT],
+    ) -> Option<[&mut [u64]; COUNT]> {
+        for (index, range) in ranges.iter().enumerate() {
+            self.check_words(range)?;
+            for other in &ranges[index + 1..] {
+                if range.start < other.end && other.start < range.end {
+                    return None;
+                }
+            }
+        }
+        let base = self.base;
+        Some(ranges.map(|range| {
+            // SAFETY: every range was checked as `words_mut` checks one, and
+            // no two overlap, so the slices never alias; `&mut self` keeps
+            // everything else away while they live.
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    base.as_ptr().wrapping_add(range.start).cast::<u64>(),
+                    range.len() / 8,
+                )
+            }
+        }))
+    }
+
+    /// A non-empty range inside the reservation, 8-byte aligned, committed
+    /// read-write throughout.
+    fn check_words(&self, range: &Range<usize>) -> Option<()> {
+        let aligned = range.start.is_multiple_of(8) && range.end.is_multiple_of(8);
+        let inside = range.start < range.end && range.end <= self.size;
+        (aligned && inside && self.pages.is_accessible(range.clone())).then_some(())
+    }
+
     /// A non-empty range inside the reservation, on page boundaries.
     fn check_pages(&self, range: &Range<usize>) -> Result<(), MemoryError> {
         let page = platform::page_size();
