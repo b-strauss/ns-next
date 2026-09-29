@@ -5,19 +5,25 @@
 // written out, `BigUint` replaced by digit slices, no `unsafe`.
 
 //! Multiplication of magnitudes: long multiplication, half-Karatsuba,
-//! Karatsuba and Toom-3, chosen by operand size as num-bigint chooses.
+//! Karatsuba, Toom-3 and the number-theoretic transform
+//! (`number_theoretic_transform`), chosen by operand size as num-bigint
+//! chooses.
 
 use std::cmp::Ordering;
 
 use super::addition::{
     add_in_place, add_in_place_with_carry, compare_magnitudes, subtract_in_place,
 };
+use super::number_theoretic_transform::multiply_accumulate_by_transform;
 use super::{trim_zero_top_digits, ArbitraryInteger};
 
 /// Below this many digits in the shorter operand, long multiplication wins.
 const LONG_MULTIPLICATION_LIMIT: usize = 32;
 /// Up to this many digits in the shorter operand, Karatsuba; above, Toom-3.
 const KARATSUBA_LIMIT: usize = 256;
+/// Up to this many digits in the shorter operand, Toom-3; above, the
+/// number-theoretic transform.
+const TOOM_3_LIMIT: usize = 512;
 
 /// `addend + left * right + carry`, answering the low digit and leaving the
 /// high one in `carry`.
@@ -106,11 +112,10 @@ fn multiply_accumulate(mut accumulator: &mut [u64], mut left: &[u64], mut right:
         multiply_half_karatsuba(accumulator, shorter, longer);
     } else if shorter.len() <= KARATSUBA_LIMIT {
         multiply_karatsuba(accumulator, shorter, longer);
-    } else {
-        // num-bigint uses Toom-3 only up to 512 digits and a number-theoretic
-        // transform above; until that transform exists here, Toom-3 carries
-        // every size, which is correct and only slower.
+    } else if shorter.len() <= TOOM_3_LIMIT {
         multiply_toom_3(accumulator, shorter, longer);
+    } else {
+        multiply_accumulate_by_transform(accumulator, shorter, longer);
     }
 }
 
@@ -322,7 +327,9 @@ mod tests {
     #[test]
     fn every_algorithm_agrees_with_schoolbook() {
         // (shorter, longer): long multiplication, half-Karatsuba (the longer
-        // at least twice the shorter), Karatsuba (at most 256), Toom-3 (above).
+        // at least twice the shorter), Karatsuba (at most 256), Toom-3 (at
+        // most 512), the number-theoretic transform (above), and half-Karatsuba
+        // whose halves reach the transform.
         for (shorter, longer) in [
             (3, 5),
             (33, 40),
@@ -330,6 +337,8 @@ mod tests {
             (100, 120),
             (300, 310),
             (700, 700),
+            (600, 600),
+            (900, 2000),
         ] {
             let left = digits(shorter, 1);
             let right = digits(longer, 2);
@@ -347,7 +356,7 @@ mod tests {
 
     #[test]
     fn all_ones_digits_carry_through_every_algorithm() {
-        for count in [1, 33, 257, 600] {
+        for count in [1, 33, 257, 600, 1100] {
             let ones = vec![u64::MAX; count];
             assert_eq!(
                 multiply_magnitudes(&ones, &ones),

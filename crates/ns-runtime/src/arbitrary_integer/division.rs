@@ -4,13 +4,18 @@
 // THIRD-PARTY-NOTICES.md at the repository root. Changed for ns-next: names
 // written out, `BigUint` replaced by digit slices, no `unsafe`.
 
-//! Division of magnitudes: by one digit, and otherwise by Knuth's algorithm
-//! D. num-bigint's x86 `div` through `asm!` is not taken; the portable `u128`
+//! Division of magnitudes: by one digit, by Knuth's algorithm D, and for
+//! the largest operands by Burnikel and Ziegler's recursive division.
+//! num-bigint's x86 `div` through `asm!` is not taken; the portable `u128`
 //! division stands in for it.
 
 use std::cmp::Ordering;
 
-use super::addition::{add_in_place_with_carry, compare_magnitudes};
+use super::addition::{
+    add_in_place_with_carry, add_magnitudes, compare_magnitudes, subtract_in_place,
+    subtract_magnitudes,
+};
+use super::multiplication::multiply_magnitudes;
 use super::{significant_length, trim_zero_top_digits};
 
 /// Half a digit: a divisor at most this large goes through
@@ -130,11 +135,17 @@ pub(super) fn divide_remainder(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, 
         Ordering::Greater => {}
     }
 
-    // num-bigint sends a dividend of more than 128 digits by a divisor of
-    // more than 64 to Burnikel and Ziegler's recursive division; until that
-    // exists here, algorithm D carries every size, which is correct and only
-    // slower.
+    if dividend.len() > 2 * BURNIKEL_ZIEGLER_THRESHOLD && divisor.len() > BURNIKEL_ZIEGLER_THRESHOLD
+    {
+        return divide_remainder_recursively(dividend, divisor);
+    }
 
+    divide_remainder_knuth(dividend, divisor)
+}
+
+/// `dividend / divisor` by algorithm D, for a divisor of at least two
+/// digits and a larger dividend, both trimmed.
+fn divide_remainder_knuth(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
     // Algorithm D guesses each quotient digit from the divisor's top digit,
     // which is best when that digit's high bit is set: shift both operands
     // until it is, and the remainder back afterwards.
@@ -143,6 +154,224 @@ pub(super) fn divide_remainder(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, 
         divide_normalized(shift_left(dividend, shift), &shift_left(divisor, shift));
     shift_right_in_place(&mut remainder, shift);
     (quotient, remainder)
+}
+
+/// Above this many digits in the divisor, and twice as many in the
+/// dividend, Burnikel and Ziegler's division wins; it also ends its
+/// recursion, whose blocks of at most this many digits go to algorithm D.
+const BURNIKEL_ZIEGLER_THRESHOLD: usize = 64;
+
+/// `dividend / divisor` by Burnikel and Ziegler's recursive division
+/// ("Fast Recursive Division", 1998), for a divisor of more than
+/// `BURNIKEL_ZIEGLER_THRESHOLD` digits and a larger dividend, both trimmed.
+///
+/// The dividend is cut into blocks of `level` digits, `level` the least
+/// power of two the divisor fits, and divided block by block like long
+/// division, each step a division of two blocks by one. That division splits
+/// every operand in halves and recurses, so it costs a few multiplications
+/// of its size and inherits their speed.
+fn divide_remainder_recursively(dividend: &[u64], divisor: &[u64]) -> (Vec<u64>, Vec<u64>) {
+    debug_assert!(divisor.last() != Some(&0), "the divisor is not trimmed");
+    let level = divisor.len().next_power_of_two();
+    // Like algorithm D, each step needs the divisor's top bit set, here the
+    // top bit of a whole block: shift both operands until it is, and the
+    // remainder back afterwards.
+    let shift = normalizing_shift(divisor, level);
+    let (quotient, mut remainder) = divide_blocks(
+        &shift_left_by_bits(dividend, shift),
+        &shift_left_by_bits(divisor, shift),
+        level,
+    );
+    shift_right_by_bits_in_place(&mut remainder, shift);
+    (quotient, remainder)
+}
+
+/// How far the trimmed `digits` must shift left for its top bit to be the
+/// top bit of a block of `level` digits.
+fn normalizing_shift(digits: &[u64], level: usize) -> u64 {
+    let bit_length = match digits.last() {
+        Some(top) => digits.len() as u64 * 64 - u64::from(top.leading_zeros()),
+        None => 0,
+    };
+    level as u64 * 64 - bit_length
+}
+
+/// `digits` split at digit `level`, as a trimmed high part and a trimmed low
+/// part.
+fn split_at_level(mut digits: Vec<u64>, level: usize) -> (Vec<u64>, Vec<u64>) {
+    if digits.len() <= level {
+        return (Vec::new(), digits);
+    }
+    let mut high = digits.split_off(level);
+    trim_zero_top_digits(&mut high);
+    trim_zero_top_digits(&mut digits);
+    (high, digits)
+}
+
+/// `high * base^level + low`, trimmed, for a `low` below `base^level`.
+fn concatenate(high: &[u64], mut low: Vec<u64>, level: usize) -> Vec<u64> {
+    debug_assert!(significant_length(&low) <= level);
+    low.resize(level, 0);
+    low.extend_from_slice(high);
+    trim_zero_top_digits(&mut low);
+    low
+}
+
+/// Long division by blocks of `level` digits: each block of the dividend,
+/// from the top, is divided with the running remainder above it.
+fn divide_blocks(dividend: &[u64], divisor: &[u64], level: usize) -> (Vec<u64>, Vec<u64>) {
+    let mut dividend_blocks = dividend.chunks(level);
+
+    // A top block already below the divisor is the first remainder.
+    let mut remainder = Vec::new();
+    if let Some(top_block) = dividend_blocks.clone().next_back() {
+        if compare_magnitudes(top_block, divisor) == Ordering::Less {
+            dividend_blocks.next_back();
+            remainder = top_block.to_vec();
+            trim_zero_top_digits(&mut remainder);
+        }
+    }
+
+    let mut quotient = vec![0; dividend_blocks.len() * level];
+    let quotient_blocks = quotient.chunks_mut(level);
+
+    for (quotient_block, dividend_block) in quotient_blocks.zip(dividend_blocks).rev() {
+        let mut dividend_block = dividend_block.to_vec();
+        trim_zero_top_digits(&mut dividend_block);
+        let (block_quotient, block_remainder) =
+            divide_two_blocks_by_one(remainder, dividend_block, divisor.to_vec(), level);
+        quotient_block[..block_quotient.len()].copy_from_slice(&block_quotient);
+        remainder = block_remainder;
+    }
+
+    trim_zero_top_digits(&mut quotient);
+    (quotient, remainder)
+}
+
+/// `[high_block, low_block] / divisor`, blocks of `level` digits, for a
+/// divisor of `level` digits with its top bit set and a `high_block` below
+/// it, so that the quotient fits one block: Burnikel and Ziegler's
+/// algorithm 1.
+fn divide_two_blocks_by_one(
+    high_block: Vec<u64>,
+    low_block: Vec<u64>,
+    divisor: Vec<u64>,
+    level: usize,
+) -> (Vec<u64>, Vec<u64>) {
+    debug_assert_eq!(
+        compare_magnitudes(&high_block, &divisor),
+        Ordering::Less,
+        "the quotient does not fit one block"
+    );
+    debug_assert_eq!(
+        normalizing_shift(&divisor, level),
+        0,
+        "the divisor's top bit is not set"
+    );
+    if level <= BURNIKEL_ZIEGLER_THRESHOLD {
+        return divide_remainder(&concatenate(&high_block, low_block, level), &divisor);
+    }
+    let half = level / 2;
+    let (first_block, second_block) = split_at_level(high_block, half);
+    let (third_block, fourth_block) = split_at_level(low_block, half);
+    let (divisor_high, divisor_low) = split_at_level(divisor, half);
+    let (high_quotient, remainder) = divide_three_halves_by_two(
+        first_block,
+        second_block,
+        third_block,
+        divisor_high.clone(),
+        divisor_low.clone(),
+        half,
+    );
+    let (remainder_high, remainder_low) = split_at_level(remainder, half);
+    let (low_quotient, final_remainder) = divide_three_halves_by_two(
+        remainder_high,
+        remainder_low,
+        fourth_block,
+        divisor_high,
+        divisor_low,
+        half,
+    );
+    (
+        concatenate(&high_quotient, low_quotient, half),
+        final_remainder,
+    )
+}
+
+/// `[first_block, second_block, third_block] / [divisor_high, divisor_low]`,
+/// blocks of `level` digits, for a dividend below `divisor * base^level`, so
+/// that the quotient fits one block: Burnikel and Ziegler's algorithm 2.
+fn divide_three_halves_by_two(
+    first_block: Vec<u64>,
+    second_block: Vec<u64>,
+    third_block: Vec<u64>,
+    divisor_high: Vec<u64>,
+    divisor_low: Vec<u64>,
+    level: usize,
+) -> (Vec<u64>, Vec<u64>) {
+    // The quotient is first estimated from the top blocks alone. Step 3 of
+    // algorithm 2 tells `first_block < divisor_high` from the rest, which
+    // keeps `divide_two_blocks_by_one`'s quotient in one block.
+    let (mut quotient, partial_remainder, subtrahend);
+    if compare_magnitudes(&first_block, &divisor_high) == Ordering::Less {
+        (quotient, partial_remainder) =
+            divide_two_blocks_by_one(first_block, second_block, divisor_high.clone(), level);
+        subtrahend = multiply_magnitudes(&quotient, &divisor_low);
+    } else {
+        // The estimate is `base^level - 1`, and the partial remainder
+        // `[first_block, second_block] - estimate * divisor_high`, which is
+        // `[first_block - divisor_high, second_block] + divisor_high`.
+        quotient = vec![u64::MAX; level];
+        partial_remainder = add_magnitudes(
+            &concatenate(
+                &subtract_magnitudes(&first_block, &divisor_high),
+                second_block,
+                level,
+            ),
+            &divisor_high,
+        );
+        // `estimate * divisor_low`, likewise, is `divisor_low * base^level -
+        // divisor_low`.
+        subtrahend =
+            subtract_magnitudes(&concatenate(&divisor_low, Vec::new(), level), &divisor_low);
+    }
+
+    // The estimate is at most two too large, so at most two corrections
+    // lift the remainder to the subtrahend, and the final subtraction
+    // cannot go below zero.
+    let mut remainder = concatenate(&partial_remainder, third_block, level);
+    if compare_magnitudes(&remainder, &subtrahend) == Ordering::Less {
+        let divisor = concatenate(&divisor_high, divisor_low, level);
+        decrement(&mut quotient);
+        remainder = add_magnitudes(&remainder, &divisor);
+        if compare_magnitudes(&remainder, &subtrahend) == Ordering::Less {
+            decrement(&mut quotient);
+            remainder = add_magnitudes(&remainder, &divisor);
+        }
+    }
+    (quotient, subtract_magnitudes(&remainder, &subtrahend))
+}
+
+/// `digits -= 1`, trimmed; `digits` is not zero.
+fn decrement(digits: &mut Vec<u64>) {
+    subtract_in_place(digits, &[1]);
+    trim_zero_top_digits(digits);
+}
+
+/// `digits << bits` for a shift of any size.
+fn shift_left_by_bits(digits: &[u64], bits: u64) -> Vec<u64> {
+    let whole_digits = (bits / 64) as usize;
+    let mut shifted = vec![0; whole_digits];
+    shifted.extend(shift_left(digits, (bits % 64) as u32));
+    shifted
+}
+
+/// `digits >>= bits` for a shift of any size, trimmed; the bits shifted out
+/// are dropped.
+fn shift_right_by_bits_in_place(digits: &mut Vec<u64>, bits: u64) {
+    let whole_digits = (bits / 64) as usize;
+    digits.drain(..whole_digits.min(digits.len()));
+    shift_right_in_place(digits, (bits % 64) as u32);
 }
 
 /// Knuth, TAOCP volume 2, section 4.3.1, algorithm D, with the improvement
@@ -269,6 +498,18 @@ mod tests {
     use crate::arbitrary_integer::multiplication::multiply_schoolbook;
     use std::cmp::Ordering;
 
+    fn digits(count: usize, seed: u64) -> Vec<u64> {
+        let mut state = seed;
+        (0..count)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                state
+            })
+            .collect()
+    }
+
     fn trimmed(mut digits: Vec<u64>) -> Vec<u64> {
         while digits.last() == Some(&0) {
             digits.pop();
@@ -355,6 +596,84 @@ mod tests {
             if !divisor.is_empty() {
                 check(&dividend, &divisor);
             }
+        }
+    }
+
+    /// Shapes past both of Burnikel and Ziegler's thresholds, a dividend
+    /// above 128 digits and a divisor above 64: ordinary ones, a divisor just
+    /// past the threshold, the smallest dividend that takes the recursion, a
+    /// divisor of all ones, which normalization shifts by whole digits
+    /// alone, and an exact multiple, whose remainder is empty.
+    #[test]
+    fn burnikel_ziegler_shapes_hold_the_identity() {
+        for (dividend_count, divisor_count) in [(200, 100), (1000, 300), (3000, 65), (129, 65)] {
+            check(&digits(dividend_count, 14), &digits(divisor_count, 15));
+        }
+
+        check(&digits(200, 16), &[u64::MAX; 90]);
+
+        let divisor = digits(100, 17);
+        let quotient = digits(150, 18);
+        let dividend = multiply_schoolbook(&divisor, &quotient);
+        let (found_quotient, remainder) = divide_remainder(&dividend, &divisor);
+        assert_eq!(found_quotient, quotient);
+        assert!(remainder.is_empty());
+    }
+
+    /// A block of 64 digits: `lowest`, then `middle` up to the `top` digit.
+    fn block(lowest: u64, middle: u64, top: u64) -> Vec<u64> {
+        let mut digits = vec![middle; 64];
+        digits[0] = lowest;
+        digits[63] = top;
+        digits
+    }
+
+    /// Algorithm 2's rare steps, at the top level of a 128-digit divisor
+    /// `[divisor_high, divisor_low]` whose top bit is set, so that nothing
+    /// is shifted: a dividend `[first, second, third, 0]` whose top two
+    /// blocks are the first remainder. Found by modelling algorithm 2 on
+    /// blocks of 8, 16 and 64 bits, where the same shapes, in units of half
+    /// the block, reach the same steps: the estimate from `first ==
+    /// divisor_high` of all ones, right and one too large, and an estimate
+    /// divided from the top blocks two too large.
+    #[test]
+    fn burnikel_ziegler_rare_steps_hold_the_identity() {
+        let zero = block(0, 0, 0);
+        let one = block(1, 0, 0);
+        let half = block(0, 0, 1 << 63);
+        let half_less_one = block(u64::MAX, u64::MAX, (1 << 63) - 1);
+        let half_plus_one = block(1, 0, 1 << 63);
+        let all_ones_less_one = block(u64::MAX - 1, u64::MAX, u64::MAX);
+
+        // (first, second, third, divisor_high, divisor_low)
+        let shapes = [
+            (&half, &zero, &zero, &half, &one),
+            (&half, &zero, &zero, &half, &half_plus_one),
+            (&half_less_one, &zero, &zero, &half, &all_ones_less_one),
+        ];
+        for (first, second, third, divisor_high, divisor_low) in shapes {
+            let dividend = [&zero[..], third, second, first].concat();
+            let divisor = [&divisor_low[..], divisor_high].concat();
+            check(&dividend, &divisor);
+            assert_eq!(
+                super::divide_remainder_recursively(&dividend, &divisor),
+                super::divide_remainder_knuth(&dividend, &divisor),
+            );
+        }
+    }
+
+    #[test]
+    fn burnikel_ziegler_agrees_with_algorithm_d() {
+        for (dividend_count, divisor_count) in
+            [(200, 100), (1000, 300), (3000, 65), (129, 65), (700, 699)]
+        {
+            let dividend = digits(dividend_count, 10);
+            let divisor = digits(divisor_count, 11);
+            assert_eq!(
+                super::divide_remainder_recursively(&dividend, &divisor),
+                super::divide_remainder_knuth(&dividend, &divisor),
+                "{dividend_count} / {divisor_count} digits",
+            );
         }
     }
 }

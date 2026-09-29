@@ -7,7 +7,8 @@
 //! Integers of any size, as a sign and a magnitude: the arithmetic behind
 //! `LargeInteger`, with no heap and no `Value`. The digit algorithms are
 //! adapted from num-bigint, one file each (`addition`, `multiplication`,
-//! `division`, `conversion`), and floor division from num-integer, here.
+//! `number_theoretic_transform`, `division`, `conversion`), and floor
+//! division from num-integer, here.
 
 use std::cmp::Ordering;
 
@@ -15,6 +16,7 @@ mod addition;
 mod conversion;
 mod division;
 mod multiplication;
+mod number_theoretic_transform;
 
 use addition::{add_magnitudes, compare_magnitudes, subtract_magnitudes};
 use division::{divide_by_digit, divide_remainder, shift_left, shift_right_in_place};
