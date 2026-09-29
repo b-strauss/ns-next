@@ -60,9 +60,15 @@ impl std::fmt::Display for MemoryError {
             ),
             MemoryError::NotCommitted => write!(formatter, "the range is not entirely committed"),
             MemoryError::Refused { operation, code } => {
+                let verb = match operation {
+                    Operation::Reserve => "reserve",
+                    Operation::Commit => "commit",
+                    Operation::Decommit => "decommit",
+                    Operation::Protect => "protect",
+                };
                 write!(
                     formatter,
-                    "the operating system refused to {operation:?} memory (error {code})"
+                    "the operating system refused to {verb} memory (error {code})"
                 )
             }
         }
@@ -87,7 +93,8 @@ impl Reservation {
     }
 
     /// Reserves at least `bytes` of address space, committing none of it.
-    /// The size is rounded up to the platform's reservation granularity.
+    /// The size is rounded up to the platform's reservation granularity; a
+    /// size whose rounding up overflows `usize` answers `InvalidRange`.
     pub fn reserve(bytes: usize) -> Result<Reservation, MemoryError> {
         if bytes == 0 {
             return Err(MemoryError::InvalidRange);

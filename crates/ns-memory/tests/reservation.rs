@@ -35,6 +35,20 @@ fn an_impossible_reservation_is_refused_as_a_value() {
     }
 }
 
+/// Windows answers error 87 to a reservation no address space holds, Linux
+/// and macOS answer `ENOMEM`; either way it is a refusal as a value.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn a_reservation_no_address_space_holds_is_refused_by_the_system() {
+    assert!(matches!(
+        Reservation::reserve(1 << 62),
+        Err(MemoryError::Refused {
+            operation: Operation::Reserve,
+            ..
+        })
+    ));
+}
+
 #[test]
 fn commit_decommit_and_protect_accept_page_aligned_ranges_inside_the_reservation() {
     let mut reservation = Reservation::reserve(8 * page()).expect("reserve");
@@ -151,6 +165,34 @@ fn a_no_access_range_finds_no_slice_and_keeps_its_contents() {
         .protect(0..page(), Protection::ReadWrite)
         .expect("protect");
     assert_eq!(reservation.words(0..8).expect("accessible")[0], 42);
+}
+
+#[test]
+fn committing_a_no_access_range_makes_it_read_write_again() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    reservation.words_mut(0..8).expect("accessible")[0] = 42;
+    reservation
+        .protect(0..page(), Protection::NoAccess)
+        .expect("protect");
+    reservation.commit(0..page()).expect("commit");
+    assert_eq!(reservation.words(0..8).expect("accessible")[0], 42);
+}
+
+#[test]
+fn a_word_range_ending_beyond_the_reservation_finds_no_slice() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    reservation.commit(0..page()).expect("commit");
+    let size = reservation.size();
+    assert!(reservation.words(0..size + 8).is_none());
+    assert!(reservation.words_mut(size..size + 8).is_none());
+}
+
+#[test]
+fn splitting_no_ranges_lends_no_slices() {
+    let mut reservation = Reservation::reserve(4 * page()).expect("reserve");
+    let slices = reservation.split_words_mut::<0>([]).expect("no ranges");
+    assert!(slices.is_empty());
 }
 
 #[test]

@@ -38,7 +38,8 @@
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `types.rs` (`Value`,
 > `Object`, `Frame`), `mixin.rs` (layout, and the one remaining iterative
-> `Drop`).
+> `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`,
+> `page_map.rs` and `platform/{mod,windows,posix}.rs`.
 
 ## What exists
 
