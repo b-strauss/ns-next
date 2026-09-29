@@ -10,7 +10,8 @@
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
 > `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections
-> module),
+> module), `crates/ns-runtime/core-library/Manifest.ns` (a project's
+> manifest, which is no shipped module: "The manifest"),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/core_library.rs` (the table of shipped modules and the
 > platform's boot),
@@ -1341,7 +1342,9 @@ the specification requires them of every value.
 The library is source the runtime ships, compiled at bootstrap as the Rust
 bootstrap used to be built, so running a program from source is unchanged:
 the bootstrap gained a phase in front of it and nothing above that changed.
-Loading several *user* modules is a separate, later step.
+A program of several *user* modules does not go through this table: the
+host compiles a project's modules in module order and hands them to the
+application in its manifest ("The manifest" below).
 
 **The table of shipped modules.** `Kernel.ns` is compiled into the binary
 by `interpreter/kernel.rs`; every other shipped module is an entry of
@@ -1358,8 +1361,9 @@ program, and since a boot no longer resolves every entry, the unit test
 `every_shipped_module_resolves` does, so the suite still catches one.
 Every interpreter still compiles each module it asks for itself, since
 compiled code is numbered against one heap's inline caches. Every entry is
-shipped source; a user module joins the table, marked as such by the host
-and resolved with `resolve`, with the step that loads one. The mirror's
+shipped source; a user module would join the table, marked as such by the
+host and resolved with `resolve`, only with the module namespace on the
+mirror (below). The mirror's
 `moduleNamed:` (below) is the leaf through which shipped Newspeak reaches
 an entry (`shipped_module_named`), and the host's boot names
 `PlatformFactory` directly (`resolved_shipped_module`).
@@ -1395,6 +1399,38 @@ Embedding does not conflict with [image-format.md](image-format.md)'s "never
 for the builtins", because that decision is about what an artifact arriving
 from outside may carry; bytes compiled into the binary are as trustworthy as
 the Rust beside them.
+
+### The manifest
+
+`crates/ns-runtime/core-library/Manifest.ns` is what a project's root
+receives as `packageUsing:`'s argument: a class `Manifest names:
+definitions:` whose `doesNotUnderstand:` answers the module definition whose
+name is the message's selector, searching its two arrays linearly, and
+passes anything else to `super` -- the lookup Newspeak on Squeak's
+`Namespacing.ns` and Primordial Soup's `CompilerApp.ns` make over a map. It
+lives beside the shipped modules and is embedded the same way, with
+`include_str!`, exported as `ns_runtime::MANIFEST_SOURCE`
+(`interpreter/core_library.rs`), but it is **not a shipped module**, and
+three things follow from that:
+
+- **It holds no mirror.** The host resolves it with `resolve`, never
+  `resolve_kernel`, so no `Binding::MirrorSend` is recorded for it, and it
+  is in neither `SHIPPED_MODULES` nor the bootstrap's checks of the mirror
+  slots. A program that reaches its class, as `manifest class`, gains
+  nothing the manifest's own code does not already have.
+- **An image carries it.** It is compiled into the program beside the
+  project's modules, as the last module in module order, from the origin
+  `ORIGIN_EMBEDDED` `Manifest.ns`, so an application that keeps its manifest
+  in a slot is written and loaded like any other object. A shipped module's
+  instance is never written ("Platform paths in the image" below); the
+  manifest must be, and is.
+- **It is compiled as user code**, by the interpreter's own lowering, with
+  its code on its mixin like any module's, and it is the host, not the
+  bootstrap, that instantiates it, once per assembled application, with an
+  `Array` of the modules' names and an `Array` of their class objects.
+
+[image-format.md](image-format.md), "Packaging", has the project file, the
+module order and how `run`, `build` and `load` use it.
 
 ### Exceptions
 
@@ -2004,7 +2040,7 @@ superclass clause — Newspeak the decoder must never run.
   path's members to the loading interpreter's platform, each step a public
   slot's, nested class's or class accessor of the shipped instance reached
   so far, sent as an ordinary public send: exactly what the program's own
-  `platform collections` may do, and loading a stateless binary runs
+  `platform collections` may do, and starting a packaged application runs
   its code anyway. Each member must be a symbol, the path length and the
   number of paths are bounded, and a step that is no such accessor, a send
   that fails or an answer that is not a shipped object refuses the image. The decoder then only looks paths up, so it still
@@ -2191,16 +2227,6 @@ lowerings — the reference lowering running uncached as the oracle — the gate
 with them: `parse-corpus` at 210/0/1/0, `run-corpus` at ran 6 / failed 0 /
 skipped 205, and all three stress modes. The one difference the move makes is
 observable only through a program no golden had recorded, below.
-
-`crates/ns-cli/src/commands/build.rs`'s `root_class_answers`, which refuses a
-build whose entry selector the root class does not answer, used to walk past
-the root level on the assumption that a builtin level held nothing but
-primitives. With the builtin classes' methods in `Kernel.ns` that would have
-accepted a selector only the core library answers — absent from the image's
-symbol table, which interns only the module's own declarations — instead of
-refusing the build. The walk now stops at the first builtin level, and
-`build_refuses_an_entry_only_a_builtin_answers`
-(`crates/ns-cli/tests/build_load.rs`) pins it.
 
 ### The one observable difference
 

@@ -20,7 +20,8 @@ Rust 1.98.0, edition 2021, five crates:
   only through `Interpreter::enter`) and the image format (`image/`).
   `docs/design/README.md`, "The map", says which document covers each part.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
-  `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
+  `load`, `bench`, `disasm`, `inspect`, `build`. A program is one `.ns` file or a
+  JSON project file of several modules (`project.rs`, `program.rs`).
 - `crates/ns-lsp` — the `ns-next-lsp` binary: a language server for `.ns` files
   (diagnostics, semantic tokens) and `dump-tokens`, which the JetBrains plugin's
   lexer is checked against. It never starts the VM; its dependencies
@@ -89,10 +90,10 @@ mixins before any decoded code runs (`image-format.md`, "Verification"). The
 transient peak of a rejected load is about 16.4x the graph section's bytes in a
 release build, 21.0x with `LargeInteger`s (debug 20.4x and 26.2x; `memory.md`
 has the breakdown and what is not counted). The guarantee covers decoding only:
-`ns-next load` runs a stateless binary's code, recursion bounded by the
+`ns-next load` runs the packaged application's code, recursion bounded by the
 100,000-activation depth limit plus its 1,000 reserve (`execution.md`, "The
-depth limit"), and a stateful image first follows its platform paths through
-shipped code only.
+depth limit"), and an image that names platform paths first follows them
+through shipped code only.
 
 **A wire tag is assigned once and never renumbered or reused.** Every tag lives in
 `crates/ns-runtime/src/image/opcodes.rs`, pinned by `tests/opcode_tags.rs`; a new
@@ -220,10 +221,10 @@ Only a release build runs the size tests (the `Object` size and
 `cargo nextest run --workspace --release`.
 
 Every corpus module must parse; there is no list of exceptions. A module that
-runs end to end belongs in `corpus/runnable.toml` with its entry selector and
-output. `PlatformFactory.ns` and `CollectionsFactory.ns` are widened only on
-demand: an accessor exists because a `runnable.toml` module needs it, named in
-the accessor's comment.
+runs end to end belongs in `corpus/runnable.toml` with the unary selector its
+generated application sends it (`send`) and its output. `PlatformFactory.ns`
+and `CollectionsFactory.ns` are widened only on demand: an accessor exists
+because a `runnable.toml` module needs it, named in the accessor's comment.
 
 Add no new external dependency without a reason that survives review — the image
 format is hand-rolled on purpose.

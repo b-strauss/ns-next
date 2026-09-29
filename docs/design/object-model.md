@@ -995,13 +995,15 @@ defective root over `Object` with no level, so `load_module` stays total; and
 `apply_mixin` folds the defect into `instantiation_refusal`, inherited by
 every class built on the root, the one cold `Option` `decide_instantiation`
 tests for both refusals it makes before allocating — the mutable slot and the
-root defect. `run` and `load` always instantiate the root, so every program
-with a defective root meets the error at start, under both lowerings with the
-same text: "cannot instantiate `M`: a module's root class may inherit only
+root defect. `run` and `build` always instantiate the root, so every program
+with a defective root meets the error at start, before anything runs or is
+written, under both lowerings with the same text: "cannot instantiate `M`: a module's root class may inherit only
 Object or Value, or write Object <: Value, and its superclass clause names
 `…`" (or "its mixin application clause *n* names `…`", or "it applies Value to
-Value"). **The encoder refuses a module with a root defect**, at `build` and
-`snapshot`, with "image encoding cannot serialize `M`:" and the same reason:
+Value"). **The encoder refuses a module with a root defect**, in
+`image::package` and `image::snapshot` alike -- at `build`, that is a project
+module the application never instantiated -- with "image encoding cannot
+serialize `M`:" and the same reason:
 such a root can never be instantiated, so an artifact of it could only fail,
 and refusing it needs no wire field and no tag. The decoder's root-section
 reader refuses what the encoder cannot write
@@ -1289,8 +1291,8 @@ is written depends on its class:
   have had to patch every place such a reference can sit once the class
   records are decoded, a mechanism across the whole decoder to keep safe
   against a crafted image.
-- **The metaclass of a prebuilt class** — a builtin, the module's root class
-  or one of the root's levels, none of which is a record — is named by tag,
+- **The metaclass of a prebuilt class** — a builtin, a module's root class
+  or one of its levels, none of which is a record — is named by tag,
   `CLASS_METACLASS` followed by that class's own tag, and its identity hash
   travels in the closing hash table (`HASHED_METACLASS`, followed by the
   class tag), as the builtin classes' own do.

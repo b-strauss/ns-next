@@ -1,16 +1,18 @@
 # Image format — serialization and deployment artifacts
 
-> **Status:** built. Both artifacts round-trip, and both can be inspected without
-> being loaded. **Planned:** one artifact, packaged before `main:args:`, with
-> programs of several modules assembled through a manifest ("Planned: one
-> artifact, packaged before `main:args:`"); the decoder builds the planned
-> eight-byte values and variably sized objects from a wire format that stays
-> id-based ("Planned: the image under the new representation"); and suspend
-> and resume.
-> **Code:** `crates/ns-runtime/src/image/` — `mod.rs`, `encode.rs`, `decode.rs`,
-> `mixins.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`. CLI: `ns-next snapshot`,
-> `ns-next load`, `ns-next build`, `ns-next inspect`, and `ns-next disasm` on an
-> artifact.
+> **Status:** built. One artifact: an application assembled from one source
+> file or a project of several modules, packaged just before `main:args:`,
+> round-trips through `build` and `load` and can be inspected without being
+> loaded. **Planned:** the decoder builds the planned eight-byte values and
+> variably sized objects from a wire format that stays id-based ("Planned:
+> the image under the new representation"); and suspend and resume.
+> **Code:** `crates/ns-runtime/src/image/` — `mod.rs` (`package`, `snapshot`,
+> `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
+> `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
+> `crates/ns-runtime/core-library/Manifest.ns`. CLI: `ns-next build`,
+> `ns-next load`, `ns-next inspect`, and `ns-next disasm` on an artifact;
+> `crates/ns-cli/src/project.rs` (the project file) and `program.rs`
+> (reading, compiling and assembling a program).
 
 ## Principles
 
@@ -25,17 +27,17 @@ otherwise as a sign and its 64-bit digits, least significant first. Symbols are
 re-interned on load rather than assumed to keep their ids.
 
 **The bootstrap is the base image.** There is no pre-built base image file.
-`run`, `snapshot` and `load` all bootstrap the core library and the `Object`
-hierarchy from Rust primitives, and the image describes only what the user's
-module added.
+`run`, `build` and `load` all bootstrap the core library and the `Object`
+hierarchy from Rust primitives, and the image describes only what the
+program's modules added.
 
 **An image is untrusted input.** No byte sequence may cause a panic or a process
 abort. Every id, tag, count and length is validated before it indexes, allocates
 or slices, and any recursion whose depth the input controls is bounded or made
 iterative.
 
-That guarantee is about **decoding**. `load` on a stateless binary instantiates
-and sends the recorded entry with no flag at all, so starting one executes its
+That guarantee is about **decoding**. `load` sends the packaged application
+`main: platform args:` with no flag at all, so starting one executes its
 code with the same exposure as running the equivalent source. Recursion depth
 is bounded by one counted limit, 100,000 activations, an ordinary Newspeak
 error rather than a native stack overflow, since nothing re-enters the run loop
@@ -44,50 +46,79 @@ exemption to recurse uncounted. Nor can it stack more exempt activations above
 a counted one than source can: that number is bounded by how deeply blocks
 nest, which the decoder caps at the parser's own ceiling ("Verification"
 below); see [execution.md](execution.md), "The depth limit". A mutated
-binary that decodes cleanly can still abort while executing — a native that
+artifact that decodes cleanly can still abort while executing — a native that
 indexes an argument it was not given, for one: the `whileTrue:` and
 `whileFalse:` leaves read `arguments[0]` unchecked, and the decoder does not check a send's argument count
 against its selector — and that is not a decoder defect.
 
-## Two artifacts
+## The artifact
 
-Following Bracha's position — "Ideally, you have images and a binary format …
-what is important is that you do not have just an image"
-([An Image Problem](https://gbracha.blogspot.com/2009/10/image-problem.html)) —
-there are two:
+An **application** is the instance of a root class that is sent `main:
+platform args:` (§8.4). The platform enters there and nowhere else: no root
+class is instantiated with it, so nothing assembled before `main:args:` can
+hold it, and an artifact written at that point cannot reach it. `build`
+writes exactly that: the application, assembled by running its factory and
+every initializer, serialized just before the send, as Newspeak on Squeak
+(`DeploymentManager.ns`, `appClass packageUsing: ide namespacing manifest`,
+then `Serializer new serialize: app`) and Primordial Soup (`CompilerApp.ns`,
+`createSnapshotsFromNamespace:outputs:`) do ("Packaging" below). `load`
+decodes it and sends it `main: platform args:` with the loading process's
+platform, the first platform the application ever sees.
 
-| | **Image** | **Stateless binary** |
-|---|---|---|
-| Contains | code, structure, heap, reachable activations | code and structure only |
-| Produced by | `snapshot`, after instantiation | `build`, before instantiation |
-| Capabilities | already bound into slots | enter at start time |
-| Is | a snapshot of a running world | a deployment artifact |
+There is **one format and one artifact**. An image is an object graph with
+the code and declarations it runs, and the header's `FLAG_START` says the
+graph's one root is an application to be started. The image with heap state
+that liveness asks for ([liveness-and-reflection.md](liveness-and-reflection.md))
+is the same artifact written at another point of the same run --
+mid-execution rather than before `main:args:`, resumed rather than started
+("Planned: suspend and resume"). Bracha's position -- "Ideally, you have
+images and a binary format … what is important is that you do not have just
+an image" ([An Image Problem](https://gbracha.blogspot.com/2009/10/image-problem.html))
+-- is met the way upstream meets it: the deployment artifact is an image
+taken at the one point where no capability is bound yet, so it carries the
+program and none of the world it will run in.
 
-They are **one format**, distinguished by a header flag. The binary is the
-image's leading sections stopping where the object graph would begin, plus a
-recorded entry point.
+`image::package` writes the started image. `image::snapshot` writes a graph
+from whatever roots a host hands it, without `FLAG_START`; no command calls
+it -- the tests use it to take the graph shapes a started image never holds
+(a stored platform, the objects platform paths name, several roots), and it
+is the writer the image with heap state will build on. Both go through
+one writer (`write_image`).
 
 A host holds what a load answers as roots: `image::load`'s `LoadedImage`
-carries the root class and the image's roots as `Root`s
-([memory.md](memory.md), "Host roots"). `image::load` decodes inside one
-entry of the interpreter it bootstraps and stashes them once decoding and
-every verification are done, before that entry ends — nothing runs while an
-artifact decodes, so nothing moves under the decoder's handles.
-`image::snapshot` takes a `&Mutator` and `image::build` a `&Heap`, with
-values a host fetches from its roots in the same entry, for the same reason:
-encoding runs no code.
+carries every module's root class and the image's roots as `Root`s, and
+whether the image is to be started ([memory.md](memory.md), "Host roots").
+`image::load` decodes inside one entry of the interpreter it bootstraps and
+stashes them once decoding and every verification are done, before that
+entry ends — nothing runs while an artifact decodes, so nothing moves under
+the decoder's handles. `image::package` and `image::snapshot` take a
+`&Mutator` and values a host fetches from its roots in the same entry, for
+the same reason: encoding runs no code.
 
 ## Layout
 
 ```
-Image:   [header][source?][origin][symbols][code][mixins][root class][entry][platform paths][graph]
-Binary:  [header][source?][origin][symbols][code][mixins][root class][entry]
+[header][symbols][code][mixins][modules][platform paths][graph][tag-named hashes]
+
+header:  magic "NSNX", FORMAT_VERSION (u32), flags (u8)
+modules: count (u32), then per module [origin][source?][root section]
+graph:   object table, frame table, roots
 ```
 
-The header carries magic, `FORMAT_VERSION` and a flag byte. `read_header`
+The header carries magic, `FORMAT_VERSION` and a flag byte. Two flags are
+assigned (`image/encode.rs`): `FLAG_HAS_SOURCE` (1) says every module in the
+module section carries its source text, and `FLAG_START` (4) says the graph's
+one root is an application `load` starts. Bit 2 is retired
+(`RETIRED_HEADER_FLAGS`): it was `FLAG_STATELESS`, the stateless binary, and
+a stale binary's header now meets an unknown flag
+(`a_retired_stateless_flag_is_refused_as_unknown`,
+`crates/ns-runtime/tests/image.rs`). `read_header`
 **refuses any flag this build does not implement** rather than masking it off: an
 unimplemented flag means a section the reader cannot see, and continuing would
-read the next field out of whatever that section occupies.
+read the next field out of whatever that section occupies. A started image
+whose graph has any number of roots but one is refused
+(`DecodeError::StartedImageRootCount`), since it leaves the host nothing, or
+nothing certain, to start.
 
 `FORMAT_VERSION` is 1 and is not bumped. The project has no external users, so
 images predating a change are disposable and no migration path is owed to them.
@@ -99,8 +130,8 @@ from validating ids and lengths, not from a version field.
 This is the part that decides how big an artifact is and how large its trusted
 surface is.
 
-- **Builtin classes, the root class and the levels the root's `<:` clauses
-  add** are referenced by a **class tag**
+- **Builtin classes, each module's root class and the levels its `<:`
+  clauses add** are referenced by a **class tag**
   wherever a class object appears — an object's `.class`, a class-valued slot, a
   frame's `current_class` — never structurally encoded. On load a tag resolves to
   the live class the bootstrap produced. The bootstrap itself is the fixed
@@ -134,9 +165,9 @@ surface is.
   (`OBJECT_METACLASS`, header `Metaclass`) whose body is only the class
   reference back to its class, and the decoder applies its class's metaclass
   mixin over `Class`, as `Mutator::attach_metaclass` does (§6); a class
-  record's header names its metaclass record. The metaclass of a builtin, the
-  root class or a root level is named by tag, `CLASS_METACLASS` followed by
-  that class's own reference, one level deep. A class record applying some
+  record's header names its metaclass record. The metaclass of a builtin, a
+  module's root class or one of its levels is named by tag, `CLASS_METACLASS`
+  followed by that class's own reference, one level deep. A class record applying some
   row's class side is refused (`ClassRecordAppliesAClassSide`)
   ([object-model.md](object-model.md), "The image format").
 - **Inline-cache state and dispatch ids.** No cache entry, polymorphic block,
@@ -159,13 +190,18 @@ against the fresh bootstrap rather than against file content.
 
 ## Sections
 
-**Symbol table**, at the head. Every selector and name once, referenced by index
+In order: the symbol table, the code table, the mixin table, the module
+section, the platform paths, the graph (object table, frame table, roots),
+and the tag-named hashes. Each is described below; the code table's
+instruction encoding has a section of its own.
+
+**Symbol table**, right after the header. Every selector and name once, referenced by index
 everywhere else. Selectors are the format's most repeated strings — name-based
 virtual dispatch puts the same selector at very many call sites — so this shrinks
 the file and turns interning into one pass over the table instead of one
 `Symbol::intern` per send instruction.
 
-**Code table.** Every `CompiledCode` reachable from the module — each method,
+**Code table.** Every `CompiledCode` reachable from the modules — each method,
 each initializer, each superclass clause, every nested block body — in a flat
 id-addressed table, blocks before the code that creates them so a `MakeClosure`
 operand encodes as an already-decoded id. The image's bytecode is what runs after
@@ -381,6 +417,14 @@ of its nested declarations with their accessor names and accessibility, the
 class-side mixin id, the initializer code id, and the provenance span. This is
 what replaced the embedded source text and the re-parse on load.
 
+The table is a **forest**: one tree per module, each in `mixin::preorder`
+order, the trees in module order (`image/mixins.rs`). A tree's first row is
+its module's root declaration, so the module section's count must equal the
+number of trees the rows form (`DecodeError::ModuleCountMismatch`): a surplus
+tree would be declarations no module names, a missing one a module without a
+root. Row ids and the nesting ceiling cover the whole forest, and a row's
+nested declarations must lie in its own tree (`MixinTableNotATree`).
+
 A slot is its name, its kind and its accessibility (the access tags a method
 uses), because those three decide which accessors it defines (§6.3.2). The kind
 is one of `opcodes.rs`'s `SLOT_*` tags: 0 immutable, 1 mutable, 2 lazy and
@@ -432,10 +476,10 @@ to its class record. Nothing else about a metaclass is written — its mixin,
 application, enclosing object and declaring class follow from its class
 ([object-model.md](object-model.md), "The image format") — and the decoder
 applies it over `Class` from its class's row (`rebuild_metaclasses`). The
-metaclass of a class that is no record — a builtin, the root class or a root
-level or a class a platform path names — is named by class tag 4,
+metaclass of a class that is no record — a builtin, a module's root class or
+one of its levels, or a class a platform path names — is named by class tag 4,
 `CLASS_METACLASS`, followed by that class's own class tag, which may be
-`CLASS_BUILTIN`, `CLASS_USER_ROOT`, `CLASS_ROOT_LEVEL` or
+`CLASS_BUILTIN`, `CLASS_MODULE`, `CLASS_MODULE_LEVEL` or
 `CLASS_PLATFORM_PATH` and nothing else (`read_prebuilt_class`), so the nesting
 is one level deep. The encoder refuses a class record whose class object has no
 metaclass rather than write a header the decoder could not pair. A metaclass
@@ -447,19 +491,51 @@ values bring it to about 21.0x ([memory.md](memory.md), "The interim cost,
 and the one question still open"); a tag-named metaclass is no record at all
 and allocates nothing.
 
-**Root class.** The class the root inherits from, as a builtin tag behind a
-presence flag that is always set, then the root's own `<:` levels, lowest first, each as its clause's position in
-row 0 and the builtin that clause named. The root rule lets a root inherit
-only `Object` or `Value` and apply only `Value` over `Object`
-([object-model.md](object-model.md), "Mixin application", "The root rule"), so
-builtin tags are enough, and there is at most one level; a root the rule
-refuses is never written ("Verification" below). `load` rebuilds the level
-with the root class, before the graph, so the graph names it by its position
-(`CLASS_ROOT_LEVEL`, class tag 3) rather than as a record.
+**Module section.** Which top-level modules the artifact carries
+(`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
+per module, in module order, its origin, its source text when the header
+sets `FLAG_HAS_SOURCE`, and its root section. **Module order** is the root
+module first, then a project file's modules in the order written, then the
+embedded `Manifest.ns` ("Packaging" below); a source file's program is its
+one module. The count is bounded by the bytes left before anything is
+reserved for it.
 
-**Platform paths.** Written only in an image, immediately before the graph:
+The **origin** is a tag from `opcodes.rs`, `ORIGIN_FILE` (0) followed by the
+path the module was read from, or `ORIGIN_EMBEDDED` (1) followed by the name
+of a source compiled into the binary -- `Manifest.ns`'s. It is provenance, in
+every artifact, source or not; `inspect` shows it. Source travels for every
+module or for none, as the header's one flag says, so the encoder refuses a
+set of modules of which only some carry theirs rather than invent an empty
+text.
+
+A module's **root section** is the class its root inherits from, as a
+builtin tag behind a presence flag that is always set, then the root's own
+`<:` levels, lowest first, each as its clause's position in that module's
+root row and the builtin that clause named. The root rule lets a root
+inherit only `Object` or `Value` and apply only `Value` over `Object`
+([object-model.md](object-model.md), "Mixin application", "The root rule"),
+so builtin tags are enough, and there is at most one level; a root the rule
+refuses is never written ("Verification" below). `load` rebuilds every
+module's root class and levels in module order
+(`modules::build_module_classes`), before the graph, so the graph names a
+module's root by the module's index (`CLASS_MODULE`, class tag 6, followed by
+a `u32`) and a level by module index and position (`CLASS_MODULE_LEVEL`,
+class tag 7, followed by two `u32`s) rather than as records. An index past
+the modules is `BadModuleReference`, a position past a module's levels
+`BadModuleLevel`. A module is named by its index and never by its name,
+which is why two modules may share one ("Packaging" below). The class tags 1
+(`CLASS_USER_ROOT`) and 3 (`CLASS_ROOT_LEVEL`), which named *the* root class
+of an artifact that carried one module, are retired
+(`opcodes::RETIRED_CLASS_TAGS`). Rebuilding the modules in the order the
+program loaded them is also what keeps every identity hash the bootstrap
+draws the same as in the run that wrote the image.
+
+**Platform paths.** Immediately before the graph:
 a `u32` count, then per path a `u32` member count and that many symbol ids
-(`image::platform_paths`). A path is the list of public members sent from the
+(`image::platform_paths`). A started image's section is empty: nothing
+before `main:args:` holds the platform or anything reached through it
+("Packaging" below), so the section serves an image `image::snapshot`
+writes, and the image with heap state to come. A path is the list of public members sent from the
 platform, one unary send each. The encoder finds them with
 `platform_paths::discover`, which walks from the platform over, for every level
 of an object's class, each **public** slot's field — a lazy slot's included,
@@ -554,19 +630,27 @@ loaded one. A record's 0 means "not yet assigned" and is preserved the same way
 ([object-model.md](object-model.md)).
 
 **The exception is an object the image names by tag rather than by record**: a
-builtin class, the module's root class, the `platform` singleton, an object a
-used platform path names, and the metaclass of a builtin, of the root class, of
-a root level or of a path-named class (`encode::is_class_tag`, and the platform
-and path checks beside it in `GraphTable::visit_value`). None of them is a
-record, so nothing about a record could carry its hash. Instead the graph
-section closes, after its roots, with a table of exactly the tag-named objects
-whose stored hash is not 0 — the builtin classes in wire-tag order, then the
-root class, then `platform`, then the path-named objects in section order
-(`HASHED_PLATFORM_PATH` followed by the path's index), then the metaclasses
-(`HASHED_METACLASS` followed by the class's reference) of the builtins in
-wire-tag order, of the root class, of its levels and of the path-named classes
-in section order — each entry a tag from the `HASHED_*` family in `opcodes.rs`
-naming the object, and its hash (`encode::encode_tag_named_hashes`). A builtin
+builtin class, a module's root class or one of its levels, the `platform`
+singleton, an object a used platform path names, and the metaclass of a
+builtin, of a module's root class or level or of a path-named class
+(`encode::is_class_tag`, and the platform and path checks beside it in
+`GraphTable::visit_value`). None of them is a record, so nothing about a
+record could carry its hash. Instead the graph section closes, after its
+roots, with a table of exactly the tag-named objects whose stored hash is not
+0 — the builtin classes in wire-tag order, then the module roots in module
+order (`HASHED_MODULE_CLASS`, 5, followed by the module's index), then their
+levels, module by module and lowest first (`HASHED_MODULE_LEVEL`, 6, followed
+by the module's index and the level's position), then `platform`, then the
+path-named objects in section order (`HASHED_PLATFORM_PATH` followed by the
+path's index), then the metaclasses (`HASHED_METACLASS` followed by the
+class's reference) of the builtins in wire-tag order, of the module roots,
+of their levels and of the path-named classes in section order — each entry
+a tag from the `HASHED_*` family in `opcodes.rs` naming the object, and its
+hash (`encode::encode_tag_named_hashes`). An entry naming a module or level
+past the ones the module section rebuilt is `BadModuleReference` or
+`BadModuleLevel` (`a_tag_named_hash_past_the_modules_is_refused`). Hash tag
+1 (`HASHED_ROOT_CLASS`), which named the one root class, is retired
+(`RETIRED_HASHED_TAGS`). A builtin
 class a path names keeps only its builtin entry, since the loader refuses one
 object listed twice. `load` restores each hash onto the object
 the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
@@ -576,15 +660,15 @@ and the object table's, so a hash assigned afterward never collides with either.
 `inspect` reads the table as part of the graph section
 (`Report::graph_tag_named_hashes`).
 
-**Gap: a root class's `<:` levels are tag-named but have no entry in that
-table**, so a hash one of them was given would not survive a snapshot: the
-decoder rebuilds the levels with the root class and they draw fresh hashes
-when asked. It is not observable today. No program can obtain a root level as
-a value — there is no reflective `superclass` — and the one thing that can name
-one in an image is a frame's `current_class`, when a method of the builtin the
-clause named, a kernel method, runs on an instance of the root class; that is
-why `CLASS_ROOT_LEVEL` exists rather than a refusal. A `HASHED_*` tag naming a
-root level by position would close the gap once something can reach one.
+**A module's `<:` levels have entries of their own**, although no program
+can obtain one as a value today — there is no reflective `superclass` — and
+the one thing that names a level in a graph is a frame's `current_class`,
+when a method of the builtin the clause named, a kernel method, runs on an
+instance of the module's root class; that is why `CLASS_MODULE_LEVEL` exists
+rather than a refusal. The decoder rebuilds the levels with their root
+class, so without an entry a hash one was given would be drawn afresh after
+a load (`a_module_levels_own_hash_survives_an_image`,
+`crates/ns-runtime/tests/image.rs`).
 
 That is what Cog and Primordial Soup get without trying: their images carry
 every object, classes included — a Spur class's identity hash is even its index
@@ -598,8 +682,8 @@ deterministic hash for each tag-named object from a reserved range, was
 rejected: every tag-named object added later would need a reserved number, and
 the hash would no longer be the one the program was actually given, which is
 what "verbatim" promises for every other object.
-`a_hash_given_to_a_tag_named_object_survives_a_snapshot` in
-`crates/ns-cli/tests/snapshot_load.rs` pins the result end to end.
+`a_hash_given_to_a_tag_named_object_survives_build_and_load` in
+`crates/ns-cli/tests/build_load.rs` pins the result end to end.
 
 ## How frames actually get into an image
 
@@ -611,10 +695,11 @@ table only as a closure's `captured_frame` — a closure a value names, or the
 one a closure frame already in the table runs — as the frame an activation
 object reifies, or as the `home` of a frame already in it. (A closure has no
 `home` field of its own to bring one in: `Heap::closure_home` derives it from
-the captured frame.) A snapshot is taken
-at a **quiesced** point —
-after instantiation, optionally after an entry send, with the Rust call stack
-already unwound and the activation stack empty; `image::snapshot` refuses to
+the captured frame.) An image is written
+at a **quiesced** point — `build` writes one once the application's factory
+and initializers have returned and before `main:args:` is sent, and a host
+calling `image::snapshot` between sends, with the Rust call stack already
+unwound and the activation stack empty; the one writer refuses to
 encode otherwise — so every frame in it is dead:
 divorced when its activation returned, or decoded from an earlier image and never
 run. Such a frame has no sender, and carries its own registers only when
@@ -636,8 +721,10 @@ The front end is not on the load path. `load` decodes the mixin table instead of
 re-running parse → resolve → bootstrap → `load_module`, which also keeps the
 parser away from attacker-controlled text.
 
-An **optional source blob** remains behind a header flag —
-`snapshot --debug-source` writes it, `load --print-source` shows it. It is never
+**Optional source text** remains behind a header flag, `FLAG_HAS_SOURCE`,
+in the module section, one text per module —
+`build --debug-source` writes every module's, `load --print-source` prints
+them in module order, one after another. It is never
 parsed, never resolved, never executed. It exists so that the liveness
 requirement "an image can be exported back to `.ns`" is met today, while the
 decompiler that is supposed to meet it properly does not exist.
@@ -691,9 +778,9 @@ index falls within the mixin's own slot count. This is harmless at run time:
 out-of-range index writes nothing and reads as an empty slot, and an in-range
 but wrong one writes or reads a different slot of the instance -- silently
 wrong output, never a panic. That is acceptable for
-the reason `CLAUDE.md`'s "An image is untrusted input" gives: loading a
-stateless binary already runs its own code, with the same exposure as running
-the equivalent source, so a wrong slot from a malformed index is no worse
+the reason `CLAUDE.md`'s "An image is untrusted input" gives: starting a
+packaged application already runs its own code, with the same exposure as
+running the equivalent source, so a wrong slot from a malformed index is no worse
 than any other wrong answer a mutated program's own code can produce.
 
 **A mixin application is checked against the row that declares it.** Every
@@ -705,9 +792,11 @@ message takes none has none (`UnexpectedMixinApplicationMessage`), so a row and
 the frames running its clauses agree on what each clause runs; a row with `<:`
 clauses but no superclass clause is refused
 (`MixinApplicationWithoutSuperclass`). A level's record names an applying row
-and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`), and the
-root-class section lists the root's levels at rising positions within row 0's
-clauses, which also bounds their count before anything is reserved for it.
+and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`), and
+each module's root section lists its root's levels at rising positions within
+the clauses of that module's own root row -- never another module's
+(`a_root_section_clause_is_checked_against_its_own_modules_row`) -- which
+also bounds their count before anything is reserved for it.
 Levels whose superclass links close on themselves have no order to be rebuilt
 in and are refused like any other class records that do (`SuperclassCycle`).
 What is not checked is that a level sits directly above a class of its applying
@@ -733,11 +822,14 @@ application refuses instantiation as a class object — an instance of `Class`,
 `InstanceOfAClassClass`.
 
 **A root the root rule forbids is refused on both sides.** The encoder refuses
-a module whose root mixin carries a root defect, at `build` and `snapshot`
-alike, with "image encoding cannot serialize `M`: a module's root class may
-inherit only Object or Value, or write Object <: Value, and …" — the reason
-the instantiation refusal gives: such a root can never be instantiated, so an
-artifact of it could only fail, and refusing it needs no wire field. The
+a module whose root mixin carries a root defect, in `image::package` and
+`image::snapshot` alike, with "image encoding cannot serialize `M`: a
+module's root class may inherit only Object or Value, or write Object <:
+Value, and …" — the reason the instantiation refusal gives: such a root can
+never be instantiated, so an artifact of it could only fail, and refusing it
+needs no wire field. `build` meets an application root's defect earlier,
+when it instantiates the application; the encoder's refusal is what catches
+a project module the application never instantiated. The
 root-section reader (`decode_root_section`) refuses what the encoder cannot
 write: a section naming no superclass at all, as `RootWithoutSuperclass`; a
 superclass tag other than `Object`'s or `Value`'s, and a level naming
@@ -930,8 +1022,8 @@ the value a collection would have put in its place anyway
 one other header besides an activation record's that names a
 kernel-private class; the walk does not visit that header as a reference, as
 it does not an activation's. Its two fields are its closure and the state 0.
-A future is *resolving* only while its block runs, and `image::snapshot`
-refuses a world with a running activation, so no snapshot meets one; the
+A future is *resolving* only while its block runs, and the image writer
+refuses a world with a running activation, so no image meets one; the
 encoder handles the case defensively all the same, writing it as
 unresolved, its closure still in the first field
 (`future::fields_for_an_image`), which is what an abandonment would make of
@@ -962,7 +1054,7 @@ future exists runs in the loaded world
 `an_unresolved_future_round_trips_and_computes_after_load`,
 `a_future_record_that_is_not_an_unresolved_future_is_refused`,
 `a_graph_naming_future_as_a_class_is_refused`, `tests/image.rs`;
-`goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose snapshot
+`goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose build/load
 round trip carries a data cycle through resolved futures).
 
 **`LargeInteger` carries builtin tag 31**, the next free number. A
@@ -988,7 +1080,7 @@ to a retired tag is refused as an unknown builtin
 
 **A platform path is resolved before the graph, and only looked up while it
 decodes.** `load` runs in three phases. The first decodes everything up to and
-including the platform path section and roots the root class and its levels.
+including the platform path section and roots every module's root class and levels.
 The section's reader refuses what a loader cannot follow before anything is
 sent: more than `MAX_PLATFORM_PATHS` paths (`TooManyPlatformPaths`), a path of
 no members or more than `MAX_PLATFORM_PATH_LENGTH` (`PlatformPathLength`), a
@@ -1025,10 +1117,10 @@ the image is refused (`PlatformInstanceFieldCount`).
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
-`DecodeError::TrailingBytes` if not. With two artifact shapes sharing one
-format, an unchecked tail would let a binary with a graph section appended — or
-a truncated, then padded, image — decode as something other than what it is;
-see `a_binary_with_a_graph_appended_is_refused` in `crates/ns-runtime/tests/image.rs`.
+`DecodeError::TrailingBytes` if not. An unchecked tail would let an image
+with bytes appended — or a truncated, then padded, one — load as something
+its author did not write; see `bytes_after_the_last_section_are_refused_not_ignored`
+in `crates/ns-runtime/tests/image.rs`.
 
 ## Reading an artifact
 
@@ -1036,11 +1128,17 @@ see `a_binary_with_a_graph_appended_is_refused` in `crates/ns-runtime/tests/imag
 `load` uses rebuilds the mixin tree with each body attached to its declaration,
 and `disasm` formats a decoded body's `Instruction`s exactly as it does a freshly
 compiled one's. Like every load, it refuses an artifact `verify_mixins` finds
-inconsistent before printing anything.
+inconsistent before printing anything. It addresses module 0 alone, the
+application's root module: `--class` is a path rooted at that module's class
+name, so the bodies of a project's other modules, the manifest's included,
+are not reachable through `disasm` of the artifact (`inspect --full` shows
+them).
 
 `ns-next inspect <artifact>` prints the file itself. Its default is a table of
 contents — header flags, section offsets, the symbol table, **the code table
-with every body named**, and the mixin table — and `--full` prints everything:
+with every body named**, the mixin table, and the module section, each
+module's origin, whether it carries source and its root section — and
+`--full` prints everything:
 the mixin rows expanded to slot names and per-body code ids, then every body
 disassembled. The intent is `javap -v`'s: an artifact should be followable end
 to end from the text, without opening the file again. The default stays brief
@@ -1059,8 +1157,12 @@ materializes objects and resolves class tags against live builtins, so it needs
 an `Interpreter`; a viewer must not bootstrap one, any more than `javap`
 instantiates a class to print it. `inspect` therefore walks the same bytes and
 reports each record: an object's class tag, identity hash and slot values, a
-frame's receiver, arguments, temporaries, `program_counter` and kind, and the roots. That is
-the half an image has and a binary does not, and nothing else showed it.
+frame's receiver, arguments, temporaries, `program_counter` and kind, and the
+roots, and a started image's one root is the application. Nothing else shows
+the graph. A module count that disagrees with the mixin table's trees is
+refused, as `load` refuses it, rather than listed past: which tree a root
+section is read against depends on the count, so a report past it would
+describe modules that are not there.
 
 Being a second reader over one layout is a drift risk, taken deliberately and
 held by two things. The tags it interprets are the shared constants in
@@ -1073,17 +1175,16 @@ dropped, because every fixture produced zero frames and the frame half was
 never walked. A source with a block in a slot, the only way a frame reaches the
 graph, is what makes it bite.
 
-`load --print-source` still only returns the debug variant's `.ns` text; for
+`load --print-source` still only returns the debug variant's `.ns` text,
+every module's in module order with nothing marking where one ends; for
 anything else, `inspect` is the tool.
 
-This exists because the stateless binary's whole purpose is to ship **without**
-source: the one tool that prints bytecode would otherwise require the thing the
-artifact was built to do without. It also paid for itself in the binary's own
-tests: when the prefix-equality check between `build` and `snapshot` fails, a
-differing byte offset says nothing on its own, and a structural diff says
-exactly what moved; and the claim that the platform is cut out of an artifact,
-previously verifiable only by reading the encoder, is now verifiable against
-the artifact itself.
+This exists because an artifact ships **without** source unless `build` is
+asked for the debug variant: the one tool that prints bytecode would
+otherwise require the thing the artifact was built to do without. It also
+makes checkable against the artifact itself what could otherwise be
+verified only by reading the encoder -- that a started image holds no
+platform and names no platform path.
 
 **One-way only. There is no text format that can be loaded back.** That would
 be a second encoder and decoder pair to keep in step with the binary one — the
@@ -1103,132 +1204,35 @@ ones someone thought to write out.
 Part of why "export back to `.ns`" looks large is that the easy half gets counted
 into it. It is not in it.
 
-## The stateless binary
+## Packaging
 
-`ns-next build <file.ns> <out> [--entry SEL] [--debug-source]` runs the pipeline
-up to compiling the code onto the declarations — parse, resolve, bootstrap,
-compile — and then **does not instantiate**. That omission is the point: the
-artifact never sees a platform.
-
-**Format delta.** A second header flag, `FLAG_STATELESS`, and an entry-selector
-field encoded as a symbol id, bounds-checked like every other id. The field sits
-at the end of the stateless run rather than in the header, because it references
-the symbol table and because down there it does not disturb the equality of the
-describing sections. It is optional in an image and mandatory in a binary — which
-is what separates a startable artifact from a snapshot.
-
-**The consistency guarantee, stated precisely:** `build` and `snapshot` share
-their section writers, which makes the section *order* and the *encoding logic*
-for code, mixins and the root class agree by construction rather than by
-discipline. Not "the binary is a prefix of the image", which would be false the
-moment one records an entry and the other does not.
-
-What that sharing does *not* cover is the symbol table's contents: the table
-stays open past the shared sections so each caller can still extend it —
-`build` interns the entry selector, `snapshot`'s object graph interns whatever
-its live objects name, including a `Symbol` minted at run time by `asSymbol`
-with no source occurrence at all. So for the same source file and the same
-`--debug-source` setting, the bytes from `origin` through `root class` are
-identical in a `build` artifact and a `snapshot` artifact only when both hold:
-
-(a) the entry selector is one the code or mixin tables already interned
-(equivalently, one the root class's own mixin chain carries as a method or
-as a nested declaration — see "Choosing the entry" below); and
-(b) the snapshotted graph interns no string absent from those same tables.
-
-(a) is enforced by the build-time entry validation described below under
-"Choosing the entry": a selector that survives it was necessarily interned
-while encoding the declaration that defines it. That enforcement is sound
-only while every
-ancestor mixin in a root class's superclass chain is an empty builtin mixin
-(no cross-module inheritance exists yet); cross-module inheritance would need
-this validation revisited. (b) is not enforced anywhere, is expected to fail
-for an arbitrary program, and is not something this format tries to guarantee
-— a `snapshot` of a world holding a run-time-minted symbol simply disagrees
-with a `build` of the same source from wherever the symbol table diverges
-onward. Neither condition affects `build`'s or `snapshot`'s own correctness;
-only whether the two agree byte-for-byte on top of it.
-
-**Choosing the entry.** If the root class declares `main:args:` that is the
-default, which makes upstream's convention a default rather than a rule.
-Otherwise `--entry` is required. `build` refuses an arity other than 0, 1 or 2,
-and a selector the root class's own mixin chain carries as neither a method
-nor a nested declaration, rather than deferring either to start-up. This is
-narrower than what a real send would find at start-up: a primitive, though an
-entry of a mixin's own `methods` table like any other
-([dispatch.md](dispatch.md), "Primitives"), is never a selector
-`mixins::encode` interns — the builtin mixins that carry primitives are never
-serialized — and `doesNotUnderstand:` answers a send `build`'s check found
-nothing for at all. On purpose: see `root_class_answers` in
-`crates/ns-cli/src/commands/build.rs` for why only this narrower set keeps the
-byte-identity guarantee above sound.
-
-**`args:` is the program's arguments.** §8.4 gives `main:args:` "a platform
-object (8.3) as its first parameter, and a list of any environment-specific
-(e.g., command line) arguments as its second". `crates/ns-cli/src/entry.rs`'s
-`entry_arguments` — the one place any command that sends an entry builds its
-arguments — supplies the platform and then the words after `--` on the
-command line, each a `String`, in an `Array` (`ns-next run app.ns -- a b`,
-`ns-next load app.nsb -- a b`), empty when there are none. They are the CLI's,
-not the format's: the encoded entry is a selector, and nothing about it
-records what the arguments are, so one binary runs with whatever arguments
-each `load` is given.
-
-**Loading.** `load` reads the header and branches. A stateful image is unchanged.
-A stateless binary decodes symbols → code → mixins → root class → entry id, with
-no graph section, then verifies the decoded declarations against their code and
-hands back empty roots with the entry as an option. The caller instantiates the
-root class with the freshly bootstrapped platform and sends the entry, so the
-primary factory and every initializer run **inside the loaded world** against
-the artifact's own code. Capabilities enter at start time.
-
-Instantiation stays in the CLI rather than in `image::load`: deciding *that* a
-command-line entry point supplies the platform is a CLI concern, because nothing
-in the runtime needs to know it was invoked from a terminal.
-
-**Tests**, in order of importance: `build` then `load` reproduces
-`run`'s stdout, stderr and exit status byte for byte
-(`crates/ns-cli/tests/golden_round_trips.rs`, one test per golden and
-lowering, `build_load::<lowering>::<category>/<name>`); `build` and
-`snapshot` agree on the describing sections' bytes
-(`a_build_and_a_snapshot_agree_on_the_describing_sections`); `run-corpus`
-carries a third lane that builds and loads each whitelisted entry, where a
-row's `send` is the build's `--entry`; and mutation and truncation tests cover
-the new flag, the entry field and the trailing-byte check
-(`crates/ns-runtime/tests/image.rs`).
-
-## Planned: one artifact, packaged before `main:args:`
-
-Would change: `build` packages the application and serializes it just before
-the send of `main:args:`, the way Newspeak on Squeak (`DeploymentManager.ns`,
-`appClass packageUsing: ide namespacing manifest`, then `Serializer new
-serialize: app`) and Primordial Soup (`CompilerApp.ns`,
-`createSnapshotsFromNamespace:outputs:`) do; the stateless binary, the
-`snapshot` command and `--send` go away, and a program made of several modules
-is assembled through a manifest. Decided with the user on 2026-09-29, before
-the Are We Fast Yet benchmarks, whose harness is such a program.
-
-**The model.** An application is the instance of a root class that is sent
-`main: platform args:` (§8.4). The platform enters there and nowhere else: no
-root class is instantiated with it, so nothing assembled before `main:args:`
-can hold it, and an artifact written at that point cannot reach it. A later
-image with heap state is the same artifact written at another point of the
-same run -- mid-execution rather than before `main:args:`, resumed rather than
-started ("Planned: suspend and resume").
+`ns-next build <file.ns | project.json> <out> [--debug-source] [--lowering
+…]` assembles the application exactly as `run` does and writes it where `run`
+would send `main:args:`. `ns-next load <image> [-- args]` starts it. The CLI
+side is `crates/ns-cli/src/program.rs` (`read_program`, `load_program`,
+`instantiate_application`, `module_sources`), shared by `run`, `build` and
+`bench`, and `crates/ns-cli/src/project.rs`, the project file.
 
 **Two ways to assemble, one entry.**
 
 - **A single source file**: `ns-next run app.ns [-- args]`. The root class's
   primary factory must be `new`, written out or left implicit (§6: "If the
   signature is omitted it defaults to `new`"); any other factory is refused
-  before anything runs, naming the factory found. The root is sent `new`, then `main: platform args:`.
-- **A project file**: `ns-next run app.json [-- args]`. The root class's
-  primary factory must be `packageUsing:`. Every module is parsed, resolved
-  and compiled first; the root is sent `packageUsing: manifest`, then `main:
+  before anything runs, naming the factory found
+  (`a_source_file_whose_root_takes_the_platform_is_refused_before_anything_runs`,
+  `crates/ns-cli/tests/run.rs`). The root is sent `new`, then `main:
   platform args:`.
+- **A project file**: `ns-next run app.json [-- args]`, recognized by its
+  `.json` extension. The root class's primary factory must be
+  `packageUsing:`. Every module is parsed, resolved and compiled first; the
+  root is sent `packageUsing: manifest`, then `main: platform args:`.
 
-The project file is JSON (the user's choice; it brings `serde_json` into
-`ns-cli`, where until now only `ns-lsp` used it):
+Either way the platform arrives only as `main:args:`'s first argument, and
+the application's factory and initializers run with no platform in
+existence.
+
+**The project file** is JSON (the user's choice; it brings `serde_json` into
+`ns-cli`, which `ns-lsp` already used):
 
 ```json
 {
@@ -1246,76 +1250,108 @@ The project file is JSON (the user's choice; it brings `serde_json` into
 - The project file's own path, given to a command, is absolute or relative
   to the working directory. A path inside it is absolute or relative to the
   project file. Either separator, `/` or `\`, is accepted in every path,
-  relative or absolute, on every operating system.
-- Refused before anything runs: an unknown field, a missing or unreadable
-  file, a module that does not parse or resolve, two modules declaring the
-  same name, and a root whose factory is not `packageUsing:`.
+  relative or absolute, on every operating system: the foreign one is
+  rewritten to the host's and the platform's own path parsing does the rest,
+  which keeps drive letters, UNC and verbatim prefixes intact
+  (`resolve_written_path`).
+- Refused before anything runs: an unknown field, a missing root, a missing
+  or unreadable file, a module that does not parse or resolve, two modules
+  declaring the same name, and a root whose factory is not `packageUsing:`.
+  A module whose name is a public member of every object -- `Array`,
+  `String` or any other predefined class `Object` has an accessor for -- is
+  refused too, once the manifest exists and before the root is sent
+  `packageUsing:`: the member would answer the send before the manifest's
+  `doesNotUnderstand:` could (`Interpreter::responds_publicly`,
+  `a_module_shadowed_by_an_object_member_is_refused`).
+- A module may declare the root's name, or be named `Manifest`: the root is
+  not in the manifest, and an image names a module by its index, never by
+  its name, so neither collides with anything.
+
+**Module order** is fixed and shared by everything that loads or writes
+modules: the root module first, then the project file's `modules` in the
+order written, then the embedded `Manifest.ns` (only for a project).
+`load_program` compiles them into one interpreter in that order, `build`
+writes them in it, and `load` rebuilds their classes in it, which is what
+keeps every identity hash the bootstrap draws the same across `run`, `build`
+and `load`.
 
 **The manifest** is an instance of a small Newspeak class,
-`core-library/Manifest.ns`, embedded in the binary. It is neither privileged
-nor shipped: it has no VM mirror, is resolved like a user module and compiled
-into the program beside the modules, so an application that keeps its
-manifest in a slot serializes it like any other object. The host instantiates
-it with an `Array` of names (`Symbol`s) and an `Array` of module definitions
-(§6.4: the class objects, not instances). Its `doesNotUnderstand:` answers the
-module definition whose name is the message's selector, searching linearly,
-and passes anything else to `super`, so `manifest Missing` is an ordinary
-`doesNotUnderstand:` at run time -- the lookup both upstream `Manifest`
-classes make over a map (`Namespacing.ns`, `CompilerApp.ns`). No program can
-name the class; it holds only what the host hands it.
+`crates/ns-runtime/core-library/Manifest.ns`, embedded in the binary as
+`ns_runtime::MANIFEST_SOURCE` ([core-library.md](core-library.md), "The
+manifest"). It is neither privileged nor shipped: it has no VM mirror, is
+resolved with `resolve` like a user module and compiled into the program
+beside the modules (`SourceOrigin::Embedded("Manifest.ns")`), so an
+application that keeps its manifest in a slot serializes it like any other
+object (`goldens/manifest/an_application_may_keep_its_manifest`). The host
+instantiates it with `names: definitions:`, an `Array` of names (`Symbol`s)
+and an `Array` of module definitions (§6.4: the class objects, not
+instances). Its `doesNotUnderstand:` answers the module definition whose
+name is the message's selector, searching linearly, and passes anything else
+to `super`, so `manifest Missing` is an ordinary `doesNotUnderstand:` at run
+time (`goldens/manifest/a_name_the_manifest_does_not_hold_is_not_understood`)
+-- the lookup both upstream `Manifest` classes make over a map
+(`Namespacing.ns`, `CompilerApp.ns`).
 
-**The commands.**
+**What `build` writes.** `image::package` takes the modules in module order
+and the application, and writes an image whose graph has the application as
+its one root and whose header sets `FLAG_START`. No platform exists for the
+application yet, so none is named: the encoder is handed `nil` as the
+platform, discovers no platform path, and a graph that reaches the platform
+or anything shipped meets the encoder's refusal of a shipped object no path
+names (`package_refuses_an_application_that_reaches_the_platform`,
+`crates/ns-runtime/tests/image.rs`). An application that reached the
+platform could only have been handed it, and nothing hands one out before
+`main:args:`. `--debug-source` stores every module's source text. An error
+raised while assembling -- a refused factory, a resolve error, an
+initializer that raises -- fails the build with the status and report `run`
+gives the same error, so a golden whose assembly fails round-trips as that
+failure.
 
-- `run <file.ns | project.json> [-- args]`: assemble as above, send `main:
-  platform args:`.
-- `build <file.ns | project.json> <out>`: assemble the same way, then write
-  the image instead of sending `main:args:`. The application's code runs at
-  build time -- its factory and every initializer -- with no platform in
-  existence. An error raised while assembling fails the build with the
-  status and message `run` reports for the same error, so a golden whose
-  assembly fails round-trips as that failure.
-- `load <artifact> [-- args]`: decode, verify, send `main: platform args:` to
-  the graph's root.
-- `bench <file.ns | project.json> [-- args]`: assemble anew for every sample,
-  as today, and time only `main:args:`.
-- `disasm` and `inspect` are unchanged, except that every artifact `inspect`
-  reads has an object graph.
-- Removed: `snapshot`, and `--send` on `run`, `load` and `bench`.
+**Loading.** `load` reads the image with `image::load`, which decodes and
+verifies it as "Verification" describes, and refuses one that is not started
+-- an image without `FLAG_START`, which only a host's `image::snapshot`
+writes (`load_refuses_an_image_that_is_not_started`,
+`crates/ns-cli/tests/build_load.rs`). It sends the application `main:
+platform args:` with the loading interpreter's platform. The factory and the
+initializers do not run again: they ran at build time, and their effects are
+in the graph (`a_loaded_application_does_not_rerun_its_initializers`). The
+send stays in the CLI rather than in `image::load`: deciding that a
+command-line start supplies the platform is a CLI concern, because nothing in
+the runtime needs to know it was invoked from a terminal.
 
-**The format.** One artifact: the image's sections with the application as
-the graph's root and a header flag saying the image is to be started, which
-`load` answers by sending `main:args:` to the root. The entry needs no field,
-because it is always `main:args:`. `FLAG_STATELESS`'s bit and the entry-selector
-field retire, and the class tags that name "the module's root class"
-(`CLASS_USER_ROOT`, `CLASS_ROOT_LEVEL`, `HASHED_ROOT_CLASS`) assume one module
-per artifact: a project's modules are several top-level mixins, so a
-top-level class is named by its index in the mixin table under new tags, and
-the old ones retire ("A wire tag is assigned once", `CLAUDE.md`). The
-platform-path encoding stays, with its runtime-level tests, for the image with
-heap state; the encoder refuses a startable image whose graph reaches a
-shipped module's instance or class, which none built this way can.
+**`args:` is the program's arguments.** §8.4 gives `main:args:` "a platform
+object (8.3) as its first parameter, and a list of any environment-specific
+(e.g., command line) arguments as its second". `crates/ns-cli/src/entry.rs`'s
+`send_main` -- the one entry send every started program receives, from
+`run`, `load` and `bench` alike -- supplies the platform and then the words
+after `--` on the command line, each a `String`, in an `Array`
+(`main_arguments`; `ns-next run app.ns -- a b`, `ns-next load app.img -- a
+b`), empty when there are none. They are the CLI's, not the format's:
+nothing in an image records them, so one artifact runs with whatever
+arguments each `load` is given.
 
-**The goldens and `run-corpus`.**
+**`bench`** assembles a fresh application for every sample, as `run` does
+and untimed, and times `main:args:` alone. **`run-corpus`** starts each
+corpus module through a generated application: the six corpus modules on
+`corpus/runnable.toml` are upstream's and declare no `main:args:`, so for
+each row it writes a wrapper application and a project file into a scratch
+directory. The wrapper's `main:args:` instantiates the corpus module from its
+manifest -- `new`, or `usingPlatform: platform` with the platform
+`main:args:` received -- and sends it the row's `send`, a unary selector.
+All four lanes, `run` of the project file and `build` then `load` of it,
+under both lowerings, go through that one wrapper
+(`crates/ns-cli/src/commands/run_corpus.rs`).
 
-- Every golden's root becomes `class X = (…)` or `class X new = (…)`, its use
-  of the platform moved from slot initializers into `main:args:` (locals, or
-  slots `main:args:` fills). The recorded `status`, `stdout` and `stderr` do
-  not change; a golden whose output would is a finding to settle, not a
-  golden to update. A golden that exists to exercise the platform in module
-  state moves to a runtime-level test.
-- New goldens cover the manifest: an application of two modules, `manifest
-  Missing`, and a manifest kept in a slot through `build` and `load`.
-- `run-corpus`'s six corpus modules cannot change and declare no
-  `main:args:`. For each row it writes a wrapper application and a project
-  file into a temporary directory; the wrapper's `main:args:` instantiates the
-  corpus module from its manifest -- `new`, or `usingPlatform: platform` --
-  and sends the row's `send`. All four lanes, source and built artifact under
-  both lowerings, then go through `run` and `build`/`load` alone.
-
-**Tests beside the goldens**: CLI tests for every refusal above and for both
-separators in relative and absolute paths; the round trip `build` then `load`
-per golden and lowering, as today; mutation and truncation tests for the new
-flag and the new class tags.
+**Tests**, in order of importance: `build` then `load` reproduces
+`run`'s stdout, stderr and exit status byte for byte, for every golden, the
+project goldens included (`crates/ns-cli/tests/golden_round_trips.rs`, one
+test per golden and lowering, `build_load::<lowering>::<category>/<name>`);
+two modules draw the same identity hashes under `run` and `load`
+(`crates/ns-cli/tests/build_load.rs`); the CLI refusals above
+(`crates/ns-cli/tests/run.rs`, and `project.rs`'s own tests for the paths);
+and mutation and truncation tests for the module section, the module class
+and hash tags, `FLAG_START` and the retired tags and flag
+(`crates/ns-runtime/tests/image.rs`).
 
 ## Planned: the image under the new representation
 
@@ -1361,17 +1397,18 @@ which is old space's bytes relocated on load, is the model this does not take.
 - **The decode amplification is recomputed** as the largest of the ratios:
   per record kind, that kind's fixed object size against its minimum record
   -- a class or metaclass object, eight fields and its header and class word,
-  80 bytes against the smallest metaclass record, 8 bytes (a class tag of 2,
-  the hash's 4, `OBJECT_METACLASS` and a one-byte `CLASS_USER_ROOT` tag for
-  the class it describes, which `decode_class_tag` accepts:
-  `image/encode.rs:1612-1615`, `image/decode.rs:3185-3190`), 10x, and a
+  80 bytes against the smallest metaclass record, 9 bytes (a class tag of 2,
+  the hash's 4, `OBJECT_METACLASS` and a two-byte `CLASS_BUILTIN` reference
+  for the class it describes, which `decode_class_tag` accepts and
+  `pair_metaclasses` refuses only once every record is read:
+  `image/encode.rs:1645-1648`, `image/decode.rs:3306-3311`), about 8.9x, and a
   frame object, about 96 bytes against a record of about 19, some 5x -- and
   per value, the words a decoded value occupies against the bytes that
   encode it -- a one-byte `VALUE_NIL` element becomes an 8-byte word, 8x,
   a UTF-8 byte widened to the 32-bit string form 4x, and a
   `VALUE_LARGE_INTEGER` of one digit, 14 bytes, becomes an object of a
   header, a class word and its digit. The class kind's
-  10x is the largest, and the bound is whichever ratio is largest once the
+  8.9x is the largest, and the bound is whichever ratio is largest once the
   layouts are final, since the first pass allocates each object's full size
   before validation. A symbol record names a symbol-table entry rather than
   carrying its text, so the first pass refuses a second record naming the
@@ -1388,11 +1425,11 @@ which is old space's bytes relocated on load, is the model this does not take.
 - **Every load tenures before the decoder allocates.** Under generations
   ([memory.md](memory.md), "Planned: generations") the decoder allocates
   everything old, and every load runs `Interpreter::bootstrap()` first
-  (`image/mod.rs:308`) and then decodes the root class
-  (`decode::build_root_class`, `image/mod.rs:323`), a stateless binary as much
-  as an image, so every load will scavenge and tenure right after the
-  bootstrap, before the decoder allocates anything; a stateful load does it
-  again after its platform paths, before the graph pass. Each is a collection
+  (`image/mod.rs:290`) and then rebuilds every module's root class
+  (`modules::build_module_classes`, `image/mod.rs:305`), so every load will
+  scavenge and tenure right after the bootstrap, before the decoder
+  allocates anything; a load whose image names platform paths does it
+  again after following them, before the graph pass. Each is a collection
   between entries, where only roots hold values, as `Interpreter::collect_now`
   is today, never one inside a step. The decoder's stores are then
   old-to-old and need no barrier.
@@ -1471,8 +1508,11 @@ argument. Its snapshots contain no running state: activations are not serialized
 and activation objects materialize only when a mirror asks for one.
 
 We need no object store, because the bootstrap is Rust and deterministic: what
-the VM needs is reconstructible rather than serialized. That is also why the
-entry selector goes in the file — there is no store to put it in.
+the VM needs is reconstructible rather than serialized. The deployment
+artifact is packaged the same way upstream's is, just before `main:args:`
+with the application as the graph's root, and needs no store for that
+either: the application is the graph's one root, and the entry is always
+`main:args:`.
 
 The trade is real in both directions. Upstream can ship a modified kernel, can
 round-trip behaviour created at run time because methods are ordinary graph
@@ -1485,16 +1525,50 @@ builtins.
 
 ## Decisions
 
-- **One format, two artifacts, distinguished by a header flag** — not two magics
-  and two decoders, which would each have to hold the untrusted-input guarantee
-  independently and would drift.
-- **The binary records its entry point.** A deployment artifact that cannot say
-  how it starts is not one.
-- **`main:args:` is the default, not the rule.** Made mandatory it would cost the
-  entire `run-corpus` gate: none of the six modules that run declares it.
-- **`build` is a new verb; `load` is not.** Producing the two artifacts are
-  different acts; consuming them is the same act, differing only in whether
-  instantiation precedes the entry send, which the header says.
+- **The application is packaged just before `main:args:`, as upstream
+  packages it** (decided with the user on 2026-09-29, before the Are We Fast
+  Yet benchmarks, whose harness is a program of several modules). Newspeak
+  on Squeak's `DeploymentManager.ns` sends `packageUsing:` and serializes
+  the result, and Primordial Soup's `CompilerApp.ns` does the same; the
+  artifact then holds what the program is and none of the world it runs in,
+  because the platform arrives only as `main:args:`'s first argument. It
+  replaced two artifacts -- a stateless binary written before instantiation
+  with a recorded entry selector, and a snapshot written after it -- with
+  one, and the command line's `snapshot`, `--send` and `--entry` with the
+  one entry every started program receives. The run-corpus gate kept its
+  modules, which declare no `main:args:`, by starting each through a
+  generated application rather than by keeping a second entry.
+- **One format; the image with heap state is the same artifact.** A started
+  image and an image written mid-execution differ in where the run was when
+  it was written, not in their sections, so there is one decoder to hold the
+  untrusted-input guarantee, and a header flag, `FLAG_START`, says which to
+  expect. The entry needs no field, because it is always `main:args:`.
+- **Modules reach the application through a manifest answering
+  `doesNotUnderstand:`**, not through a namespace builtin, a factory
+  convention or a lookup on the VM mirror: it is what both upstream
+  `Manifest` classes do, it needs nothing privileged, so the manifest is
+  ordinary user code an image may carry, and a missing module is an
+  ordinary `doesNotUnderstand:` at run time. A module shadowed by a public
+  member of every object is refused before anything runs, since the
+  manifest could never answer it.
+- **The project file is JSON** (the user's choice), read with `serde_json`,
+  which `ns-lsp` already depended on, so no new crate entered the lock file.
+  Unknown fields are refused, so a misspelt key is a message rather than a
+  module silently missing.
+- **Module order is fixed: root, the project's modules as written, then
+  `Manifest.ns`.** `run`, `build` and `load` compile or rebuild the modules
+  in the same order, so every identity hash the bootstrap draws is the same
+  under all three, and an image names a module by its index, so two modules
+  may share a name without either becoming unreachable to the format.
+- **A module is named by index, and the one-root tags retire.** `CLASS_USER_ROOT`
+  (class tag 1), `CLASS_ROOT_LEVEL` (class tag 3), `HASHED_ROOT_CLASS` (hash
+  tag 1) and the header's `FLAG_STATELESS` (bit 2) assumed one module per
+  artifact or an artifact with no graph; their numbers are retired, never
+  reused, and `CLASS_MODULE` (6), `CLASS_MODULE_LEVEL` (7),
+  `HASHED_MODULE_CLASS` (5), `HASHED_MODULE_LEVEL` (6), `FLAG_START` (4) and
+  the origin tags `ORIGIN_FILE` (0) and `ORIGIN_EMBEDDED` (1) took the next
+  free numbers, so a stale artifact meets an unknown tag instead of decoding
+  into a different program.
 - **Applications are rebuilt, not serialized**, so a stored layout can never
   disagree with its mixins.
 - **Inline-cache state is never serialized** (2026-09-16), and neither is a
@@ -1527,13 +1601,13 @@ builtins.
   a loadable text format would be a second codec to keep in step, and the need
   that would justify it is already met by corrupting real images.
 - **An image records the hashes of the objects it names by tag**, so a hash the
-  program was given survives a snapshot like every other; a reserved-range
+  program was given survives a load like every other; a reserved-range
   rule was rejected.
 
 ## Open questions
 
 - **The decompiler** that is to provide export back to `.ns`. Mitigated by the
-  debug source blob, unwritten.
+  debug source text, unwritten.
 - **Whether upstream strips source at packaging time.** A measurement of four
   `.vfuel` artifacts concluded that nothing is stripped, ~44% long text runs in
   each. `CompilerApp.ns`'s `keepSource: (appName = 'TestRunner')` shows a switch
@@ -1541,8 +1615,3 @@ builtins.
   Both can be true — different toolchain, or the measured runs were selectors
   rather than source — but the claim should be re-checked rather than left
   standing.
-- **Whether an image should record its entry too**, and **what a multi-module
-  artifact would look like**: both answered by "Planned: one artifact,
-  packaged before `main:args:`" -- every artifact is started with
-  `main:args:`, and a project's modules are several top-level mixins in one
-  artifact. Open until it is built.

@@ -79,8 +79,9 @@ On Windows the C runtime is linked statically (see `.cargo/config.toml`), so
 `ns-next.exe` is one self-contained file: it needs no Rust installation and no VC++
 redistributable on the machine that runs it.
 
-`goldens/` holds end-to-end programs, each a `.ns` source and a `.toml` beside it
-recording the exit status, stdout and stderr that source must produce, byte for byte —
+`goldens/` holds end-to-end programs, each a `.ns` source or a `.json` project file
+and a `.toml` beside it recording the exit status, stdout and stderr that program must
+produce, byte for byte —
 under both lowerings, the optimized one and the reference lowering it is checked
 against (`docs/design/README.md`, "The goldens"). The corpus is a vendored set of real
 Newspeak modules, kept as a non-regression gate for the parser; the six on
@@ -89,16 +90,37 @@ Newspeak modules, kept as a non-regression gate for the parser; the six on
 ## Usage
 
 ```bash
-# run a file end to end: parse, resolve, bootstrap, load, instantiate, send the entry selector
+# run a file end to end: parse, resolve, bootstrap, compile, instantiate the
+# root class with `new`, then send it `main: platform args:`
 cargo run -p ns-cli -- run goldens/language/hello.ns
 ```
 
-The entry selector defaults to `main:args:`; `--send <selector>` picks another one.
+A program is one `.ns` file, whose root class is instantiated with `new`, or
+a `.json` project file naming several modules, whose root is instantiated
+with `packageUsing:` a manifest of the others. Either way the application is
+then sent `main: platform args:`, the only way the platform reaches it. A
+project file names its root and its other modules; paths are relative to the
+project file, with either separator:
+
+```json
+{
+  "root": "App.ns",
+  "modules": ["Greeting.ns", "Counter.ns"]
+}
+```
+
+The root declares `class App packageUsing: manifest = (...)` and reaches each
+module by the name its source declares, `manifest Greeting`
+(`goldens/manifest/` has three such projects).
+
+```bash
+cargo run -p ns-cli -- run goldens/manifest/a_project_reaches_its_modules_through_the_manifest.json
+```
+
 The program's arguments follow `--` (`run app.ns -- first second`) and reach
-`main:args:` as an `Array` of `String`s; `load`, `snapshot` and `bench` take them
-the same way.
-`--lowering reference` compiles with the naive reference lowering instead of the
-optimized one; `run`, `snapshot`, `build` and `disasm` take it.
+`main:args:` as an `Array` of `String`s; `load` and `bench` take them the
+same way. `--lowering reference` compiles with the naive reference lowering
+instead of the optimized one; `run`, `build` and `disasm` take it.
 
 ```bash
 # print one compiled body; nothing is instantiated or run. Takes a .ns file,
@@ -107,37 +129,33 @@ cargo run -p ns-cli -- disasm goldens/language/blocks_and_return.ns find:in:
 ```
 
 ```bash
-# serialize a running world to an image, then load it back and send it a message
-cargo run -p ns-cli -- snapshot goldens/language/instance_init.ns world.img
-cargo run -p ns-cli -- load world.img --send main:args:
-```
-
-```bash
 # check that a file parses; --ast prints the syntax tree
 cargo run -p ns-cli -- parse goldens/language/hello.ns
 ```
 
 ```bash
-# compile to a stateless deployment binary: code and structure, no instance
-# state. `build` never instantiates; `load` does, against its own loading
-# world's platform, then sends the recorded entry (main:args: here, since the
-# root class declares it) -- override with --send
-cargo run -p ns-cli -- build goldens/language/arithmetic.ns app.nsb
-cargo run -p ns-cli -- load app.nsb
+# package the application: assemble it exactly as `run` does -- its factory and
+# every initializer run, with no platform in existence -- and write it just
+# before `main:args:` as an image. `load` decodes it and sends it
+# `main: platform args:` with its own platform. --debug-source keeps every
+# module's source in the image, which `load --print-source` prints
+cargo run -p ns-cli -- build goldens/language/instance_init.ns app.img
+cargo run -p ns-cli -- load app.img
 ```
 
 ```bash
-# look inside an artifact without instantiating or running it: header flags,
-# section offsets, the symbol table, every body in the code table, and the
-# mixin table. Takes a stateless binary or an image written by `snapshot`
-cargo run -p ns-cli -- inspect app.nsb
-# everything, the way `javap -v` renders a class file: mixin rows expanded and
-# every body disassembled, plus an image's object graph read record by record
-cargo run -p ns-cli -- inspect world.img --full
+# look inside an artifact without loading or running it: header flags,
+# section offsets, the symbol table, every body in the code table, the mixin
+# table and the modules
+cargo run -p ns-cli -- inspect app.img
+# everything, the way `javap -v` renders a class file: mixin rows expanded,
+# every body disassembled, and the object graph read record by record
+cargo run -p ns-cli -- inspect app.img --full
 ```
 
 ```bash
-# time one entry send; measure with --release, never a debug build
+# time main:args: alone, a fresh application assembled untimed for every
+# sample; measure with --release, never a debug build
 cargo run --release -p ns-cli -- bench goldens/bench/bench_loop.ns --iterations 30
 ```
 

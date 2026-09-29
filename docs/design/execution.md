@@ -254,7 +254,8 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   pushed — its *base* — and pops it, with everything it pushes above it, on
   every path out.
 - The image encoder only ever runs between sends, when nothing is live:
-  `image::snapshot` refuses to start while any activation is on the stack, and
+  its one writer, behind `image::package` and `image::snapshot`, refuses to
+  start while any activation is on the stack, and
   `Heap::frame_snapshot` debug-asserts that no encoded frame is married. The
   decoder builds frames that are never married. The format knows nothing of the
   stack: a frame record describes a reified frame, and nothing else is
@@ -301,8 +302,8 @@ handle, and it is never serialized.
 
 **The chain of running activations is walkable independently of the Rust
 stack**: it is the activation stack, innermost last. That is what the debugger
-will reflect over and what a precise collector will scan. An image snapshot
-serializes reified frames only, and is taken when nothing is running
+will reflect over and what a precise collector will scan. An image
+serializes reified frames only, and is written when nothing is running
 ([image-format.md](image-format.md)).
 
 ## The VM
@@ -821,8 +822,8 @@ Bytecode medians in ms:
 
 On every source the after-group lies entirely below the before-group.
 `bench_loop.ns` got about 5% faster, `bench_send.ns` about 6%, and
-**`bench_block.ns` about 22%**, from ~38.3 ms to ~29.9 ms. Every image the
-fixtures build or snapshot is byte-identical between the two binaries (44
+**`bench_block.ns` about 22%**, from ~38.3 ms to ~29.9 ms. Every artifact the
+fixtures produced is byte-identical between the two binaries (44
 artifacts), as a change that preserves behaviour requires.
 
 Each change that touched a hot path was also measured on its own, against the
@@ -879,7 +880,7 @@ medians in ms:
 On every source the after-group lies entirely below the before-group, by far
 more than either group's spread: **`bench_loop.ns` about 32% faster,
 `bench_send.ns` about 31%, `bench_block.ns` about 22%.** The optimized lowering
-emits the same instructions as before, so every `build` and `snapshot` artifact
+emits the same instructions as before, so every artifact
 of it is byte-identical between the two binaries: `compared 46 artifacts, 0
 differing`, over the 23 fixtures. A reference-lowering artifact differs by
 construction, since it now carries `SendInlinable`, and was not compared.
@@ -4859,7 +4860,7 @@ one bound, L ("The depth limit" above), is all it needs.
 ### No re-entry from Rust
 
 Rust enters the run loop only as its outermost caller — a host's `send` or
-`instantiate`, a stateless binary's entry among them — and never from inside a
+`instantiate`, an application's assembly and its `main:args:` among them — and never from inside a
 running computation. `do:`, instantiation and the nested-class accessor, the
 three paths that used to run Newspeak code from Rust, are trampoline steps.
 This was step 2a of Milestone 4, decided 2026-09-13, and it is what the root

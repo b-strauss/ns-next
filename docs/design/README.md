@@ -83,7 +83,7 @@ guarantee it gives up or the complexity it adds.
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop runs over the frame's state in locals, one entry per stretch between two safepoints, and polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers | The compact instruction encoding, after the eight-byte value ("Planned: the compact instruction encoding"); then the JIT tiers -- an execution model for compiled code, a baseline JIT and an optimizing one ("Planned: JIT tiers") |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Built — the arena, the activation stack, the safepoint, tracing, host roots, the stress modes, the lifetime brand and a mark-compact collector; a slot is reclaimed once nothing reaches it; the memory layer, `crates/ns-memory`, which nothing uses yet ("The memory layer") | The object space, fields inline in one VM-owned space with offset handles ("Planned: the object space"); generations ("Planned: generations"); inline allocation ("Planned: inline allocation") |
-| Serialization, both artifacts | [image-format.md](image-format.md) | Built | One artifact, packaged before `main:args:`, and programs of several modules through a manifest ("Planned: one artifact, packaged before `main:args:`"); the image under the new representation ("Planned: the image under the new representation"); suspend and resume |
+| Serialization: the packaged application | [image-format.md](image-format.md) | Built: one artifact, an application packaged just before `main:args:`, carrying every module of a project | The image under the new representation ("Planned: the image under the new representation"); suspend and resume ("Planned: suspend and resume") |
 | Builtins and the platform | [core-library.md](core-library.md) | **Partial:** `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is Newspeak in `crates/ns-runtime/core-library/Kernel.ns` -- a forwarder to one of the mirror's `MIRROR` rows, which are the leaves, or a quick method or ordinary method that reaches no leaf, as all of `True`'s, `False`'s and the nil protocol's are. Its hierarchy is §3.2's and §3.1.1's — `Top`, then `Object`, then `Value` over the value classes with `Number` among them, and `Behavior` over `Class` and `Metaclass` — and `Value` derives `=`, `==` and `hash` from an instance's state. Every class object's class is its own metaclass, its class side applied to `Class`, and every metaclass's class is `Metaclass`; a class object is a value when its enclosing object is. `Object` carries §3.2's accessors for the predefined classes, so a bare `String` is a send answered without an activation. §8.6's exceptions are Newspeak over kernel-private activation objects: `Exception`, `Error`, `MessageNotUnderstood`, `Halt` and `Message`, reached through `platform kernel`, with ANSI's `on:do:`, `ensure:`, `ifCurtailed:`, `return:`, `retry`, `resume:` and `pass`; every VM error and every message nothing understands is signalled, and the depth limit keeps a reserve for signalling its own. The platform is an instance of the nested `Platform` of the shipped module `crates/ns-runtime/core-library/PlatformFactory.ns`, whose root is booted with the mirror and the kernel instance from the table of shipped modules (`interpreter/core_library.rs`) and never handed out (the factory pattern); its transcript, `collections` and `kernel` members are lazy slots, its module's classes are handed out by class accessors, and an image names all of them by their platform paths. `collections` is the facet of a second shipped module, `CollectionsFactory.ns`, whose root `PlatformFactory`'s builds once through the mirror's `moduleNamed:`; its `List` is Newspeak. Integers are unbounded, as §5.1.1 requires: one that does not fit `i64` is a `LargeInteger`, a kernel subclass of `Integer` whose arithmetic (`crates/ns-runtime/src/arbitrary_integer/`) is adapted from `num-bigint` and `num-integer` ("Large integers") | real bodies for `whileTrue:`, `whileFalse:` and `do:` before the baseline JIT (road step 8); settling `Integer>>/` and the numeric tower `Number` is the place for |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 | Editor support: the language server and the JetBrains plugin | [editor-support.md](editor-support.md) | Built — highlighting and errors as you type in every commercial JetBrains IDE from 2026.1.4; the server bundled for Windows x64 | formatting, navigation, more platforms |
@@ -148,24 +148,34 @@ source bytes
                                 the interpreter's lowering -- optimized,
                                 or the reference lowering it is checked
                                 against
-  -> instantiate                the primary factory, then each level's initializer
-  -> the entry send             whatever the CLI was asked to send
+  -> assemble                   the root sent `new`, or `packageUsing:` a
+                                manifest of the project's other modules:
+                                the primary factory, then each level's
+                                initializer
+  -> main: platform args:       the platform's one way into the program
 ```
 
-The two serialization paths branch off this: `snapshot` serializes the world
-after instantiation, `load` rebuilds one without running the front end at all.
-See [image-format.md](image-format.md).
+A project's modules go through the front end one after another, in module
+order, into one interpreter, and the embedded `Manifest.ns` with them.
+`build` stops just before the send of `main:args:` and serializes the
+assembled application instead; `load` rebuilds that world without running
+the front end at all and sends it `main: platform args:`. See
+[image-format.md](image-format.md), "The artifact" and "Packaging".
 
 ### The `ns-next` binary
 
-`parse`, `parse-corpus`, `run-corpus`, `run`, `snapshot`, `load`, `bench`,
-`disasm`, `inspect`, `build` — one module each under
+`parse`, `parse-corpus`, `run-corpus`, `run`, `load`, `bench`, `disasm`,
+`inspect`, `build` — one module each under
 `crates/ns-cli/src/commands/`. `main.rs` holds only the argument parser, the
 dispatch to them and the thread every command runs on — a thread of its own
 because the symbol interner is thread-local, spawned with the stack the front
-end needs ([execution.md](execution.md), "The depth limit"); loading a source
-file, and instantiating the root class and sending the entry, which several
-commands share, live in `source.rs` and `entry.rs`.
+end needs ([execution.md](execution.md), "The depth limit"). What several
+commands share lives beside it: `source.rs` loads one source file,
+`project.rs` reads a JSON project file and its path rules, `program.rs`
+reads a program -- one source file or a project, its modules in module
+order -- compiles it and assembles its application with `new` or
+`packageUsing:` a manifest, and `entry.rs` sends `main: platform args:` and
+reports its outcome.
 
 ## The goldens
 
@@ -184,18 +194,25 @@ in a debug build `golden_with_a_two_entry_global_cache::<category>/<name>` as
 well -- so the suite lists each golden, reports every failure with the expected
 and actual stream, runs them in parallel, and runs one or a family by name
 (`cargo nextest run -p ns-cli --test run_goldens lazy`); a skipped golden is
-listed as skipped, and `--run-ignored all` runs it. The snapshot and
-build/load round trips are the same, one test per golden
+listed as skipped, and `--run-ignored all` runs it. The build/load round
+trip is the same, one test per golden
 (`crates/ns-cli/tests/golden_round_trips.rs`).
 Every golden that is not skipped, the ones recorded as raising included, also
-goes through the snapshot and the build/load round trip, which hold an image's
-and a binary's three streams against what `run` answers on the source.
+goes through the round trip, `build` then `load`, which holds the started
+image's three streams against what `run` answers on the source; a golden
+whose assembly fails must fail its `build` with `run`'s status and report.
 
-A golden's root class is instantiated with `new` and reaches the platform only as `main:args:`'s first argument (§8.4), as every program does ([image-format.md](image-format.md), "Planned: one artifact, packaged before `main:args:`").
+A golden's root class is instantiated with `new`, and a project golden's
+root with `packageUsing:` its manifest; either reaches the platform only as
+`main:args:`'s first argument (§8.4), as every program does
+([image-format.md](image-format.md), "Packaging"). A project golden's
+modules live in the directory `goldens/<category>/<name>/` beside its
+`<name>.json`; they are not goldens themselves, and `goldens/manifest/` pins
+the manifest.
 
 A fifth key, `arguments`, lists the program's arguments, which every runner
 passes after `--` to each command that sends the entry -- `run`, and `load` in
-both round trips -- so `main:args:` receives them (§8.4,
+the round trip -- so `main:args:` receives them (§8.4,
 `goldens/spec/spec_8_4_main_args_receives_the_program_arguments`); most
 goldens have none and receive an empty list.
 
@@ -224,7 +241,7 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 | `kernel/` | the core library in `Kernel.ns`: what a user subclass of a builtin inherits, the one outcome the move defined, a recursion through kernel methods the two lowerings count alike, and §3.1.1's value semantics — a value's derived equality and hash, its lack of identity, and every one of its value conditions, those decided at class creation included, each refused at instantiation, and a class object that is a value because its enclosing object is |
 | `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
 | `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
-| `manifest/` | projects: a root assembled with `packageUsing:` and the manifest of the other modules |
+| `manifest/` | projects: a root assembled with `packageUsing:` and the manifest of the other modules, a name the manifest does not hold, and a manifest the application keeps through `build` and `load`; each project's modules in the directory of its name |
 | `mixin/` | §6.2's mixin application: lookup and `super` through the applied levels, `outer` from an applied mixin, the order of several `<:` clauses, the initializer order, the level's factory selector, the errors a clause raises, and a module that declares itself a value with `<: Value` |
 | `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
 | `spec/` | one named rule of `newspeak-spec.pdf`, its section in the file name |

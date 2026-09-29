@@ -13,13 +13,10 @@ An item's code references were checked against the tree on 2026-09-28.
 
 ## Next
 
-**One artifact, packaged before `main:args:`**, the prerequisite of the Are
-We Fast Yet benchmarks below: `run` and `build` assemble an application from
-one source file (`new`) or a JSON project file (`packageUsing:` a manifest),
-`build` serializes it just before `main:args:`, and the stateless binary,
-`snapshot` and `--send` go away. Its plan is to be written from
-[image-format.md](design/image-format.md), "Planned: one artifact, packaged
-before `main:args:`".
+**Are We Fast Yet, stage 1**: Sieve, Permute, Queens, Towers, Bounce,
+Storage and List, with the harness, the first of the three stages under
+"Before step 2's second plan, the Are We Fast Yet benchmarks" below. Its
+plan is still to be written.
 
 ## The road to a high-performance VM
 
@@ -42,11 +39,12 @@ and `prior-art/newspeak-benchmarks`.
   The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into the
   tree, each a runnable module with its output pinned under both lowerings and
   a measurement source. Each one widens the platform on demand, as
-  `CLAUDE.md` asks, so the Newspeak side grows with them. It waits for the
-  packaged artifact ("Next", above): the harness becomes an application
-  whose factory is `packageUsing:` and which reaches each benchmark as
-  `manifest Sieve` rather than through SOMns's `system loadModule:`, and
-  `CD.ns`'s one `loadModule:nextTo:` line goes the same way. That includes:
+  `CLAUDE.md` asks, so the Newspeak side grows with them. The harness can
+  be a project's application, whose factory is `packageUsing:` and which
+  reaches each benchmark as `manifest Sieve` rather than through SOMns's
+  `system loadModule:`, and `CD.ns`'s one `loadModule:nextTo:` line can go
+  the same way ([image-format.md](design/image-format.md), "Packaging").
+  That includes:
   - AWFY's `Vector`, a growable array over an `Array` with a first and a last
     index (SOMns's `core-lib/Kernel.ns`), which `List` in
     `CollectionsFactory.ns` answers only in part today (`add:`, `at:`,
@@ -350,11 +348,9 @@ value objects are never copied across an actor boundary (§3.1.1).
 - **The reference lowering's future.** It is the oracle today; the user said
   (2026-09-19) it should eventually be removed, with the goldens carrying the
   tests. [compiler.md](design/compiler.md), "The reference lowering".
-- **Image format.** Whether an image should record its entry (a self-starting
-  `load`); what a multi-module artifact looks like; whether upstream strips
-  source at packaging; how an object holding external state (an open file or
-  socket) is written — decided when the first such module arrives; and entry
-  selector validation, sound only while no cross-module inheritance exists.
+- **Image format.** Whether upstream strips source at packaging; how an
+  object holding external state (an open file or socket) is written —
+  decided when the first such module arrives.
   [image-format.md](design/image-format.md), "Open questions";
   [core-library.md](design/core-library.md), "Open for later".
 - **How much history a tail call keeps**, and **data parallelism over
@@ -435,12 +431,27 @@ value objects are never copied across an actor boundary (§3.1.1).
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact.
 
-- **`ns-cli build` accepts a slot accessor as the entry selector.**
-  `root_class_answers` (`crates/ns-cli/src/commands/build.rs:54`) asks
-  `mixin.methods.contains_key`, and a slot's getter and setter are method-table
-  entries (`MethodEntry::SlotAccessor`), although its doc comment says a setter
-  must not be accepted. Refuse accessor entries and add a test to
-  `crates/ns-cli/tests/build_load.rs`.
+- **`build` refuses a project that `run` runs, when a module the
+  application never instantiates has a root defect.** A root defect is
+  deferred to instantiation ([object-model.md](design/object-model.md), "The
+  root rule"), so `run` of such a project succeeds, but the encoder refuses
+  every module whose root mixin carries one ("image encoding cannot
+  serialize `M`: …", `image::encode_describing`), so `build` fails. Either
+  the encoder writes such a module, whose instantiation then fails after
+  `load` as it would under `run`, or `run` refuses it too; decide, then pin
+  it with a project golden. [image-format.md](design/image-format.md),
+  "Verification".
+- **`load --print-source` of a project prints every module's source with
+  nothing between them** (`crates/ns-cli/src/commands/load.rs`), so a reader
+  cannot tell where one module ends; a boundary line naming each module's
+  origin would fix it. [image-format.md](design/image-format.md), "Reading
+  an artifact".
+- **`disasm` of an artifact reaches module 0 only**: `--class` is rooted at
+  the application's root class, so a project's other modules, the
+  manifest's included, have no path (`crates/ns-cli/src/commands/disasm.rs`);
+  `inspect --full` disassembles every body. A module selector, by name or
+  index, would close it. [image-format.md](design/image-format.md),
+  "Reading an artifact".
 - **A `^` into an initializer that is still running** ends the run as
   "internal: non-local return escaped the entry send" instead of a Newspeak
   error. Pinned by `tests/trampoline.rs`'s
@@ -461,11 +472,6 @@ reachable only from a crafted artifact.
 - **Load does not check that a mixin level sits directly above a class of its
   applying row**; the run-time arity guard turns a crafted mismatch into a
   Newspeak error. [image-format.md](design/image-format.md).
-- **A root class's `<:` levels keep no identity hash across a snapshot**
-  (their metaclasses do); not observable today, since no program can obtain a
-  level. A `HASHED_*` tag naming a level by position closes it.
-  [image-format.md](design/image-format.md), "Gap: a root class's `<:` levels
-  are tag-named but have no entry in that table".
 - **A crafted image can pair a register-less converted frame with a
   by-reference closure, and an `own_index` bound is unchecked** — wrong but
   safe output, accepted; it stays safe because every access is bounds-checked
@@ -503,6 +509,15 @@ where every reified frame will carry its full register file on the wire.
   process.
 - **Type arguments on a `<:` clause's receiver are dropped**, like every
   Typed-Newspeak annotation; no golden pins the drop.
+- **The image encoder does not refuse a module class handed twice** among
+  the modules it writes; the artifact it writes then fails to load. No
+  command hands it one: `program.rs` hands each module once.
+- **A project file with an empty `root`** is accepted by `read_project` and
+  fails later, as reading a directory (`crates/ns-cli/src/project.rs`).
+- **A `.ns` root declaring `packageUsing:`** is refused with the message
+  meant for a factory that takes the platform, rather than one pointing at a
+  project file (`program::instantiate_application`); no test takes that
+  branch.
 
 ## Missing tests
 
@@ -534,6 +549,21 @@ where every reified frame will carry its full register file on the wire.
   `runIde`), and `dump-tokens` on an unreadable file, a block comment over a
   whole-line selection and TODO markers through the project-wide index are
   untested. [editor-support.md](design/editor-support.md), "Known gaps".
+- The packaged artifact (2026-09-30): the refusal of a module set of which
+  only some carry source (`modules::encode_modules`); a back-reference into
+  an earlier tree, or a child shared between trees, in the mixin forest; a
+  load of an empty mixin table, which answers `ModuleCountMismatch` 1 against
+  0; `image::package`'s refusal of a shipped class or instance other than
+  the platform; the version word in `build_load.rs`'s corruption sweep;
+  `load --print-source` of an image `image::snapshot` wrote; `run-corpus`
+  refusing a row whose `send` is not unary; and that the CLI prints nothing
+  when an image's platform path is refused.
+  `a_module_shadowed_by_an_object_member_is_refused`
+  (`crates/ns-cli/tests/run.rs`) asserts an empty stdout although its root
+  has no initializer that could print, and
+  `two_modules_draw_the_same_identity_hashes_under_run_and_load`'s comment
+  claims it pins module order, which a review judged its fixture probably
+  cannot tell apart from a load that merely draws no new hash.
 
 ## Code quality follow-ups
 
@@ -596,6 +626,21 @@ Small, deliberately left, none affecting an outcome.
   and ignored; the platform-directory mapping exists twice (`build.gradle.kts`'s
   `hostPlatform` and `plugin.xml`). [editor-support.md](design/editor-support.md),
   "Known gaps".
+- The packaged artifact left: `image/decode.rs`'s `MixinTableNotATree`
+  message says a row is reached "or not at all", where a surplus row now
+  starts another tree; `inspect` prints a `<module N>` past the modules
+  without marking it; `bench` prints a generic "instantiation failed" after
+  the real report; `run-corpus`'s lanes are still named `binary` and
+  `reference binary`, and `image.rs`'s
+  `an_unknown_header_flag_is_still_rejected_now_that_three_are_known` names
+  three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
+  message for a stray golden directory carries a run of spaces from a lost
+  line continuation.
+- Comments that cite a heading of `image-format.md` which no longer exists:
+  "Planned: one artifact, packaged before `main:args:`" in
+  `crates/ns-cli/src/program.rs`, `crates/ns-cli/src/project.rs` and
+  `crates/ns-runtime/core-library/Manifest.ns` (now "Packaging"), and "Two
+  artifacts" in `crates/ns-runtime/src/image/mod.rs` (now "The artifact").
 
 ## Goldens and documentation
 
@@ -610,3 +655,10 @@ Small, deliberately left, none affecting an outcome.
 - Two "Converted representation" citations break across lines
   (`docs/design/compiler.md`, `docs/design/execution.md`), which a search for
   the heading misses.
+- 33 goldens keep a whitespace-only line where the 2026-09-30 migration
+  emptied a slot clause (`goldens/capture/captures_in_initializers.ns:9`
+  among them); `goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`'s
+  comment says the round trip "snapshots" it, where it is now `build` then
+  `load`; and
+  `goldens/manifest/a_project_reaches_its_modules_through_the_manifest/App.ns`'s
+  comment claims more than the golden pins.

@@ -15,21 +15,17 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: one artifact, packaged before `main:args:`**
-([image-format.md](design/image-format.md), "Planned: one artifact, packaged
-before `main:args:`"): `run` and `build` assemble an application from one
-source file or a JSON project file whose modules reach it through a
-manifest, and `build` serializes it just before `main:args:`. Designed with
-the user on 2026-09-29; the plan is still to be written. It comes first
-because the Are We Fast Yet harness is a program of several modules.
-
-**Then: the Are We Fast Yet benchmarks, before road step 2's second plan**
-([OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM"): the
-Newspeak versions from `prior-art/somns/core-lib/Benchmarks` become runnable
-programs with pinned output, in three stages by what they need, each
-widening the platform on demand. Decided with the user on 2026-09-29, so
-that the eight-byte value and every later step are measured on real
-programs.
+**Next: the Are We Fast Yet benchmarks, stage 1, before road step 2's
+second plan** ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM"): Sieve, Permute, Queens, Towers, Bounce, Storage and
+List from `prior-art/somns/core-lib/Benchmarks`, with the harness, become
+runnable programs with pinned output, widening the platform on demand. The
+harness can be a project's application, `packageUsing:` a manifest that
+answers each benchmark as `manifest Sieve` ("One artifact, packaged before
+`main:args:`" below; [image-format.md](design/image-format.md),
+"Packaging"). Its plan is still to be written; stages 2 and 3 follow, one
+plan each. Decided with the user on 2026-09-29, so that the eight-byte value
+and every later step are measured on real programs.
 
 **After it: road step 2's second plan, the eight-byte value**
 ([object-model.md](design/object-model.md), "Planned: an eight-byte value"):
@@ -3567,3 +3563,62 @@ spread:
 branch build. `dumpbin /disasm` of a release build with debug information shows
 `checked_floor_divide` inlined into `vm::run`, and no `vm::run::closure` or
 `run_stretch` became a function of its own.
+
+## One artifact, packaged before `main:args:` (2026-09-30)
+
+Plan: [ns-next-packaged-artifact](superpowers/plans/2026-09-29-2341-ns-next-packaged-artifact.md);
+[image-format.md](design/image-format.md), "The artifact" and "Packaging".
+Commits: every one after `78bb531`, the plan's, through this entry's.
+
+A program is one `.ns` file, whose root is instantiated with `new`, or a
+JSON project file of several modules, whose root is instantiated with
+`packageUsing:` a manifest -- `core-library/Manifest.ns`, an unprivileged
+class compiled into the program, whose `doesNotUnderstand:` answers each
+module by the name its source declares. Either way the platform reaches the
+program only as `main:args:`'s first argument (§8.4). `build` assembles the
+application exactly as `run` does and writes it just before `main:args:`, as
+Newspeak on Squeak and Primordial Soup package theirs; `load` starts it. The
+stateless binary, the `snapshot` command and `--send` and `--entry` are
+gone, and `bench` and `run-corpus` assemble the way `run` does, the latter
+through a generated wrapper application per corpus row. An image carries
+several modules: the mixin table is a forest, a module section records each
+module's origin, source and root section, and a module's root class and
+levels are named by index. New wire numbers: class tags 6 and 7, hash tags 5
+and 6, origin tags 0 and 1, header flag 4 (`FLAG_START`); retired: class
+tags 1 and 3, hash tag 1, header flag 2 (`FLAG_STATELESS`). Every golden
+reaches the platform only through `main:args:` with its `status`, `stdout`
+and `stderr` unchanged, and `goldens/manifest/` pins the manifest.
+
+- `b933032`, `3ce757d` — every golden's root is `new`-instantiated and
+  reaches the platform only through `main:args:`, with its recorded outcome
+  unchanged; a loaded world's initializer re-run shows in a printed
+  identity hash.
+- `9cf7abd` — an image names an embedded module's origin (`ORIGIN_EMBEDDED`).
+- `63096bf`, `facec11` — the code and mixin tables describe a forest of
+  modules, and `CodeIds::id_of` answers an error instead of panicking.
+- `ab5a68f` — the module section, and a module's root class and levels
+  named by index (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
+  `HASHED_MODULE_CLASS`, `HASHED_MODULE_LEVEL`), which gave a module's
+  `<:` levels the identity-hash entry a root level lacked.
+- `7b95b5b`, `27f07fc` — `image::package` writes an application to be
+  started, under `FLAG_START`, and a started image must carry exactly one
+  root.
+- `9d02911`, `5c9b8ad` — `ns-cli` reads a JSON project file, with either
+  separator in every path and UNC and verbatim prefixes kept.
+- `23bd056`, `898d045` — `run` assembles an application with `new` or a
+  project's manifest, and `--send` is gone from `run`.
+- `59407ec` — project goldens pin the manifest (`goldens/manifest/`).
+- `bf776f2` — `build` packages the application just before `main:args:`,
+  `load` starts it, and the `snapshot` command is gone.
+- `7c9e082` — `bench` times `main:args:` of an application assembled like
+  `run`'s.
+- `97561cc` — `run-corpus` starts each corpus module through a generated
+  application, in all four lanes.
+- `763fbe2` — the stateless binary, its header flag and its entry field
+  retire.
+- This commit — the documentation describes the built state.
+
+Each task was reviewed on its own, and its findings fixed, before the next
+began; the findings the reviews deferred, and what the batch leaves open,
+are in [OPEN-WORK.md](OPEN-WORK.md). The review of the whole branch and the
+end-of-batch gates are still to come.

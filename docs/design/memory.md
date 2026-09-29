@@ -528,8 +528,10 @@ re-entries moved", the protocol).
 
 ### Host roots
 
-A host keeps values across runs: `ns-next bench` sends to the same instance 22
-times, and `snapshot` encodes after its send. A run may move every object, so
+A host keeps values across runs: `ns-next bench` keeps a program's module
+classes and `main:args:`'s arguments across its 22 samples, assembling and
+sending to a fresh application each time, and `build` encodes the
+application its factory and initializers assembled. A run may move every object, so
 what a host holds across one must be where a move rewrites it: in the heap's
 root table, which the tracer walks. A `Root` (`heap.rs`) is an `Rc`-shared
 `Cell<Value>` slot the table also holds — gc-arena's `DynamicRootSet` model —
@@ -553,15 +555,15 @@ reads the root again in the next one.
 
 Every host entry takes and answers roots: `Interpreter::send`, `instantiate`,
 `load_module` and `platform`, and `image::load`, whose `LoadedImage` carries
-the root class and the image's roots as `Root`s. A send or an instantiation
+every module's root class and the image's roots as `Root`s. A send or an instantiation
 answers a `HostResult`, `Result<Root, HostSignal>`: its value rooted
 (`Mutator::to_host`), a Newspeak error as a `HostError` whose receiver is a
 `Root`, or a `^` that reached the host as `HostSignal::Return`. `Signal` and
 `EvaluationResult` are crate-private, so no plain value leaves a run by any other
 way than `fetch`; and since a `Root` can hold any value, `instantiate` refuses
 one that holds no class object with a Newspeak error. The codec runs inside
-an entry: `image::snapshot` takes a `&Mutator<'gc>` and branded values,
-`image::build` a `&Heap<'gc>`, which a host fetches from its roots in the
+an entry: `image::package` and `image::snapshot` take a `&Mutator<'gc>` and
+branded values, which a host fetches from its roots in the
 same entry — encoding runs no code, so nothing moves under it — and
 `image::load` decodes inside one entry of the interpreter it bootstraps and
 roots what it answers before that entry ends. `Root`, `HostSignal` and
@@ -767,8 +769,8 @@ separate gates, not combined, because an entry holds no handle for a move to
 break.
 
 The stress runs are gates: `CLAUDE.md` requires the whole suite and
-`run-corpus` — every runnable module from source and as a built binary, under
-both lowerings — under the variable before every commit. A release build
+`run-corpus` — every runnable module through `run` and through `build` then
+`load`, under both lowerings — under the variable before every commit. A release build
 contains none of it: `trace.rs`, the epoch, the move, the schedule and the
 test hooks (`Interpreter::move_now`, `moves`, `stress_safepoints`,
 `set_stress_moves`) are `#[cfg(debug_assertions)]`, and only the poll is
@@ -963,6 +965,13 @@ creator's frame record without registers.
   | Record minimum | 6 B | 18 B | — |
   | Release size | 56 B → 9.3x | 128 B → 7.1x | **~16.4x** |
   | Debug size | 72 B → 12.0x | 152 B → 8.4x | ~20.4x |
+
+  An object record's 6 B is `MIN_OBJECT_RECORD_BYTES` (`image/decode.rs`), the
+  divisor `bounded_count` applies to the object count: a one-byte class tag,
+  the identity hash and a body tag. Every live class tag now takes at least
+  two bytes -- the one-byte `CLASS_USER_ROOT` it was measured against is
+  retired -- but the divisor stays, since it is what a crafted count is
+  bounded by, so the figures remain what one can make the decoder reserve.
 
   **A decoded `LargeInteger` adds to that peak rather than fitting inside
   it.** The placeholders are allocated against every byte left at the graph
@@ -1620,10 +1629,10 @@ takes new amplification figures for the eight-byte value (road step 2's
 second plan) and
 for variably sized objects (road step 3), with the decoder's first pass
 checking each record's declared size against the bytes remaining; the bound
-is the largest of the per-record-kind ratios (a class object 10x against
-an 8-byte metaclass record, a frame object about 5x) and the per-value ratio
+is the largest of the per-record-kind ratios (a class object about 8.9x
+against a 9-byte metaclass record, a frame object about 5x) and the per-value ratio
 -- a one-byte `VALUE_NIL` element becomes an 8-byte word, 8x, and a UTF-8
-byte widened to the 32-bit string form 4x -- so the class kind's 10x; the
+byte widened to the 32-bit string form 4x -- so the class kind's 8.9x; the
 first pass refuses a second symbol record naming the same symbol-table entry
 before allocating and allocates each entry's text at most once, bounded by
 its encoding in the symbol section, so the base is the graph and symbol
@@ -1712,15 +1721,16 @@ Road step 4.
 - **A full collection** is the mark-compact over both generations. The image
   decoder allocates everything old, the boxed floats and large integers it
   creates included, since a decoded graph is long-lived. Every load runs
-  `Interpreter::bootstrap()` first (`image/mod.rs:308`), and a stateless and a
-  stateful load alike then decode the root class (`decode::build_root_class`,
-  `image/mod.rs:323`) before anything else, so every load will tenure
+  `Interpreter::bootstrap()` first (`image/mod.rs:290`), and then rebuilds
+  every module's root class (`modules::build_module_classes`,
+  `image/mod.rs:305`) before anything else, so every load will tenure
   everything -- a scavenge -- right after the bootstrap, before the decoder
-  allocates anything; a stateful load runs the platform paths next, which
-  leave young objects the graph may reference, and will tenure again before
-  the graph pass. Both are collections between entries, where only roots hold
-  values, as `Interpreter::collect_now` (`interpreter/safepoint.rs:215`) is
-  today -- the root class is already held as a `Root` across the paths --
+  allocates anything; a load whose image names platform paths follows them
+  next, which leaves young objects the graph may reference, and will tenure
+  again before the graph pass. Both are collections between entries, where
+  only roots hold values, as `Interpreter::collect_now`
+  (`interpreter/safepoint.rs:215`) is today -- the module classes are
+  already held as `Root`s across the paths --
   never inside a step. The decoder's old-to-old stores then need no barrier.
 - **The weak symbol table is pruned at every scavenge** as well as at every
   full collection, since a young symbol can die in either. At a scavenge a

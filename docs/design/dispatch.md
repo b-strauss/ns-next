@@ -844,8 +844,8 @@ repository already holds:
   borrow check.
 - Invalidation is resetting one table.
 - `CompiledCode` stays immutable, which suits a later actor, running on a heap
-  and a thread of its own, and a stateless binary whose code need never be
-  written.
+  and a thread of its own, and an artifact, whose code is written without
+  any feedback state and never needs rewriting.
 
 The cost is bookkeeping: a stack entry and a closure (`ClosureData`) carry a
 `feedback_base`, and so do `vm::run`, in a local beside the running code, and
