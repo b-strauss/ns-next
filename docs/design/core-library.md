@@ -155,7 +155,9 @@ stops being a Rust `String` of UTF-8, whose `size` counts code points by
 walking the bytes, and stores its code points in the object space, one byte
 each while every one fits Latin-1 and 32 bits each otherwise, so `size` and
 an `at:` are one access; `Symbol` becomes a subclass of `String` sharing both
-formats. UTF-8 stays the encoding at every boundary -- source, the
+formats, and `=` stays class-tight both ways as today (`'foo' = #foo` and
+`#foo = 'foo'` answer `false`), so `Symbol` overrides `=` and `hash`, pinned
+by a golden. UTF-8 stays the encoding at every boundary -- source, the
 transcript, files. The design and the comparison with the reference engines
 are [object-model.md](object-model.md), "Planned: the object layout".
 
@@ -686,8 +688,14 @@ inlined `IntegerBinary`, and answer a `LargeInteger` where an immediate
 result would overflow; `LargeInteger` overrides them with leaves of its own,
 and each result that fits again is answered as an immediate `Integer`.
 `Integer`'s leaves, and `IntegerBinary`'s fallback send, accept a
-`LargeInteger` argument too -- `3 + (2 raisedTo: 100)` -- and answer through
-`LargeInteger`'s arithmetic. The Smalltalk-family engines write this themselves --
+`LargeInteger` argument too -- `3 + 4611686018427387904`, the second a
+literal just past 61 bits -- and answer through `LargeInteger`'s arithmetic.
+A `Float`'s leaves convert a `LargeInteger` argument to the nearest
+`double`, as Primordial Soup's `LargeInteger::AsDouble`
+(`vm/large_integer.cc:1242`) serves, where they widen an `Integer` argument
+losslessly today; a `LargeInteger`'s leaves meet a `Float` argument as an
+`Integer`'s do, with a type mismatch. That is a derived choice, pinned by
+goldens, which the numeric tower may revisit. The Smalltalk-family engines write this themselves --
 Primordial Soup's `vm/large_integer.cc`, about 1,600 lines, covers addition,
 subtraction, multiplication, division and modulo, the bitwise operations,
 shifts, comparison, `printString` and conversion to and from `double` -- and
@@ -792,7 +800,9 @@ equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
 class-tight `=` is the stopgap that keeps the contract by answering
 `false`, and only `=` is class-tight: a `Float`'s arithmetic and ordering
 still widen an `Integer` argument losslessly, while an `Integer`'s raise a
-type mismatch (`builtins/numbers.rs`'s module note).
+type mismatch (`builtins/numbers.rs`'s module note); with large integers a
+`Float` converts a `LargeInteger` argument to the nearest `double`
+("Planned: large integers" above).
 
 ## The core library as Newspeak source over a VM mirror
 
@@ -906,9 +916,11 @@ usingVmMirror:kernel:`, whose roots no program reaches ("The platform"
 above); a user module would receive it only if a shipped module passed it
 on, and none does: each root keeps it in a private slot. The planned
 `become:` ([object-model.md](object-model.md), "Planned: `become:` through
-forwarders") will keep it that way by refusing, in either direction, every
-object a platform path names, besides the class objects it refuses anyway, so
-no program can redirect a reference shipped code holds for itself. Six things keep it
+forwarders") will keep it that way: every instance a platform path names is
+a value (`Platform`, `Transcript`, `KernelNamespace` and `Collections` are
+declared `= Value new`) and every class it names is a class object, and a
+program's `become:` refuses both in either direction, so no program can
+redirect a reference shipped code holds for itself. Six things keep it
 that way,
 and loosening any one of them lets a program claim every primitive:
 

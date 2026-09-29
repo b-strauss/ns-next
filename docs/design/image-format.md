@@ -1192,8 +1192,10 @@ which is old space's bytes relocated on load, is the model this does not take.
   remaining, then allocates, and the second pass fills the fields, whose
   forward references then name objects that already exist.
 - **The decode amplification is recomputed** as the larger of two ratios:
-  per record, a 16-byte minimum object against the minimum record, and per
-  value, the words a decoded value occupies against the bytes that encode
+  per record kind, that kind's fixed object size against its minimum record
+  -- the worst being a class or metaclass object, about 72 bytes against a
+  record of about 12, some 6x, and a frame object, about 96 bytes against a
+  record of about 19, some 5x -- and per value, the words a decoded value occupies against the bytes that encode
   it. The per-value ratio dominates -- a one-byte `VALUE_NIL` element becomes
   an 8-byte word, 8x, and a UTF-8 byte widened to the 32-bit string form 4x
   -- since the first pass allocates each object's full size before
@@ -1206,9 +1208,11 @@ which is old space's bytes relocated on load, is the model this does not take.
   everything old, and every load runs `Interpreter::bootstrap()` first
   (`image/mod.rs:308`) and then decodes the root class
   (`decode::build_root_class`, `image/mod.rs:323`), a stateless binary as much
-  as an image, so every load scavenges and tenures right after the bootstrap,
-  before the decoder allocates anything; a stateful load does it again after
-  its platform paths, before the graph pass. The decoder's stores are then
+  as an image, so every load will scavenge and tenure right after the
+  bootstrap, before the decoder allocates anything; a stateful load does it
+  again after its platform paths, before the graph pass. Each is a collection
+  between entries, where only roots hold values, as `Interpreter::collect_now`
+  is today, never one inside a step. The decoder's stores are then
   old-to-old and need no barrier.
 - **Identity hashes** are preserved as they are today, per record and in the
   tag-named table; what changes is their width. The header word holds 22 bits

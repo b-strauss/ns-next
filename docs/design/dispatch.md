@@ -1490,7 +1490,7 @@ out where today's `u32` counter practically cannot; running out keeps
 today's rule, an application without an id running uncached (`NONE`, "The
 dispatch id" above). An application id is reclaimed once no class object, no inline-cache or
 global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
-table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it, which the
+table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it, which the
 collector can tell. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The debug build's check in
 `Heap::dispatch_id`, which recomputes an object's id from its class and
 asserts that the header agrees, answers the reserved id for an object of the

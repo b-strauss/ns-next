@@ -335,6 +335,12 @@ send gathers into it, decides and pushes within one instruction, and it is
 cleared when it is given back — so it is not a root, and a debug assertion
 before every move says so (`World::check_quiescent_state`).
 
+The one other place a collection is sound is between entries, where only
+roots hold values and no step is running: `Interpreter::collect_now`
+(`interpreter/safepoint.rs:215`) collects there today, for tests only. Under
+generations a load will tenure everything there, between the bootstrap and
+the decoder ("Planned: generations").
+
 The first four systems below chose this placement; the last four collect
 elsewhere, and their right-hand column is what that costs their runtime code:
 
@@ -1174,7 +1180,7 @@ and the object layout (road step 3) will give mixins and applications ids
 ([object-model.md](object-model.md), "Planned: the object layout"). The same
 per-mixin id is wanted by dispatch's open option of guarding a private
 lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What will make the weak cache sound is the reuse rule: an application id will be reclaimed once no class object, no inline-cache or global-cache entry
-(its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it. A class's change of application will restamp every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The cache's unbounded growth under live editing
+(its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it. A class's change of application will restamp every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The cache's unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) will end with it.
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
@@ -1383,7 +1389,7 @@ object: for instances, a `become:` will forward the old one to it
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders"); for a frame, the activation will be divorced into the larger
 frame object and the VM will rewrite the references to the old one by a walk
-of the whole heap and of every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets
+of every root the collector traces (`trace.rs`) and every heap object, the new frame allocated old and born remembered
 ("Planned: the object layout", there).
 
 **No existing arena crate does what the space needs.** Every arena crate
@@ -1424,7 +1430,9 @@ high-performance VM".
   accessible. The heap does not store slices borrowed from its own
   reservation, which would make it self-referential; it re-borrows them each
   time it needs them -- one call answering the split slices per space, each
-  survivor space, eden and the old space, for one entry or one step -- and
+  survivor space, eden and the old space, per step between two safepoints,
+  and again after any commit, since a collection protects and old-space
+  growth commits inside an entry -- and
   picks the slice by an offset's range, so an offset into a protected or
   uncommitted range finds no slice: that selection is the bounds check the
   accessors rely on.
@@ -1435,8 +1443,12 @@ high-performance VM".
   PROT_NONE)` to decommit, which gives the memory back on Linux and macOS
   alike where `madvise(MADV_DONTNEED)` does not on macOS; it is mapped without
   `MAP_NORESERVE`, since a `PROT_NONE` private mapping is not charged anyway,
-  so a later commit by `mprotect` is accounted and can fail as a value rather
-  than as an out-of-memory kill on first touch, and `munmap`, through `libc`). Both crates are declarations only, with no
+  so a later commit by `mprotect` is accounted where the kernel accounts
+  commit -- Linux under strict overcommit (`overcommit_memory=2`) -- and can
+  fail there as a value; under Linux's default heuristic overcommit and on
+  macOS, which does no commit accounting, first touch can still end in the
+  out-of-memory killer, as for any process. Windows always accounts a commit,
+  so there it always fails as a value. `munmap` releases, all through `libc`). Both crates are declarations only, with no
   run-time code of their own. Primordial Soup has the same split behind the
   same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
   `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits
@@ -1469,7 +1481,9 @@ instruction encoding.
   (`prior-art/primordialsoup/vm/heap.h:373-387`). Objects are 8-byte aligned
   and at least 16 bytes, a header and a class word.
 - **A handle is a 64-bit byte offset from the space's base**, so base plus
-  handle is the object's address, the form generated code will use. There is
+  handle is the object's address, the form generated code will use. The
+  first object starts at offset 16, not 0, so an all-zero word -- a missed
+  initialization -- is never a live reference. There is
   no 32 GB ceiling: HotSpot's compressed oops save memory because a Java
   reference field is 32 bits, while every field here is a full `Value` word
   able to hold any value, so the offset can be as wide as the word allows
@@ -1534,17 +1548,23 @@ unsafe code" names `ns-runtime` (road step 1); "An image is untrusted input"
 takes new amplification figures for the eight-byte value (road step 2) and
 for variably sized objects (road step 3), with the decoder's first pass
 checking each record's declared size against the bytes remaining; the bound
-is the larger of the per-record and the per-value ratio, and the per-value
-ratio dominates -- a one-byte `VALUE_NIL` element becomes an 8-byte word,
+is the larger of the per-record-kind ratio (a class object about 6x, a frame
+object about 5x) and the per-value ratio, and the per-value ratio dominates
+-- a one-byte `VALUE_NIL` element becomes an 8-byte word,
 8x, and a UTF-8 byte widened to the 32-bit string form 4x
 ([image-format.md](image-format.md), "Planned: the image under the new
 representation"); the handle
 paragraphs describe a 64-bit byte offset and the frame arena's end (road step
 3); "A cache records what the lookup decided" reads `ClassData.builtin` as a
 field of the class object, which `act` still reads afresh on every send (road
-step 3); and the gates' stress loop gains `SCAVENGE` (road step 4); "The VM mirror is
-a capability" gains the refusal of a program's `become:` on every object a
-platform path names (road step 5;
+step 3); the gates' stress loop gains `SCAVENGE`, "nothing collects during a
+load" becomes "a load collects only between entries, right after the
+bootstrap and before the graph pass" -- the placeholders are still allocated
+after the last tenure, so the peak argument stands -- and the crate list's
+sentence on the mark-compact collector names the scavenger beside it (road
+step 4); and "The VM mirror is a capability" gains, as a consequence, that a
+program's `become:` refuses value objects and class objects, which covers
+every object a platform path names (road step 5;
 [object-model.md](object-model.md), "Planned: `become:` through
 forwarders"). Road step
 2 also retires `Literal::MalformedInteger` and its wire tag 8, since every
@@ -1623,11 +1643,14 @@ Road step 4.
   creates included, since a decoded graph is long-lived. Every load runs
   `Interpreter::bootstrap()` first (`image/mod.rs:308`), and a stateless and a
   stateful load alike then decode the root class (`decode::build_root_class`,
-  `image/mod.rs:323`) before anything else, so every load tenures everything --
-  a scavenge -- right after the bootstrap, before the decoder allocates
-  anything; a stateful load runs the platform paths next, which leave young
-  objects the graph may reference, and tenures again before the graph pass.
-  The decoder's old-to-old stores then need no barrier.
+  `image/mod.rs:323`) before anything else, so every load will tenure
+  everything -- a scavenge -- right after the bootstrap, before the decoder
+  allocates anything; a stateful load runs the platform paths next, which
+  leave young objects the graph may reference, and will tenure again before
+  the graph pass. Both are collections between entries, where only roots hold
+  values, as `Interpreter::collect_now` (`interpreter/safepoint.rs:215`) is
+  today -- the root class is already held as a `Root` across the paths --
+  never inside a step. The decoder's old-to-old stores then need no barrier.
 - **The weak symbol table is pruned at every scavenge** as well as at every
   full collection, since a young symbol can die in either. At a scavenge a
   young entry whose symbol was not copied becomes `None`, a copied one is
@@ -1694,8 +1717,9 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   bounded — the `Mixin` declaration tree, capped by the parser — a ceiling is
   the right answer and `image/mixins.rs` uses one. Objects and activations need
   neither: an arena entry holds indices, so there is nothing to unwind.
-- **A collection happens only at a safepoint in the run loop**, never inside an
-  allocation (decided 2026-09-13), so no allocating Rust path roots anything
+- **A collection happens only at a safepoint in the run loop, or between
+  entries where only roots hold values** (as `Interpreter::collect_now` does
+  for tests), never inside an allocation (decided 2026-09-13), so no allocating Rust path roots anything
   and a JIT keeps its freedom across allocations. Cog, Nova, CPython and
   piccolo put it there; V8 and HotSpot's runtime pay for the alternative with
   handles and verifiers.

@@ -1522,7 +1522,7 @@ verbatim").
 rule: an application without an id runs uncached ([dispatch.md](dispatch.md),
 "The dispatch id"). An application id is reclaimed once no class object, no inline-cache or
 global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
-table entry freed, no declaration, enclosing mixin or code holding it -- and no application and no application-cache entry, key or value, names it; the collector can
+table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it; the collector can
 tell both, so reusing an id is safe. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable.
 
 **The class word** is an ordinary value naming the object's class object.
@@ -1573,7 +1573,11 @@ Spur's forwarders take their first slot.
 everything of today's `ClassData` that holds per class object: its enclosing
 object, declaring class, superclass, for a metaclass the class it describes
 (`this_class`), its builtin tag (`ClassData.builtin`, which `act` re-reads
-on every send), its value-class refusal, and its application id as a
+on every send), its value-class refusal, for a level a `<:` clause added the
+clause that added it (`ClassData.applied_clause`: the applying declaration's
+mixin id, the clause index and the named builtin tag, each a `SmallInteger`
+or `nil`, since the `Rc<Mixin>` it holds today cannot live in the space), and
+its application id as a
 `SmallInteger`, which indexes a Rust-side table of `MixinApplication`s; the
 behaviour stays Rust. The application cache is keyed by the mixin's id and
 the superclass application's id rather than by `Rc` addresses, which lets it
@@ -1600,9 +1604,11 @@ registers into it stays decided per activation from the block's
 `outer_reach`, as today. So no frame object ever grows, and suspension, the
 debugger and edit-and-continue find room for the registers in every reified
 frame. Edit-and-continue adding locals divorces the affected activation
-into a newly allocated, larger frame object, the VM rewriting every reference
-to the old frame by a walk of the whole heap and of every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets -- since `become:` never forwards
-a frame; execution continues from the divorced frame, which needs a divorced
+into a newly allocated, larger frame object -- allocated old and born
+remembered by the rule in [memory.md](memory.md), "Planned: generations" --
+the VM rewriting every reference to the old frame by a walk of every root the
+collector traces (`trace.rs`) and every heap object, since `become:` never
+forwards a frame; execution continues from the divorced frame, which needs a divorced
 frame put back on the stack, the piece suspend and resume need too
 ([execution.md](execution.md), "How this meets the liveness requirements"). The cost is a few more words per
 reified frame, and `bench_block.ns`, which reifies a frame per iteration, is
@@ -1631,7 +1637,9 @@ change with every Unicode version and allow no constant-time indexing.
 `Symbol` becomes a subclass of `String`, as in every reference kernel, and
 `Mutator::new_symbol` stays the only way to make one: instantiating `Symbol`
 is refused, and `String new` answers an empty one-byte string, each pinned by
-a golden. Today nothing refuses it --
+a golden. `=` stays class-tight both ways, as today: `'foo' = #foo` and
+`#foo = 'foo'` both answer `false`, so `Symbol` overrides `=` and `hash` and
+`String>>=` answers `false` for a `Symbol` argument, pinned by a golden. Today nothing refuses it --
 `decide_factory` (`interpreter/instantiate.rs`) special-cases only the VM
 mirror's class and `Array`, so `Symbol new` answers an instance with no text,
 and `String new` answers an instance that understands no `size`
@@ -1647,7 +1655,16 @@ Spur. Accessors may lend a string's units or an object's fields as a slice
 instead of copying them out. Every field, element and register accessor
 checks its index against the object's own word count, not only against the
 space's bounds, so no write through one object -- a crafted image's
-by-reference register write included -- can reach the next object's header.
+by-reference register write included -- can reach the next object's header;
+an out-of-range index that a valid program produces raises an ordinary
+Newspeak error, never a panic. `InitializeSlot` and `ReturnSlotIfFilled`
+read and write `slot_base + own_index` in `self` with no send and no guard
+(`bytecode.rs`), so they also compare the receiver header's application id
+with the running level's application -- one compare, cold on a mismatch --
+and raise an ordinary Newspeak error on a mismatch: after a `self become:`
+inside an initializer or a lazy slot's initializer, the rest of that
+activation would otherwise write the old layout into an object of another
+shape.
 
 ## Planned: `become:` through forwarders
 
@@ -1717,18 +1734,16 @@ SOMns, a Newspeak with values and actors, has no `become:` at all, and
 Primordial Soup forwards only in its MirrorBuilder's installation of an edit
 (`installAll`, `prior-art/primordialsoup/newspeak/Mirrors.ns:309-326`),
 which is where the VM-internal migration below happens too. Refusing values
-was decided with the user on 2026-09-29. A program's `become:` also refuses,
-in either direction, every object a platform path names -- the platform, its
-transcript, its kernel and collections facets -- which are the objects the
-shipped core-library modules (`Kernel.ns`, `PlatformFactory.ns`,
-`CollectionsFactory.ns`) hold for themselves and a program can also reach:
-a two-way `become:` would otherwise redirect references shipped code holds to
-objects the program holds, and hand program objects to shipped code's later
-sends, which is how "The VM mirror is a capability" in `CLAUDE.md` would
-erode. The shipped roots and the mirror no program reaches at all, and the
-shipped classes are class objects, refused above; an `Array`, a `List` or an
-exception a program made is its own, and shipped code holds one only while
-the program hands it over. This refusal is derived from that invariant. So
+was decided with the user on 2026-09-29. The same refusals keep "The VM
+mirror is a capability" in `CLAUDE.md`: every instance a platform path names
+is a value -- `Platform`, `Transcript` and `KernelNamespace` in
+`PlatformFactory.ns` and `Collections` in `CollectionsFactory.ns` are all
+declared `= Value new` -- and every class a platform path names is a class
+object, so a program's `become:` refuses each of them in either direction
+without a rule of its own. No other object the shipped core-library modules
+hold is reachable by a program: an exception's activation is a frame
+object, refused above, and the shipped roots and the mirror are unreachable;
+an `Array`, a `List` or an exception a program made is its own. So
 only instances of non-value classes and arrays are ever forwarded by a
 program.
 
@@ -1739,9 +1754,9 @@ change, a new superclass, a new value refusal -- and every reference to it
 stays valid; when the slots change, its instances migrate by allocating the
 new shape, copying the fields and forwarding the old instances with
 `become:`, which instances admit. A live frame gains locals by being divorced
-into a newly allocated, larger frame object, with a walk of the whole heap and of
-every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets by the
-VM rewriting every reference to the old frame, since `become:` never forwards
+into a newly allocated, larger frame object, allocated old and born
+remembered, with a walk of every root the collector traces (`trace.rs`) and
+every heap object by the VM rewriting every reference to the old frame, since `become:` never forwards
 a frame, and execution continuing from the divorced frame ("Planned: the
 object layout" above).
 Closures keep their old code, as in Smalltalk, and new ones get the new code.

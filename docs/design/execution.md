@@ -5025,8 +5025,8 @@ and divorced while still running, the operation Cog's `divorceAllFrames`
 performs on every stack page before a snapshot — and a divorced frame's `temporaries`
 is a growable `Vec`. Under the planned object space a frame object never
 grows; the activation is divorced into a newly allocated, larger frame
-object and the VM rewrites every reference to the old one by a walk of the
-whole heap and of every root -- the activation stack's registers and `reified` entries, host roots, `Mutator`'s values including `depth_reserve`, and pending unwind targets
+object and the VM rewrites every reference to the old one by a walk of every
+root the collector traces (`trace.rs`) and every heap object, the new frame allocated old and born remembered
 ([object-model.md](object-model.md), "Planned: the object layout").
 Continuing an activation from its divorced frame needs a
 way to put the frame back on the stack, which does not exist yet; it is the
