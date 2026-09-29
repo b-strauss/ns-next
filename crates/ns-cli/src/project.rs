@@ -44,24 +44,16 @@ pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
 
 /// A path as a project file writes it: either separator, relative to the
 /// project file or absolute. Both separators are accepted everywhere so one
-/// project file serves every operating system; on a host whose separator is
-/// `/`, a `\` is taken as one rather than as a character of a file name.
+/// project file serves every operating system: the foreign separator is
+/// rewritten to the host's and the platform's own path parsing does the rest,
+/// which keeps drive letters, UNC and verbatim prefixes intact.
 pub(crate) fn resolve_written_path(project_directory: &Path, written: &str) -> PathBuf {
-    let normalized: PathBuf = written.split(['/', '\\']).enumerate().fold(
-        PathBuf::new(),
-        |mut path, (index, component)| {
-            if index == 0 && component.is_empty() {
-                path.push(std::path::MAIN_SEPARATOR_STR);
-            } else if index == 0 && component.ends_with(':') {
-                // A Windows drive, `C:`; pushed with its separator so `C:x`
-                // does not become a drive-relative path.
-                path.push(format!("{component}{}", std::path::MAIN_SEPARATOR));
-            } else if !component.is_empty() {
-                path.push(component);
-            }
-            path
-        },
-    );
+    let (foreign, native) = if cfg!(windows) {
+        ("/", "\\")
+    } else {
+        ("\\", "/")
+    };
+    let normalized = PathBuf::from(written.replace(foreign, native));
     // `/x/A.ns` on Windows has a root but is not absolute; it names the
     // current drive's root, so joining it onto the project directory would
     // replace the directory anyway.
@@ -133,6 +125,30 @@ mod tests {
                 PathBuf::from("/x/A.ns")
             );
         }
+    }
+
+    #[test]
+    fn a_doubled_separator_names_the_same_path_as_a_single_one() {
+        let directory = Path::new("projects");
+        let doubled = resolve_written_path(directory, "a//b/C.ns");
+        let single = resolve_written_path(directory, "a/b/C.ns");
+        assert!(doubled.components().eq(single.components()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_unc_path_is_absolute_with_either_separator() {
+        let directory = Path::new("projects");
+        let expected = PathBuf::from(r"\\server\share\A.ns");
+        assert!(expected.is_absolute());
+        assert_eq!(
+            resolve_written_path(directory, r"\\server\share\A.ns"),
+            expected
+        );
+        assert_eq!(
+            resolve_written_path(directory, "//server/share/A.ns"),
+            expected
+        );
     }
 
     #[test]
