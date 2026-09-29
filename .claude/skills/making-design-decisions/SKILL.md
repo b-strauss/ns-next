@@ -28,7 +28,13 @@ principles that decide between options are in `docs/design/README.md`,
    activations and dispatch, Primordial Soup and SOMns for Newspeak itself,
    Strongtalk for inline caches and deoptimization, Nova for Rust arenas and
    handles. V8 and HotSpot where the design documents already cite them.
-   `git submodule update --init <name>` fetches one that is missing.
+   `prior-art/PROVENANCE.md` says what each of the ten is for. A plain clone
+   does not fetch them: `git submodule update --init <name>`, by name, since
+   `opensmalltalk-vm` alone is ~255 MB. Nothing there is compiled or linked;
+   copying code out of one is a licensing decision (`nova` is MPL-2.0, the
+   most restrictive), made so far only for `num-bigint` and `num-integer`
+   under MIT, with notices in `THIRD-PARTY-NOTICES.md` and a header in every
+   adapted file.
 3. **The constraints the repository already fixes.** Read the design document
    for the aspect (`docs/design/README.md` maps them) and `CLAUDE.md`'s
    invariants; an option that breaks one is not an option.

@@ -19,16 +19,32 @@ Create a todo for each item.
 1. **Decide which gates apply**, from `git diff --stat master...HEAD` (or the
    batch's commits):
    - Only Markdown changed → no gates; go to step 3.
-   - Anything else → the end-of-batch group in `CLAUDE.md`, "Working in this
-     repository".
+   - Anything else → the end-of-batch gates below.
    - `editors/jetbrains/` changed → additionally
-     `./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin`.
-     Otherwise skip it.
-2. **Run the gates** exactly as `CLAUDE.md` lists them: the three stress modes
-   at once (each into `.temp/stress-<mode>.log`), `cargo nextest run -p
-   ns-lsp`, and `run-corpus` plain and under each stress mode ("ran 6, failed
-   0, skipped 205"). Read every summary line; a mode that failed is named at
-   the end of the stress run. Report failures with their output.
+     `./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin`
+     (downloads several IDEs). Otherwise skip it.
+2. **Run the gates** exactly as listed (Git Bash syntax; the stress modes act
+   only in debug builds). MOVES moves every object at the run loop's
+   safepoints, CACHES vacates every inline cache at every safepoint, COLLECT
+   collects at every safepoint. The three run at once because each ends in a
+   long tail of a few depth-limit tests that leaves most cores idle, and the
+   tails overlap (about 225 s against 6 minutes one after another):
+
+   ```bash
+   mkdir -p .temp && for mode in MOVES CACHES COLLECT; do
+     (env NS_NEXT_STRESS_$mode=1 cargo nextest run --workspace --exclude ns-lsp      > .temp/stress-$mode.log 2>&1 || echo "stress $mode FAILED: .temp/stress-$mode.log") &
+   done; wait; grep -h Summary .temp/stress-*.log
+   cargo nextest run -p ns-lsp
+   # each must report "ran 6, failed 0, skipped 205"
+   cargo run -p ns-cli -- run-corpus corpus/modules
+   NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
+   NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
+   NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
+   cargo build --workspace
+   ```
+
+   Read every summary line; a mode that failed is named at the end of the
+   stress run. Report failures with their output.
 3. **Open work.** Remove from `docs/OPEN-WORK.md` every item the batch closed;
    add every item a review, measurement or design discussion left open, with a
    pointer to where it is explained.

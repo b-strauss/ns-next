@@ -251,7 +251,7 @@ cargo test --workspace --exclude ns-lsp --doc    # the doctests, which nextest d
 NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-lsp   # the same, moving everything at the run loop's safepoints
 NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-lsp  # the same, vacating every inline cache at every safepoint
 NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-lsp # the same, collecting at every safepoint
-# (CLAUDE.md's end-of-batch gate runs the three stress modes at once, each into its own log)
+# (the finishing-a-batch skill runs the three stress modes at once, each into its own log)
 cargo nextest run -p ns-lsp             # the editor's language server: never starts the VM, so excluded above
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
