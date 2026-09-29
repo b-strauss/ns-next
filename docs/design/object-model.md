@@ -1518,15 +1518,30 @@ holds and refuses a hash of 2^22 or more, where it refuses `u32::MAX` today
 ([image-format.md](image-format.md), "Identity hashes are preserved
 verbatim").
 
-**Application ids are 22 bits wide** as well. Running out keeps today's
-rule: an application without an id runs uncached ([dispatch.md](dispatch.md),
-"The dispatch id"). It stays reachable, because a class object names its
-application by a full-width index into the Rust-side table of
-`MixinApplication`s, separate from the 22-bit guard id, which may be `NONE`;
-the index is reclaimed under the same conditions as the application itself. An application id is reclaimed once no class object, no inline-cache or
-global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
-table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it; the collector can
-tell both, so reusing an id is safe. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable.
+**An application has two ids.** Its *guard id*, 22 bits wide, is the
+inline caches' guard: it stands in object headers, in inline- and
+global-cache entries and in recorded guards (see "What a slot access
+checks" below), and nowhere else. Running out of guard ids keeps today's
+rule: an application without one runs uncached ([dispatch.md](dispatch.md),
+"The dispatch id"). Its *full-width index* into the Rust-side table of
+`MixinApplication`s is what a class object names and what every identity
+comparison of applications uses -- the application cache's key and value,
+`behavior:sharesApplicationWith:` (`Kernel.ns:116`), which class-object
+equality uses, and the global cache's `Lexical` key, which, as today, never
+records a `NONE` guard ([dispatch.md](dispatch.md), "3b — The caches").
+So an application whose guard id is `NONE` stays reachable and distinct
+from every other. Each id has its own reuse rule, and the collector can tell
+both, so reusing either is safe: a guard id is reclaimed once no object
+header, no inline- or global-cache entry and no recorded guard names it; a
+full-width index once no class object, no application-cache key or value
+and no other application's superclass link names it. A mixin id is
+reclaimed once the `Mixin` itself is dropped -- its table entry freed, no
+declaration, enclosing mixin or code holding it -- and no application, no
+application-cache key or value and no class object's applied-clause field
+names it. A class's change of application restamps every instance's header
+by a heap walk, as `Heap::set_class_application` walks the arena today
+(`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
+become reclaimable.
 
 **The class word** is an ordinary value naming the object's class object.
 An immediate has no header; its class and its guard come from a small table
@@ -1586,8 +1601,8 @@ in the space), and its application as a `SmallInteger` full-width index into
 a Rust-side table of `MixinApplication`s, separate from the 22-bit guard id
 in instances' headers; the behaviour stays Rust. Eight fields, so a class
 object is 80 bytes with its header and class word. The application cache is keyed by the mixin's id and
-the superclass application's id rather than by `Rc` addresses, which lets it
-become weak ([memory.md](memory.md), "Weak
+the superclass application's full-width index rather than by `Rc`
+addresses, which lets it become weak ([memory.md](memory.md), "Weak
 references"). A closure keeps its code id, captured frame and feedback base
 in fixed fields and its copied values inline; a code id indexes a Rust-side
 table of compiled code that is append-only per heap, its entries never freed
@@ -1663,16 +1678,34 @@ checks its index against the object's own word count, not only against the
 space's bounds, so no write through one object -- a crafted image's
 by-reference register write included -- can reach the next object's header;
 an out-of-range index that a valid program produces raises an ordinary
-Newspeak error, never a panic. `InitializeSlot` and `ReturnSlotIfFilled`
-read and write `slot_base + own_index` in `self` with no send and no guard
-(`bytecode.rs`), so they also compare the receiver header's application id
-with the one the activation recorded from that header when it was entered --
-not with the running level's own application, which differs from the
-receiver's on every inherited level -- one compare, cold on a mismatch --
-and raise an ordinary Newspeak error on a mismatch: after a `self become:`
-inside an initializer or a lazy slot's initializer, the rest of that
-activation would otherwise write the old layout into an object of another
-shape.
+Newspeak error, never a panic.
+
+**What a slot access checks.** A slot access that is not guarded by the
+receiver's own header reads or writes a field at an index decided without
+looking at the receiver: the own-slot instructions `InitializeSlot`,
+`InitializeSlotProvisionally`, `LoadOwnSlot` and `ReturnSlotIfFilled`, which
+address `slot_base + own_index` in `self` with no send (`bytecode.rs`,
+`vm.rs`), and a slot accessor acted on through `Chain::Private` or
+`Chain::Super` -- a private lexical send, one to an enclosing object
+included, resolves on the lexical class to a field index
+(`resolve_lexical`, `interpreter/resolve.rs`; `decide_slot_accessor`), and
+a super send on the superclass. Each compares the receiver's header guard
+with an expected guard, a *recorded guard*: for the own-slot instructions,
+the one the activation recorded from the receiver's header when it was
+entered -- not the running level's own application, which differs from the
+receiver's on every inherited level; for a private or super slot accessor,
+the one the cache entry recorded when it was filled. One compare, the hot
+path. On a mismatch, or when either guard is `NONE`, a cold path checks,
+through the receiver's class word and the full-width index, that the
+receiver's application inherits the accessing level: if it does -- as after
+an edit that changed only methods and restamped the header -- the access
+proceeds; if not, it raises an ordinary Newspeak error. The reference
+lowering, which has no cache, always takes the cold check. So after a
+`self become:` inside an initializer or a lazy slot's initializer, the rest
+of that activation cannot write the old layout into an object of another
+shape, and a receiver forwarded to an object of another class never
+receives a write meant for the class it replaced. Recorded guards join the
+guard id's reuse rule ("An application has two ids" above).
 
 ## Planned: `become:` through forwarders
 
@@ -1752,7 +1785,9 @@ without a rule of its own. A program can reach, and `become:`, kernel-made
 non-value objects -- a VM error's `Error` or `MessageNotUnderstood` and its
 `Message` -- and that is harmless: `become:` never moves contents between
 classes, the kernel activations holding them are frame objects and refused,
-and shipped code reaches the mirror only lexically, through its class
+a kernel method whose receiver has been forwarded to a program object fails
+the slot-access check ("What a slot access checks" above) instead of
+writing kernel-private state into it, and shipped code reaches the mirror only lexically, through its class
 objects' enclosing chain and the roots of `Kernel`, `PlatformFactory` and
 `CollectionsFactory`, each declared `= Object <: Value` and so a value, and
 the mirror itself is unreachable. Every object on a path from shipped code

@@ -1194,19 +1194,25 @@ which is old space's bytes relocated on load, is the model this does not take.
 - **The decode amplification is recomputed** as the largest of the ratios:
   per record kind, that kind's fixed object size against its minimum record
   -- a class or metaclass object, eight fields and its header and class word,
-  80 bytes against a metaclass record of about 12 (`image/encode.rs:1576-1614`),
-  about 6.7x, and a frame object, about 96 bytes against a record of about
-  19, some 5x -- and per value, the words a decoded value occupies against
-  the bytes that encode it -- a one-byte `VALUE_NIL` element becomes an
-  8-byte word, 8x, and a UTF-8 byte widened to the 32-bit string form 4x. As
-  computed, the per-value 8x is the largest; the bound is whichever is
-  largest once the layouts are final, since the first pass allocates each
-  object's full size before validation. A symbol record names a symbol-table
-  entry rather than carrying its text, so the first pass refuses a second
-  record naming the same entry, or one the heap's table already holds,
-  before allocating, and charges each entry's text once against the bytes
-  remaining -- otherwise many short records naming one long entry would
-  allocate its text many times ([memory.md](memory.md), "The interim cost, and the one
+  80 bytes against the smallest metaclass record, 8 bytes (a class tag of 2,
+  the hash's 4, `OBJECT_METACLASS` and a one-byte `CLASS_USER_ROOT` tag for
+  the class it describes, which `decode_class_tag` accepts:
+  `image/encode.rs:1612-1615`, `image/decode.rs:3185-3190`), 10x, and a
+  frame object, about 96 bytes against a record of about 19, some 5x -- and
+  per value, the words a decoded value occupies against the bytes that
+  encode it -- a one-byte `VALUE_NIL` element becomes an 8-byte word, 8x,
+  and a UTF-8 byte widened to the 32-bit string form 4x. The class kind's
+  10x is the largest, and the bound is whichever ratio is largest once the
+  layouts are final, since the first pass allocates each object's full size
+  before validation. A symbol record names a symbol-table entry rather than
+  carrying its text, so the first pass refuses a second record naming the
+  same entry, or one the heap's table already holds, before allocating, and
+  allocates each entry's text at most once; that text is bounded by its own
+  UTF-8 encoding in the symbol section -- at most 4x its encoded bytes in the
+  32-bit form -- so the amplification's base is the graph section and the
+  symbol section together, not the graph bytes remaining alone, which a
+  valid image whose graph ends in one symbol record with a long name would
+  otherwise fail ([memory.md](memory.md), "The interim cost, and the one
   question still open", where the figures are, and `CLAUDE.md`'s paragraph on
   untrusted images). `bounded_count` keeps bounding every pre-allocation by
   the bytes remaining.

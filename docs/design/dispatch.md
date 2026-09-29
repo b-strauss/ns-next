@@ -1463,12 +1463,12 @@ so that this guard stays a per-application id -- a class-index guard as in
 Spur and Primordial Soup would make every site that sees nested-class
 instances from two enclosing objects polymorphic. Two things follow for the
 caches. The application cache (`Mutator.applications`) is keyed by the
-mixin's id and the superclass application's id rather than by two
-`Rc::as_ptr` addresses, since the mixins and `MixinApplication`s will live in
-Rust-side tables indexed by their ids, and a class object will name its
-application by a full-width index into that table, separate from the 22-bit
-guard id; with ids that are never reused while a key can name them, the
-cache is free to become weak
+mixin's id and the superclass application's full-width index rather than
+by two `Rc::as_ptr` addresses, since the mixins and `MixinApplication`s will
+live in Rust-side tables indexed by their ids, and a class object will name
+its application by that full-width index, separate from the 22-bit guard
+id; with ids that are never reused while a key can name them, the cache is
+free to become weak
 ([memory.md](memory.md), "Weak references"). And a forwarder
 ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders", road step 5) carries a reserved application id that is never a
@@ -1486,15 +1486,28 @@ entry, before resolve and act -- `decide_send` (`interpreter/mod.rs`),
 lexical sends -- so the receiver `act` gets is the followed one and the two
 lowerings cannot diverge. An immediate's guard comes
 from a table indexed by its tag, and for the constant tag by the constant,
-since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the ids can run
-out where today's `u32` counter practically cannot; running out keeps
-today's rule, an application without an id running uncached (`NONE`, "The
-dispatch id" above), and still reachable through its class objects' full-width
-index, which is reclaimed under the same conditions as the application
-itself. An application id is reclaimed once no class object, no inline-cache or
-global-cache entry (its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its
-table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it, which the
-collector can tell. A class's change of application restamps every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The debug build's check in
+since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the guard ids can run out where today's `u32` counter
+practically cannot; running out keeps today's rule, an application without
+a guard id running uncached (`NONE`, "The dispatch id" above). The guard id
+serves only as a guard -- in object headers, inline- and global-cache
+entries and recorded guards ([object-model.md](object-model.md), "Planned:
+the object layout") -- and every identity comparison of applications uses
+the full-width index instead: the application cache's key and value,
+`behavior:sharesApplicationWith:` (`Kernel.ns:116`), and the global cache's
+`Lexical` key, which keeps never recording a `NONE` guard, as step 6 of the
+lookup order in "3b — The caches" says today. So an application without a
+guard id stays reachable and distinct. A guard id is reclaimed once no
+object header, no inline- or global-cache entry and no recorded guard names
+it; a full-width index once no class object, no application-cache key or
+value and no other application's superclass link names it; a mixin id once
+the `Mixin` itself is dropped -- its table entry freed, no declaration,
+enclosing mixin or code holding it -- and no application, no
+application-cache key or value and no class object's applied-clause field
+names it. The collector can tell all three. A class's change of application
+restamps every instance's header by a heap walk, as
+`Heap::set_class_application` walks the arena today
+(`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
+become reclaimable. The debug build's check in
 `Heap::dispatch_id`, which recomputes an object's id from its class and
 asserts that the header agrees, answers the reserved id for an object of the
 forwarded format instead of reading its class word, which then names the

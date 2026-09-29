@@ -82,6 +82,22 @@ and `prior-art/newspeak-benchmarks`.
 
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
+**To settle when planning**, details the design leaves to each step's plan,
+to be decided against the code:
+
+- *Road step 3:* where the recorded guard of an activation lives -- a
+  field of the activation stack's entry, and, if a reified frame is to carry
+  it for road step 7's suspend and resume, an eleventh frame-object field
+  (104 bytes rather than the about 96 the decode amplification figure uses
+  in [image-format.md](design/image-format.md)); the bit widths for packing
+  a class object's applied clause -- mixin id, clause index and builtin tag
+  -- into one `SmallInteger`; the three reserved guard values (`NONE`,
+  `VACANT` and the forwarder's) and their numbers; whether the Rust-side
+  table of value-class refusals is append-only or reclaimed under live
+  editing ([object-model.md](design/object-model.md), "Planned: the object
+  layout").
+
+
 ## Planned: performance and representation
 
 - **`IntegerBinary` without its `Jump`.** A successful inlined integer

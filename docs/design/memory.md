@@ -338,8 +338,9 @@ before every move says so (`World::check_quiescent_state`).
 The one other place a collection is sound is between entries, where only
 roots hold values and no step is running: `Interpreter::collect_now`
 (`interpreter/safepoint.rs:215`) collects there today, for tests only. Under
-generations a load will tenure everything there, between the bootstrap and
-the decoder ("Planned: generations").
+generations a load will tenure everything there -- between the bootstrap
+and the decoder's first allocation, and, for a stateful load, again after
+the platform paths and before the graph pass ("Planned: generations").
 
 The first four systems below chose this placement; the last four collect
 elsewhere, and their right-hand column is what that costs their runtime code:
@@ -1179,8 +1180,19 @@ decidable only once a mixin carries an id of its own instead of an address,
 and the object layout (road step 3) will give mixins and applications ids
 ([object-model.md](object-model.md), "Planned: the object layout"). The same
 per-mixin id is wanted by dispatch's open option of guarding a private
-lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What will make the weak cache sound is the reuse rule: an application id will be reclaimed once no class object, no inline-cache or global-cache entry
-(its guard, or a `Lexical` key's application id), no application-cache entry, key or value, and no object header names it, and a mixin id once the `Mixin` itself is dropped -- its table entry freed, no declaration, enclosing mixin or code holding it -- and no application, no application-cache entry, key or value, and no class object's applied-clause field names it. A class's change of application will restamp every instance's header by a heap walk, as `Heap::set_class_application` walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old id can become reclaimable. The cache's unbounded growth under live editing
+lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What will make the weak cache sound is that its key and value
+use an application's full-width index, never its 22-bit guard id, and the
+reuse rules: a full-width index will be reclaimed once no class object, no
+application-cache key or value and no other application's superclass link
+names it; a guard id once no object header, no inline- or global-cache entry
+and no recorded guard names it; a mixin id once the `Mixin` itself is
+dropped -- its table entry freed, no declaration, enclosing mixin or code
+holding it -- and no application, no application-cache key or value and no
+class object's applied-clause field names it ([object-model.md](object-model.md),
+"Planned: the object layout"). A class's change of application will restamp
+every instance's header by a heap walk, as `Heap::set_class_application`
+walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the
+old guard id can become reclaimable. The cache's unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) will end with it.
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
@@ -1548,12 +1560,14 @@ unsafe code" names `ns-runtime` (road step 1); "An image is untrusted input"
 takes new amplification figures for the eight-byte value (road step 2) and
 for variably sized objects (road step 3), with the decoder's first pass
 checking each record's declared size against the bytes remaining; the bound
-is the largest of the per-record-kind ratios (a class object about 6.7x, a
-frame object about 5x) and the per-value ratio -- a one-byte `VALUE_NIL`
-element becomes an 8-byte word, 8x, and a UTF-8 byte widened to the 32-bit
-string form 4x -- and the first pass refuses a second symbol record naming
-the same symbol-table entry before allocating, charging each entry's text
-once
+is the largest of the per-record-kind ratios (a class object 10x against
+an 8-byte metaclass record, a frame object about 5x) and the per-value ratio
+-- a one-byte `VALUE_NIL` element becomes an 8-byte word, 8x, and a UTF-8
+byte widened to the 32-bit string form 4x -- so the class kind's 10x; the
+first pass refuses a second symbol record naming the same symbol-table entry
+before allocating and allocates each entry's text at most once, bounded by
+its encoding in the symbol section, so the base is the graph and symbol
+sections together
 ([image-format.md](image-format.md), "Planned: the image under the new
 representation"); the handle
 paragraphs describe a 64-bit byte offset and the frame arena's end (road step

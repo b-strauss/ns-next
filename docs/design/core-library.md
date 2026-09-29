@@ -922,7 +922,11 @@ a value (`Platform`, `Transcript`, `KernelNamespace` and `Collections` are
 declared `= Value new`) and every class it names is a class object, and a
 program's `become:` will refuse both in either direction; the kernel-made
 non-value objects a program can reach, such as a VM error's `Error` and its
-`Message`, lie on no path from shipped code to the mirror, which runs only
+`Message`, lie on no path from shipped code to the mirror, and a kernel
+method whose receiver a program forwarded fails the planned slot-access
+check ([object-model.md](object-model.md), "What a slot access checks")
+rather than writing kernel-private state into a program object; the path to
+the mirror runs only
 through class objects and the value roots of `Kernel`, `PlatformFactory` and
 `CollectionsFactory`, so no program will be able to redirect a reference
 that leads shipped code to the mirror. Six things keep it
