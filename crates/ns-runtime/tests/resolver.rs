@@ -570,3 +570,187 @@ fn a_lazy_slot_initializer_does_not_see_the_factory_parameters() {
         Some(Binding::LexicalSend { depth: 0 })
     ));
 }
+
+/// A module whose root class is `class R{factory} = {clauses} ()`: the
+/// header's factory before the `=` and the clauses after it, as written.
+fn module_with_root(factory: &str, clauses: &str) -> String {
+    formatdoc! {"
+        Newspeak3
+        'T'
+        class R{factory} = {clauses} () (
+        ) : ()
+    "}
+}
+
+/// The root rule is checked by the resolver, for every module root, so a
+/// module whose artifact `build` could never write never runs either
+/// (`docs/design/object-model.md`, "The root rule"). These four are the
+/// only root clauses it leaves.
+#[test]
+fn the_four_root_forms_the_rule_allows_resolve() {
+    for clauses in ["", "Object new", "Value new", "Object <: Value"] {
+        let source = if clauses.is_empty() {
+            indoc! {"
+                Newspeak3
+                'T'
+                class R = () (
+                ) : ()
+            "}
+            .to_string()
+        } else {
+            module_with_root("", clauses)
+        };
+        assert_eq!(resolve_errors(&source), Vec::<String>::new(), "`{clauses}`");
+    }
+}
+
+/// The primary factory before the `=` is not a clause, so the rule leaves it
+/// free.
+#[test]
+fn the_root_rule_leaves_the_primary_factory_free() {
+    for (factory, clauses) in [
+        (" packageUsing: manifest", "Object new"),
+        (" usingPlatform: platform", "Value new"),
+        (" new", "Object <: Value"),
+    ] {
+        let source = module_with_root(factory, clauses);
+        assert_eq!(
+            resolve_errors(&source),
+            Vec::<String>::new(),
+            "`{factory} = {clauses}`"
+        );
+    }
+}
+
+/// Every other root clause is one resolve error, spanning the clause at
+/// fault as written, with the tail the instantiation refusal names.
+#[test]
+fn every_other_root_clause_is_one_resolve_error_at_that_clause() {
+    let rule = "a module's root class may inherit only Object or Value, or write Object <: Value";
+    // The clauses after the `=`, the offending clause as written, whether it
+    // is the last occurrence of that text rather than the first, and the tail.
+    let cases = [
+        (
+            "Array new",
+            "Array new",
+            false,
+            "its superclass clause names Array",
+        ),
+        (
+            "Missing new",
+            "Missing new",
+            false,
+            "its superclass clause names Missing",
+        ),
+        (
+            "Top new",
+            "Top new",
+            false,
+            "its superclass clause names Top",
+        ),
+        (
+            "self Object new",
+            "self Object new",
+            false,
+            "its superclass clause names self Object",
+        ),
+        (
+            "outer Missing Object new",
+            "outer Missing Object new",
+            false,
+            "its superclass clause names outer Missing Object",
+        ),
+        (
+            "Object foo",
+            "Object foo",
+            false,
+            "its superclass clause sends foo to Object, not new",
+        ),
+        (
+            "Object new: 3",
+            "Object new: 3",
+            false,
+            "its superclass clause sends new: to Object, not new",
+        ),
+        (
+            "Value + 3",
+            "Value + 3",
+            false,
+            "its superclass clause sends + to Value, not new",
+        ),
+        (
+            "Object <: Array",
+            "Array",
+            false,
+            "its mixin application clause 1 names Array",
+        ),
+        (
+            "Object <: Missing",
+            "Missing",
+            false,
+            "its mixin application clause 1 names Missing",
+        ),
+        (
+            "Object <: self Value",
+            "self Value",
+            false,
+            "its mixin application clause 1 names self Value",
+        ),
+        (
+            "Object <: Value new",
+            "Value new",
+            false,
+            "its mixin application clause 1 sends new to Value",
+        ),
+        // `Value <: Value`'s one `<:` clause is right; its superclass is not.
+        (
+            "Value <: Value",
+            "Value",
+            false,
+            "it applies Value to Value",
+        ),
+        (
+            "Value new <: Value",
+            "Value new",
+            false,
+            "it applies Value to Value",
+        ),
+        (
+            "Object <: Value <: Value",
+            "Value",
+            true,
+            "its mixin application clause 2 names Value",
+        ),
+    ];
+    for (clauses, offending, last, tail) in cases {
+        let source = module_with_root("", clauses);
+        let module = ns_syntax::parse(&source).expect("parse");
+        let errors = match resolve(
+            module,
+            source.as_str().into(),
+            SourceOrigin::File("test.ns".into()),
+        ) {
+            Ok(_) => panic!("`{clauses}` resolved"),
+            Err(errors) => errors,
+        };
+        assert_eq!(errors.len(), 1, "`{clauses}`");
+        assert_eq!(
+            errors[0].message,
+            format!("{rule}, and {tail}"),
+            "`{clauses}`"
+        );
+        let start = if last {
+            source.rfind(offending)
+        } else {
+            source.find(offending)
+        }
+        .expect("the offending clause");
+        let span = errors[0].span;
+        assert_eq!(
+            (span.start as usize, span.end as usize),
+            (start, start + offending.len()),
+            "`{clauses}` spans {:?}",
+            &source[span.start as usize..span.end as usize]
+        );
+    }
+}

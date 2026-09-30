@@ -265,7 +265,7 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
 /// set, rather than as a general class
 /// tag, because the general form names an object-table id and the object
 /// table is not decoded yet. That costs nothing: the root rule
-/// (`instantiate::root_clause_defect`) lets a root inherit only `Object` or
+/// (`resolver::root_clause_defect`) lets a root inherit only `Object` or
 /// `Value`, and `Mutator::load_root_class` builds every root over one of
 /// them, so a builtin tag names every superclass this runtime builds. A root
 /// class inheriting from a *user* class is refused here rather than written

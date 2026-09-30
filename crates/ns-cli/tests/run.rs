@@ -271,6 +271,47 @@ fn a_module_shadowed_by_an_object_member_is_refused() {
     assert!(stderr.contains("public member"), "stderr: {stderr}");
 }
 
+/// The root rule is a resolve error for every module root, so a project
+/// module that breaks it is refused even though nothing ever instantiates
+/// it: `run` refuses what `build` could never write, with the same text.
+#[test]
+fn a_never_used_module_breaking_the_root_rule_is_refused_by_run_and_build_alike() {
+    let directory = ScratchDirectory::new("project-unused-defective-root");
+    std::fs::write(directory.join("App.ns"), APP).unwrap();
+    std::fs::write(directory.join("Greeter.ns"), GREETER).unwrap();
+    std::fs::write(
+        directory.join("Unused.ns"),
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Unused = Array new () () : ()
+        "},
+    )
+    .unwrap();
+    let project = directory.join("app.json");
+    std::fs::write(
+        &project,
+        r#"{ "root": "App.ns", "modules": ["Greeter.ns", "Unused.ns"] }"#,
+    )
+    .unwrap();
+    let expected = "resolve error: a module's root class may inherit only Object or Value, \
+                    or write Object <: Value, and its superclass clause names Array\n";
+
+    let ran = run(&project);
+    let built = ns_next()
+        .arg("build")
+        .arg(&project)
+        .arg(directory.join("app.nsi"))
+        .output()
+        .unwrap();
+    for (command, out) in [("run", &ran), ("build", &built)] {
+        assert_eq!(out.status.code(), Some(1), "{command}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{command}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr), expected, "{command}");
+    }
+    assert!(!directory.join("app.nsi").exists());
+}
+
 #[test]
 fn a_program_without_main_is_an_uncaught_does_not_understand() {
     let directory = ScratchDirectory::new("no-main");

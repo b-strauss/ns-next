@@ -1,4 +1,4 @@
 status = 1
 stderr = '''
-Uncaught Newspeak error during instantiation: cannot instantiate RootNamesAnotherBuiltin: a module's root class may inherit only Object or Value, or write Object <: Value, and its superclass clause names Array
+resolve error: a module's root class may inherit only Object or Value, or write Object <: Value, and its superclass clause names Array
 '''

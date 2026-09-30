@@ -5,6 +5,8 @@ mod classes;
 mod scope;
 pub(crate) mod sends;
 
+pub(crate) use classes::root_clause_defect;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -125,13 +127,20 @@ impl Resolver {
         .chain(enclosing.iter().copied())
         .collect();
 
-        // A module root's clauses are decided by the root rule, deferred to
-        // instantiation (`interpreter::instantiate::root_clause_defect`), so
-        // they bind nothing here: a receiver with no binding lowers to the
-        // deferred `UnresolvedIdentifier`, and a root's clause receiver is
-        // never run. Refusing `Missing` here while `Array` ran was one rule
-        // on two paths.
-        if !enclosing.is_empty() {
+        // A module root's clauses are decided by the root rule alone
+        // (`classes::root_clause_defect`), a resolve error here, so they
+        // bind nothing: a receiver with no binding lowers to the deferred
+        // `UnresolvedIdentifier`, and a root's clause receiver is never run.
+        // Refusing `Missing` by name lookup while `Array` passed would be one
+        // rule on two paths.
+        if enclosing.is_empty() {
+            if let Some((defect, span)) = classes::root_clause_defect(declaration) {
+                self.errors.push(ResolveError {
+                    span,
+                    message: defect.describe(),
+                });
+            }
+        } else {
             // The superclass clause's receiver (e.g. `Object` in `Object new`)
             // is evaluated "as if it occurred inside an instance method of the
             // enclosing class" (`newspeak-spec.pdf` §6.1; `docs/design/dispatch.md`,

@@ -8,9 +8,10 @@ Newspeak3
    Object or Value, or write Object <: Value; every other root clause is a
    defect (`docs/design/object-model.md`, "The root rule").
 
-   The refusal is deferred to instantiation: the module loads, its class
-   exists and can be inspected, and only an instance is refused -- which
-   `run` asks for first, so `main:args:` never runs. *)
+   The rule is checked by the resolver, before anything runs: a module
+   whose artifact `build` could never write must not run under `run`
+   either, so this is a resolve error and `main:args:` never runs
+   (`docs/design/README.md`, "Deviations from the language specification"). *)
 class RootNamesAnotherBuiltin = Array new () (
     public main: platform args: arguments = (
         platform transcript show: 'unreachable'; newLine

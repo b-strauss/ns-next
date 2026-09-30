@@ -45,11 +45,30 @@ fn expect_error(result: HostResult, what: &str) -> String {
     }
 }
 
-/// Every root defect is deferred: the module loads, its class exists and
-/// answers its class side, and only an instance is refused -- which is what
-/// lets a live system inspect and fix a module whose root is wrong.
+/// Loads `source`, whose root breaks the root rule, the one way such a root
+/// still reaches an interpreter: a `ResolvedModule` a host builds by hand
+/// from the editor's resolution, since `resolve` refuses it.
+fn load_past_the_resolver(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolution = ns_runtime::resolve_for_editor(module);
+    assert_eq!(resolution.errors.len(), 1, "one root-rule resolve error");
+    let resolved = ns_runtime::ResolvedModule {
+        module: std::rc::Rc::new(resolution.module),
+        source: source.into(),
+        origin: ns_runtime::SourceOrigin::File("test.ns".into()),
+        bindings: std::rc::Rc::new(resolution.bindings),
+        kernel: false,
+    };
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
+}
+
+/// A root the resolver refuses still has its instantiation refused when a
+/// host builds its `ResolvedModule` by hand: the module loads, its class
+/// exists and answers its class side, and only an instance is refused.
 #[test]
-fn a_module_with_a_defective_root_loads_and_refuses_only_an_instance() {
+fn a_defective_root_built_past_the_resolver_refuses_only_an_instance() {
     let source = indoc! {"
         Newspeak3
         'Test'
@@ -57,7 +76,7 @@ fn a_module_with_a_defective_root_loads_and_refuses_only_an_instance() {
             public answer = ( ^42 )
         )
     "};
-    let (mut interpreter, class, _resolved) = load(source);
+    let (mut interpreter, class) = load_past_the_resolver(source);
     let answer = expect_ok(
         interpreter.send(&class, Symbol::intern("answer"), &[]),
         "Defective answer",
@@ -131,20 +150,32 @@ fn a_mutable_slot_above_the_value_level_is_refused() {
     );
 }
 
-/// A root clause the resolver refused until 2026-09-23 now resolves, and is
-/// refused at instantiation like every other root defect.
+/// An unknown root superclass is refused by the resolver like every other
+/// root defect, by the root rule rather than by a failed lookup, so no
+/// `main:args:` of such a module ever runs.
 #[test]
-fn an_unknown_root_superclass_is_a_deferred_defect_not_a_resolve_error() {
+fn an_unknown_root_superclass_is_a_resolve_error_of_the_root_rule() {
     let source = indoc! {"
         Newspeak3
         'Test'
         class Unknown = Missing new () ()
     "};
-    let (mut interpreter, class, _resolved) = load(source);
-    let message = expect_error(interpreter.instantiate(&class, &[]), "Unknown new");
+    let module = ns_syntax::parse(source).expect("parse");
+    let errors = match ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    ) {
+        Ok(_) => panic!("a root naming Missing resolved"),
+        Err(errors) => errors,
+    };
+    assert_eq!(errors.len(), 1);
     assert!(
-        message.ends_with("its superclass clause names Missing"),
-        "{message}"
+        errors[0]
+            .message
+            .ends_with("its superclass clause names Missing"),
+        "{}",
+        errors[0].message
     );
 }
 

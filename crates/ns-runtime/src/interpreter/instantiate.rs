@@ -227,10 +227,11 @@ impl<'gc> Mutator<'gc> {
             ModuleSource::User
         };
         let mixin = self.build_root_mixin(declaration, &resolved.bindings, source);
-        // The rule leaves three shapes, and a defective root is built as the
-        // first so that its class exists, answers its class side and can be
-        // inspected -- only an instance is refused (`apply_mixin` carries the
-        // defect into the application).
+        // The rule leaves three shapes. `resolve` refuses every other root,
+        // so a defect reaches here only through a `ResolvedModule` a host
+        // built by hand; such a root is built as the first so that its class
+        // exists and can be inspected, and only an instance is refused
+        // (`apply_mixin` carries the defect into the application).
         let (superclass_kind, applies_value) = match &mixin.root_clause_defect {
             Some(_) => (BuiltinClass::Object, false),
             None => {
@@ -312,7 +313,8 @@ impl<'gc> Mutator<'gc> {
         source: ModuleSource,
     ) -> Rc<Mixin> {
         let mut mixin = self.mixin_of(declaration, declaration, bindings, source);
-        mixin.root_clause_defect = root_clause_defect(declaration);
+        mixin.root_clause_defect =
+            crate::resolver::root_clause_defect(declaration).map(|(defect, _)| defect);
         Rc::new(mixin)
     }
 
@@ -1254,55 +1256,6 @@ fn not_an_argument_list_error<'gc>(
     })
 }
 
-/// §6.1 evaluates a module root's clauses "as if [each] was a top level
-/// expression", where §3.8 leaves nothing to send to, so the only classes a
-/// root can reach are the ones the rule names: `Object` or `Value` as its
-/// superclass, and `Value` applied to `Object`. Decided with the user on
-/// 2026-09-23 (`docs/design/object-model.md`, "The root rule"). Syntactic,
-/// so it is decided here, once, and deferred to instantiation -- a module
-/// whose root is wrong still loads and can be inspected and fixed.
-pub(crate) fn root_clause_defect(
-    declaration: &ast::ClassDeclaration,
-) -> Option<crate::mixin::RootClauseDefect> {
-    use crate::mixin::RootClauseDefect;
-    let superclass_is_value = match &declaration.superclass {
-        None => false,
-        Some(clause) => {
-            let named = clause.receiver.name.as_str();
-            if clause.prefix.is_some() || !matches!(named, "Object" | "Value") {
-                return Some(RootClauseDefect::Superclass {
-                    clause: clause_as_written(clause),
-                });
-            }
-            named == "Value"
-        }
-    };
-    for (index, clause) in declaration.mixin_applications.iter().enumerate() {
-        if index > 0 || clause.prefix.is_some() || clause.receiver.name != "Value" {
-            return Some(RootClauseDefect::MixinApplication {
-                index,
-                clause: clause_as_written(clause),
-            });
-        }
-        if superclass_is_value {
-            return Some(RootClauseDefect::ValueOverValue);
-        }
-    }
-    None
-}
-
-/// A clause's prefix and receiver, as the program wrote them -- what a
-/// refusal names, since the message part is not at fault.
-fn clause_as_written(clause: &ast::SuperclassClause) -> String {
-    let prefix = match &clause.prefix {
-        None => String::new(),
-        Some(ast::SuperclassPrefix::SelfPrefix) => "self ".to_string(),
-        Some(ast::SuperclassPrefix::SuperPrefix) => "super ".to_string(),
-        Some(ast::SuperclassPrefix::Outer(name)) => format!("outer {} ", name.name),
-    };
-    format!("{prefix}{}", clause.receiver.name)
-}
-
 /// The refusal `decide_instantiation` raises, named under the class's own
 /// primary factory as both value refusals are. `display_name` is
 /// `Heap::class_display_name`'s, which this function has no heap to ask:
@@ -1318,6 +1271,11 @@ fn instantiation_refusal_error<'gc>(
         crate::mixin::InstantiationRefusal::MutableValueSlot(violation) => {
             mutable_value_slot_error(class, application, *violation)
         }
+        // The resolver refuses a root that breaks the root rule, so no source
+        // module reaches this; it stays because a `ResolvedModule` is a
+        // public struct a host can build without resolving, and the encoder
+        // reads the same verdict to keep such a root out of an image, which
+        // is untrusted input (`image-format.md`, "Verification").
         crate::mixin::InstantiationRefusal::RootClause(defect) => NewspeakError {
             selector: factory_selector(application),
             receiver: Value::Object(class),
@@ -1696,7 +1654,7 @@ mod tests {
         let defect_of = |header: &str| {
             let source = format!("Newspeak3\n'T'\n{header} ()\n");
             let module = ns_syntax::parse(&source).expect("parse");
-            super::root_clause_defect(&module.root_class)
+            crate::resolver::root_clause_defect(&module.root_class).map(|(defect, _)| defect)
         };
         assert_eq!(defect_of("class R = ()"), None);
         assert_eq!(defect_of("class R = Object new ()"), None);
@@ -1740,6 +1698,36 @@ mod tests {
         assert_eq!(
             defect_of("class R = Value <: Value ()"),
             Some(RootClauseDefect::ValueOverValue)
+        );
+        assert_eq!(
+            defect_of("class R = Value new <: Value ()"),
+            Some(RootClauseDefect::ValueOverValue)
+        );
+        let superclass_message = |clause: &str, selector: &str| {
+            Some(RootClauseDefect::SuperclassMessage {
+                clause: clause.to_string(),
+                selector: selector.to_string(),
+            })
+        };
+        assert_eq!(
+            defect_of("class R = Object foo ()"),
+            superclass_message("Object", "foo")
+        );
+        assert_eq!(
+            defect_of("class R = Object new: 3 ()"),
+            superclass_message("Object", "new:")
+        );
+        assert_eq!(
+            defect_of("class R = Value + 3 ()"),
+            superclass_message("Value", "+")
+        );
+        assert_eq!(
+            defect_of("class R = Object <: Value new ()"),
+            Some(RootClauseDefect::MixinApplicationMessage {
+                index: 0,
+                clause: "Value".to_string(),
+                selector: "new".to_string(),
+            })
         );
     }
 }

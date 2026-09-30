@@ -10739,7 +10739,9 @@ fn a_root_section_the_root_rule_forbids_is_refused() {
 }
 
 /// A root the rule forbids can never be instantiated, so no image is written
-/// for it, and both writers say why with the instantiation's text.
+/// for it, and both writers say why with the instantiation's text. The
+/// resolver refuses such a root, so it is loaded here the one way it still
+/// reaches an interpreter: a `ResolvedModule` a host builds by hand.
 #[test]
 fn the_encoder_refuses_a_root_the_rule_forbids() {
     let source = indoc! {"
@@ -10747,7 +10749,17 @@ fn the_encoder_refuses_a_root_the_rule_forbids() {
         'T'
         class Root = Array new () ()
     "};
-    let (mut interpreter, class) = load(source);
+    let resolution = ns_runtime::resolve_for_editor(ns_syntax::parse(source).expect("parse"));
+    assert_eq!(resolution.errors.len(), 1, "one root-rule resolve error");
+    let resolved = ns_runtime::ResolvedModule {
+        module: Rc::new(resolution.module),
+        source: Rc::from(source),
+        origin: SourceOrigin::File(PathBuf::from("t.ns")),
+        bindings: Rc::new(resolution.bindings),
+        kernel: false,
+    };
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
     let platform = interpreter.platform();
     let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);

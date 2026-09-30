@@ -1,4 +1,4 @@
 status = 1
 stderr = '''
-Uncaught Newspeak error during instantiation: cannot instantiate RootMixinNamesAnUnknownClass: a module's root class may inherit only Object or Value, or write Object <: Value, and its mixin application clause 1 names Missing
+resolve error: a module's root class may inherit only Object or Value, or write Object <: Value, and its mixin application clause 1 names Missing
 '''

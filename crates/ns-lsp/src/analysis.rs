@@ -170,6 +170,30 @@ mod tests {
         assert!(found[0].contains("outer Missing"), "{}", found[0]);
     }
 
+    /// The root rule is a resolve error, so the editor underlines a module
+    /// root's offending clause before anything runs.
+    #[test]
+    fn a_root_rule_violation_is_reported_at_the_clause() {
+        let text = indoc::indoc! {"
+            Newspeak3
+            'Test'
+            class Module = Array new () () : ()
+        "};
+        let analysis = analyze(text);
+        assert_eq!(analysis.findings.len(), 1);
+        let finding = &analysis.findings[0];
+        assert_eq!(
+            finding.message,
+            "a module's root class may inherit only Object or Value, or write Object <: Value, \
+             and its superclass clause names Array"
+        );
+        let start = text.find("Array new").expect("the superclass clause");
+        assert_eq!(
+            (finding.span.start as usize, finding.span.end as usize),
+            (start, start + "Array new".len())
+        );
+    }
+
     #[test]
     fn a_panic_becomes_one_internal_error_finding() {
         let analysis = guarded("anything", |_| panic!("the analyzer broke"));

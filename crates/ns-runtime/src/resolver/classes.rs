@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use ns_syntax::ast;
 
+use crate::mixin::RootClauseDefect;
 use crate::Symbol;
 
 /// The members one side of a class declaration *declares*, each under its
@@ -127,4 +128,97 @@ pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec
         }
     }
     duplicates
+}
+
+/// The root rule (`docs/design/object-model.md`, "The root rule"): §6.1
+/// evaluates a module root's clauses "as if [each] was a top level
+/// expression", where §3.8 leaves nothing to send to, so the only classes a
+/// root can reach are the ones the rule names -- `Object` or `Value` as its
+/// superclass clause, sent `new` or nothing, and one unprefixed `Value`,
+/// sent nothing, applied over `Object`. Everything after the header's `=`
+/// is held to it; the primary factory before it is not.
+///
+/// Decided by the resolver, for every module root, before anything runs: a
+/// module whose artifact `build` could never write must not run under
+/// `run` either (`docs/design/README.md`, "Deviations from the language
+/// specification"). The span is the offending clause's, for the editor to
+/// underline. `interpreter::instantiate` records the same verdict on the
+/// root mixin, which the image encoder refuses to write.
+pub(crate) fn root_clause_defect(
+    declaration: &ast::ClassDeclaration,
+) -> Option<(RootClauseDefect, ns_syntax::Span)> {
+    // The superclass clause's span when it names `Value`, which a `<:`
+    // clause may not apply `Value` over.
+    let value_superclass = match &declaration.superclass {
+        None => None,
+        Some(clause) => {
+            let named = clause.receiver.name.as_str();
+            if clause.prefix.is_some() || !matches!(named, "Object" | "Value") {
+                return Some((
+                    RootClauseDefect::Superclass {
+                        clause: clause_as_written(clause),
+                    },
+                    clause.span,
+                ));
+            }
+            if let Some(message) = clause.messages.first() {
+                if !matches!(&message.selector, ast::Selector::Unary(selector) if selector == "new")
+                {
+                    return Some((
+                        RootClauseDefect::SuperclassMessage {
+                            clause: clause_as_written(clause),
+                            selector: selector_name(&message.selector).to_string(),
+                        },
+                        clause.span,
+                    ));
+                }
+            }
+            (named == "Value").then_some(clause.span)
+        }
+    };
+    for (index, clause) in declaration.mixin_applications.iter().enumerate() {
+        if index > 0 || clause.prefix.is_some() || clause.receiver.name != "Value" {
+            return Some((
+                RootClauseDefect::MixinApplication {
+                    index,
+                    clause: clause_as_written(clause),
+                },
+                clause.span,
+            ));
+        }
+        if let Some(message) = clause.messages.first() {
+            return Some((
+                RootClauseDefect::MixinApplicationMessage {
+                    index,
+                    clause: clause_as_written(clause),
+                    selector: selector_name(&message.selector).to_string(),
+                },
+                clause.span,
+            ));
+        }
+        if let Some(span) = value_superclass {
+            return Some((RootClauseDefect::ValueOverValue, span));
+        }
+    }
+    None
+}
+
+/// A clause's prefix and receiver, as the program wrote them -- what a
+/// refusal names; a message at fault is named apart.
+fn clause_as_written(clause: &ast::SuperclassClause) -> String {
+    let prefix = match &clause.prefix {
+        None => String::new(),
+        Some(ast::SuperclassPrefix::SelfPrefix) => "self ".to_string(),
+        Some(ast::SuperclassPrefix::SuperPrefix) => "super ".to_string(),
+        Some(ast::SuperclassPrefix::Outer(name)) => format!("outer {} ", name.name),
+    };
+    format!("{prefix}{}", clause.receiver.name)
+}
+
+fn selector_name(selector: &ast::Selector) -> &str {
+    match selector {
+        ast::Selector::Unary(name) | ast::Selector::Binary(name) | ast::Selector::Keyword(name) => {
+            name
+        }
+    }
 }

@@ -568,8 +568,9 @@ pub struct Mixin {
     /// instantiation (§6.2). `None` when the message takes none.
     pub superclass_message_code: Option<Rc<CompiledCode>>,
     /// Why this mixin, as a module's root, can never be instantiated (the
-    /// root rule, `interpreter::instantiate::root_clause_defect`). Only a
-    /// module's root mixin built from source carries one; a decoded mixin
+    /// root rule, `resolver::root_clause_defect`). Only a module's root
+    /// mixin built from a `ResolvedModule` a host assembled past `resolve`,
+    /// which refuses such a root, carries one; a decoded mixin
     /// never does, because the decoder refuses a defective root section and
     /// the encoder never writes one. `Mutator::apply_mixin` turns it into
     /// `InstantiationRefusal::RootClause` on the application.
@@ -637,21 +638,34 @@ pub struct MutableValueSlot {
     pub slot: Symbol,
 }
 
-/// Why a module's root class can never be instantiated (§6.1, §3.8): its
-/// clauses name something other than `Object`, `Value` or `Object <: Value`.
+/// Why a module's root class breaks the root rule (§6.1, §3.8): its
+/// clauses name something other than `Object`, `Value` or `Object <: Value`,
+/// or send them anything but the superclass clause's `new`. The resolver
+/// refuses such a module (`resolver::root_clause_defect`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RootClauseDefect {
     /// The superclass clause, as written without its message, when it is
     /// prefixed or names anything but `Object` or `Value`.
     Superclass { clause: String },
+    /// The superclass clause names `Object` or `Value` but sends it
+    /// `selector` rather than `new`.
+    SuperclassMessage { clause: String, selector: String },
     /// A `<:` clause other than one unprefixed `Value`; `index` is 0-based.
     MixinApplication { index: usize, clause: String },
+    /// The one `<:` clause names `Value` but sends it `selector`, where the
+    /// rule's `Object <: Value` sends nothing; `index` is 0-based.
+    MixinApplicationMessage {
+        index: usize,
+        clause: String,
+        selector: String,
+    },
     /// `Value <: Value`: the one `<:` clause is right, the superclass is not.
     ValueOverValue,
 }
 
 impl RootClauseDefect {
-    /// The tail both the instantiation refusal and the encoder print.
+    /// The resolve error's text, and the tail both the instantiation refusal
+    /// and the encoder print.
     pub fn describe(&self) -> String {
         let rule =
             "a module's root class may inherit only Object or Value, or write Object <: Value";
@@ -662,6 +676,19 @@ impl RootClauseDefect {
             RootClauseDefect::MixinApplication { index, clause } => {
                 format!(
                     "{rule}, and its mixin application clause {} names {clause}",
+                    index + 1
+                )
+            }
+            RootClauseDefect::SuperclassMessage { clause, selector } => {
+                format!("{rule}, and its superclass clause sends {selector} to {clause}, not new")
+            }
+            RootClauseDefect::MixinApplicationMessage {
+                index,
+                clause,
+                selector,
+            } => {
+                format!(
+                    "{rule}, and its mixin application clause {} sends {selector} to {clause}",
                     index + 1
                 )
             }

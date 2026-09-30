@@ -1,4 +1,4 @@
 status = 1
 stderr = '''
-Uncaught Newspeak error during instantiation: cannot instantiate RootAppliesValueToValue: a module's root class may inherit only Object or Value, or write Object <: Value, and it applies Value to Value
+resolve error: a module's root class may inherit only Object or Value, or write Object <: Value, and it applies Value to Value
 '''

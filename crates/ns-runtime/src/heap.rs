@@ -1988,7 +1988,7 @@ impl<'gc> Heap<'gc> {
     /// (`interpreter::kernel`), and `tests/instantiate.rs`'s
     /// `superclass_slot_initializer_runs_before_the_subclass_own_slots`: a
     /// root class's superclass clause may name only `Object` or `Value`
-    /// (the root rule, `instantiate::root_clause_defect`), so linking a
+    /// (the root rule, `resolver::root_clause_defect`), so linking a
     /// subclass to an already-loaded sibling *user-defined* class has to
     /// happen by hand on the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(

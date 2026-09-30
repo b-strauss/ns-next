@@ -249,7 +249,7 @@ pub enum DecodeError {
     MixinApplicationWithoutSuperclass,
     /// A module's root section names no superclass for its root
     /// class. The root rule builds every root over `Object` or `Value`
-    /// (`interpreter::instantiate::root_clause_defect`), so the encoder never
+    /// (`resolver::root_clause_defect`), so the encoder never
     /// writes one without, and a root with none would be a class outside
     /// §3.2's hierarchy, below neither `Object` nor `Top`.
     RootWithoutSuperclass,
@@ -2721,7 +2721,7 @@ pub struct RootSection {
 /// serves `inspect` as well as `load`.
 ///
 /// The reader refuses what the root rule forbids
-/// (`interpreter::instantiate::root_clause_defect`) -- a missing superclass,
+/// (`resolver::root_clause_defect`) -- a missing superclass,
 /// a superclass other than `Object` or `Value`, a level naming anything but
 /// `Value`, a second level, a level over anything but `Object` -- so a
 /// crafted artifact cannot bring back a root the encoder would refuse.

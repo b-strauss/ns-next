@@ -85,9 +85,9 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// `Interpreter::instantiate`'s `climb_levels`/`descend_levels`
 /// step ordering is what this test actually exercises. Linking the two
 /// classes together, though, cannot go through a module root's superclass
-/// clause: the root rule (`interpreter/instantiate.rs`'s
-/// `root_clause_defect`) lets a root name only `Object` or `Value`, so a
-/// root naming a sibling *user-defined* class is refused at instantiation.
+/// clause: the root rule (`resolver::root_clause_defect`) lets a root name
+/// only `Object` or `Value`, so a root naming a sibling *user-defined* class
+/// is a resolve error.
 /// Instead `Sub` is parsed with a builtin
 /// `Object` superclass clause (so `load_module` resolves cleanly through the
 /// ordinary pipeline), and its `ClassData.superclass`/`application` are then
