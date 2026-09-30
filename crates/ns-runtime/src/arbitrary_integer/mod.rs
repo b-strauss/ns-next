@@ -158,6 +158,15 @@ impl ArbitraryInteger {
         Some(ArbitraryInteger::from_parts(signs_differ, quotient))
     }
 
+    /// The remainder of `floor_divide`, which takes the divisor's sign;
+    /// `None` for a zero divisor. Derived from the quotient rather than
+    /// adapted from `num-integer`'s `mod_floor`, so the two can never
+    /// disagree.
+    pub fn floor_modulo(&self, divisor: &ArbitraryInteger) -> Option<ArbitraryInteger> {
+        let quotient = self.floor_divide(divisor)?;
+        Some(self.subtract(&quotient.multiply(divisor)))
+    }
+
     pub fn negated(&self) -> ArbitraryInteger {
         ArbitraryInteger {
             negative: !self.negative && !self.is_zero(),
@@ -400,6 +409,45 @@ mod tests {
             Some(wide(1_i128 << 63))
         );
         assert_eq!(minimum.floor_divide(&ArbitraryInteger::zero()), None);
+    }
+
+    #[test]
+    fn floor_modulo_takes_the_divisors_sign_and_agrees_with_i128() {
+        let samples: [i128; 12] = [
+            0,
+            1,
+            -1,
+            7,
+            -7,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+            i128::from(i64::MIN) - 1,
+            1 << 64,
+            -(1 << 64),
+            (1 << 100) + 12345,
+            -(1 << 100) - 12345,
+        ];
+        for dividend in samples {
+            for divisor in samples {
+                let answer = ArbitraryInteger::from_i128(dividend)
+                    .floor_modulo(&ArbitraryInteger::from_i128(divisor));
+                if divisor == 0 {
+                    assert!(answer.is_none());
+                    continue;
+                }
+                let remainder = dividend % divisor;
+                let expected = if remainder != 0 && ((remainder < 0) != (divisor < 0)) {
+                    remainder + divisor
+                } else {
+                    remainder
+                };
+                assert_eq!(
+                    answer,
+                    Some(ArbitraryInteger::from_i128(expected)),
+                    "{dividend} \\\\ {divisor}"
+                );
+            }
+        }
     }
 
     #[test]

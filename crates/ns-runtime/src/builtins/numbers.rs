@@ -121,17 +121,30 @@ pub(crate) fn checked_floor_divide(dividend: i64, divisor: i64) -> Option<i64> {
     }
 }
 
+/// `\\` on two `i64`s: the remainder of `checked_floor_divide`, which takes
+/// the divisor's sign. `divisor` is not zero. `wrapping_rem` answers `0` for
+/// `i64::MIN \\ -1`, the true remainder, where `%` would overflow; the
+/// correction cannot overflow, because it adds operands of opposite signs.
+pub(crate) fn floor_modulo(dividend: i64, divisor: i64) -> i64 {
+    let remainder = dividend.wrapping_rem(divisor);
+    if remainder != 0 && ((remainder < 0) != (divisor < 0)) {
+        remainder + divisor
+    } else {
+        remainder
+    }
+}
+
 /// An `i64` operation's result that does not fit `i64`, as the
 /// `LargeInteger` §5.1.1 asks for: "integers are not limited in size".
 fn promote<'gc>(mutator: &mut Mutator<'gc>, wide: i128) -> Value<'gc> {
     mutator.new_integer(ArbitraryInteger::from_i128(wide))
 }
 
-/// `//` by zero, raised in the same words by `Integer`'s and
-/// `LargeInteger`'s leaves.
-fn division_by_zero<'gc>(receiver: Value<'gc>) -> NewspeakError<'gc> {
+/// Division by zero, raised in the same words by `Integer`'s and
+/// `LargeInteger`'s `//` and `\\`, naming the selector sent.
+fn division_by_zero<'gc>(receiver: Value<'gc>, selector: &str) -> NewspeakError<'gc> {
     NewspeakError {
-        selector: Symbol::intern("//"),
+        selector: Symbol::intern(selector),
         receiver,
         message: "division by zero".to_string(),
     }
@@ -242,7 +255,7 @@ pub(crate) fn execute_integer<'gc>(
             .map(|answer| answer.unwrap_or_else(|wide| mutator.new_integer(wide))),
         ),
         IntegerPrimitive::FloorDivide => Some(match argument_integer() {
-            Some(0) => Err(division_by_zero(receiver)),
+            Some(0) => Err(division_by_zero(receiver, "//")),
             // With the zero divisor refused above, the one quotient that
             // does not fit is `i64::MIN // -1`'s, which is `-i64::MIN`.
             Some(divisor) => Ok(match checked_floor_divide(receiver_integer, divisor) {
@@ -256,10 +269,23 @@ pub(crate) fn execute_integer<'gc>(
                 Some(divisor) => {
                     match ArbitraryInteger::from_i64(receiver_integer).floor_divide(&divisor) {
                         Some(quotient) => Ok(mutator.new_integer(quotient)),
-                        None => Err(division_by_zero(receiver)),
+                        None => Err(division_by_zero(receiver, "//")),
                     }
                 }
                 None => Err(mismatch("//")),
+            },
+        }),
+        IntegerPrimitive::Modulo => Some(match argument_integer() {
+            Some(0) => Err(division_by_zero(receiver, "\\\\")),
+            Some(divisor) => Ok(Value::SmallInteger(floor_modulo(receiver_integer, divisor))),
+            None => match large_argument() {
+                Some(divisor) => {
+                    match ArbitraryInteger::from_i64(receiver_integer).floor_modulo(&divisor) {
+                        Some(remainder) => Ok(mutator.new_integer(remainder)),
+                        None => Err(division_by_zero(receiver, "\\\\")),
+                    }
+                }
+                None => Err(mismatch("\\\\")),
             },
         }),
         IntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
@@ -366,9 +392,16 @@ pub(crate) fn execute_large_integer<'gc>(
         LargeIntegerPrimitive::FloorDivide => Some(match argument() {
             Some(divisor) => match receiver_integer.floor_divide(&divisor) {
                 Some(quotient) => Ok(mutator.new_integer(quotient)),
-                None => Err(division_by_zero(receiver)),
+                None => Err(division_by_zero(receiver, "//")),
             },
             None => Err(mismatch("//")),
+        }),
+        LargeIntegerPrimitive::Modulo => Some(match argument() {
+            Some(divisor) => match receiver_integer.floor_modulo(&divisor) {
+                Some(remainder) => Ok(mutator.new_integer(remainder)),
+                None => Err(division_by_zero(receiver, "\\\\")),
+            },
+            None => Err(mismatch("\\\\")),
         }),
         LargeIntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         LargeIntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
@@ -471,5 +504,16 @@ mod tests {
         assert_eq!(checked_floor_divide(i64::MIN, 1), Some(i64::MIN));
         assert_eq!(checked_floor_divide(i64::MIN, -1), None);
         assert_eq!(checked_floor_divide(1, 0), None);
+    }
+
+    #[test]
+    fn floor_modulo_takes_the_divisors_sign() {
+        assert_eq!(super::floor_modulo(7, 2), 1);
+        assert_eq!(super::floor_modulo(-7, 2), 1);
+        assert_eq!(super::floor_modulo(7, -2), -1);
+        assert_eq!(super::floor_modulo(-7, -2), -1);
+        assert_eq!(super::floor_modulo(6, 3), 0);
+        assert_eq!(super::floor_modulo(i64::MIN, -1), 0);
+        assert_eq!(super::floor_modulo(i64::MIN, i64::MAX), i64::MAX - 1);
     }
 }

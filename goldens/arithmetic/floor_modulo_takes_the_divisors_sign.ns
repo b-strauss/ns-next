@@ -1,0 +1,27 @@
+Newspeak3
+'Arithmetic'
+(* `\\` is the remainder of `//`, so it takes the divisor's sign and
+   `(a // b) * b + (a \\ b) = a` holds for every pair, as Primordial Soup's
+   `Integer>>\\` says ("Remainder of integer division rounded toward
+   negative infinity"). The `LargeInteger` rows cross the boundary in both
+   positions. *)
+class FloorModulo = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript.
+          large = 9223372036854775808.
+          pairs = {
+            {7. 2}. {-7. 2}. {7. -2}. {-7. -2}. {6. 3}.
+            {-9223372036854775808. -1}.
+            {large. 10}. {large negated - 1. 10}.
+            {7. large}. {-7. large}. {large * large + 5. large negated} }. |
+        pairs do: [:pair |
+            | dividend divisor |
+            dividend:: pair at: 1.
+            divisor:: pair at: 2.
+            transcript
+                print: dividend \\ divisor;
+                show: ' ';
+                print: (dividend // divisor) * divisor + (dividend \\ divisor) = dividend;
+                newLine]
+    )
+)

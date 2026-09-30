@@ -82,6 +82,7 @@ impl Primitive {
                 | IntegerPrimitive::Subtract
                 | IntegerPrimitive::Multiply
                 | IntegerPrimitive::FloorDivide
+                | IntegerPrimitive::Modulo
                 | IntegerPrimitive::Less
                 | IntegerPrimitive::Greater
                 | IntegerPrimitive::LessOrEqual
@@ -96,6 +97,7 @@ impl Primitive {
                 | LargeIntegerPrimitive::Subtract
                 | LargeIntegerPrimitive::Multiply
                 | LargeIntegerPrimitive::FloorDivide
+                | LargeIntegerPrimitive::Modulo
                 | LargeIntegerPrimitive::Less
                 | LargeIntegerPrimitive::Greater
                 | LargeIntegerPrimitive::LessOrEqual
@@ -210,6 +212,7 @@ pub enum IntegerPrimitive {
     Subtract,
     Multiply,
     FloorDivide,
+    Modulo,
     Less,
     Greater,
     LessOrEqual,
@@ -230,6 +233,7 @@ pub enum LargeIntegerPrimitive {
     Subtract,
     Multiply,
     FloorDivide,
+    Modulo,
     Less,
     Greater,
     LessOrEqual,
@@ -872,6 +876,16 @@ pub const MIRROR: &[MirrorEntry] = &[
         "float:greaterOrEqual:ifFail:",
         ">=",
         Primitive::Float(FloatPrimitive::GreaterOrEqual),
+    ),
+    mirror(
+        "integer:modulo:ifFail:",
+        "\\\\",
+        Primitive::Integer(IntegerPrimitive::Modulo),
+    ),
+    mirror(
+        "largeInteger:modulo:ifFail:",
+        "\\\\",
+        Primitive::LargeInteger(LargeIntegerPrimitive::Modulo),
     ),
 ];
 

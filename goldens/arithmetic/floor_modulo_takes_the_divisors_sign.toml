@@ -1,0 +1,13 @@
+stdout = '''
+1 true
+1 true
+-1 true
+-1 true
+0 true
+0 true
+8 true
+1 true
+7 true
+9223372036854775801 true
+-9223372036854775803 true
+'''
