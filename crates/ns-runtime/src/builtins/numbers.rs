@@ -104,6 +104,54 @@ pub(crate) fn float_hash(value: f64) -> i64 {
     crate::hash::content_hash(normalized.to_bits())
 }
 
+/// `Float>>asStringFixed:`'s text, as Primordial Soup's double-conversion
+/// writes it: `fraction_digits` digits after the point, a tie rounded up on
+/// the exact binary value (Rust's formatter would round it to even), and
+/// the value's own sign even when the digits round to zero. Outside ±1e21,
+/// and for a NaN or an infinity, the text `printString` answers.
+pub(crate) fn fixed_text(value: f64, fraction_digits: usize) -> String {
+    if !(value > -1e21 && value < 1e21) {
+        return value.to_string();
+    }
+    // Every finite double has an exact decimal expansion of at most 1074
+    // fraction digits, so this text is the value itself, not a rounding.
+    let exact = format!("{:.1074}", value.abs());
+    let (integer_text, fraction_text) = exact
+        .split_once('.')
+        .expect("a fixed-precision format has a point");
+    let mut digits: Vec<u8> = integer_text
+        .bytes()
+        .chain(fraction_text.bytes().take(fraction_digits))
+        .collect();
+    if fraction_text.as_bytes()[fraction_digits] >= b'5' {
+        let mut position = digits.len();
+        loop {
+            if position == 0 {
+                digits.insert(0, b'1');
+                break;
+            }
+            position -= 1;
+            if digits[position] == b'9' {
+                digits[position] = b'0';
+            } else {
+                digits[position] += 1;
+                break;
+            }
+        }
+    }
+    let integer_length = digits.len() - fraction_digits;
+    let mut text = String::with_capacity(digits.len() + 2);
+    if value.is_sign_negative() {
+        text.push('-');
+    }
+    text.push_str(std::str::from_utf8(&digits[..integer_length]).expect("ASCII digits"));
+    if fraction_digits > 0 {
+        text.push('.');
+        text.push_str(std::str::from_utf8(&digits[integer_length..]).expect("ASCII digits"));
+    }
+    text
+}
+
 /// `//` on two `i64`s, rounded toward negative infinity (Primordial Soup's
 /// `Integer>>//`; `num-integer`'s `div_floor`). `None` for a zero divisor
 /// and for `i64::MIN // -1`, whose quotient does not fit -- the leaf
@@ -323,6 +371,8 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_integer.to_string()),
         ))),
+        // `as` rounds to the nearest double, ties to even.
+        IntegerPrimitive::AsFloat => Some(Ok(Value::Float(receiver_integer as f64))),
     }
 }
 
@@ -433,6 +483,7 @@ pub(crate) fn execute_large_integer<'gc>(
         LargeIntegerPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_integer.to_decimal_string()),
         ))),
+        LargeIntegerPrimitive::AsFloat => Some(Ok(Value::Float(receiver_integer.to_f64()))),
         LargeIntegerPrimitive::Negated => Some(Ok(mutator.new_integer(receiver_integer.negated()))),
         LargeIntegerPrimitive::Absolute => {
             Some(Ok(mutator.new_integer(receiver_integer.absolute())))
@@ -499,6 +550,19 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),
         ))),
+        FloatPrimitive::AsStringFixed => Some(match arguments.first() {
+            Some(Value::SmallInteger(count)) if (0..=20).contains(count) => Ok(Value::Object(
+                mutator.new_string(fixed_text(receiver_float, *count as usize)),
+            )),
+            // Primordial Soup's primitive fails outside 0 to 20 and its
+            // method raises; double-conversion's buffer is sized for 20.
+            Some(Value::SmallInteger(count)) => Err(NewspeakError {
+                selector: Symbol::intern("asStringFixed:"),
+                receiver,
+                message: format!("asStringFixed: takes 0 to 20 fraction digits, got {count}"),
+            }),
+            _ => Err(mismatch("asStringFixed:")),
+        }),
     }
 }
 
@@ -527,5 +591,27 @@ mod tests {
         assert_eq!(super::floor_modulo(6, 3), 0);
         assert_eq!(super::floor_modulo(i64::MIN, -1), 0);
         assert_eq!(super::floor_modulo(i64::MIN, i64::MAX), i64::MAX - 1);
+    }
+
+    #[test]
+    fn fixed_text_rounds_a_tie_up_on_the_exact_binary_value() {
+        assert_eq!(super::fixed_text(0.125, 2), "0.13");
+        assert_eq!(super::fixed_text(-0.125, 2), "-0.13");
+        assert_eq!(super::fixed_text(2.5, 0), "3");
+        assert_eq!(super::fixed_text(0.5, 0), "1");
+        assert_eq!(super::fixed_text(1.005, 2), "1.00");
+        assert_eq!(super::fixed_text(9.995, 2), "9.99");
+        assert_eq!(super::fixed_text(99.95, 1), "100.0");
+        assert_eq!(super::fixed_text(123.456, 1), "123.5");
+        assert_eq!(super::fixed_text(1.0, 3), "1.000");
+        assert_eq!(super::fixed_text(-0.0, 1), "-0.0");
+        assert_eq!(super::fixed_text(-0.04, 1), "-0.0");
+        assert_eq!(super::fixed_text(0.1, 20), "0.10000000000000000555");
+        assert_eq!(super::fixed_text(1e21, 2), (1e21f64).to_string());
+        assert_eq!(super::fixed_text(f64::NAN, 2), "NaN");
+        assert_eq!(
+            super::fixed_text(f64::NEG_INFINITY, 2),
+            f64::NEG_INFINITY.to_string()
+        );
     }
 }

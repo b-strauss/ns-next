@@ -90,6 +90,7 @@ impl Primitive {
                 | IntegerPrimitive::GreaterOrEqual
                 | IntegerPrimitive::Negated
                 | IntegerPrimitive::Absolute
+                | IntegerPrimitive::AsFloat
                 | IntegerPrimitive::PrintString,
             ) => false,
             Primitive::LargeInteger(LargeIntegerPrimitive::Equal) => true,
@@ -107,6 +108,7 @@ impl Primitive {
                 | LargeIntegerPrimitive::Hash
                 | LargeIntegerPrimitive::Negated
                 | LargeIntegerPrimitive::Absolute
+                | LargeIntegerPrimitive::AsFloat
                 | LargeIntegerPrimitive::PrintString,
             ) => false,
             Primitive::Float(FloatPrimitive::Equal) => true,
@@ -120,6 +122,7 @@ impl Primitive {
                 | FloatPrimitive::LessOrEqual
                 | FloatPrimitive::GreaterOrEqual
                 | FloatPrimitive::Hash
+                | FloatPrimitive::AsStringFixed
                 | FloatPrimitive::PrintString,
             ) => false,
             Primitive::String(StringPrimitive::Equal) => true,
@@ -223,6 +226,7 @@ pub enum IntegerPrimitive {
     Equal,
     Negated,
     Absolute,
+    AsFloat,
     PrintString,
 }
 
@@ -246,6 +250,7 @@ pub enum LargeIntegerPrimitive {
     Hash,
     Negated,
     Absolute,
+    AsFloat,
     PrintString,
 }
 
@@ -261,6 +266,7 @@ pub enum FloatPrimitive {
     GreaterOrEqual,
     Equal,
     Hash,
+    AsStringFixed,
     PrintString,
 }
 
@@ -900,6 +906,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "largeInteger:bitAnd:ifFail:",
         "bitAnd:",
         Primitive::LargeInteger(LargeIntegerPrimitive::BitAnd),
+    ),
+    mirror(
+        "integerAsFloat:ifFail:",
+        "asFloat",
+        Primitive::Integer(IntegerPrimitive::AsFloat),
+    ),
+    mirror(
+        "largeIntegerAsFloat:ifFail:",
+        "asFloat",
+        Primitive::LargeInteger(LargeIntegerPrimitive::AsFloat),
+    ),
+    mirror(
+        "float:asStringFixed:ifFail:",
+        "asStringFixed:",
+        Primitive::Float(FloatPrimitive::AsStringFixed),
     ),
 ];
 
