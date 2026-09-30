@@ -220,13 +220,10 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
     }
 }
 
-/// There is no Integer/Float coercion. That is a documented gap, but it must
-/// fail *honestly*: `1 + 1.5` goes through `argument_integer()`, which only
-/// accepts `Value::SmallInteger`, and reporting the resulting `None` as an
-/// "Integer overflow" would name a failure that did not happen. The message has
-/// to say what actually happened.
+/// An integer meets a `Float` argument as a `Float` meets an integer one:
+/// `1 + 1.5` is the double `2.5` (`builtins/numbers.rs`'s module note).
 #[test]
-fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
+fn integer_arithmetic_widens_a_float_argument() {
     let mut interpreter = Interpreter::bootstrap();
 
     let one = interpreter.stash(Value::SmallInteger(1));
@@ -236,21 +233,14 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
         &[interpreter.stash(Value::Float(1.5))],
     );
 
-    match result {
-        Err(HostSignal::Error(error)) => {
-            assert!(
-                !error.message.to_lowercase().contains("overflow"),
-                "a type mismatch must not be reported as an overflow: {}",
-                error.message
-            );
-            assert_eq!(error.message, "+ requires an integer argument, got 1.5");
-        }
-        Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
-            panic!("expected a Newspeak error for `1 + 1.5`, got Ok({got})")
-        }
-        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
-    }
+    let answer = expect_ok(result, "1 + 1.5");
+    interpreter.enter(|mutator| match mutator.fetch(&answer) {
+        Value::Float(sum) => assert_eq!(sum, 2.5),
+        other => panic!(
+            "expected the double 2.5, got {}",
+            mutator.heap().describe(&other)
+        ),
+    });
 }
 
 /// `type_mismatch`'s message builds off `heap.describe_argument`, but every
@@ -279,7 +269,7 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
             assert!(
                 error
                     .message
-                    .starts_with("+ requires an integer argument, got "),
+                    .starts_with("+ requires a numeric argument, got "),
                 "expected the message to name what an integer takes, got: {}",
                 error.message
             );
@@ -299,15 +289,11 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
     let mut interpreter = Interpreter::bootstrap();
 
     let one = interpreter.stash(Value::SmallInteger(1));
-    let result = interpreter.send(
-        &one,
-        Symbol::intern("<"),
-        &[interpreter.stash(Value::Float(1.5))],
-    );
+    let result = interpreter.send(&one, Symbol::intern("<"), &[interpreter.stash(Value::Nil)]);
 
     match result {
         Err(HostSignal::Error(error)) => {
-            assert_eq!(error.message, "< requires an integer argument, got 1.5")
+            assert_eq!(error.message, "< requires a numeric argument, got nil")
         }
         Ok(value) => interpreter.enter(|mutator| match mutator.fetch(&value) {
             Value::Boolean(false) => {
@@ -322,8 +308,9 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
     }
 }
 
-/// A `Float` receiver takes any number, so its mismatch asks for a number
-/// rather than for an integer, as an integer receiver's does.
+/// A `Float` receiver takes any number, so its mismatch asks for a number, as
+/// an integer's arithmetic does too; only `//`, `\` and the bit operations
+/// ask for an integer.
 #[test]
 fn a_float_receiver_asks_for_a_numeric_argument() {
     let mut interpreter = Interpreter::bootstrap();

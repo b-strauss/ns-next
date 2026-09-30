@@ -1,0 +1,17 @@
+stdout = '''
+4.5
+2.5
+14
+true
+false
+true
+false
+false
+false
+false
+9007199254740992
+9223372036854776000
+false
+true
+true
+'''

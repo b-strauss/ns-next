@@ -1,0 +1,29 @@
+Newspeak3
+'Arithmetic'
+(* An `Integer` or `LargeInteger` receiver meets a `Float` argument as a
+   `Float` receiver meets an integer one: both become doubles, as Primordial
+   Soup's primitives convert them, so the integer is rounded first. `=`
+   stays class-tight until the numeric tower, and a NaN is ordered with
+   nothing. *)
+class IntegerMeetsFloat = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript.
+          nan = 0.0 / 0.0.
+          big = 18446744073709551616. |
+        transcript print: 3 + 1.5; newLine.
+        transcript print: 3 - 0.5; newLine.
+        transcript print: 4 * 3.5; newLine.
+        transcript print: 3 < 3.5; newLine.
+        transcript print: 3 > 3.5; newLine.
+        transcript print: 3 <= 3.0; newLine.
+        transcript print: 3 >= 3.5; newLine.
+        transcript print: 3 = 3.0; newLine.
+        transcript print: 1 < nan; newLine.
+        transcript print: 1 > nan; newLine.
+        transcript print: 9007199254740993 + 0.0; newLine.
+        transcript print: big * 0.5; newLine.
+        transcript print: big < 1.5; newLine.
+        transcript print: big negated < 1.5; newLine.
+        transcript print: big - 0.5 = big asFloat; newLine
+    )
+)

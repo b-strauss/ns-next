@@ -1400,7 +1400,7 @@ fn an_inlined_integer_operation_with_a_non_integer_operand_falls_back_to_the_sen
     );
     let error = expect_error(&mut interpreter, result, "a String argument to `+`");
     assert!(
-        error.message.contains("requires an integer argument"),
+        error.message.contains("requires a numeric argument"),
         "the primitive's own type-mismatch message, unchanged: {}",
         error.message
     );

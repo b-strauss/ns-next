@@ -395,12 +395,12 @@ module a value.
   equality, which asks the classes first. Every value class's `=` is
   class-tight now, `Float`'s like `String`'s and `Symbol`'s. **Only
   equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`,
-  `>`, `<=` and `>=` still take an integer argument of either class and convert it to
+  `>`, `<=` and `>=` take an integer argument of either class and convert it to
   the nearest `double`, exact up to 2^53 (`argument_float` in
-  `builtins/numbers.rs`), so `1.5 < 2` answers; an integer receiver still
-  requires an integer argument, so `1 < 2.0` is the type-mismatch error it
-  always was, and `1 + 1.5` likewise. That asymmetry is exactly
-  what the numeric tower closes. So this is a stopgap, not the answer: see
+  `builtins/numbers.rs`), so `1.5 < 2` answers; an integer receiver's `+`,
+  `-`, `*`, `<`, `>`, `<=` and `>=` convert themselves to a `double` the
+  same way for a `Float` argument, so `1 < 2.0` and `1 + 1.5` answer too,
+  while `=` stays class-tight. So this is a stopgap, not the answer: see
   "Gap: an integer has no `/`" below, where the tower it needs is
   recorded.
 The builtin value classes' own immutability rests on there being no mutating

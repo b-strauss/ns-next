@@ -14,10 +14,10 @@
 //!   `big + 5` both answer.
 //! * A `Float`'s arithmetic and ordering convert an `Integer` or a
 //!   `LargeInteger` argument to the nearest `double` (`1.5 + 1` is `2.5`).
-//! * An integer meeting a `Float` argument is a type mismatch: `1 + 1.5`
-//!   raises a `NewspeakError` that names the argument. With no
-//!   `generality`/`coerce:` pair there is no rule for which way such a
-//!   mixed operation widens, so it fails loudly rather than guessing.
+//! * An integer's arithmetic and ordering meet a `Float` argument the same
+//!   way, converting the receiver (`4 * 3.5` is `14.0`), as Primordial
+//!   Soup's primitives do. `//`, `\` and the bit operations take integers
+//!   only; `Float` has none of them.
 //! * `=` is the deliberate exception: an argument of another class makes it
 //!   plain `false`, never an error -- matching `Object`'s own `=` and the
 //!   usual Smalltalk convention -- and it is class-tight across `Integer`
@@ -30,9 +30,9 @@
 //!   `Integer` and `LargeInteger` class-tightness loses nothing: with one
 //!   representation per integer, no two of them are ever the same number.
 //!
-//! `Fraction`, a `Number` protocol and the coercion between integers and
-//! floats are still to come (`docs/design/core-library.md`, "Gap: an integer
-//! has no `/`").
+//! `Fraction`, `Integer>>/` and cross-class `=` are still to come, with the
+//! numeric tower (`docs/design/core-library.md`, "Gap: an integer has no
+//! `/`").
 
 use std::cmp::Ordering;
 
@@ -42,19 +42,29 @@ use crate::builtins::primitive::{
 use crate::types::*;
 use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 
+/// What a numeric leaf takes as its argument, which its type mismatch names.
+#[derive(Clone, Copy)]
+enum Accepted {
+    /// `//`, `\` and the bit operations: an `Integer` or a `LargeInteger`.
+    Integer,
+    /// Arithmetic and ordering: any of the three number classes.
+    Number,
+}
+
 /// A numeric operation on an argument it does not accept (this module's
-/// note says which those are). The message names what the receiver takes:
-/// an `Integer` or `LargeInteger` receiver takes either integer class, a
-/// `Float` receiver any of the three number classes.
+/// note says which those are). The message names what the operation takes,
+/// not what the receiver is: an integer's `+` takes any number, its `//`
+/// only an integer.
 fn type_mismatch<'gc>(
     heap: &Heap<'gc>,
     receiver: &Value<'gc>,
     selector: Symbol,
+    accepted: Accepted,
     got: Option<&Value<'gc>>,
 ) -> NewspeakError<'gc> {
-    let required = match receiver {
-        Value::Float(_) => "a numeric",
-        _ => "an integer",
+    let required = match accepted {
+        Accepted::Integer => "an integer",
+        Accepted::Number => "a numeric",
     };
     NewspeakError {
         selector,
@@ -209,6 +219,15 @@ fn integer_operand<'gc>(heap: &Heap<'gc>, value: Option<&Value<'gc>>) -> Option<
     }
 }
 
+/// A `Float` argument, which an integer's arithmetic and ordering take by
+/// converting the receiver to a double (this module's note).
+fn float_operand<'gc>(value: Option<&Value<'gc>>) -> Option<f64> {
+    match value {
+        Some(Value::Float(float)) => Some(*float),
+        _ => None,
+    }
+}
+
 pub(crate) fn execute_integer<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: IntegerPrimitive,
@@ -222,11 +241,12 @@ pub(crate) fn execute_integer<'gc>(
         Some(Value::SmallInteger(argument)) => Some(*argument),
         _ => None,
     };
-    let mismatch = |operator: &str| {
+    let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(
             &mutator.heap,
             &receiver,
             Symbol::intern(operator),
+            accepted,
             arguments.first(),
         )
     };
@@ -239,39 +259,54 @@ pub(crate) fn execute_integer<'gc>(
     // always fits, and one with a `LargeInteger` argument as an
     // `ArbitraryInteger`; either is handed back as the inner `Err` for the
     // caller to make a `Value` of -- the closure holds `mutator` shared, so
-    // it cannot allocate the `LargeInteger` itself.
-    let arithmetic =
-        |operator: &str,
-         checked: fn(i64, i64) -> Option<i64>,
-         wide: fn(i128, i128) -> i128,
-         large: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger| {
-            match argument_integer() {
-                Some(argument) => Ok(checked(receiver_integer, argument)
-                    .map(Value::SmallInteger)
-                    .ok_or_else(|| {
-                        ArbitraryInteger::from_i128(wide(
-                            i128::from(receiver_integer),
-                            i128::from(argument),
-                        ))
-                    })),
-                None => match large_argument() {
-                    Some(argument) => Ok(Err(large(
-                        &ArbitraryInteger::from_i64(receiver_integer),
-                        &argument,
-                    ))),
-                    None => Err(mismatch(operator)),
+    // it cannot allocate the `LargeInteger` itself. A `Float` argument makes
+    // it a double operation on the converted receiver, which allocates
+    // nothing either.
+    let arithmetic = |operator: &str,
+                      checked: fn(i64, i64) -> Option<i64>,
+                      wide: fn(i128, i128) -> i128,
+                      large: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger,
+                      float: fn(f64, f64) -> f64| {
+        match argument_integer() {
+            Some(argument) => Ok(checked(receiver_integer, argument)
+                .map(Value::SmallInteger)
+                .ok_or_else(|| {
+                    ArbitraryInteger::from_i128(wide(
+                        i128::from(receiver_integer),
+                        i128::from(argument),
+                    ))
+                })),
+            None => match large_argument() {
+                Some(argument) => Ok(Err(large(
+                    &ArbitraryInteger::from_i64(receiver_integer),
+                    &argument,
+                ))),
+                None => match float_operand(arguments.first()) {
+                    Some(argument) => {
+                        Ok(Ok(Value::Float(float(receiver_integer as f64, argument))))
+                    }
+                    None => Err(mismatch(operator, Accepted::Number)),
                 },
-            }
-        };
+            },
+        }
+    };
     // Ordering comparisons: an argument of the wrong type is an error, not a
-    // silent `false`.
+    // silent `false`. `partial_cmp` answers `None` for a NaN, which is
+    // ordered with nothing, as `Float`'s own ordering answers.
     let compare = |operator: &str, operation: fn(Ordering) -> bool| match argument_integer() {
         Some(argument) => Ok(Value::Boolean(operation(receiver_integer.cmp(&argument)))),
         None => match large_argument() {
             Some(argument) => Ok(Value::Boolean(operation(
                 ArbitraryInteger::from_i64(receiver_integer).cmp(&argument),
             ))),
-            None => Err(mismatch(operator)),
+            None => match float_operand(arguments.first()) {
+                Some(argument) => Ok(Value::Boolean(
+                    (receiver_integer as f64)
+                        .partial_cmp(&argument)
+                        .is_some_and(operation),
+                )),
+                None => Err(mismatch(operator, Accepted::Number)),
+            },
         },
     };
     match primitive {
@@ -281,6 +316,7 @@ pub(crate) fn execute_integer<'gc>(
                 i64::checked_add,
                 |left, right| left + right,
                 ArbitraryInteger::add,
+                |left, right| left + right,
             )
             .map(|answer| answer.unwrap_or_else(|wide| mutator.new_integer(wide))),
         ),
@@ -290,6 +326,7 @@ pub(crate) fn execute_integer<'gc>(
                 i64::checked_sub,
                 |left, right| left - right,
                 ArbitraryInteger::subtract,
+                |left, right| left - right,
             )
             .map(|answer| answer.unwrap_or_else(|wide| mutator.new_integer(wide))),
         ),
@@ -299,6 +336,7 @@ pub(crate) fn execute_integer<'gc>(
                 i64::checked_mul,
                 |left, right| left * right,
                 ArbitraryInteger::multiply,
+                |left, right| left * right,
             )
             .map(|answer| answer.unwrap_or_else(|wide| mutator.new_integer(wide))),
         ),
@@ -320,7 +358,7 @@ pub(crate) fn execute_integer<'gc>(
                         None => Err(division_by_zero(receiver, "//")),
                     }
                 }
-                None => Err(mismatch("//")),
+                None => Err(mismatch("//", Accepted::Integer)),
             },
         }),
         IntegerPrimitive::Modulo => Some(match argument_integer() {
@@ -333,7 +371,7 @@ pub(crate) fn execute_integer<'gc>(
                         None => Err(division_by_zero(receiver, "\\\\")),
                     }
                 }
-                None => Err(mismatch("\\\\")),
+                None => Err(mismatch("\\\\", Accepted::Integer)),
             },
         }),
         IntegerPrimitive::BitAnd => Some(match argument_integer() {
@@ -341,7 +379,7 @@ pub(crate) fn execute_integer<'gc>(
             None => match large_argument() {
                 Some(argument) => Ok(mutator
                     .new_integer(ArbitraryInteger::from_i64(receiver_integer).bit_and(&argument))),
-                None => Err(mismatch("bitAnd:")),
+                None => Err(mismatch("bitAnd:", Accepted::Integer)),
             },
         }),
         IntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
@@ -417,53 +455,76 @@ pub(crate) fn execute_large_integer<'gc>(
     // shared, so each answers an `ArbitraryInteger` for the caller to make a
     // `Value` of.
     let argument = || integer_operand(&mutator.heap, arguments.first());
-    let mismatch = |operator: &str| {
+    let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(
             &mutator.heap,
             &receiver,
             Symbol::intern(operator),
+            accepted,
             arguments.first(),
         )
     };
-    let arithmetic =
-        |operator: &str,
-         operation: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger| {
-            match argument() {
-                Some(argument) => Ok(operation(&receiver_integer, &argument)),
-                None => Err(mismatch(operator)),
-            }
-        };
+    // An integer result is the inner `Ok`, to be made a `Value`; a double is
+    // the inner `Err`, already one.
+    let arithmetic = |operator: &str,
+                      operation: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger,
+                      float: fn(f64, f64) -> f64| {
+        match argument() {
+            Some(argument) => Ok(Ok(operation(&receiver_integer, &argument))),
+            None => match float_operand(arguments.first()) {
+                Some(argument) => Ok(Err(Value::Float(float(
+                    receiver_integer.to_f64(),
+                    argument,
+                )))),
+                None => Err(mismatch(operator, Accepted::Number)),
+            },
+        }
+    };
     let compare = |operator: &str, operation: fn(Ordering) -> bool| match argument() {
         Some(argument) => Ok(Value::Boolean(operation(receiver_integer.cmp(&argument)))),
-        None => Err(mismatch(operator)),
+        None => match float_operand(arguments.first()) {
+            Some(argument) => Ok(Value::Boolean(
+                receiver_integer
+                    .to_f64()
+                    .partial_cmp(&argument)
+                    .is_some_and(operation),
+            )),
+            None => Err(mismatch(operator, Accepted::Number)),
+        },
     };
     match primitive {
-        LargeIntegerPrimitive::Add => {
-            Some(arithmetic("+", ArbitraryInteger::add).map(|answer| mutator.new_integer(answer)))
-        }
+        LargeIntegerPrimitive::Add => Some(
+            arithmetic("+", ArbitraryInteger::add, |left, right| left + right).map(|answer| {
+                answer.map_or_else(|value| value, |integer| mutator.new_integer(integer))
+            }),
+        ),
         LargeIntegerPrimitive::Subtract => Some(
-            arithmetic("-", ArbitraryInteger::subtract).map(|answer| mutator.new_integer(answer)),
+            arithmetic("-", ArbitraryInteger::subtract, |left, right| left - right).map(|answer| {
+                answer.map_or_else(|value| value, |integer| mutator.new_integer(integer))
+            }),
         ),
         LargeIntegerPrimitive::Multiply => Some(
-            arithmetic("*", ArbitraryInteger::multiply).map(|answer| mutator.new_integer(answer)),
+            arithmetic("*", ArbitraryInteger::multiply, |left, right| left * right).map(|answer| {
+                answer.map_or_else(|value| value, |integer| mutator.new_integer(integer))
+            }),
         ),
         LargeIntegerPrimitive::FloorDivide => Some(match argument() {
             Some(divisor) => match receiver_integer.floor_divide(&divisor) {
                 Some(quotient) => Ok(mutator.new_integer(quotient)),
                 None => Err(division_by_zero(receiver, "//")),
             },
-            None => Err(mismatch("//")),
+            None => Err(mismatch("//", Accepted::Integer)),
         }),
         LargeIntegerPrimitive::Modulo => Some(match argument() {
             Some(divisor) => match receiver_integer.floor_modulo(&divisor) {
                 Some(remainder) => Ok(mutator.new_integer(remainder)),
                 None => Err(division_by_zero(receiver, "\\\\")),
             },
-            None => Err(mismatch("\\\\")),
+            None => Err(mismatch("\\\\", Accepted::Integer)),
         }),
         LargeIntegerPrimitive::BitAnd => Some(match argument() {
             Some(argument) => Ok(mutator.new_integer(receiver_integer.bit_and(&argument))),
-            None => Err(mismatch("bitAnd:")),
+            None => Err(mismatch("bitAnd:", Accepted::Integer)),
         }),
         LargeIntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         LargeIntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
@@ -517,6 +578,7 @@ pub(crate) fn execute_float<'gc>(
             &mutator.heap,
             &receiver,
             Symbol::intern(operator),
+            Accepted::Number,
             arguments.first(),
         )
     };
