@@ -95,9 +95,14 @@ code. `ns-next`'s own license is at `LICENSE`.
   `prior-art/newspeak/LICENSE`.
 - `primordialsoup` — Apache 2.0, with the Newspeak sources in it in part
   derived from the Newspeak-on-Squeak implementation; see
-  `prior-art/primordialsoup/LICENSE`.
+  `prior-art/primordialsoup/LICENSE`. Code is adapted from it:
+  `benchmarks/are-we-fast-yet/AreWeFastYet.ns` from
+  `newspeak/BenchmarkRunner.ns`, with its notice and the licence text in
+  `THIRD-PARTY-NOTICES.md`.
 - `somns` — MIT, Stefan Marr and Michael Haupt / Hasso Plattner Institute; see
-  `prior-art/somns/LICENSE`.
+  `prior-art/somns/LICENSE`. Code is adapted from it: the benchmarks in
+  `benchmarks/are-we-fast-yet/`, from `core-lib/Benchmarks/`, with its
+  notice in `THIRD-PARTY-NOTICES.md`.
 - `newspeak-benchmarks` — no license file in the tree. Treat it as
   read-only reference material and do not copy code out of it without
   resolving that first.
@@ -115,10 +120,13 @@ code. `ns-next`'s own license is at `LICENSE`.
 
 Reading these to understand a design is fine. Copying code out of any of them
 into `ns-next` is a licensing decision, not a technical one. It has been made
-once: `crates/ns-runtime/src/arbitrary_integer/` adapts code from `num-bigint`
-and `num-integer`, taken under MIT, and `THIRD-PARTY-NOTICES.md` at the
-repository root carries both licence texts. Each adapted file names its source
-in a header. Nothing has been copied from any other submodule.
+twice: `crates/ns-runtime/src/arbitrary_integer/` adapts code from `num-bigint`
+and `num-integer`, taken under MIT, and `benchmarks/are-we-fast-yet/` adapts
+the Are We Fast Yet benchmarks from `somns` (MIT) and its harness from
+`primordialsoup` (Apache 2.0). `THIRD-PARTY-NOTICES.md` at the repository
+root carries every one of those notices and licence texts. Each adapted file
+names its source in a header. Nothing has been copied from any other
+submodule.
 
 ## Checkout size
 

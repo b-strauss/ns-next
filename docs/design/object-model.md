@@ -330,9 +330,9 @@ kernel's.
   are `True`'s and `False`'s own methods, [core-library.md](core-library.md),
   "`True` and `False` are quick methods"), `Number` with `Integer` and
   `Float`, `String`, `Symbol` and `UndefinedObject` (§5.1.3 names
-  `nil`'s class so); the platform and its members, `PlatformFactory.ns`'s classes,
-  are values too ([core-library.md](core-library.md), "The platform").
-  `Number` is empty; it is the
+  `nil`'s class so); the platform and its members, `PlatformFactory.ns`'s classes
+  but `Stopwatch`, are values too ([core-library.md](core-library.md), "The
+  platform"). `Number` holds only `to:do:` and `to:by:do:`; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
   `Array` and `Block` stay directly under `Object`,
@@ -1803,7 +1803,7 @@ Primordial Soup forwards only in its MirrorBuilder's installation of an edit
 which is where the VM-internal migration below happens too. Refusing values
 was decided with the user on 2026-09-29. The same refusals keep "The VM
 mirror is a capability" in `CLAUDE.md`: every instance a platform path names
-is a value -- `Platform`, `Transcript` and `KernelNamespace` in
+is a value -- `Platform`, `Transcript`, `KernelNamespace` and `Time` in
 `PlatformFactory.ns` and `Collections` in `CollectionsFactory.ns` are all
 declared `= Value new` -- and every class a platform path names is a class
 object, so a program's `become:` refuses each of them in either direction

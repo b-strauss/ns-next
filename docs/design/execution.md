@@ -22,7 +22,8 @@
 > `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
-> its stack).
+> its stack), `crates/ns-cli/src/commands/bench.rs` and
+> `benchmarks/are-we-fast-yet/` (what "Measurements" times).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
@@ -611,6 +612,59 @@ Every figure in this section is a median of a whole-program benchmark on one
 machine. Only numbers measured against each other in one sitting are compared
 here; a figure carried across sessions says more about the machine's load than
 about the code.
+
+### The Are We Fast Yet benchmarks
+
+`benchmarks/are-we-fast-yet/` holds real programs to measure on, beside the
+microbenchmarks under `goldens/bench/`: seven of the Are We Fast Yet
+benchmarks -- Bounce, List, Permute, Queens, Sieve, Storage and Towers --
+and the harness that runs them, `AreWeFastYet.ns`, the root of the project
+`are-we-fast-yet.json`, which reaches each benchmark as `manifest Sieve`
+([image-format.md](image-format.md), "Packaging"). The benchmarks are
+adapted from SOMns's Newspeak versions
+(`prior-art/somns/core-lib/Benchmarks/`, MIT) into Primordial Soup's
+module shape and protocol: each is a module `usingPlatform:` whose one
+public method, `bench`, runs the workload once and signals an `Error` when
+its result is not the one Are We Fast Yet expects. The harness is adapted
+from Primordial Soup's `BenchmarkRunner.ns`
+(`prior-art/primordialsoup/newspeak/BenchmarkRunner.ns`, Apache 2.0). Each
+file's header names its upstream file and commit and what was changed, and
+`THIRD-PARTY-NOTICES.md` carries both licences. The protocol they send is
+what the kernel and the platform gained for them
+([core-library.md](core-library.md), "What exists", "The platform").
+
+There are two ways to measure, and they report different things:
+
+- **`ns-next bench are-we-fast-yet.json -- <Name>`** times the harness
+  without `--timed`, which runs the benchmark named -- or, with no name,
+  all seven in turn -- once and prints `<Name>: ok`. `bench` reports the
+  median, minimum and maximum of its timed runs (ten unless `--iterations`
+  says otherwise) after one discarded warm-up run. Each timed run is one
+  `main:args:` of a freshly assembled application, so it includes what
+  that send does once per application -- instantiating the harness's
+  `Benchmarking` and each benchmark module, building their nested class
+  objects, and the workload's single run, with no warm-up of its own --
+  while assembling the application, `packageUsing:` its manifest, is
+  excluded from the timed span, as parsing, resolving, bootstrapping and
+  compiling are. What carries over from the discarded run is what one
+  interpreter keeps between sends: the inline caches and the platform's
+  lazy members. The untimed run does the same work every time, which is
+  what lets `goldens/awfy/` pin its output and `bench` time it.
+- **`ns-next run are-we-fast-yet.json -- --timed [<Name>]`** lets the
+  harness measure itself, as Primordial Soup's does: for each benchmark, or
+  the one named, it runs `bench` repeatedly for at least 3 ms to warm up,
+  then for at least 20 ms, reading `platform time Stopwatch`, and prints
+  `<Name>: <runs per second>` with one fraction digit (`asStringFixed: 1`).
+  That score is a throughput after warm-up, comparable with Primordial
+  Soup's own; it varies from run to run, so only its shape is checked
+  (`crates/ns-cli/tests/run.rs`,
+  `a_timed_run_prints_a_score_for_every_benchmark`).
+
+Either way the protocol of the `measuring-performance` skill applies, as it
+does to every figure in this section: release builds only, and every binary
+compared, the current tree included, built with the same explicit
+`RUSTFLAGS` that pin function alignment, several builds per tree pooled
+("What removing the re-entries moved" below).
 
 ### What a send costs, and where it goes
 

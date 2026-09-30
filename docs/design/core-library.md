@@ -112,14 +112,17 @@ shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 and `printString`, beside its thirteen
 accessors for the predefined classes, `Object` to `Block`, each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
-below); `Integer`'s `+ - * // < >
-<= >= =`, `negated`, `abs`, `printString` and `asString`; `LargeInteger`'s
-the same and `hash` ("Large integers" below); `Float`'s
-`+ - * / < > =`, `hash`, `printString` and `asString`; `String`'s `size`,
+below); `Integer`'s `+ - * // \\ < >
+<= >= =`, `bitAnd:`, `negated`, `abs`, `asFloat`, `printString` and
+`asString`; `LargeInteger`'s the same and `hash` ("Large integers" below);
+`Float`'s `+ - * / < > <= >= =`, `hash`, `asStringFixed:`, `printString`
+and `asString`; `String`'s `size`,
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
 `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
 `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript`
-forwards `show:` and `newLine` the same way ("The platform" below).
+forwards `show:` and `newLine` the same way, and its `Stopwatch` its clock
+reading ("The platform" below). `Number` reaches no leaf of its own: its
+`to:do:` and `to:by:do:` are ordinary Newspeak (below).
 `UndefinedObject` reaches no leaf either: its nil protocol is quick methods
 and its `printString` an ordinary one ("The nil protocol" below). `True` and
 `False` reach no leaf at all:
@@ -144,6 +147,45 @@ since 2026-09-23 — `Float`'s `=` each require an argument of the receiver's
 own class: each class hashes by its own content, so a cross-class equality
 would break the rule, as `Float`'s widening did when it made `1.0 = 1` true
 while `1.0 hash` and `1 hash` differ ("What is still unchecked" below).
+
+**`to:do:` and `to:by:do:` are sent, where Primordial Soup inlines them.**
+Both are `Number`'s, Newspeak bodies after Primordial Soup's
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:2107`,
+`:2118`): an inclusive bound, a negative step counting down, and `nil` as
+the answer, so an `Integer`, a `LargeInteger` and a `Float` receiver share
+one body and a range crossing into `LargeInteger` keeps counting
+(`goldens/kernel/number_iteration.ns`). They are no leaf, because each
+iteration sends `value:` to the block and `<=` or `>=` and `+` to the
+counter, and a Rust native that calls back into Newspeak is the ceiling
+"The core library as Newspeak source over a VM mirror" below rules out.
+Primordial Soup's compiler inlines both whenever the block is a literal
+(`:inlineBytecode:`; `tryInlineToDo:` in
+`prior-art/primordialsoup/newspeak/NewspeakCompilation.ns`), so its method
+runs only for what it cannot inline. Ours sends them to the receiver as
+any other message: inlining without a guard would skip the lookup of
+`to:do:` itself, so an inlined form here, like the inlined
+conditionals, would need a guard on the receiver and the send as its
+fallback ([compiler.md](compiler.md)). Whether that pays is to be decided
+by measuring the Are We Fast Yet benchmarks, which loop with both
+([OPEN-WORK.md](../OPEN-WORK.md)). The increment is `current + step`
+rather than Primordial Soup's `step + current`: a `Float` receiver with an
+integer step must count, and an integer receiver meeting a `Float`
+argument is not arithmetic here yet, so an `Integer` receiver with a
+`Float` bound raises a type mismatch until the numeric tower's mixed
+arithmetic exists ("Gap: an integer has no `/`" below).
+
+**`asStringFixed:` rounds as Primordial Soup's double-conversion does.**
+`Float>>asStringFixed:` writes a count of fraction digits from 0 to 20,
+and raises for any other count, as Primordial Soup's primitive fails and
+its method raises (`goldens/errors/as_string_fixed_refuses_more_than_twenty_digits.ns`).
+A tie rounds up on the exact binary value, where Rust's formatter would
+round it to even, so `0.125 asStringFixed: 2` is `'0.13'` and
+`1.005 asStringFixed: 2`, just below the tie in binary, is `'1.00'`; the
+sign is the value's even when the digits round to zero (`-0.04
+asStringFixed: 1` is `'-0.0'`); and outside ±1e21, and for a NaN or an
+infinity, it answers the text `printString` does (`fixed_text` in
+`builtins/numbers.rs`; `goldens/arithmetic/as_float_and_as_string_fixed.ns`).
+The Are We Fast Yet harness prints its scores with it.
 
 **A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
 makes equal symbols one object, so it agrees with `Symbol>>=` by
@@ -352,8 +394,8 @@ module a value.
   `hash` has — and made `Float`'s own `=` disagree with the derived
   equality, which asks the classes first. Every value class's `=` is
   class-tight now, `Float`'s like `String`'s and `Symbol`'s. **Only
-  equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`
-  and `>` still take an integer argument of either class and convert it to
+  equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`,
+  `>`, `<=` and `>=` still take an integer argument of either class and convert it to
   the nearest `double`, exact up to 2^53 (`argument_float` in
   `builtins/numbers.rs`), so `1.5 < 2` answers; an integer receiver still
   requires an integer argument, so `1 < 2.0` is the type-mismatch error it
@@ -368,7 +410,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 73 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 98 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -392,12 +434,18 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         lazy public transcript = Transcript new.
         lazy public collections = collectionsModule newCollections.
         lazy public kernel = KernelNamespace new.
+        lazy public time = Time new.
         public Platform = ( ^outer PlatformFactory Platform )
         public Transcript = ( ^outer PlatformFactory Transcript )
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
+        public Time = ( ^outer PlatformFactory Time )
+        public Stopwatch = ( ^outer PlatformFactory Stopwatch )
     )
     private class Transcript = Value new () ( show: and newLine, through vmMirror )
     private class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
+    private class Time = Value new () ( public Stopwatch = ( ^outer PlatformFactory Stopwatch ) )
+    private class Stopwatch = Object new ( | private cumulativeNanoseconds ::= 0. private startNanoseconds ::= nil. | ) (
+        elapsedNanoseconds, start, and the clock reading, through vmMirror )
     public newPlatform = ( ^Platform new )
 ) : ()
 ```
@@ -427,8 +475,9 @@ program receives, and may instantiate, are the root's nested classes, its
 facets. Each reaches the privileged state lexically, as a
 member of the root, never through a slot of its own, so the facets keep
 `new` and hold no privileged state in slots of their own -- `Transcript`,
-`KernelNamespace` and the collections module's `Collections` declare none,
-and `Platform`'s three lazy slots hold only facets: `t class new` makes a
+`KernelNamespace`, `Time` and the collections module's `Collections`
+declare none, `Stopwatch`'s two slots hold only its own readings, and
+`Platform`'s four lazy slots hold only facets: `t class new` makes a
 transcript equal to `t`, and `platform class new` a platform that writes
 like the first
 (`goldens/kernel/a_second_platform_writes_like_the_first`). The platform
@@ -558,6 +607,44 @@ predefined class either: `platform Array` reaches `Object`'s (§3.2), which
 it inherits like every object
 (`goldens/kernel/the_platform_and_its_parts_are_values`).
 
+**`platform time` is Primordial Soup's `Time` facet, narrowed to its
+`Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/AreWeFastYet.ns`,
+which measures with them ("The on-demand rule" below). `Time` is a value
+like the other members, and its one method, `Stopwatch`, is a class
+accessor like the platform's own, which answers the same class; an image
+names that class by its shortest path, `Stopwatch`, never `time Stopwatch`
+(`tests/image.rs`, `a_class_the_platform_hands_out_is_named_by_its_accessor`).
+`Stopwatch` answers only what the harness sends, `start` and
+`elapsedNanoseconds`, with Primordial Soup's meaning
+(`prior-art/primordialsoup/newspeak/Time.ns`): an
+unstarted stopwatch reads 0, and `start` on a running one changes nothing
+(`goldens/kernel/a_stopwatch_measures_elapsed_time`).
+
+**A `Stopwatch` is an object, not a value.** It keeps its start and its
+accumulated time in mutable slots, which §3.1.1 forbids a value, so its
+class is `Object new`, as the collections module's `List` is, and it is
+the one class of `PlatformFactory.ns` that is not a value. So two
+stopwatches are two objects, and an image writes one as an ordinary record
+of the class the path `Stopwatch` names, readings included
+(`a_stopwatch_is_a_record_of_its_path_named_class`). Its slots hold no
+privileged state: the clock is reached through the root's `vmMirror`,
+lexically, by the private `currentMonotonicNanoseconds`, a mirror forwarder
+over the row `clockMonotonicNanoseconds:ifFail:` whose leaf
+(`platform.rs`) reads nothing off its receiver and never declines, as the
+transcript's does not.
+
+**The clock's origin is per process.** The leaf answers nanoseconds since an
+`Instant` taken on the first reading in the process, shared by every
+interpreter in it, so two interpreters' stopwatches agree; an `i64` holds
+292 years of nanoseconds, and the conversion saturates rather than wraps.
+Primordial Soup's primitive reads the operating system's monotonic clock,
+whose origin is per boot. So a **started stopwatch does not survive a
+snapshot into another process**: loaded into a fresh process, its start
+was taken against another origin, and its elapsed time there is wrong --
+negative whenever the loading process is younger than the start was. An
+unstarted stopwatch, and a started one loaded in the process that wrote
+it, read correctly.
+
 **No program reaches a shipped module's root.** The platform's class is
 `PlatformFactory`'s nested `Platform`, whose factory is `new`; the factory
 that takes the mirror belongs to the root, and nothing a program can name
@@ -641,12 +728,13 @@ ordinary record of the class the path `Platform` names.
 ## The on-demand rule
 
 **`PlatformFactory.ns` and `CollectionsFactory.ns` are widened only on
-demand.** An accessor exists because a module on `corpus/runnable.toml`
-needs it, and the whitelist entry that demanded it is named in the
-accessor's comment.
+demand.** An accessor exists because a module on `corpus/runnable.toml` or
+a program under `benchmarks/` needs it, and the whitelist entry or the
+program that demanded it is named in a comment beside it: the comments of
+`Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
 
-This is not minimalism for its own sake. A capability nothing on that list asks
-for has no test that would catch it rotting, so it is a liability rather than an
+This is not minimalism for its own sake. A capability nothing on that list or
+under `benchmarks/` asks for has no test that would catch it rotting, so it is a liability rather than an
 asset. A module that needs something nobody has asked for is a reason to widen
 the whitelist deliberately — with a real module, run end to end, its output
 recorded — not a reason to build a speculative library.
@@ -693,10 +781,11 @@ declines it on the missing payload, never on the class, and the send falls
 to `Object`'s methods
 (`goldens/kernel/a_subclass_of_large_integer_is_no_number.ns`).
 
-**The leaves.** `LargeInteger` forwards `+ - * // < > <= >= =`, `hash`,
-`negated`, `abs`, `printString` and `asString` to fourteen rows of its own,
-`largeInteger:add:ifFail:` to `largeIntegerAsString:ifFail:`
-(`builtins/numbers.rs`, `execute_large_integer`). `Integer`'s leaves keep
+**The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`,
+`bitAnd:`, `hash`, `negated`, `abs`, `asFloat`, `printString` and
+`asString` to seventeen rows of its own, `largeInteger:add:ifFail:` to
+`largeIntegerAsFloat:ifFail:` (`builtins/numbers.rs`,
+`execute_large_integer`). `Integer`'s leaves keep
 their immediate path and promote where it has no answer: a sum, difference
 or product that does not fit `i64` is recomputed in `i128`, where two
 `i64`s' always fits, and `i64::MIN // -1`, `i64::MIN negated` and
@@ -716,9 +805,10 @@ with a type mismatch, whichever integer class the receiver is
 (`goldens/arithmetic/a_float_meets_a_large_integer.ns`,
 `goldens/errors/a_large_integer_meets_a_float.ns`). That is a derived
 choice, pinned by goldens, which the numeric tower may revisit ("Gap: an
-integer has no `/`" below). `//` by zero raises "division by zero" from
-either class's leaf
-(`goldens/errors/large_integer_floor_division_by_zero_is_uncaught.ns`).
+integer has no `/`" below). `//` and `\\` by zero raise "division by zero"
+from either class's leaf
+(`goldens/errors/large_integer_floor_division_by_zero_is_uncaught.ns`,
+`goldens/errors/floor_modulo_by_zero_is_uncaught.ns`).
 
 **`//` rounds toward negative infinity**, so `7 // -2` and `-7 // 2` are
 both `-4`: Primordial Soup's `Integer>>//`, commented "Integer division,
@@ -729,7 +819,37 @@ and `num-integer`'s `div_floor`. `checked_floor_divide`
 the leaf and `IntegerBinary` share, and `ArbitraryInteger::floor_divide` the
 one for everything else
 (`goldens/arithmetic/floor_division_rounds_toward_negative_infinity.ns`).
-The remainder, `\\`, is not declared yet ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**`\\` is the remainder of that division**, so it takes the divisor's sign:
+`7 \\ -2` is `-1` and `-7 \\ 2` is `1`. For two `i64`s, `floor_modulo`
+(`builtins/numbers.rs`) corrects Rust's truncating remainder, taken with
+`wrapping_rem` so that `i64::MIN \\ -1` answers `0` where `%` would
+overflow. For everything else, `ArbitraryInteger::floor_modulo` derives it
+from `floor_divide`, as the dividend less the quotient times the divisor,
+rather than adapting `num-integer`'s `mod_floor`, so the quotient and the
+remainder can never disagree
+(`goldens/arithmetic/floor_modulo_takes_the_divisors_sign.ns`). `\\` has no
+inlined fast path: it is no `IntegerBinary` operation, so every `\\` is a
+send to the leaf.
+
+**`bitAnd:` is over two's complement**, as Primordial Soup's and Squeak's
+are: a negative number's sign bits extend without end, so `-1 bitAnd: x`
+is `x` and `-256 bitAnd: 255` is `0`, for either representation in either
+position. Two `i64`s are and-ed as they are; `ArbitraryInteger::bit_and`
+lays both operands out in two's complement one digit longer than the
+longer magnitude, so that the top digit holds the sign, ands the digits,
+and turns a negative result back into sign and magnitude. Both are checked
+against `i128` and by
+`goldens/arithmetic/bit_and_is_twos_complement.ns`; a sign-and-magnitude
+`and` would answer `0` for `-1 bitAnd: 2^64`, which is `2^64`.
+
+**`asFloat` answers the nearest double**, ties to even: an `Integer`'s by
+Rust's `as`, exact up to 2^53, and a `LargeInteger`'s by
+`ArbitraryInteger::to_f64`, the conversion a `Float`'s leaves already apply
+to an integer argument. A `Float` prints as Rust's `Display` writes it, the
+shortest digits that read back as the same double, so `9223372036854775808
+asFloat` prints `9223372036854776000`
+(`goldens/arithmetic/as_float_and_as_string_fixed.ns`).
 
 **The payload.** A `LargeInteger`'s object carries
 `ObjectData::LargeInteger(ArbitraryInteger)`: a sign and a magnitude of
@@ -833,7 +953,9 @@ so the deviation is recorded here instead.
 declares `/` only on `Float`, forwarding to the mirror row
 `float:divide:ifFail:`, while `Integer` declares `//` alone, over
 `integer:floorDivide:ifFail:`. So `7.0 / 2` works and `7 / 2` does not, which
-is asymmetric enough to surprise.
+is asymmetric enough to surprise. `asFloat` does not close the gap: it lets a
+program ask for an inexact quotient explicitly, `7 asFloat / 2`, as the Are
+We Fast Yet harness computes its scores, but `7 / 2` still answers nothing.
 
 **This is not a specification violation.** The specification mentions `Number`
 exactly twice — §3.1.1, listing it among the value objects, and §5.1.1, on
@@ -841,17 +963,19 @@ non-integral *literals* — and fixes no arithmetic protocol anywhere. Which
 selectors `Integer` answers is a library question, and §8.3 leaves the
 platform's modules to provide classes "some of which are standard and mentioned
 in this specification". `/` is not one of them. Formally this is the on-demand
-rule doing its job: nothing on `corpus/runnable.toml` asks for it.
+rule doing its job: nothing on `corpus/runnable.toml` or under `benchmarks/`
+asks for it.
 
 **Step 6's first plan left it open deliberately** (decided with the user on
 2026-09-21): moving the library into `Kernel.ns` kept every recorded outcome,
 and adding `Integer>>/` would have been a new one. The second plan's `Number`
-class did not settle it either: `Number` is declared, empty, as the place
-between `Value` and `Integer`/`Float` that §3.1.1 names, and **it is where
-the numeric tower goes when there is one** — what `Integer` and `Float`
-share moves up to it, and a `Fraction` would hang beside them. Declaring it
-empty first is what makes that a later addition rather than a later
-restructuring. **The question still has to be settled**, and the choice is as
+class did not settle it either: `Number` is the place between `Value` and
+`Integer`/`Float` that §3.1.1 names, and **it is where the numeric tower
+goes when there is one** — what `Integer` and `Float` share moves up to it,
+as `to:do:` and `to:by:do:` have ("What exists" above), and a `Fraction`
+would hang beside them. Declaring it before the tower is what makes that a
+later addition rather than a later restructuring. **The question still has to
+be settled**, and the choice is as
 it was. Primordial Soup declares both on
 `Integer` (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`):
 `/` as a primitive falling back to `^other divideFromNumber: self`, and `//`
@@ -998,8 +1122,8 @@ above); a user module would receive it only if a shipped module passed it
 on, and none does: each root keeps it in a private slot. The planned
 `become:` ([object-model.md](object-model.md), "Planned: `become:` through
 forwarders") will keep it that way: every instance a platform path names is
-a value (`Platform`, `Transcript`, `KernelNamespace` and `Collections` are
-declared `= Value new`) and every class it names is a class object, and a
+a value (`Platform`, `Transcript`, `KernelNamespace`, `Time` and
+`Collections` are declared `= Value new`) and every class it names is a class object, and a
 program's `become:` will refuse both in either direction; the kernel-made
 non-value objects a program can reach, such as a VM error's `Error` and its
 `Message`, lie on no path from shipped code to the mirror, and a kernel

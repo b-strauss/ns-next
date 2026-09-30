@@ -36,6 +36,10 @@ Rust 1.98.0, edition 2021, five crates:
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
 module (`LexerComparisonTest`), and the connection to `ns-next-lsp`.
 
+`benchmarks/are-we-fast-yet/` — seven Are We Fast Yet benchmarks and their
+harness, one project, verified by `goldens/awfy/` (`docs/design/execution.md`,
+"The Are We Fast Yet benchmarks").
+
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology;
 its "Where the next session starts" names the next piece of work.
@@ -225,7 +229,8 @@ Every corpus module must parse; there is no list of exceptions. A module that
 runs end to end belongs in `corpus/runnable.toml` with the unary selector its
 generated application sends it (`send`) and its output. `PlatformFactory.ns`
 and `CollectionsFactory.ns` are widened only on demand: an accessor exists
-because a `runnable.toml` module needs it, named in the accessor's comment.
+because a `runnable.toml` module or a program under `benchmarks/` needs it,
+named in the accessor's comment.
 
 Add no new external dependency without a reason that survives review — the image
 format is hand-rolled on purpose.
@@ -243,7 +248,8 @@ judged by the finished system; a guarantee is made by arranging Newspeak classes
 before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
-decision, made so far only for `num-bigint` and `num-integer`.
+decision, made so far only for `num-bigint` and `num-integer`
+(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`).
 
 ## Conventions
 

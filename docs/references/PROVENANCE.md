@@ -157,11 +157,19 @@ implementation appears in this repository twice and why neither copy may be
 deleted. The file paths cited below are therefore real paths in the working
 tree once the submodule is initialized, not places to go looking upstream.
 
-Four of the seven are listed here, because this file is scoped to what the design
-documents actually cite. `prior-art/somns/`, `prior-art/newspeak-benchmarks/` and
-`prior-art/strongtalk/` are not cited by any document under `docs/design/` today
-and so are absent from this list rather than omitted from it;
-`prior-art/PROVENANCE.md` covers all seven.
+Four of the ten are described here, the ones whose parts carry design weight
+across several documents. The other six are cited by documents under
+`docs/design/` too, each for a narrower purpose, and are described only in
+`prior-art/PROVENANCE.md`, which covers all ten: `prior-art/num-bigint/`,
+`prior-art/num-integer/` and `prior-art/num-rational/` for the large-integer
+arithmetic adapted from the first two and the `Fraction` the third models
+(`core-library.md`, "Large integers"); `prior-art/somns/` as a
+point of comparison throughout and as the source of the Are We Fast Yet
+benchmarks in `benchmarks/are-we-fast-yet/` (`docs/design/execution.md`, "The
+Are We Fast Yet benchmarks"); `prior-art/newspeak-benchmarks/` as a suite to
+measure the JIT tiers against (`execution.md`, "Planned: JIT tiers"); and
+`prior-art/strongtalk/` for its inline and lookup caches, its memory
+management and its `become:` (`dispatch.md`, `memory.md`, `object-model.md`).
 
 - **The canonical Newspeak implementation** — `prior-art/newspeak/`, from
   <https://github.com/newspeaklanguage/newspeak>. The reference for what the
@@ -201,7 +209,7 @@ and so are absent from this list rather than omitted from it;
   has, and the comparison it weighs its root discipline against. Rust is the whole
   reason it is the comparison rather than V8: the borrow checker is available as an
   enforcement mechanism, and a C++ engine's conventions do not carry over to a
-  solution built on one. MPL-2.0, the most restrictive license of the seven. The parts
+  solution built on one. MPL-2.0, the most restrictive license of the ten. The parts
   the design documents cite:
 
   - `GARBAGE_COLLECTOR.md` — the `GcScope`/`NoGcScope` lifetimes and `Scoped` roots,

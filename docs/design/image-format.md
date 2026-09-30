@@ -576,14 +576,17 @@ them, numbered densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
 `MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the platform is an
 instance of the nested class `Platform` of the shipped `PlatformFactory.ns`
 ([core-library.md](core-library.md), "The platform"): its public slots are
-the lazy `transcript`, `collections` and `kernel`, and its class accessors
-`Platform`, `Transcript` and `KernelNamespace` name those classes of the
-module, once the module root's accessor for each has run. `collections`
+the lazy `transcript`, `collections`, `kernel` and `time`, and its class
+accessors `Platform`, `Transcript`, `KernelNamespace`, `Time` and
+`Stopwatch` name those classes of the module, once the module root's
+accessor for each has run. `time`'s own class accessor `Stopwatch` answers
+the class `Stopwatch` does, so the path `Stopwatch`, the shorter, is the
+one written for it. `collections`
 answers an instance of the shipped `CollectionsFactory.ns`'s facet
 `Collections`, whose own class accessors `Collections` and `List` name that
 module's two classes the same way, so `collections Collections` and
 `collections List` are platform paths too, with the facet as their first
-member. All five classes are private to their root: a class accessor reaches
+member. All seven classes are private to their root: a class accessor reaches
 them by a lexical send (§5.9), and `discover` looks the class up the same way
 (`dispatch::lexical_member`), so a private nested class is named by its
 accessor's path like a public one.
@@ -594,6 +597,10 @@ module, never through a slot a program can read. A second platform a program
 made with `platform class new` is an ordinary instance record of the class
 the path `Platform` names, and a second facet made with `platform collections
 class new` is one of the class the path `collections Collections` names.
+A `Stopwatch` is an object, not a value, and is written the same way, as a
+record of the class the path `Stopwatch` names with its readings; a started
+one reads a wrong time once loaded into another process
+([core-library.md](core-library.md), "The platform").
 
 An object a path names is referenced as `VALUE_PLATFORM_PATH` (value tag 8), a
 class a path names as `CLASS_PLATFORM_PATH` (class tag 5), each followed by the

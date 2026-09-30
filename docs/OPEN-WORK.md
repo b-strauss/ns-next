@@ -13,10 +13,9 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**Are We Fast Yet, stage 1**: Sieve, Permute, Queens, Towers, Bounce,
-Storage and List, with the harness, the first of the three stages under
-"Before step 2's second plan, the Are We Fast Yet benchmarks" below. Its
-plan is still to be written.
+**Are We Fast Yet, stage 2**: Mandelbrot, NBody and Richards, the second
+of the stages under "Before step 2's second plan, the Are We Fast Yet
+benchmarks" below. Its plan is still to be written.
 
 ## The road to a high-performance VM
 
@@ -36,42 +35,38 @@ and `prior-art/newspeak-benchmarks`.
 - **Before step 2's second plan, the Are We Fast Yet benchmarks** (decided
   with the user on 2026-09-29, so that every later step is measured on real
   programs rather than only on the microbenchmarks under `goldens/bench/`).
-  The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into the
-  tree, each a runnable module with its output pinned under both lowerings and
-  a measurement source. Each one widens the platform on demand, as
-  `CLAUDE.md` asks, so the Newspeak side grows with them. The harness can
-  be a project's application, whose factory is `packageUsing:` and which
-  reaches each benchmark as `manifest Sieve` rather than through SOMns's
-  `system loadModule:`, and `CD.ns`'s one `loadModule:nextTo:` line can go
-  the same way ([image-format.md](design/image-format.md), "Packaging").
-  That includes:
-  - AWFY's `Vector`, a growable array over an `Array` with a first and a last
-    index (SOMns's `core-lib/Kernel.ns`), which `List` in
-    `CollectionsFactory.ns` answers only in part today (`add:`, `at:`,
-    `at:put:`, `size`, `do:`);
-  - the harness's `platform system` (`ticks`) and, if it still picks a
-    benchmark by name, `platform mirrors ObjectMirror`;
-  - whatever integer and float protocol each benchmark sends.
-
-  Copying them is a licensing decision. SOMns is MIT (Stefan Marr, and
-  Michael Haupt / HPI), so each file gets a header and
-  `THIRD-PARTY-NOTICES.md` an entry, as for `num-bigint`. They come in
-  three stages by what they need, one plan each (decided with the user on
-  2026-09-29), in the order a survey of where each fails today set -- every
-  one of the fourteen fails on its first send of a missing selector:
-  1. Sieve, Permute, Queens, Towers, Bounce, Storage and List, with the
-     harness: `Integer`'s `to:do:`, `downTo:do:`, `timesRepeat:`, `%` and
-     `&`; `Array`'s `new:withAll:` and `putAll:`; `Object`'s `error:` and
-     `subclassResponsibility`; `&&`.
+  The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into
+  `benchmarks/are-we-fast-yet/`, each a module of the harness's project,
+  verified under both lowerings by `goldens/awfy/` and measured as
+  [execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
+  describes. Each one widens the platform on demand, as `CLAUDE.md` asks,
+  so the Newspeak side grows with them. Stage 1 -- Sieve, Permute, Queens,
+  Towers, Bounce, Storage and List, with the harness -- is built, and
+  follows Primordial Soup's protocol and module shape (decided with the
+  user on 2026-09-30, for stage 1). Whether stages 2 and 3 follow it too is
+  for their plans to settle; their selector lists below were surveyed
+  against SOMns's protocol. The rest come in two stages by what they need,
+  one plan each (decided with the user on 2026-09-29), in the order set by
+  that day's survey of the first missing selector each one sends:
   2. Mandelbrot, NBody and Richards: `Float`'s `//`, mixed integer and float
      arithmetic, `sqrt`, `<<`, `bitXor:`, and `platform system`'s
-     `printString:` and `printNewline`.
+     `printString:` and `printNewline`. Mixed arithmetic also closes
+     `to:do:` with a `SmallInteger` receiver and a `Float` bound, which
+     raises a type mismatch until it exists
+     ([core-library.md](design/core-library.md), "What exists").
   3. DeltaBlue, Havlak, Json and CD: `Vector`, `Dictionary`,
      `IdentityDictionary`, `Set`, `IdentitySet`, the string protocol Json
      sends (`charAt:`, `substringFrom:to:`, `endsWith:`, …), `sin`, `cos`,
-     and CD's second module, `RedBlackTree.ns`.
+     and CD's second module, `RedBlackTree.ns`. AWFY's `Vector` is a
+     growable array over an `Array` with a first and a last index (SOMns's
+     `core-lib/Kernel.ns`), which `List` in `CollectionsFactory.ns` answers
+     only in part today (`add:`, `at:`, `at:put:`, `size`, `do:`); `CD.ns`'s
+     one `loadModule:nextTo:` line can become a `manifest` send, as the
+     harness reaches each benchmark ([image-format.md](design/image-format.md),
+     "Packaging").
 
-  Still to be decided: how they are measured.
+  Each benchmark file carries a header naming its upstream, and
+  `THIRD-PARTY-NOTICES.md` has SOMns's and Primordial Soup's entries.
 - **Step 2, second plan, the eight-byte value**, on today's arena: one tagged
   64-bit word -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`,
   `true` and `false`, and handles -- which moves the `SmallInteger`/
@@ -169,6 +164,18 @@ to be decided against the code:
   `interpreter/instantiate.rs`); deciding it once per activation is the known
   recovery for `bench_new2.ns`'s 3.6% (below). [execution.md](design/execution.md),
   "What `Top`, `Value` and `Number` cost".
+- **Inlining `to:do:` and `to:by:do:`.** Primordial Soup's compiler inlines
+  both (`:inlineBytecode:`,
+  `prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:2106`;
+  `tryInlineToDo:` in `NewspeakCompilation.ns`); ours sends them to
+  `Number`, whose Newspeak loop costs one activation for the send and a
+  `value:` send and a block activation per iteration. An inlined form
+  would need a guard on the receiver and the send as its fallback, as the
+  inlined conditionals have. Whether to inline
+  is decided by measuring the Are We Fast Yet benchmarks, which loop with
+  both. It relates to "Between steps 7 and 8, real Newspeak bodies for
+  `whileTrue:`, `whileFalse:` and `do:`" above.
+  [core-library.md](design/core-library.md), "What exists".
 - **Cascades through the integer fast path.** `lower_cascade` emits every
   message with `emit_ordinary_send_with_receiver`, so a cascade's binary
   integer sends never get `IntegerBinary` (`compiler/lower.rs:1514`).
@@ -212,22 +219,32 @@ to be decided against the code:
 ## Planned: language and library
 
 - **The numeric tower and `Integer>>/`.** `Integer` answers `//` but not `/`
-  (only `Float` has `/`, `Kernel.ns:544`); `1 = 1.0` and `1.0 = 1` both answer
-  false; `Number` (`Kernel.ns:463`) carries no behaviour. Settling it means
+  (only `Float` has `/`, `Kernel.ns:574`); `1 = 1.0` and `1.0 = 1` both answer
+  false; `Number` (`Kernel.ns:467`) carries only `to:do:` and `to:by:do:`.
+  Settling it means
   `Number`'s shared behaviour, `Fraction`, cross-type comparison and a
   matching hash (`3 asFloat hash = 3 hash`). Decided only that it must be
   settled; `num-rational` is the reference for `Fraction` and for converting a
   `Float` to a fraction exactly. [core-library.md](design/core-library.md),
   "Gap: an integer has no `/`".
-- **`\\`, the remainder of `//`.** `Kernel.ns` declares `//`, rounded toward
-  negative infinity, on `Integer` and `LargeInteger`, but not the floor
-  modulo Primordial Soup pairs with it ("The remainder of this division is
-  given by `\\`", `prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:1958`),
-  so `7 \\ -2` ends in `doesNotUnderstand:`. It needs a leaf per integer
-  class, a remainder whose sign follows the divisor's (`num-integer`'s
-  `mod_floor`; `ArbitraryInteger::floor_divide` already computes it), and
-  goldens; nothing on `corpus/runnable.toml` asks for it yet.
-  [core-library.md](design/core-library.md), "Large integers".
+- **A program's exit status.** A program cannot set its exit status: a run
+  exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
+  is silent. Primordial Soup exits through an explicit `exit:` primitive
+  (`prior-art/primordialsoup/newspeak/Actors.ns:588`,
+  `prior-art/primordialsoup/newspeak/TestRunner.ns:50`) and ignores
+  `main:args:`'s answer; SOMns takes the answer as the status
+  (`prior-art/somns/src/som/vm/ObjectSystem.java:557`) and also has
+  `system exit:` (`prior-art/somns/core-lib/System.ns:26`). The user
+  decided on 2026-09-30 that this is an item of its own, outside the Are We
+  Fast Yet benchmarks. The recommendation given then
+  was an explicit `platform system exit:` rather than the answer; that is
+  not yet decided. Also open: whether pending `ensure:` blocks run
+  (Primordial Soup's primitive ends the process at once); that a host
+  embedding the interpreter in its own process needs an unwind to the entry
+  rather than `std::process::exit`; and the range of the status. No design
+  document covers it yet; the decision to keep it apart is in the plan
+  [ns-next-are-we-fast-yet-stage-1](superpowers/plans/2026-09-30-1353-ns-next-are-we-fast-yet-stage-1.md),
+  "What stays out".
 - **Pattern literals lowered to §5.1.9's `Pattern` sends** (`Pattern
   wildcard`, `Pattern literal:`, `Pattern keywords:patterns:`) instead of
   **nil**; needs a pattern AST in place of the kept source text and a library
@@ -244,7 +261,8 @@ to be decided against the code:
   not built. [core-library.md](design/core-library.md), "Planned: the module
   namespace on the mirror".
 - **Library classes on demand**, each when a module on `corpus/runnable.toml`
-  asks for it: collections beyond `List` (`Map`, `IdentityMap`,
+  or a program under `benchmarks/` asks for it: collections beyond `List`
+  (`Map`, `IdentityMap`,
   `IdentitySet`, `WeakArray`, `Collection`); exceptions beyond §8.6's core
   (`ExceptionSet`, `Notification`, `Warning`, `outer`, `retryUsing:`,
   `signalerContext`, `Object>>error:`, finer `Error` subclasses); a mirror

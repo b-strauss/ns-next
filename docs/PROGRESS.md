@@ -15,17 +15,18 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: the Are We Fast Yet benchmarks, stage 1, before road step 2's
+**Next: the Are We Fast Yet benchmarks, stage 2, before road step 2's
 second plan** ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
-high-performance VM"): Sieve, Permute, Queens, Towers, Bounce, Storage and
-List from `prior-art/somns/core-lib/Benchmarks`, with the harness, become
-runnable programs with pinned output, widening the platform on demand. The
-harness can be a project's application, `packageUsing:` a manifest that
-answers each benchmark as `manifest Sieve` ("One artifact, packaged before
-`main:args:`" below; [image-format.md](design/image-format.md),
-"Packaging"). Its plan is still to be written; stages 2 and 3 follow, one
-plan each. Decided with the user on 2026-09-29, so that the eight-byte value
-and every later step are measured on real programs.
+high-performance VM"): Mandelbrot, NBody and Richards from
+`prior-art/somns/core-lib/Benchmarks` join the seven of stage 1 in
+`benchmarks/are-we-fast-yet/` ("Are We Fast Yet, stage 1" below;
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks"),
+widening the kernel and the platform on demand: mixed integer and float
+arithmetic among them. Whether they follow Primordial Soup's protocol, as
+stage 1 does, is for its plan to settle; the plan is still to be written.
+Stage 3 follows, one plan of its own. Decided with the user on 2026-09-29,
+so that the eight-byte value and every later step are measured on real
+programs.
 
 **After it: road step 2's second plan, the eight-byte value**
 ([object-model.md](design/object-model.md), "Planned: an eight-byte value"):
@@ -49,7 +50,9 @@ goldens under `goldens/bench/`; the other four -- `bench_new.ns`,
 and must be written out from [execution.md](design/execution.md), "What
 spec-conformant lookup moved", never reconstructed from a prose
 description: a reconstruction runs and prints the right answer while
-measuring something else.
+measuring something else. The Are We Fast Yet benchmarks are in the tree
+and measured as [execution.md](design/execution.md), "The Are We Fast Yet
+benchmarks", describes.
 
 ## Notes
 
@@ -3647,3 +3650,56 @@ refusal and the image encoder's and decoder's refusals stay for what does not
 come through the resolver: a `ResolvedModule` a host assembles by hand, and
 an image. The ten `goldens/errors/root_*` goldens now end with the resolve
 error; the editor underlines the clause.
+
+## Are We Fast Yet, stage 1 (2026-09-30)
+
+Plan: [ns-next-are-we-fast-yet-stage-1](superpowers/plans/2026-09-30-1353-ns-next-are-we-fast-yet-stage-1.md);
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
+[core-library.md](design/core-library.md), "What exists", "The platform"
+and "Large integers".
+Commits: `072a102` (the plan's) to the commit of this entry.
+
+Seven of the Are We Fast Yet benchmarks -- Sieve, Permute, Queens, Towers,
+Bounce, Storage and List -- are runnable programs in
+`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+module shape and protocol (decided with the user on 2026-09-30, for stage
+1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
+the root of the project `are-we-fast-yet.json`, which reaches each
+benchmark as `manifest Sieve`. Without `--timed` the harness runs each
+benchmark once and prints `<Name>: ok`, which `goldens/awfy/` pins under
+both lowerings and `ns-next bench` times; with `--timed` it prints each
+benchmark's runs per second, measured with `platform time Stopwatch`.
+The kernel gained, in Primordial Soup's protocol, `Number`'s `to:do:` and
+`to:by:do:` as Newspeak, and ten `MIRROR` rows: `Integer`'s and
+`LargeInteger`'s `\\`, `bitAnd:` and `asFloat`, `Float`'s `<=`, `>=` and
+`asStringFixed:`, and the clock; the platform gained `time`, whose
+`Stopwatch` is the one class of `PlatformFactory.ns` that is an object
+rather than a value. No wire tag changed, and no existing golden's outcome.
+`THIRD-PARTY-NOTICES.md` carries SOMns's MIT notice and Primordial Soup's
+Apache 2.0 licence.
+
+- `0516126` — `Number` iterates with `to:do:` and `to:by:do:`, and `Float`
+  orders with `<=` and `>=`.
+- `bb9c59b` — `Integer` and `LargeInteger` answer `\\`, the remainder of
+  floor division.
+- `fbfd946` — `Integer` and `LargeInteger` answer `bitAnd:` over two's
+  complement.
+- `8c74685` — integers answer `asFloat`, and `Float` answers
+  `asStringFixed:` rounding as Primordial Soup does.
+- `41c7a6c` — `platform time` answers Primordial Soup's `Stopwatch` over a
+  monotonic clock.
+- `7232111` — a loaded stopwatch's test pins its start, and the clock's
+  comments say what holds: the origin is per process.
+- `61ee9e0` — the harness and Sieve, verified by goldens, with
+  `THIRD-PARTY-NOTICES.md`'s SOMns and Primordial Soup entries.
+- `eb77d7e` — the notices introduce all four upstreams, and the harness's
+  usage line names the command.
+- `38c692c` — Permute, Queens and Towers in Primordial Soup's protocol.
+- `5c66ddc` — Bounce, Storage and List complete stage 1.
+- `dc25ee4` — a timed run's scores, and `bench` over the project, are
+  checked by shape.
+- This commit — the documentation describes the built state.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stages 2
+and 3, a program's exit status, and whether to inline `to:do:` and
+`to:by:do:`.
