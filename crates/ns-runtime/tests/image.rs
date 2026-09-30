@@ -11430,7 +11430,10 @@ fn a_list_is_a_record_of_its_path_named_class() {
 /// A `Stopwatch` is an ordinary instance of a shipped class, as a `List`
 /// is: written as a record of the class the path `Stopwatch` names,
 /// with its started reading, and it reads on after a load -- the class and
-/// its code are the loading binary's.
+/// its code are the loading binary's. Snapshot and load run in one
+/// process, which shares the clock's origin, so a start that survived the
+/// load reads a strictly positive time; a stopwatch whose start came back
+/// `nil` would read 0.
 #[test]
 fn a_stopwatch_is_a_record_of_its_path_named_class() {
     let source = indoc! {"
@@ -11453,16 +11456,13 @@ fn a_stopwatch_is_a_record_of_its_path_named_class() {
     let stopwatch = send_to(&mut loaded, &instance, "stopwatch");
     let elapsed = send_to(&mut loaded, &stopwatch, "elapsedNanoseconds");
     loaded.interpreter.enter(|mutator| {
+        let elapsed = mutator.fetch(&elapsed);
         assert!(
-            matches!(mutator.fetch(&elapsed), Value::SmallInteger(_)),
-            "a loaded stopwatch reads an integer"
+            matches!(elapsed, Value::SmallInteger(nanoseconds) if nanoseconds > 0),
+            "a loaded stopwatch keeps its start, so it reads a positive time, not {}",
+            mutator.heap().describe(&elapsed)
         );
     });
-    let restarted = send_to(&mut loaded, &stopwatch, "start");
-    assert!(
-        same_object(&mut loaded, &restarted, &stopwatch),
-        "a loaded stopwatch is still started, so start answers it unchanged"
-    );
     let platform = loaded.interpreter.platform();
     let time = send_to(&mut loaded, &platform, "time");
     let fresh_class = send_to(&mut loaded, &time, "Stopwatch");

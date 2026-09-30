@@ -7,8 +7,8 @@
 //! needs no leaf; that module is reached through the mirror's `moduleNamed:`
 //! (`builtins::module`). What is left here is `show:` and `newLine`, the
 //! forwarders of `Transcript`'s two methods, and the clock `Stopwatch`
-//! reads, nanoseconds since one origin per process, so that no reading can
-//! go backwards and two interpreters in one process agree.
+//! reads, nanoseconds since one origin per process, so that two
+//! interpreters in one process agree.
 //!
 //! The leaves read nothing off their receiver; `show:` reads only its string
 //! argument. The capability is the VM mirror the forwarder sends to, which only shipped
