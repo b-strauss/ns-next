@@ -51,8 +51,8 @@ and `prior-art/newspeak-benchmarks`.
   2. Mandelbrot, NBody and Richards: `Float`'s `//`, mixed integer and float
      arithmetic, `sqrt`, `<<`, `bitXor:`, and `platform system`'s
      `printString:` and `printNewline`. Mixed arithmetic also closes
-     `to:do:` with a `SmallInteger` receiver and a `Float` bound, which
-     raises a type mismatch until it exists
+     `to:do:` with an `Integer` receiver (a `LargeInteger` too) and a
+     `Float` bound, which raises a type mismatch until it exists
      ([core-library.md](design/core-library.md), "What exists").
   3. DeltaBlue, Havlak, Json and CD: `Vector`, `Dictionary`,
      `IdentityDictionary`, `Set`, `IdentitySet`, the string protocol Json
@@ -443,6 +443,21 @@ value objects are never copied across an actor boundary (§3.1.1).
   way to make one, and `String new` should answer an empty string; the object
   layout (road step 3) settles both, with goldens
   ([object-model.md](design/object-model.md), "Planned: the object layout").
+- **A started `Stopwatch` carried across a snapshot reads a wrong time in
+  another process.** Its clock counts from an origin taken once per process
+  (`platform.rs`, `CLOCK_ORIGIN`), where Primordial Soup's primitive reads
+  the operating system's per-boot monotonic clock, so a start written by
+  one process and read against another's origin gives a wrong elapsed time,
+  negative whenever the loading process is younger than the start was, at
+  exit status 0. Options, none decided: read the operating system's
+  monotonic clock as Primordial Soup does (right across processes of one
+  boot, still wrong across a reboot or another machine); rebase a started
+  stopwatch on load, so it reads on from the elapsed time it had when
+  written; or record the writing process's clock reading in the image and
+  offset the loading process's origin by it, which rebases every reading
+  at once without a rule for `Stopwatch`. Pinned today only within one
+  process (`tests/image.rs`, `a_stopwatch_is_a_record_of_its_path_named_class`).
+  [core-library.md](design/core-library.md), "The platform".
 
 ## Known defects and gaps
 

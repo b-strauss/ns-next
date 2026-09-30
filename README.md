@@ -20,12 +20,15 @@ Every `.ns` file in the vendored corpus parses.
 
 Not built yet, and the limits worth knowing before trying it on real code:
 
-- **No numeric tower.** An `Integer` answers `//` but not `/` or `\\`, `1 = 1.0` is
-  `false`, and a non-integral literal is a binary float.
-- **The platform is minimal**, and widens only when a whitelisted corpus module needs
-  something: a transcript, the kernel's classes and exceptions, and a collections
-  module with `List`. Six of the 211 corpus modules run end to end; the rest ask for
-  collections, streams and mirrors that do not exist yet.
+- **No numeric tower.** An `Integer` answers `//` and `\\` but not `/`, an integer
+  meeting a `Float` argument is a type mismatch, `1 = 1.0` is `false`, and a
+  non-integral literal is a binary float.
+- **The platform is minimal**, and widens only when a whitelisted corpus module or a
+  program under `benchmarks/` needs something: a transcript, the kernel's classes
+  and exceptions, a collections module with `List`, and `time` with its
+  `Stopwatch`. Six of the 211 corpus modules run end to end; the rest ask for
+  collections, streams and mirrors that do not exist yet. Seven of the Are We Fast
+  Yet benchmarks run under their harness in `benchmarks/are-we-fast-yet/`.
 - **No actors, no reflection API, no debugger, no JIT.** An eventual send runs
   synchronously and answers its value rather than a promise, a pattern literal
   evaluates to **nil**, and Typed-Newspeak annotations parse and are discarded.

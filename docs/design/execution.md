@@ -635,7 +635,8 @@ what the kernel and the platform gained for them
 
 There are two ways to measure, and they report different things:
 
-- **`ns-next bench are-we-fast-yet.json -- <Name>`** times the harness
+- **`ns-next bench benchmarks/are-we-fast-yet/are-we-fast-yet.json -- <Name>`**,
+  from the repository root, times the harness
   without `--timed`, which runs the benchmark named -- or, with no name,
   all seven in turn -- once and prints `<Name>: ok`. `bench` reports the
   median, minimum and maximum of its timed runs (ten unless `--iterations`
@@ -650,7 +651,8 @@ There are two ways to measure, and they report different things:
   interpreter keeps between sends: the inline caches and the platform's
   lazy members. The untimed run does the same work every time, which is
   what lets `goldens/awfy/` pin its output and `bench` time it.
-- **`ns-next run are-we-fast-yet.json -- --timed [<Name>]`** lets the
+- **`ns-next run benchmarks/are-we-fast-yet/are-we-fast-yet.json -- --timed [<Name>]`**
+  lets the
   harness measure itself, as Primordial Soup's does: for each benchmark, or
   the one named, it runs `bench` repeatedly for at least 3 ms to warm up,
   then for at least 20 ms, reading `platform time Stopwatch`, and prints

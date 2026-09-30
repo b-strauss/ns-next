@@ -270,8 +270,12 @@ and shows up in a diff as two deletions.
 A golden's rationale — why that outcome is the right one, and which
 specification section it comes from — is a `(* ... *)` comment at the top of
 the `.ns`, under the category string, so that it sits with the program it
-explains rather than beside it. The `.toml` holds the recorded answer and
-nothing else.
+explains rather than beside it; for a project golden, the `.ns` is its root
+module. The `awfy/` goldens share one root, the harness, so theirs is the
+harness's own header in `benchmarks/are-we-fast-yet/AreWeFastYet.ns`, which
+says what an untimed run prints and gives the usage line the refusals pin;
+their file names say which case each is. The `.toml` holds the recorded
+answer and nothing else.
 
 ## Gates
 

@@ -157,10 +157,9 @@ implementation appears in this repository twice and why neither copy may be
 deleted. The file paths cited below are therefore real paths in the working
 tree once the submodule is initialized, not places to go looking upstream.
 
-Four of the ten are described here, the ones whose parts carry design weight
-across several documents. The other six are cited by documents under
-`docs/design/` too, each for a narrower purpose, and are described only in
-`prior-art/PROVENANCE.md`, which covers all ten: `prior-art/num-bigint/`,
+Four of the ten are described here part by part. The other six are cited by
+documents under `docs/design/` too and are covered by
+`prior-art/PROVENANCE.md`, which describes all ten: `prior-art/num-bigint/`,
 `prior-art/num-integer/` and `prior-art/num-rational/` for the large-integer
 arithmetic adapted from the first two and the `Fraction` the third models
 (`core-library.md`, "Large integers"); `prior-art/somns/` as a
