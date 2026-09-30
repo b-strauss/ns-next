@@ -383,6 +383,22 @@ pub(crate) fn execute_integer<'gc>(
                 None => Err(mismatch("bitAnd:", Accepted::Integer)),
             },
         }),
+        IntegerPrimitive::BitOr => Some(match argument_integer() {
+            Some(argument) => Ok(Value::SmallInteger(receiver_integer | argument)),
+            None => match large_argument() {
+                Some(argument) => Ok(mutator
+                    .new_integer(ArbitraryInteger::from_i64(receiver_integer).bit_or(&argument))),
+                None => Err(mismatch("bitOr:", Accepted::Integer)),
+            },
+        }),
+        IntegerPrimitive::BitXor => Some(match argument_integer() {
+            Some(argument) => Ok(Value::SmallInteger(receiver_integer ^ argument)),
+            None => match large_argument() {
+                Some(argument) => Ok(mutator
+                    .new_integer(ArbitraryInteger::from_i64(receiver_integer).bit_xor(&argument))),
+                None => Err(mismatch("bitXor:", Accepted::Integer)),
+            },
+        }),
         IntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         IntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
         IntegerPrimitive::LessOrEqual => Some(compare("<=", Ordering::is_le)),
@@ -526,6 +542,14 @@ pub(crate) fn execute_large_integer<'gc>(
         LargeIntegerPrimitive::BitAnd => Some(match argument() {
             Some(argument) => Ok(mutator.new_integer(receiver_integer.bit_and(&argument))),
             None => Err(mismatch("bitAnd:", Accepted::Integer)),
+        }),
+        LargeIntegerPrimitive::BitOr => Some(match argument() {
+            Some(argument) => Ok(mutator.new_integer(receiver_integer.bit_or(&argument))),
+            None => Err(mismatch("bitOr:", Accepted::Integer)),
+        }),
+        LargeIntegerPrimitive::BitXor => Some(match argument() {
+            Some(argument) => Ok(mutator.new_integer(receiver_integer.bit_xor(&argument))),
+            None => Err(mismatch("bitXor:", Accepted::Integer)),
         }),
         LargeIntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         LargeIntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),

@@ -84,6 +84,8 @@ impl Primitive {
                 | IntegerPrimitive::FloorDivide
                 | IntegerPrimitive::Modulo
                 | IntegerPrimitive::BitAnd
+                | IntegerPrimitive::BitOr
+                | IntegerPrimitive::BitXor
                 | IntegerPrimitive::Less
                 | IntegerPrimitive::Greater
                 | IntegerPrimitive::LessOrEqual
@@ -101,6 +103,8 @@ impl Primitive {
                 | LargeIntegerPrimitive::FloorDivide
                 | LargeIntegerPrimitive::Modulo
                 | LargeIntegerPrimitive::BitAnd
+                | LargeIntegerPrimitive::BitOr
+                | LargeIntegerPrimitive::BitXor
                 | LargeIntegerPrimitive::Less
                 | LargeIntegerPrimitive::Greater
                 | LargeIntegerPrimitive::LessOrEqual
@@ -223,6 +227,8 @@ pub enum IntegerPrimitive {
     FloorDivide,
     Modulo,
     BitAnd,
+    BitOr,
+    BitXor,
     Less,
     Greater,
     LessOrEqual,
@@ -246,6 +252,8 @@ pub enum LargeIntegerPrimitive {
     FloorDivide,
     Modulo,
     BitAnd,
+    BitOr,
+    BitXor,
     Less,
     Greater,
     LessOrEqual,
@@ -931,6 +939,26 @@ pub const MIRROR: &[MirrorEntry] = &[
         "clockMonotonicNanoseconds:ifFail:",
         "currentMonotonicNanoseconds",
         Primitive::Platform(PlatformPrimitive::MonotonicNanoseconds),
+    ),
+    mirror(
+        "integer:bitOr:ifFail:",
+        "bitOr:",
+        Primitive::Integer(IntegerPrimitive::BitOr),
+    ),
+    mirror(
+        "largeInteger:bitOr:ifFail:",
+        "bitOr:",
+        Primitive::LargeInteger(LargeIntegerPrimitive::BitOr),
+    ),
+    mirror(
+        "integer:bitXor:ifFail:",
+        "bitXor:",
+        Primitive::Integer(IntegerPrimitive::BitXor),
+    ),
+    mirror(
+        "largeInteger:bitXor:ifFail:",
+        "bitXor:",
+        Primitive::LargeInteger(LargeIntegerPrimitive::BitXor),
     ),
 ];
 

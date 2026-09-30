@@ -169,15 +169,35 @@ impl ArbitraryInteger {
 
     /// Bitwise and over two's complement, where a negative number's sign
     /// bits extend without end (Primordial Soup's and Squeak's `bitAnd:`).
-    /// One digit beyond the longer magnitude holds the sign, so the top
-    /// bit of the result's top digit says whether it is negative.
     pub fn bit_and(&self, other: &ArbitraryInteger) -> ArbitraryInteger {
+        self.bitwise(other, |left, right| left & right)
+    }
+
+    /// Bitwise inclusive or, over two's complement as `bit_and`.
+    pub fn bit_or(&self, other: &ArbitraryInteger) -> ArbitraryInteger {
+        self.bitwise(other, |left, right| left | right)
+    }
+
+    /// Bitwise exclusive or, over two's complement as `bit_and`.
+    pub fn bit_xor(&self, other: &ArbitraryInteger) -> ArbitraryInteger {
+        self.bitwise(other, |left, right| left ^ right)
+    }
+
+    /// One digit beyond the longer magnitude holds the sign, so the top bit
+    /// of the result's top digit says whether it is negative: every one of
+    /// `&`, `|` and `^` applied to two sign-extended digits answers the
+    /// result's own sign extension.
+    fn bitwise(
+        &self,
+        other: &ArbitraryInteger,
+        operation: fn(u64, u64) -> u64,
+    ) -> ArbitraryInteger {
         let length = self.magnitude.len().max(other.magnitude.len()) + 1;
         let digits: Vec<u64> = self
             .twos_complement_digits(length)
             .iter()
             .zip(other.twos_complement_digits(length))
-            .map(|(left_digit, right_digit)| left_digit & right_digit)
+            .map(|(left_digit, right_digit)| operation(*left_digit, right_digit))
             .collect();
         if digits[length - 1] >> (u64::BITS - 1) == 1 {
             // A negative result's magnitude is its complement plus one.
@@ -512,6 +532,40 @@ mod tests {
                         .to_decimal_string(),
                     (left & right).to_string(),
                     "{left} bitAnd: {right}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bit_or_and_bit_xor_are_twos_complement_and_agree_with_i128() {
+        let samples: [i128; 12] = [
+            0,
+            1,
+            -1,
+            65535,
+            -65536,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+            (1 << 64) - 1,
+            1 << 64,
+            -(1 << 64),
+            -(1 << 64) - 1,
+            -(1 << 100) + 12345,
+        ];
+        for left in samples {
+            for right in samples {
+                let left_integer = ArbitraryInteger::from_i128(left);
+                let right_integer = ArbitraryInteger::from_i128(right);
+                assert_eq!(
+                    left_integer.bit_or(&right_integer).to_decimal_string(),
+                    (left | right).to_string(),
+                    "{left} bitOr: {right}"
+                );
+                assert_eq!(
+                    left_integer.bit_xor(&right_integer).to_decimal_string(),
+                    (left ^ right).to_string(),
+                    "{left} bitXor: {right}"
                 );
             }
         }

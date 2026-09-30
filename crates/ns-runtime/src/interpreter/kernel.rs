@@ -784,6 +784,9 @@ mod tests {
         // sends `<=`, `>=` and `+` to its receiver, which no leaf could do.
         (BuiltinClass::Number, "to:do:"),
         (BuiltinClass::Number, "to:by:do:"),
+        // Primordial Soup's Newspeak body, `-1 - self`: a send of `-` to
+        // `self`, which no leaf could do, and which `LargeInteger` inherits.
+        (BuiltinClass::Integer, "bitInvert"),
         // A send to `self` is no leaf: `printString` reads the class's own
         // `name`, and a metaclass's `name` reads its own `thisClass` first.
         (BuiltinClass::Class, "printString"),
