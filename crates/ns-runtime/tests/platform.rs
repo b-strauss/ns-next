@@ -260,12 +260,18 @@ fn the_platform_is_an_instance_of_the_shipped_platform_module() {
 
 /// The platform's members are lazy slots (§6.3.3): the host's boot runs the
 /// factory and nothing more, so the transcript is built on the first
-/// `platform transcript`, not at every start.
+/// `platform transcript`, not at every start, and `platform time` likewise.
 #[test]
 fn the_platform_builds_its_members_on_first_use() {
+    for member in ["transcript", "time"] {
+        a_platform_member_is_built_on_first_use(member);
+    }
+}
+
+fn a_platform_member_is_built_on_first_use(member: &str) {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
-    let transcript_field = |interpreter: &mut Interpreter| {
+    let member_field = |interpreter: &mut Interpreter| {
         interpreter.enter(|mutator| {
             let Value::Object(platform) = mutator.fetch(&platform) else {
                 panic!("the platform is an object");
@@ -279,8 +285,8 @@ fn the_platform_builds_its_members_on_first_use() {
                 .mixin
                 .slots
                 .iter()
-                .position(|slot| slot.name.as_str() == "transcript")
-                .expect("the platform declares a transcript slot");
+                .position(|slot| slot.name.as_str() == member)
+                .unwrap_or_else(|| panic!("the platform declares a {member} slot"));
             let field = mutator
                 .heap()
                 .instance_field(platform, application.own_slot_base + position)
@@ -289,16 +295,16 @@ fn the_platform_builds_its_members_on_first_use() {
         })
     };
     assert!(
-        transcript_field(&mut interpreter),
-        "the transcript is not built before its first use"
+        member_field(&mut interpreter),
+        "the {member} is not built before its first use"
     );
     expect_ok(
-        interpreter.send(&platform, Symbol::intern("transcript"), &[]),
-        "platform transcript",
+        interpreter.send(&platform, Symbol::intern(member), &[]),
+        &format!("platform {member}"),
     );
     assert!(
-        !transcript_field(&mut interpreter),
-        "the transcript is kept once built"
+        !member_field(&mut interpreter),
+        "the {member} is kept once built"
     );
 }
 
@@ -470,7 +476,13 @@ fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
 fn the_platform_factory_answers_only_new_platform() {
     let mut interpreter = Interpreter::bootstrap();
     let factory = the_platform_factory(&mut interpreter);
-    for name in ["Platform", "Transcript", "KernelNamespace"] {
+    for name in [
+        "Platform",
+        "Transcript",
+        "KernelNamespace",
+        "Time",
+        "Stopwatch",
+    ] {
         let message = refusal(
             interpreter.send(&factory, Symbol::intern(name), &[]),
             &format!("factory {name}"),

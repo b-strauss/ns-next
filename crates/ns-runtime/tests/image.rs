@@ -11152,7 +11152,8 @@ const PLATFORM_MEMBERS: &str = indoc! {"
     'T'
     class Holder usingPlatform: platform = Object new (
         | public transcript = platform transcript.
-          public collections = platform collections. |
+          public collections = platform collections.
+          public time = platform time. |
     ) (
         public unused = (
             transcript newLine.
@@ -11211,21 +11212,27 @@ fn a_platform_member_is_named_by_its_path() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.platform_paths,
-        vec!["transcript".to_string(), "collections".to_string()],
+        vec![
+            "transcript".to_string(),
+            "collections".to_string(),
+            "time".to_string()
+        ],
         "the paths the graph uses, in the order it first reaches them"
     );
     assert!(
         report.graph_objects.iter().all(|record| {
-            !record.starts_with("class Transcript") && !record.starts_with("class Collections")
+            !record.starts_with("class Transcript")
+                && !record.starts_with("class Collections")
+                && !record.starts_with("class Time")
         }),
-        "neither member is written as a record: {:#?}",
+        "no member is written as a record: {:#?}",
         report.graph_objects
     );
 
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
     let platform = loaded.interpreter.platform();
-    for member in ["transcript", "collections"] {
+    for member in ["transcript", "collections", "time"] {
         let stored = send_to(&mut loaded, &instance, member);
         let fresh = send_to(&mut loaded, &platform, member);
         assert!(
@@ -11262,7 +11269,8 @@ fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
 /// (`public Transcript = ( ^outer PlatformFactory Transcript )`), and the
 /// collections facet its module's the same way, so a class a program got
 /// from one is named by the accessor's path, and the loading platform
-/// answers its own class for it.
+/// answers its own class for it. `platform time Stopwatch` answers the
+/// class `platform Stopwatch` does, so the one path `Stopwatch` names both.
 #[test]
 fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     let source = indoc! {"
@@ -11273,7 +11281,10 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
               public platformClass = platform class.
               public collectionsClass = platform collections Collections.
               public listClass = platform collections List.
-              public kernelNamespaceClass = platform KernelNamespace. |
+              public kernelNamespaceClass = platform KernelNamespace.
+              public timeClass = platform Time.
+              public stopwatchClass = platform Stopwatch.
+              public timeStopwatchClass = platform time Stopwatch. |
         ) (
         ) : ()
     "};
@@ -11286,7 +11297,9 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
             "Platform".to_string(),
             "collections Collections".to_string(),
             "collections List".to_string(),
-            "KernelNamespace".to_string()
+            "KernelNamespace".to_string(),
+            "Time".to_string(),
+            "Stopwatch".to_string()
         ],
         "the paths the graph uses, in the order it first reaches them"
     );
@@ -11294,12 +11307,16 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     let instance = loaded.roots.first().cloned().expect("the root instance");
     let platform = loaded.interpreter.platform();
     let collections = send_to(&mut loaded, &platform, "collections");
+    let time = send_to(&mut loaded, &platform, "time");
     for (member, answerer, accessor) in [
         ("transcriptClass", &platform, "Transcript"),
         ("platformClass", &platform, "Platform"),
         ("collectionsClass", &collections, "Collections"),
         ("listClass", &collections, "List"),
         ("kernelNamespaceClass", &platform, "KernelNamespace"),
+        ("timeClass", &platform, "Time"),
+        ("stopwatchClass", &platform, "Stopwatch"),
+        ("timeStopwatchClass", &time, "Stopwatch"),
     ] {
         let stored = send_to(&mut loaded, &instance, member);
         let fresh = send_to(&mut loaded, answerer, accessor);
@@ -11407,6 +11424,52 @@ fn a_list_is_a_record_of_its_path_named_class() {
     assert!(
         same_object(&mut loaded, &stored_class, &fresh_class),
         "the loaded list is an instance of the loading platform's List"
+    );
+}
+
+/// A `Stopwatch` is an ordinary instance of a shipped class, as a `List`
+/// is: written as a record of the class the path `Stopwatch` names,
+/// with its started reading, and it reads on after a load -- the class and
+/// its code are the loading binary's.
+#[test]
+fn a_stopwatch_is_a_record_of_its_path_named_class() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Holder usingPlatform: platform = Object new (
+            | public stopwatch = platform time Stopwatch new start. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report.platform_paths.contains(&"Stopwatch".to_string()),
+        "the stopwatch's class is named by its path: {:?}",
+        report.platform_paths
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let stopwatch = send_to(&mut loaded, &instance, "stopwatch");
+    let elapsed = send_to(&mut loaded, &stopwatch, "elapsedNanoseconds");
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            matches!(mutator.fetch(&elapsed), Value::SmallInteger(_)),
+            "a loaded stopwatch reads an integer"
+        );
+    });
+    let restarted = send_to(&mut loaded, &stopwatch, "start");
+    assert!(
+        same_object(&mut loaded, &restarted, &stopwatch),
+        "a loaded stopwatch is still started, so start answers it unchanged"
+    );
+    let platform = loaded.interpreter.platform();
+    let time = send_to(&mut loaded, &platform, "time");
+    let fresh_class = send_to(&mut loaded, &time, "Stopwatch");
+    let stored_class = send_to(&mut loaded, &stopwatch, "class");
+    assert!(
+        same_object(&mut loaded, &stored_class, &fresh_class),
+        "the loaded stopwatch is an instance of the loading platform's Stopwatch"
     );
 }
 

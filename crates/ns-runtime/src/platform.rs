@@ -1,14 +1,17 @@
-//! The transcript's output, the one part of the platform that reaches Rust.
-//! The platform is an instance of the shipped `PlatformFactory.ns` module's
-//! nested `Platform` (`docs/design/core-library.md`, "The platform"): its
-//! members are lazy slots holding values of the module's nested classes and
-//! the facet of the shipped `CollectionsFactory.ns` module, whose `List` is
-//! Newspeak and needs no leaf; that module is reached through the mirror's
-//! `moduleNamed:` (`builtins::module`). What is left here is `show:` and
-//! `newLine`, the forwarders of `Transcript`'s two methods.
+//! The transcript's output and the monotonic clock, the two parts of the
+//! platform that reach Rust. The platform is an instance of the shipped
+//! `PlatformFactory.ns` module's nested `Platform`
+//! (`docs/design/core-library.md`, "The platform"): its members are lazy
+//! slots holding values of the module's nested classes and the facet of
+//! the shipped `CollectionsFactory.ns` module, whose `List` is Newspeak and
+//! needs no leaf; that module is reached through the mirror's `moduleNamed:`
+//! (`builtins::module`). What is left here is `show:` and `newLine`, the
+//! forwarders of `Transcript`'s two methods, and the clock `Stopwatch`
+//! reads, nanoseconds since one origin per process, so that no reading can
+//! go backwards and two interpreters in one process agree.
 //!
-//! The leaf reads nothing off its receiver, only the string argument. The
-//! capability is the VM mirror the forwarder sends to, which only shipped
+//! The leaves read nothing off their receiver; `show:` reads only its string
+//! argument. The capability is the VM mirror the forwarder sends to, which only shipped
 //! source reaches (`docs/design/core-library.md`, "The VM mirror is the
 //! whole Rust boundary"), not the receiver's class: `Transcript` is no
 //! builtin, so the VM could not recognize its class anyway, and a user
@@ -37,6 +40,10 @@ pub fn execute<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     Some(stream(mutator, primitive, receiver, selector, arguments))
 }
+
+/// The instant every monotonic reading is measured from, taken on the
+/// first reading. One per process, so two interpreters' stopwatches agree.
+static CLOCK_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 fn stream<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -68,6 +75,15 @@ fn stream<'gc>(
         PlatformPrimitive::NewLine => {
             println!();
             Ok(receiver)
+        }
+        // Nanoseconds since the process's origin: an `i64` holds 292 years
+        // of them, so the conversion cannot fail in practice and saturates
+        // rather than wraps if it ever did.
+        PlatformPrimitive::MonotonicNanoseconds => {
+            let elapsed = CLOCK_ORIGIN.get_or_init(std::time::Instant::now).elapsed();
+            Ok(Value::SmallInteger(
+                i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX),
+            ))
         }
     }
 }

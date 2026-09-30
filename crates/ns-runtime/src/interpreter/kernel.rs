@@ -1187,9 +1187,10 @@ mod tests {
     /// `KernelNamespace`'s five send to the kernel instance the platform was
     /// handed, so they are neither. Each costs one activation more than a
     /// kernel accessor; a namespace member is asked for once, typically in a
-    /// slot initializer, not in a loop. `Transcript`'s two are mirror
-    /// forwarders like the kernel's: `PlatformFactory.ns` is resolved with
-    /// `resolve_kernel`.
+    /// slot initializer, not in a loop. `Transcript`'s two and `Stopwatch`'s
+    /// clock reading are mirror forwarders like the kernel's:
+    /// `PlatformFactory.ns` is resolved with `resolve_kernel`. `Time`'s
+    /// `Stopwatch` is a class accessor, like the platform's.
     #[test]
     fn the_platform_modules_members_have_the_fast_path_they_should() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1201,6 +1202,8 @@ mod tests {
             };
         let kernel_namespace = class_named("KernelNamespace");
         let transcript = class_named("Transcript");
+        let time = class_named("Time");
+        let stopwatch = class_named("Stopwatch");
         let collections = class_named("collections");
         let collections = match interpreter.send(&collections, crate::Symbol::intern("class"), &[])
         {
@@ -1246,6 +1249,14 @@ mod tests {
                     "Transcript>>{selector} is not recognized as a primitive method"
                 );
             }
+            assert!(
+                matches!(
+                    fast_path(&stopwatch, "currentMonotonicNanoseconds"),
+                    Some(crate::mixin::MethodFastPath::Mirror(_))
+                ),
+                "Stopwatch>>currentMonotonicNanoseconds is not recognized as a primitive method"
+            );
+            assert_eq!(fast_path(&time, "Stopwatch"), None, "Time>>Stopwatch");
         });
     }
 
@@ -1331,7 +1342,13 @@ mod tests {
                 .heap()
                 .class_application(platform_class)
                 .expect("Platform has an application");
-            for name in ["Platform", "Transcript", "KernelNamespace"] {
+            for name in [
+                "Platform",
+                "Transcript",
+                "KernelNamespace",
+                "Time",
+                "Stopwatch",
+            ] {
                 let method = application
                     .mixin
                     .compiled_method(crate::Symbol::intern(name))
@@ -1574,6 +1591,8 @@ mod tests {
                 "Activation",
                 "Future",
                 "KernelNamespace",
+                "Time",
+                "Stopwatch",
                 "LargeInteger",
             ] {
                 assert!(

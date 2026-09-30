@@ -34,9 +34,10 @@ Newspeak3
    mirror send, as in `Kernel.ns`: this module is resolved with
    `resolve_kernel`, which only shipped source is.
 
-   Everything here is a value (§3.1.1), as SOMns's `Platform` is: stateless
-   but for what the host hands the root and the collections module it
-   builds once. *)
+   Everything here but `Stopwatch` is a value (§3.1.1), as SOMns's
+   `Platform` is: stateless but for what the host hands the root and the
+   collections module it builds once. A `Stopwatch` keeps its reading in
+   slots, so it is an object, as `CollectionsFactory.ns`'s `List` is. *)
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
     | private vmMirror = theMirror.
       private kernelModule = theKernel. |
@@ -49,20 +50,23 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     (* §8.3 describes the platform as an object that "provides accessors to
        various modules"; each is a lazy slot (§6.3.3), built on first use,
        so a program pays only for what it asks for. This module's classes
-       -- `Platform`, `Transcript` and `KernelNamespace` -- are handed out
-       by class accessors, each exactly `^outer PlatformFactory <Name>`,
-       which an image names by its path from the platform rather than
-       carrying the class (`docs/design/image-format.md`, "The platform
-       path section"). Each is a lexical send, which reaches the root's
+       -- `Platform`, `Transcript`, `KernelNamespace`, `Time` and
+       `Stopwatch` -- are handed out by class accessors, each exactly
+       `^outer PlatformFactory <Name>`, which an image names by its path
+       from the platform rather than carrying the class
+       (`docs/design/image-format.md`, "The platform path section"). Each is a lexical send, which reaches the root's
        private classes (§5.9). The collections module's classes are its
        facet's, handed out the same way. *)
     private class Platform = Value new () (
         lazy public transcript = Transcript new.
         lazy public collections = collectionsModule newCollections.
         lazy public kernel = KernelNamespace new.
+        lazy public time = Time new.
         public Platform = ( ^outer PlatformFactory Platform )
         public Transcript = ( ^outer PlatformFactory Transcript )
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
+        public Time = ( ^outer PlatformFactory Time )
+        public Stopwatch = ( ^outer PlatformFactory Stopwatch )
     )
     (* `show:` writes a string as it is and refuses anything else, as an
        ordinary error; `print:` writes any object's `printString`, as
@@ -81,6 +85,30 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public MessageNotUnderstood = ( ^kernelModule MessageNotUnderstood )
         public Halt = ( ^kernelModule Halt )
         public Message = ( ^kernelModule Message )
+    )
+    (* `platform time`: Primordial Soup's `Time` facet, holding only what
+       `benchmarks/are-we-fast-yet/AreWeFastYet.ns` measures with. *)
+    private class Time = Value new () (
+        public Stopwatch = ( ^outer PlatformFactory Stopwatch )
+    )
+    (* Primordial Soup's `Stopwatch` (`Time.ns`), narrowed to what
+       `AreWeFastYet.ns` sends. It keeps its reading in slots, so it is
+       an object, not a value. A stopwatch carried across a snapshot reads
+       a start taken against another process's clock, as Primordial Soup's
+       does. *)
+    private class Stopwatch = Object new (
+        | private cumulativeNanoseconds ::= 0.
+          private startNanoseconds ::= nil. |
+    ) (
+        public elapsedNanoseconds = (
+            startNanoseconds isNil ifTrue: [^cumulativeNanoseconds].
+            ^cumulativeNanoseconds + (currentMonotonicNanoseconds - startNanoseconds)
+        )
+        public start = (
+            startNanoseconds isNil ifFalse: [^self].
+            startNanoseconds:: currentMonotonicNanoseconds
+        )
+        private currentMonotonicNanoseconds = ( ^vmMirror clockMonotonicNanoseconds: self ifFail: [nil] )
     )
     (* The one public member: the platform the host hands out. *)
     public newPlatform = ( ^Platform new )

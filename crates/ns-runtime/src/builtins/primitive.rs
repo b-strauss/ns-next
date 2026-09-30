@@ -150,7 +150,11 @@ impl Primitive {
                 | BlockPrimitive::WhileTrue
                 | BlockPrimitive::WhileFalse,
             ) => false,
-            Primitive::Platform(PlatformPrimitive::Show | PlatformPrimitive::NewLine) => false,
+            Primitive::Platform(
+                PlatformPrimitive::Show
+                | PlatformPrimitive::NewLine
+                | PlatformPrimitive::MonotonicNanoseconds,
+            ) => false,
             Primitive::Activation(ActivationPrimitive::InheritsMixinOf) => true,
             Primitive::Activation(
                 ActivationPrimitive::Current
@@ -311,6 +315,7 @@ pub enum BlockPrimitive {
 pub enum PlatformPrimitive {
     Show,
     NewLine,
+    MonotonicNanoseconds,
 }
 
 /// The activation leaves `Kernel.ns`'s `Exception` is built on
@@ -921,6 +926,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         "float:asStringFixed:ifFail:",
         "asStringFixed:",
         Primitive::Float(FloatPrimitive::AsStringFixed),
+    ),
+    mirror(
+        "clockMonotonicNanoseconds:ifFail:",
+        "currentMonotonicNanoseconds",
+        Primitive::Platform(PlatformPrimitive::MonotonicNanoseconds),
     ),
 ];
 

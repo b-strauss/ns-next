@@ -1,0 +1,22 @@
+Newspeak3
+'Kernel'
+(* `platform time Stopwatch` is Primordial Soup's: it reads a monotonic
+   clock in nanoseconds, so an unstarted stopwatch reads 0, and a started
+   one reads an integer that never decreases. Nothing here prints a time,
+   which would differ between runs. *)
+class StopwatchReads = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript.
+          Stopwatch = platform time Stopwatch.
+          idle = Stopwatch new.
+          running = Stopwatch new start.
+          first second |
+        transcript print: idle elapsedNanoseconds; newLine.
+        first:: running elapsedNanoseconds.
+        1 to: 1000 do: [:index | index].
+        second:: running elapsedNanoseconds.
+        transcript print: first >= 0; newLine.
+        transcript print: second >= first; newLine.
+        transcript print: (running start) == running; newLine
+    )
+)
