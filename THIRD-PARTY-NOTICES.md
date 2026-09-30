@@ -1,15 +1,16 @@
 # Third-party notices
 
-`ns-next` adapts code from two third-party projects. All of it lives in
-`crates/ns-runtime/src/arbitrary_integer/`, and each file there that holds any
-names the upstream file it comes from in a header. Both projects are licensed
-MIT OR Apache-2.0 at the licensee's choice; `ns-next` takes them under MIT,
-whose terms require each notice below to accompany every copy.
+`ns-next` adapts code from four third-party projects, and each file that holds
+any names the upstream file it comes from in a header:
 
-`ns-next` also adapts Newspeak code from two projects under
-`benchmarks/are-we-fast-yet/`: the benchmarks from SOMns, under MIT, and the
-harness from Primordial Soup, under the Apache License 2.0. Each file there
-names its upstream in a header.
+- Rust code from num-bigint and num-integer, in
+  `crates/ns-runtime/src/arbitrary_integer/`. Both are licensed MIT OR
+  Apache-2.0 at the licensee's choice; `ns-next` takes them under MIT.
+- Newspeak code in `benchmarks/are-we-fast-yet/`: the benchmarks from SOMns,
+  licensed MIT, and the harness from Primordial Soup, licensed under the Apache
+  License 2.0.
+
+Each of these licences requires its notice below to accompany every copy.
 
 The upstream trees are checked out as submodules under `prior-art/`, at the
 commits named here (`prior-art/PROVENANCE.md`).
