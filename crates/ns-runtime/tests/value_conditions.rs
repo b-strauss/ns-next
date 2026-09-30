@@ -92,12 +92,15 @@ fn a_defective_root_built_past_the_resolver_refuses_only_an_instance() {
     );
 }
 
-/// The forms the rule allows load and instantiate as before.
+/// Every combination of `Object` and `Value` the root rule allows loads and
+/// instantiates.
 #[test]
 fn every_allowed_root_form_instantiates() {
     for header in [
         "class Allowed = ()",
+        "class Allowed = Object ()",
         "class Allowed = Object new ()",
+        "class Allowed = Value ()",
         "class Allowed = Value new ()",
         "class Allowed = Object <: Value ()",
         "class Allowed = Object new <: Value ()",

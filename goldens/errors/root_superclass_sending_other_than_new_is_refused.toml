@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+resolve error: a module's root class may inherit only Object or Value, or write Object <: Value, and its superclass clause sends foo to Object, not new
+'''

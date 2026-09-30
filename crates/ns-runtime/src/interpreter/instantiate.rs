@@ -227,11 +227,13 @@ impl<'gc> Mutator<'gc> {
             ModuleSource::User
         };
         let mixin = self.build_root_mixin(declaration, &resolved.bindings, source);
-        // The rule leaves three shapes. `resolve` refuses every other root,
-        // so a defect reaches here only through a `ResolvedModule` a host
-        // built by hand; such a root is built as the first so that its class
-        // exists and can be inspected, and only an instance is refused
-        // (`apply_mixin` carries the defect into the application).
+        // Whatever the spelling, the rule leaves three class shapes to build:
+        // over `Object`, over `Value`, or a `Value` level over `Object`.
+        // `resolve` refuses every other root, so a defect reaches here only
+        // through a `ResolvedModule` a host built by hand; such a root is built
+        // over `Object` so that its class exists and can be inspected, and only
+        // an instance is refused (`apply_mixin` carries the defect into the
+        // application).
         let (superclass_kind, applies_value) = match &mixin.root_clause_defect {
             Some(_) => (BuiltinClass::Object, false),
             None => {
@@ -1656,10 +1658,17 @@ mod tests {
             let module = ns_syntax::parse(&source).expect("parse");
             crate::resolver::root_clause_defect(&module.root_class).map(|(defect, _)| defect)
         };
-        assert_eq!(defect_of("class R = ()"), None);
-        assert_eq!(defect_of("class R = Object new ()"), None);
-        assert_eq!(defect_of("class R = Value new ()"), None);
-        assert_eq!(defect_of("class R = Object <: Value ()"), None);
+        for allowed in [
+            "class R = ()",
+            "class R = Object ()",
+            "class R = Object new ()",
+            "class R = Value ()",
+            "class R = Value new ()",
+            "class R = Object <: Value ()",
+            "class R = Object new <: Value ()",
+        ] {
+            assert_eq!(defect_of(allowed), None, "{allowed}");
+        }
         let superclass = |clause: &str| {
             Some(RootClauseDefect::Superclass {
                 clause: clause.to_string(),

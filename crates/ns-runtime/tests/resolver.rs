@@ -584,11 +584,19 @@ fn module_with_root(factory: &str, clauses: &str) -> String {
 
 /// The root rule is checked by the resolver, for every module root, so a
 /// module whose artifact `build` could never write never runs either
-/// (`docs/design/object-model.md`, "The root rule"). These four are the
-/// only root clauses it leaves.
+/// (`docs/design/object-model.md`, "The root rule"). It leaves every
+/// combination of `Object` and `Value` that works, and nothing else.
 #[test]
-fn the_four_root_forms_the_rule_allows_resolve() {
-    for clauses in ["", "Object new", "Value new", "Object <: Value"] {
+fn every_working_combination_of_object_and_value_resolves() {
+    for clauses in [
+        "",
+        "Object",
+        "Object new",
+        "Value",
+        "Value new",
+        "Object <: Value",
+        "Object new <: Value",
+    ] {
         let source = if clauses.is_empty() {
             indoc! {"
                 Newspeak3
