@@ -582,6 +582,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public >= other = ( ^vmMirror float: self greaterOrEqual: other ifFail: [^super >= other] )
         public = other = ( ^vmMirror float: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror floatHash: self ifFail: [^super hash] )
+        public sqrt = ( ^vmMirror floatSquareRoot: self ifFail: [^super sqrt] )
         public asStringFixed: fractionDigits = ( ^vmMirror float: self asStringFixed: fractionDigits ifFail: [^super asStringFixed: fractionDigits] )
         public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )

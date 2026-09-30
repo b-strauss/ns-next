@@ -700,6 +700,7 @@ pub(crate) fn execute_float<'gc>(
         )
         .map(|answer| Ok(Value::Boolean(answer))),
         FloatPrimitive::Hash => Some(Ok(Value::SmallInteger(float_hash(receiver_float)))),
+        FloatPrimitive::SquareRoot => Some(Ok(Value::Float(receiver_float.sqrt()))),
         FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),
         ))),

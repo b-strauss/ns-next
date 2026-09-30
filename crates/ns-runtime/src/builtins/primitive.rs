@@ -129,6 +129,7 @@ impl Primitive {
                 | FloatPrimitive::GreaterOrEqual
                 | FloatPrimitive::Hash
                 | FloatPrimitive::AsStringFixed
+                | FloatPrimitive::SquareRoot
                 | FloatPrimitive::PrintString,
             ) => false,
             Primitive::String(StringPrimitive::Equal) => true,
@@ -283,6 +284,7 @@ pub enum FloatPrimitive {
     Equal,
     Hash,
     AsStringFixed,
+    SquareRoot,
     PrintString,
 }
 
@@ -938,6 +940,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         "float:asStringFixed:ifFail:",
         "asStringFixed:",
         Primitive::Float(FloatPrimitive::AsStringFixed),
+    ),
+    mirror(
+        "floatSquareRoot:ifFail:",
+        "sqrt",
+        Primitive::Float(FloatPrimitive::SquareRoot),
     ),
     mirror(
         "clockMonotonicNanoseconds:ifFail:",

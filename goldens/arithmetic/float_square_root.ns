@@ -1,0 +1,15 @@
+Newspeak3
+'Arithmetic'
+(* `sqrt` is Primordial Soup's `Float>>sqrt`: the IEEE square root,
+   correctly rounded, NaN for a negative receiver and `-0.0` for `-0.0`.
+   NBody sends it. *)
+class FloatSquareRoot = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. |
+        transcript print: 0.25 sqrt; newLine.
+        transcript print: 2.0 sqrt; newLine.
+        transcript print: 4.0 sqrt = 2.0; newLine.
+        transcript print: -1.0 sqrt; newLine.
+        transcript print: -0.0 sqrt; newLine
+    )
+)
