@@ -1,0 +1,115 @@
+Newspeak3
+'AreWeFastYet'
+(* Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
+   e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
+   core-lib/Benchmarks/Mandelbrot.ns), one of the Are We Fast Yet benchmarks.
+   Changed for ns-next: a module in Primordial Soup's shape, whose bench
+   runs once and checks its own result; only Primordial Soup's protocol is
+   sent; names are written out.
+
+   SOMns's own header of the file:
+
+   This version is a transcription of the Ruby implementation mandelbrot.rb
+     found with JRuby
+     https://raw.githubusercontent.com/jruby/jruby/3e43676ee6dc3c13e70fe4a52cce685128c23b8e/bench/truffle/mandelbrot.rb
+
+     The original copyright statement reads as follows:
+
+   # Copyright © 2004-2013 Brent Fulgham
+   #
+   # All rights reserved.
+   #
+   # Redistribution and use in source and binary forms, with or without
+   # modification, are permitted provided that the following conditions are met:
+   #
+   #   * Redistributions of source code must retain the above copyright notice,
+   #     this list of conditions and the following disclaimer.
+   #
+   #   * Redistributions in binary form must reproduce the above copyright notice,
+   #     this list of conditions and the following disclaimer in the documentation
+   #     and/or other materials provided with the distribution.
+   #
+   #   * Neither the name of 'The Computer Language Benchmarks Game' nor the name
+   #     of 'The Computer Language Shootout Benchmarks' nor the names of its
+   #     contributors may be used to endorse or promote products derived from this
+   #     software without specific prior written permission.
+   #
+   # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS 'AS IS'
+   # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+   # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+   # DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+   # FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+   # DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+   # SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+   # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+   # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+   # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+   #
+   # The Computer Language Benchmarks Game
+   # http://benchmarksgame.alioth.debian.org
+   #
+   #  contributed by Karl von Laudermann
+   #  modified by Jeremy Echols
+   #  modified by Detlef Reichl
+   #  modified by Joseph LaFata
+   #  modified by Peter Zotov
+   #
+   # http://benchmarksgame.alioth.debian.org/u64q/program.php?test=mandelbrot&lang=yarv&id=3 *)
+class Mandelbrot usingPlatform: platform = (
+    | private Error = platform kernel Error. |
+) (
+    public bench = (
+        | result |
+        result:: mandelbrot: 750.
+        result = 50 ifFalse: [Error signal: 'Mandelbrot: expected 50, got ', result printString].
+        ^result
+    )
+    mandelbrot: size = (
+        | sum byteAccumulator bitNumber row |
+        sum:: 0.
+        byteAccumulator:: 0.
+        bitNumber:: 0.
+        row:: 0.
+        [row < size] whileTrue: [
+            | imaginaryConstant column |
+            imaginaryConstant:: (2.0 * row / size) - 1.0.
+            column:: 0.
+            [column < size] whileTrue: [
+                | real realSquared imaginary imaginarySquared realConstant escape iteration notDone |
+                realSquared:: real:: 0.0.
+                imaginarySquared:: imaginary:: 0.0.
+                realConstant:: (2.0 * column / size) - 1.5.
+                iteration:: 0.
+                notDone:: true.
+                escape:: 0.
+                [notDone and: [iteration < 50]] whileTrue: [
+                    real:: realSquared - imaginarySquared + realConstant.
+                    imaginary:: 2.0 * real * imaginary + imaginaryConstant.
+                    (* preserve recalculation *)
+                    realSquared:: real * real.
+                    imaginarySquared:: imaginary * imaginary.
+                    (realSquared + imaginarySquared > 4.0) ifTrue: [
+                        notDone:: false.
+                        escape:: 1].
+                    iteration:: iteration + 1].
+                byteAccumulator:: (byteAccumulator << 1) + escape.
+                bitNumber:: bitNumber + 1.
+                (* Code is very similar for these cases, but using separate blocks
+                   ensures we skip the shifting when it is unnecessary,
+                   which is in most cases. *)
+                bitNumber = 8
+                    ifTrue: [
+                        sum:: sum bitXor: byteAccumulator.
+                        byteAccumulator:: 0.
+                        bitNumber:: 0]
+                    ifFalse: [
+                        (column = (size - 1)) ifTrue: [
+                            byteAccumulator:: byteAccumulator << (8 - bitNumber).
+                            sum:: sum bitXor: byteAccumulator.
+                            byteAccumulator:: 0.
+                            bitNumber:: 0]].
+                column:: column + 1].
+            row:: row + 1].
+        ^sum
+    )
+)

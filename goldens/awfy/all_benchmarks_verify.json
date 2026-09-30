@@ -3,6 +3,8 @@
   "modules": [
     "../../benchmarks/are-we-fast-yet/Bounce.ns",
     "../../benchmarks/are-we-fast-yet/List.ns",
+    "../../benchmarks/are-we-fast-yet/Mandelbrot.ns",
+    "../../benchmarks/are-we-fast-yet/NBody.ns",
     "../../benchmarks/are-we-fast-yet/Permute.ns",
     "../../benchmarks/are-we-fast-yet/Queens.ns",
     "../../benchmarks/are-we-fast-yet/Sieve.ns",

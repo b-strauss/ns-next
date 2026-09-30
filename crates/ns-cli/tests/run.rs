@@ -380,7 +380,17 @@ fn a_timed_run_prints_a_score_for_every_benchmark() {
         .collect();
     assert_eq!(
         names,
-        ["Bounce", "List", "Permute", "Queens", "Sieve", "Storage", "Towers"]
+        [
+            "Bounce",
+            "List",
+            "Mandelbrot",
+            "NBody",
+            "Permute",
+            "Queens",
+            "Sieve",
+            "Storage",
+            "Towers"
+        ]
     );
 }
 
