@@ -439,6 +439,8 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::Divide => Some(arithmetic("/", |left, right| left / right)),
         FloatPrimitive::Less => Some(compare("<", |left, right| left < right)),
         FloatPrimitive::Greater => Some(compare(">", |left, right| left > right)),
+        FloatPrimitive::LessOrEqual => Some(compare("<=", |left, right| left <= right)),
+        FloatPrimitive::GreaterOrEqual => Some(compare(">=", |left, right| left >= right)),
         // Same exception as `Integer`'s `=`: never an error.
         FloatPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
             mutator,

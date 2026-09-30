@@ -1,0 +1,18 @@
+Newspeak3
+'Kernel'
+(* `to:do:` and `to:by:do:` are `Number`'s, after Primordial Soup's: the
+   bound is inclusive, a negative step counts down, an empty range runs
+   nothing, and both answer nil. A `Float` receiver counts in `Float`s, and
+   a range that crosses into `LargeInteger` keeps counting. *)
+class NumberIteration = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. |
+        1 to: 3 do: [:index | transcript print: index; newLine].
+        5 to: 1 by: -2 do: [:index | transcript print: index; newLine].
+        3 to: 1 do: [:index | transcript show: 'never'; newLine].
+        transcript print: (1 to: 0 do: [:index | index]); newLine.
+        transcript print: (1 to: 0 by: 1 do: [:index | index]); newLine.
+        1.5 to: 3 do: [:value | transcript print: value; newLine].
+        9223372036854775806 to: 9223372036854775808 do: [:index | transcript print: index; newLine]
+    )
+)

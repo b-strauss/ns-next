@@ -113,6 +113,8 @@ impl Primitive {
                 | FloatPrimitive::Divide
                 | FloatPrimitive::Less
                 | FloatPrimitive::Greater
+                | FloatPrimitive::LessOrEqual
+                | FloatPrimitive::GreaterOrEqual
                 | FloatPrimitive::Hash
                 | FloatPrimitive::PrintString,
             ) => false,
@@ -247,6 +249,8 @@ pub enum FloatPrimitive {
     Divide,
     Less,
     Greater,
+    LessOrEqual,
+    GreaterOrEqual,
     Equal,
     Hash,
     PrintString,
@@ -858,6 +862,16 @@ pub const MIRROR: &[MirrorEntry] = &[
         // Unary: the future is the row's subject.
         "value",
         Primitive::Future(FuturePrimitive::Value),
+    ),
+    mirror(
+        "float:lessOrEqual:ifFail:",
+        "<=",
+        Primitive::Float(FloatPrimitive::LessOrEqual),
+    ),
+    mirror(
+        "float:greaterOrEqual:ifFail:",
+        ">=",
+        Primitive::Float(FloatPrimitive::GreaterOrEqual),
     ),
 ];
 

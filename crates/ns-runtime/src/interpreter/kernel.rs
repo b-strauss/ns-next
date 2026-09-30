@@ -780,6 +780,10 @@ mod tests {
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
         (BuiltinClass::Block, "cull:"),
+        // Iteration is Newspeak, after Primordial Soup's `Number`: a loop that
+        // sends `<=`, `>=` and `+` to its receiver, which no leaf could do.
+        (BuiltinClass::Number, "to:do:"),
+        (BuiltinClass::Number, "to:by:do:"),
         // A send to `self` is no leaf: `printString` reads the class's own
         // `name`, and a metaclass's `name` reads its own `thisClass` first.
         (BuiltinClass::Class, "printString"),

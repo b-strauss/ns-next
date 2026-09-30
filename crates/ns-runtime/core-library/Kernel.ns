@@ -457,10 +457,34 @@ class Kernel vmMirror: theMirror = Object <: Value (
         private valueSlotOf: subject at: index = ( ^vmMirror value: subject slotAt: index ifFail: [^nil] )
     )
     (* §3.1.1 names `Number` among the classes whose instances are values,
-       and §5.1.1's numeric literals are its instances. It is empty for now,
-       like `Value`: what the two share between `Integer` and `Float` moves
-       up here once there is a body to move. *)
+       and §5.1.1's numeric literals are its instances. Iteration is here,
+       as in Primordial Soup's `Number`, so an `Integer`, a `LargeInteger`
+       and a `Float` receiver share one body. Primordial Soup's compiler
+       inlines both; ours sends them. The increment is `current + step`
+       rather than Primordial Soup's `step + current`, because an `Integer`
+       receiver meeting a `Float` argument is not yet arithmetic here and a
+       `Float` receiver must still count. *)
     public class Number = Value new () (
+        public to: stop do: action = (
+            | current |
+            current:: self.
+            [current <= stop] whileTrue: [
+                action value: current.
+                current:: current + 1].
+            ^nil
+        )
+        public to: stop by: step do: action = (
+            | current |
+            current:: self.
+            step < 0
+                ifTrue: [[current >= stop] whileTrue: [
+                    action value: current.
+                    current:: current + step]]
+                ifFalse: [[current <= stop] whileTrue: [
+                    action value: current.
+                    current:: current + step]].
+            ^nil
+        )
     )
     public class Boolean = Value new () (
     )
@@ -544,6 +568,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public / other = ( ^vmMirror float: self divide: other ifFail: [^super / other] )
         public < other = ( ^vmMirror float: self lessThan: other ifFail: [^super < other] )
         public > other = ( ^vmMirror float: self greaterThan: other ifFail: [^super > other] )
+        public <= other = ( ^vmMirror float: self lessOrEqual: other ifFail: [^super <= other] )
+        public >= other = ( ^vmMirror float: self greaterOrEqual: other ifFail: [^super >= other] )
         public = other = ( ^vmMirror float: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror floatHash: self ifFail: [^super hash] )
         public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
