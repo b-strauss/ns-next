@@ -1,0 +1,5 @@
+arguments = ["Nope"]
+status = 1
+stderr = '''
+Uncaught Newspeak error: Unknown benchmark: Nope
+'''

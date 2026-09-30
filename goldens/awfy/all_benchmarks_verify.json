@@ -1,0 +1,4 @@
+{
+  "root": "../../benchmarks/are-we-fast-yet/AreWeFastYet.ns",
+  "modules": ["../../benchmarks/are-we-fast-yet/Sieve.ns"]
+}
