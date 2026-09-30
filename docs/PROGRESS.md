@@ -3568,7 +3568,7 @@ branch build. `dumpbin /disasm` of a release build with debug information shows
 
 Plan: [ns-next-packaged-artifact](superpowers/plans/2026-09-29-2341-ns-next-packaged-artifact.md);
 [image-format.md](design/image-format.md), "The artifact" and "Packaging".
-Commits: every one after `78bb531`, the plan's, through this entry's.
+Commits: `78bb531..cec79bf`, `78bb531` being the plan's, and the commit of this entry.
 
 A program is one `.ns` file, whose root is instantiated with `new`, or a
 JSON project file of several modules, whose root is instantiated with
@@ -3616,9 +3616,16 @@ and `stderr` unchanged, and `goldens/manifest/` pins the manifest.
   application, in all four lanes.
 - `763fbe2` — the stateless binary, its header flag and its entry field
   retire.
-- This commit — the documentation describes the built state.
+- `088cd6c` — the documentation describes the built state.
+- `cec79bf` — comments that cited retired headings of `image-format.md`, the
+  host-send callers of `check_method_arity` and the commands sharing the source
+  pipeline match the tree; `run-corpus` names its lanes "image" and
+  "reference image".
+- This commit — the whole-branch review's text findings in the documentation.
 
-Each task was reviewed on its own, and its findings fixed, before the next
-began; the findings the reviews deferred, and what the batch leaves open,
-are in [OPEN-WORK.md](OPEN-WORK.md). The review of the whole branch and the
-end-of-batch gates are still to come.
+All thirteen tasks were reviewed, with fix rounds until each review was
+clean. The end-of-batch gates passed: the three stress modes, 2625 of 2625
+each; `ns-lsp`, 40 of 40; `run-corpus` "ran 6, failed 0, skipped 205" plain and
+under each stress mode; the release suite, 2364 passed. The review of the whole
+branch found no code defect; its text findings were fixed in the two commits
+after `088cd6c`. What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md).

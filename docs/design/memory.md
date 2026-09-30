@@ -770,7 +770,8 @@ break.
 
 The stress runs are gates: `CLAUDE.md` requires the whole suite and
 `run-corpus` — every runnable module through `run` and through `build` then
-`load`, under both lowerings — under the variable before every commit. A release build
+`load`, under both lowerings — under the variable at the end of a batch, as the `finishing-a-batch` skill
+lists them. A release build
 contains none of it: `trace.rs`, the epoch, the move, the schedule and the
 test hooks (`Interpreter::move_now`, `moves`, `stress_safepoints`,
 `set_stress_moves`) are `#[cfg(debug_assertions)]`, and only the poll is

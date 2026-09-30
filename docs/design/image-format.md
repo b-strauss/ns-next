@@ -309,8 +309,18 @@ Instructions:
   ([dispatch.md](dispatch.md), "Shapes the resolver must recognize"),
   `destination` and `depth`, both `u16`: loads the kth enclosing object of the
   running method's defining class, the object `outer N m` sends to.
+- 36 `MakeFuture`: §6.3.2, a new unresolved future of a closure,
+  `destination` and `closure`, both `u16`.
+- 37 `ResolveFuture`: a value seen through a future, forcing it first if it is
+  unresolved, `destination` and `source`, both `u16`.
+- 38 `LoadOwnSlot`: `self`'s own slot read back without a getter send,
+  `destination` a `u16` and `own_index` a `u32`, addressed as `InitializeSlot`
+  addresses it.
+- 39 `InitializeSlotProvisionally`: `InitializeSlot` without §3.1.1's
+  value-slot check, for a simultaneous clause's future only, `source` a `u16`
+  and `own_index` a `u32`.
 
-The next free instruction number is 36. A send's `CallSite` -- its number
+The next free instruction number is 40. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see
@@ -358,7 +368,7 @@ function (`bytecode::family_size_of`). A block precedes its parent in the
 table, but its numbers depend on where its `MakeClosure` sits in its root's
 emission order, so the decoder numbers a family only once its root -- the
 body nothing else's `MakeClosure` creates -- has been read in full. The
-golden image is 1274 bytes.
+golden image is 1281 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.

@@ -9,7 +9,7 @@ file records what is not.
 
 Keep it current: remove an item in the same batch that closes it, and add one
 whenever a review, a measurement or a design discussion leaves something open.
-An item's code references were checked against the tree on 2026-09-28.
+Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 when they were written.
 
 ## Next
 
@@ -630,17 +630,11 @@ Small, deliberately left, none affecting an outcome.
   message says a row is reached "or not at all", where a surplus row now
   starts another tree; `inspect` prints a `<module N>` past the modules
   without marking it; `bench` prints a generic "instantiation failed" after
-  the real report; `run-corpus`'s lanes are still named `binary` and
-  `reference binary`, and `image.rs`'s
+  the real report; `image.rs`'s
   `an_unknown_header_flag_is_still_rejected_now_that_three_are_known` names
   three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
   message for a stray golden directory carries a run of spaces from a lost
   line continuation.
-- Comments that cite a heading of `image-format.md` which no longer exists:
-  "Planned: one artifact, packaged before `main:args:`" in
-  `crates/ns-cli/src/program.rs`, `crates/ns-cli/src/project.rs` and
-  `crates/ns-runtime/core-library/Manifest.ns` (now "Packaging"), and "Two
-  artifacts" in `crates/ns-runtime/src/image/mod.rs` (now "The artifact").
 
 ## Goldens and documentation
 
@@ -657,8 +651,6 @@ Small, deliberately left, none affecting an outcome.
   the heading misses.
 - 33 goldens keep a whitespace-only line where the 2026-09-30 migration
   emptied a slot clause (`goldens/capture/captures_in_initializers.ns:9`
-  among them); `goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`'s
-  comment says the round trip "snapshots" it, where it is now `build` then
-  `load`; and
+  among them); and
   `goldens/manifest/a_project_reaches_its_modules_through_the_manifest/App.ns`'s
   comment claims more than the golden pins.
