@@ -1,5 +1,5 @@
 //! Reading, parsing and resolving a module -- the pipeline every command
-//! that runs, disassembles, snapshots, loads or builds a `.ns` file shares
+//! that runs, benchmarks, disassembles or builds a `.ns` file shares
 //! before an interpreter exists.
 
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use ns_syntax::{Diagnostic, Severity};
 
 /// A module read, parsed, and resolved -- everything `run`, `disasm`, and
-/// `snapshot` share before an interpreter exists.
+/// `build` share before an interpreter exists.
 pub(crate) struct LoadedSource {
     pub(crate) source: String,
     pub(crate) origin: ns_runtime::SourceOrigin,

@@ -64,29 +64,29 @@ struct RunOutcome {
 struct Lane {
     name: &'static str,
     lowering: &'static str,
-    binary: bool,
+    image: bool,
 }
 
 const LANES: [Lane; 4] = [
     Lane {
         name: "source",
         lowering: "optimized",
-        binary: false,
+        image: false,
     },
     Lane {
-        name: "binary",
+        name: "image",
         lowering: "optimized",
-        binary: true,
+        image: true,
     },
     Lane {
         name: "reference source",
         lowering: "reference",
-        binary: false,
+        image: false,
     },
     Lane {
-        name: "reference binary",
+        name: "reference image",
         lowering: "reference",
-        binary: true,
+        image: true,
     },
 ];
 
@@ -111,7 +111,7 @@ fn check_row(
     let artifact = scratch.path().join("app.nsi");
     let mut first_stderr: Option<String> = None;
     for lane in &LANES {
-        let outcome = if lane.binary {
+        let outcome = if lane.image {
             run_one_binary(executable, &project, &artifact, lane.lowering)
         } else {
             run_one(executable, &project, lane.lowering)
@@ -331,9 +331,9 @@ fn run_one_binary(
 /// every real row -- no corpus module that currently runs writes to the
 /// transcript at all -- this is a tripwire that a whitelisted module still
 /// instantiates and still answers one message without error, plus a check
-/// that the same module still starts from a built binary instead of from
-/// source. It is not yet a differential harness over observable *output*
-/// from real modules; it becomes one on the day a row can record something
+/// that the same module still starts from a built image of the wrapper
+/// application instead of from source. It is not yet a differential harness
+/// over observable *output* from real modules; it becomes one on the day a row can record something
 /// printed. Treat a green `run-corpus` as "nothing regressed", not as "the
 /// corpus is covered".
 pub(crate) fn execute(directory: &Path, whitelist: Option<&Path>) -> ExitCode {

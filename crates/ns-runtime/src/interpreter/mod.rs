@@ -1812,9 +1812,10 @@ impl<'gc> Mutator<'gc> {
 ///
 /// No Newspeak-level send can reach this: the parser builds a message whose
 /// argument count matches its selector by construction. The reachable
-/// callers are host-initiated sends -- `ns-next run --send`, `snapshot
-/// --send`, `load --send`, and any future embedder driving
-/// `Interpreter::send` directly.
+/// callers are host-initiated sends -- the entry send of `ns-next run`, `load`
+/// and `bench`, always `main:args:` with its fixed two arguments, and any
+/// embedder driving `Interpreter::send` directly with an argument list of its
+/// own.
 fn check_method_arity<'gc>(
     method: &crate::mixin::MixinMethod,
     receiver: Value<'gc>,

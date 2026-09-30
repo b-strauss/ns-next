@@ -1,7 +1,7 @@
 Newspeak3
 'Test'
 (* The data cycle of spec_6_3_2_a_data_cycle_resolves, kept in module state
-   so the golden round trip snapshots it: an image never holds a resolved
+   so the golden round trip, which `build` packages and `load` starts, holds it: an image never holds a resolved
    future, only its value (docs/design/image-format.md), so after a load the
    element and the slot are still one object. *)
 class Spec632ADataCycleSurvivesAnImage = Object new (

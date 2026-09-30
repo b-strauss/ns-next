@@ -2,8 +2,7 @@
 //! instantiated with `new`, or a project file whose root is instantiated
 //! with `packageUsing:` a manifest of the other modules. Either way the
 //! platform arrives only as `main:args:`'s first argument
-//! (`docs/design/image-format.md`, "Planned: one artifact, packaged before
-//! `main:args:`").
+//! (`docs/design/image-format.md`, "Packaging").
 
 use std::path::Path;
 use std::process::ExitCode;

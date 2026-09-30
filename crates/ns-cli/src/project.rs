@@ -1,7 +1,6 @@
 //! The project file: a program of several modules, named in JSON. `root` is
 //! the application's source; `modules` are the other modules its manifest
-//! holds (`docs/design/image-format.md`, "Planned: one artifact, packaged
-//! before `main:args:`").
+//! holds (`docs/design/image-format.md`, "Packaging").
 
 use std::path::{Path, PathBuf};
 
