@@ -1,4 +1,9 @@
 {
   "root": "../../benchmarks/are-we-fast-yet/AreWeFastYet.ns",
-  "modules": ["../../benchmarks/are-we-fast-yet/Sieve.ns"]
+  "modules": [
+    "../../benchmarks/are-we-fast-yet/Permute.ns",
+    "../../benchmarks/are-we-fast-yet/Queens.ns",
+    "../../benchmarks/are-we-fast-yet/Sieve.ns",
+    "../../benchmarks/are-we-fast-yet/Towers.ns"
+  ]
 }

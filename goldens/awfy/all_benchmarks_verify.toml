@@ -1,3 +1,6 @@
 stdout = '''
+Permute: ok
+Queens: ok
 Sieve: ok
+Towers: ok
 '''

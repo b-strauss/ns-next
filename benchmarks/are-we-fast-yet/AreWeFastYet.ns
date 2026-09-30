@@ -23,7 +23,7 @@ Newspeak3
    warm-up and prints its runs per second, as Primordial Soup does. *)
 class AreWeFastYet packageUsing: manifest = (
     | private benchmarks = {
-        manifest Sieve }. |
+        manifest Permute. manifest Queens. manifest Sieve. manifest Towers }. |
 ) (
     class Benchmarking usingPlatform: platform = (
         | private Stopwatch = platform time Stopwatch.
