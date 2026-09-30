@@ -183,6 +183,35 @@ impl ArbitraryInteger {
         self.bitwise(other, |left, right| left ^ right)
     }
 
+    /// The receiver times two to the `count`: the magnitude shifted, the
+    /// sign kept, which is exact for a negative receiver too. `None` when
+    /// the result's digits cannot be reserved, so a count the program
+    /// chose is never a Rust allocation abort.
+    pub fn shift_left(&self, count: u64) -> Option<ArbitraryInteger> {
+        if self.is_zero() {
+            return Some(ArbitraryInteger::zero());
+        }
+        let digit_shift = usize::try_from(count / u64::from(u64::BITS)).ok()?;
+        let bit_shift = (count % u64::from(u64::BITS)) as u32;
+        let length = digit_shift
+            .checked_add(self.magnitude.len())?
+            .checked_add(1)?;
+        let mut magnitude: Vec<u64> = Vec::new();
+        magnitude.try_reserve_exact(length).ok()?;
+        magnitude.resize(digit_shift, 0);
+        let mut carry = 0;
+        for digit in self.magnitude.iter() {
+            if bit_shift == 0 {
+                magnitude.push(*digit);
+            } else {
+                magnitude.push((digit << bit_shift) | carry);
+                carry = digit >> (u64::BITS - bit_shift);
+            }
+        }
+        magnitude.push(carry);
+        Some(ArbitraryInteger::from_parts(self.negative, magnitude))
+    }
+
     /// One digit beyond the longer magnitude holds the sign, so the top bit
     /// of the result's top digit says whether it is negative: every one of
     /// `&`, `|` and `^` applied to two sign-extended digits answers the
@@ -569,6 +598,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shift_left_multiplies_by_a_power_of_two_and_agrees_with_i128() {
+        let samples: [i128; 7] = [
+            0,
+            1,
+            -1,
+            3,
+            -12345,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+        ];
+        for value in samples {
+            for count in [0_u64, 1, 13, 63, 64] {
+                assert_eq!(
+                    ArbitraryInteger::from_i128(value)
+                        .shift_left(count)
+                        .expect("a small shift allocates")
+                        .to_decimal_string(),
+                    (value << count).to_string(),
+                    "{value} << {count}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shift_left_refuses_a_result_that_cannot_be_allocated() {
+        assert!(ArbitraryInteger::from_i64(1).shift_left(u64::MAX).is_none());
+        assert!(ArbitraryInteger::zero().shift_left(u64::MAX).is_some());
     }
 
     #[test]

@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: << takes a non-negative shift count, got -1
+'''

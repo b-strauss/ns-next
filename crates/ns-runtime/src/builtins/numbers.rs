@@ -208,6 +208,54 @@ fn division_by_zero<'gc>(receiver: Value<'gc>, selector: &str) -> NewspeakError<
     }
 }
 
+/// `<<` for either integer class, once the fast path of a `SmallInteger`
+/// shifted by less than 64 is ruled out: Primordial Soup's primitive 23,
+/// which fails for a negative count so that its method raises. A result
+/// that cannot be allocated is an error, as `Array new:`'s is, never an
+/// abort.
+fn shift_left<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    receiver_integer: &ArbitraryInteger,
+    arguments: &[Value<'gc>],
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let selector = Symbol::intern("<<");
+    let refusal = |message: String| NewspeakError {
+        selector,
+        receiver,
+        message,
+    };
+    let Some(count) = integer_operand(&mutator.heap, arguments.first()) else {
+        return Err(type_mismatch(
+            &mutator.heap,
+            &receiver,
+            selector,
+            Accepted::Integer,
+            arguments.first(),
+        ));
+    };
+    if count.is_negative() {
+        return Err(refusal(format!(
+            "<< takes a non-negative shift count, got {}",
+            count.to_bounded_text()
+        )));
+    }
+    let shifted = count
+        .to_i64()
+        .and_then(|count| u64::try_from(count).ok())
+        .and_then(|count| receiver_integer.shift_left(count));
+    match shifted {
+        Some(result) => Ok(mutator.new_integer(result)),
+        // A count beyond `u64` shifts a zero receiver to zero like any
+        // other count.
+        None if receiver_integer.is_zero() => Ok(Value::SmallInteger(0)),
+        None => Err(refusal(format!(
+            "<< cannot allocate the result of shifting by {} bits",
+            count.to_bounded_text()
+        ))),
+    }
+}
+
 /// An integer operand of either representation, for the slow path: a
 /// `SmallInteger` widened, or a `LargeInteger`'s payload. `None` for
 /// anything else, which each leaf turns into its own type mismatch.
@@ -399,6 +447,21 @@ pub(crate) fn execute_integer<'gc>(
                 None => Err(mismatch("bitXor:", Accepted::Integer)),
             },
         }),
+        IntegerPrimitive::ShiftLeft => Some(match argument_integer() {
+            Some(count) if (0..64).contains(&count) => {
+                let wide = i128::from(receiver_integer) << count;
+                Ok(match i64::try_from(wide) {
+                    Ok(small) => Value::SmallInteger(small),
+                    Err(_) => promote(mutator, wide),
+                })
+            }
+            _ => shift_left(
+                mutator,
+                receiver,
+                &ArbitraryInteger::from_i64(receiver_integer),
+                arguments,
+            ),
+        }),
         IntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         IntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
         IntegerPrimitive::LessOrEqual => Some(compare("<=", Ordering::is_le)),
@@ -551,6 +614,9 @@ pub(crate) fn execute_large_integer<'gc>(
             Some(argument) => Ok(mutator.new_integer(receiver_integer.bit_xor(&argument))),
             None => Err(mismatch("bitXor:", Accepted::Integer)),
         }),
+        LargeIntegerPrimitive::ShiftLeft => {
+            Some(shift_left(mutator, receiver, &receiver_integer, arguments))
+        }
         LargeIntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         LargeIntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
         LargeIntegerPrimitive::LessOrEqual => Some(compare("<=", Ordering::is_le)),

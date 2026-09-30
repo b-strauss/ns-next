@@ -86,6 +86,7 @@ impl Primitive {
                 | IntegerPrimitive::BitAnd
                 | IntegerPrimitive::BitOr
                 | IntegerPrimitive::BitXor
+                | IntegerPrimitive::ShiftLeft
                 | IntegerPrimitive::Less
                 | IntegerPrimitive::Greater
                 | IntegerPrimitive::LessOrEqual
@@ -105,6 +106,7 @@ impl Primitive {
                 | LargeIntegerPrimitive::BitAnd
                 | LargeIntegerPrimitive::BitOr
                 | LargeIntegerPrimitive::BitXor
+                | LargeIntegerPrimitive::ShiftLeft
                 | LargeIntegerPrimitive::Less
                 | LargeIntegerPrimitive::Greater
                 | LargeIntegerPrimitive::LessOrEqual
@@ -229,6 +231,7 @@ pub enum IntegerPrimitive {
     BitAnd,
     BitOr,
     BitXor,
+    ShiftLeft,
     Less,
     Greater,
     LessOrEqual,
@@ -254,6 +257,7 @@ pub enum LargeIntegerPrimitive {
     BitAnd,
     BitOr,
     BitXor,
+    ShiftLeft,
     Less,
     Greater,
     LessOrEqual,
@@ -959,6 +963,16 @@ pub const MIRROR: &[MirrorEntry] = &[
         "largeInteger:bitXor:ifFail:",
         "bitXor:",
         Primitive::LargeInteger(LargeIntegerPrimitive::BitXor),
+    ),
+    mirror(
+        "integer:shiftLeft:ifFail:",
+        "<<",
+        Primitive::Integer(IntegerPrimitive::ShiftLeft),
+    ),
+    mirror(
+        "largeInteger:shiftLeft:ifFail:",
+        "<<",
+        Primitive::LargeInteger(LargeIntegerPrimitive::ShiftLeft),
     ),
 ];
 
