@@ -168,11 +168,11 @@ conditionals, would need a guard on the receiver and the send as its
 fallback ([compiler.md](compiler.md)). Whether that pays is to be decided
 by measuring the Are We Fast Yet benchmarks, which loop with both
 ([OPEN-WORK.md](../OPEN-WORK.md)). The increment is `current + step`
-rather than Primordial Soup's `step + current`: a `Float` receiver with an
-integer step must count, and an integer receiver meeting a `Float`
-argument is not arithmetic here yet, so an `Integer` receiver with a
-`Float` bound raises a type mismatch until the numeric tower's mixed
-arithmetic exists ("Gap: an integer has no `/`" below).
+rather than Primordial Soup's `step + current`. An `Integer` receiver
+with a `Float` bound or step counts too, since an integer's arithmetic
+and ordering meet a `Float` argument: `1 to: 2 by: 0.5 do:` answers `1`,
+`1.5`, `2`, the counter becoming a `Float` once a `Float` step is added
+(`goldens/kernel/an_integer_counts_to_a_float_bound`).
 
 **`asStringFixed:` rounds as Primordial Soup's double-conversion does.**
 `Float>>asStringFixed:` writes a count of fraction digits from 0 to 20,

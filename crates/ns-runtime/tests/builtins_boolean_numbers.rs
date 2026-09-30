@@ -243,8 +243,8 @@ fn integer_arithmetic_widens_a_float_argument() {
     });
 }
 
-/// `type_mismatch`'s message builds off `heap.describe_argument`, but every
-/// type-mismatch test above drives a `Value::Float` into it, which formats
+/// `type_mismatch`'s message builds off `heap.describe_argument`, but the
+/// type-mismatch tests above drive a `Value::Nil` or `Value::Float` into it, which formats
 /// harmlessly either way. A `Value::Object` there would recurse through
 /// `Object`'s self-referential bootstrap class until the stack gives out if
 /// the message ever `{:?}`-formatted the argument directly, so this drives
@@ -297,7 +297,7 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
         }
         Ok(value) => interpreter.enter(|mutator| match mutator.fetch(&value) {
             Value::Boolean(false) => {
-                panic!("`1 < 1.5` silently answered false instead of reporting the type mismatch")
+                panic!("`1 < nil` silently answered false instead of reporting the type mismatch")
             }
             other => panic!(
                 "expected a Newspeak error, got Ok({})",
@@ -309,7 +309,7 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
 }
 
 /// A `Float` receiver takes any number, so its mismatch asks for a number, as
-/// an integer's arithmetic does too; only `//`, `\` and the bit operations
+/// an integer's arithmetic does too; only `//`, `\\` and the bit operations
 /// ask for an integer.
 #[test]
 fn a_float_receiver_asks_for_a_numeric_argument() {

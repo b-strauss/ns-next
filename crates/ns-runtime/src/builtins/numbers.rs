@@ -16,7 +16,7 @@
 //!   `LargeInteger` argument to the nearest `double` (`1.5 + 1` is `2.5`).
 //! * An integer's arithmetic and ordering meet a `Float` argument the same
 //!   way, converting the receiver (`4 * 3.5` is `14.0`), as Primordial
-//!   Soup's primitives do. `//`, `\` and the bit operations take integers
+//!   Soup's primitives do. `//`, `\\` and the bit operations take integers
 //!   only; `Float` has none of them.
 //! * `=` is the deliberate exception: an argument of another class makes it
 //!   plain `false`, never an error -- matching `Object`'s own `=` and the
@@ -45,7 +45,7 @@ use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 /// What a numeric leaf takes as its argument, which its type mismatch names.
 #[derive(Clone, Copy)]
 enum Accepted {
-    /// `//`, `\` and the bit operations: an `Integer` or a `LargeInteger`.
+    /// `//`, `\\` and the bit operations: an `Integer` or a `LargeInteger`.
     Integer,
     /// Arithmetic and ordering: any of the three number classes.
     Number,
@@ -253,7 +253,8 @@ pub(crate) fn execute_integer<'gc>(
     // A `LargeInteger` argument, read only once the argument is known to be
     // no `SmallInteger`, so the common case never touches the heap.
     let large_argument = || integer_operand(&mutator.heap, arguments.first());
-    // `+`/`-`/`*`: an argument of neither integer class is a type mismatch.
+    // `+`/`-`/`*`: an argument of neither integer class nor `Float` is a type
+    // mismatch.
     // A result that fits is answered without allocating. One that does not
     // is recomputed in `i128`, where two `i64`s' sum, difference or product
     // always fits, and one with a `LargeInteger` argument as an
@@ -450,8 +451,8 @@ pub(crate) fn execute_large_integer<'gc>(
         return None;
     };
     let receiver_integer = mutator.heap.large_integer(object)?;
-    // Either integer class as the argument; anything else is the leaf's type
-    // mismatch. As in `execute_integer`, these closures hold `mutator`
+    // Either integer class as the argument, or a `Float` for arithmetic and
+    // ordering; anything else is the leaf's type mismatch. As in `execute_integer`, these closures hold `mutator`
     // shared, so each answers an `ArbitraryInteger` for the caller to make a
     // `Value` of.
     let argument = || integer_operand(&mutator.heap, arguments.first());
