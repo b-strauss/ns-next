@@ -1,6 +1,9 @@
 stdout = '''
+Bounce: ok
+List: ok
 Permute: ok
 Queens: ok
 Sieve: ok
+Storage: ok
 Towers: ok
 '''

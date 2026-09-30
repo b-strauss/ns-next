@@ -1,4 +1,4 @@
 {
   "root": "AreWeFastYet.ns",
-  "modules": ["Permute.ns", "Queens.ns", "Sieve.ns", "Towers.ns"]
+  "modules": ["Bounce.ns", "List.ns", "Permute.ns", "Queens.ns", "Sieve.ns", "Storage.ns", "Towers.ns"]
 }
