@@ -67,6 +67,14 @@ and `prior-art/newspeak-benchmarks`.
 
   Each benchmark file carries a header naming its upstream, and
   `THIRD-PARTY-NOTICES.md` has SOMns's and Primordial Soup's entries.
+
+  After stage 3, and before step 2's second plan, a baseline over all
+  fourteen is measured and recorded in [execution.md](design/execution.md),
+  "The Are We Fast Yet benchmarks": several pinned release builds, pooled,
+  as that document's measurement protocol asks (decided with the user on
+  2026-09-30). No baseline is recorded yet; one informal pinned build of
+  stage 1 scored between about 225 (Towers) and 800 (List) runs per second
+  under `--timed`.
 - **Step 2, second plan, the eight-byte value**, on today's arena: one tagged
   64-bit word -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`,
   `true` and `false`, and handles -- which moves the `SmallInteger`/
