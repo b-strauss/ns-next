@@ -92,7 +92,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public Stopwatch = ( ^outer PlatformFactory Stopwatch )
     )
     (* Primordial Soup's `Stopwatch` (`Time.ns`), narrowed to what
-       `AreWeFastYet.ns` sends. It keeps its reading in slots, so it is
+       `benchmarks/are-we-fast-yet/AreWeFastYet.ns` sends. It keeps its reading in slots, so it is
        an object, not a value. Its readings are nanoseconds since an
        origin taken once per process, not the operating system's per-boot
        monotonic clock Primordial Soup's primitive reads, so a started

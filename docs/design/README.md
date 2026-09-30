@@ -274,7 +274,12 @@ explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `awfy/` goldens share one root, the harness, so theirs is the
 harness's own header in `benchmarks/are-we-fast-yet/AreWeFastYet.ns`, which
 says what an untimed run prints and gives the usage line the refusals pin;
-their file names say which case each is. The `.toml` holds the recorded
+their file names say which case each is. Every `goldens/awfy/*.json` lists
+every module of `benchmarks/are-we-fast-yet/are-we-fast-yet.json`, because the
+harness names each benchmark when it is instantiated; a new benchmark is added
+to the harness tuple, the project file, each `awfy` golden `.json`,
+`all_benchmarks_verify.toml` and the name list in `crates/ns-cli/tests/run.rs`'s
+`a_timed_run_prints_a_score_for_every_benchmark`. The `.toml` holds the recorded
 answer and nothing else.
 
 ## Gates

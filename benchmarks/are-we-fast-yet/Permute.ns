@@ -40,7 +40,7 @@ class Permute usingPlatform: platform = (
     )
     permute: size = (
         count:: count + 1.
-        (size = 0) not ifTrue: [
+        size = 0 ifFalse: [
             permute: size - 1.
             size to: 1 by: -1 do: [:index |
                 swap: size with: index.

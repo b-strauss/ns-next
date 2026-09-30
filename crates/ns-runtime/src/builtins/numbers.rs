@@ -554,8 +554,10 @@ pub(crate) fn execute_float<'gc>(
             Some(Value::SmallInteger(count)) if (0..=20).contains(count) => Ok(Value::Object(
                 mutator.new_string(fixed_text(receiver_float, *count as usize)),
             )),
-            // Primordial Soup's primitive fails outside 0 to 20 and its
-            // method raises; double-conversion's buffer is sized for 20.
+            // The 20 is Primordial Soup's own wrapper, not double-conversion's
+            // (which allows 100): its `DoubleToCStringAsFixed` fixes 20 digits
+            // either side of the point to size its buffer, so its primitive
+            // fails outside 0 to 20 and its method raises.
             Some(Value::SmallInteger(count)) => Err(NewspeakError {
                 selector: Symbol::intern("asStringFixed:"),
                 receiver,
