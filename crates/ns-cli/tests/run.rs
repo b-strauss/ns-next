@@ -1,6 +1,6 @@
 mod common;
 
-use common::ScratchDirectory;
+use common::{goldens_root, ScratchDirectory};
 use indoc::indoc;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -337,4 +337,68 @@ fn a_program_without_main_is_an_uncaught_does_not_understand() {
         stderr.contains("does not understand #main:args:"),
         "stderr: {stderr}"
     );
+}
+
+/// The Are We Fast Yet harness's project file, reached from `goldens/`'s
+/// sibling so that no second way of finding the repository root exists.
+fn harness_project() -> std::path::PathBuf {
+    goldens_root().join("../benchmarks/are-we-fast-yet/are-we-fast-yet.json")
+}
+
+/// `--timed` prints `<Name>: <runs per second>` with one fraction digit,
+/// for every benchmark in the harness's order; the numbers differ between
+/// runs, so only their shape is checked.
+#[test]
+fn a_timed_run_prints_a_score_for_every_benchmark() {
+    let output = ns_next()
+        .arg("run")
+        .arg(harness_project())
+        .args(["--", "--timed"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
+    let names: Vec<&str> = stdout
+        .lines()
+        .map(|line| {
+            let (name, score) = line.split_once(": ").expect("a name and a score");
+            let (whole, fraction) = score.split_once('.').expect("a fraction digit");
+            assert!(
+                !whole.is_empty() && whole.bytes().all(|byte| byte.is_ascii_digit()),
+                "{line}"
+            );
+            assert!(
+                fraction.len() == 1 && fraction.bytes().all(|byte| byte.is_ascii_digit()),
+                "{line}"
+            );
+            name
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["Bounce", "List", "Permute", "Queens", "Sieve", "Storage", "Towers"]
+    );
+}
+
+/// `ns-next bench` times the untimed harness on one benchmark.
+#[test]
+fn bench_times_one_benchmark_of_the_project() {
+    let output = ns_next()
+        .arg("bench")
+        .arg(harness_project())
+        .args(["--iterations", "1", "--", "Sieve"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Sieve: ok"), "{stdout}");
+    assert!(stdout.contains("median"), "{stdout}");
 }
