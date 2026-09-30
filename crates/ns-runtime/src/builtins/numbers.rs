@@ -452,9 +452,9 @@ pub(crate) fn execute_large_integer<'gc>(
     };
     let receiver_integer = mutator.heap.large_integer(object)?;
     // Either integer class as the argument, or a `Float` for arithmetic and
-    // ordering; anything else is the leaf's type mismatch. As in `execute_integer`, these closures hold `mutator`
-    // shared, so each answers an `ArbitraryInteger` for the caller to make a
-    // `Value` of.
+    // ordering; anything else is the leaf's type mismatch. As in
+    // `execute_integer`, these closures hold `mutator` shared, so each answers
+    // an `ArbitraryInteger` for the caller to make a `Value` of.
     let argument = || integer_operand(&mutator.heap, arguments.first());
     let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(

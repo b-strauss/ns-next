@@ -244,7 +244,7 @@ fn integer_arithmetic_widens_a_float_argument() {
 }
 
 /// `type_mismatch`'s message builds off `heap.describe_argument`, but the
-/// type-mismatch tests above drive a `Value::Nil` or `Value::Float` into it, which formats
+/// other type-mismatch tests here drive a `Value::Nil` into it, which formats
 /// harmlessly either way. A `Value::Object` there would recurse through
 /// `Object`'s self-referential bootstrap class until the stack gives out if
 /// the message ever `{:?}`-formatted the argument directly, so this drives
