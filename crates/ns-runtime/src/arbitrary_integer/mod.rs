@@ -167,6 +167,44 @@ impl ArbitraryInteger {
         Some(self.subtract(&quotient.multiply(divisor)))
     }
 
+    /// Bitwise and over two's complement, where a negative number's sign
+    /// bits extend without end (Primordial Soup's and Squeak's `bitAnd:`).
+    /// One digit beyond the longer magnitude holds the sign, so the top
+    /// bit of the result's top digit says whether it is negative.
+    pub fn bit_and(&self, other: &ArbitraryInteger) -> ArbitraryInteger {
+        let length = self.magnitude.len().max(other.magnitude.len()) + 1;
+        let digits: Vec<u64> = self
+            .twos_complement_digits(length)
+            .iter()
+            .zip(other.twos_complement_digits(length))
+            .map(|(left_digit, right_digit)| left_digit & right_digit)
+            .collect();
+        if digits[length - 1] >> (u64::BITS - 1) == 1 {
+            // A negative result's magnitude is its complement plus one.
+            let complement = digits.iter().map(|digit| !digit).collect();
+            ArbitraryInteger::from_parts(false, complement)
+                .add(&ArbitraryInteger::from_i64(1))
+                .negated()
+        } else {
+            ArbitraryInteger::from_parts(false, digits)
+        }
+    }
+
+    /// `length` digits of the two's-complement representation, least
+    /// significant first: a negative `-m` is the complement of `m - 1`.
+    fn twos_complement_digits(&self, length: usize) -> Vec<u64> {
+        if self.negative {
+            let decremented = self.absolute().subtract(&ArbitraryInteger::from_i64(1));
+            let mut digits = decremented.magnitude().to_vec();
+            digits.resize(length, 0);
+            digits.iter().map(|digit| !digit).collect()
+        } else {
+            let mut digits = self.magnitude.to_vec();
+            digits.resize(length, 0);
+            digits
+        }
+    }
+
     pub fn negated(&self) -> ArbitraryInteger {
         ArbitraryInteger {
             negative: !self.negative && !self.is_zero(),
@@ -445,6 +483,35 @@ mod tests {
                     answer,
                     Some(ArbitraryInteger::from_i128(expected)),
                     "{dividend} \\\\ {divisor}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bit_and_is_twos_complement_and_agrees_with_i128() {
+        let samples: [i128; 12] = [
+            0,
+            1,
+            -1,
+            65535,
+            -65536,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+            (1 << 64) - 1,
+            1 << 64,
+            -(1 << 64),
+            -(1 << 64) - 1,
+            -(1 << 100) + 12345,
+        ];
+        for left in samples {
+            for right in samples {
+                assert_eq!(
+                    ArbitraryInteger::from_i128(left)
+                        .bit_and(&ArbitraryInteger::from_i128(right))
+                        .to_decimal_string(),
+                    (left & right).to_string(),
+                    "{left} bitAnd: {right}"
                 );
             }
         }

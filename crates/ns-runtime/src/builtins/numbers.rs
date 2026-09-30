@@ -288,6 +288,14 @@ pub(crate) fn execute_integer<'gc>(
                 None => Err(mismatch("\\\\")),
             },
         }),
+        IntegerPrimitive::BitAnd => Some(match argument_integer() {
+            Some(argument) => Ok(Value::SmallInteger(receiver_integer & argument)),
+            None => match large_argument() {
+                Some(argument) => Ok(mutator
+                    .new_integer(ArbitraryInteger::from_i64(receiver_integer).bit_and(&argument))),
+                None => Err(mismatch("bitAnd:")),
+            },
+        }),
         IntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         IntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
         IntegerPrimitive::LessOrEqual => Some(compare("<=", Ordering::is_le)),
@@ -402,6 +410,10 @@ pub(crate) fn execute_large_integer<'gc>(
                 None => Err(division_by_zero(receiver, "\\\\")),
             },
             None => Err(mismatch("\\\\")),
+        }),
+        LargeIntegerPrimitive::BitAnd => Some(match argument() {
+            Some(argument) => Ok(mutator.new_integer(receiver_integer.bit_and(&argument))),
+            None => Err(mismatch("bitAnd:")),
         }),
         LargeIntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
         LargeIntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
