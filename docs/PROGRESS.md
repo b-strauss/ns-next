@@ -3637,8 +3637,12 @@ for every module root, at the offending clause, before anything runs
 the user as a deviation from §6.1 ([README.md](design/README.md),
 "Deviations from the language specification"): refused only at
 instantiation, a project module nothing instantiated ran under `run` while
-`build` refused it. The rule now also refuses a superclass clause that sends
-anything but `new` and a `<:` clause that sends anything. The instantiation
+`build` refused it. The rule allows exactly the seven combinations of
+`Object` and `Value` that work -- none, `Object`, `Object new`, `Value`,
+`Value new`, `Object <: Value` and `Object new <: Value` -- and now also
+refuses a superclass clause that sends anything but `new`
+(`goldens/errors/root_superclass_sending_other_than_new_is_refused.ns`) and a
+`<:` clause that sends anything; `Value <: Value` stays refused. The instantiation
 refusal and the image encoder's and decoder's refusals stay for what does not
 come through the resolver: a `ResolvedModule` a host assembles by hand, and
 an image. The ten `goldens/errors/root_*` goldens now end with the resolve

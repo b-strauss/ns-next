@@ -967,15 +967,19 @@ effect of how a root clause is resolved
 (`goldens/mixin/mixin_module_declares_itself_a_value.ns`).
 
 **The root rule: only `Object`, `Value` or `Object <: Value`.** A module's
-root class may omit its superclass clause (which is `Object`), write `Object`
-or `Value` unprefixed and sent `new` or nothing, or write `Object <: Value`
-with nothing sent to `Value`. Everything after the header's `=` is held to
-the rule; the primary factory before it (`new`, `packageUsing: manifest`,
-`usingPlatform: platform`, …) is not. Everything else is a root defect: any
-prefix, any other name — the other builtins, `Top` and a name nothing
-declares included — any other message (`Object foo`, `Object new: 3`), any
-other `<:` clause, a message sent to the `<:` clause's `Value`,
-`Value <: Value` and several clauses among them. A root class has no
+root class may write every combination of `Object` and `Value` that works
+(decided with the user on 2026-09-30), and exactly these seven root clauses:
+none (which is `Object`), `Object`, `Object new`, `Value`, `Value new`,
+`Object <: Value` and `Object new <: Value`. Everything after the header's
+`=` is held to the rule; the primary factory before it (`new`,
+`packageUsing: manifest`, `usingPlatform: platform`, …) is not. Everything
+else is a root defect: any prefix, any other name — the other builtins,
+`Top` and a name nothing declares included — any message but the superclass
+clause's `new` (`Object foo`, `Object new: 3`,
+`goldens/errors/root_superclass_sending_other_than_new_is_refused.ns`), any
+other `<:` clause, a message sent to the `<:` clause's `Value`, and a second
+`<:` clause. `Value <: Value` and `Value new <: Value` stay refused:
+applying `Value` over `Value` adds nothing. A root class has no
 enclosing object to evaluate a receiver in: §6.1 evaluates its clause "as if
 it was a top level expression", where it "will almost certainly fail", so the
 only classes a root can reach are the ones the rule names. The corpus has
