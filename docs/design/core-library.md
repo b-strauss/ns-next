@@ -567,9 +567,11 @@ enclosing object of the classes a program is handed. So no program can
 build a second root instance over something that is not the mirror, and no
 runtime refusal is needed: the bootstrap instantiates `Kernel` and
 `PlatformFactory` through the same `Interpreter::instantiate` a host uses,
-and a shipped root with a defect of its own -- a mutable slot under `Value`,
-a root clause the root rule refuses -- is refused to it like to any program
-(`mirror.rs`'s `a_defective_shipped_root_is_refused_to_the_bootstrap`).
+and a shipped root with a defect of its own -- a mutable slot under `Value`
+-- is refused to it like to any program
+(`mirror.rs`'s `a_defective_shipped_root_is_refused_to_the_bootstrap`); a
+root clause the root rule refuses is a resolve error under `resolve_kernel`
+as under `resolve`.
 Until 2026-09-27 the platform was the module's root instance itself, and the
 runtime refused every instantiation of a shipped root but the bootstrap's;
 a second platform over something that is not the mirror would otherwise

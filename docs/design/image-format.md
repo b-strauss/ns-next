@@ -837,9 +837,10 @@ a module whose root mixin carries a root defect, in `image::package` and
 module's root class may inherit only Object or Value, or write Object <:
 Value, and …" — the reason the instantiation refusal gives: such a root can
 never be instantiated, so an artifact of it could only fail, and refusing it
-needs no wire field. `build` meets an application root's defect earlier,
-when it instantiates the application; the encoder's refusal is what catches
-a project module the application never instantiated. The
+needs no wire field. From source a root defect is a resolve error, so `run`
+and `build` refuse such a project alike, before anything runs, whether or not
+the application would instantiate the module; the encoder's refusal guards a
+`ResolvedModule` a host assembled past `resolve`. The
 root-section reader (`decode_root_section`) refuses what the encoder cannot
 write: a section naming no superclass at all, as `RootWithoutSuperclass`; a
 superclass tag other than `Object`'s or `Value`'s, and a level naming

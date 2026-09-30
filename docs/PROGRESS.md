@@ -2604,12 +2604,11 @@ conditions" and "Mixin application", "The root rule".
   `Kernel.ns` is `= Object <: Value` and the mirror's class sits below
   `Value`, so every builtin value class passes the enclosing-object condition
   by construction and the mirror is a value by the ordinary rule.
-- **The root rule, deferred** (2026-09-23): a module's root may name only
-  `Object` or `Value`, or write `Object <: Value`; every other root clause,
-  including those the resolver used to refuse, is a defect recorded on the
-  root mixin and refused at instantiation, so a module with a wrong root
-  still loads and can be fixed live. The encoder refuses such a root, and the
-  decoder a root section the rule forbids.
+- **The root rule** (2026-09-23): a module's root may name only `Object` or
+  `Value`, or write `Object <: Value`; every other root clause is a defect.
+  The encoder refuses such a root, and the decoder a root section the rule
+  forbids. Since 2026-09-30 the resolver refuses it ("The root rule is a
+  resolve error" below).
 - **Every golden declaring a value class inside an ordinary module becomes a
   value module and keeps its outcome** (2026-09-23), the rule decided for the
   two `class Text = String new` goldens, extended to every such module.
@@ -3629,3 +3628,18 @@ each; `ns-lsp`, 40 of 40; `run-corpus` "ran 6, failed 0, skipped 205" plain and
 under each stress mode; the release suite, 2364 passed. The review of the whole
 branch found no code defect; its text findings were fixed in the two commits
 after `088cd6c`. What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md).
+
+## The root rule is a resolve error (2026-09-30)
+
+A module root whose clauses break the root rule is refused by the resolver,
+for every module root, at the offending clause, before anything runs
+([object-model.md](design/object-model.md), "The root rule"). Decided with
+the user as a deviation from §6.1 ([README.md](design/README.md),
+"Deviations from the language specification"): refused only at
+instantiation, a project module nothing instantiated ran under `run` while
+`build` refused it. The rule now also refuses a superclass clause that sends
+anything but `new` and a `<:` clause that sends anything. The instantiation
+refusal and the image encoder's and decoder's refusals stay for what does not
+come through the resolver: a `ResolvedModule` a host assembles by hand, and
+an image. The ten `goldens/errors/root_*` goldens now end with the resolve
+error; the editor underlines the clause.

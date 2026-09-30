@@ -430,14 +430,14 @@ the *application* and is decided once, where `Mutator::apply_mixin` builds
 it — before any class object exists, which is what covers a module's root
 class along with every nested one — and the enclosing objects are fixed per
 *class object*, decided once where one is created. **Every one of them is
-refused where an instance would come into being**, and so is a fifth: a
-module root that breaks the root rule ("Mixin application", at its end),
-which decides what a module that declares itself a value may write. Every
-refusal is an ordinary Newspeak error named under the primary factory of the
-class being instantiated, defaulted to `new`, raised at run time — a class
-nothing instantiates never fails, as a method nothing runs never does — and
-every text lives in `interpreter/instantiate.rs`, so both lowerings raise the
-same errors.
+refused where an instance would come into being**. Every such refusal is an
+ordinary Newspeak error named under the primary factory of the class being
+instantiated, defaulted to `new`, raised at run time — a class nothing
+instantiates never fails, as a method nothing runs never does — and every
+text lives in `interpreter/instantiate.rs`, so both lowerings raise the same
+errors. The root rule ("Mixin application", at its end), which decides what a
+module that declares itself a value may write, is not among them: a root that
+breaks it is a resolve error, refused before anything runs.
 
 - **Step 1 refuses a mutable slot anywhere in the chain.** A class that
   inherits `Value` and has one could never have a value object for an
@@ -967,48 +967,58 @@ effect of how a root clause is resolved
 (`goldens/mixin/mixin_module_declares_itself_a_value.ns`).
 
 **The root rule: only `Object`, `Value` or `Object <: Value`.** A module's
-root class may omit its superclass clause (which is `Object`), name `Object`
-or `Value` unprefixed, or write `Object <: Value`; its message part is
-unaffected and checked at instantiation like any other. Everything else is a
-root defect: any prefix, any other name — the other builtins, `Top` and a
-name nothing declares included — and any other `<:` clause, `Value <: Value`
-and several clauses among them. A root class has no enclosing object to
-evaluate a receiver in: §6.1 evaluates its clause "as if it was a top level
-expression", where it "will almost certainly fail", so the only classes a
-root can reach are the ones the rule names. The corpus has such roots —
-`Newspeak2SqueakCompilation`'s `= NewspeakCompilation usingPlatform:
-platform`, `UISessionManager`'s `= NewspeakObject new` — which the
-Squeak-hosted implementation accepts; none is on `corpus/runnable.toml`.
+root class may omit its superclass clause (which is `Object`), write `Object`
+or `Value` unprefixed and sent `new` or nothing, or write `Object <: Value`
+with nothing sent to `Value`. Everything after the header's `=` is held to
+the rule; the primary factory before it (`new`, `packageUsing: manifest`,
+`usingPlatform: platform`, …) is not. Everything else is a root defect: any
+prefix, any other name — the other builtins, `Top` and a name nothing
+declares included — any other message (`Object foo`, `Object new: 3`), any
+other `<:` clause, a message sent to the `<:` clause's `Value`,
+`Value <: Value` and several clauses among them. A root class has no
+enclosing object to evaluate a receiver in: §6.1 evaluates its clause "as if
+it was a top level expression", where it "will almost certainly fail", so the
+only classes a root can reach are the ones the rule names. The corpus has
+such roots — `Newspeak2SqueakCompilation`'s `= NewspeakCompilation
+usingPlatform: platform`, `UISessionManager`'s `= NewspeakObject new` — which
+the Squeak-hosted implementation accepts; none is on `corpus/runnable.toml`.
 
-**Every root defect is deferred to instantiation** (decided with the user on
-2026-09-23): one rule, one path, and the deferred one, because a module whose
-root is wrong still loads, so its class exists to be inspected and fixed in a
-live system before anything instantiates it. The resolver binds none of a
-root clause's receivers (`resolver/mod.rs`), so `= Missing new` is no resolve
-error; compiling stays total, since a receiver with no binding lowers to the
-deferred `UnresolvedIdentifier`, and a root's clause receiver is never run. Nested declarations keep their resolve errors. The
-rule is syntactic, so `Mutator::build_root_mixin` — which builds every
-module's root mixin, `Kernel.ns`'s included — records the defect on the root
-mixin (`instantiate::root_clause_defect`, `Mixin::root_clause_defect`,
-naming the clause as written and the reason); `load_root_class` builds a
-defective root over `Object` with no level, so `load_module` stays total; and
+**Every root defect is a resolve error** (decided with the user on
+2026-09-30), for every module root, the shipped modules' included, before
+anything runs: `resolver::root_clause_defect` classifies the root's clauses
+and the resolver reports the first defect at the offending clause's span, so
+the editor underlines exactly that clause. The specification would leave the
+failure to evaluation; checking it statically is a recorded deviation
+([README.md](README.md), "Deviations from the language specification"),
+taken because a module root is not an ordinary class and a program must not
+run when its artifact cannot be built — deferring it to instantiation let a
+project module nothing instantiated run under `run` while `build` refused it.
+`run` and `build` print it alike, as "resolve error: a module's root class
+may inherit only Object or Value, or write Object <: Value, and its
+superclass clause names `…`" (or "its superclass clause sends `s` to `…`,
+not new", "its mixin application clause *n* names `…`", "its mixin
+application clause *n* sends `s` to Value", "it applies Value to Value"). The
+resolver binds none of a root clause's receivers (`resolver/mod.rs`); the
+rule decides them, and a root's clause receiver is never run. Nested
+declarations keep their own resolve errors.
+
+**The instantiation-time refusal stays, for what does not come through the
+resolver.** `Mutator::build_root_mixin` records the same verdict on the root
+mixin (`Mixin::root_clause_defect`); `load_root_class` builds a defective
+root over `Object` with no level, so `load_module` stays total; and
 `apply_mixin` folds the defect into `instantiation_refusal`, inherited by
-every class built on the root, the one cold `Option` `decide_instantiation`
-tests for both refusals it makes before allocating — the mutable slot and the
-root defect. `run` and `build` always instantiate the root, so every program
-with a defective root meets the error at start, before anything runs or is
-written, under both lowerings with the same text: "cannot instantiate `M`: a module's root class may inherit only
-Object or Value, or write Object <: Value, and its superclass clause names
-`…`" (or "its mixin application clause *n* names `…`", or "it applies Value to
-Value"). **The encoder refuses a module with a root defect**, in
-`image::package` and `image::snapshot` alike -- at `build`, that is a project
-module the application never instantiated -- with "image encoding cannot
-serialize `M`:" and the same reason:
-such a root can never be instantiated, so an artifact of it could only fail,
-and refusing it needs no wire field and no tag. The decoder's root-section
-reader refuses what the encoder cannot write
-([image-format.md](image-format.md), "Verification"), so a crafted artifact
-cannot bring the rule back. `goldens/errors/root_*` pin one defect each.
+every class built on the root, refused with "cannot instantiate `M`:" and the
+same reason. From source this is unreachable; it is reached only by a
+`ResolvedModule` a host assembles past `resolve`, whose fields are public
+(`tests/value_conditions.rs`,
+`a_defective_root_built_past_the_resolver_refuses_only_an_instance`). **The
+encoder refuses a module with a root defect**, in `image::package` and
+`image::snapshot` alike, with "image encoding cannot serialize `M`:" and the
+same reason, so the format needs no wire field and no tag for one; the
+decoder's root-section reader refuses what the encoder cannot write
+([image-format.md](image-format.md), "Verification"), so a crafted artifact,
+which is untrusted input, cannot bring the rule back.
+`goldens/errors/root_*` pin one defect each.
 
 ## Class sides and metaclasses
 
@@ -1860,10 +1870,10 @@ remove slots of a class with live instances.
   where `Mutator::apply_mixin` builds it, and the enclosing objects per class
   object, where one is created ("A value object's four conditions" above).
 - **A module's root may name only `Object` or `Value`, or write
-  `Object <: Value`, and every other root is a defect deferred to
-  instantiation** (decided with the user on 2026-09-23), so a module with a
-  wrong root still loads and can be fixed live ("Mixin application", "The
-  root rule").
+  `Object <: Value`** (decided with the user on 2026-09-23), **and every other
+  root is a resolve error** (decided with the user on 2026-09-30), so a
+  program whose artifact `build` could never write never runs under `run`
+  either ("Mixin application", "The root rule").
 - **§3.2's class hierarchy is reified as `Behavior`, `Class` and
   `Metaclass` in `Kernel.ns`** (nine decisions taken with the user on
   2026-09-25, built by

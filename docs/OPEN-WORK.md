@@ -431,16 +431,6 @@ value objects are never copied across an actor boundary (§3.1.1).
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact.
 
-- **`build` refuses a project that `run` runs, when a module the
-  application never instantiates has a root defect.** A root defect is
-  deferred to instantiation ([object-model.md](design/object-model.md), "The
-  root rule"), so `run` of such a project succeeds, but the encoder refuses
-  every module whose root mixin carries one ("image encoding cannot
-  serialize `M`: …", `image::encode_describing`), so `build` fails. Either
-  the encoder writes such a module, whose instantiation then fails after
-  `load` as it would under `run`, or `run` refuses it too; decide, then pin
-  it with a project golden. [image-format.md](design/image-format.md),
-  "Verification".
 - **`load --print-source` of a project prints every module's source with
   nothing between them** (`crates/ns-cli/src/commands/load.rs`), so a reader
   cannot tell where one module ends; a boundary line naming each module's

@@ -94,6 +94,13 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    A block's own parameter may share a name with its method's: it is another
    activation's slot.
 
+   A module root whose clauses break the root rule is a resolve error at the
+   offending clause, for every module root, before anything runs
+   (`classes::root_clause_defect`; [object-model.md](object-model.md), "The
+   root rule"). The specification leaves such a clause to fail when it is
+   evaluated; refusing it statically is a recorded deviation
+   ([README.md](README.md), "Deviations from the language specification").
+
    The member set also holds the declaration's **primary factory selector** —
    the one its own message pattern spells out, or `new` when it writes none.
    §6.3 makes the factory a member of the metaclass mixin the class side
