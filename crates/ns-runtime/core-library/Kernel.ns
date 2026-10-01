@@ -607,7 +607,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
            sent from. Json's escapes send it. *)
         public with: code = ( ^vmMirror stringClass: self with: code ifFail: [nil] )
     )
-    public class Symbol =Value new () (
+    public class Symbol = Value new () (
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
         public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror symbolHash: self ifFail: [^super hash] )
