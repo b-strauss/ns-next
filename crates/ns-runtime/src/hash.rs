@@ -74,6 +74,32 @@ pub(crate) fn content_hash(value: impl std::hash::Hash) -> i64 {
     i64::from(IdentityBuildHasher::default().hash_one(value) as u32)
 }
 
+/// `content_hash` of the text `characters` spell, without building it:
+/// `str`'s `Hash` writes the UTF-8 bytes in one `write`, which
+/// `IdentityHasher` takes eight at a time, and then `0xff`.
+pub(crate) fn content_hash_of_characters(characters: impl Iterator<Item = char>) -> i64 {
+    let mut hasher = IdentityHasher::default();
+    let mut word = [0u8; 8];
+    let mut filled = 0;
+    let mut encoded = [0u8; 4];
+    for character in characters {
+        for byte in character.encode_utf8(&mut encoded).bytes() {
+            word[filled] = byte;
+            filled += 1;
+            if filled == 8 {
+                hasher.add(u64::from_le_bytes(word));
+                word = [0u8; 8];
+                filled = 0;
+            }
+        }
+    }
+    if filled > 0 {
+        hasher.add(u64::from_le_bytes(word));
+    }
+    hasher.write_u8(0xff);
+    i64::from(hasher.finish() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use std::hash::{BuildHasher, Hash};

@@ -1,0 +1,15 @@
+stdout = '''
+plain
+café
+€uro 😀
+5
+4
+6
+10
+true
+true
+true
+false
+'€uro 😀'
+#€uro 😀
+'''

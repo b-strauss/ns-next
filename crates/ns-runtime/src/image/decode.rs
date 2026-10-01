@@ -803,6 +803,18 @@ impl<'a> Reader<'a> {
     pub fn read_str(&mut self) -> Result<String, DecodeError> {
         String::from_utf8(self.read_bytes()?).map_err(|_| DecodeError::InvalidUtf8)
     }
+
+    /// A String record's text, validated as UTF-8 where it lies and
+    /// converted straight from the buffer: no intermediate `Vec` or
+    /// `String`, so a record costs at most the 4 heap bytes per wire byte
+    /// of a wide string (`docs/design/memory.md`, the decode
+    /// amplification).
+    pub fn read_code_points(&mut self) -> Result<crate::CodePoints, DecodeError> {
+        let length = self.read_u32()? as usize;
+        let bytes = self.read_raw(length)?;
+        let text = std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)?;
+        Ok(crate::CodePoints::from(text))
+    }
 }
 
 /// What the header says about the rest of the image.
@@ -3280,7 +3292,7 @@ pub fn decode_graph_section<'gc>(
                 }
                 ObjectData::Instance(fields)
             }
-            OBJECT_STRING => ObjectData::String(reader.read_str()?),
+            OBJECT_STRING => ObjectData::String(reader.read_code_points()?),
             OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
             OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
             OBJECT_CLOSURE => ObjectData::Closure(decode_closure_record(reader, context, &tables)?),

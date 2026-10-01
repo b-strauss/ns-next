@@ -4,19 +4,6 @@ use crate::builtins::primitive::{Primitive, StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
-/// Extracts an owned `String` from `argument` if it is a `String`-payload
-/// object. `None` for anything else, including `Symbol` (a distinct payload)
-/// and non-`Object` values.
-///
-/// Concatenation's rule, and only concatenation's. Equality reads the class
-/// instead (`of_the_same_class`).
-fn argument_string<'gc>(heap: &Heap<'gc>, argument: Option<&Value<'gc>>) -> Option<String> {
-    match argument {
-        Some(Value::Object(object)) => heap.str_value(*object),
-        _ => None,
-    }
-}
-
 /// Whether `argument` is an object of `receiver`'s own class -- the guard
 /// every `=` in this module opens with, and the reason each of them names
 /// one class rather than one payload.
@@ -38,18 +25,17 @@ fn of_the_same_class<'gc>(
         .then_some(*other)
 }
 
-/// `String>>=`'s rule: an argument of the receiver's own
-/// class carrying the same text. Named rather than written twice, so that
+/// `String>>=`'s rule: an argument of the receiver's own class carrying
+/// the same code points. Named rather than written twice, so that
 /// `builtins::value`'s derived equality decides one exactly as the class's
 /// own `=` does instead of growing a second copy of the rule.
 pub(crate) fn text_equals<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
-    text: &str,
     argument: Option<&Value<'gc>>,
 ) -> bool {
     match of_the_same_class(heap, receiver, argument) {
-        Some(other) => heap.str_value(other).as_deref() == Some(text),
+        Some(other) => heap.strings_equal(receiver, other) == Some(true),
         None => false,
     }
 }
@@ -110,16 +96,21 @@ pub(crate) fn execute_string<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = &receiver else {
+    let Value::Object(object) = receiver else {
         return None;
     };
-    let string = mutator.heap.str_value(*object)?;
+    // Declines for anything that is no String, before any leaf reads it.
+    let size = mutator.heap.string_size(object)?;
     match primitive {
-        StringPrimitive::Size => Some(Ok(Value::SmallInteger(string.chars().count() as i64))),
+        StringPrimitive::Size => Some(Ok(Value::SmallInteger(size as i64))),
         StringPrimitive::Concatenate => {
-            Some(match argument_string(&mutator.heap, arguments.first()) {
-                Some(other) => Ok(Value::Object(
-                    mutator.new_string(format!("{string}{other}")),
+            let joined = match arguments.first() {
+                Some(Value::Object(other)) => mutator.heap.string_concatenation(object, *other),
+                _ => None,
+            };
+            Some(match joined {
+                Some(code_points) => Ok(Value::Object(
+                    mutator.new_string_from_code_points(code_points),
                 )),
                 None => Err(NewspeakError {
                     selector,
@@ -132,7 +123,7 @@ pub(crate) fn execute_string<'gc>(
             })
         }
         StringPrimitive::Equal => {
-            let equal = text_equals(&mutator.heap, *object, &string, arguments.first());
+            let equal = text_equals(&mutator.heap, object, arguments.first());
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::String(primitive),
@@ -142,10 +133,17 @@ pub(crate) fn execute_string<'gc>(
             )
             .map(|answer| Ok(Value::Boolean(answer)))
         }
-        StringPrimitive::Hash => Some(Ok(Value::SmallInteger(string_hash(&string)))),
-        StringPrimitive::AsSymbol => Some(Ok(mutator.new_symbol(Symbol::intern(&string)))),
+        StringPrimitive::Hash => mutator
+            .heap
+            .string_hash(object)
+            .map(|hash| Ok(Value::SmallInteger(hash))),
+        StringPrimitive::AsSymbol => {
+            let text = mutator.heap.str_value(object)?;
+            Some(Ok(mutator.new_symbol(Symbol::intern(&text))))
+        }
         StringPrimitive::PrintString => {
-            Some(Ok(Value::Object(mutator.new_string(quote_string(&string)))))
+            let text = mutator.heap.str_value(object)?;
+            Some(Ok(Value::Object(mutator.new_string(quote_string(&text)))))
         }
     }
 }

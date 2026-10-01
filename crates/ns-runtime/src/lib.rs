@@ -11,6 +11,7 @@
 mod arbitrary_integer;
 pub mod builtins;
 pub mod bytecode;
+pub mod code_points;
 pub mod compiler;
 pub mod dispatch;
 pub mod hash;
@@ -64,6 +65,7 @@ macro_rules! for_each_lowering {
         }
     };
 }
+pub use code_points::CodePoints;
 pub use heap::{
     ActivationHeader, ActivationReference, ClassReference, CollectorStatistics, FrameReference,
     Heap, HeapStatistics, ObjectReference, RegisterBase, Root,

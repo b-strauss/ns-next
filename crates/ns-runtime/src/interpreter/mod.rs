@@ -1453,8 +1453,15 @@ impl<'gc> Mutator<'gc> {
     }
 
     pub fn new_string(&mut self, string: String) -> ObjectReference<'gc> {
+        self.new_string_from_code_points(crate::CodePoints::from(string))
+    }
+
+    pub fn new_string_from_code_points(
+        &mut self,
+        code_points: crate::CodePoints,
+    ) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::String);
-        self.new_instance_object(class, ObjectData::String(string))
+        self.new_instance_object(class, ObjectData::String(code_points))
     }
 
     /// The one way an `ArbitraryInteger` becomes a `Value`, so that every

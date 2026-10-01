@@ -52,7 +52,7 @@ pub struct Object<'gc> {
 #[derive(Debug, Clone)]
 pub enum ObjectData<'gc> {
     Instance(Vec<Value<'gc>>),
-    String(String),
+    String(crate::CodePoints),
     Symbol(Symbol),
     Array(Vec<Value<'gc>>),
     Closure(ClosureData<'gc>),
