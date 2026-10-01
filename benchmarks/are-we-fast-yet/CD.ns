@@ -9,8 +9,9 @@ Newspeak3
    RedBlackTree.ns, which SOMns loads beside CD.ns, became the nested class
    RedBlackTree, its helper classes and treeMinimum: members of CD beside
    it; only Primordial Soup's protocol is sent, so SOMns's Vector is List,
-   its float division // is /, ~= and <> are (a == b) not and (a = b) not;
-   names are written out.
+   its float division // is /, so an Integer receiver's i // 10.0 is
+   frame asFloat / 10.0, there being no Integer>>/; ~= and <> are
+   (a == b) not and (a = b) not; names are written out.
 
    SOMns's own header of both files:
 

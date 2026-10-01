@@ -600,7 +600,7 @@ where every reified frame will carry its full register file on the wire.
 - **`Number>>to:by:do:` with a step of 0 never ends from a receiver at
   most `stop`**: `Kernel.ns`'s body, Primordial Soup's, counts up for any
   step that is not negative and has no guard against 0, so `1 to: 5 by: 0
-  do:` loops forever, while `5 to: 1 by: 0 do:` runs its block no time; the
+  do:` loops forever, while `5 to: 1 by: 0 do:` never runs its block; the
   method's comment says only that a zero step never ends. Noted
   2026-10-01.
   [core-library.md](design/core-library.md), "What exists".

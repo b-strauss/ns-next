@@ -192,6 +192,7 @@ pub(crate) fn execute_string<'gc>(
     // Declines for anything that is no String, before any leaf reads it.
     let size = mutator.heap.string_size(object)?;
     match primitive {
+        // Unreachable: the early return above handles it; the arm keeps the match exhaustive.
         StringPrimitive::FromCodePoint => None,
         // Array's errors, so that a program sees one text from either.
         StringPrimitive::ElementAt => Some(match arguments.first() {

@@ -577,7 +577,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         )
         (* Evaluates `action` with the receiver, then with each number
            `step` further on, while it is at most `stop` -- at least `stop`
-           for a negative `step`; answers nil. A zero `step` never ends. *)
+           for a negative `step`; answers nil. A zero `step` never ends from a receiver at most `stop`. *)
         public to: stop by: step do: action = (
             | current |
             current:: self.
@@ -591,8 +591,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^nil
         )
         (* The greater of the receiver and `other`: the receiver when it is
-           `>` `other`, `other` otherwise. Primordial Soup's `Number>>max:`,
-           for any two numbers the ordering compares. Havlak sends it. *)
+           `>` `other`, `other` otherwise. Signals what `>` signals for an
+           argument that is no number. *)
+        (* Primordial Soup's `Number>>max:`. Havlak sends it. *)
         public max: other = ( ^self > other ifTrue: [self] ifFalse: [other] )
     )
     (* The superclass of `True` and `False`. *)

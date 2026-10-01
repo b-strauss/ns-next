@@ -294,7 +294,7 @@ and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
   `CollectionsFactory.ns` has a `(* … *)` comment directly above it, or shares
   one with the family it belongs to (`+ - *`, the comparisons, the class
   accessors on `Object`). It describes what the member does as it stands: what
-  it answers, what it takes, and which Error it signals and when -- one to four
+  it answers, what it takes, and which Error it signals and when — one to four
   lines, no more. It names no other implementation. A comment that explains a
   decision, as the rule above asks, goes after it.
 - **Object, frame and activation access goes through
