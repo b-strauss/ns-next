@@ -1,0 +1,24 @@
+Newspeak3
+'Arithmetic'
+(* `sin` and `cos` are Primordial Soup's `Float>>sin` and `cos`, the C
+   library's functions of radians; only values exact on every platform are
+   printed, the others are bounded. `asInteger` is Primordial Soup's
+   `Float>>asInteger`: it truncates toward zero, exactly at any magnitude,
+   into a LargeInteger beyond 64 bits, and refuses a NaN and an infinity.
+   CD sends all three. *)
+class FloatSineCosineAndTruncation = Object new (
+) (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. sine cosine |
+        transcript print: 0.0 sin; show: ' '; print: -0.0 sin; show: ' '; print: 0.0 cos; newLine.
+        sine:: 0.5 sin.
+        cosine:: 0.5 cos.
+        transcript print: (sine > 0.4794 and: [sine < 0.4795]); show: ' '; print: (cosine > 0.8775 and: [cosine < 0.8776]); newLine.
+        transcript print: (0.0 / 0.0) sin; show: ' '; print: (1.0 / 0.0) cos; newLine.
+        transcript print: 3.7 asInteger; show: ' '; print: -3.7 asInteger; show: ' '; print: 0.5 asInteger; show: ' '; print: -0.0 asInteger; newLine.
+        transcript print: 100000000000000000000 asFloat asInteger; show: ' '; print: 100000000000000000000 asFloat asInteger class; newLine.
+        transcript print: 9223372036854775808 asFloat asInteger; show: ' '; print: (0 - 9223372036854775808) asFloat asInteger; show: ' '; print: (0 - 9223372036854775808) asFloat asInteger class; newLine.
+        transcript show: ([(0.0 / 0.0) asInteger] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([(-1.0 / 0.0) asInteger] on: Error do: [:error | error messageText]); newLine
+    )
+) : ()

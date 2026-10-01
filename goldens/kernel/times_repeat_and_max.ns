@@ -1,0 +1,19 @@
+Newspeak3
+'Kernel'
+(* `timesRepeat:` is Primordial Soup's `Integer>>timesRepeat:`, which
+   evaluates its block the receiver's number of times and answers nil;
+   `max:` is its `Number>>max:`, for any two numbers the ordering
+   compares. DeltaBlue and Havlak send them. *)
+class TimesRepeatAndMax = Object new (
+) (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. count |
+        count:: 0.
+        5 timesRepeat: [count:: count + 1].
+        0 timesRepeat: [count:: count + 100].
+        -3 timesRepeat: [count:: count + 100].
+        transcript print: count; show: ' '; print: (2 timesRepeat: []); newLine.
+        transcript print: (3 max: 7); show: ' '; print: (7 max: 3); show: ' '; print: (-1 max: -2); newLine.
+        transcript print: (2.5 max: 1); show: ' '; print: (1 max: 2.5); show: ' '; print: (18446744073709551616 max: 1); newLine
+    )
+) : ()

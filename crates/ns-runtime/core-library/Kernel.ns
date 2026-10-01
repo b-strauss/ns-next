@@ -482,6 +482,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
                     current:: current + step]].
             ^nil
         )
+        (* Primordial Soup's `Number>>max:`, for any two numbers the
+           ordering compares. Havlak sends it. *)
+        public max: other = ( ^self > other ifTrue: [self] ifFalse: [other] )
     )
     public class Boolean = Value new () (
     )
@@ -533,6 +536,12 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public bitXor: other = ( ^vmMirror integer: self bitXor: other ifFail: [^super bitXor: other] )
         public << other = ( ^vmMirror integer: self shiftLeft: other ifFail: [^super << other] )
         public bitInvert = ( ^-1 - self )
+        (* Primordial Soup's `Integer>>timesRepeat:`, which its compiler
+           inlines and ours sends. DeltaBlue and Havlak send it. *)
+        public timesRepeat: action = (
+            1 to: self do: [:ignored | action value].
+            ^nil
+        )
         public < other = ( ^vmMirror integer: self lessThan: other ifFail: [^super < other] )
         public > other = ( ^vmMirror integer: self greaterThan: other ifFail: [^super > other] )
         public <= other = ( ^vmMirror integer: self lessOrEqual: other ifFail: [^super <= other] )
@@ -583,6 +592,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public = other = ( ^vmMirror float: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror floatHash: self ifFail: [^super hash] )
         public sqrt = ( ^vmMirror floatSquareRoot: self ifFail: [^super sqrt] )
+        (* Primordial Soup's `sin`, `cos` and `asInteger`, which truncates
+           toward zero. CD sends all three. *)
+        public sin = ( ^vmMirror floatSine: self ifFail: [^super sin] )
+        public cos = ( ^vmMirror floatCosine: self ifFail: [^super cos] )
+        public asInteger = ( ^vmMirror floatAsInteger: self ifFail: [^super asInteger] )
         public asStringFixed: fractionDigits = ( ^vmMirror float: self asStringFixed: fractionDigits ifFail: [^super asStringFixed: fractionDigits] )
         public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )

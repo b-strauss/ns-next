@@ -787,6 +787,11 @@ mod tests {
         // Primordial Soup's Newspeak body, `-1 - self`: a send of `-` to
         // `self`, which no leaf could do, and which `LargeInteger` inherits.
         (BuiltinClass::Integer, "bitInvert"),
+        // Primordial Soup's Newspeak bodies: `timesRepeat:` sends `to:do:`
+        // and `value`, and `max:` sends `>` to `self`, which no leaf could
+        // do.
+        (BuiltinClass::Integer, "timesRepeat:"),
+        (BuiltinClass::Number, "max:"),
         // A send to `self` is no leaf: `printString` reads the class's own
         // `name`, and a metaclass's `name` reads its own `thisClass` first.
         (BuiltinClass::Class, "printString"),

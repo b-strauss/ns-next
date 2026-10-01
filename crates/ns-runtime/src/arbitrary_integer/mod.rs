@@ -71,6 +71,32 @@ impl ArbitraryInteger {
         }
     }
 
+    /// The integer `value` truncates to, toward zero, exactly; `None` for a
+    /// NaN or an infinity. Primordial Soup's `Float>>asInteger`
+    /// (`LargeInteger::FromDouble`).
+    pub fn from_f64_truncated(value: f64) -> Option<ArbitraryInteger> {
+        if !value.is_finite() {
+            return None;
+        }
+        let truncated = value.trunc();
+        // Below 2^63 in magnitude, `as` converts a whole `f64` exactly.
+        if truncated.abs() < 9_223_372_036_854_775_808.0 {
+            return Some(ArbitraryInteger::from_i64(truncated as i64));
+        }
+        // Beyond, the value is its 53-bit significand times a power of two
+        // of at least 2^11, which `shift_left` multiplies out.
+        let bits = truncated.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) - 1075;
+        let significand = (bits & ((1 << 52) - 1)) | (1 << 52);
+        let magnitude =
+            ArbitraryInteger::from_parts(false, vec![significand]).shift_left(exponent)?;
+        Some(if truncated < 0.0 {
+            magnitude.negated()
+        } else {
+            magnitude
+        })
+    }
+
     pub fn is_negative(&self) -> bool {
         self.negative
     }

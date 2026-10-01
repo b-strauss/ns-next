@@ -703,6 +703,21 @@ pub(crate) fn execute_float<'gc>(
         .map(|answer| Ok(Value::Boolean(answer))),
         FloatPrimitive::Hash => Some(Ok(Value::SmallInteger(float_hash(receiver_float)))),
         FloatPrimitive::SquareRoot => Some(Ok(Value::Float(receiver_float.sqrt()))),
+        // Primordial Soup's are the C library's `sin` and `cos`; Rust's
+        // call the same functions. No benchmark result depends on their
+        // last bit (CD was checked against correctly rounded values).
+        FloatPrimitive::Sine => Some(Ok(Value::Float(receiver_float.sin()))),
+        FloatPrimitive::Cosine => Some(Ok(Value::Float(receiver_float.cos()))),
+        FloatPrimitive::AsInteger => Some(
+            match crate::ArbitraryInteger::from_f64_truncated(receiver_float) {
+                Some(integer) => Ok(mutator.new_integer(integer)),
+                None => Err(NewspeakError {
+                    selector: Symbol::intern("asInteger"),
+                    receiver,
+                    message: format!("asInteger requires a finite Float, got {receiver_float}"),
+                }),
+            },
+        ),
         FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),
         ))),

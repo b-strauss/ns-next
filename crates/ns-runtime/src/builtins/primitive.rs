@@ -130,6 +130,9 @@ impl Primitive {
                 | FloatPrimitive::Hash
                 | FloatPrimitive::AsStringFixed
                 | FloatPrimitive::SquareRoot
+                | FloatPrimitive::Sine
+                | FloatPrimitive::Cosine
+                | FloatPrimitive::AsInteger
                 | FloatPrimitive::PrintString,
             ) => false,
             Primitive::String(StringPrimitive::Equal) => true,
@@ -288,6 +291,9 @@ pub enum FloatPrimitive {
     Hash,
     AsStringFixed,
     SquareRoot,
+    Sine,
+    Cosine,
+    AsInteger,
     PrintString,
 }
 
@@ -1003,6 +1009,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "stringClass:with:ifFail:",
         "with:",
         Primitive::String(StringPrimitive::FromCodePoint),
+    ),
+    mirror(
+        "floatSine:ifFail:",
+        "sin",
+        Primitive::Float(FloatPrimitive::Sine),
+    ),
+    mirror(
+        "floatCosine:ifFail:",
+        "cos",
+        Primitive::Float(FloatPrimitive::Cosine),
+    ),
+    mirror(
+        "floatAsInteger:ifFail:",
+        "asInteger",
+        Primitive::Float(FloatPrimitive::AsInteger),
     ),
 ];
 
