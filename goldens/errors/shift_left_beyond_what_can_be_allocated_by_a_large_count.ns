@@ -1,0 +1,9 @@
+Newspeak3
+'T'
+(* A count beyond what a machine integer holds still reaches the refusal for a
+   result that cannot be allocated, rather than wrapping or aborting. *)
+class ShiftByALargeCount = () (
+    public main: platform args: arguments = (
+        platform transcript print: 1 << 18446744073709551616; newLine
+    )
+)

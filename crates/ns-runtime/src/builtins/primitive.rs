@@ -942,11 +942,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Float(FloatPrimitive::AsStringFixed),
     ),
     mirror(
-        "floatSquareRoot:ifFail:",
-        "sqrt",
-        Primitive::Float(FloatPrimitive::SquareRoot),
-    ),
-    mirror(
         "clockMonotonicNanoseconds:ifFail:",
         "currentMonotonicNanoseconds",
         Primitive::Platform(PlatformPrimitive::MonotonicNanoseconds),
@@ -980,6 +975,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         "largeInteger:shiftLeft:ifFail:",
         "<<",
         Primitive::LargeInteger(LargeIntegerPrimitive::ShiftLeft),
+    ),
+    mirror(
+        "floatSquareRoot:ifFail:",
+        "sqrt",
+        Primitive::Float(FloatPrimitive::SquareRoot),
     ),
 ];
 

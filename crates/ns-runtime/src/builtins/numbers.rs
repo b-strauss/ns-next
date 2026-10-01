@@ -246,8 +246,10 @@ fn shift_left<'gc>(
         .and_then(|count| receiver_integer.shift_left(count));
     match shifted {
         Some(result) => Ok(mutator.new_integer(result)),
-        // A count beyond `u64` shifts a zero receiver to zero like any
-        // other count.
+        // A count beyond `i64` (`to_i64` fails) or a result that cannot be
+        // allocated: a zero receiver still shifts to zero like any other
+        // count. The `u64` conversion above cannot fail, since the count is
+        // known non-negative.
         None if receiver_integer.is_zero() => Ok(Value::SmallInteger(0)),
         None => Err(refusal(format!(
             "<< cannot allocate the result of shifting by {} bits",

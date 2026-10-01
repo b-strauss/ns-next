@@ -24,6 +24,7 @@ class IntegerMeetsFloat = () (
         transcript print: big * 0.5; newLine.
         transcript print: big < 1.5; newLine.
         transcript print: big negated < 1.5; newLine.
+        transcript print: big < nan; newLine.
         transcript print: big - 0.5 = big asFloat; newLine
     )
 )

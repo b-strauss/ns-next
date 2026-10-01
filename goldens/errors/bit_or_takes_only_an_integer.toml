@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: bitOr: requires an integer argument, got nil
+'''
