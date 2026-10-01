@@ -36,8 +36,9 @@ Rust 1.98.0, edition 2021, five crates:
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
 module (`LexerComparisonTest`), and the connection to `ns-next-lsp`.
 
-`benchmarks/are-we-fast-yet/` — ten Are We Fast Yet benchmarks, Primordial
-Soup's Ton80 Richards and their harness, one project, verified by
+`benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
+Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
+project, verified by
 `goldens/awfy/` (`docs/design/execution.md`, "The Are We Fast Yet
 benchmarks").
 
@@ -257,7 +258,8 @@ before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
 decision, made so far only for `num-bigint` and `num-integer`
-(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`).
+(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`),
+and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
 
 ## Conventions
 

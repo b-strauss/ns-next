@@ -15,16 +15,15 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: the Are We Fast Yet benchmarks, stage 3, before road step 2's
+**Next: the baseline over all sixteen programs, before road step 2's
 second plan** ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
-high-performance VM"): DeltaBlue, Havlak, Json and CD from
-`prior-art/somns/core-lib/Benchmarks` join the eleven programs of stages 1 and
-2 in `benchmarks/are-we-fast-yet/` ("Are We Fast Yet, stage 1" and "stage 2"
-below; [execution.md](design/execution.md), "The Are We Fast Yet
-benchmarks"), widening the kernel and the platform on demand. Its plan is
-still to be written, and whether it follows Primordial Soup's protocol, as
-stages 1 and 2 do, is for that plan to settle. Decided with the user on
-2026-09-29, so that the eight-byte value and every later step are measured
+high-performance VM"): the fourteen Are We Fast Yet benchmarks and
+Primordial Soup's Richards and DeltaBlue in `benchmarks/are-we-fast-yet/`
+("Are We Fast Yet, stage 1", "stage 2" and "stage 3" below) are measured on
+several pinned release builds, pooled, and recorded in
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks", as
+its measurement protocol asks. Decided with the user on 2026-09-29 and
+2026-09-30, so that the eight-byte value and every later step are measured
 on real programs.
 
 **After it: road step 2's second plan, the eight-byte value**
@@ -3699,9 +3698,9 @@ Apache 2.0 licence.
   checked by shape.
 - This commit — the documentation describes the built state.
 
-What the batch left open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3 (stage
-2 is built, below), a program's exit status, and whether to inline `to:do:`
-and `to:by:do:`.
+What the batch left open is in [OPEN-WORK.md](OPEN-WORK.md): a program's
+exit status, and whether to inline `to:do:` and `to:by:do:`. Stages 2 and 3
+are built (below).
 
 ## Are We Fast Yet, stage 2 (2026-09-30)
 
@@ -3715,7 +3714,8 @@ Mandelbrot, NBody and Richards join the seven benchmarks of stage 1 in
 `benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
 module shape, and Primordial Soup's own Richards, the Ton80 version, comes
 in beside them as `RichardsTon80`: eleven programs under the one harness.
-Mandelbrot and NBody run at the sizes Are We Fast Yet pins. The kernel
+Mandelbrot runs at SOMns's verified 750 and NBody at Are We Fast Yet's
+250000 steps (decision 3). The kernel
 gained, in Primordial Soup's protocol: an integer's `+ - * < > <= >=`
 meeting a `Float` argument, as a `Float`'s meet an integer one; `bitOr:`,
 `bitXor:` and `<<` for `Integer` and `LargeInteger`, over two's complement,
@@ -3732,8 +3732,9 @@ The decisions, each the user's (2026-09-30):
    in Primordial Soup) and leave out Richards's tracing, so no `platform
    system` protocol is needed.
 2. Both Richards versions come in, as `Richards` and `RichardsTon80`.
-3. Mandelbrot (750, answering 50) and NBody (250000 steps) run at Are We Fast
-   Yet's pinned sizes, knowing a run takes seconds in a release build.
+3. Mandelbrot at SOMns's verified 750, which answers 50 (Are We Fast Yet's
+   `rebench.conf` runs 500), and NBody at Are We Fast Yet's 250000 steps,
+   knowing a run takes seconds in a release build.
 4. `Mandelbrot.ns` keeps the Computer Language Benchmarks Game's BSD-3 header
    as SOMns carries it; `THIRD-PARTY-NOTICES.md` gets no entry for it.
 
@@ -3752,8 +3753,8 @@ with a `Float` is a refusal Primordial Soup makes too.
 - `4ba1e1f` — `Integer` and `LargeInteger` shift left with `<<`, refusing a
   result that cannot be allocated.
 - `58e8765` — `Float` answers `sqrt`.
-- `2f4af6e` — Mandelbrot and NBody in Primordial Soup's protocol, at Are We
-  Fast Yet's sizes.
+- `2f4af6e` — Mandelbrot and NBody in Primordial Soup's protocol, at the
+  sizes of decision 3.
 - `4634a60` — the Are We Fast Yet Richards and Primordial Soup's Ton80
   Richards.
 - `5f53da2`, `8c4c4b1` — the documentation describes the built state, and
@@ -3767,6 +3768,112 @@ with a `Float` is a refusal Primordial Soup makes too.
   never under a stress mode (decided with the user on 2026-10-01); the three
   stress runs drop from 2227 s to 277 s.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3,
-`//` with a `Float` operand, and a program-chosen size that a
-system which overcommits accepts and then kills the process for.
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): `//` with a
+`Float` operand, and a program-chosen size that a system which overcommits
+accepts and then kills the process for. Stage 3 is built (below).
+
+## Are We Fast Yet, stage 3 (2026-10-01)
+
+Plan: [ns-next-are-we-fast-yet-stage-3](superpowers/plans/2026-10-01-1855-ns-next-are-we-fast-yet-stage-3.md);
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
+[core-library.md](design/core-library.md), "Strings are code points in two
+widths", "The collections module (plan 2)" and "A NaN equals a NaN".
+Commits: `192c6d0` (the plan's) to the commit of this entry.
+
+DeltaBlue, Havlak, CD and Json, the last four Are We Fast Yet benchmarks,
+join the eleven programs of stages 1 and 2 in `benchmarks/are-we-fast-yet/`,
+ported from SOMns into Primordial Soup's module shape, and Primordial Soup's
+own DeltaBlue comes in beside them as `DeltaBlueTon80`: sixteen programs
+under the one harness. A `String` is now its code points, one byte or four
+each, so `size` and `at:` are one access. The kernel gained six `MIRROR`
+rows, 111 in all -- `String`'s `at:` and `copyFrom:to:`, `String with:`,
+and `Float`'s `sin`, `cos` and `asInteger` -- and `Integer>>timesRepeat:`
+and `Number>>max:` in Newspeak; `Float>>=` makes a NaN equal to a NaN. The
+collections module's `List` became Primordial Soup's, with a first index,
+and `Map` and `Set` joined it. Every public member of the three shipped
+modules is documented in place, and `CLAUDE.md`'s "Conventions" holds the
+rule. No wire tag changed, and no existing golden's outcome. Four existing
+goldens' sources changed: the comments of
+`goldens/collections/a_list_grows_past_its_first_array` and
+`a_list_index_error_is_caught_as_an_error` name the new growth;
+`a_user_subclass_of_list_inherits_its_protocol`'s superclass clause sends
+`new: 3`, `List`'s primary factory; and `goldens/nesting/nested_override`'s
+slot starts at `Stopwatch` rather than `List`, whose primary factory,
+`new:`, is not the `new` that `Nested`'s superclass clause sends.
+
+The decisions, each the user's (2026-10-01):
+
+1. Stage 3 follows Primordial Soup's protocol, as stages 1 and 2 do: every
+   selector a port sends to a kernel or collections object exists in
+   Primordial Soup's `KernelForPrimordialSoup.ns` or `Collections.ns` with
+   the same meaning.
+2. Primordial Soup's own DeltaBlue joins as `DeltaBlueTon80`, beside the
+   Are We Fast Yet `DeltaBlue`, as `RichardsTon80` sits beside `Richards`.
+3. `List` is used canonically and made fast: SOMns's `Vector` is
+   Primordial Soup's `List`, a queue is `add:` and `removeFirst`, no port
+   rewrites an algorithm around a slow operation, and `removeFirst` runs in
+   amortized constant time.
+4. `Map` and `Set` are adapted from Primordial Soup's `Collections.ns`
+   (Apache 2.0), its `transient` slot as ns-next's `lazy` slot; that an
+   image carries a lazy slot's value is recorded in
+   [OPEN-WORK.md](OPEN-WORK.md).
+5. Strings are optimized now: the two widths come forward onto today's
+   arena.
+6. CD is a module like all the others: `RedBlackTree.ns` becomes nested
+   classes of `CD`.
+7. The sizes are Are We Fast Yet's `rebench.conf`'s: DeltaBlue 12000,
+   Havlak 1500 (6102 loops, 5213 nodes), CD 250 (10830 collisions), and
+   Json parsing once, its 100 being a repetition count; `DeltaBlueTon80`
+   keeps Primordial Soup's 100 and 100.
+8. Mandelbrot stays at 750, SOMns's verified size, and the documentation
+   is corrected: Are We Fast Yet's `rebench.conf` runs 500.
+9. The licences go into the files: `Havlak.ns` carries Google's Apache 2.0
+   text and `CD.ns` Purdue's and Apple's BSD-3 text, as SOMns's files do,
+   with no `THIRD-PARTY-NOTICES.md` entry of their own; the notices'
+   introduction is corrected.
+10. The collections' representation is private, where Primordial Soup's is
+    protected; only `List`'s `size_` stays protected.
+11. A NaN equals a NaN, and every NaN hashes alike, so that a `Float`'s
+    equality is an equivalence (§3.1.1); the ordering and the arithmetic
+    stay IEEE's.
+12. The public API of the shipped modules is documented: every `public`
+    member of `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`
+    has a comment of one to four lines saying what it answers, takes and
+    signals, and `CLAUDE.md` holds the rule.
+
+- `192c6d0` — the plan, and whether an image carries a lazy slot's value
+  recorded in [OPEN-WORK.md](OPEN-WORK.md).
+- `ce858e6` — a `String` is its code points, one byte or four each.
+- `cc2418f` — a `String` answers `at:` and `copyFrom:to:`, and `String
+  with:` a one-character string.
+- `745a2ac` — restores the space the previous task dropped from `Symbol`'s
+  class header.
+- `7488e1d` — `Float` answers `sin`, `cos` and `asInteger`; `Integer`
+  `timesRepeat:` and `Number` `max:`.
+- `2e1b437` — `List` is Primordial Soup's, with a first index so that
+  `removeFirst` moves nothing.
+- `98b19e3` — its golden pins a queue moving its elements to the front, and
+  a sort from an offset.
+- `cf924c3` — `Map` and `Set`, adapted from Primordial Soup's
+  `Collections.ns`.
+- `fb090fd` — a NaN equals a NaN, so a `Float`'s equality is an
+  equivalence.
+- `d1bca4f` — a unit test pins NaNs of different bit patterns equal and
+  hashing alike.
+- `5e49e60` — DeltaBlue and `DeltaBlueTon80` join the harness.
+- `10836cb` — Havlak joins the harness.
+- `fe0a935` — CD, with its red-black tree folded in, joins the harness.
+- `aadcf78` — Json joins the harness.
+- `abdc1ea` — the project file separates Json and List as it does every
+  other module.
+- `5f6a73f` — every public member of the shipped modules says what it does,
+  and `CLAUDE.md` holds the rule.
+- `c88bf0f` — the descriptions come before their reasons, and say what
+  each refuses.
+- This commit — the documentation describes the built state.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the baseline
+over all sixteen programs, whether an image carries a lazy slot's value,
+`ns-next run` ending in a panic when its output pipe closes early,
+`Object>>printString` answering `an Object` for every class that does not
+override it, and `to:by:do:` with a step of 0, which never ends.

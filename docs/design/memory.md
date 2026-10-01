@@ -273,16 +273,24 @@ file next starts from a list rather than from rediscovery.
 - **The `heap` parameter sits first in some signatures and last in others**,
   across `image/`, `compiler/` and `interpreter/`.
 - **Copy-out costs, and the accessor that could now avoid them.**
-  `builtins/text.rs`'s string dispatch clones the payload on every send, and
-  `object_snapshot`/`frame_snapshot` clone each payload twice per encoded
-  record. The arena did not remove these, and was never going to: copy-out is a
-  property of an accessor's *return type*, not of the store, and `str_value`
-  still returns an owned `String`. What the arena changed is that a *borrowing*
+  `builtins/text.rs`'s string dispatch no longer clones the payload: its
+  accessors -- `string_size`, `string_code_point_at`, `string_slice`,
+  `string_concatenation`, `strings_equal` and `string_hash` -- copy out a
+  size, a code point, a slice, a `bool` or a hash, the work done inside
+  `heap.rs`, and `str_value` stays as the UTF-8 boundary, an owned
+  `String` for the transcript and the error texts. Measured on 2026-10-01
+  (release, two pinned builds per side): 25,000 `size` sends over a
+  25,000-character string went from 22.3 ms to 2.4 ms, and `size` with
+  `at:` from 40 ms to 3 ms. `object_snapshot`/`frame_snapshot` still clone
+  each payload twice per encoded record, and `encode` converts each
+  `String` to UTF-8 once. Copy-out is a property of an accessor's *return
+  type*, not of the store; what the arena changed is that a *borrowing*
   accessor became expressible at all. Under `Rc<RefCell<_>>` one would have had
   to hand back a `Ref` guard, which is unusable at a site that calls back into
-  the interpreter; under the arena an accessor can lend out `&str` tied to the
-  `&Heap` borrow, and the borrow checker enforces the rest. Whether to add one
-  is a measurement, and neither site named here is on a measured path.
+  the interpreter; under the arena an accessor can lend out a slice tied to
+  the `&Heap` borrow, and the borrow checker enforces the rest. Whether to
+  add one for the snapshots is a measurement, and they are not on a measured
+  path.
 
 ## Checked roots and a collector
 
@@ -987,6 +995,14 @@ creator's frame record without registers.
   the worst case, and the digit count is bounded against the bytes left
   before its `Vec` is allocated (`read_large_integer_parts`), which keeps the
   term proportional to the input.
+
+  **A decoded `String` costs at most 4 heap bytes per wire byte** beyond its
+  placeholder: its text is UTF-8 on the wire, and one code point outside
+  Latin-1 makes every element four bytes. It is allocated exactly, from
+  the buffer in place, with no intermediate `Vec` or `String`
+  (`Reader::read_code_points`). A byte cannot be both a `String`'s and a
+  `LargeInteger`'s, so the term stays below `LargeInteger`'s 4.6x, and the
+  ~16.4x and ~21.0x peaks stand.
 
   **Two things none of these figures count.** They count live bytes. First,
   `reserve_for` (`image/decode.rs`) caps a list's capacity at the bytes

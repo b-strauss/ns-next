@@ -5,8 +5,9 @@
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
 > `collections` the facet of the shipped module `CollectionsFactory.ns`
-> with a Newspeak `List`; missing is `Integer>>/`, and the surface grows on
-> demand, not speculatively.
+> with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/`, and the
+> surface grows on demand, not speculatively. Every public member of the
+> three shipped modules is documented in place, by a comment above it.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
 > `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections
@@ -35,6 +36,12 @@ different `ns-next` binary rather than a different artifact. See the
 comparison in [image-format.md](image-format.md).
 
 ## What exists
+
+The shipped modules document their public members in place: every `public`
+method, slot and class of `Kernel.ns`, `PlatformFactory.ns` and
+`CollectionsFactory.ns` has a comment above it, or shares one with its
+family, saying what it answers, what it takes and which `Error` it signals
+(`CLAUDE.md`, "Conventions"). This document gives the reasons behind them.
 
 `Kernel.ns` declares one nested class per builtin class but the mirror's:
 
@@ -117,14 +124,16 @@ below); `Integer`'s `+ - * // \\ < >
 `printString` and `asString`, beside `bitInvert`, which is ordinary Newspeak,
 Primordial Soup's `^-1 - self`, and reaches no leaf; `LargeInteger`'s the same
 leaves and `hash` ("Large integers" below);
-`Float`'s `+ - * / < > <= >= =`, `hash`, `sqrt`, `asStringFixed:`,
-`printString` and `asString`; `String`'s `size`,
-`,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
+`Float`'s `+ - * / < > <= >= =`, `hash`, `sqrt`, `sin`, `cos`,
+`asInteger`, `asStringFixed:`, `printString` and `asString`; `String`'s
+`size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`, `asSymbol` and
+`printString`, and on its class side `with:`; `Symbol`'s `asString`, `=`,
 `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
 `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript`
 forwards `show:` and `newLine` the same way, and its `Stopwatch` its clock
 reading ("The platform" below). `Number` reaches no leaf of its own: its
-`to:do:` and `to:by:do:` are ordinary Newspeak (below).
+`to:do:` and `to:by:do:` are ordinary Newspeak (below), and so are
+`Number>>max:` and `Integer>>timesRepeat:`, Primordial Soup's bodies.
 `UndefinedObject` reaches no leaf either: its nil protocol is quick methods
 and its `printString` an ordinary one ("The nil protocol" below). `True` and
 `False` reach no leaf at all:
@@ -197,16 +206,46 @@ so it does **not** survive a snapshot: the same symbol in a reloaded image
 can hash to another number, and a hash a program recorded in an artifact
 cannot be compared against one computed after the load.
 
-**Planned: strings of code points in two widths.** Would change: a `String`
-stops being a Rust `String` of UTF-8, whose `size` counts code points by
-walking the bytes, and stores its code points in the object space, one byte
-each while every one fits Latin-1 and 32 bits each otherwise, so `size` and
-an `at:` are one access; `Symbol` becomes a subclass of `String` sharing both
-formats, and `=` stays class-tight both ways as today (`'foo' = #foo` and
-`#foo = 'foo'` answer `false`), so `Symbol` overrides `=` and `hash`, pinned
-by a golden. UTF-8 stays the encoding at every boundary -- source, the
-transcript, files. The design and the comparison with the reference engines
-are [object-model.md](object-model.md), "Planned: the object layout".
+**Strings are code points in two widths.** A `String`'s payload is a
+`CodePoints`
+(`crates/ns-runtime/src/code_points.rs`): one byte per code point while
+every one fits Latin-1, 32 bits per code point otherwise, so `size` and
+`at:` are one access each. It is canonical -- a string whose code points
+all fit Latin-1 is always narrow -- so `=` compares the payloads directly
+and `hash` agrees with it. Every element is a Unicode scalar value, at most
+U+10FFFF and never a surrogate, so UTF-8 stays the encoding at every
+boundary -- source, the transcript, the image -- and the conversion to it is
+total. `hash` is the hash of the UTF-8 text, the value it had when a
+`String`'s payload was a Rust `String`. Built on 2026-10-01 for Json, ahead
+of road step 3, on today's arena. The design and the comparison with the
+reference engines are [object-model.md](object-model.md), "Planned: the
+object layout", "Strings have two widths".
+
+Three leaves read the code points, each Primordial Soup's selector over
+code points rather than its bytes:
+
+- **`at:`** answers the code point at a 1-based index, an `Integer`, where
+  Primordial Soup's answers a UTF-8 byte -- the same for ASCII. Its errors
+  are `Array>>at:`'s texts: "index 4 out of range: valid indices are 1..3
+  (size 3)", and "at: requires an Integer index, got nil".
+- **`copyFrom:to:`** is Primordial Soup's, 1-based and inclusive: the range
+  lies within the string, and the empty range is the one that stops just
+  before it starts. Anything else is an `Error`, "copyFrom: 3 to: 1 out of
+  range: valid ranges lie within 1..3, an empty range ends just before it
+  starts (size 3)", or "copyFrom:to: requires an Integer index, got …".
+- **`String with:`** answers a one-character string of any code point,
+  where Primordial Soup's takes a byte; anything that is not a scalar value
+  is an `Error`, "with: requires a Unicode code point, an Integer from 0 to
+  1114111 outside 55296 to 57343, got …".
+
+`goldens/kernel/a_string_answers_its_code_points` and
+`goldens/kernel/a_string_is_its_code_points` pin them in either width,
+`goldens/exceptions/a_string_index_error_is_caught` their errors.
+
+**Planned, with road step 3:** `Symbol` becomes a subclass of `String`
+sharing both formats, and `=` stays class-tight both ways as today
+(`'foo' = #foo` and `#foo = 'foo'` answer `false`), so `Symbol` overrides
+`=` and `hash`, pinned by a golden.
 
 Four further rows serve `Value` itself rather than one builtin:
 `value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
@@ -412,7 +451,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 105 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 111 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -463,8 +502,14 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     private class Collections = Value new () (
         public Collections = ( ^outer CollectionsFactory Collections )
         public List = ( ^outer CollectionsFactory List )
+        public Map = ( ^outer CollectionsFactory Map )
+        public Set = ( ^outer CollectionsFactory Set )
     )
-    private class List = Object new ( | protected size_ ::= 0. protected data ::= Array new: 4. | ) ( ... )
+    private class List new: capacity = Object new (
+        | protected size_ ::= 0. private firstIndex ::= 1. private data ::= Array new: capacity. |
+    ) ( ... ) : ( public new = ( ^self new: 3 ) )
+    private class Map new: capacity = Object new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class Set new: capacity = Object new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     public newCollections = ( ^Collections new )
 ) : ()
 ```
@@ -505,7 +550,7 @@ reaches the mirror (`tests/platform.rs`,
 `the_platform_factory_answers_only_new_platform`,
 `the_platforms_class_accessors_reach_the_private_classes`).
 `CollectionsFactory.ns` follows the same pattern: its root holds the kernel
-instance, its nested `Collections` and `List` are private, and its one
+instance, its nested `Collections`, `List`, `Map` and `Set` are private, and its one
 public member, `newCollections`, answers the facet `platform collections`
 is (`the_collections_factory_answers_only_new_collections`).
 
@@ -520,13 +565,15 @@ which fetches `CollectionsFactory`'s root class through the mirror's
 with the kernel instance, on the first `platform collections` of any
 platform; `Platform`'s `collections` answers that instance's
 `newCollections`. So every platform's facet comes from one factory and
-hands out one `List` class, and the facets, values, are all equal
+hands out one `List`, one `Map` and one `Set` class, and the facets,
+values, are all equal
 (`goldens/collections/every_platform_shares_one_collections_module`). The
 facet names its own class, `^outer CollectionsFactory Collections`, as
-`Platform>>Platform` does, and `List` by `^outer CollectionsFactory List`:
-class accessors the compiler recognizes in every shipped module but the
-kernel, so the platform paths `collections Collections` and `collections
-List` needed no wider recognition.
+`Platform>>Platform` does, and `List`, `Map` and `Set` by `^outer
+CollectionsFactory <Name>`: class accessors the compiler recognizes in
+every shipped module but the kernel, so the platform paths `collections
+Collections`, `collections List`, `collections Map` and `collections Set`
+needed no wider recognition.
 
 **The boot.** `Interpreter::install_platform`, run by `bootstrap_with`
 right after `install_kernel`, takes `PlatformFactory` from the table of
@@ -741,16 +788,18 @@ asset. A module that needs something nobody has asked for is a reason to widen
 the whitelist deliberately — with a real module, run end to end, its output
 recorded — not a reason to build a speculative library.
 
-The `collections` namespace is the worked example. It hands out exactly one
-class of the library, `List`, because exactly one is asked for -- `Ducts.ns`,
+The `collections` namespace is the worked example. It hands out `List`,
+`Map` and `Set`, because those are asked for: `List` because `Ducts.ns`,
 `NewspeakASTs.ns` and `V5BytecodeSimulation.ns` bind `platform collections
-List` -- and `List` answers exactly the six selectors the corpus and the
-goldens send: `new`, `add:`, `at:`, `at:put:`, `do:` and `size`. The corpus
-also asks that namespace for `Map`, `IdentityMap`, `IdentitySet`, `WeakArray`
-and `Collection`. Those name classes the runtime does not have, and inventing
-them — or worse, aliasing them onto `List`, which is neither a dictionary nor
-a set — would be a collections library built without a caller. Modules
-needing them stay off the whitelist.
+List`, and the Are We Fast Yet benchmarks of stage 3 widen it; `Map` and
+`Set` because DeltaBlue and Havlak need them. Each carries only the
+selectors those programs and the goldens send ("The collections module
+(plan 2)" below). The corpus also asks that namespace for `IdentityMap`,
+`IdentitySet`, `WeakArray` and `Collection`. Those name classes the runtime
+does not have, and inventing them — or worse, aliasing them onto `List`,
+`Map` or `Set`, which compare by `=` and hold their elements strongly —
+would be a collections library built without a caller. Modules needing them
+stay off the whitelist.
 
 ## Large integers
 
@@ -966,6 +1015,27 @@ class `Fraction`. This is a bug"), and it names the open design question —
 whether a user chooses the numeric implementation — rather than settling it.
 A golden for the rule would have to be skipped behind a whole numeric tower,
 so the deviation is recorded here instead.
+
+## A NaN equals a NaN
+
+`Float>>=` is IEEE 754's equality except that every NaN equals every other,
+and every NaN hashes alike (`float_equals` and `float_hash` in
+`builtins/numbers.rs`). A `Float` is a value, so its `=` must be an
+equivalence, and its `==` answers what `=` does (§3.1.1); IEEE's equality is
+not one, since a NaN equals nothing, itself included, so a NaN would not even
+be identical to itself. This is JavaScript's SameValueZero, the equality its
+`Map` and `Set` use, under which `0.0 = -0.0` stays true and both hash
+alike. Julia's `isequal` and Java's `Double.equals` make a NaN equal to a NaN
+too, but tell `0.0` from `-0.0`.
+
+The ordering and the arithmetic stay IEEE's: for a NaN `a = b` is true while
+`a <= b` is false, and a comparison of a NaN with anything answers `false`.
+It differs from Primordial Soup and Squeak, where a NaN equals nothing;
+Primordial Soup's `isNaN` is `^(self = self) not`, so ns-next's, when a
+program asks for it, is a leaf. Decided with the user on 2026-10-01;
+`goldens/arithmetic/not_a_number_equals_itself` pins it, a NaN found again
+as a `Map` key included, and `every_nan_equals_every_other_and_hashes_alike`
+in `builtins/numbers.rs` NaNs of different bit patterns.
 
 ## Gap: an integer has no `/`
 
@@ -2240,12 +2310,13 @@ its class. That needs its own decision when the first such module arrives.
   platform" above): `class CollectionsFactory usingKernel: theKernel =
   Object <: Value`, a root that holds the kernel in a private slot and is
   never handed out, with the private nested classes a program reaches
-  through the platform -- the `Collections` facet and `List` -- as SOMns's
-  and Primordial Soup's collections modules are values; it needs no mirror.
+  through the platform -- the `Collections` facet, `List`, `Map` and `Set`
+  -- as SOMns's and Primordial Soup's collections modules are values; it
+  needs no mirror.
   `PlatformFactory`'s root fetches the module (`vmMirror moduleNamed:
   #CollectionsFactory ifFail: [nil]`) and instantiates it with
   `kernelModule`, once, in its lazy `collectionsModule`, so every platform
-  shares one module instance and one `List` class; the platform's lazy
+  shares one module instance and one class of each; the platform's lazy
   `collections` slot answers that instance's `newCollections`, its one
   public member, and plan 1's `Collections` class has left
   `PlatformFactory.ns`. **How the facet's class is named, settled with the
@@ -2259,11 +2330,41 @@ its class. That needs its own decision when the first such module arrives.
   `collections List`; a program may still subclass it
   (`goldens/collections/a_user_subclass_of_list_inherits_its_protocol`).
 - **`List`, built,** is Primordial Soup's `List` in this runtime's
-  Newspeak: `protected size_`, `protected data`, an `Array` of four to
-  start, replaced by one twice as long when it is full -- nothing grows in
-  place. Its protocol follows the on-demand rule: `new`, `add:`, `at:`,
+  Newspeak, with the index of its first element added. Its elements live
+  in `data` from `firstIndex` on, `size_` of them, in an `Array` of three
+  to start. When `add:` finds the array full at its end, the elements move
+  to the front of the same array if at least half of it lies empty before
+  them, and otherwise into an `Array` half as large again, Primordial
+  Soup's growth (`capacity // 2 + capacity bitOr: 7`: 3, 7, 15, 23, …) --
+  nothing grows in place. The first index is what makes a queue cheap:
+  `removeFirst` moves nothing, where Primordial Soup's shifts every
+  element, so a queue of `add:` and `removeFirst` runs in amortized
+  constant time, as SOMns's `Vector` keeps its `firstIdx`; DeltaBlue at
+  12000 took 52 s with the shifting `removeFirst`, against 0.9 s
+  (decided with the user on 2026-10-01: the benchmarks use a `List` as the
+  upstream benchmark uses its `Vector`, and `List` is made fast rather than
+  a port rewritten around a slow operation). The primary factory is
+  `new: capacity`, as Primordial Soup's is, so a program may write `List
+  new: 15` as a superclass clause, as DeltaBlue's `Plan` does; the class
+  side's `new` is `new: 3`.
+  Its protocol follows the on-demand rule: `new`, `add:`, `at:`,
   `at:put:`, `do:` and `size`, what the corpus and the goldens ask of
-  `OrderedCollection`, plus `at:put:`, which `Array` has. `add:` answers
+  `OrderedCollection`, plus `at:put:`, which `Array` has; and what the Are
+  We Fast Yet benchmarks send: `isEmpty` (DeltaBlue, `DeltaBlueTon80`,
+  Havlak), `removeFirst` (DeltaBlue's and Havlak's queues), `removeLast`
+  (`DeltaBlueTon80`'s stack), `remove:ifAbsent:` (both DeltaBlues),
+  `removeAll` (Havlak, keeping the capacity, as the Are We Fast Yet
+  `Vector` does), `anySatisfy:` (Havlak) and `sort:` (DeltaBlue), a
+  stable merge sort whose block answers whether its first argument may
+  precede its second, Primordial Soup's `lessOrEqual`
+  (`goldens/collections/a_list_is_a_queue_a_stack_and_sorts`). An empty
+  `List`'s `removeFirst` and `removeLast` are `Error`s. Its representation
+  -- `data`, `firstIndex` and every helper method -- is private, where
+  Primordial Soup's is protected, so that it can change later, to a ring
+  buffer say, or under a fuller protocol, without a subclass noticing;
+  only `size_` stays protected, as a subclass's view of the size
+  (`goldens/collections/a_user_subclass_of_list_inherits_its_protocol`
+  reads it; decided with the user on 2026-10-01). `add:` answers
   the element, and `at:put:` the value, as Smalltalk's and Primordial
   Soup's do, where the kernel's `Array>>at:put:` leaf answers the receiver
   (decided with the user on 2026-09-28). `do:` reads the size once, as
@@ -2278,6 +2379,31 @@ its class. That needs its own decision when the first such module arrives.
   `kernelModule Error` with `Array>>at:`'s text, "index 3 out of range:
   valid indices are 1..2 (size 2)", so a program sees one error from
   either (`goldens/collections/a_list_index_error_is_caught_as_an_error`).
+- **`Map` and `Set`, built** (2026-10-01), adapted from Primordial Soup's
+  `newspeak/Collections.ns` (Apache 2.0) for DeltaBlue and Havlak, which
+  use SOMns's `Dictionary`, `IdentityDictionary`, `Set` and `IdentitySet`.
+  Each is an insertion-ordered hash table: the elements, or a `Map`'s keys
+  and values side by side, in `data_` in the order they were first added,
+  and `hashtable_`, an open-addressing table of their indices in `data_`,
+  0 marking an empty bucket, kept at most three quarters full. A key or an
+  element is found by its `hash` and compared with `=`; a `Map`'s `at:`
+  signals an `Error` for an absent key, "key not found: …", and a negative
+  capacity is an `Error` too. Primordial Soup's `transient` slot
+  `hashtable_ ::= rehash` is ns-next's `lazy` slot, the same getter
+  (§6.3.3), so the table is rebuilt from `data_` whenever it is `nil`;
+  that an image writes a lazy slot's value, where §6.3.3 intends it never
+  be persisted, is [OPEN-WORK.md](../OPEN-WORK.md)'s "Whether an image
+  carries a lazy slot's value". Changed from Primordial Soup's: only what
+  the benchmarks send -- `Map`'s `new`, `new:`, `at:`, `at:put:`, `keys`
+  and `removeAll`, `Set`'s `new`, `new:`, `add:`, `do:` and `size` --
+  so there is no removal of single elements and no deleted marks; a lookup
+  answers the element's index in `data_`, so that no operation reads the
+  table twice; `removeAll` keeps the capacity, as the Are We Fast Yet
+  `Dictionary` does, because Havlak empties and refills its map for every
+  loop search. As `List`'s, the representation -- `size_`, `data_`,
+  `hashtable_` and every helper -- is private, where Primordial Soup's is
+  protected. `goldens/collections/a_map_and_a_set_keep_insertion_order`
+  pins both.
 - **The handler search keeps no `OrderedCollection`, built.** `invokeNextHandler`
   counts the enabled `on:do:` activations it passes, and
   `invokeHandlerAt:disabling:` fills an `Array new: count` by walking the same range
@@ -2323,8 +2449,9 @@ Done in plan 2: `CollectionsFactory.ns` joins the shipped modules resolved
 with `resolve_kernel` and whose root no program reaches -- its one instance
 is kept by `PlatformFactory`'s private lazy `collectionsModule`, and what a
 program gets is the facet `platform collections` answers. It declares no
-`vmMirror` and needs none. The on-demand rule is its too: every `List`
-selector exists because the corpus or a golden asks for it.
+`vmMirror` and needs none. The on-demand rule is its too: every selector
+of `List`, `Map` and `Set` exists because the corpus, a golden or an Are
+We Fast Yet benchmark asks for it.
 
 #### What is measured
 
@@ -2668,9 +2795,22 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   including the number-theoretic transform and Burnikel-Ziegler division
   (decided with the user the same day); divide-and-conquer radix conversion
   is not taken ("Large integers" above).
-- **Strings will store code points in one of two widths**, Latin-1 or 32
-  bits (planned; decided with the user on 2026-09-29; [object-model.md](object-model.md),
-  "Planned: the object layout").
+- **Strings store code points in one of two widths**, Latin-1 or 32
+  bits (decided with the user on 2026-09-29, built on today's arena on
+  2026-10-01, ahead of road step 3; "Strings are code points in two widths"
+  above; [object-model.md](object-model.md), "Planned: the object layout").
+- **`List` is used canonically and made fast; `Map` and `Set` are adapted
+  from Primordial Soup** (decided with the user on 2026-10-01, built the
+  same day; "The collections module (plan 2)" above;
+  [plan](../superpowers/plans/2026-10-01-1855-ns-next-are-we-fast-yet-stage-3.md)):
+  the Are We Fast Yet ports use a `List` as the upstream benchmark uses its
+  `Vector`, a queue being `add:` and `removeFirst`, and `List` keeps a first
+  index so that `removeFirst` moves nothing, rather than a port being
+  rewritten around a slow operation; `Map` and `Set` are Primordial Soup's
+  `Collections.ns` (Apache 2.0), with its `transient` slot as a `lazy` one;
+  the representation of all three is private.
+- **A NaN equals a NaN** (decided with the user on 2026-10-01, built the
+  same day; "A NaN equals a NaN" above).
 - **Exceptions** (nine decisions taken with the user on 2026-09-25, built
   2026-09-25 to 2026-09-26; "Exceptions" above;
   [plan](../superpowers/plans/2026-09-25-2244-ns-next-exceptions.md)):

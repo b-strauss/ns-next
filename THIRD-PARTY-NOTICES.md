@@ -7,7 +7,14 @@ any names the upstream file it comes from in a header:
   `crates/ns-runtime/src/arbitrary_integer/`. Both are licensed MIT OR
   Apache-2.0 at the licensee's choice; `ns-next` takes them under MIT.
 - Newspeak code in `benchmarks/are-we-fast-yet/`: the benchmarks from SOMns,
-  licensed MIT, and the harness and `RichardsTon80.ns` from Primordial Soup,
+  licensed MIT, except that `Mandelbrot.ns`, `Havlak.ns` and `CD.ns` keep
+  their upstream files' own licence texts in their headers (BSD-3, Apache
+  License 2.0 and BSD-3); and the harness, `RichardsTon80.ns` and
+  `DeltaBlueTon80.ns` from Primordial Soup, licensed under the Apache
+  License 2.0.
+- Newspeak code in `crates/ns-runtime/core-library/CollectionsFactory.ns`,
+  its `List`, `Map` and `Set`, adapted from Primordial Soup's
+  `newspeak/Collections.ns` and `newspeak/KernelForPrimordialSoup.ns`,
   licensed under the Apache License 2.0.
 
 Each of these licences requires its notice below to accompany every copy.

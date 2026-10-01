@@ -24,7 +24,10 @@ pointers, no baked-in tagging or host endianness.
 **Canonical encodings.** Little-endian integers, IEEE-754 `binary64` for floats,
 UTF-8 for strings and symbols, an integer as an `i64` when it fits one and
 otherwise as a sign and its 64-bit digits, least significant first. Symbols are
-re-interned on load rather than assumed to keep their ids.
+re-interned on load rather than assumed to keep their ids. The decoder picks
+a `String`'s width, one byte or four per code point, from the code points it
+reads ([core-library.md](core-library.md), "Strings are code points in two
+widths").
 
 **The bootstrap is the base image.** There is no pre-built base image file.
 `run`, `build` and `load` all bootstrap the core library and the `Object`
@@ -1391,8 +1394,10 @@ which is old space's bytes relocated on load, is the model this does not take.
 - **Floats** stay `VALUE_FLOAT`, an `f64` on the wire, and the decoder answers
   an immediate SmallFloat64 or a boxed `Float` from the value alone. A boxed
   `Float` is a value with no identity, so it needs no record of its own.
-- **Strings and symbols** stay UTF-8 on the wire; the decoder picks the
-  one-byte or the four-byte form from the code points it reads.
+- **Symbols** stay UTF-8 on the wire, as strings do; the decoder picks a
+  symbol's one-byte or four-byte form from the code points it reads, as it
+  already does a string's, and both become byte- or 32-bit-indexed objects
+  in the space.
 - **Frames become object records.** A reified frame is an object of the frame
   format ([object-model.md](object-model.md), "Planned: the object layout"), so
   its record joins the object table under a new object tag. The separate frame

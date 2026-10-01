@@ -20,7 +20,7 @@ ObjectReference = a 32-bit index into the `Heap`'s object arena; ClassReference 
 
 Object { class: ClassReference, identity_hash: u32, dispatch_id: DispatchId, data: ObjectData }
 
-ObjectData = Instance(Vec<Value>) | String(String) | Symbol(Symbol)
+ObjectData = Instance(Vec<Value>) | String(CodePoints) | Symbol(Symbol)
            | Array(Vec<Value>) | Closure(ClosureData) | Class(Box<ClassData>)
            | Activation(FrameReference) | LargeInteger(ArbitraryInteger)
 ```
@@ -29,7 +29,9 @@ A `SmallInteger` is every integer that fits `i64`; any other is an object of
 the kernel class `LargeInteger`, whose `ArbitraryInteger` payload holds a sign
 and 64-bit digits and no handle. `Mutator::new_integer` decides which, so each
 integer has one representation ([core-library.md](core-library.md), "Large
-integers").
+integers"). A `String`'s `CodePoints` payload holds its code points in one of
+two widths and no handle ([core-library.md](core-library.md), "Strings are
+code points in two widths").
 
 `dispatch_id` is the id an inline cache guards the object's sends on, a copy
 stamped from its application's ids, and a class object's data is boxed to keep `Object` at 56
@@ -1510,7 +1512,9 @@ its byte offset. Road step 3; the space, its
 allocation and its collector are [memory.md](memory.md), "Planned: the
 object space". The header word plus class word (option A), frames as heap
 objects and strings in two widths were decided with the user on 2026-09-29;
-the rest is derived.
+the rest is derived. Strings in two widths are built already, on today's
+arena (2026-10-01); what road step 3 changes for them is that they become
+byte- and word-format objects in the space.
 
 ```
 [header word][class word][field 1][field 2] ...     8-byte aligned, at least 16 bytes
@@ -1666,9 +1670,13 @@ to a frame object, so an `ActivationReference` is still never stored. The
 frame arena, its second forwarding table and every separate register vector
 go.
 
-**Strings have two widths.** One byte per code point while every code point
-fits Latin-1, 32 bits per code point otherwise; either way the elements are
-code points, so `size` and `at:` are one access. §5.1.5 makes a string's
+**Strings have two widths.** A string holds one byte per code point while
+every code point fits Latin-1, 32 bits per code point otherwise; either way
+the elements are code points, so `size` and `at:` are one access. This is
+built on today's arena, as the `CodePoints` payload
+(`crates/ns-runtime/src/code_points.rs`; [core-library.md](core-library.md),
+"Strings are code points in two widths"); road step 3 makes the two widths
+the byte- and 32-bit-indexed formats below. §5.1.5 makes a string's
 elements "integers representing the encoding of the string in Unicode normal
 form C" and leaves the representation to the implementation. This is Spur's
 `ByteString` and `WideString`; Java's compact strings (JEP 254) and V8 do the
@@ -1676,11 +1684,12 @@ same with a UTF-16 wide form, and Python (PEP 393) adds a middle width of two
 bytes, which can be added here later behind the same interface. Primordial
 Soup stores UTF-8 bytes and answers a byte from `at:`
 (`String_at`, `vm/primitives.cc`), which would change what `size` answers
-for any text beyond ASCII. Source files, the transcript and files stay UTF-8,
+for any text beyond ASCII. Source, the transcript and the image are UTF-8,
 converted at the boundary. A grapheme cluster -- one emoji with a skin-tone
 modifier is two code points -- is never an element; counting or iterating
 them is a library protocol above the string, since the segmentation rules
 change with every Unicode version and allow no constant-time indexing.
+Planned with road step 3:
 `Symbol` becomes a subclass of `String`, as in every reference kernel, and
 `Mutator::new_symbol` stays the only way to make one: instantiating `Symbol`
 is refused, and `String new` answers an empty one-byte string, each pinned by
@@ -1932,9 +1941,10 @@ remove slots of a class with live instances.
   guard would make nested classes megamorphic; the class object gets a word
   of its own rather than a class index packed beside the guard, so that
   `class` and `outer` stay one load.
-- **Strings will store code points in one of two widths**, Latin-1 or 32
-  bits, with UTF-8 only at the boundaries (planned; decided with the user on
-  2026-09-29; "Planned: the object layout" above).
+- **Strings store code points in one of two widths**, Latin-1 or 32
+  bits, with UTF-8 only at the boundaries (decided with the user on
+  2026-09-29, built on today's arena on 2026-10-01; "Planned: the object
+  layout" above).
 - **A program's own `become:` will refuse value objects** (decided with the
   user on 2026-09-29; "Planned: `become:` through forwarders" above): a value
   is immutable, and forwarding it would change what every holder holds. Editing

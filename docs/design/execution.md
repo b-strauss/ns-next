@@ -616,38 +616,67 @@ about the code.
 ### The Are We Fast Yet benchmarks
 
 `benchmarks/are-we-fast-yet/` holds real programs to measure on, beside the
-microbenchmarks under `goldens/bench/`: ten of the Are We Fast Yet
-benchmarks -- Bounce, List, Mandelbrot, NBody, Permute, Queens, Richards,
-Sieve, Storage and Towers -- and Primordial Soup's own Richards,
-`RichardsTon80`, derived from the Dart Ton80 version, beside them, and the
+microbenchmarks under `goldens/bench/`: all fourteen Are We Fast Yet
+benchmarks -- Bounce, CD, DeltaBlue, Havlak, Json, List, Mandelbrot,
+NBody, Permute, Queens, Richards, Sieve, Storage and Towers -- and
+Primordial Soup's own Richards and DeltaBlue, `RichardsTon80`, derived from
+the Dart Ton80 version, and `DeltaBlueTon80`, beside them, and the
 harness that runs them, `AreWeFastYet.ns`, the root of the project
 `are-we-fast-yet.json`, which reaches each benchmark as `manifest Sieve`
-([image-format.md](image-format.md), "Packaging"). The benchmarks are
+([image-format.md](image-format.md), "Packaging"). Every benchmark is one
+module: SOMns's CD loads a second module, `RedBlackTree.ns`, which here is
+folded into `CD.ns` as nested classes of `CD`, so CD too is reached as
+`manifest CD` (decided with the user on 2026-10-01). The benchmarks are
 adapted from SOMns's Newspeak versions
 (`prior-art/somns/core-lib/Benchmarks/`, MIT) into Primordial Soup's
 module shape and protocol: each is a module `usingPlatform:` whose one
 public method, `bench`, runs the workload once and signals an `Error` when
 its result is not the one Are We Fast Yet expects. The harness is adapted
 from Primordial Soup's `BenchmarkRunner.ns`
-(`prior-art/primordialsoup/newspeak/BenchmarkRunner.ns`, Apache 2.0), and
+(`prior-art/primordialsoup/newspeak/BenchmarkRunner.ns`, Apache 2.0),
 `RichardsTon80.ns` from its `Richards.ns`
-(`prior-art/primordialsoup/newspeak/Richards.ns`, Apache 2.0). Each
+(`prior-art/primordialsoup/newspeak/Richards.ns`, Apache 2.0), and
+`DeltaBlueTon80.ns` from its `DeltaBlue.ns`
+(`prior-art/primordialsoup/newspeak/DeltaBlue.ns`, Apache 2.0). Each
 file's header names its upstream file and commit and what was changed, and
-`THIRD-PARTY-NOTICES.md` carries both licences. The protocol they send is
-what the kernel and the platform gained for them
+`THIRD-PARTY-NOTICES.md` carries SOMns's and Primordial Soup's licences.
+Three SOMns files carry their upstream's own licence rather than SOMns's
+MIT, and the ports keep it in their headers, as SOMns's files do:
+`Mandelbrot.ns` Brent Fulgham's BSD-3 text, `CD.ns` Purdue's and Apple's
+BSD-3 text (for both of SOMns's files), and `Havlak.ns` Google's Apache
+2.0 text. The protocol
+they send is what the kernel and the platform gained for them
 ([core-library.md](core-library.md), "What exists", "The platform").
 
-Mandelbrot and NBody run at the sizes Are We Fast Yet pins: 750, which
-answers 50, and 250000 steps, which answers an energy of
-`-0.1690859889909308`. Each takes seconds per run in a release build, so
-`--timed` (below) measures them with one run per phase: its score for them
-is one run's rate, not a throughput over many runs. Decided with the user on
-2026-09-30, who chose the pinned sizes over smaller ones.
+Mandelbrot runs at 750, which answers 50: SOMns's verified size
+(`setupVerifiedRun:`), where Are We Fast Yet's own `rebench.conf` runs 500
+(the user kept 750 on 2026-10-01). NBody runs at Are We Fast Yet's 250000
+steps, which answers an energy of `-0.1690859889909308`. Each takes
+seconds per run in a release build, so `--timed` (below) measures them
+with one run per phase: its score for them is one run's rate, not a
+throughput over many runs. Decided with the user on 2026-09-30, who chose
+these sizes over smaller ones.
+
+DeltaBlue at 12000, Havlak at 1500, which answers 6102 loops in a graph of
+5213 nodes, and CD at 250, which answers 10830 collisions, are
+`rebench.conf`'s sizes. Json parses its input once, since its 100 there is
+a repetition count, and checks what SOMns's `verifyResult:` checks;
+`DeltaBlueTon80` keeps Primordial Soup's 100 and 100 (decided with the
+user on 2026-10-01). Release times of one run, measured while porting:
+about 0.9 s for DeltaBlue, 5 s each for Havlak and CD, and 15 ms for Json.
+CD's count does not depend on the last bits of `sin` and `cos`, whose leaves
+call Rust's, which call the C library's as Primordial Soup's do
+(`builtins/numbers.rs`): correctly rounded values, values one ulp up and
+one ulp down, the Windows C library's values and a Taylor series off by up
+to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 
 So the tests that run every benchmark are not part of the suite.
-`goldens/awfy/all_benchmarks_verify` runs both at full size in five variants
-(both lowerings, a two-entry global cache, `build` and `load`), about 90 s
-each in the debug build, and `a_timed_run_prints_a_score_for_every_benchmark`
+`goldens/awfy/all_benchmarks_verify` runs every benchmark at full size in
+five variants (both lowerings, a two-entry global cache, `build` and
+`load`) -- about 90 s each in the debug build for the eleven programs of
+stages 1 and 2, to which Havlak and CD, the slowest of stage 3, add in
+every variant an amount not timed in the debug build -- and
+`a_timed_run_prints_a_score_for_every_benchmark`
 runs each at least twice; under the stress modes the gate took 37 minutes
 with them (MOVES, 2026-10-01). `.config/nextest.toml`'s default profile
 leaves these six tests out, so neither the per-commit gate nor a stress run
@@ -667,7 +696,7 @@ There are two ways to measure, and they report different things:
 - **`ns-next bench benchmarks/are-we-fast-yet/are-we-fast-yet.json -- <Name>`**,
   from the repository root, times the harness
   without `--timed`, which runs the benchmark named -- or, with no name,
-  all eleven in turn -- once and prints `<Name>: ok`. `bench` reports the
+  all sixteen in turn -- once and prints `<Name>: ok`. `bench` reports the
   median, minimum and maximum of its timed runs (ten unless `--iterations`
   says otherwise) after one discarded warm-up run. Each timed run is one
   `main:args:` of a freshly assembled application, so it includes what

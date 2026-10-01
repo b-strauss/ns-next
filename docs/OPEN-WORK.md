@@ -13,9 +13,12 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**Are We Fast Yet, stage 3**: DeltaBlue, Havlak, Json and CD, the last of
-the stages under "Before step 2's second plan, the Are We Fast Yet
-benchmarks" below. Its plan is still to be written.
+**The baseline over all sixteen programs**, the fourteen Are We Fast Yet
+benchmarks and Primordial Soup's Richards and DeltaBlue: measured on
+several pinned release builds, pooled, and recorded in
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks", as
+its measurement protocol asks, before road step 2's second plan ("Before
+step 2's second plan, the Are We Fast Yet benchmarks" below).
 
 ## The road to a high-performance VM
 
@@ -46,27 +49,18 @@ and `prior-art/newspeak-benchmarks`.
   user on 2026-09-30, for stage 1). Stage 2 (Mandelbrot, NBody, Richards,
   and Primordial Soup's Ton80 Richards beside them) is built and follows
   Primordial Soup's protocol, as stage 1 does (decided with the user on
-  2026-09-30). Whether stage 3 follows it too is for its plan to settle;
-  its selector list below was surveyed against SOMns's protocol. The rest
-  comes in one more stage, by what it needs (decided with the user on
-  2026-09-29):
-  3. DeltaBlue, Havlak, Json and CD: `Vector`, `Dictionary`,
-     `IdentityDictionary`, `Set`, `IdentitySet`, the string protocol Json
-     sends (`charAt:`, `substringFrom:to:`, `endsWith:`, …), `sin`, `cos`,
-     and CD's second module, `RedBlackTree.ns`. AWFY's `Vector` is a
-     growable array over an `Array` with a first and a last index (SOMns's
-     `core-lib/Kernel.ns`), which `List` in `CollectionsFactory.ns` answers
-     only in part today (`add:`, `at:`, `at:put:`, `size`, `do:`); `CD.ns`'s
-     one `loadModule:nextTo:` line can become a `manifest` send, as the
-     harness reaches each benchmark ([image-format.md](design/image-format.md),
-     "Packaging").
+  2026-09-30). Stage 3 is built: DeltaBlue, Havlak, CD and Json, and
+  Primordial Soup's DeltaBlue as `DeltaBlueTon80`, in Primordial Soup's
+  protocol (decided with the user on 2026-10-01).
 
   Each benchmark file carries a header naming its upstream, and
-  `THIRD-PARTY-NOTICES.md` has SOMns's and Primordial Soup's entries.
+  `THIRD-PARTY-NOTICES.md` has SOMns's and Primordial Soup's entries;
+  `Mandelbrot.ns`, `Havlak.ns` and `CD.ns` keep their upstream files' own
+  licence texts in their headers.
 
-  After stage 3, and before step 2's second plan, a baseline over all
-  fifteen -- the fourteen Are We Fast Yet benchmarks and Primordial Soup's
-  Richards -- is measured and recorded in [execution.md](design/execution.md),
+  Before step 2's second plan, a baseline over all sixteen -- the fourteen
+  Are We Fast Yet benchmarks and Primordial Soup's Richards and DeltaBlue
+  -- is measured and recorded in [execution.md](design/execution.md),
   "The Are We Fast Yet benchmarks": several pinned release builds, pooled,
   as that document's measurement protocol asks (decided with the user on
   2026-09-30). No baseline is recorded yet; one informal pinned build of
@@ -87,8 +81,10 @@ and `prior-art/newspeak-benchmarks`.
   sign) and a class word,
   the fields inline, variably sized objects in one VM-owned space with
   byte-offset handles; classes, closures and reified frames become heap
-  objects and the frame arena goes; strings in two widths; `Symbol` under
-  `String`; the application cache keyed by id. [memory.md](design/memory.md),
+  objects and the frame arena goes; strings, already in two widths on the
+  arena ([core-library.md](design/core-library.md), "Strings are code
+  points in two widths"), become byte- and word-format objects in the
+  space; `Symbol` under `String`; the application cache keyed by id. [memory.md](design/memory.md),
   "Planned: the object space"; [object-model.md](design/object-model.md),
   "Planned: the object layout"; [image-format.md](design/image-format.md),
   "Planned: the image under the new representation".
@@ -406,11 +402,11 @@ value objects are never copied across an actor boundary (§3.1.1).
   any other slot's. A `Map` or `Set` whose table was filled before a
   snapshot would then answer wrongly after the load wherever a key's hash
   does not survive it, as a `Symbol`'s does not
-  ([core-library.md](design/core-library.md), "What exists"). Nothing
-  reaches it yet: no image holds a `Map` or a `Set`, and the benchmarks
-  build theirs at run time. Noted with the user on 2026-10-01, while
-  planning the Are We Fast Yet benchmarks' stage 3, which brings `Map` and
-  `Set`.
+  ([core-library.md](design/core-library.md), "What exists"). `Map` and
+  `Set` exist ([core-library.md](design/core-library.md), "The collections
+  module (plan 2)"), but nothing reaches this yet: no image holds one, and
+  the benchmarks build theirs at run time. Noted with the user on
+  2026-10-01, while planning the Are We Fast Yet benchmarks' stage 3.
 
 ## Unexplained measurements and unmeasured decisions
 
@@ -501,7 +497,9 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first, which a program
-can reach and which ends in the operating system killing the process.
+can reach and which ends in the operating system killing the process, and
+three a program meets as a gap: `ns-next run`'s panic on a closed pipe,
+`Object>>printString`'s one text and `to:by:do:`'s zero step.
 
 - **`<<` and `Array new:` reserve a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
@@ -588,6 +586,22 @@ where every reified frame will carry its full register file on the wire.
   command hands it one: `program.rs` hands each module once.
 - **A project file with an empty `root`** is accepted by `read_project` and
   fails later, as reading a directory (`crates/ns-cli/src/project.rs`).
+- **`ns-next run` panics when its stdout pipe closes early** (`ns-next run
+  … | head`): the transcript's `print!` reports "failed printing to
+  stdout" (os error 232 on Windows) instead of ending quietly
+  (`crates/ns-runtime/src/platform.rs`). Found 2026-10-01 while checking
+  the Json port.
+- **`Object>>printString` answers `an Object` for every object whose class
+  does not override it**, whatever its class: the leaf
+  (`crates/ns-runtime/src/builtins/object_class.rs`, `PrintString`) reads
+  nothing off the receiver, where Primordial Soup's answers `'instance of
+  '` followed by the class's name. A program that prints its own objects
+  cannot tell them apart. Noted 2026-10-01.
+- **`Number>>to:by:do:` with a step of 0 never ends**: `Kernel.ns`'s body,
+  Primordial Soup's, counts up for any step that is not negative and has
+  no guard against 0, so the loop never ends; its comment says so. Noted
+  2026-10-01.
+  [core-library.md](design/core-library.md), "What exists".
 - **A `.ns` root declaring `packageUsing:`** is refused with the message
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
