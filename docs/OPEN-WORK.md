@@ -9,7 +9,7 @@ file records what is not.
 
 Keep it current: remove an item in the same batch that closes it, and add one
 whenever a review, a measurement or a design discussion leaves something open.
-Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 when they were written.
+Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 and 2026-10-01 when they were written.
 
 ## Next
 
@@ -280,9 +280,9 @@ to be decided against the code:
   not built. [core-library.md](design/core-library.md), "Planned: the module
   namespace on the mirror".
 - **Library classes on demand**, each when a module on `corpus/runnable.toml`
-  or a program under `benchmarks/` asks for it: collections beyond `List`
-  (`Map`, `IdentityMap`,
-  `IdentitySet`, `WeakArray`, `Collection`); exceptions beyond §8.6's core
+  or a program under `benchmarks/` asks for it: collections beyond `List`,
+  `Map` and `Set` (`IdentityMap`, `IdentitySet`, `WeakArray`,
+  `Collection`); exceptions beyond §8.6's core
   (`ExceptionSet`, `Notification`, `Warning`, `outer`, `retryUsing:`,
   `signalerContext`, `Object>>error:`, finer `Error` subclasses); a mirror
   `slot name` leaf for reflection; an embedded compiled kernel image if the
@@ -597,9 +597,11 @@ where every reified frame will carry its full register file on the wire.
   nothing off the receiver, where Primordial Soup's answers `'instance of
   '` followed by the class's name. A program that prints its own objects
   cannot tell them apart. Noted 2026-10-01.
-- **`Number>>to:by:do:` with a step of 0 never ends**: `Kernel.ns`'s body,
-  Primordial Soup's, counts up for any step that is not negative and has
-  no guard against 0, so the loop never ends; its comment says so. Noted
+- **`Number>>to:by:do:` with a step of 0 never ends from a receiver at
+  most `stop`**: `Kernel.ns`'s body, Primordial Soup's, counts up for any
+  step that is not negative and has no guard against 0, so `1 to: 5 by: 0
+  do:` loops forever, while `5 to: 1 by: 0 do:` runs its block no time; the
+  method's comment says only that a zero step never ends. Noted
   2026-10-01.
   [core-library.md](design/core-library.md), "What exists".
 - **A `.ns` root declaring `packageUsing:`** is refused with the message

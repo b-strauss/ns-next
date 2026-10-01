@@ -3792,8 +3792,11 @@ and `Number>>max:` in Newspeak; `Float>>=` makes a NaN equal to a NaN. The
 collections module's `List` became Primordial Soup's, with a first index,
 and `Map` and `Set` joined it. Every public member of the three shipped
 modules is documented in place, and `CLAUDE.md`'s "Conventions" holds the
-rule. No wire tag changed, and no existing golden's outcome. Four existing
-goldens' sources changed: the comments of
+rule. No wire tag changed. Of the existing goldens, only
+`goldens/awfy/all_benchmarks_verify.toml` records a different outcome, a
+`<Name>: ok` line for each of the five new programs, and the four
+`goldens/awfy/*.json` project files list the five new modules. Four
+other existing goldens' sources changed, their outcomes not: the comments of
 `goldens/collections/a_list_grows_past_its_first_array` and
 `a_list_index_error_is_caught_as_an_error` name the new growth;
 `a_user_subclass_of_list_inherits_its_protocol`'s superclass clause sends
@@ -3876,4 +3879,5 @@ What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the baseline
 over all sixteen programs, whether an image carries a lazy slot's value,
 `ns-next run` ending in a panic when its output pipe closes early,
 `Object>>printString` answering `an Object` for every class that does not
-override it, and `to:by:do:` with a step of 0, which never ends.
+override it, and `to:by:do:` with a step of 0, which never ends from a
+receiver at most `stop`.

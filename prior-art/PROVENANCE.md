@@ -125,7 +125,7 @@ code. `ns-next`'s own license is at `LICENSE`.
 
 Reading these to understand a design is fine. Copying code out of any of them
 into `ns-next` is a licensing decision, not a technical one. It has been made
-twice: `crates/ns-runtime/src/arbitrary_integer/` adapts code from `num-bigint`
+three times: `crates/ns-runtime/src/arbitrary_integer/` adapts code from `num-bigint`
 and `num-integer`, taken under MIT, and `benchmarks/are-we-fast-yet/` adapts
 the Are We Fast Yet benchmarks from `somns` (MIT) and its harness,
 `RichardsTon80.ns` and `DeltaBlueTon80.ns` from `primordialsoup` (Apache
