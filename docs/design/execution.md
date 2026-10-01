@@ -644,6 +644,14 @@ answers 50, and 250000 steps, which answers an energy of
 is one run's rate, not a throughput over many runs. Decided with the user on
 2026-09-30, who chose the pinned sizes over smaller ones.
 
+The cost is in the test suite. In the debug build,
+`goldens/awfy/all_benchmarks_verify` runs both at full size in four variants
+(both lowerings, `build` and `load`), about 90 s each, and
+`a_timed_run_prints_a_score_for_every_benchmark` runs each at least twice.
+Under the stress modes the end-of-batch gate takes much longer (measured
+2026-10-01: MOVES 2227 s, COLLECT 809 s, CACHES 354 s, almost all of it in
+those tests). nextest's SLOW marks there are expected, not hangs.
+
 There are two ways to measure, and they report different things:
 
 - **`ns-next bench benchmarks/are-we-fast-yet/are-we-fast-yet.json -- <Name>`**,

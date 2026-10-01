@@ -3739,7 +3739,9 @@ The decisions, each the user's (2026-09-30):
 
 Mixed arithmetic, a proposal the user had not confirmed when the plan was
 written, is built as proposed: `=` stays class-tight and `//` and `\\` take
-integers only. Both are recorded as open in [OPEN-WORK.md](OPEN-WORK.md).
+integers only. Cross-class `=` (with the numeric tower) and `//` with a
+`Float` operand are recorded as open in [OPEN-WORK.md](OPEN-WORK.md); `\\`
+with a `Float` is a refusal Primordial Soup makes too.
 
 - `4f90ca5` — an integer's arithmetic and ordering meet a `Float` argument.
 - `5a451f7` — comments name the modulo selector and describe an integer
@@ -3757,5 +3759,5 @@ integers only. Both are recorded as open in [OPEN-WORK.md](OPEN-WORK.md).
 - This commit — the documentation describes the built state.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3,
-`//` and `\\` with a `Float` operand, and a program-chosen size that a
+`//` with a `Float` operand, and a program-chosen size that a
 system which overcommits accepts and then kills the process for.

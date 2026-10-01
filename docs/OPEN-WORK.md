@@ -242,6 +242,14 @@ to be decided against the code:
   The on-demand rule adds `//` when a benchmark or runnable module sends
   it. [core-library.md](design/core-library.md), "Gap: an integer has no
   `/`".
+- **Failure blocks and Primordial Soup's error classes.** Every kernel
+  forwarder's failure block is `ifFail: [^super <selector> …]`, reached only
+  for a receiver of the wrong shape, while Primordial Soup's methods signal
+  `ArgumentError` when the primitive fails (e.g.
+  `newspeak/KernelForPrimordialSoup.ns:1599-1602` for `<<`). Our leaves raise
+  their errors themselves, so whether the Newspeak side should signal
+  Primordial Soup's error classes is open.
+  [core-library.md](design/core-library.md), "What exists".
 - **A program's exit status.** A program cannot set its exit status: a run
   exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
   is silent. Primordial Soup exits through an explicit `exit:` primitive

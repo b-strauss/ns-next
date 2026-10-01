@@ -238,7 +238,7 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 
 | Directory | What belongs in it |
 |---|---|
-| `arithmetic/` | the inlined integer fast path beside the ways its guard declines, which must answer what the primitive answers; floor division and its remainder, `bitAnd:`, `asFloat`, `Float`'s `<=`, `>=` and `asStringFixed:`; large integers -- promotion, their arithmetic at every algorithm's size, mixed operands and literals |
+| `arithmetic/` | the inlined integer fast path beside the ways its guard declines, which must answer what the primitive answers; floor division and its remainder, `bitAnd:`, `bitOr:`, `bitXor:`, `bitInvert`, `<<`, `asFloat`, `sqrt`, an integer meeting a `Float`, `Float`'s `<=`, `>=` and `asStringFixed:`; large integers -- promotion, their arithmetic at every algorithm's size, mixed operands and literals |
 | `awfy/` | the Are We Fast Yet harness, verified; its sources live in `benchmarks/are-we-fast-yet/` |
 | `bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
 | `cache/` | an outcome an inline cache could change, each added before any cache existed |
