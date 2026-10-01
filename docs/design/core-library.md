@@ -1031,11 +1031,33 @@ too, but tell `0.0` from `-0.0`.
 The ordering and the arithmetic stay IEEE's: for a NaN `a = b` is true while
 `a <= b` is false, and a comparison of a NaN with anything answers `false`.
 It differs from Primordial Soup and Squeak, where a NaN equals nothing;
-Primordial Soup's `isNaN` is `^(self = self) not`, so ns-next's, when a
-program asks for it, is a leaf. Decided with the user on 2026-10-01;
+Primordial Soup's `isNaN` is `^(self = self) not`, which no longer answers
+`true` here. Decided with the user on 2026-10-01;
 `goldens/arithmetic/not_a_number_equals_itself` pins it, a NaN found again
 as a `Map` key included, and `every_nan_equals_every_other_and_hashes_alike`
 in `builtins/numbers.rs` NaNs of different bit patterns.
+
+**Planned: `isNaN`** (noted with the user on 2026-10-01; added when a
+program sends it, by the on-demand rule): `Number>>isNaN` answers `false`,
+so every integer answers it without a method of its own, and `Float`
+overrides it with a leaf over `f64::is_nan`. A NaN stays an ordinary
+`Float`; a class of its own was considered and set aside:
+- a `Float` is an unboxed `Value::Float`, whose class follows from its
+  representation, so a NaN class would make the class of every float depend
+  on its bits;
+- every send site that computes with floats would then see two classes, and
+  its inline cache would turn polymorphic for all float arithmetic, not
+  only for NaN;
+- the class of `0.0 / 0.0` would differ from that of `1.0 / 2.0`, and
+  `x class == Float` would be false for a value that is an IEEE double and
+  computes like one;
+- it would save only the test inside `isNaN`; equality is already settled
+  by `=` above.
+
+Spur's `SmallFloat64` and `BoxedFloat64`, where NaN and the infinities are
+boxed because they fall outside the immediate exponent range, split `Float`
+by representation, not by meaning; the eight-byte value (road step 2) may
+bring that split here too, with one `isNaN` test shared by both.
 
 ## Gap: an integer has no `/`
 

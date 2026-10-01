@@ -238,6 +238,12 @@ to be decided against the code:
   The on-demand rule adds `//` when a benchmark or runnable module sends
   it. [core-library.md](design/core-library.md), "Gap: an integer has no
   `/`".
+- **`isNaN`.** `Number>>isNaN` answering `false` and `Float>>isNaN` as a
+  leaf over `f64::is_nan`; Primordial Soup's `^(self = self) not` no longer
+  works, since a NaN equals a NaN here. A NaN stays an ordinary `Float`
+  (a class of its own was set aside). Noted with the user on 2026-10-01;
+  added when a program sends it. [core-library.md](design/core-library.md),
+  "A NaN equals a NaN".
 - **Failure blocks and Primordial Soup's error classes.** Every kernel
   forwarder's failure block is `ifFail: [^super <selector> …]`, reached only
   for a receiver of the wrong shape, while Primordial Soup's methods signal
