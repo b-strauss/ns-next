@@ -1,5 +1,6 @@
 //! `String` and `Symbol` native methods.
 
+use crate::builtins::collections;
 use crate::builtins::primitive::{Primitive, StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
@@ -89,6 +90,92 @@ fn quote_string(text: &str) -> String {
     out
 }
 
+/// `String with: code`: a one-element String. Primordial Soup's takes a
+/// byte (`String_class_with`); this takes any code point, since an ns-next
+/// String's elements are code points. Declines for a subject other than
+/// `String` itself, as `Array new:` does.
+fn from_code_point<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let Value::Object(class) = receiver else {
+        return None;
+    };
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
+        return None;
+    }
+    let code_points = match arguments.first() {
+        Some(Value::SmallInteger(code)) => u32::try_from(*code)
+            .ok()
+            .and_then(crate::CodePoints::from_code_point),
+        _ => None,
+    };
+    Some(match code_points {
+        Some(code_points) => Ok(Value::Object(
+            mutator.new_string_from_code_points(code_points),
+        )),
+        None => Err(NewspeakError {
+            selector,
+            receiver,
+            message: format!(
+                "{selector} requires a Unicode code point, an Integer from 0 to 1114111 \
+                 outside 55296 to 57343, got {}",
+                mutator.heap.describe_argument(arguments.first())
+            ),
+        }),
+    })
+}
+
+/// `copyFrom: start to: stop`, 1-based and inclusive, as Primordial Soup's
+/// `Bytes_copyStringFromTo`: the range lies within the string, and the
+/// empty range is the one that stops just before it starts, at either end.
+fn copy_range<'gc>(
+    mutator: &mut Mutator<'gc>,
+    object: ObjectReference<'gc>,
+    size: usize,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let bound = |argument: Option<&Value<'gc>>| match argument {
+        Some(Value::SmallInteger(bound)) => Ok(*bound),
+        other => Err(collections::not_an_integer(
+            &mutator.heap,
+            &receiver,
+            selector,
+            other,
+        )),
+    };
+    let start = bound(arguments.first())?;
+    let stop = bound(arguments.get(1))?;
+    // `start` is tested first, so that `start - 1` cannot overflow; the
+    // slice refuses a `stop` past the end.
+    let slice = if start >= 1 && stop >= start - 1 {
+        usize::try_from(stop).ok().and_then(|stop| {
+            mutator
+                .heap
+                .string_slice(object, (start - 1) as usize, stop)
+        })
+    } else {
+        None
+    };
+    match slice {
+        Some(code_points) => Ok(Value::Object(
+            mutator.new_string_from_code_points(code_points),
+        )),
+        None => Err(NewspeakError {
+            selector,
+            receiver,
+            message: format!(
+                "copyFrom: {start} to: {stop} out of range: valid ranges lie within \
+                 1..{size}, an empty range ends just before it starts (size {size})"
+            ),
+        }),
+    }
+}
+
 pub(crate) fn execute_string<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: StringPrimitive,
@@ -96,12 +183,38 @@ pub(crate) fn execute_string<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    if primitive == StringPrimitive::FromCodePoint {
+        return from_code_point(mutator, receiver, selector, arguments);
+    }
     let Value::Object(object) = receiver else {
         return None;
     };
     // Declines for anything that is no String, before any leaf reads it.
     let size = mutator.heap.string_size(object)?;
     match primitive {
+        StringPrimitive::FromCodePoint => None,
+        // Array's errors, so that a program sees one text from either.
+        StringPrimitive::ElementAt => Some(match arguments.first() {
+            Some(Value::SmallInteger(index)) => {
+                match usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|position| mutator.heap.string_code_point_at(object, position))
+                {
+                    Some(code_point) => Ok(Value::SmallInteger(i64::from(code_point))),
+                    None => Err(collections::out_of_range(&receiver, selector, *index, size)),
+                }
+            }
+            other => Err(collections::not_an_integer(
+                &mutator.heap,
+                &receiver,
+                selector,
+                other,
+            )),
+        }),
+        StringPrimitive::CopyRange => Some(copy_range(
+            mutator, object, size, receiver, selector, arguments,
+        )),
         StringPrimitive::Size => Some(Ok(Value::SmallInteger(size as i64))),
         StringPrimitive::Concatenate => {
             let joined = match arguments.first() {

@@ -589,14 +589,25 @@ class Kernel vmMirror: theMirror = Object <: Value (
     )
     public class String = Value new () (
         public size = ( ^vmMirror stringSize: self ifFail: [^super size] )
+        (* Primordial Soup's `at:` and `copyFrom:to:`, over code points:
+           `at:` answers the code point, where Primordial Soup's answers a
+           UTF-8 byte -- the same for ASCII. Json sends both. *)
+        public at: index = ( ^vmMirror string: self at: index ifFail: [^super at: index] )
+        public copyFrom: start to: stop = ( ^vmMirror string: self copyFrom: start to: stop ifFail: [^super copyFrom: start to: stop] )
         public , other = ( ^vmMirror string: self concatenate: other ifFail: [^super , other] )
         public = other = ( ^vmMirror string: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror stringHash: self ifFail: [^super hash] )
         public asSymbol = ( ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol] )
         public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
         public asString = ( ^self )
+    ) : (
+        (* A one-character String: Primordial Soup's `String with:`, which
+           takes a byte, over code points. The leaf declines only a subject
+           that is not `String` itself, which a flat class side cannot be
+           sent from. Json's escapes send it. *)
+        public with: code = ( ^vmMirror stringClass: self with: code ifFail: [nil] )
     )
-    public class Symbol = Value new () (
+    public class Symbol =Value new () (
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
         public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
         public hash = ( ^vmMirror symbolHash: self ifFail: [^super hash] )

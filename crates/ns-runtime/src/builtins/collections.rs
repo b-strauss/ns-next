@@ -8,7 +8,7 @@ use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
-fn out_of_range<'gc>(
+pub(crate) fn out_of_range<'gc>(
     receiver: &Value<'gc>,
     selector: Symbol,
     index: i64,
@@ -23,7 +23,7 @@ fn out_of_range<'gc>(
     }
 }
 
-fn not_an_integer<'gc>(
+pub(crate) fn not_an_integer<'gc>(
     heap: &Heap<'gc>,
     receiver: &Value<'gc>,
     selector: Symbol,

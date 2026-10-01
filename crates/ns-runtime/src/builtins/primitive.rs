@@ -138,6 +138,9 @@ impl Primitive {
                 | StringPrimitive::Concatenate
                 | StringPrimitive::Hash
                 | StringPrimitive::AsSymbol
+                | StringPrimitive::ElementAt
+                | StringPrimitive::CopyRange
+                | StringPrimitive::FromCodePoint
                 | StringPrimitive::PrintString,
             ) => false,
             Primitive::Symbol(SymbolPrimitive::Equal) => true,
@@ -295,6 +298,11 @@ pub enum StringPrimitive {
     Equal,
     Hash,
     AsSymbol,
+    ElementAt,
+    CopyRange,
+    /// `String with: code`, on `String`'s class side: its subject is the
+    /// class.
+    FromCodePoint,
     PrintString,
 }
 
@@ -980,6 +988,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "floatSquareRoot:ifFail:",
         "sqrt",
         Primitive::Float(FloatPrimitive::SquareRoot),
+    ),
+    mirror(
+        "string:at:ifFail:",
+        "at:",
+        Primitive::String(StringPrimitive::ElementAt),
+    ),
+    mirror(
+        "string:copyFrom:to:ifFail:",
+        "copyFrom:to:",
+        Primitive::String(StringPrimitive::CopyRange),
+    ),
+    mirror(
+        "stringClass:with:ifFail:",
+        "with:",
+        Primitive::String(StringPrimitive::FromCodePoint),
     ),
 ];
 
