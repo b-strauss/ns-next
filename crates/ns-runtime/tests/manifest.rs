@@ -46,8 +46,6 @@ fn manifest_over(interpreter: &mut Interpreter, name: &str, module: &Root) -> Ro
 }
 
 const SIEVE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Sieve = Object new () () : ()
 "};
 

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 4.2: radixNum is radix ["-"] extendedDigits
    [extendedFraction] [exponent], and 5.1.1 makes a number with a fraction or
    an exponent non-integral. Its value is its digits in its radix -- the

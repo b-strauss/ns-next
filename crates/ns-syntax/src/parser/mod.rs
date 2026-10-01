@@ -475,8 +475,6 @@ mod tests {
     #[test]
     fn a_module_spelling_colon_equals_does_not_parse() {
         let source = indoc::indoc! {"
-            Newspeak3
-            'X'
             class C = () (
                 public m = ( | t | t := 1. ^t )
             ) : ()

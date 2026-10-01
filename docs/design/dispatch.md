@@ -1286,7 +1286,7 @@ No instruction changed shape except in the width of its site:
 #### Verification
 
 The oracle: the reference lowering runs uncached and the optimized lowering
-cached, and both are held to every `goldens/<category>/*.ns` and the outcome
+cached, and both are held to every `goldens/**/*.ns` and the outcome
 recorded beside it, and to `run-corpus` from source and
 as a binary, so a cache defect shows as the two lowerings disagreeing. The seven
 goldens under `goldens/runtime/cache/`, added before any

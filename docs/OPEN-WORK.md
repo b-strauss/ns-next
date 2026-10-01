@@ -744,7 +744,7 @@ Small, deliberately left, none affecting an outcome.
 - Golden proposals from the 2026-09-18 audits judged marginal and not built:
   §5.1.8 closure value rules, §5.1.5 doubled quote, §5.1.7 empty and immutable
   tuples, §6.3.4 binary message pattern, §6.3.1 an unmodified method being
-  protected, §4.3 inert metadata comments, §8.1 optional category string.
+  protected, §4.3 inert metadata comments.
 - Two "Converted representation" citations break across lines
   (`docs/design/compiler.md`, `docs/design/execution.md`), which a search for
   the heading misses.

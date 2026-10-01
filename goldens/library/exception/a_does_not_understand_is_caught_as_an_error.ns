@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A `MessageNotUnderstood` is an `Error`, so `on: Error do:` catches a
    send nothing understands, `nil`'s included. *)
 class ADoesNotUnderstandIsCaughtAsAnError = Object new (

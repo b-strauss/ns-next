@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* The compiler inlines whileTrue: and whileFalse:, and an inlined block
    takes no temporaries, so every variable such a loop writes is its
    method's. A block created in one iteration is written by the next, so

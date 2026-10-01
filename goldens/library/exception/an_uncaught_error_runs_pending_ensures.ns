@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An error nothing handles ends the run through `defaultAction`, which
    terminates it: every pending `ensure:` block runs, innermost first, on
    the way to the bottom of the stack, and the host then reports the error

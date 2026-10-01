@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* `timesRepeat:` is Primordial Soup's `Integer>>timesRepeat:`, which
    evaluates its block the receiver's number of times and answers nil;
    `max:` is its `Number>>max:`, for any two numbers the ordering

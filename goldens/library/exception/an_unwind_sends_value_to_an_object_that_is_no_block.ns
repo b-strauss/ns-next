@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `ensure:` and `ifCurtailed:` send `value` to their argument, as Squeak's
    and Primordial Soup's do, so any object that answers `value` will do --
    on the normal path, where `ensure:` sends it itself, and on an unwind,

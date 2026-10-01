@@ -61,8 +61,6 @@ fn instantiate_and_get(source: &str, factory_arguments: Vec<Value<'static>>, get
 }
 
 const FACTORY_PARAMETER: &str = indoc! {"
-    Newspeak3
-    'T'
     class Foo x: a = Object new (
       | p = a. |
     ) (
@@ -70,8 +68,6 @@ const FACTORY_PARAMETER: &str = indoc! {"
     ) : ()
 "};
 const INITIALIZER_EXPRESSIONS: &str = indoc! {"
-    Newspeak3
-    'T'
     class Foo = Object new (
       | q ::= 5. r ::= 0. |
       r:: q + 1.
@@ -95,8 +91,6 @@ fn initializer_expressions_run_after_slot_initializers() {
 #[test]
 fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initializer_frame() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
           | blk = [ 3 ]. |
         ) (
@@ -136,8 +130,6 @@ fn a_return_inside_a_block_in_initializer_expressions_escapes_instantiate() {
     // running, and nothing catches it: the host receives it as
     // `HostSignal::Return`.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
           | |
           [ ^1 ] value.
@@ -253,8 +245,6 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // compiled for it -- keyed by that mixin -- is the one both hand-made
     // applications run.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Shared x: a = Object new (
           | v = a. |
         ) (
@@ -345,8 +335,6 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
 #[test]
 fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Levels = Object new () (
             public class Base withBase: b = Object new (| b1 ::= b. b2 ::= 10. |) (
             )

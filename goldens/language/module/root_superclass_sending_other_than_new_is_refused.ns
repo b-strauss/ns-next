@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.1: an inheritance clause that does not appear within
    an enclosing class "is evaluated as if it was a top level expression" --
    a top level expression (3.8) has no enclosing object to send to. So a

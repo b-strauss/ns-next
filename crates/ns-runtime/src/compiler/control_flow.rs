@@ -173,8 +173,6 @@ mod tests {
 
     fn parse_send(source: &str) -> ast::Send {
         let full = formatdoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               foo = ( ^{source} )
@@ -191,8 +189,6 @@ mod tests {
     /// by `resolve_kernel`; answers the send it returns and the bindings.
     fn kernel_send(source: &str) -> (ast::Send, std::rc::Rc<HashMap<Span, Binding>>) {
         let full = formatdoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (

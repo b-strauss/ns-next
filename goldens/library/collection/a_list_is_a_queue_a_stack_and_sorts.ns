@@ -1,5 +1,3 @@
-Newspeak3
-'Collections'
 (* Primordial Soup's List protocol, as the Are We Fast Yet benchmarks of
    stage 3 send it (docs/design/core-library.md, "The collections
    module"): a queue of `add:` and `removeFirst` that runs past many

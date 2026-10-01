@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* Object>>ifNotNil: is ^block cull: self: an argument that is no block is
    sent cull: like any other object, and nothing but a block answers it. *)
 class NotABlock = Object new () (

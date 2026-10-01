@@ -74,8 +74,6 @@ fn as_boolean<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> bool {
 #[test]
 fn equal_symbols_are_identical() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Symbols usingPlatform: p = Object new () (
             public literalAndDerived = ( ^#foo == 'foo' asSymbol )
             public twoDerived = ( ^'bar' asSymbol == 'bar' asSymbol )
@@ -109,8 +107,6 @@ fn equal_symbols_are_identical() {
 #[test]
 fn does_not_understand_hands_the_literals_selector_object() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Selectors usingPlatform: p = Object new () (
             public doesNotUnderstand: message = ( ^message selector == #frobnicate )
             public probe = ( ^self frobnicate )

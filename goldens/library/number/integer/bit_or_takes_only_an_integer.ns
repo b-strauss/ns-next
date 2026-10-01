@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* `bitOr:` takes an integer only, as `bitAnd:` does; nil is a type mismatch
    naming what the leaf takes. *)
 class BitOrNil = () (

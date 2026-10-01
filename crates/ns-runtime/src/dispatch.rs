@@ -438,8 +438,6 @@ mod tests {
             .map(|modifier| format!("{modifier:?} ").to_lowercase())
             .unwrap_or_default();
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               {access_keyword}{selector} = ( ^1 )

@@ -48,14 +48,24 @@ fn resolve_mixin_path(
     Ok(current)
 }
 
-/// Whether `bytes` begins with the image format's magic.
+/// Whether `bytes` begins with the image format's magic and the version
+/// after it.
 ///
 /// Sniffing the content rather than the file extension is deliberate: an
-/// artifact has no required extension, `build` writes whatever path
-/// it is given, and a `.ns` file cannot begin with these four bytes because
-/// every module starts with the `Newspeak3` language identifier.
+/// artifact has no required extension, and `build` writes whatever path it
+/// is given. The magic alone does not decide, because a module may open with
+/// the language id `NSNX`; the version's first byte, a control character no
+/// source text has there, does.
 fn looks_like_an_artifact(bytes: &[u8]) -> bool {
-    bytes.len() >= 4 && &bytes[0..4] == ns_runtime::image::encode::MAGIC
+    // The version is written little-endian; a version whose low byte were
+    // printable or whitespace would make the test below miss every artifact.
+    const VERSION_LOW_BYTE: u8 = ns_runtime::image::encode::FORMAT_VERSION.to_le_bytes()[0];
+    const _: () =
+        assert!(VERSION_LOW_BYTE.is_ascii_control() && !VERSION_LOW_BYTE.is_ascii_whitespace());
+    bytes.len() >= 5
+        && &bytes[0..4] == ns_runtime::image::encode::MAGIC
+        && bytes[4].is_ascii_control()
+        && !bytes[4].is_ascii_whitespace()
 }
 
 /// The mixin behind a class object, or the message for the one case where

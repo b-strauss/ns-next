@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* Every level of this recursion goes through and:, or: and a one-armed
    ifTrue: with literal blocks -- inlined by the optimized lowering, a
    SendInlinable under the reference lowering, which reaches True's and

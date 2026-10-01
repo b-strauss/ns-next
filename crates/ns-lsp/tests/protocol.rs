@@ -86,11 +86,9 @@ fn an_editor_session() {
     );
     notify(&client, "initialized", json!({}));
 
-    // Non-ASCII text before the error on its own line, so a position counted
-    // in bytes or in chars rather than UTF-16 units would be off.
+    // Non-ASCII text before the error on its line, so a position counted in
+    // bytes or in chars rather than UTF-16 units would be off.
     let broken = indoc! {"
-        Newspeak3
-        'Test'
         class Module = Object new () ( (* Grüße 😀 *) public broken = ( ^outer Missing foo ) ) : ()
     "};
     notify(
@@ -104,17 +102,15 @@ fn an_editor_session() {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0]["severity"], 1, "an error");
     assert_eq!(diagnostics[0]["source"], "ns-next");
-    let line_three = broken.lines().nth(2).expect("line 3");
-    let byte_column = line_three.find("outer Missing").expect("the send");
-    let column = line_three[..byte_column].encode_utf16().count() as u64;
+    let line = broken.lines().next().expect("one line");
+    let byte_column = line.find("outer Missing").expect("the send");
+    let column = line[..byte_column].encode_utf16().count() as u64;
     assert_eq!(
         diagnostics[0]["range"]["start"],
-        json!({ "line": 2, "character": column })
+        json!({ "line": 0, "character": column })
     );
 
     let fixed = indoc! {"
-        Newspeak3
-        'Test'
         class Module = Object new () ( public echo: argument = ( ^argument ) ) : ()
     "};
     notify(

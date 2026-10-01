@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A handler for the depth limit runs in the reserve above it; one that
    recurses itself overruns the reserve too, and that ends the run
    unsignalled: the outer `on: Error do:` never runs, while the pending

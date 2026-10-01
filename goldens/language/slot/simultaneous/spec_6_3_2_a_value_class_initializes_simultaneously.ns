@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A value class may declare a simultaneous clause: its slots hold futures
    only during the clause, provisionally, and the clause's end stores each
    value through 3.1.1's check (docs/design/object-model.md, "The

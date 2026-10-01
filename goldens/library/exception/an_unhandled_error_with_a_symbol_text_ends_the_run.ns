@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An unhandled exception ends the run whatever its text is: a Symbol's is
    reported as its text, and nothing after the signal runs. *)
 class AnUnhandledErrorWithASymbolTextEndsTheRun = Object new (

@@ -1,5 +1,3 @@
-Newspeak3
-'Core-Library'
 (* What a project's root receives as `packageUsing:`'s argument: every
    module the project file names, answered by the name its source declares
    (docs/design/image-format.md, "Packaging"). Newspeak on Squeak's `Namespacing.ns` and Primordial

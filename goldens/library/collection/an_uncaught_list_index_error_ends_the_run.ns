@@ -1,5 +1,3 @@
-Newspeak3
-'Collections'
 (* An unhandled List index error ends the run like any other Error. *)
 class AnUncaughtListIndexErrorEndsTheRun = Object new (
     

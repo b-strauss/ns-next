@@ -155,8 +155,6 @@ fn expect_error(result: HostResult, what: &str) -> String {
 #[test]
 fn a_class_object_carries_identity_and_its_application_carries_layout() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Point new = Object new (| x. y. |) ()
     "};
     let (mut interpreter, class, _resolved) = load(source);
@@ -187,8 +185,6 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
 }
 
 const NESTED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Inner = Object new (| v. |) (
             public value = ( ^v )
@@ -280,8 +276,6 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
 #[test]
 fn a_slot_declaration_defines_accessor_entries() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Holder = Object new (| public fixed = 1. private mutable ::= 2. |) (
             public other = ( ^3 )
         )
@@ -358,8 +352,6 @@ fn a_redeclared_nested_class_gets_its_own_cache_slot() {
 #[test]
 fn a_class_side_is_not_inherited() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class FlatMetaclass usingPlatform: platform = Object new () (
             class Base = Object new () (
             ) : (
@@ -417,8 +409,6 @@ fn string_of(interpreter: &mut Interpreter, root: &Root) -> String {
 }
 
 const APPLIED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Host usingPlatform: platform = Object new (
         | private mark = 'host'. |
     ) (
@@ -494,8 +484,6 @@ ns_runtime::for_each_lowering! {
 }
 
 const SUPER_SOURCE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Host usingPlatform: platform = Object new () (
         public class Marker = Object new () (
             public level = ( ^1 )
@@ -542,8 +530,6 @@ ns_runtime::for_each_lowering! {
 }
 
 const TWO_CLAUSES_SOURCE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Host usingPlatform: platform = Object new () (
         public class First = Object new () (
         )
@@ -638,8 +624,6 @@ ns_runtime::for_each_lowering! {
     /// so the clause names a builtin -- the only kind of class it can name.
     fn a_root_class_builds_its_applied_levels(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Root = Object new <: Value (
             ) (
             )

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.4.3 makes `v:: e` a send of v:, and 5.7 sends it to
    the innermost lexically enclosing construct in which v: is declared. The
    block's parameter v declares a getter only (3.6), so that construct is

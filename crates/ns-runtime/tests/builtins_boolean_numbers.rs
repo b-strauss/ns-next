@@ -94,8 +94,6 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         "| t f | t:: [1]. f:: [2]. ^true ifTrue: t ifFalse: f",
     ] {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class Foo = Object new (
             ) (
               public m = ( {body} )
@@ -126,8 +124,6 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         "| t f | t:: [ x ]. f:: [ 0 ]. ^true ifTrue: t ifFalse: f",
     ] {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class Foo = Object new (|x = 5.|) (
               public m = ( {body} )
             ) : ()
@@ -165,8 +161,6 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
         "| b | b:: [^'escaped']. true and: b. ^'fell through'",
     ] {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class Foo = Object new (
             ) (
               public m = ( {body} )
@@ -199,8 +193,6 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
         "| b | b:: [^'wrongly invoked']. false and: b. true or: b. ^'correct'",
     ] {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class Foo = Object new (
             ) (
               public m = ( {body} )
@@ -414,8 +406,6 @@ fn integer_multiplication_overflow_answers_a_large_integer() {
 #[test]
 fn a_radix_integer_literal_evaluates() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^16r1F )

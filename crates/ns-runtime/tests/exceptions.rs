@@ -25,8 +25,6 @@ fn expect_error(result: HostResult, what: &str) -> HostError {
 }
 
 const PROBE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Probe = Object new () (
         public probe = ( ^self absent )
         public outOfRange = ( ^{1. 2} at: 5 )
@@ -130,8 +128,6 @@ ns_runtime::for_each_lowering! {
 }
 
 const DEEP: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Deep usingPlatform: thePlatform = Object new (
         | private Error = thePlatform kernel Error.
           public deepest ::= 0.

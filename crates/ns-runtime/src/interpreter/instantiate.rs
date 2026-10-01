@@ -1654,7 +1654,7 @@ mod tests {
     fn root_clause_defect_classifies_every_root_form() {
         use crate::mixin::RootClauseDefect;
         let defect_of = |header: &str| {
-            let source = format!("Newspeak3\n'T'\n{header} ()\n");
+            let source = format!("{header} ()\n");
             let module = ns_syntax::parse(&source).expect("parse");
             crate::resolver::root_clause_defect(&module.root_class).map(|(defect, _)| defect)
         };

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A class-side method reaches a predefined class by its bare name, in its
    own body and inside a block alike. No enclosing construct declares
    `Array`, so by newspeak-spec.pdf 5.7 it is `self Array`, sent to the class

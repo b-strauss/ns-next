@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.7: the receiver of an implicit send is "the
    innermost lexically enclosing construct in which a method, slot or class
    named s is declared". Beta's Dup declares no marker, so the marker in

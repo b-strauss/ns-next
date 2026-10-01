@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A block that only *assigns* an enclosing scope's variable still has to
    reach it, so it is handed that scope's indirection vector exactly as a
    reading block would be -- and every block between it and the declaring

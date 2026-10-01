@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.2's futures are indistinguishable from their
    values (5.5's proxy; docs/design/object-model.md, "Where Rust sees a
    future"), so every equality leaf that answers false to an operand of

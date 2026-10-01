@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A class that inherits a member named like a predefined class reaches the
    inherited member. No construct enclosing `show` declares `Array`, so by
    newspeak-spec.pdf 5.7 the bare `Array` is the self send `self Array`, and

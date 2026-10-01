@@ -196,7 +196,7 @@ fn write_wrapper(scratch: &Path, module: &Path, send: &str) -> Result<PathBuf, S
         }
     };
     let wrapper = format!(
-        "Newspeak3\n'RunCorpus'\nclass RunCorpusEntry packageUsing: manifest = Object new (\n    \
+        "class RunCorpusEntry packageUsing: manifest = Object new (\n    \
          | private Module = manifest {class_name}. |\n) (\n    \
          public main: platform args: arguments = (\n        ({instance}) {send}\n    )\n) : ()\n"
     );

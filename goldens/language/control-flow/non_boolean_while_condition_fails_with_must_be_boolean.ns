@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* The condition body runs exactly once, then its non-Boolean value is sent
    `mustBeBoolean`. *)
 class WhileMbb = Object new (

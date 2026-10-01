@@ -46,8 +46,6 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
 #[test]
 fn array_at_returns_the_one_based_element() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^{1. 2. 3} at: 2 )
@@ -69,8 +67,6 @@ fn array_at_returns_the_one_based_element() {
 #[test]
 fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^{1. 2. 3} at: 5 )
@@ -90,8 +86,6 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
 #[test]
 fn array_at_put_writes_and_returns_the_receiver() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( | a | a:: {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )
@@ -116,8 +110,6 @@ fn array_at_put_writes_and_returns_the_receiver() {
 #[test]
 fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( | sum | sum:: 0. {1. 2. 3} do: [:x | sum:: sum + x]. ^sum )
@@ -148,8 +140,6 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
 #[test]
 fn do_walks_a_snapshot_of_its_receiver() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = (
@@ -210,8 +200,6 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
 #[test]
 fn do_with_a_non_block_answers_its_receiver() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( | a | a:: {1. 2}. ^(a do: 3) == a )
@@ -229,8 +217,6 @@ fn do_with_a_non_block_answers_its_receiver() {
 #[test]
 fn do_checks_its_block_arity_at_each_element() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public empty = ( ^{} do: [:a :b | a] )
@@ -259,8 +245,6 @@ fn do_checks_its_block_arity_at_each_element() {
 #[test]
 fn block_value_invokes_a_zero_argument_closure() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^[42] value )
@@ -282,8 +266,6 @@ fn block_value_invokes_a_zero_argument_closure() {
 #[test]
 fn block_value_colon_passes_the_argument_positionally() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^[:x | x + 1] value: 41 )
@@ -305,8 +287,6 @@ fn block_value_colon_passes_the_argument_positionally() {
 #[test]
 fn block_argument_count_reports_the_declared_parameter_count() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^[:x :y | x + y] numArgs )
@@ -331,8 +311,6 @@ fn block_argument_count_reports_the_declared_parameter_count() {
 #[test]
 fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^[:x | x] value )
@@ -353,8 +331,6 @@ fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
 #[test]
 fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( ^[42] value: 1 )

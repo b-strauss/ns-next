@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.1.1: a value's class "inherits from class Value and
    does not define an identity method (==)". `Value`'s own `==` answers what
    its `=` does, which is what makes a value globally unique; a class that

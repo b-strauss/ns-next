@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.10: "If a public or protected method f named s is
    defined for (3.5) S, the value of the send is the result of invoking f
    ... Otherwise, the #doesNotUnderstand: method defined for S is invoked".

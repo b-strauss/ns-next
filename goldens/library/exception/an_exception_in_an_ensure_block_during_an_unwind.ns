@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An exception signalled in an `ensure:` block while an unwind runs it
    behaves as any exception does there. Caught inside the block, its
    handler returns into the block, and the unwind completes once the block

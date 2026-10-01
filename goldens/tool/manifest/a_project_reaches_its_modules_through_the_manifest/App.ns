@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A project's root is instantiated with `packageUsing:` and a manifest of
    the project's other modules, each answered by the name its source
    declares (docs/design/image-format.md). Each module definition is a

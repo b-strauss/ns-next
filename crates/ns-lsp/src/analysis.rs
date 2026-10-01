@@ -118,8 +118,6 @@ mod tests {
     #[test]
     fn a_clean_module_has_no_findings() {
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Module = Object new () () : ()
         "};
         assert!(messages(text).is_empty(), "{:?}", messages(text));
@@ -128,8 +126,6 @@ mod tests {
     #[test]
     fn a_lexer_error_is_reported_where_it_is() {
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Module = Object new () ( public broken = ( ^'unterminated ) ) : ()
         "};
         let analysis = analyze(text);
@@ -144,8 +140,6 @@ mod tests {
     #[test]
     fn a_parser_error_is_reported() {
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Module = Object new ()
         "};
         let found = messages(text);
@@ -161,8 +155,6 @@ mod tests {
     #[test]
     fn a_resolver_error_is_reported() {
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Module = Object new () ( public broken = ( ^outer Missing foo ) ) : ()
         "};
         let found = messages(text);
@@ -175,8 +167,6 @@ mod tests {
     #[test]
     fn a_root_rule_violation_is_reported_at_the_clause() {
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Module = Array new () () : ()
         "};
         let analysis = analyze(text);

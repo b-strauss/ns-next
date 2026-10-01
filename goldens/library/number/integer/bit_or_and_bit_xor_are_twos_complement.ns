@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* `bitOr:` and `bitXor:` are Primordial Soup's: operations over two's
    complement, where a negative number's sign bits extend without end, for
    either representation in either position. `bitInvert` is Primordial

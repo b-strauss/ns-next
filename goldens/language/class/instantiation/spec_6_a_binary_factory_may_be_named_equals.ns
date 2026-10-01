@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6: classDeclaration tries classToken identifier
    messagePattern equalSign ... before classToken identifier empty equalSign
    ..., a PEG, so in class Pair = other = Object new the first "=" and

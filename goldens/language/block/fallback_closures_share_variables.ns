@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An inlined ifTrue: keeps a run-time guard: a receiver that is not a
    Boolean gets the real message with a real closure
    (goldens/language/control-flow/control_flow_fallback.ns). That closure can be kept

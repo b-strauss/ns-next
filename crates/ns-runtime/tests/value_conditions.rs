@@ -70,8 +70,6 @@ fn load_past_the_resolver(source: &str) -> (Interpreter, Root) {
 #[test]
 fn a_defective_root_built_past_the_resolver_refuses_only_an_instance() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Defective = Array new () () : (
             public answer = ( ^42 )
         )
@@ -105,7 +103,7 @@ fn every_allowed_root_form_instantiates() {
         "class Allowed = Object <: Value ()",
         "class Allowed = Object new <: Value ()",
     ] {
-        let source = format!("Newspeak3\n'Test'\n{header} ()\n");
+        let source = format!("{header} ()\n");
         let (mut interpreter, class, _resolved) = load(&source);
         expect_ok(interpreter.instantiate(&class, &[]), header);
     }
@@ -120,8 +118,6 @@ fn every_allowed_root_form_instantiates() {
 #[test]
 fn a_mutable_slot_above_the_value_level_is_refused() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class MutableSlotAboveValue usingPlatform: platformAtCreation = Object <: Value () (
             public class Counting = Object new (
                 | public count ::= 0. |
@@ -159,8 +155,6 @@ fn a_mutable_slot_above_the_value_level_is_refused() {
 #[test]
 fn an_unknown_root_superclass_is_a_resolve_error_of_the_root_rule() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Unknown = Missing new () ()
     "};
     let module = ns_syntax::parse(source).expect("parse");
@@ -193,8 +187,6 @@ fn an_unknown_root_superclass_is_a_resolve_error_of_the_root_rule() {
 #[test]
 fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Outer = Object <: Value () (
             public class Base = Value new () ()
             public class Inner = Object new () (
@@ -237,8 +229,6 @@ fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
 #[test]
 fn a_value_class_over_a_non_value_enclosing_object_is_created_but_not_instantiated() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Root = Object new () (
             public class Described = Object new <: Value () ()
         ) : ()

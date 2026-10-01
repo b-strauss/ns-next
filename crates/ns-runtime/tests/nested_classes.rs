@@ -61,8 +61,6 @@ fn expect_error(result: HostResult, what: &str) -> String {
 }
 
 const SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Inner = Object new (| v. |) (
             public value = ( ^42 )
@@ -195,8 +193,6 @@ fn a_nested_class_can_be_instantiated_through_its_accessor() {
 /// to a class object C." A program error, not an interpreter invariant --
 /// a `NewspeakError`, never a panic.
 const NON_CLASS_SUPERCLASS_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
         public class Inner = notAClass new () ()
         public innerClass = ( ^Inner )
@@ -226,8 +222,6 @@ fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
 /// send must not reach it -- and `lookupPublic`'s hard-stop rule means the
 /// search stops at the declaration rather than continuing up the chain.
 const PROTECTED_NESTED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         class Hidden = Object new () (
             public value = ( ^7 )
@@ -272,8 +266,6 @@ fn a_nested_class_defaults_to_protected_accessibility() {
 /// `current_class` must be, since the clause is lexically part of `Base`'s
 /// declaration.
 const INHERITED_NESTED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class M usingPlatform: p = Object new () (
         class Base = Object new () (
             public class N = Object new () (
@@ -349,8 +341,6 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
 /// `goldens/language/class/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`
 /// pins that the lookup starts above the declaring class.
 const SUPER_PREFIXED_CLAUSE_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Inner = super Object () ()
         public innerClass = ( ^Inner )
@@ -382,8 +372,6 @@ fn a_super_prefixed_clause_answers_a_class_object() {
 /// the cache slot is filled -- unbounded recursion, and an abort rather than
 /// a diagnosable error, without the in-progress guard.
 const CYCLIC_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Inner = Inner new () ()
         public innerClass = ( ^Inner )
@@ -426,8 +414,6 @@ fn a_self_referential_nested_class_is_a_program_error() {
 #[test]
 fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Outer = Object new (
         ) (
             public class Base = Object new (
@@ -463,8 +449,6 @@ fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
 }
 
 const CLASS_SIDE_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Widget new = Object new () (
     ) : (
         public describe = ( ^'a widget class' )
@@ -503,8 +487,6 @@ fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
 }
 
 const CLASS_SIDE_INHERITANCE_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Widget new = Object new () (
         ) : (
@@ -665,8 +647,6 @@ fn a_class_sides_own_method_is_found_before_falling_through_to_object() {
 /// `Base`'s own `outer Outer label` must resolve from *that* activation.
 /// Mirrors `goldens/language/class/nesting/nested_super.ns` at the API level.
 const NESTED_SUPER_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         label = ( ^'outer' )
         public class Base = Object new () (
@@ -707,8 +687,6 @@ fn super_and_outer_both_resolve_through_the_defining_level() {
 /// pass either way. This guards the actual defect class the level-tracking
 /// machinery exists for.
 const SUPER_CHAIN_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Grand = Object new () (
             public describe = ( ^'grand' )
@@ -747,8 +725,6 @@ fn a_super_chain_progresses_through_an_inherited_middle_level() {
 /// resolving the depth from the receiver's own class instead reaches the
 /// `Mid` instance, whose decoy `label` answers `'middle'`.
 const OUTER_THROUGH_INHERITED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         label = ( ^'top' )
         public class Base = Object new () (
@@ -786,8 +762,6 @@ fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
 /// `Derived`'s own class. Stepping through the reached object's class
 /// instead lands on `Mid`'s instance and its decoy `label`.
 const DEEP_OUTER_THROUGH_INHERITED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         label = ( ^'top' )
         public class Base = Object new () (
@@ -829,8 +803,6 @@ fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
 /// `Widget`'s decoy `label` is what a walk that stopped one level short
 /// would answer with.
 const CLASS_SIDE_OUTER_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         label = ( ^'top' )
         public class Widget = Object new () (
@@ -883,8 +855,6 @@ fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
 #[test]
 fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Outer = Object new (
           | first ::= true. |
         ) (
@@ -925,8 +895,6 @@ fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
 /// hop's starting point. Each enclosing level answers its own `label`, so
 /// landing on the wrong one shows.
 const APPLIED_ENCLOSING_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Host usingPlatform: platform = Object new () (
         public class Library = Object new (
             | private mark = 'library'. |
@@ -1000,8 +968,6 @@ ns_runtime::for_each_lowering! {
     /// ordinary Newspeak error, and it names the clause.
     fn a_mixin_clause_that_is_not_a_class_is_a_program_error(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'Test'
             class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
                 public class Applied = Object new <: notAClass () ()
                 public appliedClass = ( ^Applied )

@@ -678,8 +678,6 @@ mod tests {
     /// makes the leaf treat these instances as values all the same.
     fn a_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Fixture = Object new () (
                 class Marker = Object new () (
                     public = other = ( ^self == other )
@@ -777,8 +775,6 @@ mod tests {
     /// object: a cycle through classes.
     fn a_value_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class ValueFixture = Object <: Value () (
                 class Point x: xValue y: yValue = Value new (
                     | public x = xValue. public y = yValue. |

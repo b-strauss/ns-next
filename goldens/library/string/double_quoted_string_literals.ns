@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* §5.1.5: a string literal is written 'σ' or "σ". A double-quoted one has
    no escape and ends at the next double quote, except that any single
    character between two quotes is a one-character string -- so """ is the

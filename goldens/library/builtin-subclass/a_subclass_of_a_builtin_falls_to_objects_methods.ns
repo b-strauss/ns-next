@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* A user subclass of a builtin inherits its kernel methods but none of its
    payload, so each leaf those methods forward to declines, and the failure
    block's `super` send reaches Object's method: `=` is identity and

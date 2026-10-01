@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: "Next, the instance initializer of I invokes the
    instance initializer of S on o with the arguments of mu_s. Then, m is
    evaluated to mu_m". Marker's clause message sends #fooBar to 3, which

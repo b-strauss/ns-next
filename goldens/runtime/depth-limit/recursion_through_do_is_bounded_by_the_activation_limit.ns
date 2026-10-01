@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* `do:` is a trampoline step, so a recursion through it is made only of
    counted activations -- the method and the block, at every level -- and
    ends at the activation limit like any other recursion. It used to end at a

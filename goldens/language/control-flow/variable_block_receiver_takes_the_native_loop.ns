@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 class WhileVar = Object new (
     | n ::= 0. |
 ) (

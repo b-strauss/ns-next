@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* The core library (`docs/design/core-library.md`, "The core library as
    Newspeak source over a VM mirror"). One nested class per builtin class;
    the bootstrap fills the builtin class objects from them before it

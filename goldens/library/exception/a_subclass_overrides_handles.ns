@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A class decides which exceptions it handles: `Picky`'s class side
    declares its own `handles:`, which the handler search sends in place of
    `Class`'s default ("an instance of me or of a subclass"), so

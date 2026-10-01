@@ -46,8 +46,6 @@ fn expect_cannot_return(result: HostResult, what: &str) {
 #[test]
 fn method_with_no_explicit_return_returns_self() {
     let (mut interpreter, receiver) = instance_of(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public bar = ( 1. 2 )
@@ -69,8 +67,6 @@ fn method_with_no_explicit_return_returns_self() {
 #[test]
 fn method_with_explicit_return_returns_the_returned_value() {
     let (mut interpreter, receiver) = instance_of(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public answer = ( ^42 )
@@ -89,8 +85,6 @@ fn method_with_explicit_return_returns_the_returned_value() {
 #[test]
 fn bare_builtin_class_name_reference_produces_a_working_instance() {
     let (mut interpreter, receiver) = instance_of(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public bar = ( ^Array new )
@@ -116,8 +110,6 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
 #[test]
 fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     let (mut interpreter, receiver) = instance_of(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           public m = ( [ ^1 ] value. ^2 )
@@ -136,8 +128,6 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
 #[test]
 fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_not_a_panic() {
     let (mut interpreter, receiver) = instance_of(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (|b.|) (
           public m = ( b:: [ ^1 ]. ^b value )
           public again = ( ^b value )
@@ -156,8 +146,6 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
 #[test]
 fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() {
     let (mut interpreter, receiver) = instance_of(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (|b.|) (
           public capture = ( b:: [^1] )
           public runIt = ( ^b value )

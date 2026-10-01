@@ -44,8 +44,6 @@ fn root_mixin(interpreter: &mut Interpreter, class: &Root) -> Rc<Mixin> {
 #[test]
 fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           foo = ( ^1 )
@@ -79,8 +77,6 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
 #[test]
 fn the_method_dispatch_finds_carries_its_body() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           foo = ( ^1 )
@@ -104,8 +100,6 @@ fn the_method_dispatch_finds_carries_its_body() {
 #[test]
 fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indices() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo x: a = Object new (
           | p = a. q ::= 5. |
           q:: p.
@@ -170,8 +164,6 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
 #[test]
 fn an_uninitialized_slot_emits_nothing() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | a. b = 1. |
         ) (
@@ -202,8 +194,6 @@ fn an_uninitialized_slot_emits_nothing() {
 /// nested declarations and class sides, not only the root's own method
 /// table.
 const NESTED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Inner = Object new (| v. |) (
             public value = ( ^v )
@@ -257,8 +247,6 @@ ns_runtime::for_each_lowering! {
     /// the platform module cost").
     fn a_lazy_slots_getter_opens_with_its_filled_test_and_has_no_fast_path(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | eager = 1. |
             ) (

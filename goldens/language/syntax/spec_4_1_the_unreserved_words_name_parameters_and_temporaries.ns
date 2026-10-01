@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
    nil, so class, public, protected, private and lazy name a method's, a
    block's and a factory's parameters like any identifier (6.3.4's

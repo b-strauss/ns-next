@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.9: "If N declares a private method f named s then
    the value of the send is the result of invoking f in response to (3.5)
    message u on o. Otherwise, Let f = lookupProtected(s, R) where R is the

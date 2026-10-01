@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* `<<` is Primordial Soup's: the receiver times two to the count, for
    either representation in either position, widening into a
    `LargeInteger` when the result does not fit and back when it does. A

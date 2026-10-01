@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* There is no Character class: §5.1.4 announces character literals going
    away in favour of strings, and with them the class, so `Object` has no
    accessor for it and a bare Character is an ordinary self send nothing

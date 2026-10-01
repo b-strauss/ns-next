@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A block three levels down reads a variable of the method, so every
    block between them has to carry it -- a copy when nothing writes it
    after capture (first), the shared variable when something does

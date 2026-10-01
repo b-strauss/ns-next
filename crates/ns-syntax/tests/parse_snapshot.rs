@@ -3,8 +3,6 @@ use indoc::indoc;
 #[test]
 fn hello_world_ast() {
     let source = indoc! {"
-        Newspeak3
-        'HelloApp'
         class Hello usingPlatform: platform = (
             | private Transcript = platform Transcript. |
         ) (

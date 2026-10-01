@@ -1,5 +1,3 @@
-Newspeak3
-'Collections'
 (* `List>>do:` reads the size once, as Primordial Soup's `1 to: size_ do:`
    does, so an element added inside the block is not visited. *)
 class DoVisitsTheElementsAListHeldWhenItStarted = Object new (

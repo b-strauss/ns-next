@@ -686,8 +686,6 @@ mod tests {
     #[test]
     fn the_editor_entry_answers_bindings_and_errors_together() {
         let source = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Module = Object new (
             ) (
               public broken = ( ^outer Missing foo )

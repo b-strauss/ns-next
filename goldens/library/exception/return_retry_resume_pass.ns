@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* ANSI's ways out of a handler: `return:` answers its value from
    `on:do:`; `retry` runs the protected block again, here until a counter
    lets it through; `resume:` makes its value the value of `signal` and

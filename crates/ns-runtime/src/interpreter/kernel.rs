@@ -1475,8 +1475,6 @@ mod tests {
         /// rest on that alone.
         fn a_block_class_in_another_shipped_module_carries_no_unwind_marker(lowering) {
             let source = indoc::indoc! {"
-                Newspeak3
-                'Shipped'
                 class Shipped = Object new () (
                     public class Block = Object new () (
                         public on: exceptionClass do: handler = (
@@ -1849,8 +1847,6 @@ mod tests {
     #[test]
     fn a_mirror_send_whose_only_literal_block_is_its_failure_block_is_accepted() {
         let resolved = resolve_kernel_fixture(indoc::indoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (
@@ -1869,8 +1865,6 @@ mod tests {
     #[should_panic(expected = "only the final ifFail: argument may be a literal block")]
     fn a_mirror_send_with_a_literal_block_before_its_failure_block_is_refused() {
         let resolved = resolve_kernel_fixture(indoc::indoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (
@@ -1907,8 +1901,6 @@ mod tests {
     fn only_a_send_to_the_root_classs_vm_mirror_is_marked() {
         use indoc::indoc;
         let source = indoc! {"
-            Newspeak3
-            'Test'
             class Test vmMirror: theMirror = Object new (
                 | private vmMirror = theMirror. |
             ) (

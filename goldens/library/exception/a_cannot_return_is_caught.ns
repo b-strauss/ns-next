@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* §7's `cannotReturn` is a VM error, and so a signalled `Error`: a `^`
    from a block whose home has returned, run inside `on: Error do:`, is
    caught, its text the one an uncaught one ends the run with, and the

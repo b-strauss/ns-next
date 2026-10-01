@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf §5.5: "the #doesNotUnderstand: method defined for
    (3.5) the class of o is invoked" -- a class object's class is its
    metaclass (§3.2), so a class side that declares `doesNotUnderstand:`

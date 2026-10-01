@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.3: "The token `lazy` may optionally be preceded or
    followed by an access modifier; both `lazy public m = e.` and `public lazy
    m = e.` are accepted, with identical meaning", and a lazy slot may be

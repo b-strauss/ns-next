@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 4.1 reserves self, super, outer, true, false and nil and
    nothing else, so class, public, protected, private and lazy are ordinary
    identifiers. 6.3.2's slotDef, [accessModifier] slotDecl, is a PEG (4.2):

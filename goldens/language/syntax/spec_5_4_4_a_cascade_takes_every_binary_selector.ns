@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.4.4: cascadeMsg is semicolon (keywordMsg | binaryMsg |
    unarySelector), and binaryMsg takes any binarySelector -- "=", "<" and
    ">", which have tokens of their own for the declaration syntax, among

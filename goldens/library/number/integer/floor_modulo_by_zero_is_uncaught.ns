@@ -1,5 +1,3 @@
-Newspeak3
-'Errors'
 (* `\\` refuses a zero divisor with the "division by zero" `//` raises,
    for either representation of the receiver; the first raise ends the
    program. *)

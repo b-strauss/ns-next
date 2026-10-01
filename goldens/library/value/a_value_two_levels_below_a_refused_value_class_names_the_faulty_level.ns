@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.1.1: `Counter` inherits `Value` directly but is
    enclosed by a mutable `Holder`, so its class object records a refusal
    naming no level -- the fault is its own enclosing object. `Stamped`

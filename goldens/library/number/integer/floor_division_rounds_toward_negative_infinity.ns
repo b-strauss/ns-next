@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* `//` rounds toward negative infinity, as Primordial Soup's `Integer>>//`
    does (`KernelForPrimordialSoup.ns`, "Integer division, rounded toward
    negative infinity"); the specification does not define it. The first

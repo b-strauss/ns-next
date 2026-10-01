@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.2: after the clause no slot of it holds a future
    (docs/design/object-model.md, "Simultaneous slots", rule 1). `second`'s
    initializer assigns `first` with a setter send, which answers its

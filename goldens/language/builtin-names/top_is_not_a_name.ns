@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.2 lets only `Object` name `Top`, as its superclass,
    so `Object` provides no accessor for it among its "accessors for
    predefined classes". `self Top` therefore finds nothing on the receiver's

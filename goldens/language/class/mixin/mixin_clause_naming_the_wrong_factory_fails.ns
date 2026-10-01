@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: "Class I has a primary factory method (6) with the
    same selector as m", and 6.1, whose inheritance clause the part after <:
    is: "It is a run time error if the message selector specified by the

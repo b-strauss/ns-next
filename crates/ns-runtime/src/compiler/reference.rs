@@ -838,8 +838,6 @@ mod tests {
 
     fn method(declaration: &str) -> String {
         formatdoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               {declaration}
@@ -969,8 +967,6 @@ mod tests {
     /// to `vmMirror` carry `Binding::MirrorSend`.
     fn compile_kernel_method(declaration: &str) -> CompiledCode {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (

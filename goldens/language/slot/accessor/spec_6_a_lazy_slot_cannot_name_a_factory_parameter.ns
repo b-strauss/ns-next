@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6: the primary factory's parameters "are in scope in
    the instance initializer but not in the rest of the class body", and a
    lazy slot is declared in the class body. So `seed` in its initializer is

@@ -385,8 +385,6 @@ mod tests {
     #[test]
     fn a_defective_shipped_root_is_refused_to_the_bootstrap() {
         let source = indoc::indoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object <: Value (
               | private vmMirror = theMirror. public count ::= 0. |
             ) () : ()
@@ -419,8 +417,6 @@ mod tests {
     /// (`size`). Answers the interpreter and a `Probe`.
     fn a_probe(lowering: crate::Lowering, kernel: bool) -> (Interpreter, Root) {
         let source = indoc::indoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (
@@ -618,8 +614,6 @@ mod tests {
     #[test]
     fn a_snapshot_that_reaches_the_mirror_is_refused() {
         let source = indoc::indoc! {"
-            Newspeak3
-            'T'
             class Holder = Object new (
                 | public held |
             ) (

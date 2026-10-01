@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `newspeak-spec.pdf` §3.2: metaclasses are flat, so a class side is not
    inherited down the subclass chain. `SpecialWidget` declares no class
    side of its own; its superclass `Widget` does, but `SpecialWidget

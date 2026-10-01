@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.2's futures, when an initializer raises: that
    abandons its clause, and a future that had escaped stays unresolved
    (docs/design/object-model.md, "A clause abandoned by an exception").

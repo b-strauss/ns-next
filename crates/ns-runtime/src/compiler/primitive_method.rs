@@ -319,8 +319,6 @@ mod tests {
 
     fn module_source(method: &str) -> String {
         formatdoc! {"
-            Newspeak3
-            'T'
             class Kernel vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (
@@ -585,8 +583,6 @@ mod tests {
     /// and what `recognize_class_accessor` answers for it.
     fn class_accessor_in_a_shipped_module(method: &str) -> Option<crate::mixin::ClassAccessor> {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class Shipped vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (

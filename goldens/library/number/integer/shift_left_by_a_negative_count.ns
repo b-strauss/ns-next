@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A negative count is refused, as Primordial Soup's primitive fails for it
    and its method raises. *)
 class NegativeShift = () (

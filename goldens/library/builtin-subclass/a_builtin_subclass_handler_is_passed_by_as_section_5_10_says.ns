@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* A user subclass of Array that answers doesNotUnderstand: itself. Its
    instances carry no array, so Array>>size's leaf declines, and the failure
    block's `super size` finds no size in Object. §5.10: "the

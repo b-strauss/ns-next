@@ -1,5 +1,3 @@
-Newspeak3
-'Collections'
 (* Primordial Soup's Map and Set, as the Are We Fast Yet benchmarks of
    stage 3 send them (docs/design/core-library.md, "The collections
    module"): keys are found by `hash` and compared with `=`, so an equal

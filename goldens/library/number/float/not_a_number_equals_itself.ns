@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* A Float is a value, so its `=` must be an equivalence and its `==`
    answers what `=` does (§3.1.1). IEEE 754's equality is not one: a NaN
    equals nothing, itself included. So `=` is IEEE's except that every NaN

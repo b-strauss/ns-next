@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* §5.1.1: "integers are not limited in size". An `Integer` operation whose
    result does not fit becomes a `LargeInteger`, and one whose result fits
    again is an `Integer`, so each integer has one representation. The first

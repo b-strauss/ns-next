@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A manifest answers only the modules the project file lists. Asking it for
    any other name is an ordinary unknown message, raised while the root is
    instantiated, so main:args: never runs. *)

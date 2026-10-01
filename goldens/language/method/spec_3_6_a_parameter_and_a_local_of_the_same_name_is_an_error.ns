@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.6: "It is a compile-time error to define a method or
    closure that has a parameter and a local with the same name." An
    activation's parameter slots and local slots are one set of slots -- 3.6

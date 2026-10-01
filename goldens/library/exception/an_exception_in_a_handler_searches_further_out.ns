@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* While a handler runs, its own `on:do:` is disabled: an exception the
    handler signals is not caught by it again but searches further out. The
    outer handler's value answers from the outer `on:do:`; resumed, the

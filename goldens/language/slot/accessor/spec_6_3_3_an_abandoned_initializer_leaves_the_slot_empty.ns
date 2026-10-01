@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.3 sets the slot to the object e evaluated to. An
    initializer that signals, and whose exception a handler returns from,
    evaluated to nothing: the slot stays nil and the next read evaluates it

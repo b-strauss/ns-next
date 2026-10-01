@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `ensure:` runs its block once, before the method's value is printed:
    on a normal end, where `ensure:` itself runs it, and on a `^` that
    leaves the protected block, where the unwinder runs it before popping

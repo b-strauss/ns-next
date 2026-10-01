@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* §5.5 makes a message nothing understood the VM's error, so a
    `doesNotUnderstand:` raised just below the depth limit, or at it, takes
    the reserve above the limit as any VM error does and is caught as

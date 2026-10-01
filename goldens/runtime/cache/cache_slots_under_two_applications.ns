@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 class CacheSlotsUnderTwoApplications = Object new () (
 	class Narrow = Object new (| first ::= 'narrow a'. |) (
 		public describe = ( ^'narrow' )

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.6: an activation has "zero or more local slots, one
    for each slot declaration in the body of p. Local slots are defined by
    their corresponding declarations (6.3.2). They are initialized in the

@@ -95,8 +95,6 @@ fn method(selector: &str) -> CachedTarget {
 #[test]
 fn nested_class_instances_of_two_enclosing_objects_share_one_entry() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           class Outer = Object new () (
             public class Inner = Object new () ( public describe = ( ^1 ) )
@@ -127,8 +125,6 @@ fn nested_class_instances_of_two_enclosing_objects_share_one_entry() {
 }
 
 const FIVE_KINDS: &str = indoc! {"
-    Newspeak3
-    'T'
     class Subject = Object new () (
       class KindOne = Object new () ( public value = ( ^1 ) )
       class KindTwo = Object new () ( public value = ( ^2 ) )
@@ -189,8 +185,6 @@ fn a_site_goes_polymorphic_then_megamorphic() {
 #[test]
 fn a_site_on_true_and_false_is_bimorphic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           public run = (
             | count |
@@ -212,8 +206,6 @@ fn a_site_on_true_and_false_is_bimorphic() {
 }
 
 const TWO_APPLICATIONS: &str = indoc! {"
-    Newspeak3
-    'T'
     class Subject = Object new () (
       class Narrow = Object new (| first ::= 1. |) ( public describe = ( ^1 ) )
       class Wide = Object new (| first ::= 1. second ::= 2. third ::= 3. |) ( public describe = ( ^2 ) )
@@ -287,8 +279,6 @@ fn a_super_send_in_a_mixin_applied_twice() {
 #[test]
 fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           class Outer named: label = Object new (| name = label. |) (
             private secret = ( ^name )
@@ -334,8 +324,6 @@ fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
 #[test]
 fn class_objects_and_instances_share_a_site() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           class Maker make = Object new () ( public describe = ( ^1 ) )
           class Plain = Object new () ( public describe = ( ^2 ) ) : ( public make = ( ^Plain new ) )
@@ -373,8 +361,6 @@ fn class_objects_and_instances_share_a_site() {
 #[test]
 fn does_not_understand_handlers_are_entries_like_any_other() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           class Catcher = Object new () ( public doesNotUnderstand: message = ( ^1 ) )
           class Recorder = Object new (| public doesNotUnderstand ::= nil. |) ()
@@ -412,8 +398,6 @@ fn does_not_understand_handlers_are_entries_like_any_other() {
 #[test]
 fn a_second_site_fills_from_the_global_cache() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           class Kind = Object new () ( public value = ( ^1 ) )
           public first = ( ^Kind new value )
@@ -452,8 +436,6 @@ fn a_second_site_fills_from_the_global_cache() {
 #[test]
 fn a_vacant_lexical_site_uses_the_global_cache() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           public helper = ( ^1 )
           public first = ( ^helper )
@@ -501,8 +483,6 @@ fn a_vacant_lexical_site_uses_the_global_cache() {
 #[test]
 fn a_vacant_lexical_site_does_not_borrow_a_different_ns_entry() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           class Base = Object new () (
             private helper = ( ^1 )
@@ -622,8 +602,6 @@ fn a_tiny_global_cache_answers_like_a_full_one() {
 #[test]
 fn only_the_families_that_ran_take_room_in_the_cache_table() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new () (
           public used = (
             | sum |
@@ -656,8 +634,6 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
 #[test]
 fn a_failing_primitive_keeps_its_entry() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object <: Value () (
           class Pair of: value = Value new (
             | public value = value. |
@@ -687,8 +663,6 @@ fn a_failing_primitive_keeps_its_entry() {
 }
 
 const TWO_FACTORIES: &str = indoc! {"
-    Newspeak3
-    'T'
     class Subject = Object new () (
       class Alpha = Object new () ( public describe = ( ^1 ) )
       class Beta with: seed = Object new () ( public describe = ( ^2 ) )
@@ -718,8 +692,6 @@ ns_runtime::for_each_lowering! {
     /// were hits and not misses that re-ran the lookup.
     fn a_cached_factory_instantiates_the_receiver_it_is_sent_to(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Subject = Object new () (
               class Holder seed: value = Object new (| seed = value. |) (
                 class Item = Object new () ( public describe = ( ^seed ) )

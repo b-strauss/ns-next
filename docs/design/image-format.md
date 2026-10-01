@@ -1366,7 +1366,7 @@ under both lowerings, go through that one wrapper
 **Tests**, in order of importance: `build` then `load` reproduces
 `run`'s stdout, stderr and exit status byte for byte, for every golden, the
 project goldens included (`crates/ns-cli/tests/golden_round_trips.rs`, one
-test per golden and lowering, `build_load::<lowering>::<category>/<name>`);
+test per golden and lowering, `build_load::<lowering>::<path>`);
 two modules draw the same identity hashes under `run` and `load`
 (`crates/ns-cli/tests/build_load.rs`); the CLI refusals above
 (`crates/ns-cli/tests/run.rs`, and `project.rs`'s own tests for the paths);

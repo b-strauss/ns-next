@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.1 lets an inheritance clause's receiver be a unary
    send to `super`, and evaluates it "as if it occurred inside an instance
    method" of the enclosing class. `super Helper` in `Derived` is therefore

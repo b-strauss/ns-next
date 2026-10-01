@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.1.1: a value object's equality is that of its
    state, so two values whose slots hold a not-a-number are equal: a
    `Float`'s `=` and `hash` treat every NaN as the one NaN (so a Float

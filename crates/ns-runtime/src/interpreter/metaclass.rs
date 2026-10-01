@@ -274,8 +274,6 @@ mod tests {
     #[test]
     fn metaclasses_of_one_declaration_share_an_application() {
         let source = indoc! {"
-            Newspeak3
-            'Test'
             class Outer usingPlatform: platform = Object new () (
                 public class Widget = Object new () (
                 )

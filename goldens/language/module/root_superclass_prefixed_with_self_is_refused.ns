@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.1: an inheritance clause that does not appear within
    an enclosing class "is evaluated as if it was a top level expression.
    Consequently, it will almost certainly fail since no interesting classes

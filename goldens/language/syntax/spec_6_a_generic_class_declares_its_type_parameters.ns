@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6: "An optional type parameter declaration may appear
    between the class name and the primary factory method pattern", written
    typeParameterDecl, <[K, V]>, as in class Map <[K, V]> new: capacity

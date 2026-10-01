@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* `bitAnd:` is Primordial Soup's: an and over two's complement, where a
    negative number's sign bits extend without end, for either
    representation in either position. Bounce's and Storage's `Random`

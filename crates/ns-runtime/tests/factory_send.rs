@@ -129,8 +129,6 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
 #[test]
 fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (|x = 42.|) (public bar = (^x)) : ()
     "};
     let module = ns_syntax::parse(source).expect("parse");
@@ -221,8 +219,6 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
 #[test]
 fn a_factory_is_an_entry_of_the_metaclass_mixin() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Boxed with: contents = Object new (| public held = contents. |) (
         ) : (
             public describe = ( ^'a Boxed' )
@@ -249,8 +245,6 @@ fn a_factory_is_an_entry_of_the_metaclass_mixin() {
 #[test]
 fn a_class_without_a_class_side_still_has_a_factory_entry() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Plain = Object new () (
         ) : ()
     "};
@@ -284,8 +278,6 @@ fn a_builtin_class_has_a_factory_entry_under_new() {
 #[test]
 fn every_class_object_of_one_declaration_shares_its_metaclass_behaviour() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Holder = Object new () (
             class Item = Object new () (
             )
@@ -331,8 +323,6 @@ fn every_class_object_of_one_declaration_shares_its_metaclass_behaviour() {
 #[test]
 fn a_superclasss_factory_selector_is_not_understood() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class FactoryNotInherited = Object new () (
             class Simple = Object new () (
                 public label = ( ^'simple' )
@@ -395,8 +385,6 @@ ns_runtime::for_each_lowering! {
     /// metaclasses went flat, so this pins the answer that replaced it.
     fn a_class_side_super_new_does_not_instantiate(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'Test'
             class SuperFactory = Object new () (
                 class Simple = Object new () (
                     public label = ( ^'a simple' )

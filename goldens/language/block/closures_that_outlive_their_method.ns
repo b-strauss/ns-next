@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* What a block may still do once its method has returned: read a copy,
    share a written variable with a second block, and return non-locally
    -- which is refused, because the home activation is gone (3.6, 7.2).

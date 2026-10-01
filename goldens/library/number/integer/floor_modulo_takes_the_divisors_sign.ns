@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* `\\` is the remainder of `//`, so it takes the divisor's sign and
    `(a // b) * b + (a \\ b) = a` holds for every pair, as Primordial Soup's
    `Integer>>\\` says ("Remainder of integer division rounded toward

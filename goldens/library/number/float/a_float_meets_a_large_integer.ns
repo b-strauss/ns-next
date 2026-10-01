@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* A `Float`'s leaves convert a `LargeInteger` argument to the nearest
    `double`, as they convert an `Integer` one; `=` stays class-tight. `big`
    is 2^64, and `1.5 + 2^64` rounds to 2^64. *)

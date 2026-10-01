@@ -52,8 +52,6 @@ fn a_collection_gives_back_what_a_run_discarded() {
     // not load, so the loop is written with `whileTrue:`, which is a native
     // primitive (`crates/ns-runtime/src/builtins/primitive.rs`).
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Churn = Object new () (
           public run: count = (
             | total remaining |
@@ -103,8 +101,6 @@ fn a_collection_gives_back_what_a_run_discarded() {
 #[cfg(debug_assertions)]
 fn a_symbol_nothing_holds_is_collected_and_minted_again() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Symbols = Object new () (
           public make = ( ^#transient )
           public same = ( ^#kept == #kept )
@@ -136,8 +132,6 @@ fn a_symbol_nothing_holds_is_collected_and_minted_again() {
 #[cfg(debug_assertions)]
 fn the_symbol_table_does_not_keep_its_objects_alive() {
     let baseline_source = indoc! {"
-        Newspeak3
-        'T'
         class Baseline = Object new () (
           public make: count = ( ^nil )
         ) : ()
@@ -155,8 +149,6 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
     let baseline_statistics = baseline_interpreter.heap_statistics();
 
     let transient_source = indoc! {"
-        Newspeak3
-        'T'
         class Transient = Object new () (
           public make: count = (
             | remaining |
@@ -201,8 +193,6 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
 #[cfg(debug_assertions)]
 fn kept_closures_keep_their_frames() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Keeper = Object new (| public blocks ::= nil. |) (
           public fill: count = (
             | made remaining |
@@ -279,8 +269,6 @@ fn kept_closures_keep_their_frames() {
 #[cfg(debug_assertions)]
 fn discarding_everything_returns_to_the_starting_size() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Discard = Object new () (
           public fill: count = (
             | remaining |
@@ -325,8 +313,6 @@ fn discarding_everything_returns_to_the_starting_size() {
 #[cfg(debug_assertions)]
 fn the_collect_stress_mode_does_not_change_an_answer() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Sum = Object new () (
           public upTo: count = (
             | total remaining |
@@ -376,8 +362,6 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
 #[cfg(debug_assertions)]
 fn allocating_past_the_limit_collects_during_the_run() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Churn = Object new () (
           public run: count = (
             | total remaining |

@@ -60,8 +60,6 @@ fn string_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
 
 fn module(body: &str) -> String {
     formatdoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public run = ( {body} )

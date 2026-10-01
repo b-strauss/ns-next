@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 class Dnu = Object new (
 ) (
     public main: p args: a = (

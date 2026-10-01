@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.2: "Each class is an instance of a unique metaclass.
    All metaclasses are instances of class Metaclass". So a class's class is
    its metaclass, every metaclass's class is `Metaclass`, and `Metaclass`'s

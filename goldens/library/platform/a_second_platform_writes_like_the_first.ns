@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* A program may make a platform of its own: the platform's class is a
    nested class of the `PlatformFactory` module, whose factory is `new`,
    and its members reach the module's classes lexically, so a second

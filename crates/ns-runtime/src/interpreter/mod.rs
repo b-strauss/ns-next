@@ -2035,8 +2035,6 @@ mod tests {
     #[test]
     fn deciding_a_send_answers_what_to_run_without_running_it() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               public foo = ( ^1 )
@@ -2069,8 +2067,6 @@ mod tests {
     #[test]
     fn deciding_do_answers_its_block_for_the_first_element() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               public items = ( ^{10. 20. 30} )
@@ -2116,8 +2112,6 @@ mod tests {
     #[test]
     fn deciding_a_nested_class_answers_its_superclass_clause_as_an_activation() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               public class N = self base (
@@ -2166,8 +2160,6 @@ mod tests {
     #[test]
     fn deciding_new_answers_the_first_initializer_as_an_activation() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               public class P = Object new (
@@ -2258,8 +2250,6 @@ mod tests {
     #[test]
     fn a_finished_walk_leaves_an_empty_box_for_the_next() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               public class P x: a = Object new (
@@ -2319,8 +2309,6 @@ mod tests {
     #[test]
     fn a_retired_walk_holds_no_classref_in_its_phase() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               public class Base x: p = Object new (

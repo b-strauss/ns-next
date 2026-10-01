@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 2.3, verbatim apart from the module around it: "Here
    is a class with a single nested class", then "Because all references
    to nested classes are message sends, nested classes can be

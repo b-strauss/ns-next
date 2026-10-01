@@ -2061,8 +2061,6 @@ mod tests {
     fn a_literal_returns_a_fresh_scratch_register() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^42 )
@@ -2089,8 +2087,6 @@ mod tests {
     fn reading_a_parameter_returns_its_own_register_with_no_extra_instruction() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo: x = ( ^x )
@@ -2120,8 +2116,6 @@ mod tests {
     fn an_operand_that_a_later_argument_can_write_is_copied_out_of_its_local() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo: x bar: y = ( ^x )
@@ -2164,8 +2158,6 @@ mod tests {
     fn an_operand_no_later_argument_can_write_stays_in_its_own_register() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   m: a with: b = ( ^a foo: b bar: 3 )
@@ -2208,8 +2200,6 @@ mod tests {
     fn a_parameter_operand_is_never_copied() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   m: argument = ( ^argument foo: self bar )
@@ -2234,8 +2224,6 @@ mod tests {
     #[test]
     fn an_immutable_local_operand_is_never_copied() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               m = ( | local = 1. | ^local foo: self bar )
@@ -2273,8 +2261,6 @@ mod tests {
     #[test]
     fn an_operand_is_no_longer_copied_because_a_send_might_write_it() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               m = ( | t ::= 1. | ^t + self foo )
@@ -2302,8 +2288,6 @@ mod tests {
     #[test]
     fn an_operand_a_branch_assigns_is_still_copied() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               m: c = ( | t ::= 1. | c ifTrue: [t:: 9]. ^t + self foo )
@@ -2331,8 +2315,6 @@ mod tests {
     #[test]
     fn an_operand_a_later_argument_assigns_is_still_copied() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               first: x second: y = ( ^x )
@@ -2396,8 +2378,6 @@ mod tests {
     #[test]
     fn an_assignment_two_inlined_levels_deep_in_a_method_copies_the_operand() {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               m = (
@@ -2424,8 +2404,6 @@ mod tests {
     #[test]
     fn an_assignment_two_inlined_levels_deep_in_a_block_copies_the_operand() {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               m = (
@@ -2455,8 +2433,6 @@ mod tests {
     fn assigning_a_named_temporary_emits_store_local_and_records_the_statement_range() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( | t | t:: 7. ^t )
@@ -2485,8 +2461,6 @@ mod tests {
     fn scratch_registers_reset_between_statements() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( | t | t:: 1. t:: 2. ^t )
@@ -2523,8 +2497,6 @@ mod tests {
     fn an_integer_literal_beyond_i64_lowers_to_a_large_integer_literal() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^99999999999999999999 )
@@ -2550,8 +2522,6 @@ mod tests {
     fn a_radix_literal_is_parsed_at_compile_time() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^16rFF )
@@ -2578,8 +2548,6 @@ mod tests {
         // (`an_integer_addition_lowers_to_the_inlined_fast_path`).
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo: x = ( ^3 ~= x )
@@ -2616,8 +2584,6 @@ mod tests {
         // `foo`'s body (`^bar`) resolves `bar` as an implicit-receiver unary
         // send at depth 0 (`bar` is a sibling method) -- `Binding::LexicalSend`.
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               bar = ( ^42 )
@@ -2644,8 +2610,6 @@ mod tests {
     #[test]
     fn a_keyword_implicit_send_and_a_super_send_lower_without_a_receiver_register() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               at: i put: v = ( ^v )
@@ -2678,8 +2642,6 @@ mod tests {
     #[test]
     fn a_slot_assignment_lowers_to_a_setter_lexical_send() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -2732,8 +2694,6 @@ mod tests {
     #[test]
     fn a_slot_assignment_in_statement_position_does_not_copy_its_value() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -2759,8 +2719,6 @@ mod tests {
     #[test]
     fn a_returned_slot_assignment_copies_its_value_out_of_the_local() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -2796,8 +2754,6 @@ mod tests {
         // one a fallback closure can write, and so the copy possible at all
         // (`a_slot_assignment_in_statement_position_does_not_copy_its_value`).
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -2854,8 +2810,6 @@ mod tests {
     #[test]
     fn a_slot_initializer_that_assigns_a_parameter_copies_nothing() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -2911,8 +2865,6 @@ mod tests {
     #[test]
     fn a_blocks_last_slot_assignment_copies_its_value_and_an_earlier_one_does_not() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -2948,8 +2900,6 @@ mod tests {
     #[test]
     fn a_block_parameter_operand_is_never_copied() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -2983,8 +2933,6 @@ mod tests {
     #[test]
     fn an_inlined_blocks_last_slot_assignment_is_copied_only_when_its_value_is_read() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
               | n ::= 0. |
             ) (
@@ -3021,8 +2969,6 @@ mod tests {
     #[test]
     fn a_bare_builtin_class_name_lowers_to_a_self_send() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               foo = ( ^Array )
@@ -3050,8 +2996,6 @@ mod tests {
     #[test]
     fn a_cascade_reuses_one_receiver_register_across_every_message() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               foo = ( | c | c:: List new. c add: 1; add: 2 )
@@ -3117,8 +3061,6 @@ mod tests {
     #[test]
     fn a_cascade_receiver_a_branch_assigns_is_copied_out_of_its_local() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               foo = (
@@ -3150,8 +3092,6 @@ mod tests {
     #[test]
     fn a_cascade_receiver_a_later_messages_argument_assigns_is_copied_out_of_its_local() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               foo = (
@@ -3206,8 +3146,6 @@ mod tests {
     fn a_method_with_no_explicit_return_implicitly_returns_self() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( 1 + 1 )
@@ -3228,8 +3166,6 @@ mod tests {
     fn an_explicit_method_return_is_a_plain_return_with_nothing_appended() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^1 )
@@ -3253,8 +3189,6 @@ mod tests {
     fn a_block_literal_compiles_to_its_own_code_carried_by_make_closure() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^[ :x | x ] )
@@ -3297,8 +3231,6 @@ mod tests {
     #[test]
     fn a_family_numbers_its_sends_densely_across_nested_blocks() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Subject = Object new (
             ) (
               public run: items = (
@@ -3346,8 +3278,6 @@ mod tests {
     fn a_block_reads_a_copied_value_and_writes_through_its_scopes_vector() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo: x = ( | t | ^[ t:: x ] )
@@ -3393,8 +3323,6 @@ mod tests {
     fn a_block_reads_a_copied_variable_as_its_own_register() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo: x = ( ^[x] )
@@ -3423,8 +3351,6 @@ mod tests {
     fn a_block_that_writes_shares_its_scopes_vector() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( | t | ^[t:: 1] )
@@ -3469,8 +3395,6 @@ mod tests {
     fn a_doubly_nested_block_is_handed_the_variable_by_the_block_between() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo: x = ( ^[[x]] )
@@ -3507,8 +3431,6 @@ mod tests {
     fn the_fallback_closure_of_an_inlined_conditional_stays_by_reference() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo: c = ( | t | c ifTrue: [t:: 1]. ^t )
@@ -3551,8 +3473,6 @@ mod tests {
     fn a_return_inside_a_block_is_a_non_local_return() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^[ ^1 ] )
@@ -3579,8 +3499,6 @@ mod tests {
     fn an_empty_block_returns_nil_and_a_multi_statement_block_returns_its_last_value() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( [ ] value. ^[ 1. 2 ] value )
@@ -3646,8 +3564,6 @@ mod tests {
     fn a_dynamic_array_literal_lowers_to_make_array() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^{ 1. 2. 3 } )
@@ -3686,8 +3602,6 @@ mod tests {
     fn an_initializer_discards_a_top_level_return_and_always_returns_self() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^1 )
@@ -3723,8 +3637,6 @@ mod tests {
     fn a_slot_initializer_is_one_statement_ending_in_initialize_slot() {
         let (method, bindings) = resolve_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   foo = ( ^6 * 7 )
@@ -3758,8 +3670,6 @@ mod tests {
     /// Compiles `foo: x = ( ^<body> )` and returns the method's code.
     fn compile_foo(body: &str) -> CompiledCode {
         let full = formatdoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               foo: x = ( ^{body} )
@@ -3777,8 +3687,6 @@ mod tests {
     /// `Binding::MirrorSend`.
     fn lower_kernel_method(method: &str) -> CompiledCode {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (
@@ -4031,8 +3939,6 @@ mod tests {
     fn a_local_read_across_an_inlined_arithmetic_fallback_is_copied() {
         let code = lower_whole_method(
             indoc! {"
-                Newspeak3
-                'T'
                 class X = Object new (
                 ) (
                   bump: value = ( ^value + 1 )

@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* Primordial Soup's `at:`, `copyFrom:to:` and `String with:`, over
    ns-next's code points: `at:` answers the Integer code point, 1-based;
    `copyFrom:to:` is inclusive and takes the empty range that stops just

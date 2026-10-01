@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* What `outer_reach` folds (docs/design/execution.md, "Converted
    representation", "The divorce"). A fallback closure keeps the
    by-reference model, and so does every block nested in it: the block

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2 builds the part after <: from 6.1's inheritance
    clause, and 6.1 says: "It is a run time error if e_c does not evaluate
    to a class object C." notAClass answers 7, so reaching Applied is an

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A block created while its class initializes, whose `^` runs after the
    initializer has returned: its home is dead, so this is §7.2's
    `cannotReturn`. *)

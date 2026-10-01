@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A block's own register layout, and the capture rules applied to a
    block's own locals rather than a method's (docs/design/execution.md,
    "Converted representation"; "The rule", rule 3).

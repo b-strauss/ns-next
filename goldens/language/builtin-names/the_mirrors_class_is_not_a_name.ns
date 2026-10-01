@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* The VM mirror is a capability that reaches the core library alone, so
    `Object` provides no accessor for its class among its "accessors for
    predefined classes" (newspeak-spec.pdf 3.2). A bare `VmMirror` is, by

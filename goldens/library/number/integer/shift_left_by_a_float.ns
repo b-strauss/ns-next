@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* The count must be an integer, as for `//`, `\\` and the bit operations:
    a `Float` count is a type mismatch, not a truncation. *)
 class FloatShift = () (

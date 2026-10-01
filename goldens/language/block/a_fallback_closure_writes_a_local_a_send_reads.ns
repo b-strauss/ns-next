@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* The one run-time case `a_send_can_write` exists for
    (docs/design/execution.md, "Fewer protective copies"). An inlined
    ifTrue: whose receiver is not a Boolean sends the real message with a

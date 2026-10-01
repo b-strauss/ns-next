@@ -16,8 +16,6 @@ fn run(file: &Path) -> Output {
 /// A project's root: `packageUsing:` its manifest, reaching the module
 /// `Greeter` through it.
 const APP: &str = indoc! {"
-    Newspeak3
-    'Test'
     class App packageUsing: manifest = Object new (
         | Greeter = manifest Greeter. |
     ) (
@@ -28,8 +26,6 @@ const APP: &str = indoc! {"
 "};
 
 const GREETER: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Greeter = Object new () (
         public greeting = ( ^'hello from a module' )
     ) : ()
@@ -42,8 +38,6 @@ fn run_sends_main_arguments_and_prints_via_platform_transcript() {
     std::fs::write(
         &file,
         indoc! {"
-            Newspeak3
-            'Test'
             class Hello = Object new (
             ) (
                 public main: platform args: arguments = (
@@ -71,8 +65,6 @@ fn run_reports_a_parse_error_and_exits_nonzero() {
     std::fs::write(
         &file,
         indoc! {"
-            Newspeak3
-            'Test'
             class C = (
         "},
     )
@@ -90,8 +82,6 @@ fn a_source_file_whose_root_takes_the_platform_is_refused_before_anything_runs()
     std::fs::write(
         &file,
         indoc! {"
-            Newspeak3
-            'Test'
             class Old usingPlatform: platform = Object new () (
                 public main: platform args: arguments = ( platform transcript show: 'ran' )
             ) : ()
@@ -165,8 +155,6 @@ fn a_projects_root_must_take_the_manifest() {
     std::fs::write(
         directory.join("App.ns"),
         indoc! {"
-            Newspeak3
-            'Test'
             class App = Object new () (
                 public main: platform args: arguments = ( platform transcript show: 'ran' )
             ) : ()
@@ -196,8 +184,6 @@ fn a_projects_root_must_take_the_manifest() {
 fn two_modules_of_one_name_are_refused() {
     let directory = ScratchDirectory::new("project-twins");
     let twin = indoc! {"
-        Newspeak3
-        'Test'
         class Twin = Object new () () : ()
     "};
     std::fs::write(directory.join("App.ns"), APP).unwrap();
@@ -243,8 +229,6 @@ fn a_module_shadowed_by_an_object_member_is_refused() {
     std::fs::write(
         directory.join("App.ns"),
         indoc! {"
-            Newspeak3
-            'Test'
             class App packageUsing: manifest = Object new () (
                 public main: platform args: arguments = ( platform transcript show: 'ran' )
             ) : ()
@@ -254,8 +238,6 @@ fn a_module_shadowed_by_an_object_member_is_refused() {
     std::fs::write(
         directory.join("Array.ns"),
         indoc! {"
-            Newspeak3
-            'Test'
             class Array = Object new () () : ()
         "},
     )
@@ -282,8 +264,6 @@ fn a_never_used_module_breaking_the_root_rule_is_refused_by_run_and_build_alike(
     std::fs::write(
         directory.join("Unused.ns"),
         indoc! {"
-            Newspeak3
-            'Test'
             class Unused = Array new () () : ()
         "},
     )
@@ -319,8 +299,6 @@ fn a_program_without_main_is_an_uncaught_does_not_understand() {
     std::fs::write(
         &file,
         indoc! {"
-            Newspeak3
-            'Test'
             class Quiet = Object new () () : ()
         "},
     )

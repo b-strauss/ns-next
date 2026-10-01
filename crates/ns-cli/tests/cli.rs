@@ -25,8 +25,6 @@ fn parse_ok_file() {
     std::fs::write(
         &file,
         indoc! {"
-            Newspeak3
-            'X'
             class C = () ()
         "},
     )
@@ -46,8 +44,6 @@ fn parse_bad_file_exits_1() {
     std::fs::write(
         &file,
         indoc! {"
-            Newspeak3
-            'X'
             class C = (
         "},
     )
@@ -65,8 +61,6 @@ fn parse_corpus_reports_counts() {
     std::fs::write(
         modules.join("Good.ns"),
         indoc! {"
-            Newspeak3
-            'X'
             class C = () ()
         "},
     )
@@ -74,8 +68,6 @@ fn parse_corpus_reports_counts() {
     std::fs::write(
         modules.join("AlsoGood.ns"),
         indoc! {"
-            Newspeak3
-            'X'
             class D = () ()
         "},
     )
@@ -83,8 +75,6 @@ fn parse_corpus_reports_counts() {
     std::fs::write(
         modules.join("Bad.ns"),
         indoc! {"
-            Newspeak3
-            'X'
             class C = (
         "},
     )
@@ -113,8 +103,6 @@ fn parse_corpus_succeeds_when_every_file_parses() {
     std::fs::write(
         modules.join("Good.ns"),
         indoc! {"
-            Newspeak3
-            'X'
             class C = () ()
         "},
     )
@@ -136,8 +124,6 @@ fn parse_corpus_succeeds_when_every_file_parses() {
 /// `run-corpus` whitelist can exercise `expected_stdout` against real
 /// output -- the vendored corpus modules that run today print nothing.
 const TALKATIVE: &str = indoc! {"
-    Newspeak3
-    'X'
     class Talkative usingPlatform: p = Object new (
         | private platform = p. |
     ) (
@@ -251,8 +237,6 @@ fn run_corpus_instantiates_a_new_module_with_new() {
     std::fs::write(
         modules.join("Quiet.ns"),
         indoc! {"
-            Newspeak3
-            'X'
             class Quiet = Object new (
             ) (
                 public answer = ( ^42 )
@@ -282,8 +266,6 @@ fn run_corpus_refuses_a_module_whose_factory_it_cannot_fill() {
     std::fs::write(
         modules.join("Picky.ns"),
         indoc! {"
-            Newspeak3
-            'X'
             class Picky usingPlatform: p ide: i = Object new (
             ) (
                 public answer = ( ^42 )

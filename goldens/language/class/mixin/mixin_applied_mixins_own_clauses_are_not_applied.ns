@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: "an inheritance clause that specifies a class C
    whose mixin M will be applied to the superclass", and the result "is a
    class I with mixin M and superclass S". M is C's mixin, the class

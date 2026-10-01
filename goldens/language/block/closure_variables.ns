@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 class ClosureVariables = Object new () (
 	sumOf: coll = (
 		| s |

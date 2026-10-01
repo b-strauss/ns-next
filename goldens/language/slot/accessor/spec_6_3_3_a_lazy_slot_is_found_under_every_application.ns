@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.3 and 6.2: one mixin's lazy slot, applied once
    directly and once over a superclass with slots of its own, so the slot
    sits at a different field under each application. Its getter is

@@ -76,8 +76,6 @@ ns_runtime::for_each_lowering! {
         std::fs::write(
             &source,
             indoc! {"
-                Newspeak3
-                'Test'
                 class Applying = Object new () (
                     class Base withBase: b = Object new (| base = b. |) (
                         public chain = ( ^'Base ', base printString )
@@ -159,8 +157,6 @@ fn an_initializer_is_not_rerun_by_load_and_draws_the_same_hash() {
     std::fs::write(
         &source,
         indoc! {"
-            Newspeak3
-            'T'
             class Stamp = Object new (| stamp = Object new hash. |) (
                 public main: platform args: arguments = (
                     platform transcript show: stamp printString; newLine
@@ -187,8 +183,6 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
     std::fs::write(
         &source,
         indoc! {"
-            Newspeak3
-            'T'
             class Raises = Object new (
             ) (
                 public main: platform args: arguments = (
@@ -266,7 +260,7 @@ fn a_built_image_is_source_free_unless_debug_source_is_asked_for() {
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail
     // this too. Lines under 12 characters are structural punctuation --
-    // `)`, `) : ()`, `Newspeak3` -- which an image's byte stream reproduces by
+    // `)`, `) : ()` -- which an image's byte stream reproduces by
     // chance, so checking them would report leaks that are not leaks.
     // See `no_line_of_the_source_survives_in_a_source_free_image` in
     // `ns-runtime`'s image tests for the same property with a module built
@@ -368,8 +362,6 @@ fn a_hash_given_to_a_tag_named_object_survives_build_and_load() {
     std::fs::write(
         &source,
         indoc! {"
-            Newspeak3
-            'Test'
             class Hashes = Object new (
                 | integer = Integer hash. module = self class hash. meta = self class class hash. stamp = Object new hash. |
             ) (
@@ -400,8 +392,6 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
     std::fs::write(
         directory.join("App.ns"),
         indoc! {"
-            Newspeak3
-            'Test'
             class App packageUsing: manifest = Object new (
                 | private Stamper = manifest Stamper.
                   stamp = Object new hash.
@@ -420,8 +410,6 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
     std::fs::write(
         directory.join("Stamper.ns"),
         indoc! {"
-            Newspeak3
-            'Test'
             class Stamper = Object new (| public stamp = Object new hash. |) () : ()
         "},
     )
@@ -461,8 +449,6 @@ fn load_refuses_an_image_that_is_not_started() {
     use std::rc::Rc;
 
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Plain = Object new () (
             public main: platform args: arguments = ( platform transcript show: 'ran'; newLine )
         ) : ()

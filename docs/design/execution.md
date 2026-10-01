@@ -46,7 +46,7 @@ of the six silent defects Milestone 3's review found were identically wrong
 under both.
 
 Behaviour is protected by recorded answers, which both lowerings must produce:
-every `goldens/<category>/*.ns` against the exit status, stdout and stderr
+every `goldens/**/*.ns` against the exit status, stdout and stderr
 recorded in the `.toml` beside it (`crates/ns-cli/tests/run_goldens.rs`), and
 `run-corpus` over the runnable corpus. The answers recorded before the
 retirement are verdicts the oracle and the VM agreed on. A change that alters
@@ -1652,8 +1652,6 @@ which the tree has refused since "M4 — Removing `:=`" ([PROGRESS.md](../PROGRE
 and is the same program. The three print `20000`:
 
 ```
-Newspeak3
-'Bench'
 class BenchNew = Object new (
 	| sum ::= 0. |
 ) (
@@ -1672,8 +1670,6 @@ class BenchNew = Object new (
 ```
 
 ```
-Newspeak3
-'Bench'
 class BenchNew2 = Object new (
 	| sum ::= 0. |
 ) (
@@ -1697,8 +1693,6 @@ class BenchNew2 = Object new (
 ```
 
 ```
-Newspeak3
-'Bench'
 class BenchNewArg = Object new (
 	| sum ::= 0. |
 ) (
@@ -1724,8 +1718,6 @@ class BenchNewArg = Object new (
 `bench_do.ns` prints `275000`:
 
 ```
-Newspeak3
-'Bench'
 class BenchDo = Object new (
 	| sum ::= 0. |
 ) (

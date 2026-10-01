@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An error raised just below the depth limit, or at it, is signalled as
    itself: its `signal` needs activations of its own, which the reserve
    above the limit gives it, so it is not mistaken for the limit.

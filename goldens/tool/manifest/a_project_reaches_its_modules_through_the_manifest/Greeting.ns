@@ -1,3 +1,1 @@
-Newspeak3
-'Test'
 class Greeting named: name = Object new (| public text = 'hello, ', name. |) () : ()

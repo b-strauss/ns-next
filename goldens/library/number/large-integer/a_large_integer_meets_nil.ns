@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A `LargeInteger` receiver meets an argument that is no number with its
    leaf's type mismatch, which names what arithmetic takes: neither an
    overflow nor a fall through to `doesNotUnderstand:`. *)

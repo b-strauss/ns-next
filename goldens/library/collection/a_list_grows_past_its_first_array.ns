@@ -1,5 +1,3 @@
-Newspeak3
-'Collections'
 (* A List starts over an Array of three and moves into one half as large
    again whenever it is full -- Primordial Soup's growth, to seven and then
    fifteen -- so ten elements take two moves; `add:` answers the element and

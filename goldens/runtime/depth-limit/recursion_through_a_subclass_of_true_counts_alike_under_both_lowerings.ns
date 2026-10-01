@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* Every level sends ifTrue: with a literal block to an instance of a user
    subclass of True. The optimized lowering's guard sees no Boolean and
    makes the real send; the reference lowering sends it as a

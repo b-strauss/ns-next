@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.1.8: a code body's temporaries are slotDecls, which
    6.3.2 makes either a sequential | ... | or a simultaneous || ... || clause,
    and an empty sequential one may be written || -- inside a method as in a

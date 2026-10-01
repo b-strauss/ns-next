@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* fallback_closures_share_variables.ns for and: and or:. The compiler
    inlines both, and both keep a run-time guard whose failure path sends
    the real message with a real closure; that closure keeps the

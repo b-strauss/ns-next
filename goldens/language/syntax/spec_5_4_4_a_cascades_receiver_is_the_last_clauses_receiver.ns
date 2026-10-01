@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.4.4: a cascade "has the form e m0; ... mn where mi,
    i in 0..n are message clauses and e is an expression. It is equivalent
    to `[:p | p m0. ... p mn] value:(e)`." A message clause (5.4.2) is one

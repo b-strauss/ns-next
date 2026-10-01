@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares `n`
    -- `Enclosing` only inherits it from `OuterBase` -- so `^n` is "equivalent
    to a self send", and on figure 4, "Only if this fails is the receiver's

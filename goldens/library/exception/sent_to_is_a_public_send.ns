@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `Message>>sentTo:` sends the message as an ordinary public send (§5.5),
    as Primordial Soup's `sendTo:` does: a program can build a message, so a
    send through one reaches a public method and never a private or a

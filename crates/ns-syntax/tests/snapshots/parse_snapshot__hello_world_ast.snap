@@ -3,15 +3,15 @@ source: crates/ns-syntax/tests/parse_snapshot.rs
 expression: module
 ---
 Module {
-    language_id: "Newspeak3",
-    category: "HelloApp",
+    language_id: "",
+    category: "",
     root_class: ClassDeclaration {
         access: None,
         name: Identifier {
             name: "Hello",
             span: Span {
-                start: 27,
-                end: 32,
+                start: 6,
+                end: 11,
             },
         },
         factory: Some(
@@ -21,15 +21,15 @@ Module {
                         Identifier {
                             name: "usingPlatform",
                             span: Span {
-                                start: 33,
-                                end: 47,
+                                start: 12,
+                                end: 26,
                             },
                         },
                         Identifier {
                             name: "platform",
                             span: Span {
-                                start: 48,
-                                end: 56,
+                                start: 27,
+                                end: 35,
                             },
                         },
                     ),
@@ -48,8 +48,8 @@ Module {
                     name: Identifier {
                         name: "Transcript",
                         span: Span {
-                            start: 75,
-                            end: 85,
+                            start: 54,
+                            end: 64,
                         },
                     },
                     mutability: Immutable,
@@ -60,8 +60,8 @@ Module {
                                     Identifier {
                                         name: "platform",
                                         span: Span {
-                                            start: 88,
-                                            end: 96,
+                                            start: 67,
+                                            end: 75,
                                         },
                                     },
                                 ),
@@ -71,13 +71,13 @@ Module {
                                     ),
                                     arguments: [],
                                     span: Span {
-                                        start: 88,
-                                        end: 107,
+                                        start: 67,
+                                        end: 86,
                                     },
                                 },
                                 span: Span {
-                                    start: 88,
-                                    end: 107,
+                                    start: 67,
+                                    end: 86,
                                 },
                             },
                         ),
@@ -85,8 +85,8 @@ Module {
                     lazy: false,
                     simultaneous: false,
                     span: Span {
-                        start: 67,
-                        end: 108,
+                        start: 46,
+                        end: 87,
                     },
                 },
             ],
@@ -102,15 +102,15 @@ Module {
                                 Identifier {
                                     name: "main",
                                     span: Span {
-                                        start: 126,
-                                        end: 131,
+                                        start: 105,
+                                        end: 110,
                                     },
                                 },
                                 Identifier {
                                     name: "args",
                                     span: Span {
-                                        start: 132,
-                                        end: 136,
+                                        start: 111,
+                                        end: 115,
                                     },
                                 },
                             ),
@@ -126,8 +126,8 @@ Module {
                                             Identifier {
                                                 name: "Transcript",
                                                 span: Span {
-                                                    start: 141,
-                                                    end: 151,
+                                                    start: 120,
+                                                    end: 130,
                                                 },
                                             },
                                         ),
@@ -140,40 +140,40 @@ Module {
                                                     String {
                                                         value: "Hello, World!",
                                                         span: Span {
-                                                            start: 158,
-                                                            end: 173,
+                                                            start: 137,
+                                                            end: 152,
                                                         },
                                                     },
                                                 ),
                                             ],
                                             span: Span {
-                                                start: 141,
-                                                end: 173,
+                                                start: 120,
+                                                end: 152,
                                             },
                                         },
                                         span: Span {
-                                            start: 141,
-                                            end: 173,
+                                            start: 120,
+                                            end: 152,
                                         },
                                     },
                                 ),
                             ),
                         ],
                         span: Span {
-                            start: 141,
-                            end: 175,
+                            start: 120,
+                            end: 154,
                         },
                     },
                     span: Span {
-                        start: 119,
-                        end: 175,
+                        start: 98,
+                        end: 154,
                     },
                 },
             ],
             nested_classes: [],
             span: Span {
-                start: 65,
-                end: 177,
+                start: 44,
+                end: 156,
             },
         },
         class_side: Some(
@@ -183,18 +183,18 @@ Module {
                 methods: [],
                 nested_classes: [],
                 span: Span {
-                    start: 181,
-                    end: 182,
+                    start: 160,
+                    end: 161,
                 },
             },
         ),
         span: Span {
-            start: 21,
-            end: 182,
+            start: 0,
+            end: 161,
         },
     },
     span: Span {
         start: 0,
-        end: 183,
+        end: 162,
     },
 }

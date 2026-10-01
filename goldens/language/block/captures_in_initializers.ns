@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An instance initializer's activation has the factory's parameters as
    its locals (6.2), and a slot initializer is one of its statements. A
    block built there captures those parameters, which no assignment can

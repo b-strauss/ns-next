@@ -379,8 +379,6 @@ mod tests {
     /// accessor is recognized, and with plain `resolve` otherwise.
     fn an_inner_instance(shipped: bool) -> (Interpreter, Root) {
         let source = indoc::indoc! {"
-            Newspeak3
-            'T'
             class Shipped = Object new () (
               public class Middle = Object new () (
                 public class Inner = Object new () (

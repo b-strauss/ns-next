@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* An `Integer` or `LargeInteger` receiver meets a `Float` argument as a
    `Float` receiver meets an integer one: both become doubles, as Primordial
    Soup's primitives convert them, so the integer is rounded first. `=`

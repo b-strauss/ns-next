@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* Instantiation runs each initializer level as a trampoline step, so a class
    whose slot initializer instantiates it again is a chain of counted
    initializer activations and ends at the activation limit. It used to end at

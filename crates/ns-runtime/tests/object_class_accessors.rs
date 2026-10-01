@@ -47,8 +47,6 @@ fn expect_error(result: HostResult, what: &str) -> String {
 #[test]
 fn an_explicit_self_send_of_a_class_name_answers_the_builtin_class() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Probe = Object new () (
             public same = ( ^(self String) == 'text' class )
             public array = ( ^(self Array) new size )
@@ -76,8 +74,6 @@ fn an_explicit_self_send_of_a_class_name_answers_the_builtin_class() {
 #[test]
 fn a_class_that_redefines_the_name_reaches_its_own_method() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Probe = Object new () (
             public String = ( ^42 )
             public answer = ( ^self String )
@@ -99,8 +95,6 @@ fn a_class_that_redefines_the_name_reaches_its_own_method() {
 #[test]
 fn object_declares_no_accessor_for_top() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Probe = Object new () (
             public top = ( ^self Top )
         ) : ()
@@ -128,8 +122,6 @@ ns_runtime::for_each_lowering! {
     /// class of a string literal, under both lowerings.
     fn a_bare_builtin_name_and_the_kernel_answer_alike_under_both_lowerings(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'Test'
             class Probe = Object new () (
                 public printed = ( ^3 printString )
                 public same = ( ^String == 'text' class )

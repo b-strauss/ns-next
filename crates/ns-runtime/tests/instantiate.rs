@@ -54,8 +54,6 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
     // reaches `public` members (`newspeak-spec.pdf` §5.5's `lookupPublic`);
     // the default access (no modifier) is `protected`.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (|x = 42.|) (public bar = (^x)) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -107,15 +105,11 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 #[test]
 fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     let superclass_source = indoc! {"
-        Newspeak3
-        'T'
         class Sup = Object new (|a = 10.|) () : ()
     "};
     let (mut interpreter, superclass) = load(superclass_source);
 
     let subclass_source = indoc! {"
-        Newspeak3
-        'T'
         class Sub = Object new (|b = a.|) (public getB = (^b)) : ()
     "};
     let subclass_module = ns_syntax::parse(subclass_source).expect("parse");
@@ -190,8 +184,6 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
 #[test]
 fn a_factory_parameter_is_visible_in_a_slot_initializer() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class M usingPlatform: platform = Object new (|t = platform.|) (public getT = (^t)) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -223,8 +215,6 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
 #[test]
 fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class M usingPlatform: p = Object new (|t = p printString.|) (public getT = (^t)) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -266,8 +256,6 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
 #[test]
 fn a_factory_parameter_is_visible_in_an_initializer_expression() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class M usingPlatform: p = Object new (|t.| t:: p.) (public getT = (^t)) : ()
     "};
     let module = ns_syntax::parse(source).expect("parse");
@@ -313,8 +301,6 @@ fn a_factory_parameter_is_visible_in_an_initializer_expression() {
 #[test]
 fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class M usingPlatform: p ide: q = Object new (|t = q.|) (public getT = (^t)) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -340,8 +326,6 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
 #[test]
 fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new () () : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -377,8 +361,6 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
 #[test]
 fn a_superclass_factory_message_receives_its_own_arguments() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class SuperclassArgs = Object new () (
             public class Base withValue: v = Object new (| baseValue ::= v. |) (
                 public base = ( ^baseValue )
@@ -423,8 +405,6 @@ ns_runtime::for_each_lowering! {
     /// else -- its last statement's value, say, or `nil` -- would fail here.
     fn new_answers_the_instance_its_initializers_ran_on(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Kinds = Object new (
                 | seen ::= nil. |
             ) (
@@ -539,8 +519,6 @@ fn expect_error(result: HostResult, what: &str) -> ns_runtime::HostError {
 #[test]
 fn a_value_class_that_declares_a_mutable_slot_cannot_be_instantiated() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Counter start: first = Value new (
             | public count ::= first. |
         ) () : ()
@@ -564,8 +542,6 @@ fn a_value_class_that_declares_a_mutable_slot_cannot_be_instantiated() {
 #[test]
 fn a_value_class_refuses_a_slot_that_is_not_a_value() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Values = Object <: Value () (
             public class Holder on: contents = Value new (
                 | public contents = contents. |
@@ -624,8 +600,6 @@ fn a_class_that_is_no_value(interpreter: &mut Interpreter, module: &Root) -> Roo
 #[test]
 fn a_refused_slot_names_the_factory_the_program_sent() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holders = Object <: Value () (
             public class Base held: contents = Value new (
                 | public held = contents. |
@@ -673,8 +647,6 @@ fn a_refused_slot_names_the_factory_the_program_sent() {
 #[test]
 fn a_value_class_accepts_a_slot_holding_an_instance_of_value_itself() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder = Value new (
             | public contents = Value new. |
         ) (
@@ -708,8 +680,6 @@ fn a_value_class_accepts_a_slot_holding_an_instance_of_value_itself() {
 #[test]
 fn the_same_declarations_are_ordinary_below_object() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder on: contents = Object new (
             | public contents = contents. public count ::= 1. |
         ) () : ()
@@ -741,8 +711,6 @@ fn the_same_declarations_are_ordinary_below_object() {
 /// with the applying class's. `Other` declares a superclass clause of its
 /// own, which an application of it replaces with the level below.
 const APPLICATION_ORDER_SOURCE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Order = Object new (
         | log ::= 0. |
     ) (
@@ -849,8 +817,6 @@ ns_runtime::for_each_lowering! {
 /// its chain: a level's message is evaluated even when no code of the level
 /// runs after it.
 const EVALUATION_ORDER_SOURCE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Evaluation = Object new (
         | log ::= 0. |
     ) (

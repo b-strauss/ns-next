@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 2.3, verbatim apart from the module around it: "It is
    also possible to override a superclass of a nested class; consider this
    variation", then "Here are a few more illustrative examples. If g is an

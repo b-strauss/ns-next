@@ -182,8 +182,6 @@ fn register_addressing_puts_arguments_before_temporaries() {
     // encodes, and a synthetic frame could encode it wrongly and then
     // agree with itself.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class T usingPlatform: p = Object new () (
             public run: a = (| t | t:: a. ^t)
         ) : ()
@@ -214,8 +212,6 @@ fn register_addressing_puts_arguments_before_temporaries() {
 #[test]
 fn instances_of_a_nested_class_share_a_dispatch_id_across_enclosing_objects() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new (
         ) (
           public class Outer = Object new () (
@@ -327,8 +323,6 @@ fn immediates_answer_their_builtin_classes_instance_ids() {
 #[test]
 fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new (
         ) (
         ) : ()

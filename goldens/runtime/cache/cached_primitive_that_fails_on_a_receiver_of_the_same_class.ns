@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A primitive that fails where its entry was recorded: `=` and
    `printString` on a user subclass of `String`, whose instances carry no
    string, fall through the failure block's `super` send -- `printString`

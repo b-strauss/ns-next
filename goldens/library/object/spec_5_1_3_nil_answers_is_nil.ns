@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.1.3: nil "responds to almost all messages with a
    messageNotUnderstood error. The exceptions are isNil, which answers true
    and methods inherited from class Value." So isNil is the one selector

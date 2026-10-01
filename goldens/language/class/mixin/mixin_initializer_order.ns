@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: "Let m_s be the message pattern defined by the
    superclass clause. The instance initializer for I evaluates m_s to mu_s,
    the message determined by the superclass clause. Next, the instance

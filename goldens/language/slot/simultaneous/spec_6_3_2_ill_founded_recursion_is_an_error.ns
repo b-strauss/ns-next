@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.2 resolves "any well founded mutual recursion";
    `first` and `second` each need the other's value, which is not, and
    forcing a future while its own block runs is an ordinary error, caught

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A future is indistinguishable from its value (5.5's proxy; docs/design/
    object-model.md, "Simultaneous slots", rule 3): compared during the
    clause, by equality or identity and from either side, it answers as the

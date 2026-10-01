@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A leaf that stores or activates a block argument must not take a
    sibling's future for a non-block (docs/design/object-model.md, "Where
    Rust sees a future"): `do:` and `whileTrue:` receive `printer`'s and

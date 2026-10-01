@@ -684,8 +684,6 @@ mod tests {
     #[test]
     fn resolving_names_the_chain_and_runs_nothing() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Subject = Object new (
             ) (
               public foo = ( ^1 )
@@ -758,8 +756,6 @@ mod tests {
     #[test]
     fn a_lexical_resolution_finds_what_lexical_member_finds() {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Subject = Object new (
             ) (
               private helper = ( ^1 )

@@ -104,6 +104,36 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
     assert!(String::from_utf8_lossy(&both.stderr).contains("exactly one"));
 }
 
+/// A module whose language id begins with the image format's magic is still
+/// a module: `disasm` tells an artifact from source by more than its first
+/// four bytes.
+#[test]
+fn disasm_reads_a_module_whose_language_id_is_the_image_magic_as_source() {
+    let directory = ScratchDirectory::new("disasm-magic-language-id");
+    let path = directory.join("magic.ns");
+    std::fs::write(
+        &path,
+        indoc! {"
+            NSNX
+            class Magic = Object new () (
+                public value = ( ^42 )
+            )
+        "},
+    )
+    .expect("write temp source");
+    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("disasm")
+        .arg(&path)
+        .arg("value")
+        .output()
+        .expect("run ns-next disasm");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// `--class` addresses a nested class's own method and a class side's own
 /// method by mixin path, and reports a clean error (not a panic) for a
 /// path segment that names nothing in the tree. Not a golden: this only
@@ -117,8 +147,6 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     std::fs::write(
         &path,
         indoc! {"
-            Newspeak3
-            'T'
             class Outer usingPlatform: p = Object new () (
                 public class Inner = Object new () (
                     public value = ( ^42 )
@@ -227,8 +255,6 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     use std::rc::Rc;
 
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Bare = Object new () (
             public main: p args: a = ( ^0 )
         ) : ()
@@ -308,8 +334,11 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
 fn disasm_rejects_a_corrupt_artifact_with_a_message() {
     let directory = ScratchDirectory::new("disasm-bad");
     let bad = directory.join("truncated.img");
-    // Magic, so it is taken for an artifact, and then nothing.
-    std::fs::write(&bad, ns_runtime::image::encode::MAGIC).expect("write");
+    // Magic and the version's first byte, so it is taken for an artifact,
+    // and then nothing.
+    let mut truncated = ns_runtime::image::encode::MAGIC.to_vec();
+    truncated.push(ns_runtime::image::encode::FORMAT_VERSION.to_le_bytes()[0]);
+    std::fs::write(&bad, truncated).expect("write");
 
     let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* §5.10 makes S the superclass of the running activation's current class,
    which §3.2 makes `Class` for a metaclass: the metaclass hierarchy is "kept
    very flat" -- every metaclass is the class side applied directly to

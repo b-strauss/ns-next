@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: "The result of a mixin application expression is a
    class I with mixin M and superclass S". 3.1.1: an object is a value object
    when "Its class inherits from class `Value`" and its slots "are immutable,

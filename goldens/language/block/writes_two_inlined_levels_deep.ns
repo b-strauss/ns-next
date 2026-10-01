@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An assignment inside an inlined block is lowered into the body that
    inlines it, so it writes that body's registers directly and an operand
    read before it has to be copied out first (CLAUDE.md, "An expression's

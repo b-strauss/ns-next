@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 class NestedIdentity = Object new () (
     public class Holder = Object new () (
         public class Inner = Object new () (

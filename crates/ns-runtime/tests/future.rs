@@ -29,8 +29,6 @@ fn expect_error_message(result: HostResult, what: &str) -> String {
 }
 
 const HOLDER: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Holder = Object new (
         | public runs ::= 0. public held |
     ) (

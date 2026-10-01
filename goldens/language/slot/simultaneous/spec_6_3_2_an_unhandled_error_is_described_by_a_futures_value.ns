@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An unhandled error's description reaches the leaf that ends the run,
    which renders it: here it is `text`'s future, since `Error`'s
    `description` answers its message text, and the run must report the

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.5: lookupPublic(n, C) is "m, if the mixin of C
    defines a method m with selector n and public access. Undefined, if the
    mixin of C defines a method m with selector n and protected access.

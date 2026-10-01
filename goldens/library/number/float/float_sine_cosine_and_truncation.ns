@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* `sin` and `cos` are Primordial Soup's `Float>>sin` and `cos`, the C
    library's functions of radians; only values exact on every platform are
    printed, the others are bounded. `asInteger` is Primordial Soup's

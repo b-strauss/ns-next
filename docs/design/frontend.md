@@ -11,8 +11,6 @@ change for runtime work.
 ## What a source file looks like
 
 ```
-Newspeak3
-'CategoryString'
 class Name usingPlatform: platform = SuperclassClause (
     (* optional class comment *)
     |
@@ -30,6 +28,31 @@ class Name usingPlatform: platform = SuperclassClause (
 
 Three bracketed sections in order: the class body (slots and initializer
 expressions), the instance side, and — after `) : (` — the class side.
+
+## The module header
+
+A module may open with §8.1's language id (`Newspeak3`) and its class
+category (`'App'`), in that order, and may leave out either or both. The
+specification requires the language id; ns-next does not, and that is a
+deliberate deviation. The id names the language a compilation unit is written
+in, for a later version to announce itself, but nothing reads it: the
+canonical parser discards it (`NewspeakParsing.ns`, `compilationUnit`'s
+`wrapper: [:lid :u :e | u]`), and here it reaches `Module::language_id` and no
+further. The category is the canonical IDE's grouping of modules, which the
+specification itself calls a temporary expedient, and nothing here reads it
+either. Every module the repository writes -- the core library, the goldens,
+the benchmarks, the tests' inline modules -- leaves both out; the corpus keeps
+its headers, and they parse as before.
+
+Making the id optional makes the start of a module ambiguous, because `class`
+and the access modifiers are unreserved words (§4.1) and so valid ids. A
+leading identifier is always the id. A leading `class`, `public`, `protected`
+or `private` is the id exactly when a `toplevelClass` follows it -- a category,
+or `class` and a name, an access modifier before them included -- and opens
+the declaration otherwise: `class class Root = () ()` is the id `class` and the
+class `Root`, `class class = () ()` the class named `class`, and
+`public class Root = () ()` the id `public`, since the reading that refuses
+the module's access modifier is the one that fails.
 
 ## Grammar
 
@@ -76,8 +99,9 @@ The productions, and what the parser does with each:
 
 - `compilationUnit → languageId toplevelClass`, `toplevelClass →
   classCategory classDeclaration`, `classCategory → [string]` (§8.1): the
-  category is optional, and the module's class takes no access modifier --
-  only `nestedClassDecl → [accessModifier] classDeclaration` has one.
+  language id is optional too ("The module header"), and the module's class
+  takes no access modifier -- only `nestedClassDecl → [accessModifier]
+  classDeclaration` has one.
 - `classDeclaration` (§6): `class`, a name, an optional `typeParameterDecl`
   (`<[K, V]>`, dropped, "What is parsed and dropped"), then the factory's
   `messagePattern` and `=`, or `=` alone -- tried in that order, so

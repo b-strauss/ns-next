@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* `x:: e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
    sends"), even when the setter it sends writes the local `e` read, through a
    closure built earlier. One case per position that reads an assignment's

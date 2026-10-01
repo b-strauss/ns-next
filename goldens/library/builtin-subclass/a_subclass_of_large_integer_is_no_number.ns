@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* A user subclass of `LargeInteger`, and `LargeInteger new`, inherit its
    methods but no integer payload, so every `LargeInteger` leaf declines,
    then every `Integer` leaf, and the send reaches `Object`'s: nothing takes

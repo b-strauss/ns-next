@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A count whose result cannot be allocated is an error the program sees,
    never a Rust allocation abort, as `Array new:` refuses such a size. *)
 class HugeShift = () (

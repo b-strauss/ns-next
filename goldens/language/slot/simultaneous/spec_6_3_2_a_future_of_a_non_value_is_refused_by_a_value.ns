@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A future about to be stored in a value's slot is forced first, and its
    value is checked like any other (newspeak-spec.pdf 3.1.1;
    docs/design/object-model.md, "Simultaneous slots", rule 4): `pair`'s

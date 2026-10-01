@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* ANSI's `on:do:`: the handler block's value is the value of `on:do:`, an
    implicit `return:`; a block that signals nothing answers its own value,
    and the handler does not run. *)

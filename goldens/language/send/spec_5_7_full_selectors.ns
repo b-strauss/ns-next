@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.7 looks for "a method, slot or class named s", s
    being "the selector of the message" -- the whole selector. Outer's
    foo:bar: declares no member foo:, and its at:put: declares no member

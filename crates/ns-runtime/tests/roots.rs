@@ -40,8 +40,6 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
 }
 
 const COUNTER: &str = indoc! {"
-    Newspeak3
-    'T'
     class Counter = Object new (
       | n ::= 0. |
     ) (
@@ -134,8 +132,6 @@ fn fetching_a_root_through_another_interpreter_panics() {
 /// Gated like its only caller: a move exists only in a debug build.
 #[cfg(debug_assertions)]
 const GRAPH: &str = indoc! {"
-    Newspeak3
-    'T'
     class X = Object new (
       | cell ::= nil. counter ::= nil. |
     ) (

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `on:do:` is an ordinary kernel method, so a recursion through it counts
    its activations as any other (docs/design/compiler.md, "How the limit
    counts"): each level of `down:` is three counted activations -- the

@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* `LargeInteger`'s arithmetic and ordering, with a `LargeInteger` on either
    side and an `Integer` on the other, and a result that fits again answered
    as an `Integer`. The operands are built by arithmetic, not literals, so

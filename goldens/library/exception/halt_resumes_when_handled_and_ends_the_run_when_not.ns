@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `halt` signals a `Halt`, which is resumable: handled with `resume:`, the
    value answers from `halt` and execution carries on after it. Unhandled,
    its `defaultAction` -- the hook the debugger will replace -- ends the

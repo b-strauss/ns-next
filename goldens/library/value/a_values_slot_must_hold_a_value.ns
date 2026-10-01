@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.1.1: a value object is *deeply* immutable -- "all
    objects reachable from it are also deeply immutable" -- so a slot of a
    value may only hold another value. An `Array` is mutable (`at:put:`),

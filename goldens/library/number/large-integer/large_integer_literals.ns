@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* §5.1.1 bounds no literal: "integers are not limited in size". A decimal
    and a radix literal beyond `i64`, a negative one, and the two `i64` edges,
    which stay `Integer`s. *)

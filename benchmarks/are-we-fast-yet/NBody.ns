@@ -1,5 +1,3 @@
-Newspeak3
-'AreWeFastYet'
 (* Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
    e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
    core-lib/Benchmarks/NBody.ns), one of the Are We Fast Yet benchmarks.

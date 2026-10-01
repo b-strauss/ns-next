@@ -1,7 +1,10 @@
 Newspeak3
 (* newspeak-spec.pdf 8.1: compilationUnit is languageId toplevelClass,
    toplevelClass is classCategory classDeclaration, and classCategory is
-   [string] -- a module may leave its category out. *)
+   [string] -- a module may leave its category out. ns-next makes the
+   language id optional too (docs/design/frontend.md, "The module
+   header"); this module keeps it, so a module opening with one stays
+   pinned. *)
 class Spec81AModuleNeedsNoCategory = Object new () (
     public main: platform args: arguments = (
         platform transcript show: 'no category'; newLine

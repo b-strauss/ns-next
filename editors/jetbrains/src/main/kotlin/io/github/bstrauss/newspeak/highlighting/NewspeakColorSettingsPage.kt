@@ -56,8 +56,6 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
     )
 
     override fun getDemoText(): String = """
-        Newspeak3
-        'Examples'
         class <class>Counter</class> usingPlatform: <parameter>platform</parameter> = Object <send>new</send> (
           (* A counter. TODO: reset *)
           | private <slot>count</slot> ::= 0. private <immutable>limit</immutable> = 16rFF. |

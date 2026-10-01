@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3.3: "if the slot contains nil, e is evaluated". An
    initializer that answers nil leaves the slot containing nil, so every
    read evaluates it again: three reads, three marks. *)

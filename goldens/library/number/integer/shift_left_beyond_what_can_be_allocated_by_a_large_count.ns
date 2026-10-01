@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A count beyond what a machine integer holds still reaches the refusal for a
    result that cannot be allocated, rather than wrapping or aborting. *)
 class ShiftByALargeCount = () (

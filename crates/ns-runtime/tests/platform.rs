@@ -317,8 +317,6 @@ fn a_platform_member_is_built_on_first_use(member: &str) {
 #[test]
 fn a_subclass_of_the_transcript_class_writes_too() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Loudness usingPlatform: platform = Object <: Value (
             | private thePlatform = platform. |
         ) (
@@ -415,8 +413,6 @@ fn the_platform_class_is_nested_in_the_platform_factory() {
 #[test]
 fn a_subclass_of_the_platform_class_writes_too() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Copier usingPlatform: platform = Object <: Value (
             | private thePlatform = platform. |
         ) (

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 4.2: symbol is pound sym, and sym is str | kws | binSel
    | id -- a quoted string, keywords each ending in their colon, a binary
    selector, or an identifier. *)

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `on: nil do:` names no class: the search sends `nil handles:`, which
    `nil` does not understand. The `on:do:` whose test raised that is
    disabled while the test runs, so the `MessageNotUnderstood` is looked

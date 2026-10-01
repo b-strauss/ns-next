@@ -41,8 +41,6 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 /// loops and `and:`/`or:`, a `^` out of an inlined block, slot
 /// initializers, a cascade, a chained assignment.
 const PROGRAMS: &str = indoc! {"
-    Newspeak3
-    'T'
     class Programs = Object new (
         | a = 3. b = a + 4. |
     ) (
@@ -92,8 +90,6 @@ ns_runtime::for_each_lowering! {
 #[test]
 fn a_reference_initializer_initializes_each_slot_then_answers_self() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
             | a = 1. b ::= 2. |
             a printString.
@@ -165,8 +161,6 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
 #[test]
 fn the_reference_lowering_emits_every_send_uncached() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Subject = Object new (
         ) (
           public run: items = (

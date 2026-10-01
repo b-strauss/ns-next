@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* Decided with the user on 2026-09-26 (docs/design/core-library.md, "Lazy
    slots first"): a value's state-derived = and hash skip lazy slots, which
    are state derived from the rest -- Bracha's transient fields, purged on

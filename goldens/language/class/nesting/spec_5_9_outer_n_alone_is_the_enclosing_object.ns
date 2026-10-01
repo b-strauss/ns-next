@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.9 defines outer N only as a send's receiver, the object
    the send goes to; canonical Newspeak also answers outer N alone as that
    object, and so does this runtime (decided with the user on 2026-09-27). N

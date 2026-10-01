@@ -689,8 +689,6 @@ mod tests {
     use super::*;
 
     const MODULE: &str = indoc::indoc! {"
-        Newspeak3
-        'Test'
         class Shapes usingPlatform: platform = Object new (
           | private count ::= 0. private limit = 10. |
         ) (
@@ -823,8 +821,6 @@ mod tests {
         // `super` send's selector is -- never looked up against `Shapes` at
         // all.
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Shapes = Object new () (
               class Inner = Object new () ()
               class ViaSelf = self Inner new () ()
@@ -881,8 +877,6 @@ mod tests {
         // recording a `LexicalSend` for it. The classifier must still not
         // colour it: `outer` is a reserved word, not a member reference.
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Shapes = Object new () (
               public nested = ( ^outer Shapes )
             ) : ()
@@ -903,8 +897,6 @@ mod tests {
     fn a_message_to_an_object_colours_its_selector_as_a_method() {
         // `new` in `Inner new` has an explicit receiver and no binding.
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Shapes = Object new (
               | list = Object new. |
             ) (
@@ -952,8 +944,6 @@ mod tests {
         // §6.3.3: `lazy` may stand before or after the access modifier, and
         // a lazy slot may be declared with `=` or `::=`.
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Holder usingPlatform: platform = Object new () (
               lazy public first = platform.
               public lazy second = first.
@@ -1013,8 +1003,6 @@ mod tests {
         // §4.1 reserves neither `class` nor the access modifiers: behind a
         // modifier one names a slot, and after a receiver it is a send.
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Holder = Object new (
               | public public = 1. private class ::= 2. |
             ) (
@@ -1058,8 +1046,6 @@ mod tests {
     #[test]
     fn a_slot_or_method_named_lazy_is_not_a_keyword() {
         let text = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Holder = Object new (
               | lazy = 1. |
             ) (

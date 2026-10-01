@@ -557,8 +557,6 @@ mod tests {
     /// Analyses the first instance-side method of a one-method module.
     fn analyze_method(body: &str) -> Captures {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class X = Object new (
             ) (
               foo = ( {body} )
@@ -720,8 +718,6 @@ mod tests {
     #[test]
     fn a_write_in_a_mirror_sends_failure_block_is_not_branch_assigned() {
         let source = indoc::indoc! {"
-            Newspeak3
-            'T'
             class K vmMirror: theMirror = Object new (
               | private vmMirror = theMirror. |
             ) (

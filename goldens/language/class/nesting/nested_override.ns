@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A nested class's superclass clause (newspeak-spec.pdf 6.1) is evaluated
    once per enclosing instance, and `GrandChildOfOuter` overrides what its
    `Inner` clause reads with a slot rather than a nested-class declaration.

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: the result of a mixin application "is a class I
    with mixin M and superclass S", and its instance initializer runs S's
    initializer and then M's "on o with the arguments of mu_m". Nothing

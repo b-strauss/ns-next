@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* True and False each declare the hash their own `=` demands, and Boolean
    declares none, so an instance of a user subclass of Boolean hashes as the
    value it is: by its state, through Value's hash, like any other slotless

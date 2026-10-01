@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* An `on:do:` is disabled only while its handler runs, however the handler
    is left: `resume:` unwinds out of it back to the signal, and the handler
    is enabled again for the next exception the protected block signals --

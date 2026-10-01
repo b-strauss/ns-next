@@ -129,8 +129,6 @@ fn with_method_code(mut mixin: Mixin, selector: &str, code: Rc<CompiledCode>) ->
 #[test]
 fn a_user_method_runs_as_bytecode_and_returns_its_value() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public answer = ( ^42 )
@@ -148,8 +146,6 @@ fn a_user_method_runs_as_bytecode_and_returns_its_value() {
 #[test]
 fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public makeBlock = ( ^[ :x | x + 1 ] )
@@ -185,8 +181,6 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
 #[test]
 fn temporaries_implicit_self_sends_and_arithmetic_work() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           helper = ( ^40 )
@@ -205,8 +199,6 @@ fn temporaries_implicit_self_sends_and_arithmetic_work() {
 #[test]
 fn slots_read_and_write_through_lexical_sends() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | n ::= 1. |
         ) (
@@ -226,8 +218,6 @@ fn slots_read_and_write_through_lexical_sends() {
 #[test]
 fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -248,8 +238,6 @@ fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
 #[test]
 fn a_super_send_falls_through_to_objects_native_print_string() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo = ( ^super printString )
@@ -269,8 +257,6 @@ fn a_super_send_falls_through_to_objects_native_print_string() {
 #[test]
 fn cascades_and_list_instantiation_work() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X usingPlatform: platform = Object new (
           | List = platform collections List. |
         ) (
@@ -290,8 +276,6 @@ fn cascades_and_list_instantiation_work() {
 #[test]
 fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_frame() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           find: target in: coll = ( coll do: [:each | each = target ifTrue: [^'found']]. ^'not found' )
@@ -312,8 +296,6 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
 #[test]
 fn a_block_writes_an_enclosing_temporary_through_store_outer_local() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public sum = ( | n | n:: 0. {1. 2. 3} do: [:e | n:: n + e]. ^n )
@@ -331,8 +313,6 @@ fn a_block_writes_an_enclosing_temporary_through_store_outer_local() {
 #[test]
 fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public empty = ( ^[ ] value )
@@ -353,8 +333,6 @@ fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
 #[test]
 fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo: b = ( ^b ifTrue: ['yes'] ifFalse: ['no'] )
@@ -380,8 +358,6 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
 #[test]
 fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           mk = ( ^[ ^1 ] )
@@ -398,8 +374,6 @@ fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
 #[test]
 fn an_integer_literal_beyond_i64_evaluates_to_a_large_integer() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo = ( ^99999999999999999999 printString )
@@ -419,8 +393,6 @@ fn an_integer_literal_beyond_i64_evaluates_to_a_large_integer() {
 #[test]
 fn a_dynamic_array_literal_evaluates_its_elements() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo = ( | a | a:: {1. 2. 3}. ^a )
@@ -447,8 +419,6 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
 #[test]
 fn a_method_that_falls_off_its_end_implicitly_returns_self() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo = ( 1 + 1 )
@@ -469,8 +439,6 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
 #[test]
 fn loading_a_module_installs_its_compiled_code() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public makeBlock = ( ^[ 1 ] )
@@ -501,16 +469,12 @@ fn loading_a_module_installs_its_compiled_code() {
 #[test]
 fn loading_a_second_module_keeps_the_first_modules_code() {
     let first = indoc! {"
-        Newspeak3
-        'T'
         class A = Object new (
         ) (
           public answer = ( ^1 )
         ) : ()
     "};
     let second = indoc! {"
-        Newspeak3
-        'T'
         class B = Object new (
         ) (
           public answer = ( ^2 )
@@ -556,8 +520,6 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
 /// -- `t` -- read back the first surplus argument instead of `Nil`,
 /// silently.
 const ARITY_PROBE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Probe = Object new (
     ) (
         public probe = (
@@ -602,8 +564,6 @@ fn a_wrong_arity_send_is_refused() {
 #[test]
 fn a_vector_round_trips_a_value_through_its_slot() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public compute = ( ^0 )
@@ -660,8 +620,6 @@ fn a_vector_round_trips_a_value_through_its_slot() {
 #[test]
 fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public bad = ( ^0 )
@@ -724,8 +682,6 @@ fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
 #[test]
 fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public bad = ( ^0 )
@@ -808,8 +764,6 @@ fn constant_block(value: i64) -> Rc<CompiledCode> {
 #[test]
 fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_hand() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | n |
         ) (
@@ -909,8 +863,6 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
 #[test]
 fn resolve_future_answers_a_non_future_value_unchanged() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public probe = ( ^0 )
@@ -957,8 +909,6 @@ fn resolve_future_answers_a_non_future_value_unchanged() {
 #[test]
 fn load_own_slot_answers_nil_for_an_unfilled_slot() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | n |
         ) (
@@ -1004,8 +954,6 @@ fn load_own_slot_answers_nil_for_an_unfilled_slot() {
 #[test]
 fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public bad = ( ^0 )
@@ -1128,8 +1076,6 @@ fn a_corrupted_future(
 #[test]
 fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | public held |
         ) (
@@ -1241,8 +1187,6 @@ fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
 #[test]
 fn an_inlined_integer_operation_answers_what_the_primitive_answers() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Arithmetic = Object new (
         ) (
           public add: left to: right = ( ^left + right )
@@ -1307,8 +1251,6 @@ fn an_inlined_integer_operation_answers_what_the_primitive_answers() {
 #[test]
 fn an_inlined_integer_operation_leaves_promotion_and_division_by_zero_to_the_primitive() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Arithmetic = Object new (
         ) (
           public add: left to: right = ( ^left + right )
@@ -1376,8 +1318,6 @@ fn large_integer_text(interpreter: &mut Interpreter, root: &Root) -> String {
 #[test]
 fn an_inlined_integer_operation_with_a_non_integer_operand_falls_back_to_the_send() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Arithmetic = Object new (
         ) (
           public add: left to: right = ( ^left + right )
@@ -1423,8 +1363,6 @@ fn an_inlined_integer_operation_with_a_non_integer_operand_falls_back_to_the_sen
 #[test]
 fn an_inlined_integer_operation_evaluates_its_argument_once_on_the_fallback_path() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Counting = Object new (
           | ticks ::= 0. |
         ) (
@@ -1447,8 +1385,6 @@ fn an_inlined_integer_operation_evaluates_its_argument_once_on_the_fallback_path
 #[cfg(debug_assertions)]
 fn a_stretch_leaves_for_a_requested_safepoint_and_resumes_where_it_stood() {
     let (mut interpreter, class) = load(indoc! {"
-        Newspeak3
-        'Test'
         class Probe = Object new () (
             public caller = ( ^self callee + 1 )
             public callee = ( ^41 )
@@ -1473,8 +1409,6 @@ fn a_stretch_leaves_for_a_requested_safepoint_and_resumes_where_it_stood() {
 #[cfg(debug_assertions)]
 fn a_loop_that_sends_nothing_still_reaches_a_safepoint() {
     let (mut interpreter, class) = load(indoc! {"
-        Newspeak3
-        'Test'
         class Probe = Object new () (
             public count = (
                 | index ::= 0. |

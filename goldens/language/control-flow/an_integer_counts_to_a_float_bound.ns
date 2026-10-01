@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* `to:do:` and `to:by:do:` with an `Integer` receiver and a `Float` bound
    or step: `Number`'s loop compares and adds across the two classes, and
    the counter becomes a `Float` once a `Float` step is added. *)

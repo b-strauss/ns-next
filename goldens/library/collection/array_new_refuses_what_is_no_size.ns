@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* `Array new:` refuses a negative size, a size that is no Integer and a
    size it cannot allocate, each as an ordinary Error a handler catches --
    never an abort of the process. *)

@@ -9,8 +9,6 @@ fn resolve_source(source: &str) -> ns_runtime::ResolvedModule {
 #[test]
 fn method_temporary_resolves_as_local() {
     let resolved = resolve_source(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           bar = ( | x | x )
@@ -27,8 +25,6 @@ fn method_temporary_resolves_as_local() {
 #[test]
 fn self_send_resolves_to_depth_zero() {
     let resolved = resolve_source(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           bar = ( ^self baz )
@@ -44,8 +40,6 @@ fn self_send_resolves_to_depth_zero() {
 #[test]
 fn super_send_resolves_to_super_send_binding() {
     let resolved = resolve_source(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           bar = ( ^super baz )
@@ -60,8 +54,6 @@ fn super_send_resolves_to_super_send_binding() {
 #[test]
 fn outer_named_send_resolves_to_the_exact_depth() {
     let resolved = resolve_source(indoc! {"
-        Newspeak3
-        'T'
         class Outer = Object new (
         ) (
           outerMethod = ( ^1 )
@@ -87,8 +79,6 @@ fn outer_named_send_resolves_to_the_exact_depth() {
 #[test]
 fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           bar = ( | c | c:: Array new. ^c )
@@ -127,8 +117,6 @@ fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
 #[test]
 fn undeclared_outer_class_name_is_a_resolve_error() {
     let module = ns_syntax::parse(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           bar = ( ^outer Missing baz )
@@ -147,8 +135,6 @@ fn undeclared_outer_class_name_is_a_resolve_error() {
 fn a_lowercase_outer_class_name_is_an_outer_send() {
     assert_eq!(
         resolve_errors(indoc! {"
-            Newspeak3
-            'T'
             class Foo = Object new () (
               class public = Object new () (
                 class Inner = Object new () (
@@ -162,8 +148,6 @@ fn a_lowercase_outer_class_name_is_an_outer_send() {
     );
     assert_eq!(
         resolve_errors(indoc! {"
-            Newspeak3
-            'T'
             class Foo = Object new () (
               bar = ( ^outer missing baz )
             ) : ()
@@ -180,8 +164,6 @@ fn a_lowercase_outer_class_name_is_an_outer_send() {
 fn an_activation_declares_each_name_once() {
     let errors = |member: &str| {
         resolve_errors(&formatdoc! {"
-            Newspeak3
-            'T'
             class Foo = Object new () (
               {member}
             ) : ()
@@ -235,8 +217,6 @@ fn resolve_errors(source: &str) -> Vec<String> {
 #[test]
 fn a_slot_and_a_method_of_one_name_are_a_resolve_error() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
           | x ::= 1. |
         ) (
@@ -251,8 +231,6 @@ fn a_slot_and_a_method_of_one_name_are_a_resolve_error() {
 #[test]
 fn a_mutable_slot_and_a_method_of_its_setters_name_are_a_resolve_error() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
           | x ::= 1. |
         ) (
@@ -268,8 +246,6 @@ fn a_mutable_slot_and_a_method_of_its_setters_name_are_a_resolve_error() {
 #[test]
 fn an_immutable_slot_and_a_method_of_its_setters_name_resolve() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
           | x = 1. |
         ) (
@@ -284,8 +260,6 @@ fn an_immutable_slot_and_a_method_of_its_setters_name_resolve() {
 #[test]
 fn a_nested_class_and_a_method_of_one_name_are_a_resolve_error() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'T'
         class Foo = Object new (
         ) (
           class Inner = Object new () ()
@@ -303,8 +277,6 @@ fn a_nested_class_and_a_method_of_one_name_are_a_resolve_error() {
 #[test]
 fn a_class_side_may_not_declare_the_factory_selector() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'Test'
         class Conflict usingPlatform: platform = Object new () (
             class Widget new = Object new () (
             ) : (
@@ -321,8 +293,6 @@ fn a_class_side_may_not_declare_the_factory_selector() {
 #[test]
 fn a_class_side_may_not_declare_the_default_factory_selector() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'Test'
         class Conflict usingPlatform: platform = Object new () (
             class Widget = Object new () (
             ) : (
@@ -339,8 +309,6 @@ fn a_class_side_may_not_declare_the_default_factory_selector() {
 #[test]
 fn a_class_side_method_under_another_selector_resolves() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'Test'
         class Widget new = Object new () (
         ) : (
             public make = ( ^'not a widget' )
@@ -356,8 +324,6 @@ fn a_class_side_method_under_another_selector_resolves() {
 #[test]
 fn a_class_side_may_not_declare_a_keyword_factory_selector() {
     let errors = resolve_errors(indoc! {"
-        Newspeak3
-        'Test'
         class Boxed with: contents = Object new () (
         ) : (
             public with: contents = ( ^'the class side' )
@@ -381,8 +347,6 @@ fn a_class_side_may_not_declare_a_keyword_factory_selector() {
 #[test]
 fn an_implicit_factory_send_binds_to_the_declaring_class_not_an_enclosing_member() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Outer = Object new (
         ) (
           class Inner = Object new (
@@ -422,8 +386,6 @@ fn an_implicit_factory_send_binds_to_the_declaring_class_not_an_enclosing_member
 /// member to find two levels out and a named `outer Host` has a class to name.
 fn module_applying(inheritance: &str) -> String {
     formatdoc! {"
-        Newspeak3
-        'T'
         class Host using: platform = Object new (
           | private Mixin = platform Mixin. |
         ) (
@@ -546,8 +508,6 @@ fn an_undeclared_outer_class_in_a_mixin_clause_is_a_resolve_error() {
 #[test]
 fn a_lazy_slot_initializer_does_not_see_the_factory_parameters() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Foo seed: seed = Object new (
             | eager = seed. |
         ) (
@@ -575,8 +535,6 @@ fn a_lazy_slot_initializer_does_not_see_the_factory_parameters() {
 /// header's factory before the `=` and the clauses after it, as written.
 fn module_with_root(factory: &str, clauses: &str) -> String {
     formatdoc! {"
-        Newspeak3
-        'T'
         class R{factory} = {clauses} () (
         ) : ()
     "}
@@ -599,8 +557,6 @@ fn every_working_combination_of_object_and_value_resolves() {
     ] {
         let source = if clauses.is_empty() {
             indoc! {"
-                Newspeak3
-                'T'
                 class R = () (
                 ) : ()
             "}

@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A `LargeInteger` receiver refuses a zero divisor with the same "division
    by zero" an `Integer` receiver raises, not a message of its own. *)
 class LargeIntegerDivisionByZero = Object new (

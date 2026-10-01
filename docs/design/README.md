@@ -193,10 +193,11 @@ empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
 for byte and exit status included (`crates/ns-cli/tests/run_goldens.rs`).
 That runner is a `harness = false` binary on `libtest-mimic`, one test per
-golden per lowering named by its path -- `golden::optimized::<category>/<name>`
-and `golden::reference::<category>/<name>`, so nextest runs the two lowerings
+golden per lowering named by its path below `goldens/` --
+`golden::optimized::<path>` and `golden::reference::<path>`, with `<path>`
+such as `language/block/blocks_and_return`, so nextest runs the two lowerings
 of a golden in parallel rather than one trial running both in sequence -- and
-in a debug build `golden_with_a_two_entry_global_cache::<category>/<name>` as
+in a debug build `golden_with_a_two_entry_global_cache::<path>` as
 well -- so the suite lists each golden, reports every failure with the expected
 and actual stream, runs them in parallel, and runs one or a family by name
 (`cargo nextest run -p ns-cli --test run_goldens lazy`); a skipped golden is
@@ -240,7 +241,7 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 |---|---|
 | `language/` | what the compiler, the resolver and the object model decide |
 | `language/syntax/` | the grammar's rules: the unreserved words, literals and their signs, symbols' forms, precedence, cascades, type parameters |
-| `language/module/` | a module's root: every kind of root the root rule refuses, a module without a category, and `main:args:`'s arguments |
+| `language/module/` | a module's root: every kind of root the root rule refuses, a module with a language id and no category, and `main:args:`'s arguments |
 | `language/builtin-names/` | which names a program sees: no `Character`, no `Top`, no mirror class, and a member of a program's own named like a builtin, which wins |
 | `language/class/` | classes and their objects |
 | `language/class/instantiation/` | factories, superclass clauses and their arguments, the initializer and the order instantiation runs in |
@@ -295,7 +296,7 @@ and shows up in a diff as two deletions.
 
 A golden's rationale — why that outcome is the right one, and which
 specification section it comes from — is a `(* ... *)` comment at the top of
-the `.ns`, under the category string, so that it sits with the program it
+the `.ns`, so that it sits with the program it
 explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `awfy/` goldens share one root, the harness, so theirs is the
 harness's own header in `benchmarks/are-we-fast-yet/AreWeFastYet.ns`, which

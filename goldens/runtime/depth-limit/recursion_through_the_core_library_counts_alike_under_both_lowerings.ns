@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* Every level of this recursion sends ifTrue:ifFalse: with literal blocks
    -- inlined by the optimized lowering, a SendInlinable under the reference
    lowering -- and reaches printString, show: and + through the core library.

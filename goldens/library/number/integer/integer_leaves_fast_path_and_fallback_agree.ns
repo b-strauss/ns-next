@@ -1,5 +1,3 @@
-Newspeak3
-'Arithmetic'
 (* The inlined integer leaves (`Instruction::IntegerBinary`): three sends
    whose operands are both literal small integers, which the fast path
    computes itself, then two whose guard declines -- a Float receiver and a

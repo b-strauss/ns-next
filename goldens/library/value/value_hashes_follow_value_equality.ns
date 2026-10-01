@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* A value object has no observable identity -- §3.1.1 lets a value be
    copied across an actor boundary, so a copy must be equal to, and hash
    like, its original. Primordial Soup states the contract `hash` is held

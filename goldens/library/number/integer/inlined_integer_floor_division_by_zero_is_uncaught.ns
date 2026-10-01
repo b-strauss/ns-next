@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A zero divisor is the other case `checked_div_euclid` declines: the fast
    path's guard passes on two literal integers, then the fallback's ordinary
    `//` send raises the primitive's own "division by zero" -- not a message

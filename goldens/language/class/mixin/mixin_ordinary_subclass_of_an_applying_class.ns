@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.3: an instance initializer first evaluates the message
    of its class's superclass clause, "the bindings of the formal parameters of
    the factory method are available in the message clause of the superclass

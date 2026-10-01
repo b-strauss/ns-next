@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* `ifCurtailed:` runs its block only when an unwind abandons the
    protected block -- once, before the method's value is printed -- and
    never when the block ends normally. *)

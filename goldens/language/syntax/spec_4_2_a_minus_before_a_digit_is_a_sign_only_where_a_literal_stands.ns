@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 4.2: decimalNum is ["-"] digits ..., and binSel is
    (specialCharacter | "-") specialCharacter*, in a PEG. Where a binary
    message can stand, the "-" is its selector, so 3 -4 and 3-4 subtract; where

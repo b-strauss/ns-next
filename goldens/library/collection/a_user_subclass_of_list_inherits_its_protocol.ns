@@ -1,5 +1,3 @@
-Newspeak3
-'Collections'
 (* A class of the program may inherit from List, which the collections
    facet hands out although it is a private class of its module: it keeps
    the whole protocol and reaches the protected `size_` by a self send.

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A subclass may answer anything from `description` and from the
    selector it reports: an unhandled one still ends the run, its
    description rendered as a value is in an error message, and nothing

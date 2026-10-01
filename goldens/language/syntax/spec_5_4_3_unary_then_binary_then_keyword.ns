@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.4.3's grammar is the whole precedence rule:
    `unaryExpression = primary unarySelector*`,
    `binaryExpression = unaryExpression binaryMsg*`,

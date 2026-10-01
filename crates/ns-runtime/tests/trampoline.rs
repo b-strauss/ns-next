@@ -44,8 +44,6 @@ fn small_integer<'gc>(value: Value<'gc>) -> i64 {
 }
 
 const DEPTH: &str = indoc! {"
-    Newspeak3
-    'T'
     class Depth = Object new (
     ) (
         public down: n = ( n = 0 ifTrue: [^0]. ^down: n - 1 )
@@ -91,8 +89,6 @@ ns_runtime::for_each_lowering! {
     /// method it names and leaves nothing behind it on the stack.
     fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class R = Object new (
             ) (
                 public find = ( self each: [:e | e = 3 ifTrue: [^e * 10]]. ^0 )
@@ -128,8 +124,6 @@ ns_runtime::for_each_lowering! {
     /// nothing else should.
     fn a_return_into_a_running_initializer_escapes_the_run(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class E = Object new (
             ) (
                 class Inner = Object new ( | a = [^1] value. | ) ( ) : ()
@@ -159,8 +153,6 @@ ns_runtime::for_each_lowering! {
     /// initializer activations on the stack and nothing on the Rust stack.
     fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Tower = Object new (
             ) (
                 public class Floor n: k = Object new (
@@ -198,8 +190,6 @@ ns_runtime::for_each_lowering! {
 /// calls back into the loop, so forty thousand levels fit on a test thread's
 /// stack under either lowering.
 const THROUGH_NATIVES: &str = indoc! {"
-    Newspeak3
-    'T'
     class N = Object new (
     ) (
         public viaValue: n = ( | b | b:: [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )
@@ -310,8 +300,6 @@ ns_runtime::for_each_lowering! {
     /// 99,996 activations, 7 x 14,286 + 1 is past the limit.
     fn the_marked_block_methods_count_alike_under_both_lowerings(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Marked = Object new (
             ) (
                 public marked: n = (
@@ -408,8 +396,6 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     use ns_runtime::image;
     use ns_runtime::image::opcodes::{OPCODE_SEND_INLINABLE, OPCODE_SEND_PUBLIC};
     let source = formatdoc! {"
-        Newspeak3
-        'T'
         class Crafted = Object new (
         ) (
             public main = ( | b n | n:: 0. b:: {block}. ^b value )
@@ -501,8 +487,6 @@ ns_runtime::for_each_lowering! {
     /// value and leave both depths where they were.
     fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Floor = Object new (
                 | n ::= 0. |
             ) (
@@ -655,8 +639,6 @@ ns_runtime::for_each_lowering! {
     /// counts two activations, the method and the block.
     fn a_deep_recursion_through_do_runs_on_the_activation_stack(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class DoDeep = Object new (
             ) (
                 public d: n = ( n = 0 ifTrue: [^0]. {1} do: [:e | ^d: n - 1]. ^1 )
@@ -691,8 +673,6 @@ ns_runtime::for_each_lowering! {
     /// progress (`Interpreter::run_from_host` debug-asserts that).
     fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Chain = Object new (
             ) (
                 public class Link = Object new (
@@ -725,8 +705,6 @@ ns_runtime::for_each_lowering! {
     /// the clause again rather than reporting the class as depending on itself.
     fn a_return_through_a_superclass_clause_abandons_its_creation(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Outer = Object new (
                 | escape ::= nil. armed ::= true. |
             ) (
@@ -784,8 +762,6 @@ ns_runtime::for_each_lowering! {
     /// written in -- the clause receiver is a single name.
     fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Outer = Object new (
             ) (
                 class Base x: a = Object new (
@@ -823,8 +799,6 @@ ns_runtime::for_each_lowering! {
     /// on either count, and the interpreter goes on.
     fn a_return_into_an_initializer_with_a_level_below_escapes_the_run(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class E = Object new (
             ) (
                 class Base = Object new ( | a = [^1] value. | ) ( ) : ()
@@ -861,8 +835,6 @@ ns_runtime::for_each_lowering! {
     /// leaves the run with the error.
     fn an_error_in_a_clause_message_mid_climb_unwinds_the_run(lowering) {
         let source = indoc! {"
-            Newspeak3
-            'T'
             class Outer = Object new (
             ) (
                 class Base x: a = Object new ( | u = a. | ) ( ) : ()

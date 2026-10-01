@@ -37,8 +37,6 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 /// and arguments on the way up and down, and a nested class's enclosing
 /// object and declaring class.
 const EVERY_CONTINUATION: &str = indoc! {"
-    Newspeak3
-    'T'
     class S = Object new (
     ) (
       public class Base x: a = Object new (

@@ -39,8 +39,6 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 #[test]
 fn a_metaclass_is_the_class_side_applied_to_class() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Subject = Object new () (
         ) : (
           public make = ( ^1 )
@@ -80,8 +78,6 @@ fn a_metaclass_is_the_class_side_applied_to_class() {
 #[test]
 fn the_class_of_a_class_is_its_metaclass() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Subject = Object new () (
         ) : (
           public make = ( ^1 )
@@ -149,8 +145,6 @@ fn the_class_of_a_class_is_its_metaclass() {
 #[test]
 fn class_objects_of_one_declaration_share_a_dispatch_id() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class Outer usingPlatform: platform = Object new () (
             public class Widget = Object new () (
             )

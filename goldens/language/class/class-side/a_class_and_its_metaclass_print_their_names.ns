@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A class prints as its name and a metaclass as its class's name followed
    by ` class`, as Primordial Soup's `Class>>printString` and
    `Metaclass>>printString` do. `Metaclass` itself is a class. *)

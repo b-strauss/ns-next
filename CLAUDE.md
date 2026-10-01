@@ -54,7 +54,7 @@ Each has already produced a real defect. The rule is stated here; the mechanism
 and its history are in the design document named with it. Read that section
 before changing code the rule governs.
 
-**Program outcomes are pinned, not re-derived.** Every `goldens/<category>/*.ns`
+**Program outcomes are pinned, not re-derived.** Every `goldens/**/*.ns`
 is held to the `status`, `stdout` and `stderr` in the `.toml` beside it, under
 both the optimized and the reference lowering, and `run-corpus` likewise. A
 change that alters one is a behaviour change: establish that the new output is

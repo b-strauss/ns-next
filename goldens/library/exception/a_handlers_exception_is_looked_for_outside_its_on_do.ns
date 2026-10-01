@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* ANSI's handler environment, as Squeak implements it: an exception
    signalled in a handler is looked for in the handler's own nested
    `on:do:`s and then outside the `on:do:` that caught the first one --

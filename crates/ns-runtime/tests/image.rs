@@ -430,8 +430,6 @@ fn mixin_chain(depth: u32) -> Vec<u8> {
 }
 
 const RICH: &str = indoc! {"
-    Newspeak3
-    'T'
     class Rich x: a = Object new (
       | p = a. q ::= 0. |
       q:: p.
@@ -745,8 +743,6 @@ fn round_trip_code_table<'gc>(
 #[test]
 fn every_instruction_variant_round_trips() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -875,8 +871,6 @@ fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
 #[test]
 fn a_decoded_family_is_numbered_as_the_compiler_numbered_it() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public run = (
@@ -1174,8 +1168,6 @@ fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_large_integer_value_round_trips() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | large = 9223372036854775807 + 1. small = 0 - (9223372036854775807 + 1). |
         ) (
@@ -1234,8 +1226,6 @@ fn a_large_integer_value_round_trips() {
 #[test]
 fn a_large_integer_literal_round_trips() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo = ( ^99999999999999999999 )
@@ -1358,8 +1348,6 @@ fn a_non_canonical_large_integer_is_refused() {
 #[test]
 fn a_large_integer_is_a_value_not_a_record() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | first = 9223372036854775807 + 1. second = first. |
         ) (
@@ -1410,8 +1398,6 @@ fn a_large_integer_is_a_value_not_a_record() {
 #[test]
 fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -1461,8 +1447,6 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
 #[test]
 fn an_invalid_builtin_class_tag_at_the_root_section_is_a_decode_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new <: Value () ()
     "};
     let decoded = mixin_table_of(&snapshot_of(source));
@@ -1849,8 +1833,6 @@ fn source_with_nested_blocks(levels: usize) -> String {
         nest = format!("[{nest} value]");
     }
     formatdoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public nest = ( ^{nest} value )
@@ -2041,8 +2023,6 @@ fn round_trip_graph(
 }
 
 const EMPTY: &str = indoc! {"
-    Newspeak3
-    'T'
     class X = Object new (
     ) (
     ) : ()
@@ -2157,8 +2137,6 @@ fn the_platform_singleton_resolves_to_the_interpreters_own() {
 #[test]
 fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | a = 1. b = 'two'. |
         ) (
@@ -2191,8 +2169,6 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
 #[test]
 fn a_closure_and_its_paused_home_frame_round_trip() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           mk = ( ^[ 1 ] )
@@ -2293,8 +2269,6 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
 #[test]
 fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | blk = [ 2 ]. |
         ) (
@@ -2328,8 +2302,6 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
 #[test]
 fn the_graph_section_encoding_is_deterministic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | a = 1. blk = [ 2 ]. s = 'three'. |
         ) (
@@ -2979,8 +2951,6 @@ fn a_closure_frames_object_id_out_of_range_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | blk = [ 2 ]. |
         ) (
@@ -3042,8 +3012,6 @@ fn a_closure_capturing_a_block_activation_round_trips() {
     // `captured_frame` is a *block activation* -- a `FrameKind::Closure`
     // frame, the one frame kind the quiesced worlds above never produce.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public mk = ( ^[:x | [ x ] ] value: 5 )
@@ -3112,8 +3080,6 @@ fn a_closure_capturing_a_block_activation_round_trips() {
 #[test]
 fn a_closure_frame_names_the_closure_object_it_runs() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public mk = ( ^[:x | [ x ] ] value: 5 )
@@ -3230,8 +3196,6 @@ fn inspect_refuses_an_unknown_frame_kind_tag() {
 #[test]
 fn inspect_names_the_closure_object_a_closure_frame_runs() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public mk = ( ^[:x | [ x ] ] value: 5 )
@@ -3452,8 +3416,6 @@ fn a_closure_record_with_no_copied_values_decodes() {
 #[test]
 fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_counter() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Counter = Object new (
           | n ::= 0. |
         ) (
@@ -3524,8 +3486,6 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
 #[test]
 fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Counter = Object new (
           | count ::= 0. |
         ) (
@@ -3585,8 +3545,6 @@ fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
 #[test]
 fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new (
         ) (
           public class Alpha = Object new (
@@ -3658,8 +3616,6 @@ fn trace_of(interpreter: &mut Interpreter, holder: &Root) -> String {
 #[test]
 fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new (
           | public first = Holder new. public second = Holder new. |
         ) (
@@ -3755,8 +3711,6 @@ fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
 #[test]
 fn a_lazy_slot_without_its_getter_is_refused() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder = Object new (| trace = 0. |) (
           main: p args: q = ( ^trace )
         ) : ()
@@ -3800,8 +3754,6 @@ fn a_lazy_slot_without_its_getter_is_refused() {
 #[test]
 fn bytes_after_the_last_section_are_refused_not_ignored() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -3834,8 +3786,6 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
 #[test]
 fn load_refuses_a_version_mismatch() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -3929,8 +3879,6 @@ fn an_invalid_source_origin_tag_is_a_decode_error_not_a_panic() {
 #[test]
 fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | blk = [ 2 ]. |
         ) (
@@ -4613,8 +4561,6 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
     // `argument_count`. A body claiming a different arity leaves `read_local`
     // indexing `temporaries` past its end.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo: a = ( ^a )
@@ -4645,8 +4591,6 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
 #[test]
 fn a_method_root_naming_a_block_body_is_refused_on_load() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public foo = ( ^1 )
@@ -4675,8 +4619,6 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
 // ---------------------------------------------------------------------------
 
 const ONE_METHOD: &str = indoc! {"
-    Newspeak3
-    'T'
     class X = Object new (
     ) (
       public foo = ( ^1 )
@@ -4868,8 +4810,6 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     // The end-to-end control: a quiesced world holding a closure over a
     // method activation, through the real sections and back.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | held ::= nil. |
         ) (
@@ -4924,8 +4864,6 @@ fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
     // or the two would answer `false` to `==` and `identityHash` where a
     // heap with one canonical symbol per text never could.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | storedSymbol ::= nil. |
         ) (
@@ -4980,8 +4918,6 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     // `value` after the load is what proves the reconstructed chain reads
     // the right register.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | held ::= nil. |
         ) (
@@ -5048,8 +4984,6 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
 /// A root class with one slot, so `class_has_initializer_code` is true and
 /// `instantiate` *must* find compiled initializer code for it.
 const NEEDS_INITIALIZER: &str = indoc! {"
-    Newspeak3
-    'T'
     class X = Object new (
       | count ::= 1. |
     ) (
@@ -5166,8 +5100,6 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     // there costs a shared hash (identity is `Rc` identity, never the
     // hash) instead of aborting the process.
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -5219,8 +5151,6 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
 #[test]
 fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -5282,8 +5212,6 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
 #[test]
 fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
         ) : ()
@@ -5477,8 +5405,6 @@ fn the_tag_named_hash_table_answers_its_largest_hash() {
 // ---------------------------------------------------------------------------
 
 const NESTED_MODULE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public class Inner = Object new (| v = 9. |) (
             public value = ( ^v )
@@ -6011,8 +5937,6 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
 /// `nil label`, an error. Both are wrong output rather than a refused
 /// image, which is why the field has to travel.
 const DEEP_OUTER_MODULE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         label = ( ^'top' )
         public class Base = Object new () (
@@ -6070,8 +5994,6 @@ fn string_contents<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
 }
 
 const NESTED_SUPERCLASS_ARGUMENTS: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Args usingPlatform: p = Object new () (
         public class Base withBase: b = Object new (| v ::= b. |) (
             public value = ( ^v )
@@ -6333,8 +6255,6 @@ fn the_superclass_clause_frame_kinds_decode() {
 // ---------------------------------------------------------------------------
 
 const TRIVIAL_MODULE: &str = indoc! {"
-    Newspeak3
-    'T'
     class X = Object new (
     ) (
       foo = ( ^1 )
@@ -6383,14 +6303,10 @@ fn same_value<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
 }
 
 const FIRST_MODULE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class First = Object new (| public held ::= nil. public made ::= nil. |) () : ()
 "};
 
 const SECOND_MODULE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Second = Object new () (
         public answer = ( ^2 )
         public maker = ( ^[42] )
@@ -6553,8 +6469,6 @@ fn a_root_section_clause_is_checked_against_its_own_modules_row() {
     // 1's section naming clause 0 is refused against module 1's own row --
     // module 0's would have accepted it.
     let (mut interpreter, first) = load(indoc! {"
-        Newspeak3
-        'Test'
         class First = Object new <: Value () () : ()
     "});
     let second = load_another(&mut interpreter, SECOND_MODULE, "Second.ns");
@@ -6690,8 +6604,6 @@ fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
 #[test]
 fn a_module_levels_own_hash_survives_an_image() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class M = Object new <: Value () () : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -6777,8 +6689,6 @@ fn a_repeated_selector_is_stored_once() {
     // plain text -- `bytes_outside_the_module_section` excludes that section,
     // which the symbol table does not cover.)
     let bytes = snapshot_of(indoc! {"
-        Newspeak3
-        'T'
         class C = Object new (
         ) (
           a = ( ^self distinctiveSelector )
@@ -7091,8 +7001,6 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
     // must still resolve to the same interned `Symbol` after a load, not
     // merely compress on the wire.
     let bytes = snapshot_of(indoc! {"
-        Newspeak3
-        'T'
         class C = Object new (
         ) (
           public a = ( ^self distinctiveSelector )
@@ -7122,8 +7030,6 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
 // ---------------------------------------------------------------------------
 
 const TABLE_NESTED_SOURCE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new (| s. |) (
         public class Inner withV: a = Object new (| v = a. |) (
             public value = ( ^v )
@@ -7322,15 +7228,11 @@ fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
 #[test]
 fn two_modules_encode_as_two_trees_in_module_order() {
     let (mut interpreter, first) = load(indoc! {"
-        Newspeak3
-        'Test'
         class First = Object new () (
             class Inner = Object new () ( public answer = ( ^1 ) ) : ()
         ) : ()
     "});
     let second_source = indoc! {"
-        Newspeak3
-        'Test'
         class Second = Object new () ( public answer = ( ^2 ) ) : ()
     "};
     let second_module = ns_syntax::parse(second_source).expect("parse");
@@ -7503,8 +7405,6 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
 /// the two ceilings differ by more than the uncounted root.
 fn nested_module_source(nested: usize, class_side: bool) -> String {
     let mut source = String::from(indoc! {"
-        Newspeak3
-        'T'
         class C0 = Object new () (
     "});
     for level in 1..=nested {
@@ -7854,8 +7754,6 @@ fn a_class_object_whose_own_class_is_another_class_record_is_refused() {
 /// method that hands out a live block -- so a snapshot of it carries a
 /// closure, and therefore frames, in its graph.
 const SOURCE_FREE_MODULE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: p = Object new () (
         public answer = ( ^42 )
         public block = ( ^[ 42 ] )
@@ -8144,8 +8042,6 @@ fn a_frames_sender_survives_a_round_trip() {
 #[test]
 fn an_activation_object_round_trips() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder = Object new (
           | held |
         ) (
@@ -8218,8 +8114,6 @@ fn an_activation_object_round_trips() {
 #[test]
 fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_continuable() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
         ) (
           public mk = ( ^[ ^1 ] )
@@ -8287,8 +8181,6 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
 /// test checks is unlike any other byte sequence the image has a reason to
 /// contain, so a partial leak has somewhere to show up.
 const LEAK_PROBE_MODULE: &str = indoc! {"
-    Newspeak3
-    'Test'
     (* commentaryAboutTheFrobulator explains nothing at all *)
     class Probe usingPlatform: aPlatformSlotName = Object new (
         | mnemosyneSlot ::= 3 + 4 * 5. |
@@ -8308,9 +8200,8 @@ const LEAK_PROBE_MODULE: &str = indoc! {"
 ///
 /// Lines shorter than `MIN_DISTINCTIVE_LINE` are skipped. The threshold is
 /// 12 characters because a Newspeak module's short lines are structural
-/// punctuation (`)`, `(`, `) : ()`, `Newspeak3`) that a binary stream can
-/// and does reproduce by chance -- a `)` is one byte, and `Newspeak3` is
-/// shorter than several selectors -- so testing them would report leaks
+/// punctuation (`)`, `(`, `) : ()`) that a binary stream can and does
+/// reproduce by chance -- a `)` is one byte -- so testing them would report leaks
 /// that are not leaks. Every line that actually carries program text (a
 /// comment, a slot clause, an initializer statement, a method body, a
 /// nested class header) is well past 12 characters in this module, so the
@@ -8401,6 +8292,10 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
 /// already has its own dedicated round-trip test above; folding every format
 /// feature into one fixture would leave a future diff of `golden-image.binary`
 /// unable to say which section actually moved.
+///
+/// It keeps the optional module header the other sources leave out: the
+/// fixture records source offsets, so dropping the header would move every
+/// one of them without the format having changed.
 const GOLDEN_SOURCE: &str = indoc! {"
     Newspeak3
     'Golden'
@@ -8492,8 +8387,6 @@ fn an_unknown_header_flag_is_still_rejected_now_that_three_are_known() {
 
 /// A module with an application's `main:args:`, for the tests that need one.
 const ENTRY_SOURCE: &str = indoc! {"
-    Newspeak3
-    'T'
     class X = Object new (
     ) (
       main: p args: q = ( ^1 )
@@ -8537,8 +8430,6 @@ fn the_graph_walk_consumes_the_section_exactly() {
     // way a frame reaches the graph at all, so without it the frame half of
     // the layout is never walked and this guard would be blind to it.
     const WITH_A_FRAME: &str = indoc! {"
-        Newspeak3
-        'T'
         class X usingPlatform: p = Object new (
           | blk = [ 2 ]. |
         ) (
@@ -8585,8 +8476,6 @@ fn the_graph_walk_consumes_the_section_exactly() {
 #[test]
 fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Keeper = Object new (
             | keep ::= nil. |
         ) (
@@ -8706,8 +8595,6 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
 #[test]
 fn a_decoded_metaclass_is_rebuilt_over_class() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class X = Object new (
           | held ::= nil. |
         ) (
@@ -8803,8 +8690,6 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
 /// class` answers that metaclass (`tests/metaclasses.rs`); the tests below
 /// put it in the slot from Rust, read off the heap the world was built in.
 const METACLASS_MODULE: &str = indoc! {"
-    Newspeak3
-    'Test'
     class Outer usingPlatform: platform = Object new (
       | public kept ::= nil. public other ::= nil. |
     ) (
@@ -9020,8 +8905,6 @@ fn a_metaclass_identity_hash_survives() {
 #[test]
 fn a_root_level_metaclass_round_trips_by_tag() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new <: Value () ()
     "};
     let (mut interpreter, class) = load(source);
@@ -9082,8 +8965,6 @@ fn a_root_level_metaclass_round_trips_by_tag() {
 #[test]
 fn a_graph_reaching_an_unnameable_class_is_refused() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new () ()
     "};
     let (mut interpreter, class) = load(source);
@@ -9142,8 +9023,6 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
 #[test]
 fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new () ()
     "};
     let (mut interpreter, class) = load(source);
@@ -9425,8 +9304,6 @@ fn inspect_refuses_a_nested_metaclass_reference() {
 /// clause's own message taking arguments computed from the applying
 /// declaration's factory parameter, and a super chain through every level.
 const MIXIN_APPLICATION_MODULE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Host usingPlatform: p = Object new () (
         public class Base withBase: b = Object new (| base = b. |) (
             public fromBase = ( ^base )
@@ -9590,8 +9467,6 @@ fn an_image_of_a_module_applying_mixins_builds_its_levels_after_loading() {
 #[test]
 fn a_root_class_applying_a_builtin_mixin_round_trips() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new <: Value () (
             public answer = ( ^42 )
         )
@@ -9661,8 +9536,6 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
 #[test]
 fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Host usingPlatform: p = Object new () (
             public class Keeper withBlock: block = Object new (| kept = block. |) (
                 public run = ( ^kept value )
@@ -9704,8 +9577,6 @@ fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
 
 /// The smallest module whose mixin table has a row with a `<:` clause.
 const APPLYING_MODULE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Host = Object new () (
         class Marker = Object new () ()
         class Applied = Object new <: Marker () ()
@@ -10194,8 +10065,6 @@ fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
 /// arrays holds the other's future, resolved once the clause ends. `kept` is
 /// for a test to fill, and `second` answers a block to make a future of.
 const DATA_CYCLE: &str = indoc! {"
-    Newspeak3
-    'T'
     class Holder = Object new (
       | public probe = Probe new. public kept. |
     ) (
@@ -10346,8 +10215,6 @@ fn a_resolved_future_is_written_as_its_value() {
 #[test]
 fn an_unresolved_future_round_trips_and_computes_after_load() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder = Object new (
           | public escaped. |
         ) (
@@ -10431,8 +10298,6 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
 #[test]
 fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder = Object new (
           | public held |
         ) (
@@ -10557,8 +10422,6 @@ fn a_module_class_tag_past_the_modules_is_refused() {
 #[test]
 fn a_root_level_class_tag_names_the_root_classs_own_level() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new <: Value () ()
     "};
     let mut bytes = one_array_object(|writer| {
@@ -10647,8 +10510,6 @@ fn root_section_bytes(superclass: Option<BuiltinClass>, levels: &[(u32, u8)]) ->
 #[test]
 fn a_root_level_naming_a_clause_out_of_place_is_refused() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new <: Value () ()
     "};
     let decoded = mixin_table_of(&snapshot_of(source));
@@ -10697,8 +10558,6 @@ fn a_root_level_naming_a_clause_out_of_place_is_refused() {
 #[test]
 fn a_root_section_the_root_rule_forbids_is_refused() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new <: Value () ()
     "};
     let decoded = mixin_table_of(&snapshot_of(source));
@@ -10745,8 +10604,6 @@ fn a_root_section_the_root_rule_forbids_is_refused() {
 #[test]
 fn the_encoder_refuses_a_root_the_rule_forbids() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Array new () ()
     "};
     let resolution = ns_runtime::resolve_for_editor(ns_syntax::parse(source).expect("parse"));
@@ -10961,8 +10818,6 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     }
 
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Root = Object new <: Value () ()
     "};
     let report =
@@ -10980,8 +10835,6 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
 #[test]
 fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Host usingPlatform: p = Object <: Value () (
             public class Point = Object new <: Value () (
                 public answer = ( ^7 )
@@ -11048,8 +10901,6 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
 #[test]
 fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class RefusedValueClassModule usingPlatform: platformAtCreation = Object <: Value () (
             public class Holder = Object new (
                 | public count ::= 0. |
@@ -11115,8 +10966,6 @@ fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
 #[test]
 fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
     let source = indoc! {"
-        Newspeak3
-        'Test'
         class ValueModuleDefiningIdentity usingPlatform: platformAtCreation = Object <: Value () (
             public == other = ( ^false )
         ) : ()
@@ -11148,8 +10997,6 @@ fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
 /// one method is never run: it is there so that the selectors the crafted
 /// path sections below name are in the image's symbol table.
 const PLATFORM_MEMBERS: &str = indoc! {"
-    Newspeak3
-    'T'
     class Holder usingPlatform: platform = Object new (
         | public transcript = platform transcript.
           public collections = platform collections.
@@ -11245,8 +11092,6 @@ fn a_platform_member_is_named_by_its_path() {
 #[test]
 fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder usingPlatform: platform = Object new (
             | public keptPlatform = platform.
               public collections = platform collections. |
@@ -11274,8 +11119,6 @@ fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
 #[test]
 fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder usingPlatform: platform = Object new (
             | public transcriptClass = platform Transcript.
               public platformClass = platform class.
@@ -11333,8 +11176,6 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
 #[test]
 fn a_second_platform_is_a_record_of_its_path_named_class() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder usingPlatform: platform = Object new (
             | public second = platform class new. |
             second transcript.
@@ -11382,8 +11223,6 @@ fn a_second_platform_is_a_record_of_its_path_named_class() {
 #[test]
 fn a_list_is_a_record_of_its_path_named_class() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder usingPlatform: platform = Object new (
             | public list = platform collections List new. |
             list add: 3.
@@ -11437,8 +11276,6 @@ fn a_list_is_a_record_of_its_path_named_class() {
 #[test]
 fn a_stopwatch_is_a_record_of_its_path_named_class() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder usingPlatform: platform = Object new (
             | public stopwatch = platform time Stopwatch new start. |
         ) (
@@ -11479,8 +11316,6 @@ fn a_stopwatch_is_a_record_of_its_path_named_class() {
 #[test]
 fn a_second_collections_facet_is_a_record_of_its_path_named_class() {
     let source = indoc! {"
-        Newspeak3
-        'T'
         class Holder usingPlatform: platform = Object new (
             | public facet = platform collections class new. |
         ) (
@@ -11927,8 +11762,6 @@ fn a_packaged_application_loads_as_a_started_image_with_one_root() {
 
 fn packaged_application() -> Vec<u8> {
     let (mut interpreter, class) = load(indoc! {"
-        Newspeak3
-        'Test'
         class App = Object new (| public count ::= 41. |) (
             public main: platform args: arguments = ( count:: count + 1. ^count )
         ) : ()
@@ -11950,8 +11783,6 @@ fn packaged_application() -> Vec<u8> {
 #[test]
 fn package_refuses_an_application_that_reaches_the_platform() {
     let (mut interpreter, class) = load(indoc! {"
-        Newspeak3
-        'Test'
         class App = Object new (| public held ::= nil. |) () : ()
     "});
     let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
@@ -11996,8 +11827,6 @@ fn a_retired_stateless_flag_is_refused_as_unknown() {
 #[test]
 fn a_snapshot_is_not_started() {
     let bytes = snapshot_of(indoc! {"
-        Newspeak3
-        'Test'
         class App = Object new () () : ()
     "});
     let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));

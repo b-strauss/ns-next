@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.6: an activation has "zero or more parameter slots,
    one for each formal parameter of p. Parameter slots are immutable
    (6.3.2)", and 6.3.2 gives an immutable slot a getter alone -- "There is

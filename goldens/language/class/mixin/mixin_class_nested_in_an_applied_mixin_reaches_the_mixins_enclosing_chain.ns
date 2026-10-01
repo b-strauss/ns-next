@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: "The enclosing object of I is the enclosing object
    of C", where C is the class the inheritance clause after <: specifies;
    3.3 defines the kth enclosing object of o with respect to a class C, and

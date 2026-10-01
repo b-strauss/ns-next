@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 5.8: "A self send consists of the reserved word self
    (5.2), enclosed in zero or more pairs of parentheses, followed by a
    message clause" -- and "the solution is to recognize the parenthesized

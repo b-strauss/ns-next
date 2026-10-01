@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* The depth limit is an `Error` like every VM error, caught by
    `on: Error do:`: its `signal` runs in a reserve above the limit
    (docs/design/execution.md, "The depth limit"). The second recursion is

@@ -307,21 +307,27 @@ impl<'a> Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    /// Top level: `languageId category classDecl EndOfInput`.
+    /// Top level: `languageId? category? classDecl EndOfInput`.
     ///
-    /// `languageId` is the first `Identifier` token (`Newspeak3`); `category`
-    /// is the first `String` literal. Missing pieces and trailing tokens are
-    /// reported but parsing continues (recovery).
+    /// `languageId` is a leading name (`Newspeak3`); `category` is a leading
+    /// `String` literal. Missing pieces and trailing tokens are reported but
+    /// parsing continues (recovery).
     pub(crate) fn parse_module(&mut self) -> Module {
         let start = self.current().span;
-        let language_id = if self.at_name() {
+        // §8.1 requires the language id; ns-next makes it optional, because
+        // nothing reads it (`docs/design/frontend.md`, "The module header").
+        // An identifier can only be the id, but `class` and the access
+        // modifiers are unreserved words that also open a declaration: one
+        // of them is the id only when a `toplevelClass` follows it.
+        let is_language_id = match self.peek() {
+            TokenKind::Identifier => true,
+            kind if super::is_name(kind) => self.toplevel_class_starts_at(self.position + 1),
+            _ => false,
+        };
+        let language_id = if is_language_id {
             let token = self.bump();
             self.text(token).to_string()
         } else {
-            self.push_error(
-                self.current().span,
-                "expected a language id (e.g. `Newspeak3`)",
-            );
             String::new()
         };
         // §8.1's `toplevelClass → classCategory classDeclaration`, with
@@ -356,6 +362,23 @@ impl<'a> Parser<'a> {
             root_class,
             span: start.merge(end),
         }
+    }
+
+    /// Whether the tokens from `position` on open a `toplevelClass`: a
+    /// category, or `class` and the class's name, an access modifier before
+    /// it included (refused afterwards, but a declaration all the same).
+    fn toplevel_class_starts_at(&self, position: usize) -> bool {
+        let kind_at = |offset: usize| {
+            self.tokens
+                .get(position + offset)
+                .map_or(TokenKind::EndOfInput, |token| token.kind)
+        };
+        let class_offset = match kind_at(0) {
+            TokenKind::String => return true,
+            TokenKind::Public | TokenKind::Protected | TokenKind::Private => 1,
+            _ => 0,
+        };
+        kind_at(class_offset) == TokenKind::Class && super::is_name(kind_at(class_offset + 1))
     }
 
     /// The real Newspeak3 class grammar
@@ -1107,8 +1130,6 @@ mod class_tests {
     #[test]
     fn dotless_final_slot_initializer_does_not_swallow_following_declaration() {
         let source = indoc! {"
-            Newspeak3
-            'X'
             class Outer = (
              | a = X new |
             ) (
@@ -1132,8 +1153,6 @@ mod class_tests {
     #[test]
     fn bar_operator_in_slot_initializer() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = (
              | flag = a | b. |
             ) ()
@@ -1174,8 +1193,6 @@ mod class_tests {
     #[test]
     fn superclass_clause_with_send() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = Object new () ()
         "});
         let superclass = module.root_class.superclass.as_ref().unwrap();
@@ -1186,8 +1203,6 @@ mod class_tests {
     #[test]
     fn a_mixin_application_carries_its_clauses_in_order() {
         let module = module(indoc! {"
-            Newspeak3
-            'T'
             class Applied using: platform = Object new <: Value <: Other with: 1 (
             ) (
             ) : ()
@@ -1209,8 +1224,6 @@ mod class_tests {
     #[test]
     fn a_mixin_application_may_end_with_a_dot_instead_of_a_body() {
         let module = module(indoc! {"
-            Newspeak3
-            'T'
             class Applied = Object <: Value.
         "});
         let declaration = &module.root_class;
@@ -1224,8 +1237,6 @@ mod class_tests {
     #[test]
     fn an_ordinary_declaration_has_no_mixin_applications() {
         let module = module(indoc! {"
-            Newspeak3
-            'T'
             class Plain using: platform <Platform> = Object new () ()
         "});
         assert!(module.root_class.mixin_applications.is_empty());
@@ -1236,8 +1247,6 @@ mod class_tests {
         // Comment + `|..|` slot section + initializer expressions live in G1; methods and
         // nested classes live in G2.
         let source = indoc! {"
-            Newspeak3
-            'X'
             class Outer usingPlatform: p = (
                 (* a comment *)
                 | x ::= 0. |
@@ -1262,8 +1271,6 @@ mod class_tests {
     #[test]
     fn class_side_block() {
         let source = indoc! {"
-            Newspeak3
-            'X'
             class C = () () : ( public default = ( ^ C new ) )
         "};
         let module = module(source);
@@ -1276,8 +1283,6 @@ mod class_tests {
     #[test]
     fn trailing_garbage_is_an_error() {
         assert!(crate::parse(indoc! {"
-            Newspeak3
-            'X'
             class C = () ()
             extra
         "})
@@ -1290,8 +1295,6 @@ mod class_tests {
     #[test]
     fn malformed_body_caret_is_error() {
         assert!(crate::parse(indoc! {"
-            Newspeak3
-            'X'
             class C = ( ^ 1 ) ()
         "})
         .is_err());
@@ -1300,8 +1303,6 @@ mod class_tests {
     #[test]
     fn malformed_body_semicolon_is_error() {
         assert!(crate::parse(indoc! {"
-            Newspeak3
-            'X'
             class C = ( ; ) ()
         "})
         .is_err());
@@ -1310,8 +1311,6 @@ mod class_tests {
     #[test]
     fn malformed_body_binary_selector_is_error() {
         assert!(crate::parse(indoc! {"
-            Newspeak3
-            'X'
             class C = ( + ) ()
         "})
         .is_err());
@@ -1321,8 +1320,6 @@ mod class_tests {
     #[test]
     fn slot_section_in_g2_is_error() {
         assert!(crate::parse(indoc! {"
-            Newspeak3
-            'X'
             class C = () ( | x | ) : ()
         "})
         .is_err());
@@ -1334,8 +1331,6 @@ mod class_tests {
     fn two_group_with_class_side() {
         // Exact shape of corpus/modules/ADummyPush.ns.
         let source = indoc! {"
-            Newspeak3
-            'Newspeak'
             class ADummyPush new = Object new (
             ) (
                 foo = (
@@ -1351,8 +1346,6 @@ mod class_tests {
     #[test]
     fn nested_class_two_group() {
         let source = indoc! {"
-            Newspeak3
-            'X'
             class C = () ( class Inner = ( ) ( m = () ) : () ) : ()
         "};
         let module = module(source);
@@ -1369,8 +1362,6 @@ mod class_tests {
     #[test]
     fn initializer_expressions_in_g1_only() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = ( x:: 1. y:: 2. ) ()
         "});
         let body = &module.root_class.instance_side;
@@ -1381,8 +1372,6 @@ mod class_tests {
     #[test]
     fn lazy_slot_in_g2() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = () ( lazy foo = bar baz. ) : ()
         "});
         let body = &module.root_class.instance_side;
@@ -1398,8 +1387,6 @@ mod class_tests {
     #[test]
     fn lazy_slot_modifier_first_in_g2() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = () ( public lazy foo ::= bar. ) : ()
         "});
         let body = &module.root_class.instance_side;
@@ -1412,8 +1399,6 @@ mod class_tests {
     #[test]
     fn a_header_slot_is_never_lazy() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = ( | foo = 1. | ) ( ) : ()
         "});
         let body = &module.root_class.instance_side;
@@ -1425,8 +1410,6 @@ mod class_tests {
     #[test]
     fn method_named_lazy_is_not_a_slot() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = () ( lazy = ( ^ 1 ) ) : ()
         "});
         let body = &module.root_class.instance_side;
@@ -1439,8 +1422,6 @@ mod class_tests {
     #[test]
     fn leading_string_in_header_is_an_initializer_expression_not_a_comment() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = ( 'hello' printLine. ) ()
         "});
         assert_eq!(module.root_class.class_comment, None);
@@ -1462,8 +1443,6 @@ mod class_tests {
     #[test]
     fn block_comment_in_header_is_still_the_class_comment() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = ( (* a comment *) ) ()
         "});
         assert_eq!(
@@ -1503,8 +1482,6 @@ mod class_tests {
     #[test]
     fn shallow_nesting_still_parses_clean() {
         let module = module(indoc! {"
-            Newspeak3
-            'X'
             class C = ( ((((x)))). ) ()
         "});
         assert_eq!(
@@ -1755,8 +1732,6 @@ mod reserved_word_tests {
     /// module's root class.
     fn reserved_word_errors(member: &str) -> Vec<String> {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class Root = Object new () (
               {member}
             ) : ()
@@ -1886,8 +1861,6 @@ mod unreserved_word_tests {
 
     fn parse_sides(instance_side: &str, class_side: &str) -> Result<Module, Vec<String>> {
         let source = formatdoc! {"
-            Newspeak3
-            'T'
             class Root = Object new () (
               {instance_side}
             ) : (
@@ -2109,8 +2082,6 @@ mod specification_tests {
 
     fn parse_member(member: &str) -> Result<Module, Vec<String>> {
         parse_module_source(&formatdoc! {"
-            Newspeak3
-            'T'
             class Root = Object new () (
               {member}
             ) : ()
@@ -2274,8 +2245,6 @@ mod specification_tests {
         refused("class Box = Object new ( self foo self bar ) ()");
         refused("first = ( ^1 ). second = ( ^2 )");
         assert!(parse_module_source(indoc::indoc! {"
-            Newspeak3
-            'T'
             class Root = () () : ( first = ( ^1 ). )
         "})
         .is_err());
@@ -2312,14 +2281,43 @@ mod specification_tests {
     #[test]
     fn a_module_has_an_optional_category_and_no_access_modifier() {
         assert!(parse_module_source("Newspeak3\nclass Root = () ()\n").is_ok());
-        assert!(parse_module_source("Newspeak3\n'T'\nclass Root = () ()\n").is_ok());
+        assert!(parse_module_source("'T'\nclass Root = () ()\n").is_ok());
         assert!(parse_module_source("Newspeak3\n'T'\npublic class Root = () ()\n").is_err());
+        assert!(parse_module_source("'T'\npublic class Root = () ()\n").is_err());
+    }
+
+    /// §8.1's `languageId`, which ns-next makes optional
+    /// (`docs/design/frontend.md`, "The module header"). `class` and the
+    /// access modifiers are unreserved words (§4.1), so each is a language id
+    /// exactly when a `toplevelClass` follows it, and opens the declaration
+    /// otherwise.
+    #[test]
+    fn a_module_may_leave_its_language_id_out() {
+        let language_id_of = |source: &str| {
+            parse_module_source(source)
+                .unwrap_or_else(|errors| panic!("{source}: {errors:?}"))
+                .language_id
+        };
+        assert_eq!(language_id_of("class Root = () ()\n"), "");
+        assert_eq!(language_id_of("'T'\nclass Root = () ()\n"), "");
+        assert_eq!(language_id_of("class class = () ()\n"), "");
+        assert_eq!(language_id_of("class class Root = () ()\n"), "class");
+        assert_eq!(language_id_of("class\n'T'\nclass Root = () ()\n"), "class");
+        assert_eq!(language_id_of("public class Root = () ()\n"), "public");
+        assert_eq!(
+            language_id_of("Newspeak3\nclass Root = () ()\n"),
+            "Newspeak3"
+        );
+        assert_eq!(
+            language_id_of("Newspeak3\n'T'\nclass Root = () ()\n"),
+            "Newspeak3"
+        );
     }
 
     /// A name is expected where the grammar has an `identifier`.
     #[test]
     fn a_declaration_names_what_it_declares() {
-        assert!(parse_module_source("Newspeak3\n'T'\nclass 3 = () ()\n").is_err());
+        assert!(parse_module_source("class 3 = () ()\n").is_err());
         refused("foo: 3 = ( ^1 )");
         refused("+ 3 = ( ^1 )");
         refused("probe = ( ^[:3 | 1] )");
@@ -2365,7 +2363,7 @@ mod specification_tests {
     /// is a binary factory, not the end of the header.
     #[test]
     fn a_binary_factory_may_be_named_equals() {
-        let module = parse_module_source("Newspeak3\n'T'\nclass Pair = other = Object new () ()\n")
+        let module = parse_module_source("class Pair = other = Object new () ()\n")
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         let class = &module.root_class;
         assert!(
@@ -2412,8 +2410,6 @@ mod specification_tests {
     #[test]
     fn a_slot_declaration_records_whether_its_clause_is_simultaneous() {
         let source = indoc::indoc! {"
-            Newspeak3
-            'Test'
             class Probe = Object new (|| first = second. second = 2. ||) (
                 lazy late = 3.
                 public sequential = ( | one = 1. | ^one )

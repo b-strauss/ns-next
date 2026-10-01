@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 3.1.1: the root rule (6.1) is no exemption from the
    value conditions -- a module's root class inherits Value like any other
    class does, so an identity method it defines is refused exactly as a

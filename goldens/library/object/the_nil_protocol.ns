@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* isNil, notNil and the four ifNil:/ifNotNil: forms, on nil and on any
    other object. A block for the not-nil case is culled with the receiver,
    as Squeak's and the canonical Newspeak corpus's are: handed it when it

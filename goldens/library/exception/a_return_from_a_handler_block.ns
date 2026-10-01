@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A `^` in a handler block is a non-local return from the method that
    wrote it, through `signal`, the handler's activation and the protected
    block, by the same unwinder: the `ensure:` block on the way runs, and

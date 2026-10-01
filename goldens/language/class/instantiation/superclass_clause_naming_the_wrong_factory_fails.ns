@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* §6.1: "It is a run time error if the message selector specified by the
    inheritance clause is not the selector of the primary factory of the
    class *C*." *)

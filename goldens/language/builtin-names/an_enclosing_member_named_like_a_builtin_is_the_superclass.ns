@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* A nested class's superclass clause that names a predefined class finds a
    member of that name an enclosing class declares. newspeak-spec.pdf 6.1
    evaluates the clause `String new` "as if it occurred inside an instance

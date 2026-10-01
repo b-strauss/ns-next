@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* `platform time Stopwatch` is Primordial Soup's: it reads a monotonic
    clock in nanoseconds, so an unstarted stopwatch reads 0, and a started
    one reads an integer that never decreases. Nothing here prints a time,

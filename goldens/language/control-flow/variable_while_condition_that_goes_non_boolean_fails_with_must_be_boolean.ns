@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A native loop whose condition goes non-Boolean after two rounds sends
    `mustBeBoolean` to it, after exactly two bodies. *)
 class WhileVarMbb = Object new (

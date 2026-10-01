@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 6.2: "The result of a mixin application expression is
    a class I with mixin M and superclass S." Combined is Trait's mixin
    applied to Base, with Combined's own body on top of that application, so

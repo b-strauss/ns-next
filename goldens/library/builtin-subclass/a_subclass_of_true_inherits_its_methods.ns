@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* True's methods are Newspeak and need no payload, so a user subclass
    inherits them: its instance runs the true branch and prints as true,
    where Boolean itself declares nothing and an instance of a subclass of

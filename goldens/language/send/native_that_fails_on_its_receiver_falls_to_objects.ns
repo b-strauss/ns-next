@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* A user subclass of a builtin inherits the builtin's natives, but its
    instances carry no payload of the builtin's kind, so every such native
    fails on them and the send falls to `Object`'s: `=` answers identity and

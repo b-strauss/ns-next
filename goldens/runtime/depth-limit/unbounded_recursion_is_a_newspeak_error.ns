@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* Unbounded recursion is an ordinary Newspeak error, not a process abort,
    and the same one under both lowerings. *)
 class Unbounded = Object new (

@@ -1,5 +1,3 @@
-Newspeak3
-'Test'
 (* newspeak-spec.pdf 8.4: main:args: "accepts a platform object (8.3) as its
    first parameter, and a list of any environment-specific (e.g., command
    line) arguments as its second". The CLI passes the words after --, each a

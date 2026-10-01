@@ -1,5 +1,3 @@
-Newspeak3
-'Kernel'
 (* A String is its code points (§5.1.5), stored one byte each while every
    one fits Latin-1 and 32 bits each otherwise
    (docs/design/core-library.md, "Strings are code points in two widths").

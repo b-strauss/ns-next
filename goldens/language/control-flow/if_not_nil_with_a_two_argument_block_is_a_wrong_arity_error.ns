@@ -1,5 +1,3 @@
-Newspeak3
-'T'
 (* cull: hands a block that takes arguments exactly one, the receiver, so a
    block that takes two fails the arity check as value: would. *)
 class CullArity = Object new () (
