@@ -396,6 +396,21 @@ value objects are never copied across an actor boundary (§3.1.1).
   [core-library.md](design/core-library.md), "Open for later".
 - **How much history a tail call keeps**, and **data parallelism over
   immutable data** as a later exception to the actor model.
+- **Whether an image carries a lazy slot's value.** §6.3.3 intends that lazy
+  slots "need never be persisted or synchronized": they are reset to
+  **nil** and recomputed on demand. Primordial Soup's `transient` slot, the
+  same getter under its own keyword, is skipped by its serializer
+  (`newspeak/Serialization.ns`, line 645), which is what lets its `Map` and
+  `Set` rebuild their hash table after a load (`newspeak/Collections.ns`,
+  `hashtable_ ::= rehash`). ns-next's image writes a lazy slot's value like
+  any other slot's. A `Map` or `Set` whose table was filled before a
+  snapshot would then answer wrongly after the load wherever a key's hash
+  does not survive it, as a `Symbol`'s does not
+  ([core-library.md](design/core-library.md), "What exists"). Nothing
+  reaches it yet: no image holds a `Map` or a `Set`, and the benchmarks
+  build theirs at run time. Noted with the user on 2026-10-01, while
+  planning the Are We Fast Yet benchmarks' stage 3, which brings `Map` and
+  `Set`.
 
 ## Unexplained measurements and unmeasured decisions
 
