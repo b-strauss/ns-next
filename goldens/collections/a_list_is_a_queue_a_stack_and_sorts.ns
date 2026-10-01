@@ -73,6 +73,22 @@ class AListIsAQueueAStackAndSorts = Object new (
         pairs do: [:each | line:: line, (each at: 2)].
         transcript show: line; newLine.
 
+        queue:: List new.
+        1 to: 5 do: [:index | queue add: index].
+        6 to: 1005 do: [:index |
+            queue add: index.
+            queue removeFirst].
+        line:: ''.
+        queue do: [:each | line:: line, each printString, ' '].
+        transcript show: line; print: queue size; newLine.
+        list:: List new.
+        list add: 9; add: 3; add: 7; add: 1; add: 8; add: 2.
+        list removeFirst; removeFirst.
+        list sort: [:first :second | first <= second].
+        line:: ''.
+        list do: [:each | line:: line, each printString, ' '].
+        transcript show: line; print: list size; newLine.
+
         plan:: Plan new.
         plan add: 4; add: 5.
         transcript print: plan total; show: ' '; print: plan size; newLine.

@@ -14,6 +14,8 @@ ab 2
 5
 bedac
 cadeb
+1001 1002 1003 1004 1005 5
+1 2 7 8 4
 9 2
 removeFirst: the List is empty
 removeLast: the List is empty
