@@ -1,0 +1,30 @@
+Newspeak3
+'Arithmetic'
+(* A Float is a value, so its `=` must be an equivalence and its `==`
+   answers what `=` does (§3.1.1). IEEE 754's equality is not one: a NaN
+   equals nothing, itself included. So `=` is IEEE's except that every NaN
+   equals every other, and every NaN hashes alike -- JavaScript's
+   SameValueZero, the equality its Map and Set use: `0.0 = -0.0` stays
+   true. The ordering stays IEEE's, false whenever a NaN takes part, and
+   so does arithmetic. A NaN is thus itself, and a key a Map finds again
+   (docs/design/core-library.md, "A NaN equals a NaN"). *)
+class NotANumberEqualsItself = Object new (
+) (
+    public main: platform args: arguments = (
+        | transcript = platform transcript.
+          Map = platform collections Map.
+          Set = platform collections Set.
+          notANumber other map set |
+        notANumber:: 0.0 / 0.0.
+        other:: (1.0 / 0.0) - (1.0 / 0.0).
+        transcript print: notANumber = notANumber; show: ' '; print: notANumber == notANumber; show: ' '; print: notANumber = other; show: ' '; print: notANumber hash = other hash; newLine.
+        transcript print: notANumber < notANumber; show: ' '; print: notANumber <= notANumber; show: ' '; print: notANumber > 1.0; show: ' '; print: notANumber = 1.0; show: ' '; print: 1.0 = notANumber; newLine.
+        transcript print: 0.0 = -0.0; show: ' '; print: 0.0 hash = -0.0 hash; show: ' '; print: (notANumber + 1.0) = notANumber; newLine.
+        map:: Map new.
+        map at: notANumber put: 'found'.
+        transcript show: (map at: other); newLine.
+        set:: Set new.
+        set add: notANumber; add: other; add: 1.0.
+        transcript print: set size; newLine
+    )
+) : ()

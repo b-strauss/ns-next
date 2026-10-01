@@ -84,33 +84,33 @@ pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<&Value<'gc>>) 
     matches!(argument, Some(Value::SmallInteger(other)) if *other == receiver)
 }
 
-/// `Float>>=`'s rule, the same way, and class-tight: only a `Float` can be
-/// equal to a `Float`.
-///
-/// It widened an `Integer` argument until 2026-09-23. That broke the one
-/// rule a `hash` has -- `1.0 = 1` answered `true` while `1.0 hash` and
-/// `1 hash` differ -- and it made `builtins::value`'s derived equality,
-/// which asks the classes first, answer `false` for the very pair this
-/// answered `true` for. One rule now, in both places. Cross-type numeric
-/// equality is what the numeric tower under `Number` brings back
-/// (`docs/design/core-library.md`, "Gap: an integer has no `/`"); the
-/// conversion of an integer in `argument_float` below stays, because arithmetic
-/// and ordering ask a magnitude question rather than an identity one.
+/// `Float>>=`: IEEE 754's equality, except that every NaN equals every
+/// other. A Float is a value, so its `=` must be an equivalence and its
+/// `==` answers the same (§3.1.1); IEEE's is not reflexive. This is
+/// JavaScript's SameValueZero, the equality of its `Map` and `Set`: `0.0`
+/// and `-0.0` stay equal. The ordering stays IEEE's
+/// (`docs/design/core-library.md`, "A NaN equals a NaN").
 pub(crate) fn float_equals<'gc>(receiver: f64, argument: Option<&Value<'gc>>) -> bool {
-    matches!(argument, Some(Value::Float(other)) if *other == receiver)
+    matches!(argument, Some(Value::Float(other))
+        if *other == receiver || (other.is_nan() && receiver.is_nan()))
 }
 
 /// A float's content hash: its bits, mixed and folded to 32 bits. `-0.0` is
-/// normalized to `0.0` first -- the two have different bits but compare
-/// equal, and a `hash` that told them apart would break the one rule a
-/// `hash` has ("if `x = y` ... then `x hash = y hash`"). A `NaN` needs no
-/// such care: it equals nothing, itself included, so nothing constrains its
-/// hash.
+/// normalized to `0.0` and every NaN to one NaN first, because `=` makes
+/// each of them equal to the other, and a `hash` that told them apart would
+/// break the one rule a `hash` has ("if `x = y` ... then `x hash = y
+/// hash`").
 ///
 /// Shared with `builtins::value`, whose derived hash must answer the same
 /// number for a float slot as `Float>>hash` does for the float itself.
 pub(crate) fn float_hash(value: f64) -> i64 {
-    let normalized = if value == 0.0 { 0.0 } else { value };
+    let normalized = if value == 0.0 {
+        0.0
+    } else if value.is_nan() {
+        f64::NAN
+    } else {
+        value
+    };
     crate::hash::content_hash(normalized.to_bits())
 }
 
