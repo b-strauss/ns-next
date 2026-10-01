@@ -386,6 +386,7 @@ fn a_timed_run_prints_a_score_for_every_benchmark() {
             "DeltaBlue",
             "DeltaBlueTon80",
             "Havlak",
+            "Json",
             "List",
             "Mandelbrot",
             "NBody",
