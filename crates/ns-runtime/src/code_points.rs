@@ -109,6 +109,18 @@ impl CodePoints {
         }
     }
 
+    /// The text as UTF-8. ASCII is its own UTF-8, so a narrow ASCII string
+    /// hands its bytes over in one copy; any other string is encoded
+    /// character by character.
+    pub fn to_utf8(&self) -> String {
+        match &self.0 {
+            Representation::Narrow(bytes) if bytes.is_ascii() => {
+                String::from_utf8(bytes.to_vec()).unwrap_or_default()
+            }
+            _ => self.characters().collect(),
+        }
+    }
+
     fn from_words(words: &[u32]) -> CodePoints {
         if words.iter().all(|word| *word <= 0xFF) {
             let bytes: Vec<u8> = words
@@ -158,11 +170,7 @@ impl From<String> for CodePoints {
 
 impl std::fmt::Display for CodePoints {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use std::fmt::Write;
-        for character in self.characters() {
-            formatter.write_char(character)?;
-        }
-        Ok(())
+        formatter.write_str(&self.to_utf8())
     }
 }
 
@@ -206,6 +214,7 @@ mod tests {
     fn the_text_survives_the_round_trip() {
         for text in TEXTS {
             assert_eq!(CodePoints::from(text).to_string(), text);
+            assert_eq!(CodePoints::from(text).to_utf8(), text);
             assert_eq!(CodePoints::from(text.to_string()).to_string(), text);
             assert_eq!(
                 CodePoints::from(text).size(),

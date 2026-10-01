@@ -1630,7 +1630,7 @@ fn encode_object<'gc>(
             writer.write_u8(OBJECT_STRING);
             // The wire keeps UTF-8 (`docs/design/image-format.md`); the
             // width is the heap's, chosen afresh when the record is decoded.
-            writer.write_str(&string.to_string());
+            writer.write_str(&string.to_utf8());
         }
         ObjectData::Symbol(symbol) => {
             writer.write_u8(OBJECT_SYMBOL);

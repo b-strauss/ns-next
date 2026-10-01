@@ -1279,7 +1279,7 @@ impl<'gc> Heap<'gc> {
     /// which copy out a size, a code point or a hash, not the whole text.
     pub fn str_value(&self, object: ObjectReference<'gc>) -> Option<String> {
         self.code_points(object)
-            .map(|code_points| code_points.to_string())
+            .map(|code_points| code_points.to_utf8())
     }
 
     /// The one lender of a String's payload, private to the heap, so that
