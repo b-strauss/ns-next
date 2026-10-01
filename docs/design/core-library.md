@@ -785,9 +785,8 @@ to `Object`'s methods
 
 **The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`,
 `bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `hash`, `negated`, `abs`, `asFloat`,
-`printString` and `asString` to twenty rows of its own, `largeInteger:add:ifFail:` to
-`largeIntegerAsFloat:ifFail:` (`builtins/numbers.rs`,
-`execute_large_integer`). `Integer`'s leaves keep
+`printString` and `asString` to twenty rows of its own, the `largeInteger:`
+rows of `MIRROR` (`builtins/numbers.rs`, `execute_large_integer`). `Integer`'s leaves keep
 their immediate path and promote where it has no answer: a sum, difference
 or product that does not fit `i64` is recomputed in `i128`, where two
 `i64`s' always fits, and `i64::MIN // -1`, `i64::MIN negated` and

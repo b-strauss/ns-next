@@ -3699,9 +3699,9 @@ Apache 2.0 licence.
   checked by shape.
 - This commit — the documentation describes the built state.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stages 2
-and 3, a program's exit status, and whether to inline `to:do:` and
-`to:by:do:`.
+What the batch left open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3 (stage
+2 is built, below), a program's exit status, and whether to inline `to:do:`
+and `to:by:do:`.
 
 ## Are We Fast Yet, stage 2 (2026-09-30)
 

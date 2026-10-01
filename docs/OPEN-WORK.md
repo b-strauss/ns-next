@@ -224,20 +224,23 @@ to be decided against the code:
 ## Planned: language and library
 
 - **The numeric tower and `Integer>>/`.** `Integer` answers `//` but not `/`
-  (only `Float` has `/`, `Kernel.ns:574`); `1 = 1.0` and `1.0 = 1` both answer
-  false; `Number` (`Kernel.ns:467`) carries only `to:do:` and `to:by:do:`.
+  (only `Float` has `/`, `Kernel.ns:578`); `1 = 1.0` and `1.0 = 1` both answer
+  false; `Number` (`Kernel.ns:464`) carries only `to:do:` and `to:by:do:`.
   Settling it means
   `Number`'s shared behaviour, `Fraction`, cross-type comparison and a
   matching hash (`3 asFloat hash = 3 hash`). Decided only that it must be
   settled; `num-rational` is the reference for `Fraction` and for converting a
   `Float` to a fraction exactly. [core-library.md](design/core-library.md),
   "Gap: an integer has no `/`".
-- **`//` and `\\` with a `Float` operand.** Primordial Soup answers
-  `7 // 2.5` and `7.5 // 2` as a floored `Float` (`vm/primitives.cc`,
-  `Number_floorDivide`); ours raises a type mismatch for the first and
-  `doesNotUnderstand:` for the second, since `Float` has neither selector.
-  The on-demand rule adds them when a benchmark or runnable module sends
-  them. [core-library.md](design/core-library.md), "Gap: an integer has no
+- **`//` with a `Float` operand.** Primordial Soup answers `7 // 2.5` and
+  `7.5 // 2` as a floored `Float` (`vm/primitives.cc`, `Number_div`, whose
+  `IS_FLOAT_OP` branch answers `floor(left / right)`); ours raises a type
+  mismatch for the first and `doesNotUnderstand:` for the second, since
+  `Float` has no `//`. `\\` is not a gap: Primordial Soup's `Number_mod` has
+  no `Float` branch and its Newspeak fallback signals an `ArgumentError`
+  (`newspeak/KernelForPrimordialSoup.ns:1988`), as ours refuses a `Float`.
+  The on-demand rule adds `//` when a benchmark or runnable module sends
+  it. [core-library.md](design/core-library.md), "Gap: an integer has no
   `/`".
 - **A program's exit status.** A program cannot set its exit status: a run
   exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
@@ -474,7 +477,8 @@ value objects are never copied across an actor boundary (§3.1.1).
 ## Known defects and gaps
 
 None of these changes a correct program's output; each is wrong but safe, or
-reachable only from a crafted artifact.
+reachable only from a crafted artifact, except the first, which a program
+can reach and which ends in the operating system killing the process.
 
 - **`<<` and `Array new:` reserve a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
@@ -483,7 +487,10 @@ reachable only from a crafted artifact.
   meant never to abort the process. Neither leaf can tell an affordable size
   from one the system will accept and then kill for.
   `crates/ns-runtime/src/builtins/collections.rs`, `allocate`, and
-  `builtins/numbers.rs`, `shift_left`;
+  `builtins/numbers.rs`, `shift_left`, which reaches
+  `ArbitraryInteger::shift_left`
+  (`crates/ns-runtime/src/arbitrary_integer/mod.rs`), where the digits are
+  reserved;
   [core-library.md](design/core-library.md), "Large integers".
 - **`load --print-source` of a project prints every module's source with
   nothing between them** (`crates/ns-cli/src/commands/load.rs`), so a reader
