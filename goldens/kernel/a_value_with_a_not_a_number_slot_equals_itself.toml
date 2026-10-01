@@ -1,0 +1,5 @@
+stdout = '''
+two NaNs true true true
+zeros true true true
+NaN and one false false false
+'''

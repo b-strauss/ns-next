@@ -65,34 +65,43 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public List = ( ^outer CollectionsFactory List )
         (* The `Map` class: `Map new`, or `Map new: capacity`. A negative
            capacity signals an Error, 'new: requires a capacity of at least 0,
-           got …', a Float 'new: requires an Integer size, got …', and one that
-           is no number a MessageNotUnderstood for `<`. *)
+           got …', a Float or a LargeInteger 'new: requires an Integer size,
+           got …', a capacity too large to allocate 'new: cannot allocate an
+           Array of … elements', and one that is no number a
+           MessageNotUnderstood for `<`. The size in the 'Integer size' and
+           'cannot allocate' texts is that of the array the capacity asks
+           for, not the capacity. *)
         (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` need
            it, for SOMns's `Dictionary` and `IdentityDictionary`. *)
         public Map = ( ^outer CollectionsFactory Map )
         (* The `Set` class: `Set new`, or `Set new: capacity`. A negative
            capacity signals an Error, 'new: requires a capacity of at least 0,
-           got …', a Float 'new: requires an Integer size, got …', and one that
-           is no number a MessageNotUnderstood for `<`. *)
+           got …', a Float or a LargeInteger 'new: requires an Integer size,
+           got …', a capacity too large to allocate 'new: cannot allocate an
+           Array of … elements', and one that is no number a
+           MessageNotUnderstood for `<`. The size in the 'Integer size' and
+           'cannot allocate' texts is that of the array the capacity asks
+           for, not the capacity. *)
         (* `benchmarks/are-we-fast-yet/Havlak.ns` needs it, for SOMns's
            `Set` and `IdentitySet`. *)
         public Set = ( ^outer CollectionsFactory Set )
     )
-    (* An ordered, growable sequence: Primordial Soup's `List`, with the
-       protocol the corpus, the goldens and the Are We Fast Yet benchmarks
-       ask for (the on-demand rule, docs/design/core-library.md). The
-       elements live in `data` from `firstIndex` on, `size_` of them, so
-       that `removeFirst` moves nothing and a queue of `add:` and
-       `removeFirst` runs in amortized constant time, as SOMns's `Vector`
-       keeps its `firstIdx`. When `add:` finds the array full at its end, the
-       elements move to its start if at least half of it lies empty before
-       them, and otherwise into an Array half as large again; nothing grows
-       in place. The primary factory takes the capacity, as Primordial
-       Soup's does, so a program may write `List new: 15` as a superclass
-       clause, as DeltaBlue's `Plan` does. The representation is private,
-       where Primordial Soup's is protected, so that it can change -- to a
-       ring buffer, say -- without a subclass noticing; `size_` alone stays
+    (* An ordered, growable sequence with the protocol the corpus, the
+       goldens and the Are We Fast Yet benchmarks ask for (the on-demand
+       rule, docs/design/core-library.md). The elements live in `data` from
+       `firstIndex` on, `size_` of them, so that `removeFirst` moves nothing
+       and a queue of `add:` and `removeFirst` runs in amortized constant
+       time. When `add:` finds the array full at its end, the elements move
+       to its start if at least half of it lies empty before them, and
+       otherwise into an Array half as large again; nothing grows in place.
+       The primary factory takes the capacity, so a program may write
+       `List new: 15` as a superclass clause, as DeltaBlue's `Plan` does.
+       The representation is private, so that it can change -- to a ring
+       buffer, say -- without a subclass noticing; `size_` alone stays
        protected, as a subclass's view of the size. *)
+    (* Primordial Soup's `List`, whose primary factory also takes the
+       capacity and whose representation is protected. The `firstIndex`
+       is SOMns's `Vector`'s `firstIdx`. *)
     private class List new: capacity = Object new (
         | protected size_ ::= 0.
           private firstIndex ::= 1.
@@ -230,20 +239,34 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            argument may precede its second. *)
         (* Primordial Soup's meaning: `lessOrEqual` answers whether its
            first argument may precede its second, and the sort is a stable
-           merge sort, `Array>>sortFrom:to:by:`'s, run over the list's range
-           of `data` with a copy of that range as the other buffer.
+           merge sort, `Array>>sortFrom:to:by:`'s, run over the first
+           `size_` slots of `data` with a copy of them as the other buffer.
            `benchmarks/are-we-fast-yet/DeltaBlue.ns` sorts its unsatisfied
            constraints by strength. *)
         public sort: lessOrEqual = (
-            | last buffer index |
+            | buffer index |
             size_ < 2 ifTrue: [^self].
-            last:: firstIndex + size_ - 1.
-            buffer:: Array new: last.
-            index:: firstIndex.
-            [index <= last] whileTrue: [
+            moveToFront.
+            buffer:: Array new: size_.
+            index:: 1.
+            [index <= size_] whileTrue: [
                 buffer at: index put: (data at: index).
                 index:: index + 1].
-            sort: buffer into: data from: firstIndex to: last by: lessOrEqual
+            sort: buffer into: data from: 1 to: size_ by: lessOrEqual
+        )
+        (* The elements start at 1 afterwards, so that a sort's buffer
+           needs only as many slots as there are elements. *)
+        private moveToFront = (
+            | index |
+            firstIndex = 1 ifTrue: [^self].
+            index:: 1.
+            [index <= size_] whileTrue: [
+                data at: index put: (data at: firstIndex + index - 1).
+                index:: index + 1].
+            [index < (firstIndex + size_)] whileTrue: [
+                data at: index put: nil.
+                index:: index + 1].
+            firstIndex:: 1
         )
         (* `source` and `destination` hold the same elements from `start`
            to `stop`; this leaves them sorted in `destination`, sorting each
@@ -338,14 +361,15 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* An empty List, `List new: 3`. *)
         public new = ( ^self new: 3 )
     )
-    (* Primordial Soup's `Map`: keys and values side by side in `data_`, in
-       insertion order, and `hashtable_`, an open-addressing table of the
-       keys' indices in `data_`, 0 marking an empty bucket. A key is found
-       by its `hash` and compared with `=`; `at:` signals when the key is
-       absent. The table is kept at most three quarters full, so a probe
-       always meets an empty bucket. Only what
+    (* A map holding keys and values side by side in `data_`, in insertion
+       order, and `hashtable_`, an open-addressing table of the keys'
+       indices in `data_`, 0 marking an empty bucket. A key is found by its
+       `hash` and compared with `=`; `at:` signals when the key is absent.
+       The table is kept at most three quarters full, so a probe always
+       meets an empty bucket. Only what
        `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` send is
        here: `new`, `at:`, `at:put:`, `keys` and `removeAll`. *)
+    (* Primordial Soup's `Map`. *)
     private class Map new: capacity = Object new (
         | private size_ ::= 0.
           private data_ ::= nil. |
@@ -462,11 +486,12 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* An empty Map, `Map new: 3`. *)
         public new = ( ^self new: 3 )
     )
-    (* Primordial Soup's `Set`: the elements in `data_`, in insertion
-       order, and `hashtable_`, an open-addressing table of their indices,
-       as `Map` keeps its keys; elements are compared with `=` and found by
-       their `hash`. Only what `benchmarks/are-we-fast-yet/Havlak.ns` sends
-       is here: `new`, `add:`, `do:` and `size`. *)
+    (* A set holding its elements in `data_`, in insertion order, and
+       `hashtable_`, an open-addressing table of their indices, as `Map`
+       keeps its keys; elements are compared with `=` and found by their
+       `hash`. Only what `benchmarks/are-we-fast-yet/Havlak.ns` sends is
+       here: `new`, `add:`, `do:` and `size`. *)
+    (* Primordial Soup's `Set`. *)
     private class Set new: capacity = Object new (
         | private size_ ::= 0.
           private data_ ::= nil. |

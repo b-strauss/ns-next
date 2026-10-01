@@ -794,14 +794,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public hash = ( ^vmMirror floatHash: self ifFail: [^super hash] )
         (* The square root; a NaN for a negative receiver. *)
         public sqrt = ( ^vmMirror floatSquareRoot: self ifFail: [^super sqrt] )
-        (* The sine and the cosine of the receiver, in radians, and
-           `asInteger`, the receiver truncated toward zero, an integer of
-           any size. `asInteger` signals an Error, 'asInteger requires a
-           finite Float, got …', for a NaN or an infinity. *)
-        (* Primordial Soup's `sin`, `cos` and `asInteger`, which truncates
-           toward zero. CD sends all three. *)
+        (* The sine and the cosine of the receiver, in radians. *)
+        (* Primordial Soup's `sin` and `cos`. CD sends both. *)
         public sin = ( ^vmMirror floatSine: self ifFail: [^super sin] )
         public cos = ( ^vmMirror floatCosine: self ifFail: [^super cos] )
+        (* The receiver truncated toward zero, an integer of any size.
+           Signals an Error, 'asInteger requires a finite Float, got …', for
+           a NaN or an infinity. *)
+        (* Primordial Soup's `asInteger`, which truncates toward zero. CD
+           sends it. *)
         public asInteger = ( ^vmMirror floatAsInteger: self ifFail: [^super asInteger] )
         (* The receiver with `fractionDigits` digits after the point, rounded
            half away from zero; its `printString` when not within ±1e21.
