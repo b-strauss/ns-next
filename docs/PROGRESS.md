@@ -15,24 +15,16 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: the baseline over all sixteen programs, before road step 2's
-second plan** ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
-high-performance VM"): the fourteen Are We Fast Yet benchmarks and
-Primordial Soup's Richards and DeltaBlue in `benchmarks/are-we-fast-yet/`
-("Are We Fast Yet, stage 1", "stage 2" and "stage 3" below) are measured on
-several pinned release builds, pooled, and recorded in
-[execution.md](design/execution.md), "The Are We Fast Yet benchmarks", as
-its measurement protocol asks. Decided with the user on 2026-09-29 and
-2026-09-30, so that the eight-byte value and every later step are measured
-on real programs.
-
-**After it: road step 2's second plan, the eight-byte value**
+**Next: road step 2's second plan, the eight-byte value**
 ([object-model.md](design/object-model.md), "Planned: an eight-byte value"):
 one tagged 64-bit word with a 61-bit `SmallInteger`, on today's arena. Its
 first plan, large integers, is built ("Large integers" below;
 [core-library.md](design/core-library.md), "Large integers"), so the word
 moves the `SmallInteger`/`LargeInteger` boundary rather than introducing it.
-The whole road, decided with the user on 2026-09-29, is in
+It is measured against the baseline over all sixteen programs ("The
+baseline over all sixteen programs" below), recorded in
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks". The
+whole road, decided with the user on 2026-09-29, is in
 [OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
@@ -3882,3 +3874,19 @@ over all sixteen programs, whether an image carries a lazy slot's value,
 `Object>>printString` answering `an Object` for every class that does not
 override it, and `to:by:do:` with a step of 0, which never ends from a
 receiver at most `stop`.
+
+## The baseline over all sixteen programs (2026-10-02)
+
+The fourteen Are We Fast Yet benchmarks and Primordial Soup's Richards and
+DeltaBlue, measured at `1792df5` as [execution.md](design/execution.md)'s
+protocol asks, before road step 2's second plan (decided with the user on
+2026-09-30): three pinned release builds told apart by `-C metadata`, three
+rounds with the builds' order rotated, `bench --iterations 10` per
+benchmark and the harness's `--timed` in each round. The pooled figures,
+their ranges and what the measurement does not cover are in
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
+under "The baseline". The builds' medians lie within 3.1% of each other on
+every benchmark; the slowest programs, Havlak and CD, take about 5.2 s and
+4.9 s a run, Mandelbrot 4.0 s and NBody 2.6 s.
+
+- This commit — the baseline recorded, and the next step named.

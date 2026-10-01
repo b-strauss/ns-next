@@ -13,12 +13,10 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**The baseline over all sixteen programs**, the fourteen Are We Fast Yet
-benchmarks and Primordial Soup's Richards and DeltaBlue: measured on
-several pinned release builds, pooled, and recorded in
-[execution.md](design/execution.md), "The Are We Fast Yet benchmarks", as
-its measurement protocol asks, before road step 2's second plan ("Before
-step 2's second plan, the Are We Fast Yet benchmarks" below).
+**Road step 2's second plan, the eight-byte value** ("Step 2, second
+plan" below), measured against the baseline over all sixteen programs
+recorded in [execution.md](design/execution.md), "The Are We Fast Yet
+benchmarks".
 
 ## The road to a high-performance VM
 
@@ -58,14 +56,11 @@ and `prior-art/newspeak-benchmarks`.
   `Mandelbrot.ns`, `Havlak.ns` and `CD.ns` keep their upstream files' own
   licence texts in their headers.
 
-  Before step 2's second plan, a baseline over all sixteen -- the fourteen
-  Are We Fast Yet benchmarks and Primordial Soup's Richards and DeltaBlue
-  -- is measured and recorded in [execution.md](design/execution.md),
-  "The Are We Fast Yet benchmarks": several pinned release builds, pooled,
-  as that document's measurement protocol asks (decided with the user on
-  2026-09-30). No baseline is recorded yet; one informal pinned build of
-  stage 1 scored between about 225 (Towers) and 800 (List) runs per second
-  under `--timed`.
+  The baseline over all sixteen -- the fourteen Are We Fast Yet benchmarks
+  and Primordial Soup's Richards and DeltaBlue -- is recorded in
+  [execution.md](design/execution.md), "The Are We Fast Yet benchmarks":
+  three pinned release builds of `1792df5`, pooled, as that document's
+  measurement protocol asks (decided with the user on 2026-09-30).
 - **Step 2, second plan, the eight-byte value**, on today's arena: one tagged
   64-bit word -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`,
   `true` and `false`, and handles -- which moves the `SmallInteger`/

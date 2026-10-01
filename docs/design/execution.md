@@ -728,6 +728,50 @@ compared, the current tree included, built with the same explicit
 `RUSTFLAGS` that pin function alignment, several builds per tree pooled
 ("What removing the re-entries moved" below).
 
+**The baseline**, measured on 2026-10-02 at `1792df5` on one Windows 11
+machine (Intel Core Ultra 9 285K): three pinned release builds of the tree,
+told apart by `-C metadata=alpha`, `beta` and `gamma`, each checked to
+import no `VCRUNTIME140.dll` and to print `ok` for all sixteen. Three
+rounds, the builds' order rotated from round to round; in each round every
+build ran `bench --iterations 10 -- <Name>` for every benchmark, then the
+harness's `--timed` over all sixteen. `bench` gives nine medians per
+benchmark (three builds times three rounds); the table pools them by their
+median and gives their range. The `--timed` score is the median of nine
+scores, in runs per second.
+
+| Benchmark | `bench` median, ms | range of the nine | `--timed`, runs/s |
+|---|---|---|---|
+| Bounce | 1.48 | 1.45–1.51 | 688.2 |
+| CD | 4906 | 4867–5009 | (0.2) |
+| DeltaBlue | 895 | 887–942 | (1.1) |
+| DeltaBlueTon80 | 8.26 | 8.21–9.29 | 110.2 |
+| Havlak | 5249 | 5217–5263 | (0.2) |
+| Json | 14.39 | 14.00–14.61 | 70.1 |
+| List | 1.26 | 1.26–1.28 | 799.0 |
+| Mandelbrot | 4045 | 4021–4057 | (0.2) |
+| NBody | 2631 | 2625–2670 | (0.4) |
+| Permute | 3.01 | 2.93–3.10 | 331.4 |
+| Queens | 2.50 | 2.47–2.55 | 408.5 |
+| Richards | 90.2 | 89.8–92.2 | 11.0 |
+| RichardsTon80 | 6.14 | 6.06–6.40 | 163.5 |
+| Sieve | 1.67 | 1.66–1.70 | 621.5 |
+| Storage | 2.01 | 1.98–2.05 | 501.5 |
+| Towers | 4.44 | 4.42–4.54 | 228.4 |
+
+The bracketed scores are one run's rate (see above), printed to one
+fraction digit, too coarse to compare; for those five `bench` is the
+figure. The three builds' medians lie within 3.1% of each other on every
+benchmark (Bounce the widest, then Permute at 2.7%; all others within
+1.6%), so code layout moves these programs less than it moves
+`bench_block.ns`. Within one build the nine values spread further where a
+single round stood out: DeltaBlueTon80 at 9.29 ms (one build, round 1,
+otherwise 8.21–8.40) and DeltaBlue at 940 ms (two builds, round 1,
+otherwise 887–900). What the baseline does not cover: one machine and one
+operating system; data layout, which `-C metadata` does not vary (above);
+and, for the `bench` figures, what each timed `main:args:` does once per
+application -- instantiating the harness and the benchmark module --
+which they include and whose share was not measured.
+
 ### What a send costs, and where it goes
 
 Milestone 4's design rests on a decomposition rather than on the aggregate. The
