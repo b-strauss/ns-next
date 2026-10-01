@@ -1,0 +1,15 @@
+# The Are We Fast Yet benchmarks at their full sizes take minutes in a debug
+# build and much longer under the stress modes, so the per-commit gate and the
+# stress runs leave them out. They run on demand, when benchmarking, and once
+# at the end of a branch, in a plain run without a stress mode:
+#
+#     cargo nextest run -p ns-cli --profile benchmarks
+#
+# The other awfy goldens stay in every run: they exercise the harness on Sieve
+# alone or on no benchmark at all.
+
+[profile.default]
+default-filter = "not (test(~awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark))"
+
+[profile.benchmarks]
+default-filter = "test(~awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)"

@@ -644,13 +644,23 @@ answers 50, and 250000 steps, which answers an energy of
 is one run's rate, not a throughput over many runs. Decided with the user on
 2026-09-30, who chose the pinned sizes over smaller ones.
 
-The cost is in the test suite. In the debug build,
-`goldens/awfy/all_benchmarks_verify` runs both at full size in four variants
-(both lowerings, `build` and `load`), about 90 s each, and
-`a_timed_run_prints_a_score_for_every_benchmark` runs each at least twice.
-Under the stress modes the end-of-batch gate takes much longer (measured
-2026-10-01: MOVES 2227 s, COLLECT 809 s, CACHES 354 s, almost all of it in
-those tests). nextest's SLOW marks there are expected, not hangs.
+So the tests that run every benchmark are not part of the suite.
+`goldens/awfy/all_benchmarks_verify` runs both at full size in five variants
+(both lowerings, a two-entry global cache, `build` and `load`), about 90 s
+each in the debug build, and `a_timed_run_prints_a_score_for_every_benchmark`
+runs each at least twice; under the stress modes the gate took 37 minutes
+with them (MOVES, 2026-10-01). `.config/nextest.toml`'s default profile
+leaves these six tests out, so neither the per-commit gate nor a stress run
+reaches them. They run on demand, when benchmarking, and once at the end of a
+branch, in a plain run without a stress mode (decided with the user on
+2026-10-01):
+
+```bash
+cargo nextest run -p ns-cli --profile benchmarks
+```
+
+The other `awfy` goldens stay in every run; they exercise the harness on Sieve
+alone or on no benchmark at all.
 
 There are two ways to measure, and they report different things:
 

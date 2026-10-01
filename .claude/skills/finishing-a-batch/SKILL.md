@@ -28,9 +28,10 @@ Create a todo for each item.
    safepoints, CACHES vacates every inline cache at every safepoint, COLLECT
    collects at every safepoint. The three run at once because each ends in a
    long tail of a few depth-limit tests that leaves most cores idle, and the
-   tails overlap (measured 2026-10-01: about 2227 s, MOVES the longest,
-   against 3390 s, the sum of the three per-mode times, one after another; the awfy tests that run Mandelbrot and
-   NBody at full size dominate, and nextest's SLOW marks are expected):
+   tails overlap (measured 2026-10-01: 277 s, MOVES the longest, against
+   703 s, the sum of the three per-mode times, one after another). The stress
+   runs use nextest's default profile, which leaves out the Are We Fast Yet
+   benchmarks; they run once, plain, at the end of the list:
 
    ```bash
    mkdir -p .temp && for mode in MOVES CACHES COLLECT; do
@@ -43,6 +44,8 @@ Create a todo for each item.
    NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
    NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
    cargo build --workspace
+   # the Are We Fast Yet benchmarks at full size, plain, never under stress
+   cargo nextest run -p ns-cli --profile benchmarks
    ```
 
    Read every summary line; a mode that failed is named at the end of the

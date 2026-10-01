@@ -208,8 +208,15 @@ Plus, per commit touching them:
   `./editors/jetbrains/gradlew -p editors/jetbrains check` (when unsure whether
   a change reaches the plugin, run it)
 
+`.config/nextest.toml`'s default profile leaves out the tests that run the Are
+We Fast Yet benchmarks at full size; they run only on demand, when
+benchmarking, and once at the end of a branch, never under a stress mode:
+`cargo nextest run -p ns-cli --profile benchmarks` (`execution.md`, "The Are
+We Fast Yet benchmarks").
+
 The end-of-batch gates (the three stress modes, `run-corpus` plain and under
-stress, `verifyPlugin`) are in the `finishing-a-batch` skill. A commit that
+stress, the benchmarks profile, `verifyPlugin`) are in the `finishing-a-batch`
+skill. A commit that
 never saw them is work in progress, not finished work; a subagent implementing
 part of a batch is told this staggering explicitly.
 
