@@ -741,7 +741,27 @@ pub(crate) fn execute_float<'gc>(
 
 #[cfg(test)]
 mod tests {
-    use super::checked_floor_divide;
+    use super::{checked_floor_divide, float_equals, float_hash, Value};
+
+    #[test]
+    fn every_nan_equals_every_other_and_hashes_alike() {
+        let not_a_numbers = [
+            f64::NAN,
+            -f64::NAN,
+            f64::from_bits(0x7ff8_0000_0000_0001),
+            f64::from_bits(0xfff0_0000_0000_0001),
+        ];
+        for first in not_a_numbers {
+            assert!(first.is_nan());
+            for second in not_a_numbers {
+                assert!(float_equals(first, Some(&Value::Float(second))));
+                assert_eq!(float_hash(first), float_hash(second));
+            }
+        }
+        assert!(float_equals(0.0, Some(&Value::Float(-0.0))));
+        assert_eq!(float_hash(0.0), float_hash(-0.0));
+        assert!(!float_equals(f64::NAN, Some(&Value::Float(1.0))));
+    }
 
     #[test]
     fn floor_division_rounds_toward_negative_infinity() {
