@@ -405,7 +405,10 @@ value objects are never copied across an actor boundary (§3.1.1).
   ([core-library.md](design/core-library.md), "What exists"). `Map` and
   `Set` exist ([core-library.md](design/core-library.md), "The collections
   module (plan 2)"), but nothing reaches this yet: no image holds one, and
-  the benchmarks build theirs at run time. Noted with the user on
+  the benchmarks build theirs at run time. `Map`'s and `Set`'s `rehash`,
+  which their lazy `hashtable_` runs when the slot is nil, therefore runs
+  today only after growth; the path that rebuilds a table after a load has
+  no test, and gets one when this item is settled. Noted with the user on
   2026-10-01, while planning the Are We Fast Yet benchmarks' stage 3.
 
 ## Unexplained measurements and unmeasured decisions

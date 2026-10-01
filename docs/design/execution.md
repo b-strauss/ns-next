@@ -673,13 +673,13 @@ to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 So the tests that run every benchmark are not part of the suite.
 `goldens/awfy/all_benchmarks_verify` runs every benchmark at full size in
 five variants (both lowerings, a two-entry global cache, `build` and
-`load`) -- about 90 s each in the debug build for the eleven programs of
-stages 1 and 2; with Havlak and CD, the slowest of stage 3, it took 57 s
-under the optimized lowering, 136 s under the reference lowering and 228 s
-for its `build`/`load` variant under the reference lowering (timed on
-2026-10-01) -- and `a_timed_run_prints_a_score_for_every_benchmark` runs
-each at least twice, 115 s in the debug build; the whole
-`--profile benchmarks` run of the six tests, in parallel, took 228 s; under the stress modes the gate took 37 minutes
+`load`). With Havlak and CD, the slowest of stage 3, all sixteen programs
+took 57 s under the optimized lowering, 136 s under the reference lowering
+and 228 s for the `build`/`load` variant under the reference lowering
+(timed on 2026-10-01). `a_timed_run_prints_a_score_for_every_benchmark` runs
+each at least twice and took 115 s in the debug build. The whole
+`--profile benchmarks` run of the six tests, in parallel, took 228 s; under
+the stress modes the gate took 37 minutes
 with them (MOVES, 2026-10-01). `.config/nextest.toml`'s default profile
 leaves these six tests out, so neither the per-commit gate nor a stress run
 reaches them. They run on demand, when benchmarking, and once at the end of a
