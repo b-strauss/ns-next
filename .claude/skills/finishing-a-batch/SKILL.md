@@ -29,7 +29,7 @@ Create a todo for each item.
    collects at every safepoint. The three run at once because each ends in a
    long tail of a few depth-limit tests that leaves most cores idle, and the
    tails overlap (measured 2026-10-01: about 2227 s, MOVES the longest,
-   against 3390 s one after another; the awfy tests that run Mandelbrot and
+   against 3390 s, the sum of the three per-mode times, one after another; the awfy tests that run Mandelbrot and
    NBody at full size dominate, and nextest's SLOW marks are expected):
 
    ```bash

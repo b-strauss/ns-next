@@ -249,7 +249,7 @@ to be decided against the code:
   `newspeak/KernelForPrimordialSoup.ns:1599-1602` for `<<`). Our leaves raise
   their errors themselves, so whether the Newspeak side should signal
   Primordial Soup's error classes is open.
-  [core-library.md](design/core-library.md), "What exists".
+  [core-library.md](design/core-library.md), "The shape of a kernel method".
 - **A program's exit status.** A program cannot set its exit status: a run
   exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
   is silent. Primordial Soup exits through an explicit `exit:` primitive
