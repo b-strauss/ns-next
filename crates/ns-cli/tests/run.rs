@@ -382,6 +382,8 @@ fn a_timed_run_prints_a_score_for_every_benchmark() {
         names,
         [
             "Bounce",
+            "DeltaBlue",
+            "DeltaBlueTon80",
             "List",
             "Mandelbrot",
             "NBody",
