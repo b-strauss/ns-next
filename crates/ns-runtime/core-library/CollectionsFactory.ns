@@ -21,7 +21,28 @@ Newspeak3
    receiver to whoever catches it.
 
    A value (§3.1.1), so that its facet is one and the platform, a value,
-   may hold the facet in a slot. *)
+   may hold the facet in a slot.
+
+   `List` is adapted from Primordial Soup's Collections.ns
+   (https://github.com/rmacnak/primordialsoup, commit
+   338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/Collections.ns), and
+   `List>>sort:`'s merge sort from `Array>>sortFrom:to:by:` in its
+   newspeak/KernelForPrimordialSoup.ns. Changed for ns-next: only the
+   selectors the corpus, the goldens and the Are We Fast Yet benchmarks
+   send (the on-demand rule); `List` keeps the index of its first element,
+   so that `removeFirst` runs in amortized constant time, as SOMns's
+   `Vector` does, where Primordial Soup's shifts every element; a
+   `removeAll` keeps the capacity, as the Are We Fast Yet `Vector` does;
+   errors are `kernelModule Error`s with texts of their own, where
+   Primordial Soup sends the undefined `errorEmpty`; `>>` and `|` on
+   integers are written with `//` and `bitOr:`; names are written out.
+
+   Copyright 2008, the Newspeak project authors.
+
+   Licensed under the Apache License, Version 2.0 (the ''License''); you
+   may not use this file except in compliance with the License. You may
+   obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+   and in THIRD-PARTY-NOTICES.md at the repository root. *)
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
     | private kernelModule = theKernel. |
 ) (
@@ -36,63 +57,237 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public List = ( ^outer CollectionsFactory List )
     )
     (* An ordered, growable sequence: Primordial Soup's `List`, with the
-       protocol the corpus and the goldens ask for (the on-demand rule,
-       docs/design/core-library.md). The elements live in `data`, an Array
-       at least `size_` long, replaced by one twice as long when it is
-       full; nothing grows in place. *)
-    private class List = Object new (
+       protocol the corpus, the goldens and the Are We Fast Yet benchmarks
+       ask for (the on-demand rule, docs/design/core-library.md). The
+       elements live in `data` from `firstIndex` on, `size_` of them, so
+       that `removeFirst` moves nothing and a queue of `add:` and
+       `removeFirst` runs in amortized constant time, as SOMns's `Vector`
+       keeps its `firstIdx`. When `add:` finds the array full at its end, the
+       elements move to its start if at least half of it lies empty before
+       them, and otherwise into an Array half as large again; nothing grows
+       in place. The primary factory takes the capacity, as Primordial
+       Soup's does, so a program may write `List new: 15` as a superclass
+       clause, as DeltaBlue's `Plan` does. The representation is private,
+       where Primordial Soup's is protected, so that it can change -- to a
+       ring buffer, say -- without a subclass noticing; `size_` alone stays
+       protected, as a subclass's view of the size. *)
+    private class List new: capacity = Object new (
         | protected size_ ::= 0.
-          protected data ::= Array new: 4. |
+          private firstIndex ::= 1.
+          private data ::= Array new: capacity. |
     ) (
         public size = ( ^size_ )
+        (* `benchmarks/are-we-fast-yet/DeltaBlue.ns`, `DeltaBlueTon80.ns`
+           and `Havlak.ns` ask whether a work list is empty. *)
+        public isEmpty = ( ^0 = size_ )
         (* Answers the element, as Smalltalk's and Newspeak's `add:` do. *)
         public add: element = (
-            size_ = data size ifTrue: [self grow].
+            | end |
+            end:: firstIndex + size_.
+            end > data size ifTrue: [end:: makeRoomAtEnd].
+            data at: end put: element.
             size_:: size_ + 1.
-            data at: size_ put: element.
             ^element
         )
+        (* The index check is written out here rather than sent, since
+           every `at:` pays for it. An index that is no Integer is out of
+           range too, rather than an error of the comparison. *)
         public at: index = (
-            (self includesIndex: index) ifFalse: [^self indexOutOfRange: index].
-            ^data at: index
+            ((index class == Integer) and: [(1 <= index) and: [index <= size_]])
+                ifFalse: [^self indexOutOfRange: index].
+            ^data at: firstIndex + index - 1
         )
         (* Answers the value, as `add:` answers the element. *)
         public at: index put: value = (
-            (self includesIndex: index) ifFalse: [^self indexOutOfRange: index].
-            data at: index put: value.
+            ((index class == Integer) and: [(1 <= index) and: [index <= size_]])
+                ifFalse: [^self indexOutOfRange: index].
+            data at: firstIndex + index - 1 put: value.
             ^value
         )
         (* Visits the elements the list holds when it starts: the size is
            read once, so an `add:` inside the block does not extend the
-           walk. *)
+           walk, while `data` and `firstIndex` are read for every element,
+           so an `at:put:` inside it is seen, as in Primordial Soup's `1 to:
+           size_ do:`. *)
         public do: action = (
             | end index |
             end:: size_.
-            index:: 1.
-            [index <= end] whileTrue: [
-                action value: (data at: index).
+            index:: 0.
+            [index < end] whileTrue: [
+                action value: (data at: firstIndex + index).
                 index:: index + 1]
         )
-        (* An index that is no Integer is out of range too, rather than an
-           error of the comparison inside this test. *)
-        protected includesIndex: index = (
-            ^(index class == Integer) and: [(1 <= index) and: [index <= size_]]
-        )
-        protected grow = (
-            | larger index |
-            larger:: Array new: data size * 2.
-            index:: 1.
-            [index <= size_] whileTrue: [
-                larger at: index put: (data at: index).
+        (* Primordial Soup's `Collection>>anySatisfy:`, a walk like `do:`'s
+           written out, which needs no non-local return.
+           `benchmarks/are-we-fast-yet/Havlak.ns` sends it. *)
+        public anySatisfy: predicate = (
+            | end index |
+            end:: size_.
+            index:: 0.
+            [index < end] whileTrue: [
+                (predicate value: (data at: firstIndex + index)) ifTrue: [^true].
                 index:: index + 1].
-            data:: larger
+            ^false
+        )
+        (* Moves nothing: the vacated slot is cleared, so that the list
+           keeps no element alive, and an emptied list starts its next
+           element at the front again. `benchmarks/are-we-fast-yet/DeltaBlue.ns`
+           and `Havlak.ns` use a list as a queue. *)
+        public removeFirst = (
+            | element |
+            0 = size_ ifTrue: [^kernelModule Error signal: 'removeFirst: the List is empty'].
+            element:: data at: firstIndex.
+            data at: firstIndex put: nil.
+            size_:: size_ - 1.
+            0 = size_
+                ifTrue: [firstIndex:: 1]
+                ifFalse: [firstIndex:: firstIndex + 1].
+            ^element
+        )
+        (* `benchmarks/are-we-fast-yet/DeltaBlueTon80.ns` uses a list as a
+           stack. *)
+        public removeLast = (
+            | last element |
+            0 = size_ ifTrue: [^kernelModule Error signal: 'removeLast: the List is empty'].
+            last:: firstIndex + size_ - 1.
+            element:: data at: last.
+            data at: last put: nil.
+            size_:: size_ - 1.
+            0 = size_ ifTrue: [firstIndex:: 1].
+            ^element
+        )
+        (* Removes the first element `=` to `element` and answers
+           `element`, or answers what `onAbsent` answers.
+           `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `DeltaBlueTon80.ns`
+           remove a constraint from a variable's list. *)
+        public remove: element ifAbsent: onAbsent = (
+            | position end |
+            position:: firstIndex.
+            end:: firstIndex + size_.
+            [position < end] whileTrue: [
+                (data at: position) = element ifTrue: [
+                    removeAtDataIndex: position.
+                    ^element].
+                position:: position + 1].
+            ^onAbsent value
+        )
+        (* Keeps the capacity, as the Are We Fast Yet `Vector>>removeAll`
+           does, since a list emptied is usually filled again to about its
+           old size: `benchmarks/are-we-fast-yet/Havlak.ns` empties and
+           refills its predecessor lists for every loop search. *)
+        public removeAll = (
+            data:: Array new: data size.
+            firstIndex:: 1.
+            size_:: 0
+        )
+        (* Primordial Soup's meaning: `lessOrEqual` answers whether its
+           first argument may precede its second, and the sort is a stable
+           merge sort, `Array>>sortFrom:to:by:`'s, run over the list's range
+           of `data` with a copy of that range as the other buffer.
+           `benchmarks/are-we-fast-yet/DeltaBlue.ns` sorts its unsatisfied
+           constraints by strength. *)
+        public sort: lessOrEqual = (
+            | last buffer index |
+            size_ < 2 ifTrue: [^self].
+            last:: firstIndex + size_ - 1.
+            buffer:: Array new: last.
+            index:: firstIndex.
+            [index <= last] whileTrue: [
+                buffer at: index put: (data at: index).
+                index:: index + 1].
+            sort: buffer into: data from: firstIndex to: last by: lessOrEqual
+        )
+        (* `source` and `destination` hold the same elements from `start`
+           to `stop`; this leaves them sorted in `destination`, sorting each
+           half into `source` first. *)
+        private sort: source into: destination from: start to: stop by: lessOrEqual = (
+            | middle |
+            start >= stop ifTrue: [^self].
+            middle:: (start + stop) // 2.
+            sort: destination into: source from: start to: middle by: lessOrEqual.
+            sort: destination into: source from: middle + 1 to: stop by: lessOrEqual.
+            merge: source into: destination start: start middle: middle stop: stop by: lessOrEqual
+        )
+        (* Takes from the left run while its element may precede the right
+           run's, which is what makes the sort stable. *)
+        private merge: source into: destination start: start middle: middle stop: stop by: lessOrEqual = (
+            | leftCursor rightCursor destinationCursor |
+            leftCursor:: start.
+            rightCursor:: middle + 1.
+            destinationCursor:: start.
+            [(leftCursor <= middle) and: [rightCursor <= stop]] whileTrue: [
+                (lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor))
+                    ifTrue: [
+                        destination at: destinationCursor put: (source at: leftCursor).
+                        leftCursor:: leftCursor + 1]
+                    ifFalse: [
+                        destination at: destinationCursor put: (source at: rightCursor).
+                        rightCursor:: rightCursor + 1].
+                destinationCursor:: destinationCursor + 1].
+            [leftCursor <= middle] whileTrue: [
+                destination at: destinationCursor put: (source at: leftCursor).
+                leftCursor:: leftCursor + 1.
+                destinationCursor:: destinationCursor + 1].
+            [rightCursor <= stop] whileTrue: [
+                destination at: destinationCursor put: (source at: rightCursor).
+                rightCursor:: rightCursor + 1.
+                destinationCursor:: destinationCursor + 1]
+        )
+        (* Closes the gap from the shorter side, so that removing the first
+           or the last element moves nothing. *)
+        private removeAtDataIndex: position = (
+            | last index |
+            last:: firstIndex + size_ - 1.
+            position - firstIndex < (last - position)
+                ifTrue: [
+                    index:: position.
+                    [index > firstIndex] whileTrue: [
+                        data at: index put: (data at: index - 1).
+                        index:: index - 1].
+                    data at: firstIndex put: nil.
+                    firstIndex:: firstIndex + 1]
+                ifFalse: [
+                    index:: position.
+                    [index < last] whileTrue: [
+                        data at: index put: (data at: index + 1).
+                        index:: index + 1].
+                    data at: last put: nil].
+            size_:: size_ - 1.
+            0 = size_ ifTrue: [firstIndex:: 1]
+        )
+        (* Moves the elements to the start of `data`, or of a larger Array,
+           and answers the index after the last. Moving within `data` only
+           when at least as many slots lie empty before the elements as
+           they fill pays for the move with the `removeFirst`s that emptied
+           those slots; growing by half pays for the copy with the `add:`s
+           that fill the new room. Primordial Soup's growth, `capacity >> 1
+           + capacity | 7`, also gives an Array of size 0 room. *)
+        private makeRoomAtEnd = (
+            | target index |
+            ((firstIndex > 1) and: [firstIndex - 1 >= size_])
+                ifTrue: [target:: data]
+                ifFalse: [target:: Array new: (data size // 2 + data size bitOr: 7)].
+            index:: 0.
+            [index < size_] whileTrue: [
+                target at: index + 1 put: (data at: firstIndex + index).
+                index:: index + 1].
+            target == data ifTrue: [
+                index:: firstIndex.
+                [index < (firstIndex + size_)] whileTrue: [
+                    data at: index put: nil.
+                    index:: index + 1]].
+            data:: target.
+            firstIndex:: 1.
+            ^size_ + 1
         )
         (* `Array>>at:`'s text, so a program sees one error from either. *)
-        protected indexOutOfRange: index = (
+        private indexOutOfRange: index = (
             ^kernelModule Error signal: 'index ', index printString,
                 ' out of range: valid indices are 1..', size_ printString,
                 ' (size ', size_ printString, ')'
         )
+    ) : (
+        public new = ( ^self new: 3 )
     )
     (* The one public member: the facet `platform collections` answers. *)
     public newCollections = ( ^Collections new )

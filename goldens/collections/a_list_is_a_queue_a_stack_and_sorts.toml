@@ -1,0 +1,20 @@
+stdout = '''
+true
+667 334 1000
+334 335
+444555
+0 true false
+1000 0
+7 1
+20 19 18 18
+20 absent
+30 20 2
+ab 2
+0 true
+5
+bedac
+cadeb
+9 2
+removeFirst: the List is empty
+removeLast: the List is empty
+'''

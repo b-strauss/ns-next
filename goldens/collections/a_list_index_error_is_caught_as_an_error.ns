@@ -1,7 +1,7 @@
 Newspeak3
 'Collections'
 (* An index outside 1..size is an Error with Array>>at:'s text, whatever
-   capacity the List's array has spare: an empty List's array has four
+   capacity the List's array has spare: an empty List's array has three
    slots, and `at: 1` still fails. An index that is no Integer is out of
    range too. *)
 class AListIndexErrorIsCaughtAsAnError = Object new (
