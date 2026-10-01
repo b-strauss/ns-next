@@ -27,8 +27,9 @@ Not built yet, and the limits worth knowing before trying it on real code:
   program under `benchmarks/` needs something: a transcript, the kernel's classes
   and exceptions, a collections module with `List`, and `time` with its
   `Stopwatch`. Six of the 211 corpus modules run end to end; the rest ask for
-  collections, streams and mirrors that do not exist yet. Seven of the Are We Fast
-  Yet benchmarks run under their harness in `benchmarks/are-we-fast-yet/`.
+  collections, streams and mirrors that do not exist yet. The fourteen Are We Fast
+  Yet benchmarks and Primordial Soup's Ton80 Richards and DeltaBlue run under
+  their harness in `benchmarks/are-we-fast-yet/`.
 - **No actors, no reflection API, no debugger, no JIT.** An eventual send runs
   synchronously and answers its value rather than a promise, a pattern literal
   evaluates to **nil**, and Typed-Newspeak annotations parse and are discarded.
@@ -160,6 +161,21 @@ cargo run -p ns-cli -- inspect app.img --full
 # time main:args: alone, a fresh application assembled untimed for every
 # sample; measure with --release, never a debug build
 cargo run --release -p ns-cli -- bench goldens/tool/bench/bench_loop.ns --iterations 30
+```
+
+The Are We Fast Yet benchmarks are one project; a benchmark's name after `--`
+picks one, and without a name all sixteen run in turn
+(`docs/design/execution.md`, "The Are We Fast Yet benchmarks"):
+
+```bash
+# run each benchmark once and verify its result: prints `<Name>: ok`
+cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/are-we-fast-yet.json -- Richards
+# time one run of the benchmark: median, minimum and maximum of ten
+cargo run --release -p ns-cli -- bench benchmarks/are-we-fast-yet/are-we-fast-yet.json -- Richards
+# let the harness measure itself: runs per second after a warm-up
+cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/are-we-fast-yet.json -- --timed
+# the same, as tests: every benchmark verified at its full size
+cargo nextest run -p ns-cli --profile benchmarks
 ```
 
 `ns-next <command> --help` documents the remaining flags.
