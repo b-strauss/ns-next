@@ -426,6 +426,39 @@ fn significant_length(digits: &[u64]) -> usize {
 mod tests {
     use super::ArbitraryInteger;
 
+    #[test]
+    fn a_float_truncates_exactly_at_every_magnitude() {
+        let two_to_63 = 2f64.powi(63);
+        let values = [
+            f64::MAX,
+            -f64::MAX,
+            2f64.powi(1023),
+            two_to_63,
+            -two_to_63,
+            two_to_63 - 1024.0,
+            0.5,
+            -0.5,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+        ];
+        for value in values {
+            let integer = ArbitraryInteger::from_f64_truncated(value)
+                .unwrap_or_else(|| panic!("{value} truncates"));
+            assert_eq!(integer.to_f64(), value.trunc(), "{value}");
+            let expected = if value == -two_to_63 {
+                Some(i64::MIN)
+            } else if value.abs() >= two_to_63 {
+                None
+            } else {
+                Some(value.trunc() as i64)
+            };
+            assert_eq!(integer.to_i64(), expected, "{value}");
+        }
+        assert!(ArbitraryInteger::from_f64_truncated(f64::NAN).is_none());
+        assert!(ArbitraryInteger::from_f64_truncated(f64::INFINITY).is_none());
+        assert!(ArbitraryInteger::from_f64_truncated(f64::NEG_INFINITY).is_none());
+    }
+
     /// Operands at every boundary the representation has: zero, one digit,
     /// the `i64` edges and the digit edge, plus a deterministic spread.
     fn operands() -> Vec<i64> {
