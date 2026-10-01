@@ -65,23 +65,23 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public List = ( ^outer CollectionsFactory List )
         (* The `Map` class: `Map new`, or `Map new: capacity`. A negative
            capacity signals an Error, 'new: requires a capacity of at least 0,
-           got …', a Float or a LargeInteger 'new: requires an Integer size,
-           got …', a capacity too large to allocate 'new: cannot allocate an
-           Array of … elements', and one that is no number a
-           MessageNotUnderstood for `<`. The size in the 'Integer size' and
-           'cannot allocate' texts is that of the array the capacity asks
-           for, not the capacity. *)
+           got …', a Float, a LargeInteger or a capacity whose array size
+           `(capacity + 1) * 2` passes the SmallInteger range, from 2^62 - 1
+           on, 'new: requires an Integer size, got …', any other capacity
+           too large to allocate 'new: cannot allocate an Array of …
+           elements', and one that is no number a MessageNotUnderstood for
+           `<`. Both texts show the array size, not the capacity. *)
         (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` need
            it, for SOMns's `Dictionary` and `IdentityDictionary`. *)
         public Map = ( ^outer CollectionsFactory Map )
         (* The `Set` class: `Set new`, or `Set new: capacity`. A negative
            capacity signals an Error, 'new: requires a capacity of at least 0,
-           got …', a Float or a LargeInteger 'new: requires an Integer size,
-           got …', a capacity too large to allocate 'new: cannot allocate an
-           Array of … elements', and one that is no number a
-           MessageNotUnderstood for `<`. The size in the 'Integer size' and
-           'cannot allocate' texts is that of the array the capacity asks
-           for, not the capacity. *)
+           got …', a Float, a LargeInteger or a capacity of 2^63 - 1 or more
+           'new: requires an Integer size, got …', any other capacity too
+           large to allocate 'new: cannot allocate an Array of … elements',
+           and one that is no number a MessageNotUnderstood for `<`. Both
+           texts show `capacity + 1`, the size of the Set's `data_`, not the
+           capacity. *)
         (* `benchmarks/are-we-fast-yet/Havlak.ns` needs it, for SOMns's
            `Set` and `IdentitySet`. *)
         public Set = ( ^outer CollectionsFactory Set )
@@ -335,18 +335,14 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            + capacity | 7`, also gives an Array of size 0 room. *)
         private makeRoomAtEnd = (
             | target index |
-            ((firstIndex > 1) and: [firstIndex - 1 >= size_])
-                ifTrue: [target:: data]
-                ifFalse: [target:: Array new: (data size // 2 + data size bitOr: 7)].
+            ((firstIndex > 1) and: [firstIndex - 1 >= size_]) ifTrue: [
+                moveToFront.
+                ^size_ + 1].
+            target:: Array new: (data size // 2 + data size bitOr: 7).
             index:: 0.
             [index < size_] whileTrue: [
                 target at: index + 1 put: (data at: firstIndex + index).
                 index:: index + 1].
-            target == data ifTrue: [
-                index:: firstIndex.
-                [index < (firstIndex + size_)] whileTrue: [
-                    data at: index put: nil.
-                    index:: index + 1]].
             data:: target.
             firstIndex:: 1.
             ^size_ + 1

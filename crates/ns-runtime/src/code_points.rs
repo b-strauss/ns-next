@@ -214,7 +214,7 @@ mod tests {
     fn the_text_survives_the_round_trip() {
         for text in TEXTS {
             assert_eq!(CodePoints::from(text).to_string(), text);
-            assert_eq!(CodePoints::from(text).to_utf8(), text);
+            assert_eq!(CodePoints::from(text).to_utf8(), text, "{text}");
             assert_eq!(CodePoints::from(text.to_string()).to_string(), text);
             assert_eq!(
                 CodePoints::from(text).size(),
