@@ -2,6 +2,7 @@ stdout = '''
 Bounce: ok
 DeltaBlue: ok
 DeltaBlueTon80: ok
+Havlak: ok
 List: ok
 Mandelbrot: ok
 NBody: ok
