@@ -57,22 +57,23 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        collections List` (docs/design/core-library.md, "The on-demand
        rule"). *)
     private class Collections = Value new () (
-        (* The class accessors: each answers this module's class it is
-           named after. *)
+        (* The `Collections` class. *)
         public Collections = ( ^outer CollectionsFactory Collections )
         (* The `List` class: `List new`, or `List new: capacity`, which
            signals the Errors `Array new:` does for a capacity that is no
            Integer or is negative. *)
         public List = ( ^outer CollectionsFactory List )
-        (* The `Map` class: `Map new`, or `Map new: capacity`, which signals
-           an Error, 'new: requires a capacity of at least 0, got …', for a
-           negative capacity. *)
+        (* The `Map` class: `Map new`, or `Map new: capacity`. A negative
+           capacity signals an Error, 'new: requires a capacity of at least 0,
+           got …', a Float 'new: requires an Integer size, got …', and one that
+           is no number a MessageNotUnderstood for `<`. *)
         (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` need
            it, for SOMns's `Dictionary` and `IdentityDictionary`. *)
         public Map = ( ^outer CollectionsFactory Map )
-        (* The `Set` class: `Set new`, or `Set new: capacity`, which signals
-           an Error, 'new: requires a capacity of at least 0, got …', for a
-           negative capacity. *)
+        (* The `Set` class: `Set new`, or `Set new: capacity`. A negative
+           capacity signals an Error, 'new: requires a capacity of at least 0,
+           got …', a Float 'new: requires an Integer size, got …', and one that
+           is no number a MessageNotUnderstood for `<`. *)
         (* `benchmarks/are-we-fast-yet/Havlak.ns` needs it, for SOMns's
            `Set` and `IdentitySet`. *)
         public Set = ( ^outer CollectionsFactory Set )
@@ -475,9 +476,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         private lazy hashtable_ ::= rehash.
         (* The number of elements. *)
         public size = ( ^size_ )
-        (* Adds `element` unless an `=` one is present, and answers it. A new
-           element comes last in the order; one already present keeps its
-           place and is replaced by the argument. *)
+        (* Adds `element` last in the order, or replaces an `=` element
+           already present, which keeps its place in the order; answers
+           `element`. *)
         (* The replacement is Primordial Soup's. *)
         public add: element = (
             | table keyIndex |
