@@ -3756,7 +3756,16 @@ with a `Float` is a refusal Primordial Soup makes too.
   Fast Yet's sizes.
 - `4634a60` — the Are We Fast Yet Richards and Primordial Soup's Ton80
   Richards.
-- This commit — the documentation describes the built state.
+- `5f53da2`, `8c4c4b1` — the documentation describes the built state, and
+  the task review's corrections to it.
+- `f7b54b9`, `7195bdd`, `1714ad8` — what the final review found: the open
+  items reconciled, the suite's cost recorded, a shift by a huge count,
+  `bitOr:` with `nil` and a `LargeInteger` against NaN pinned, the
+  `floatSquareRoot:ifFail:` row appended at the end of `MIRROR`.
+- `8bcfdf0` — the Are We Fast Yet benchmarks leave the suite and run only on
+  demand, in nextest's `benchmarks` profile, once at the end of a branch and
+  never under a stress mode (decided with the user on 2026-10-01); the three
+  stress runs drop from 2227 s to 277 s.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3,
 `//` with a `Float` operand, and a program-chosen size that a
