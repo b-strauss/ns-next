@@ -58,10 +58,20 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
        private classes (§5.9). The collections module's classes are its
        facet's, handed out the same way. *)
     private class Platform = Value new () (
+        (* `platform transcript`: the program's standard output, written as
+           UTF-8. Built on first use. *)
         lazy public transcript = Transcript new.
+        (* `platform collections`: the namespace of `List`, `Map` and `Set`.
+           Built on first use. *)
         lazy public collections = collectionsModule newCollections.
+        (* `platform kernel`: the namespace of the exception classes and
+           `Message`. Built on first use. *)
         lazy public kernel = KernelNamespace new.
+        (* `platform time`: the namespace of `Stopwatch`. Built on first
+           use. *)
         lazy public time = Time new.
+        (* The class accessors: each answers this module's class it is
+           named after. *)
         public Platform = ( ^outer PlatformFactory Platform )
         public Transcript = ( ^outer PlatformFactory Transcript )
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
@@ -73,13 +83,22 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
        canonical Newspeak's transcript does. The leaf never declines, so
        the failure blocks never run. *)
     private class Transcript = Value new () (
+        (* Writes the String `text` to standard output and answers the
+           receiver. Signals an Error, 'show: requires a String, got …', for
+           any other argument. *)
         public show: text = ( ^vmMirror transcript: self show: text ifFail: [nil] )
+        (* Writes a line break to standard output and answers the
+           receiver. *)
         public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [nil] )
+        (* Writes `object printString` to standard output and answers the
+           receiver. *)
         public print: object = ( ^self show: object printString )
     )
     (* `platform kernel`: the kernel classes a program may name, as
        Primordial Soup's `Kernel wrapping:` facet answers them. *)
     private class KernelNamespace = Value new () (
+        (* The class accessors: each answers the kernel class it is named
+           after. *)
         public Exception = ( ^kernelModule Exception )
         public Error = ( ^kernelModule Error )
         public MessageNotUnderstood = ( ^kernelModule MessageNotUnderstood )
@@ -89,6 +108,8 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     (* `platform time`: Primordial Soup's `Time` facet, holding only what
        `benchmarks/are-we-fast-yet/AreWeFastYet.ns` measures with. *)
     private class Time = Value new () (
+        (* The `Stopwatch` class: `Stopwatch new` answers a stopped one
+           reading 0. *)
         public Stopwatch = ( ^outer PlatformFactory Stopwatch )
     )
     (* Primordial Soup's `Stopwatch` (`Time.ns`), narrowed to what
@@ -103,16 +124,21 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         | private cumulativeNanoseconds ::= 0.
           private startNanoseconds ::= nil. |
     ) (
+        (* The nanoseconds that have passed since `start`, an Integer; 0
+           before it. *)
         public elapsedNanoseconds = (
             startNanoseconds isNil ifTrue: [^cumulativeNanoseconds].
             ^cumulativeNanoseconds + (currentMonotonicNanoseconds - startNanoseconds)
         )
+        (* Starts the stopwatch, and answers it; a running stopwatch keeps
+           its start. *)
         public start = (
             startNanoseconds isNil ifFalse: [^self].
             startNanoseconds:: currentMonotonicNanoseconds
         )
         private currentMonotonicNanoseconds = ( ^vmMirror clockMonotonicNanoseconds: self ifFail: [nil] )
     )
-    (* The one public member: the platform the host hands out. *)
+    (* A new platform. The one public member: the platform the host hands
+       out. *)
     public newPlatform = ( ^Platform new )
 ) : ()

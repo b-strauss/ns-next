@@ -287,6 +287,14 @@ decision, made so far only for `num-bigint` and `num-integer`
   indented with spaces with the Rust around it, the closing `"}` on its own
   line — not a one-line literal of `\n` escapes.
 - Comments explain the decision — what a check prevents — not the mechanics.
+- **A public member of a shipped core-library module is documented.** Every
+  `public` method, slot and class of `Kernel.ns`, `PlatformFactory.ns` and
+  `CollectionsFactory.ns` has a `(* … *)` comment directly above it, or shares
+  one with the family it belongs to (`+ - *`, the comparisons, the class
+  accessors on `Object`). It describes what the member does as it stands: what
+  it answers, what it takes, and which Error it signals and when -- one to four
+  lines, no more. It names no other implementation. A comment that explains a
+  decision, as the rule above asks, goes after it.
 - **Object, frame and activation access goes through
   `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to it;
   add a missing accessor there. Accessors copy out rather than lend out

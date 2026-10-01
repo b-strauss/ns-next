@@ -57,11 +57,22 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        collections List` (docs/design/core-library.md, "The on-demand
        rule"). *)
     private class Collections = Value new () (
+        (* The class accessors: each answers this module's class it is
+           named after. *)
         public Collections = ( ^outer CollectionsFactory Collections )
+        (* The `List` class: `List new`, or `List new: capacity`, which
+           signals the Errors `Array new:` does for a capacity that is no
+           Integer or is negative. *)
         public List = ( ^outer CollectionsFactory List )
+        (* The `Map` class: `Map new`, or `Map new: capacity`, which signals
+           an Error, 'new: requires a capacity of at least 0, got …', for a
+           negative capacity. *)
         (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` need
            it, for SOMns's `Dictionary` and `IdentityDictionary`. *)
         public Map = ( ^outer CollectionsFactory Map )
+        (* The `Set` class: `Set new`, or `Set new: capacity`, which signals
+           an Error, 'new: requires a capacity of at least 0, got …', for a
+           negative capacity. *)
         (* `benchmarks/are-we-fast-yet/Havlak.ns` needs it, for SOMns's
            `Set` and `IdentitySet`. *)
         public Set = ( ^outer CollectionsFactory Set )
@@ -86,10 +97,14 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
           private firstIndex ::= 1.
           private data ::= Array new: capacity. |
     ) (
+        (* The number of elements. *)
         public size = ( ^size_ )
+        (* Whether the list holds no element. *)
         (* `benchmarks/are-we-fast-yet/DeltaBlue.ns`, `DeltaBlueTon80.ns`
            and `Havlak.ns` ask whether a work list is empty. *)
         public isEmpty = ( ^0 = size_ )
+        (* Appends `element` at the end, in amortized constant time, and
+           answers it. *)
         (* Answers the element, as Smalltalk's and Newspeak's `add:` do. *)
         public add: element = (
             | end |
@@ -99,6 +114,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             size_:: size_ + 1.
             ^element
         )
+        (* The element at `index`, 1-based. Signals an Error, 'index … out of
+           range: valid indices are 1..size (size …)', for an index outside 1
+           to `size`, an index that is no Integer included. *)
         (* The index check is written out here rather than sent, since
            every `at:` pays for it. An index that is no Integer is out of
            range too, rather than an error of the comparison. *)
@@ -107,6 +125,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 ifFalse: [^self indexOutOfRange: index].
             ^data at: firstIndex + index - 1
         )
+        (* Replaces the element at `index`, 1-based, with `value` and
+           answers `value`. Signals an Error, as `at:` does, for an index
+           outside 1 to `size`. *)
         (* Answers the value, as `add:` answers the element. *)
         public at: index put: value = (
             ((index class == Integer) and: [(1 <= index) and: [index <= size_]])
@@ -114,6 +135,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             data at: firstIndex + index - 1 put: value.
             ^value
         )
+        (* Evaluates `action` with each element in turn, from the first, and
+           answers the receiver. Elements added meanwhile are not visited;
+           an element replaced meanwhile is visited as it is then. *)
         (* Visits the elements the list holds when it starts: the size is
            read once, so an `add:` inside the block does not extend the
            walk, while `data` and `firstIndex` are read for every element,
@@ -127,6 +151,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 action value: (data at: firstIndex + index).
                 index:: index + 1]
         )
+        (* Whether `predicate` answers true for some element, tried in turn
+           from the first until one does. *)
         (* Primordial Soup's `Collection>>anySatisfy:`, a walk like `do:`'s
            written out, which needs no non-local return.
            `benchmarks/are-we-fast-yet/Havlak.ns` sends it. *)
@@ -139,6 +165,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 index:: index + 1].
             ^false
         )
+        (* Removes the first element and answers it, in constant time.
+           Signals an Error, 'removeFirst: the List is empty', for an empty
+           List. *)
         (* Moves nothing: the vacated slot is cleared, so that the list
            keeps no element alive, and an emptied list starts its next
            element at the front again. `benchmarks/are-we-fast-yet/DeltaBlue.ns`
@@ -154,6 +183,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 ifFalse: [firstIndex:: firstIndex + 1].
             ^element
         )
+        (* Removes the last element and answers it, in constant time.
+           Signals an Error, 'removeLast: the List is empty', for an empty
+           List. *)
         (* `benchmarks/are-we-fast-yet/DeltaBlueTon80.ns` uses a list as a
            stack. *)
         public removeLast = (
@@ -167,8 +199,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^element
         )
         (* Removes the first element `=` to `element` and answers
-           `element`, or answers what `onAbsent` answers.
-           `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `DeltaBlueTon80.ns`
+           `element`, or, when there is none, answers the value of
+           `onAbsent`. *)
+        (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `DeltaBlueTon80.ns`
            remove a constraint from a variable's list. *)
         public remove: element ifAbsent: onAbsent = (
             | position end |
@@ -181,6 +214,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 position:: position + 1].
             ^onAbsent value
         )
+        (* Removes every element and answers the receiver. *)
         (* Keeps the capacity, as the Are We Fast Yet `Vector>>removeAll`
            does, since a list emptied is usually filled again to about its
            old size: `benchmarks/are-we-fast-yet/Havlak.ns` empties and
@@ -190,6 +224,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             firstIndex:: 1.
             size_:: 0
         )
+        (* Sorts the elements in place, stably, and answers the receiver:
+           `lessOrEqual`, a two-argument block, answers whether its first
+           argument may precede its second. *)
         (* Primordial Soup's meaning: `lessOrEqual` answers whether its
            first argument may precede its second, and the sort is a stable
            merge sort, `Array>>sortFrom:to:by:`'s, run over the list's range
@@ -297,6 +334,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 ' (size ', size_ printString, ')'
         )
     ) : (
+        (* An empty List, `List new: 3`. *)
         public new = ( ^self new: 3 )
     )
     (* Primordial Soup's `Map`: keys and values side by side in `data_`, in
@@ -316,14 +354,17 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            it is nil. Every read runs its getter, so each operation reads
            it once and hands the table on. *)
         private lazy hashtable_ ::= rehash.
+        (* The value stored under `key`, found by `hash` and `=`. Signals an
+           Error, 'key not found: …' with the key's `printString`, for a key
+           that is absent. *)
         public at: key = (
             | keyIndex |
             keyIndex:: scanFor: key in: hashtable_.
             keyIndex < 0 ifTrue: [^kernelModule Error signal: 'key not found: ', key printString].
             ^data_ at: keyIndex + 1
         )
-        (* Answers the value. A key already present keeps its place in the
-           order. *)
+        (* Stores `value` under `key` and answers `value`. A new key comes
+           last in the order; a key already present keeps its place. *)
         public at: key put: value = (
             | table keyIndex |
             table:: hashtable_.
@@ -332,7 +373,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             data_ at: keyIndex + 1 put: value.
             ^value
         )
-        (* An Array of the keys in insertion order. *)
+        (* A new Array of the keys, in the order they were first stored. *)
         public keys = (
             | result data index |
             result:: Array new: size_.
@@ -343,6 +384,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 index:: index + 1].
             ^result
         )
+        (* Removes every key and its value, and answers the receiver. *)
         (* Keeps the capacity, as the Are We Fast Yet `Dictionary>>removeAll`
            does: `benchmarks/are-we-fast-yet/Havlak.ns` empties its map of
            depth-first numbers for every loop search and fills it again with
@@ -416,6 +458,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^bucketIndex
         )
     ) : (
+        (* An empty Map, `Map new: 3`. *)
         public new = ( ^self new: 3 )
     )
     (* Primordial Soup's `Set`: the elements in `data_`, in insertion
@@ -430,10 +473,12 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     ) (
         (* As `Map`'s. *)
         private lazy hashtable_ ::= rehash.
+        (* The number of elements. *)
         public size = ( ^size_ )
-        (* Answers the element. An element already present keeps its place
-           in the order and is replaced by the argument, as in Primordial
-           Soup. *)
+        (* Adds `element` unless an `=` one is present, and answers it. A new
+           element comes last in the order; one already present keeps its
+           place and is replaced by the argument. *)
+        (* The replacement is Primordial Soup's. *)
         public add: element = (
             | table keyIndex |
             table:: hashtable_.
@@ -442,8 +487,11 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             data_ at: keyIndex put: element.
             ^element
         )
-        (* Visits the elements in insertion order; the size and the data
-           array are read once, as in Primordial Soup. *)
+        (* Evaluates `action` with each element in the order they were added,
+           and answers the receiver. Elements added meanwhile are not
+           visited. *)
+        (* The size and the data array are read once, as in Primordial
+           Soup. *)
         public do: action = (
             | data end index |
             data:: data_.
@@ -513,8 +561,10 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^bucketIndex
         )
     ) : (
+        (* An empty Set, `Set new: 3`. *)
         public new = ( ^self new: 3 )
     )
-    (* The one public member: the facet `platform collections` answers. *)
+    (* A new `Collections` namespace. The one public member: the facet
+       `platform collections` answers. *)
     public newCollections = ( ^Collections new )
 ) : ()

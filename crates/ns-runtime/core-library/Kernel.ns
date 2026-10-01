@@ -30,12 +30,24 @@ class Kernel vmMirror: theMirror = Object <: Value (
        empty, so that all code, `Object`'s included, resides in a mixin. *)
     private class Top = () (
     )
+    (* The root of every class a program declares: the protocol every object
+       answers -- its class, identity, equality, hash and printed form, the
+       class accessors, the nil protocol, `halt` and `doesNotUnderstand:`. *)
     public class Object = Top new () (
+        (* The receiver's class. *)
         public class = ( ^vmMirror objectClass: self ifFail: [^super class] )
+        (* Whether `other` is the receiver itself. *)
         public == other = ( ^vmMirror object: self identicalTo: other ifFail: [^super == other] )
+        (* Whether `other` is the receiver itself: an object without an `=`
+           of its own equals only itself. *)
         public = other = ( ^vmMirror object: self equals: other ifFail: [^super = other] )
+        (* The receiver's identity hash, an Integer that stays the same for
+           the object's lifetime. *)
         public hash = ( ^vmMirror objectHash: self ifFail: [^super hash] )
+        (* The String 'an Object'. *)
         public printString = ( ^vmMirror objectPrintString: self ifFail: [^super printString] )
+        (* The class accessors: each answers the kernel class it is named
+           after. *)
         (* §3.2: Object "provides ... accessors for predefined classes and
            objects, such as the classes of the built-in literals", so a bare
            `String` anywhere is the implicit send `self String` and lands
@@ -74,6 +86,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
             exception reachedDefaultHandler ifTrue: [^message sentTo: self].
             ^value
         )
+        (* The nil protocol: every object but nil answers `isNil` false,
+           `notNil` true and `ifNil:` itself; `ifNotNil:` and the two-block
+           forms answer the not-nil block's value, given the receiver when
+           the block takes an argument. *)
         (* The nil protocol, as SOMns's kernel and Newspeak's own declare it:
            every object but nil is not nil, and `UndefinedObject` answers the
            other way. A block for the not-nil case is culled with the
@@ -86,10 +102,13 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public ifNotNil: block = ( ^block cull: self )
         public ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )
         public ifNotNil: notNilBlock ifNil: nilBlock = ( ^notNilBlock cull: self )
-        (* Signals a `Halt`, whose `defaultAction` is the hook the debugger
-           will replace; handled, it resumes after the send. *)
+        (* Signals a `Halt` and answers what a handler resumes it with;
+           unhandled, it ends the run. Its `defaultAction` is the hook the
+           debugger will replace. *)
         public halt = ( ^outer Kernel Halt new signal )
     )
+    (* The superclass of `Class` and `Metaclass`: the equality and hash of
+       every class object and every metaclass. *)
     (* §3.2: "Each class is an instance of a unique metaclass. All
        metaclasses are instances of class Metaclass, and are direct
        subclasses of Class." The specification names neither `Behavior`
@@ -99,6 +118,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
        runtime (`ClassData`), as SOMns keeps it in `SClass`; these three
        carry behaviour only. `Object` declares no accessor for any of them. *)
     public class Behavior = Object new () (
+        (* `=` and `==` answer the same: whether `other` is the receiver, or,
+           for a class object whose enclosing object is a value, a class
+           object of the same declaration with an equal enclosing object and
+           an equal superclass. `hash` agrees with them. *)
         (* A class object that is a value has no identity: two are equal
            when they apply one mixin application to equal enclosing objects
            over equal superclasses (docs/design/object-model.md, "Class
@@ -123,9 +146,16 @@ class Kernel vmMirror: theMirror = Object <: Value (
         private enclosingOf: subject = ( ^vmMirror behaviorEnclosing: subject ifFail: [^nil] )
         private superclassOf: subject = ( ^vmMirror behaviorSuperclass: subject ifFail: [^nil] )
     )
+    (* What a class object answers, as an instance of its metaclass: its
+       name, its printed form and `handles:`. *)
     public class Class = Behavior new () (
+        (* The class's name, a String, as its declaration writes it. *)
         public name = ( ^vmMirror className: self ifFail: [^nil] )
+        (* The class's name. *)
         public printString = ( ^name )
+        (* Whether `exception` is an instance of the receiver or of a
+           subclass, under any enclosing object; `on:do:` asks it of its
+           exception class. *)
         (* ANSI's `handles:`, by default "an instance of me or of a
            subclass", compared by mixin so that a nested exception class
            catches its instances under any enclosing instance. Here rather
@@ -136,9 +166,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
            (docs/design/core-library.md, "Exceptions"). *)
         public handles: exception = ( ^vmMirror object: exception inheritsMixinOf: self ifFail: [false] )
     )
+    (* The class of every metaclass: a metaclass's name, printed form and
+       equality. *)
     public class Metaclass = Behavior new () (
+        (* Its class's name followed by ' class'. *)
         public name = ( ^thisClass name, ' class' )
+        (* The metaclass's name. *)
         public printString = ( ^name )
+        (* `=` and `==` answer the same: whether `other` is the metaclass of
+           a class equal to the receiver's class. *)
         (* A metaclass's enclosing object is its class's and its superclass
            is always `Class`, so its class is all its state: two metaclasses
            are equal exactly when their classes are. `==` is the same
@@ -151,6 +187,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
         private thisClassOf: subject = ( ^vmMirror metaclassThisClass: subject ifFail: [^nil] )
     )
+    (* The root of the exceptions: signalled with `signal` or `signal:`,
+       caught by `Block>>on:do:`, whose handler block receives it and may
+       send it `resume:`, `return:`, `retry` or `pass`. Resumable. *)
     (* §8.6: exception handling is a library issue, built here over the
        activation (docs/design/core-library.md, "Exceptions"). The slots are
        the exception's own state; `originSelector` and `originReceiver` are
@@ -166,12 +205,23 @@ class Kernel vmMirror: theMirror = Object <: Value (
           private searching ::= false.
           private originSelector ::= nil.
           private originReceiver ::= nil.
+          (* The text describing the exception, nil until `signal:` or
+             `messageText:` sets it. *)
           public messageText ::= nil. |
     ) (
+        (* `messageText`, or the name of the receiver's class when it is
+           nil. *)
         public description = ( ^messageText isNil ifTrue: [self class name] ifFalse: [messageText] )
+        (* The `description`. *)
         public printString = ( ^self description )
+        (* Whether a handler may `resume:` the exception: true here. *)
         public isResumable = ( ^true )
+        (* Whether a `signal` found no handler and ran `defaultAction`. *)
         public reachedDefaultHandler = ( ^reachedDefault )
+        (* Signals the exception: the innermost enabled `on:do:` whose
+           exception class `handles:` it runs its handler, and the send
+           answers what the handler resumes it with. With no handler,
+           `defaultAction` runs, which ends the run. *)
         (* ANSI's signal: the handler runs on top of the stack, above this
            activation, and nothing is unwound until it decides. *)
         public signal = (
@@ -180,15 +230,23 @@ class Kernel vmMirror: theMirror = Object <: Value (
             searching:: true.
             ^self invokeNextHandler
         )
+        (* Sets `messageText` to `text` and signals the exception. *)
         public signal: text = (
             messageText:: text.
             ^self signal
         )
+        (* From a handler: offers the exception to the next enclosing
+           handler, or runs `defaultAction` when there is none, and answers
+           what that handler resumes it with. Signals an Error, 'pass sent to
+           an exception that is not being handled', outside a handler. *)
         public pass = (
             handlerActivation isNil ifTrue: [^self notInAHandler: #pass].
             searching:: true.
             ^self invokeNextHandler
         )
+        (* From a handler: ends the handler's `on:do:`, which answers
+           `value`. Signals an Error, 'return: sent to an exception that is
+           not being handled', outside a handler. *)
         public return: value = (
             | target |
             target:: handlerActivation.
@@ -197,7 +255,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
             handlerActivation:: nil.
             ^vmMirror activation: target returnValue: value ifFail: [nil]
         )
+        (* `return: nil`. *)
         public return = ( ^self return: nil )
+        (* From a handler: evaluates the handler's `on:do:` again from the
+           start of its protected block. Signals an Error, 'retry sent to an
+           exception that is not being handled', outside a handler. *)
         public retry = (
             | target |
             target:: handlerActivation.
@@ -206,6 +268,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
             handlerActivation:: nil.
             ^vmMirror activationRestart: target ifFail: [nil]
         )
+        (* From a handler: makes the `signal` answer `value`. Signals an
+           Error, 'cannot resume a non-resumable exception', when
+           `isResumable` is false, and 'resume: sent to an exception that is
+           not being handled' outside a handler. *)
         public resume: value = (
             | target |
             self isResumable ifFalse: [^(outer Kernel Error new) signal: 'cannot resume a non-resumable exception'].
@@ -215,7 +281,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
             handlerActivation:: nil.
             ^vmMirror activation: target returnValue: value ifFail: [nil]
         )
+        (* `resume: nil`. *)
         public resume = ( ^self resume: nil )
+        (* What `signal` runs when no handler handles the exception: ends
+           the run, reporting the `description`, once the pending `ensure:`
+           blocks have run. *)
         (* No handler: the run ends through the leaf, once the pending
            `ensure:` blocks have run. The one place the debugger will
            replace. The leaf takes any selector, receiver and description
@@ -307,47 +377,72 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^(outer Kernel Error new) signal: selector asString, ' sent to an exception that is not being handled'
         )
     ) : (
+        (* `signal` and `signal: text` signal a new instance, as the
+           instance side's do. *)
         (* §3.2's metaclasses are flat, so each kernel exception class
            declares these on its own class side; `handles:` is `Class`'s. *)
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
     )
+    (* An exception that is not resumable; the VM's own errors are Errors. *)
     public class Error = Exception new () (
+        (* False: a handler cannot `resume:` an Error. *)
         public isResumable = ( ^false )
     ) : (
+        (* `signal` and `signal: text` signal a new instance. *)
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
     )
+    (* What `Object>>doesNotUnderstand:` signals for a send nothing
+       understood, with the text 'an object does not understand #…' naming
+       the selector. A handler's `resume:` makes the failed send answer the
+       value it resumes with. *)
     (* §5.5's exception. Resumable although an `Error`, as in Squeak, so
        that the debugger can create the missing method and carry on:
        `Object>>doesNotUnderstand:` then sends the message again. A host
        receives the selector and receiver of the send nothing understood. *)
     public class MessageNotUnderstood = Error new (
+        (* The `Message` nothing understood, and the receiver it was sent
+           to. *)
         | public message ::= nil.
           public receiver ::= nil. |
     ) (
+        (* True: a handler may `resume:` it. *)
         public isResumable = ( ^true )
         (* One a program signals itself may carry no message: it then ends
            the run as any other exception does. *)
         protected hostSelector = ( ^message isNil ifTrue: [super hostSelector] ifFalse: [message selector] )
         protected hostReceiver = ( ^message isNil ifTrue: [super hostReceiver] ifFalse: [receiver] )
     ) : (
+        (* `signal` and `signal: text` signal a new instance, which carries
+           no message. *)
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
     )
+    (* What `Object>>halt` signals: a resumable exception which, unhandled,
+       ends the run. *)
     public class Halt = Exception new () (
     ) : (
+        (* `signal` and `signal: text` signal a new instance. *)
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
     )
+    (* A message: a selector and its arguments. `doesNotUnderstand:`
+       receives one, and a program may build one and send it. *)
     (* What a `doesNotUnderstand:` handler receives. `sentTo:` sends it as
        an ordinary public send (§5.5), as Primordial Soup's `sendTo:` does:
        a program can build a message, so a send through one must reach no
        protected or private method. *)
     public class Message = Object new (
+        (* The selector, a Symbol, and the arguments, an Array or nil for
+           none. *)
         | public selector ::= nil.
           public arguments ::= nil. |
     ) (
+        (* Sends the message to `receiver` as a public send and answers the
+           result; only public methods are found. Signals an Error,
+           'sentTo: needs a Symbol selector and an Array of arguments', when
+           `selector` is no Symbol or `arguments` neither an Array nor nil. *)
         (* A message built without `arguments:` holds nil there, and is
            sent with none. *)
         public sentTo: receiver = ( ^vmMirror message: self sendTo: receiver ifFail: [^(outer Kernel Error new) signal: 'sentTo: needs a Symbol selector and an Array of arguments'] )
@@ -401,6 +496,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^message sentTo: (vmMirror futureValue: self ifFail: [^nil])
         )
     )
+    (* The superclass of every value class: its instances are deeply
+       immutable, and two are equal when their classes are equal and their
+       slots are equal. *)
     (* §3.1.1: an object is a value object -- deeply immutable and globally
        unique -- only if "its class inherits from class `Value`", so every
        class whose instances are values hangs below this one.
@@ -414,16 +512,20 @@ class Kernel vmMirror: theMirror = Object <: Value (
        `True`'s and `False`'s are no forwarders to a leaf: the value they
        answer is already at hand. *)
     public class Value = Object new () (
+        (* Whether `other` is of an equal class and its slots are equal,
+           each compared with `=`. *)
         (* §3.1.1: a value object is globally unique, in the sense that no
            other object is equal to it -- so equality is derived from state,
            and a value has no observable identity. The leaf declines when a
            slot's class brings its own `=`, because a leaf may not send;
            `valueEquals:` then sends it. *)
         public = other = ( ^vmMirror value: self sameAs: other ifFail: [^self valueEquals: other] )
+        (* What `=` answers: a value has no identity of its own. *)
         (* §3.1.1: where `Value` declares an identity method, "that method
            must return the same results as `Value`'s equality method". A send
            of `=` makes that true by construction, for every subclass. *)
         public == other = ( ^self = other )
+        (* A hash of the slots, so that equal values hash alike. *)
         public hash = ( ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots] )
         private valueEquals: other = (
             | index count |
@@ -456,12 +558,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
         private valueSlotCountOf: subject = ( ^vmMirror valueSlotCount: subject ifFail: [^0] )
         private valueSlotOf: subject at: index = ( ^vmMirror value: subject slotAt: index ifFail: [^nil] )
     )
+    (* The superclass of `Integer` and `Float`: counting loops and `max:`. *)
     (* §3.1.1 names `Number` among the classes whose instances are values,
        and §5.1.1's numeric literals are its instances. Iteration is here,
        as in Primordial Soup's `Number`, so an `Integer`, a `LargeInteger`
        and a `Float` receiver share one body. Primordial Soup's compiler
        inlines both; ours sends them. *)
     public class Number = Value new () (
+        (* Evaluates `action` with the receiver, then with each number one
+           greater, while it is at most `stop`; answers nil. *)
         public to: stop do: action = (
             | current |
             current:: self.
@@ -470,6 +575,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
                 current:: current + 1].
             ^nil
         )
+        (* Evaluates `action` with the receiver, then with each number
+           `step` further on, while it is at most `stop` -- at least `stop`
+           for a negative `step`; answers nil. A zero `step` never ends. *)
         public to: stop by: step do: action = (
             | current |
             current:: self.
@@ -482,12 +590,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
                     current:: current + step]].
             ^nil
         )
-        (* Primordial Soup's `Number>>max:`, for any two numbers the
-           ordering compares. Havlak sends it. *)
+        (* The greater of the receiver and `other`: the receiver when it is
+           `>` `other`, `other` otherwise. Primordial Soup's `Number>>max:`,
+           for any two numbers the ordering compares. Havlak sends it. *)
         public max: other = ( ^self > other ifTrue: [self] ifFalse: [other] )
     )
+    (* The superclass of `True` and `False`. *)
     public class Boolean = Value new () (
     )
+    (* The class of `true`. *)
     (* §5.1.2: `true` is the unique instance of `True` and `false` of
        `False`. Each branch is a method of its own, as in every prior-art
        kernel (SOMns's, Primordial Soup's, Newspeak on Squeak's), so no
@@ -500,139 +611,288 @@ class Kernel vmMirror: theMirror = Object <: Value (
        methods"). An argument that is no block is sent `value` like any
        other object; `printString` and `hash` alone are ordinary methods. *)
     public class True = Boolean new () (
+        (* The conditionals answer the value of `trueBlock`; `ifFalse:`
+           answers nil. *)
         public ifTrue: trueBlock ifFalse: falseBlock = ( ^trueBlock value )
         public ifFalse: falseBlock ifTrue: trueBlock = ( ^trueBlock value )
         public ifTrue: trueBlock = ( ^trueBlock value )
         public ifFalse: falseBlock = ( ^nil )
+        (* False. *)
         public not = ( ^false )
+        (* The logical operators: `&` answers `other` and `and:` the value
+           of `block`; `|` and `or:` answer true without evaluating their
+           argument. *)
         public & other = ( ^other )
         public and: block = ( ^block value )
         public | other = ( ^true )
         public or: block = ( ^true )
+        (* The String 'true'. *)
         public printString = ( ^'true' )
+        (* 1. *)
         public hash = ( ^1 )
     )
+    (* The class of `false`. *)
     public class False = Boolean new () (
+        (* The conditionals answer the value of `falseBlock`; `ifTrue:`
+           answers nil. *)
         public ifTrue: trueBlock ifFalse: falseBlock = ( ^falseBlock value )
         public ifFalse: falseBlock ifTrue: trueBlock = ( ^falseBlock value )
         public ifTrue: trueBlock = ( ^nil )
         public ifFalse: falseBlock = ( ^falseBlock value )
+        (* True. *)
         public not = ( ^true )
+        (* The logical operators: `&` and `and:` answer false without
+           evaluating their argument; `|` answers `other` and `or:` the
+           value of `block`. *)
         public & other = ( ^false )
         public and: block = ( ^false )
         public | other = ( ^other )
         public or: block = ( ^block value )
+        (* The String 'false'. *)
         public printString = ( ^'false' )
+        (* 0. *)
         public hash = ( ^0 )
     )
+    (* The integers, of any size: a literal such as `3` is one, and an
+       integer that does not fit 64 bits is a `LargeInteger`. *)
     public class Integer = Number new () (
+        (* Arithmetic: an integer argument answers an integer, a LargeInteger
+           only when it does not fit 64 bits; a Float argument converts the
+           receiver and answers a Float. Any other signals an Error, '+
+           requires a numeric argument, got …', naming the operator. *)
         public + other = ( ^vmMirror integer: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror integer: self subtract: other ifFail: [^super - other] )
         public * other = ( ^vmMirror integer: self multiply: other ifFail: [^super * other] )
+        (* The quotient rounded toward negative infinity, and the remainder,
+           which takes the sign of `other`. Integers only: signals an Error,
+           'division by zero' for a zero `other`, and '// requires an integer
+           argument, got …', naming the operator, for any other argument. *)
         public // other = ( ^vmMirror integer: self floorDivide: other ifFail: [^super // other] )
         public \\ other = ( ^vmMirror integer: self modulo: other ifFail: [^super \\ other] )
+        (* The bit operations, on the two's-complement form of integers of
+           any size: an Integer or a LargeInteger argument answers an
+           integer. Any other argument signals an Error, 'bitAnd: requires an
+           integer argument, got …' with the selector sent. *)
         public bitAnd: other = ( ^vmMirror integer: self bitAnd: other ifFail: [^super bitAnd: other] )
         public bitOr: other = ( ^vmMirror integer: self bitOr: other ifFail: [^super bitOr: other] )
         public bitXor: other = ( ^vmMirror integer: self bitXor: other ifFail: [^super bitXor: other] )
+        (* The receiver times 2 to the power `other`. Signals an Error, '<<
+           takes a non-negative shift count, got …', '<< requires an integer
+           argument, got …' or '<< cannot allocate the result of shifting by
+           … bits', for a negative, a non-integer or too large a shift. *)
         public << other = ( ^vmMirror integer: self shiftLeft: other ifFail: [^super << other] )
+        (* The bitwise complement, `-1 - self`. *)
         public bitInvert = ( ^-1 - self )
+        (* Evaluates `action` as many times as the receiver says, none for
+           a receiver below 1; answers nil. *)
         (* Primordial Soup's `Integer>>timesRepeat:`, which its compiler
            inlines and ours sends. DeltaBlue and Havlak send it. *)
         public timesRepeat: action = (
             1 to: self do: [:ignored | action value].
             ^nil
         )
+        (* The comparisons: an Integer, a LargeInteger or a Float argument
+           answers a Boolean, false whenever a Float argument is a NaN. Any
+           other argument signals an Error, '< requires a numeric argument,
+           got …' with the operator sent. *)
         public < other = ( ^vmMirror integer: self lessThan: other ifFail: [^super < other] )
         public > other = ( ^vmMirror integer: self greaterThan: other ifFail: [^super > other] )
         public <= other = ( ^vmMirror integer: self lessOrEqual: other ifFail: [^super <= other] )
         public >= other = ( ^vmMirror integer: self greaterOrEqual: other ifFail: [^super >= other] )
+        (* Whether `other` is an integer of the same value. Never signals: a
+           Float, even of the same value, or any other object is unequal. *)
         public = other = ( ^vmMirror integer: self equals: other ifFail: [^super = other] )
+        (* The receiver itself. *)
         public hash = ( ^self )
+        (* `0 - self`. *)
         public negated = ( ^vmMirror integerNegated: self ifFail: [^super negated] )
+        (* The receiver without its sign. *)
         public abs = ( ^vmMirror integerAbsolute: self ifFail: [^super abs] )
+        (* The nearest Float, a tie rounded to the even one. *)
         public asFloat = ( ^vmMirror integerAsFloat: self ifFail: [^super asFloat] )
+        (* `printString` and `asString` answer the decimal digits, after a
+           '-' for a negative receiver. *)
         public printString = ( ^vmMirror integerPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror integerAsString: self ifFail: [^super asString] )
     )
+    (* An integer that does not fit 64 bits. It answers `Integer`'s
+       protocol with the same answers and errors; any result that fits 64
+       bits again is an `Integer`. *)
     (* §5.1.1: "integers are not limited in size". An `Integer` whose value
        does not fit a `SmallInteger`; every leaf answers an `Integer` when
        the result fits again, so each integer has one representation.
        `3 class` stays `Integer` -- the section asks only for its protocol. *)
     public class LargeInteger = Integer new () (
+        (* Arithmetic, as `Integer`'s: an integer argument answers an
+           integer and a Float argument a Float; any other signals an Error,
+           '+ requires a numeric argument, got …' with the operator sent. *)
         public + other = ( ^vmMirror largeInteger: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror largeInteger: self subtract: other ifFail: [^super - other] )
         public * other = ( ^vmMirror largeInteger: self multiply: other ifFail: [^super * other] )
+        (* As `Integer`'s: the division rounded toward negative infinity and
+           its remainder, taking integers only, with the same errors. *)
         public // other = ( ^vmMirror largeInteger: self floorDivide: other ifFail: [^super // other] )
         public \\ other = ( ^vmMirror largeInteger: self modulo: other ifFail: [^super \\ other] )
+        (* The bit operations, as `Integer`'s, with the same errors. *)
         public bitAnd: other = ( ^vmMirror largeInteger: self bitAnd: other ifFail: [^super bitAnd: other] )
         public bitOr: other = ( ^vmMirror largeInteger: self bitOr: other ifFail: [^super bitOr: other] )
         public bitXor: other = ( ^vmMirror largeInteger: self bitXor: other ifFail: [^super bitXor: other] )
+        (* The receiver shifted left by `other` bits, as `Integer>><<`, with
+           the same errors. *)
         public << other = ( ^vmMirror largeInteger: self shiftLeft: other ifFail: [^super << other] )
+        (* The comparisons, as `Integer`'s: a numeric argument answers a
+           Boolean, false whenever a Float argument is a NaN; any other
+           signals an Error, '< requires a numeric argument, got …' with the
+           operator sent. *)
         public < other = ( ^vmMirror largeInteger: self lessThan: other ifFail: [^super < other] )
         public > other = ( ^vmMirror largeInteger: self greaterThan: other ifFail: [^super > other] )
         public <= other = ( ^vmMirror largeInteger: self lessOrEqual: other ifFail: [^super <= other] )
         public >= other = ( ^vmMirror largeInteger: self greaterOrEqual: other ifFail: [^super >= other] )
+        (* Whether `other` is a LargeInteger of the same value. Never
+           signals. *)
         public = other = ( ^vmMirror largeInteger: self equals: other ifFail: [^super = other] )
+        (* A hash of the value. *)
         public hash = ( ^vmMirror largeIntegerHash: self ifFail: [^super hash] )
+        (* `0 - self`. *)
         public negated = ( ^vmMirror largeIntegerNegated: self ifFail: [^super negated] )
+        (* The receiver without its sign. *)
         public abs = ( ^vmMirror largeIntegerAbsolute: self ifFail: [^super abs] )
+        (* The nearest Float, a tie rounded to the even one; an infinity
+           beyond the largest Float. *)
         public asFloat = ( ^vmMirror largeIntegerAsFloat: self ifFail: [^super asFloat] )
+        (* `printString` and `asString` answer the decimal digits, after a
+           '-' for a negative receiver. *)
         public printString = ( ^vmMirror largeIntegerPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror largeIntegerAsString: self ifFail: [^super asString] )
     )
+    (* The 64-bit IEEE 754 floating-point numbers: a literal such as `1.5`
+       is one. *)
     public class Float = Number new () (
+        (* Arithmetic: a numeric argument, an integer converted to the
+           nearest Float, answers a Float as IEEE 754 computes it, so dividing
+           by zero answers an infinity or a NaN. Any other signals an Error,
+           '+ requires a numeric argument, got …', naming the operator. *)
         public + other = ( ^vmMirror float: self add: other ifFail: [^super + other] )
         public - other = ( ^vmMirror float: self subtract: other ifFail: [^super - other] )
         public * other = ( ^vmMirror float: self multiply: other ifFail: [^super * other] )
         public / other = ( ^vmMirror float: self divide: other ifFail: [^super / other] )
+        (* The comparisons: a numeric argument, converted as for the
+           arithmetic, answers a Boolean, false whenever either side is a
+           NaN. Any other argument signals an Error, '< requires a numeric
+           argument, got …' with the operator sent. *)
         public < other = ( ^vmMirror float: self lessThan: other ifFail: [^super < other] )
         public > other = ( ^vmMirror float: self greaterThan: other ifFail: [^super > other] )
         public <= other = ( ^vmMirror float: self lessOrEqual: other ifFail: [^super <= other] )
         public >= other = ( ^vmMirror float: self greaterOrEqual: other ifFail: [^super >= other] )
+        (* Whether `other` is a Float of the same value: `0.0` equals
+           `-0.0`, and every NaN equals every other NaN. Never signals: an
+           integer, even of the same value, or any other object is
+           unequal. *)
         public = other = ( ^vmMirror float: self equals: other ifFail: [^super = other] )
+        (* A hash of the value, alike for every pair `=` makes equal. *)
         public hash = ( ^vmMirror floatHash: self ifFail: [^super hash] )
+        (* The square root; a NaN for a negative receiver. *)
         public sqrt = ( ^vmMirror floatSquareRoot: self ifFail: [^super sqrt] )
+        (* The sine and the cosine of the receiver, in radians, and
+           `asInteger`, the receiver truncated toward zero, an integer of
+           any size. `asInteger` signals an Error, 'asInteger requires a
+           finite Float, got …', for a NaN or an infinity. *)
         (* Primordial Soup's `sin`, `cos` and `asInteger`, which truncates
            toward zero. CD sends all three. *)
         public sin = ( ^vmMirror floatSine: self ifFail: [^super sin] )
         public cos = ( ^vmMirror floatCosine: self ifFail: [^super cos] )
         public asInteger = ( ^vmMirror floatAsInteger: self ifFail: [^super asInteger] )
+        (* The receiver with `fractionDigits` digits after the point, rounded
+           half away from zero; its `printString` when not within ±1e21.
+           Signals an Error, 'asStringFixed: takes 0 to 20 fraction digits,
+           got …', or 'asStringFixed: requires a numeric argument, got …'. *)
         public asStringFixed: fractionDigits = ( ^vmMirror float: self asStringFixed: fractionDigits ifFail: [^super asStringFixed: fractionDigits] )
+        (* `printString` and `asString` answer the shortest decimal text
+           that reads back as the receiver, with no exponent and no point
+           for an integral value: '1.5', '1', 'NaN', 'inf', '-inf'. *)
         public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
         public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )
     )
+    (* An immutable sequence of Unicode code points: a literal such as
+       `'abc'` is one. *)
     public class String = Value new () (
+        (* The number of code points. *)
         public size = ( ^vmMirror stringSize: self ifFail: [^super size] )
+        (* The code point at `index`, 1-based, as an Integer. Signals an
+           Error, as `Array>>at:` does, for an index outside 1 to `size` or
+           one that is no Integer. *)
         (* Primordial Soup's `at:` and `copyFrom:to:`, over code points:
            `at:` answers the code point, where Primordial Soup's answers a
            UTF-8 byte -- the same for ASCII. Json sends both. *)
         public at: index = ( ^vmMirror string: self at: index ifFail: [^super at: index] )
+        (* The code points from `start` to `stop` as a new String. Signals an
+           Error, 'copyFrom: … to: … out of range: valid ranges lie within
+           1..size, an empty range ends just before it starts (size …)', or
+           'copyFrom:to: requires an Integer index, got …' for a non-Integer. *)
         public copyFrom: start to: stop = ( ^vmMirror string: self copyFrom: start to: stop ifFail: [^super copyFrom: start to: stop] )
+        (* A new String of the receiver followed by `other`. Signals an
+           Error, 'String concatenation (,) requires a String argument, got
+           …', for an argument that is no String. *)
         public , other = ( ^vmMirror string: self concatenate: other ifFail: [^super , other] )
+        (* Whether `other` is a String of the same code points; a Symbol
+           never is. *)
         public = other = ( ^vmMirror string: self equals: other ifFail: [^super = other] )
+        (* A hash of the code points, alike for equal Strings. *)
         public hash = ( ^vmMirror stringHash: self ifFail: [^super hash] )
+        (* The Symbol of the same text. *)
         public asSymbol = ( ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol] )
+        (* The String as a literal writes it: between single quotes, each
+           quote inside doubled. *)
         public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
+        (* The receiver itself. *)
         public asString = ( ^self )
     ) : (
+        (* A one-character String holding the code point `code`. Signals an
+           Error, 'with: requires a Unicode code point, an Integer from 0 to
+           1114111 outside 55296 to 57343, got …', for any other
+           argument. *)
         (* A one-character String: Primordial Soup's `String with:`, which
            takes a byte, over code points. The leaf declines only a subject
            that is not `String` itself, which a flat class side cannot be
            sent from. Json's escapes send it. *)
         public with: code = ( ^vmMirror stringClass: self with: code ifFail: [nil] )
     )
+    (* An interned name: a literal such as `#at:put:` is one, and two
+       Symbols of the same text are one object. *)
     public class Symbol = Value new () (
+        (* A String of the Symbol's text. *)
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
+        (* Whether `other` is the same Symbol; a String never is. *)
         public = other = ( ^vmMirror symbol: self equals: other ifFail: [^super = other] )
+        (* A hash, alike for equal Symbols. *)
         public hash = ( ^vmMirror symbolHash: self ifFail: [^super hash] )
+        (* The Symbol as a literal writes it: its text after a '#'. *)
         public printString = ( ^vmMirror symbolPrintString: self ifFail: [^super printString] )
     )
+    (* A fixed-size sequence of objects, indexed from 1: `Array new: 3`, or a
+       literal such as `{1. 2}`. *)
     public class Array = Object new () (
+        (* Evaluates `action` with each element in turn, from the first;
+           answers the receiver. An `action` that is no block is not
+           evaluated. *)
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
+        (* Stores `value` at `index`, 1-based, and answers the receiver.
+           Signals an Error, 'index … out of range: valid indices are
+           1..size (size …)', for an index outside 1 to `size`, and 'at:put:
+           requires an Integer index, got …' for one that is no Integer. *)
         public at: index put: value = ( ^vmMirror collection: self at: index put: value ifFail: [^super at: index put: value] )
+        (* The number of elements. *)
         public size = ( ^vmMirror collectionSize: self ifFail: [^super size] )
+        (* The element at `index`, 1-based. Signals an Error, 'index … out of
+           range: valid indices are 1..size (size …)', for an index outside 1
+           to `size`, and 'at: requires an Integer index, got …' for one that
+           is no Integer. *)
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
     ) : (
+        (* A new Array of `size` nils. Signals an Error, 'new: requires an
+           Integer size, got …', 'new: requires a size of at least 0, got …'
+           or 'new: cannot allocate an Array of … elements', for a size that
+           is no Integer, is negative, or is too large to allocate. *)
         (* A sized array of nils, which `List` grows into and the handler
            search fills. The leaf declines only a subject that is not `Array`
            itself, which a flat class side cannot be sent from. *)
@@ -642,27 +902,50 @@ class Kernel vmMirror: theMirror = Object <: Value (
        answers `isNil` with true. It answers the rest of the nil protocol
        `Object` declares the other way round, each a quick method, and
        prints as `nil`, as Primordial Soup's does. *)
+    (* The class of `nil`. *)
     public class UndefinedObject = Value new () (
+        (* The nil protocol, for nil: `isNil` answers true and `notNil`
+           false; `ifNil:` and the two-block forms answer the value of the
+           nil block, and `ifNotNil:` answers nil. *)
         public isNil = ( ^true )
         public notNil = ( ^false )
         public ifNil: block = ( ^block value )
         public ifNotNil: block = ( ^nil )
         public ifNil: nilBlock ifNotNil: notNilBlock = ( ^nilBlock value )
         public ifNotNil: notNilBlock ifNil: nilBlock = ( ^nilBlock value )
+        (* The String 'nil'. *)
         public printString = ( ^'nil' )
     )
+    (* A block, `[:argument | …]`: code that runs when it is sent `value`,
+       in the scope it was written in. *)
     public class Block = Object new () (
+        (* `value` to `value:value:value:` evaluate the block with the
+           arguments given and answer its value. Each signals an Error,
+           'wrong number of block arguments: block takes …, got …', when
+           the block declares another number of parameters. *)
         public value = ( ^vmMirror blockValue: self ifFail: [^super value] )
         public value: first = ( ^vmMirror block: self value: first ifFail: [^super value: first] )
         public value: first value: second = ( ^vmMirror block: self value: first value: second ifFail: [^super value: first value: second] )
         public value: first value: second value: third = ( ^vmMirror block: self value: first value: second value: third ifFail: [^super value: first value: second value: third] )
+        (* The number of parameters the block declares. *)
         public numArgs = ( ^vmMirror blockNumArgs: self ifFail: [^super numArgs] )
+        (* Evaluates the block with `argument` when it declares one
+           parameter, and with none when it declares none; answers its
+           value. *)
         (* Squeak's `cull:`: the argument when the block takes one, nothing
            when it takes none. `Object`'s `ifNotNil:` family means exactly
            this, and its quick methods do it without sending it. *)
         public cull: argument = ( ^self numArgs = 0 ifTrue: [self value] ifFalse: [self value: argument] )
+        (* `whileTrue:` evaluates the receiver, and `body` after each true,
+           until it answers false; `whileFalse:` the other way round. Each
+           answers nil. A condition value that is no Boolean is sent
+           `mustBeBoolean`, and the loop answers what that send answers. *)
         public whileTrue: body = ( ^vmMirror block: self whileTrue: body ifFail: [^super whileTrue: body] )
         public whileFalse: body = ( ^vmMirror block: self whileFalse: body ifFail: [^super whileFalse: body] )
+        (* Evaluates the receiver and answers its value. An exception
+           signalled meanwhile that `exceptionClass handles:` runs `handler`,
+           given the exception when it takes one argument; the handler's
+           value, unless it resumes or retries, is this send's. *)
         (* ANSI's handler: the marker on this method's code tells `signal`
            this activation handles `exceptionClass` with `handler`, while
            `handlerActive` is true (docs/design/core-library.md,
@@ -672,6 +955,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
             | handlerActive ::= true. |
             ^self value
         )
+        (* Evaluates the receiver, then `onUnwind` -- also when an unwind
+           abandons the receiver -- and answers the receiver's value. *)
         (* On a normal end the block runs here; on an unwind the unwinder
            runs it, having set `complete` first, so it runs exactly once. *)
         public ensure: onUnwind = (
@@ -680,7 +965,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
             complete isNil ifTrue: [complete:: true. onUnwind value].
             ^result
         )
-        (* Runs `onUnwind` only when an unwind abandons the block. *)
+        (* Evaluates the receiver and answers its value; runs `onUnwind`
+           only when an unwind abandons the block. *)
         public ifCurtailed: onUnwind = (
             | complete ::= nil. |
             ^self value
