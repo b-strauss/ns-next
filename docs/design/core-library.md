@@ -113,10 +113,12 @@ and `printString`, beside its thirteen
 accessors for the predefined classes, `Object` to `Block`, each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
 below); `Integer`'s `+ - * // \\ < >
-<= >= =`, `bitAnd:`, `negated`, `abs`, `asFloat`, `printString` and
-`asString`; `LargeInteger`'s the same and `hash` ("Large integers" below);
-`Float`'s `+ - * / < > <= >= =`, `hash`, `asStringFixed:`, `printString`
-and `asString`; `String`'s `size`,
+<= >= =`, `bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `negated`, `abs`, `asFloat`,
+`printString` and `asString`, beside `bitInvert`, which is ordinary Newspeak,
+Primordial Soup's `^-1 - self`, and reaches no leaf; `LargeInteger`'s the same
+leaves and `hash` ("Large integers" below);
+`Float`'s `+ - * / < > <= >= =`, `hash`, `sqrt`, `asStringFixed:`,
+`printString` and `asString`; `String`'s `size`,
 `,`, `=`, `hash`, `asSymbol` and `printString`; `Symbol`'s `asString`, `=`,
 `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
 `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript`
@@ -410,7 +412,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 98 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 105 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -782,8 +784,8 @@ to `Object`'s methods
 (`goldens/kernel/a_subclass_of_large_integer_is_no_number.ns`).
 
 **The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`,
-`bitAnd:`, `hash`, `negated`, `abs`, `asFloat`, `printString` and
-`asString` to seventeen rows of its own, `largeInteger:add:ifFail:` to
+`bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `hash`, `negated`, `abs`, `asFloat`,
+`printString` and `asString` to twenty rows of its own, `largeInteger:add:ifFail:` to
 `largeIntegerAsFloat:ifFail:` (`builtins/numbers.rs`,
 `execute_large_integer`). `Integer`'s leaves keep
 their immediate path and promote where it has no answer: a sum, difference
@@ -800,10 +802,12 @@ convert a `LargeInteger` argument to the nearest `double`
 (`ArbitraryInteger::to_f64`, rounded to nearest with ties to even, infinite
 beyond `f64::MAX`), as Primordial Soup's `LargeInteger::AsDouble`
 (`prior-art/primordialsoup/vm/large_integer.cc:1242`) serves, and as they
-convert an `Integer` argument; an integer's leaves meet a `Float` argument
-with a type mismatch, whichever integer class the receiver is
-(`goldens/arithmetic/a_float_meets_a_large_integer.ns`,
-`goldens/errors/a_large_integer_meets_a_float.ns`). That is a derived
+convert an `Integer` argument; an integer's `+ - * < > <= >=` convert
+themselves and a `Float` argument to doubles the same way, whichever integer
+class the receiver is, so the two directions agree
+(`goldens/arithmetic/a_float_meets_a_large_integer.ns`). An argument that
+is neither an integer nor a `Float` is a type mismatch naming "a numeric
+argument" (`goldens/errors/a_large_integer_meets_nil.ns`). That is a derived
 choice, pinned by goldens, which the numeric tower may revisit ("Gap: an
 integer has no `/`" below). `//` and `\\` by zero raise "division by zero"
 from either class's leaf
@@ -841,7 +845,24 @@ longer magnitude, so that the top digit holds the sign, ands the digits,
 and turns a negative result back into sign and magnitude. Both are checked
 against `i128` and by
 `goldens/arithmetic/bit_and_is_twos_complement.ns`; a sign-and-magnitude
-`and` would answer `0` for `-1 bitAnd: 2^64`, which is `2^64`.
+`and` would answer `0` for `-1 bitAnd: 2^64`, which is `2^64`. `bitOr:` and
+`bitXor:` are over two's complement the same way: `ArbitraryInteger`'s
+`bit_and`, `bit_or` and `bit_xor` are one `bitwise` with a different digit
+operation, checked against `i128` and by
+`goldens/arithmetic/bit_or_and_bit_xor_are_twos_complement.ns`, and
+`-1 bitXor: 2^64` is `-(2^64) - 1`.
+
+**`<<` shifts the magnitude and keeps the sign**, which is exact for a
+negative receiver: `-9223372036854775808 << 1` is `-18446744073709551616`,
+and `-1 << 63` is exactly `i64::MIN`, still an `Integer`
+(`goldens/arithmetic/shift_left_widens_into_a_large_integer.ns`). A negative
+count raises an error that says the count must be non-negative. A result
+whose digits cannot be reserved raises "cannot allocate" rather than
+aborting: `ArbitraryInteger::shift_left` reserves with `try_reserve_exact`,
+as `Array new:` does, because the count is the program's ([OPEN-WORK.md](../OPEN-WORK.md)
+says what that does not yet cover). `0 << n` answers `0` without
+allocating. The selector and its meaning are Primordial Soup's
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:1599`).
 
 **`asFloat` answers the nearest double**, ties to even: an `Integer`'s by
 Rust's `as`, exact up to 2^53, and a `LargeInteger`'s by
@@ -1004,10 +1025,14 @@ has to meet is written down in Primordial Soup's `testFloatHash`
 (`prior-art/primordialsoup/newspeak/KernelTests.ns`): `3 asFloat hash` must
 equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
 class-tight `=` is the stopgap that keeps the contract by answering
-`false`, and only `=` is class-tight: a `Float`'s arithmetic and ordering
-convert an integer argument of either class, `Integer` or `LargeInteger`,
-to the nearest `double`, exact up to 2^53, while an integer's raise a type
-mismatch (`builtins/numbers.rs`'s module note; "Large integers" above).
+`false`, and only `=` is class-tight: in both directions, a `Float`'s
+arithmetic and ordering convert an integer argument of either class,
+`Integer` or `LargeInteger`, and an integer's `+ - * < > <= >=` convert
+themselves and a `Float` argument, to the nearest `double`, exact up to
+2^53, as Primordial Soup's primitives do (`vm/primitives.cc`,
+`IS_FLOAT_OP`). `//` and `\\` take integers only, since `Float` has
+neither selector (`builtins/numbers.rs`'s module note; "Large integers"
+above).
 
 ## The core library as Newspeak source over a VM mirror
 

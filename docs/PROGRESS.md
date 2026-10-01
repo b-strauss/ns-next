@@ -15,18 +15,17 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: the Are We Fast Yet benchmarks, stage 2, before road step 2's
+**Next: the Are We Fast Yet benchmarks, stage 3, before road step 2's
 second plan** ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
-high-performance VM"): Mandelbrot, NBody and Richards from
-`prior-art/somns/core-lib/Benchmarks` join the seven of stage 1 in
-`benchmarks/are-we-fast-yet/` ("Are We Fast Yet, stage 1" below;
-[execution.md](design/execution.md), "The Are We Fast Yet benchmarks"),
-widening the kernel and the platform on demand: mixed integer and float
-arithmetic among them. Whether they follow Primordial Soup's protocol, as
-stage 1 does, is for its plan to settle; the plan is still to be written.
-Stage 3 follows, one plan of its own. Decided with the user on 2026-09-29,
-so that the eight-byte value and every later step are measured on real
-programs.
+high-performance VM"): DeltaBlue, Havlak, Json and CD from
+`prior-art/somns/core-lib/Benchmarks` join the eleven programs of stages 1 and
+2 in `benchmarks/are-we-fast-yet/` ("Are We Fast Yet, stage 1" and "stage 2"
+below; [execution.md](design/execution.md), "The Are We Fast Yet
+benchmarks"), widening the kernel and the platform on demand. Its plan is
+still to be written, and whether it follows Primordial Soup's protocol, as
+stages 1 and 2 do, is for that plan to settle. Decided with the user on
+2026-09-29, so that the eight-byte value and every later step are measured
+on real programs.
 
 **After it: road step 2's second plan, the eight-byte value**
 ([object-model.md](design/object-model.md), "Planned: an eight-byte value"):
@@ -3703,3 +3702,60 @@ Apache 2.0 licence.
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stages 2
 and 3, a program's exit status, and whether to inline `to:do:` and
 `to:by:do:`.
+
+## Are We Fast Yet, stage 2 (2026-09-30)
+
+Plan: [ns-next-are-we-fast-yet-stage-2](superpowers/plans/2026-09-30-2156-ns-next-are-we-fast-yet-stage-2.md);
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
+[core-library.md](design/core-library.md), "What exists", "Large integers"
+and "Gap: an integer has no `/`".
+Commits: `5699ab0` (the plan's) to the commit of this entry.
+
+Mandelbrot, NBody and Richards join the seven benchmarks of stage 1 in
+`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+module shape, and Primordial Soup's own Richards, the Ton80 version, comes
+in beside them as `RichardsTon80`: eleven programs under the one harness.
+Mandelbrot and NBody run at the sizes Are We Fast Yet pins. The kernel
+gained, in Primordial Soup's protocol: an integer's `+ - * < > <= >=`
+meeting a `Float` argument, as a `Float`'s meet an integer one; `bitOr:`,
+`bitXor:` and `<<` for `Integer` and `LargeInteger`, over two's complement,
+and `Integer>>bitInvert` in Newspeak; and `Float>>sqrt`. The platform did
+not change. No wire tag changed. One golden's outcome changed on purpose,
+`goldens/errors/a_large_integer_meets_a_float` becoming
+`a_large_integer_meets_nil`, because a `LargeInteger` receiver now answers a
+`Float` argument.
+
+The decisions, each the user's (2026-09-30):
+
+1. Stage 2 follows Primordial Soup's protocol, as stage 1 does; the ports
+   translate SOMns's division selectors (`//` is float division there, `/`
+   in Primordial Soup) and leave out Richards's tracing, so no `platform
+   system` protocol is needed.
+2. Both Richards versions come in, as `Richards` and `RichardsTon80`.
+3. Mandelbrot (750, answering 50) and NBody (250000 steps) run at Are We Fast
+   Yet's pinned sizes, knowing a run takes seconds in a release build.
+4. `Mandelbrot.ns` keeps the Computer Language Benchmarks Game's BSD-3 header
+   as SOMns carries it; `THIRD-PARTY-NOTICES.md` gets no entry for it.
+
+Mixed arithmetic, a proposal the user had not confirmed when the plan was
+written, is built as proposed: `=` stays class-tight and `//` and `\\` take
+integers only. Both are recorded as open in [OPEN-WORK.md](OPEN-WORK.md).
+
+- `4f90ca5` — an integer's arithmetic and ordering meet a `Float` argument.
+- `5a451f7` — comments name the modulo selector and describe an integer
+  meeting a `Float`.
+- `472d4d5` — a test's doc comment names the mismatches it really drives.
+- `eccbfdc` — `Integer` and `LargeInteger` answer `bitOr:`, `bitXor:` and
+  `bitInvert` over two's complement.
+- `4ba1e1f` — `Integer` and `LargeInteger` shift left with `<<`, refusing a
+  result that cannot be allocated.
+- `58e8765` — `Float` answers `sqrt`.
+- `2f4af6e` — Mandelbrot and NBody in Primordial Soup's protocol, at Are We
+  Fast Yet's sizes.
+- `4634a60` — the Are We Fast Yet Richards and Primordial Soup's Ton80
+  Richards.
+- This commit — the documentation describes the built state.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3,
+`//` and `\\` with a `Float` operand, and a program-chosen size that a
+system which overcommits accepts and then kills the process for.

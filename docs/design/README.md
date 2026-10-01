@@ -90,8 +90,8 @@ guarantee it gives up or the complexity it adds.
 
 Real programs to measure the runtime on, beside the microbenchmarks under
 `goldens/bench/`, live in `benchmarks/`: today
-`benchmarks/are-we-fast-yet/`, seven of the Are We Fast Yet benchmarks and
-their harness, which [execution.md](execution.md), "The Are We Fast Yet
+`benchmarks/are-we-fast-yet/`, ten of the Are We Fast Yet benchmarks,
+Primordial Soup's Ton80 Richards and their harness, which [execution.md](execution.md), "The Are We Fast Yet
 benchmarks", describes and `goldens/awfy/` verifies.
 
 ## Architecture

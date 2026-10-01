@@ -36,9 +36,10 @@ Rust 1.98.0, edition 2021, five crates:
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
 module (`LexerComparisonTest`), and the connection to `ns-next-lsp`.
 
-`benchmarks/are-we-fast-yet/` — seven Are We Fast Yet benchmarks and their
-harness, one project, verified by `goldens/awfy/` (`docs/design/execution.md`,
-"The Are We Fast Yet benchmarks").
+`benchmarks/are-we-fast-yet/` — ten Are We Fast Yet benchmarks, Primordial
+Soup's Ton80 Richards and their harness, one project, verified by
+`goldens/awfy/` (`docs/design/execution.md`, "The Are We Fast Yet
+benchmarks").
 
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology;

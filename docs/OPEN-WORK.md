@@ -13,8 +13,8 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**Are We Fast Yet, stage 2**: Mandelbrot, NBody and Richards, the second
-of the stages under "Before step 2's second plan, the Are We Fast Yet
+**Are We Fast Yet, stage 3**: DeltaBlue, Havlak, Json and CD, the last of
+the stages under "Before step 2's second plan, the Are We Fast Yet
 benchmarks" below. Its plan is still to be written.
 
 ## The road to a high-performance VM
@@ -43,17 +43,13 @@ and `prior-art/newspeak-benchmarks`.
   so the Newspeak side grows with them. Stage 1 -- Sieve, Permute, Queens,
   Towers, Bounce, Storage and List, with the harness -- is built, and
   follows Primordial Soup's protocol and module shape (decided with the
-  user on 2026-09-30, for stage 1). Whether stages 2 and 3 follow it too is
-  for their plans to settle; their selector lists below were surveyed
-  against SOMns's protocol. The rest come in two stages by what they need,
-  one plan each (decided with the user on 2026-09-29), in the order set by
-  that day's survey of the first missing selector each one sends:
-  2. Mandelbrot, NBody and Richards: `Float`'s `//`, mixed integer and float
-     arithmetic, `sqrt`, `<<`, `bitXor:`, and `platform system`'s
-     `printString:` and `printNewline`. Mixed arithmetic also closes
-     `to:do:` with an `Integer` receiver (a `LargeInteger` too) and a
-     `Float` bound, which raises a type mismatch until it exists
-     ([core-library.md](design/core-library.md), "What exists").
+  user on 2026-09-30, for stage 1). Stage 2 (Mandelbrot, NBody, Richards,
+  and Primordial Soup's Ton80 Richards beside them) is built and follows
+  Primordial Soup's protocol, as stage 1 does (decided with the user on
+  2026-09-30). Whether stage 3 follows it too is for its plan to settle;
+  its selector list below was surveyed against SOMns's protocol. The rest
+  comes in one more stage, by what it needs (decided with the user on
+  2026-09-29):
   3. DeltaBlue, Havlak, Json and CD: `Vector`, `Dictionary`,
      `IdentityDictionary`, `Set`, `IdentitySet`, the string protocol Json
      sends (`charAt:`, `substringFrom:to:`, `endsWith:`, …), `sin`, `cos`,
@@ -69,7 +65,8 @@ and `prior-art/newspeak-benchmarks`.
   `THIRD-PARTY-NOTICES.md` has SOMns's and Primordial Soup's entries.
 
   After stage 3, and before step 2's second plan, a baseline over all
-  fourteen is measured and recorded in [execution.md](design/execution.md),
+  fifteen -- the fourteen Are We Fast Yet benchmarks and Primordial Soup's
+  Richards -- is measured and recorded in [execution.md](design/execution.md),
   "The Are We Fast Yet benchmarks": several pinned release builds, pooled,
   as that document's measurement protocol asks (decided with the user on
   2026-09-30). No baseline is recorded yet; one informal pinned build of
@@ -235,6 +232,13 @@ to be decided against the code:
   settled; `num-rational` is the reference for `Fraction` and for converting a
   `Float` to a fraction exactly. [core-library.md](design/core-library.md),
   "Gap: an integer has no `/`".
+- **`//` and `\\` with a `Float` operand.** Primordial Soup answers
+  `7 // 2.5` and `7.5 // 2` as a floored `Float` (`vm/primitives.cc`,
+  `Number_floorDivide`); ours raises a type mismatch for the first and
+  `doesNotUnderstand:` for the second, since `Float` has neither selector.
+  The on-demand rule adds them when a benchmark or runnable module sends
+  them. [core-library.md](design/core-library.md), "Gap: an integer has no
+  `/`".
 - **A program's exit status.** A program cannot set its exit status: a run
   exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
   is silent. Primordial Soup exits through an explicit `exit:` primitive
@@ -472,6 +476,15 @@ value objects are never copied across an actor boundary (§3.1.1).
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact.
 
+- **`<<` and `Array new:` reserve a program-chosen size with
+  `try_reserve_exact`, which refuses an impossible size on Windows but on a
+  system that overcommits (Linux) can succeed**, and the process is then
+  OOM-killed while the zeros are written, where a program-chosen size is
+  meant never to abort the process. Neither leaf can tell an affordable size
+  from one the system will accept and then kill for.
+  `crates/ns-runtime/src/builtins/collections.rs`, `allocate`, and
+  `builtins/numbers.rs`, `shift_left`;
+  [core-library.md](design/core-library.md), "Large integers".
 - **`load --print-source` of a project prints every module's source with
   nothing between them** (`crates/ns-cli/src/commands/load.rs`), so a reader
   cannot tell where one module ends; a boundary line naming each module's

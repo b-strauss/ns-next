@@ -97,7 +97,8 @@ code. `ns-next`'s own license is at `LICENSE`.
   derived from the Newspeak-on-Squeak implementation; see
   `prior-art/primordialsoup/LICENSE`. Code is adapted from it:
   `benchmarks/are-we-fast-yet/AreWeFastYet.ns` from
-  `newspeak/BenchmarkRunner.ns`, with its notice and the licence text in
+  `newspeak/BenchmarkRunner.ns` and `RichardsTon80.ns` from
+  `newspeak/Richards.ns`, with its notice and the licence text in
   `THIRD-PARTY-NOTICES.md`.
 - `somns` — MIT, Stefan Marr and Michael Haupt / Hasso Plattner Institute; see
   `prior-art/somns/LICENSE`. Code is adapted from it: the benchmarks in
