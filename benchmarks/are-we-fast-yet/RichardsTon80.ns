@@ -1,0 +1,309 @@
+Newspeak3
+'AreWeFastYet'
+(* Adapted for ns-next from Primordial Soup's Richards.ns
+   (https://github.com/rmacnak/primordialsoup, commit
+   338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/Richards.ns), which
+   says of itself: "An OS kernel simulation benchmark, originally written in
+   BCPL by Martin Richards. This version derived from the Dart Ton80
+   version." It is not the Are We Fast Yet Richards, which is Richards.ns
+   beside it. Changed for ns-next: the module is named RichardsTon80 so
+   that both sit in one harness; bench signals an Error rather than an
+   Exception and answers the queue count; quo: 2 is // 2, the same for the
+   never negative control word; next: queueHead is the assignment it
+   means; names are written out.
+
+   Copyright 2008, the Newspeak project authors.
+
+   Licensed under the Apache License, Version 2.0 (the ''License''); you
+   may not use this file except in compliance with the License. You may
+   obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+   and in THIRD-PARTY-NOTICES.md at the repository root. *)
+class RichardsTon80 usingPlatform: platform = (
+    | private Error = platform kernel Error.
+      dataSize = 4.
+      idleCount = 1000.
+
+      idleIdentity = 1.
+      workerIdentity = 2.
+      handlerAIdentity = 3.
+      handlerBIdentity = 4.
+      deviceAIdentity = 5.
+      deviceBIdentity = 6.
+      numberOfIdentities = 6.
+
+      kindDevice = 0.
+      kindWork = 1.
+
+      (* The task is running and is currently scheduled. *)
+      stateRunning = 0.
+
+      (* The task has packets left to process. *)
+      stateRunnable = 1.
+
+      (* The task is not currently running. The task is not blocked as such and may be started by the scheduler. *)
+      stateSuspended = 2.
+
+      (* The task is blocked and cannot be run until it is explicitly released. *)
+      stateHeld = 4.
+      stateSuspendedRunnable = stateSuspended bitOr: stateRunnable.
+      stateNotHeld = stateHeld bitInvert. |
+) (
+    (* A task that suspends itself after each time it has been run to simulate waiting for data from an external device. *)
+    class DeviceTask on: taskScheduler = Task on: taskScheduler (
+        | protected pending <Packet> |
+    ) (
+        public run: packet <Packet> ^<TaskControlBlock> = (
+            packet isNil ifTrue: [
+                | functionWork <Packet> |
+                pending isNil ifTrue: [^scheduler suspendCurrent].
+                functionWork:: pending.
+                pending:: nil.
+                ^scheduler queue: functionWork].
+            pending:: packet.
+            ^scheduler holdCurrent
+        )
+    )
+    (* A task that manipulates work packets and then suspends itself. *)
+    class HandlerTask on: taskScheduler = Task on: taskScheduler (
+        | workIn <Packet>
+          deviceIn <Packet> |
+    ) (
+        public run: packet <Packet> ^<TaskControlBlock> = (
+            packet isNil ifFalse: [
+                packet kind = kindWork
+                    ifTrue: [workIn:: packet appendTo: workIn]
+                    ifFalse: [deviceIn:: packet appendTo: deviceIn]].
+            workIn isNil ifFalse: [
+                | queued count = workIn datum. |
+                count < dataSize
+                    ifTrue: [
+                        deviceIn isNil ifFalse: [
+                            queued:: deviceIn.
+                            deviceIn:: deviceIn link.
+                            queued datum: (workIn data at: count + 1 (* 1-origin conversion, sigh *)).
+                            workIn datum: (count + 1).
+                            ^scheduler queue: queued]]
+                    ifFalse: [
+                        queued:: workIn.
+                        workIn:: workIn link.
+                        ^scheduler queue: queued]].
+            ^scheduler suspendCurrent
+        )
+    )
+    (* An idle task doesn't do any work itself but cycles control between the two device tasks. *)
+    class IdleTask on: taskScheduler with: initialControl with: initialCount = Task on: taskScheduler (
+        | protected control <Integer> ::= initialControl. (* A seed value that controls how the device tasks are scheduled. *)
+          protected count <Integer> ::= initialCount. (* The number of times this task should be scheduled. *) |
+    ) (
+        public run: packet <Packet> ^<TaskControlBlock> = (
+            count:: count - 1.
+            count = 0 ifTrue: [^scheduler holdCurrent].
+            (control bitAnd: 1) = 0 ifTrue: [
+                control:: control // 2.
+                ^scheduler release: deviceAIdentity].
+            control:: (control // 2) bitXor: 16rD008.
+            ^scheduler release: deviceBIdentity
+        )
+    )
+    (* A simple package of data that is manipulated by the tasks.  The exact layout of the payload data carried by a packet is not importaint, and neither is the nature of the work performed on packets by the tasks. Besides carrying data, packets form linked lists and are hence used both as data and worklists. *)
+    class Packet link: initialLink identity: initialIdentity kind: initialKind = (
+        | public link <Packet> ::= initialLink. (* The tail of the linked list of packets. *)
+          public identity <Integer> ::= initialIdentity. (* An ID for this packet. *)
+          public kind <Integer> ::= initialKind. (* The type of this packet. *)
+          public datum <Integer> ::= 0.
+          public data <Array[Integer]> = Array new: dataSize. |
+    ) (
+        (* Add this packet to the end of a worklist, and return the worklist. *)
+        public appendTo: queueHead <Packet> ^<Packet> = (
+            | peek next |
+            link: nil.
+            queueHead isNil ifTrue: [^self].
+            next:: queueHead.
+            [(peek:: next link) isNil]
+                whileFalse: [next:: peek].
+            next link: self.
+            ^queueHead
+        )
+    )
+    (* A scheduler can be used to schedule a set of tasks based on their relative priorities.  Scheduling is done by maintaining a list of task control blocks which holds tasks and the data queue they are processing. *)
+    class Scheduler = (
+        | public queueCount <Integer> ::= 0.
+          public holdCount <Integer> ::= 0.
+          currentBlock <TaskControlBlock>
+          currentIdentity
+          list <TaskControlBlock>
+          blocks <Array[TaskControlBlock]> = Array new: numberOfIdentities. |
+    ) (
+        (* Add a device task to this scheduler. *)
+        public addDeviceTask: id <Integer> priority: priority <Integer> work: queue <Packet> = (
+            addTask: id priority: priority work: queue task: (DeviceTask on: self).
+        )
+        (* Add a handler task to this scheduler. *)
+        public addHandlerTask: id <Integer> priority: priority <Integer> work: queue <Packet> = (
+            addTask: id priority: priority work: queue task: (HandlerTask on: self).
+        )
+        (* Add an idle task to this scheduler. *)
+        public addIdleTask: id <Integer> priority: priority <Integer> work: queue <Packet> state: count <Integer> = (
+            addRunningTask: id priority: priority work: queue task: (IdleTask on: self with: 1 with: count).
+        )
+        addRunningTask: id <Integer> priority: priority <Integer> work: queue <Packet> task: task <Task> = (
+            addTask: id priority: priority work: queue task: task.
+            currentBlock setRunning.
+        )
+        addTask: id <Integer> priority: priority <Integer> work: queue <Packet> task: task <Task> = (
+            currentBlock:: TaskControlBlock link: list id: id priority: priority queue: queue task: task.
+            list:: currentBlock.
+            blocks at: id put: currentBlock.
+        )
+        (* Add a work task to this scheduler. *)
+        public addWorkerTask: id <Integer> priority: priority <Integer> work: queue <Packet> = (
+            addTask: id priority: priority work: queue task: (WorkerTask on: self with: handlerAIdentity with: 0).
+        )
+        (* Block the currently executing task and return the next task control block to run.  The blocked task will not be made runnable until it is explicitly released, even if new work is added to it. *)
+        public holdCurrent ^<TaskControlBlock> = (
+            holdCount:: holdCount + 1.
+            currentBlock markAsHeld.
+            ^currentBlock link
+        )
+        (* Add the specified packet to the end of the worklist used by the task associated with the packet and make the task runnable if it is currently suspended. *)
+        public queue: packet <Packet> ^<TaskControlBlock> = (
+            | block = blocks at: packet identity. |
+            block isNil ifTrue: [^block].
+            queueCount:: queueCount + 1.
+            packet link: nil.
+            packet identity: currentIdentity.
+            ^block addInput: packet checkPriority: currentBlock
+        )
+        (* Release a task that is currently blocked and return the next block to run. *)
+        public release: id <Integer> ^<TaskControlBlock> = (
+            | block = blocks at: id. |
+            block isNil ifTrue: [^block].
+            block markAsNotHeld.
+            block priority > currentBlock priority ifTrue: [^block].
+            ^currentBlock
+        )
+        (* Execute the tasks managed by this scheduler. *)
+        public schedule = (
+            currentBlock:: list.
+            [currentBlock isNil] whileFalse: [
+                currentBlock isHeldOrSuspended
+                    ifTrue: [currentBlock:: currentBlock link]
+                    ifFalse: [
+                        currentIdentity:: currentBlock identity.
+                        currentBlock:: currentBlock run]].
+        )
+        (* Suspend the currently executing task and return the next task control block to run. If new work is added to the suspended task it will be made runnable. *)
+        public suspendCurrent ^<TaskControlBlock> = (
+            currentBlock markAsSuspended.
+            ^currentBlock
+        )
+    )
+    (* Abstract task that manipulates work packets. *)
+    class Task on: taskScheduler = (
+        | protected scheduler <Scheduler> = taskScheduler. (* The scheduler that manages this task. *) |
+    ) (
+        public run: packet <Packet> = (
+            subclassResponsibility
+        )
+    )
+    (* A task control block manages a task and the queue of work packages associated with it. *)
+    class TaskControlBlock link: initialLink id: initialIdentity priority: initialPriority queue: initialQueue task: initialTask = (
+        | public link <TaskControlBlock> = initialLink.
+          public identity <Integer> = initialIdentity.
+          public priority <Integer> = initialPriority.
+          queue <Packet> ::= initialQueue.
+          task <Task> = initialTask.
+          state <Integer> ::= queue isNil ifTrue: [stateSuspended] ifFalse: [stateSuspendedRunnable]. |
+    ) (
+        (* Adds a packet to the worklist of this block's task, marks this as runnable if necessary, and returns the next runnable object to run (the one with the highest priority. *)
+        public addInput: packet <Packet> checkPriority: oldTask <Task> ^<TaskControlBlock> = (
+            queue isNil
+                ifTrue: [
+                    queue:: packet.
+                    self markAsRunnable.
+                    priority > oldTask priority ifTrue: [^self]]
+                ifFalse: [
+                    queue:: packet appendTo: queue].
+            ^oldTask
+        )
+        public isHeldOrSuspended = (
+            ^((state bitAnd: stateHeld) = 0) not
+                or: [state = stateSuspended]
+        )
+        public markAsHeld = (
+            state:: state bitOr: stateHeld.
+        )
+        public markAsNotHeld = (
+            state:: state bitAnd: stateNotHeld.
+        )
+        public markAsRunnable = (
+            state:: state bitOr: stateRunnable.
+        )
+        public markAsSuspended = (
+            state:: state bitOr: stateSuspended.
+        )
+        (* Runs this task, if it is ready to be run, and returns the next task to run. *)
+        public run ^<TaskControlBlock> = (
+            | packet |
+            state = stateSuspendedRunnable ifTrue: [
+                packet:: queue.
+                queue:: packet link.
+                state:: queue isNil ifTrue: [stateRunning] ifFalse: [stateRunnable].
+            ].
+            ^task run: packet
+        )
+        public setRunning = (
+            state:: stateRunning.
+        )
+    )
+    (* A task that manipulates work packets. *)
+    class WorkerTask on: taskScheduler with: initialDestination with: initialCount = Task on: taskScheduler (
+        | protected destination <Integer> ::= initialDestination.
+          protected count <Integer> ::= initialCount. |
+    ) (
+        public run: packet <Packet> ^<TaskControlBlock> = (
+            packet isNil ifTrue: [^scheduler suspendCurrent].
+            destination = handlerAIdentity
+                ifTrue: [destination:: handlerBIdentity]
+                ifFalse: [destination:: handlerAIdentity].
+            packet identity: destination.
+            packet datum: 0.
+            1 to: dataSize do: [:index |
+                count:: count + 1.
+                count > 26 ifTrue: [count:: 1].
+                packet data at: index put: count.
+            ].
+            ^scheduler queue: packet
+        )
+    )
+    public bench = (
+        | scheduler queue |
+        scheduler:: Scheduler new.
+        scheduler addIdleTask: idleIdentity priority: 0 work: nil state: idleCount.
+        queue:: Packet link: nil identity: workerIdentity kind: kindWork.
+        queue:: Packet link: queue identity: workerIdentity kind: kindWork.
+        scheduler addWorkerTask: workerIdentity priority: 1000 work: queue.
+
+        queue:: Packet link: nil identity: deviceAIdentity kind: kindDevice.
+        queue:: Packet link: queue identity: deviceAIdentity kind: kindDevice.
+        queue:: Packet link: queue identity: deviceAIdentity kind: kindDevice.
+        scheduler addHandlerTask: handlerAIdentity priority: 2000 work: queue.
+
+        queue:: Packet link: nil identity: deviceBIdentity kind: kindDevice.
+        queue:: Packet link: queue identity: deviceBIdentity kind: kindDevice.
+        queue:: Packet link: queue identity: deviceBIdentity kind: kindDevice.
+        scheduler addHandlerTask: handlerBIdentity priority: 3000 work: queue.
+
+        scheduler addDeviceTask: deviceAIdentity priority: 4000 work: nil.
+
+        scheduler addDeviceTask: deviceBIdentity priority: 5000 work: nil.
+
+        scheduler schedule.
+
+        scheduler queueCount = 2322 ifFalse: [
+            Error signal: 'RichardsTon80: expected queue count 2322, got ', scheduler queueCount printString].
+        scheduler holdCount = 928 ifFalse: [
+            Error signal: 'RichardsTon80: expected hold count 928, got ', scheduler holdCount printString].
+        ^scheduler queueCount
+    )
+)

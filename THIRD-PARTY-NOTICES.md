@@ -7,8 +7,8 @@ any names the upstream file it comes from in a header:
   `crates/ns-runtime/src/arbitrary_integer/`. Both are licensed MIT OR
   Apache-2.0 at the licensee's choice; `ns-next` takes them under MIT.
 - Newspeak code in `benchmarks/are-we-fast-yet/`: the benchmarks from SOMns,
-  licensed MIT, and the harness from Primordial Soup, licensed under the Apache
-  License 2.0.
+  licensed MIT, and the harness and `RichardsTon80.ns` from Primordial Soup,
+  licensed under the Apache License 2.0.
 
 Each of these licences requires its notice below to accompany every copy.
 

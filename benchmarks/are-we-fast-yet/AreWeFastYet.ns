@@ -24,7 +24,8 @@ Newspeak3
 class AreWeFastYet packageUsing: manifest = (
     | private benchmarks = {
         manifest Bounce. manifest List. manifest Mandelbrot. manifest NBody.
-        manifest Permute. manifest Queens. manifest Sieve. manifest Storage.
+        manifest Permute. manifest Queens. manifest Richards.
+        manifest RichardsTon80. manifest Sieve. manifest Storage.
         manifest Towers }. |
 ) (
     class Benchmarking usingPlatform: platform = (

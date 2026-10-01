@@ -7,6 +7,8 @@
     "../../benchmarks/are-we-fast-yet/NBody.ns",
     "../../benchmarks/are-we-fast-yet/Permute.ns",
     "../../benchmarks/are-we-fast-yet/Queens.ns",
+    "../../benchmarks/are-we-fast-yet/Richards.ns",
+    "../../benchmarks/are-we-fast-yet/RichardsTon80.ns",
     "../../benchmarks/are-we-fast-yet/Sieve.ns",
     "../../benchmarks/are-we-fast-yet/Storage.ns",
     "../../benchmarks/are-we-fast-yet/Towers.ns"

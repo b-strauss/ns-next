@@ -387,6 +387,8 @@ fn a_timed_run_prints_a_score_for_every_benchmark() {
             "NBody",
             "Permute",
             "Queens",
+            "Richards",
+            "RichardsTon80",
             "Sieve",
             "Storage",
             "Towers"

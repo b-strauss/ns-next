@@ -5,6 +5,8 @@ Mandelbrot: ok
 NBody: ok
 Permute: ok
 Queens: ok
+Richards: ok
+RichardsTon80: ok
 Sieve: ok
 Storage: ok
 Towers: ok
