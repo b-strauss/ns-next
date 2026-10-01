@@ -1,0 +1,51 @@
+Newspeak3
+'Collections'
+(* Primordial Soup's Map and Set, as the Are We Fast Yet benchmarks of
+   stage 3 send them (docs/design/core-library.md, "The collections
+   module"): keys are found by `hash` and compared with `=`, so an equal
+   String is the same key and two plain objects are two keys; `keys` and
+   `do:` answer in insertion order, which overwriting a key does not
+   change; growth past many rehashes and `removeAll` keep every key
+   findable; `at:` signals when the key is absent. *)
+class AMapAndASetKeepInsertionOrder = Object new (
+) (
+    public main: platform args: arguments = (
+        | transcript = platform transcript.
+          Error = platform kernel Error.
+          Map = platform collections Map.
+          Set = platform collections Set.
+          map first second big set line |
+        map:: Map new.
+        map at: #strong put: 1; at: #weak put: 2.
+        map at: #strong put: 10.
+        transcript print: (map at: #strong); show: ' '; print: (map at: #weak); show: ' '; print: (map keys at: 1); show: ' '; print: (map keys at: 2); newLine.
+        map at: 'ab' put: 3.
+        transcript print: (map at: 'a', 'b'); newLine.
+        map at: -5 put: 'minus'; at: 18446744073709551616 put: 'large'; at: nil put: 'nothing'.
+        transcript show: (map at: -5); show: ' '; show: (map at: 18446744073709551616); show: ' '; show: (map at: nil); newLine.
+        first:: Object new.
+        second:: Object new.
+        map at: first put: 'first'.
+        transcript show: (map at: first); show: ' '; show: ([map at: second] on: Error do: [:error | 'absent']); newLine.
+        transcript show: ([map at: #missing] on: Error do: [:error | error messageText]); newLine.
+        transcript print: map keys size; newLine.
+
+        big:: Map new.
+        1 to: 1000 do: [:index | big at: index put: index * index].
+        transcript print: (big at: 777); show: ' '; print: big keys size; show: ' '; print: (big keys at: 1); show: ' '; print: (big keys at: 1000); newLine.
+        big removeAll.
+        transcript print: big keys size; newLine.
+        big at: 5 put: 25.
+        transcript print: (big at: 5); show: ' '; print: big keys size; newLine.
+
+        set:: Set new.
+        set add: 3; add: 1; add: 3; add: 2.
+        line:: ''.
+        set do: [:each | line:: line, each printString, ' '].
+        transcript show: line; print: set size; newLine.
+        set add: 'x'; add: 'x', ''; add: first; add: second; add: first.
+        transcript print: set size; newLine.
+        1 to: 1000 do: [:index | set add: index].
+        transcript print: set size; newLine
+    )
+) : ()

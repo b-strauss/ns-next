@@ -23,7 +23,7 @@ Newspeak3
    A value (§3.1.1), so that its facet is one and the platform, a value,
    may hold the facet in a slot.
 
-   `List` is adapted from Primordial Soup's Collections.ns
+   `List`, `Map` and `Set` are adapted from Primordial Soup's Collections.ns
    (https://github.com/rmacnak/primordialsoup, commit
    338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/Collections.ns), and
    `List>>sort:`'s merge sort from `Array>>sortFrom:to:by:` in its
@@ -32,10 +32,14 @@ Newspeak3
    send (the on-demand rule); `List` keeps the index of its first element,
    so that `removeFirst` runs in amortized constant time, as SOMns's
    `Vector` does, where Primordial Soup's shifts every element; a
-   `removeAll` keeps the capacity, as the Are We Fast Yet `Vector` does;
-   errors are `kernelModule Error`s with texts of their own, where
-   Primordial Soup sends the undefined `errorEmpty`; `>>` and `|` on
-   integers are written with `//` and `bitOr:`; names are written out.
+   `removeAll` keeps the capacity, as the Are We Fast Yet `Vector` and
+   `Dictionary` do; `Map` and `Set` have no removal of single elements and
+   so no deleted marks; a hash table lookup answers the element's index in
+   the data array, so that no operation reads the hash table twice; errors
+   are `kernelModule Error`s with texts of their own, where Primordial Soup
+   signals `NotFound` or `ArgumentError`, or sends the undefined
+   `errorEmpty`; `>>` and `|` on integers are written with `//` and
+   `bitOr:`; names are written out.
 
    Copyright 2008, the Newspeak project authors.
 
@@ -55,6 +59,12 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     private class Collections = Value new () (
         public Collections = ( ^outer CollectionsFactory Collections )
         public List = ( ^outer CollectionsFactory List )
+        (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` need
+           it, for SOMns's `Dictionary` and `IdentityDictionary`. *)
+        public Map = ( ^outer CollectionsFactory Map )
+        (* `benchmarks/are-we-fast-yet/Havlak.ns` needs it, for SOMns's
+           `Set` and `IdentitySet`. *)
+        public Set = ( ^outer CollectionsFactory Set )
     )
     (* An ordered, growable sequence: Primordial Soup's `List`, with the
        protocol the corpus, the goldens and the Are We Fast Yet benchmarks
@@ -285,6 +295,222 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^kernelModule Error signal: 'index ', index printString,
                 ' out of range: valid indices are 1..', size_ printString,
                 ' (size ', size_ printString, ')'
+        )
+    ) : (
+        public new = ( ^self new: 3 )
+    )
+    (* Primordial Soup's `Map`: keys and values side by side in `data_`, in
+       insertion order, and `hashtable_`, an open-addressing table of the
+       keys' indices in `data_`, 0 marking an empty bucket. A key is found
+       by its `hash` and compared with `=`; `at:` signals when the key is
+       absent. The table is kept at most three quarters full, so a probe
+       always meets an empty bucket. Only what
+       `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` send is
+       here: `new`, `at:`, `at:put:`, `keys` and `removeAll`. *)
+    private class Map new: capacity = Object new (
+        | private size_ ::= 0.
+          private data_ ::= nil. |
+        createTable: capacity
+    ) (
+        (* Primordial Soup's transient slot, rebuilt from `data_` whenever
+           it is nil. Every read runs its getter, so each operation reads
+           it once and hands the table on. *)
+        private lazy hashtable_ ::= rehash.
+        public at: key = (
+            | keyIndex |
+            keyIndex:: scanFor: key in: hashtable_.
+            keyIndex < 0 ifTrue: [^kernelModule Error signal: 'key not found: ', key printString].
+            ^data_ at: keyIndex + 1
+        )
+        (* Answers the value. A key already present keeps its place in the
+           order. *)
+        public at: key put: value = (
+            | table keyIndex |
+            table:: hashtable_.
+            keyIndex:: scanFor: key in: table.
+            keyIndex < 0 ifTrue: [^insert: 0 - keyIndex in: table key: key value: value].
+            data_ at: keyIndex + 1 put: value.
+            ^value
+        )
+        (* An Array of the keys in insertion order. *)
+        public keys = (
+            | result data index |
+            result:: Array new: size_.
+            data:: data_.
+            index:: 1.
+            [index <= size_] whileTrue: [
+                result at: index put: (data at: index * 2 - 1).
+                index:: index + 1].
+            ^result
+        )
+        (* Keeps the capacity, as the Are We Fast Yet `Dictionary>>removeAll`
+           does: `benchmarks/are-we-fast-yet/Havlak.ns` empties its map of
+           depth-first numbers for every loop search and fills it again with
+           as many nodes. *)
+        public removeAll = (
+            createTable: data_ size // 2 - 1
+        )
+        (* Answers the new hash table. *)
+        private createTable: count = (
+            | table index |
+            count < 0 ifTrue: [^kernelModule Error signal: 'new: requires a capacity of at least 0, got ', count printString].
+            size_:: 0.
+            data_:: Array new: count + 1 * 2.
+            table:: Array new: count + 1 * 4 // 3.
+            index:: table size.
+            [index > 0] whileTrue: [
+                table at: index put: 0.
+                index:: index - 1].
+            hashtable_:: table.
+            ^table
+        )
+        private insert: bucketIndex in: table key: key value: value = (
+            | keyIndex |
+            keyIndex:: size_ * 2 + 1.
+            size_:: size_ + 1.
+            data_ at: keyIndex put: key.
+            data_ at: keyIndex + 1 put: value.
+            table at: bucketIndex put: keyIndex.
+            keyIndex + 2 > data_ size ifTrue: [rehash].
+            ^value
+        )
+        (* With no removal, every entry keeps its index in `data_`. *)
+        private rehash = (
+            | oldData end table newData keyIndex |
+            oldData:: data_.
+            end:: size_ * 2.
+            table:: createTable: size_ * 2.
+            newData:: data_.
+            keyIndex:: 1.
+            [keyIndex < end] whileTrue: [
+                table at: (emptyBucketFor: (oldData at: keyIndex) in: table) put: keyIndex.
+                newData at: keyIndex put: (oldData at: keyIndex).
+                newData at: keyIndex + 1 put: (oldData at: keyIndex + 1).
+                keyIndex:: keyIndex + 2].
+            size_:: end // 2.
+            ^table
+        )
+        (* Answers the key's index in `data_`, or the negated index of the
+           empty bucket where it belongs. *)
+        private scanFor: key in: table = (
+            | data tableSize bucketIndex keyIndex |
+            data:: data_.
+            tableSize:: table size.
+            bucketIndex:: key hash \\ tableSize + 1.
+            [true] whileTrue: [
+                keyIndex:: table at: bucketIndex.
+                0 = keyIndex ifTrue: [^0 - bucketIndex].
+                key = (data at: keyIndex) ifTrue: [^keyIndex].
+                bucketIndex = tableSize
+                    ifTrue: [bucketIndex:: 1]
+                    ifFalse: [bucketIndex:: bucketIndex + 1]]
+        )
+        private emptyBucketFor: key in: table = (
+            | tableSize bucketIndex |
+            tableSize:: table size.
+            bucketIndex:: key hash \\ tableSize + 1.
+            [0 = (table at: bucketIndex)] whileFalse: [
+                bucketIndex = tableSize
+                    ifTrue: [bucketIndex:: 1]
+                    ifFalse: [bucketIndex:: bucketIndex + 1]].
+            ^bucketIndex
+        )
+    ) : (
+        public new = ( ^self new: 3 )
+    )
+    (* Primordial Soup's `Set`: the elements in `data_`, in insertion
+       order, and `hashtable_`, an open-addressing table of their indices,
+       as `Map` keeps its keys; elements are compared with `=` and found by
+       their `hash`. Only what `benchmarks/are-we-fast-yet/Havlak.ns` sends
+       is here: `new`, `add:`, `do:` and `size`. *)
+    private class Set new: capacity = Object new (
+        | private size_ ::= 0.
+          private data_ ::= nil. |
+        createTable: capacity
+    ) (
+        (* As `Map`'s. *)
+        private lazy hashtable_ ::= rehash.
+        public size = ( ^size_ )
+        (* Answers the element. An element already present keeps its place
+           in the order and is replaced by the argument, as in Primordial
+           Soup. *)
+        public add: element = (
+            | table keyIndex |
+            table:: hashtable_.
+            keyIndex:: scanFor: element in: table.
+            keyIndex < 0 ifTrue: [^insert: 0 - keyIndex in: table element: element].
+            data_ at: keyIndex put: element.
+            ^element
+        )
+        (* Visits the elements in insertion order; the size and the data
+           array are read once, as in Primordial Soup. *)
+        public do: action = (
+            | data end index |
+            data:: data_.
+            end:: size_.
+            index:: 1.
+            [index <= end] whileTrue: [
+                action value: (data at: index).
+                index:: index + 1]
+        )
+        private createTable: count = (
+            | table index |
+            count < 0 ifTrue: [^kernelModule Error signal: 'new: requires a capacity of at least 0, got ', count printString].
+            size_:: 0.
+            data_:: Array new: count + 1.
+            table:: Array new: count + 1 * 4 // 3.
+            index:: table size.
+            [index > 0] whileTrue: [
+                table at: index put: 0.
+                index:: index - 1].
+            hashtable_:: table.
+            ^table
+        )
+        private insert: bucketIndex in: table element: element = (
+            | keyIndex |
+            keyIndex:: size_ + 1.
+            size_:: keyIndex.
+            data_ at: keyIndex put: element.
+            table at: bucketIndex put: keyIndex.
+            keyIndex + 1 > data_ size ifTrue: [rehash].
+            ^element
+        )
+        private rehash = (
+            | oldData end table newData keyIndex |
+            oldData:: data_.
+            end:: size_.
+            table:: createTable: size_ * 2.
+            newData:: data_.
+            keyIndex:: 1.
+            [keyIndex <= end] whileTrue: [
+                table at: (emptyBucketFor: (oldData at: keyIndex) in: table) put: keyIndex.
+                newData at: keyIndex put: (oldData at: keyIndex).
+                keyIndex:: keyIndex + 1].
+            size_:: end.
+            ^table
+        )
+        private scanFor: element in: table = (
+            | data tableSize bucketIndex keyIndex |
+            data:: data_.
+            tableSize:: table size.
+            bucketIndex:: element hash \\ tableSize + 1.
+            [true] whileTrue: [
+                keyIndex:: table at: bucketIndex.
+                0 = keyIndex ifTrue: [^0 - bucketIndex].
+                element = (data at: keyIndex) ifTrue: [^keyIndex].
+                bucketIndex = tableSize
+                    ifTrue: [bucketIndex:: 1]
+                    ifFalse: [bucketIndex:: bucketIndex + 1]]
+        )
+        private emptyBucketFor: element in: table = (
+            | tableSize bucketIndex |
+            tableSize:: table size.
+            bucketIndex:: element hash \\ tableSize + 1.
+            [0 = (table at: bucketIndex)] whileFalse: [
+                bucketIndex = tableSize
+                    ifTrue: [bucketIndex:: 1]
+                    ifFalse: [bucketIndex:: bucketIndex + 1]].
+            ^bucketIndex
         )
     ) : (
         public new = ( ^self new: 3 )

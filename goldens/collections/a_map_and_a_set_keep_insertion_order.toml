@@ -1,0 +1,14 @@
+stdout = '''
+10 2 #strong #weak
+3
+minus large nothing
+first absent
+key not found: #missing
+7
+603729 1000 1 1000
+0
+25 1
+3 1 2 3
+6
+1003
+'''
