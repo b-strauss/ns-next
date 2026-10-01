@@ -346,7 +346,7 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
 /// binds it as `Binding::SuperSend`, and both lowerings emit it as a super
 /// send, §6.1). `super Object` starts its lookup above `Outer`, at `Object`,
 /// whose accessor for the predefined class (§3.2) answers a class object.
-/// `goldens/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`
+/// `goldens/language/class/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`
 /// pins that the lookup starts above the declaring class.
 const SUPER_PREFIXED_CLAUSE_SOURCE: &str = indoc! {"
     Newspeak3
@@ -663,7 +663,7 @@ fn a_class_sides_own_method_is_found_before_falling_through_to_object() {
 /// wrong level. `Derived` inherits nothing here (it overrides `describe`
 /// itself), but its `super describe` lands in `Base`'s activation, and
 /// `Base`'s own `outer Outer label` must resolve from *that* activation.
-/// Mirrors `goldens/nesting/nested_super.ns` at the API level.
+/// Mirrors `goldens/language/class/nesting/nested_super.ns` at the API level.
 const NESTED_SUPER_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'

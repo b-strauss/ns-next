@@ -214,7 +214,7 @@ whatever code points it is given and does not depend on it.
   included: `16r1.8` is 1.5 and `2r1e3` is 1000, its digits in its radix
   times ten to its exponent -- the canonical parser's reading, since the
   section gives an exponent no base
-  (`goldens/spec/spec_5_1_1_a_radix_number_may_have_a_fraction_and_an_exponent`).
+  (`goldens/language/syntax/spec_5_1_1_a_radix_number_may_have_a_fraction_and_an_exponent`).
 - *Symbols.* `sym → str | kws | binSel | id`, `kws → kw+`: every keyword of a
   symbol ends in its colon, so `#at:put:` is one symbol and `#at:put` is
   `#at:` followed by `put`.
@@ -351,7 +351,7 @@ alternatives the first that matches in full wins. So:
 alike, both refused. [README.md](README.md)'s deviations table records it.
 
 `parser::declaration`'s `unreserved_word_tests` pin every position, the
-refused forms included; `goldens/spec/spec_4_1_the_unreserved_words_*` and
+refused forms included; `goldens/language/syntax/spec_4_1_the_unreserved_words_*` and
 `spec_6_3_3_the_unreserved_words_name_lazy_slots` run each accepted one.
 §5.9's `outer N` takes any identifier for `N`, and one naming no enclosing
 class is the compile-time error §5.9 makes it ([dispatch.md](dispatch.md)).

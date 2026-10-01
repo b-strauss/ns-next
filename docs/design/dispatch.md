@@ -90,7 +90,7 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    closure that has a parameter and a local with the same name", applied to
    every pair, since two parameters or two locals of one name leave the same
    ambiguity (`Resolver::check_activation_names`,
-   `goldens/spec/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error`).
+   `goldens/language/method/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error`).
    A block's own parameter may share a name with its method's: it is another
    activation's slot.
 
@@ -192,16 +192,16 @@ body and in a nested class's superclass clause alike
 (`resolver::resolve_identifier`, `resolve_superclass_clause`), and the
 receiver's inheritance chain answers it. A class that declares or inherits a
 member of that name therefore reaches its own, as §2.3.1 says
-(`goldens/nesting/a_module_that_declares_string_uses_its_own.ns`,
-`goldens/nesting/an_inherited_member_named_like_a_builtin_wins.ns`,
-`goldens/nesting/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
+(`goldens/language/builtin-names/a_module_that_declares_string_uses_its_own.ns`,
+`goldens/language/builtin-names/an_inherited_member_named_like_a_builtin_wins.ns`,
+`goldens/language/builtin-names/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
 and a class-side method reaches `Object`'s accessor through its class
 object's ordinary lookup — class side, `Class`, `Behavior`, `Object`
-(`goldens/class-side/a_class_side_method_names_a_builtin.ns`). `Object`
+(`goldens/language/class/class-side/a_class_side_method_names_a_builtin.ns`). `Object`
 declares no accessor for `Top`, the VM mirror's class or `Platform`, so
 `self Top`, like a bare `Top`, ends in `doesNotUnderstand:`
-(`goldens/errors/top_is_not_a_name.ns`,
-`goldens/errors/the_mirrors_class_is_not_a_name.ns`). Only a module root's
+(`goldens/language/builtin-names/top_is_not_a_name.ns`,
+`goldens/language/builtin-names/the_mirrors_class_is_not_a_name.ns`). Only a module root's
 clause receivers stay unbound, which the root rule decides and which never
 run; they lower to the deferred `UnresolvedIdentifier` literal, so compiling
 stays total. A bare `super` is a syntax error (§5.10). The accessor itself
@@ -214,7 +214,7 @@ it as `SendSuper` of `Foo`: §6.1 evaluates the clause "as if it occurred
 inside an instance method" of the enclosing class, and the clause's
 activation carries the declaring class as its `current_class`, so the lookup
 starts above the class that declares the clause.
-`goldens/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`
+`goldens/language/class/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`
 pins it, and `crates/ns-runtime/tests/nested_classes.rs`'s
 `a_super_prefixed_clause_answers_a_class_object` pins `super Object`.
 
@@ -284,7 +284,7 @@ The parser normalizes several forms, and the resolver keys off those shapes:
   `Binding::EnclosingObject { depth }` on it, both lowerings emit
   `LoadEnclosingObject`, and the VM answers `dispatch::kth_enclosing_object`
   through `interpreter::sends::enclosing_object` -- a load, no send, so no
-  code runs (`goldens/spec/spec_5_9_outer_n_alone_is_the_enclosing_object`).
+  code runs (`goldens/language/class/nesting/spec_5_9_outer_n_alone_is_the_enclosing_object`).
 - **`super m`** always has a real span; the grammar has no implicit form.
 
 ## The three lookup algorithms
@@ -343,7 +343,7 @@ class of the receiver", and a class object's class is its metaclass (§3.2),
 so the walk from `class_of(receiver)` meets a class side's
 `doesNotUnderstand:` before `Object`'s, for an explicit-receiver send, an
 implicit-receiver send inside a class-side method and a keyword send alike
-(`goldens/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
+(`goldens/language/class/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
 
 **The reified message is a `Message`.** §3.4 says a message "may be
 *reified* by the implementation by means of a *message mirror*", "an object
@@ -356,9 +356,9 @@ arguments, built by slot name once the handler is found, and `sentTo:
 receiver` sends it again as an ordinary *public* send (§5.5), through the
 `message:sendTo:ifFail:` leaf's `decide_send` — a program can build a
 message, so a send through one must reach no protected or private method
-(`goldens/exceptions/sent_to_is_a_public_send`). A handler reads
+(`goldens/library/exception/sent_to_is_a_public_send`). A handler reads
 `message selector` and `message arguments`, which
-`goldens/cache/does_not_understand_site_with_three_kinds_of_handler.ns`
+`goldens/runtime/cache/does_not_understand_site_with_three_kinds_of_handler.ns`
 records.
 
 **`Object`'s handler signals, and re-sends when resumed.** The kernel's
@@ -737,8 +737,8 @@ lowering, which inlines the whole send, counts none. With it, the quick
 method answers the block straight to the `SendInlinable`'s sender, and the
 exemption applies unchanged. `whileTrue:` and `whileFalse:` reach a
 primitive method and its leaf the same way.
-`goldens/kernel/recursion_through_the_core_library_counts_alike_under_both_lowerings`
-and `goldens/kernel/recursion_through_and_or_counts_alike_under_both_lowerings`
+`goldens/runtime/depth-limit/recursion_through_the_core_library_counts_alike_under_both_lowerings`
+and `goldens/runtime/depth-limit/recursion_through_and_or_counts_alike_under_both_lowerings`
 pin it.
 
 **`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without the marks, for
@@ -1289,7 +1289,7 @@ The oracle: the reference lowering runs uncached and the optimized lowering
 cached, and both are held to every `goldens/<category>/*.ns` and the outcome
 recorded beside it, and to `run-corpus` from source and
 as a binary, so a cache defect shows as the two lowerings disagreeing. The seven
-goldens under `goldens/cache/`, added before any
+goldens under `goldens/runtime/cache/`, added before any
 cache existed, pin the outcomes a cache could change. `NS_NEXT_STRESS_CACHES=1`
 is a gate of its own beside `NS_NEXT_STRESS_MOVES`; the two are not combined,
 because an entry holds no handle for a move to break, and emptied caches would
@@ -1736,13 +1736,13 @@ target rather than a class.
     §5.10 in a class-side method looks in `Class`. Built; the two recorded
     outcomes that
     pinned the inheritance were re-cut to pin the conforming rule instead.
-    `goldens/class-side/class_side.ns` sent `SpecialWidget describe` for an
+    `goldens/language/class/class-side/class_side.ns` sent `SpecialWidget describe` for an
     inherited class-side method; its subclass now declares its own
     `describe`, since a class side that declares none answers nothing. A
     cache golden rested on
     a class-side `doesNotUnderstand:` declared by a superclass, which a flat
     metaclass makes unreachable; it is gone, replaced by a golden of
-    class-side `super`, now `goldens/class-side/class_side_super_reaches_class.ns`,
+    class-side `super`, now `goldens/language/class/class-side/class_side_super_reaches_class.ns`,
     whose class-side `super printString` answers `Class`'s, the class's
     name: §5.10 makes S the superclass of the running activation's current
     class, which §3.2 makes `Class` for a metaclass.
@@ -1775,7 +1775,7 @@ target rather than a class.
     both probes (Primordial Soup; half the capacity); zapping the other
     probes on insert (Cog; discards other keys for a reason particular to
     Cog). Built, and measured against 3b's insert with
-    `goldens/bench/bench_megamorphic.ns`, added for it because none of the
+    `goldens/tool/bench/bench_megamorphic.ns`, added for it because none of the
     existing sources reaches a megamorphic site. **The replacement rule
     itself is unmeasured, and that benchmark cannot measure it.** It fills 27
     of the 1024 slots, five of them at the one megamorphic site it drives, so

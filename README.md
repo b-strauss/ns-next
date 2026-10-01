@@ -95,7 +95,7 @@ Newspeak modules, kept as a non-regression gate for the parser; the six on
 ```bash
 # run a file end to end: parse, resolve, bootstrap, compile, instantiate the
 # root class with `new`, then send it `main: platform args:`
-cargo run -p ns-cli -- run goldens/language/hello.ns
+cargo run -p ns-cli -- run goldens/library/platform/hello.ns
 ```
 
 A program is one `.ns` file, whose root class is instantiated with `new`, or
@@ -114,10 +114,10 @@ project file, with either separator:
 
 The root declares `class App packageUsing: manifest = (...)` and reaches each
 module by the name its source declares, `manifest Greeting`
-(`goldens/manifest/` has three such projects).
+(`goldens/tool/manifest/` has three such projects).
 
 ```bash
-cargo run -p ns-cli -- run goldens/manifest/a_project_reaches_its_modules_through_the_manifest.json
+cargo run -p ns-cli -- run goldens/tool/manifest/a_project_reaches_its_modules_through_the_manifest.json
 ```
 
 The program's arguments follow `--` (`run app.ns -- first second`) and reach
@@ -128,12 +128,12 @@ instead of the optimized one; `run`, `build` and `disasm` take it.
 ```bash
 # print one compiled body; nothing is instantiated or run. Takes a .ns file,
 # which it compiles, or an artifact, whose bodies it decodes instead
-cargo run -p ns-cli -- disasm goldens/language/blocks_and_return.ns find:in:
+cargo run -p ns-cli -- disasm goldens/language/block/blocks_and_return.ns find:in:
 ```
 
 ```bash
 # check that a file parses; --ast prints the syntax tree
-cargo run -p ns-cli -- parse goldens/language/hello.ns
+cargo run -p ns-cli -- parse goldens/library/platform/hello.ns
 ```
 
 ```bash
@@ -142,7 +142,7 @@ cargo run -p ns-cli -- parse goldens/language/hello.ns
 # before `main:args:` as an image. `load` decodes it and sends it
 # `main: platform args:` with its own platform. --debug-source keeps every
 # module's source in the image, which `load --print-source` prints
-cargo run -p ns-cli -- build goldens/language/instance_init.ns app.img
+cargo run -p ns-cli -- build goldens/language/class/instantiation/instance_init.ns app.img
 cargo run -p ns-cli -- load app.img
 ```
 
@@ -159,7 +159,7 @@ cargo run -p ns-cli -- inspect app.img --full
 ```bash
 # time main:args: alone, a fresh application assembled untimed for every
 # sample; measure with --release, never a debug build
-cargo run --release -p ns-cli -- bench goldens/bench/bench_loop.ns --iterations 30
+cargo run --release -p ns-cli -- bench goldens/tool/bench/bench_loop.ns --iterations 30
 ```
 
 `ns-next <command> --help` documents the remaining flags.

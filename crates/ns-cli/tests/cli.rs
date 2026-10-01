@@ -328,7 +328,7 @@ fn run_corpus_malformed_whitelist_fails_with_error() {
 fn benchmark_reports_the_entry_sends_median() {
     let out = ns_next()
         .arg("bench")
-        .arg(common::golden("language/while_loop"))
+        .arg(common::golden("language/control-flow/while_loop"))
         .arg("--iterations")
         .arg("3")
         .output()
@@ -350,6 +350,7 @@ fn benchmark_takes_a_project_file() {
         .arg("bench")
         .arg(
             common::goldens_root()
+                .join("tool")
                 .join("manifest")
                 .join("a_project_reaches_its_modules_through_the_manifest.json"),
         )
@@ -374,7 +375,7 @@ fn benchmark_takes_a_project_file() {
 fn benchmark_rejects_zero_iterations() {
     let out = ns_next()
         .arg("bench")
-        .arg(common::golden("language/while_loop"))
+        .arg(common::golden("language/control-flow/while_loop"))
         .arg("--iterations")
         .arg("0")
         .output()
@@ -397,7 +398,7 @@ fn benchmark_rejects_zero_iterations() {
 fn benchmark_collector_statistics_reports_to_stderr() {
     let out = ns_next()
         .arg("bench")
-        .arg(common::golden("bench/bench_block"))
+        .arg(common::golden("tool/bench/bench_block"))
         .arg("--iterations")
         .arg("1")
         .arg("--collector-statistics")

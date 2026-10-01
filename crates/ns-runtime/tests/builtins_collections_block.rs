@@ -142,7 +142,7 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
 /// Pins `builtins/collections.rs`'s `do_step`, which reads
 /// `Heap::array_elements` once, before the first element's activation, and
 /// stores the clone in `DoLoop` -- the walk never re-reads the receiver.
-/// `goldens/collections/do_visits_the_elements_a_list_held_when_it_started`
+/// `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`
 /// pins the same invariant for `List>>do:`, a Newspeak loop that never
 /// reaches this leaf, so it cannot stand in for this test.
 #[test]

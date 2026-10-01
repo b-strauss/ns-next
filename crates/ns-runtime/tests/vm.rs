@@ -596,7 +596,7 @@ fn a_wrong_arity_send_is_refused() {
 // `StoreVector`) -- closure conversion's own storage. Hand-built rather than
 // compiled, so that each instruction's own behaviour is pinned independently
 // of which shapes the optimized lowering happens to emit them for; the
-// goldens under `goldens/capture/` cover the compiled side.
+// goldens under `goldens/language/block/` cover the compiled side.
 // ---------------------------------------------------------------------------
 
 #[test]

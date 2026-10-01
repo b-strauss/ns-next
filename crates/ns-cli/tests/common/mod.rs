@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The `goldens/` directory: every recorded program outcome lives under a
-/// category directory inside it.
+/// The `goldens/` directory: every recorded program outcome lives in a
+/// category directory below it.
 pub fn goldens_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../goldens")
 }
@@ -20,45 +20,27 @@ pub fn goldens_root() -> PathBuf {
 /// list, so that adding one needs no edit anywhere. Sorted, so a failure names
 /// the same golden on every platform and run.
 ///
-/// The layout is two levels -- `goldens/<category>/<name>.<extension>` -- and
-/// anything else is refused rather than skipped. The one exception is the
-/// directory `<name>/` beside a project golden `<name>.json`, which holds that
-/// project's modules; its contents are not goldens and are not walked. A golden the walk does
-/// not accept but silently drops is not a golden at all: no sweep runs it and
-/// the pairing check cannot see it, so a wrong recorded answer would pass
+/// The goldens are a tree of directories: one that holds files is a category
+/// and holds goldens only; one that holds none groups categories or further
+/// groups. Anything else is refused rather than skipped -- a file at the root,
+/// or a directory beside goldens. The one exception is the directory `<name>/`
+/// beside a project golden `<name>.json`, which holds that project's modules;
+/// its contents are not goldens and are not walked. A golden the walk does not
+/// accept but silently drops is not a golden at all: no sweep runs it and the
+/// pairing check cannot see it, so a wrong recorded answer would pass
 /// unnoticed. The category is the organizing principle, so a file outside one
 /// is a mistake to report, not a layout to support.
 pub fn golden_files(extension: &str) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let root = goldens_root();
-    let categories =
-        std::fs::read_dir(&root).unwrap_or_else(|error| panic!("read {}: {error}", root.display()));
-    for category in categories {
-        let category = category.expect("goldens category entry").path();
+    for entry in directory_entries(&root) {
         assert!(
-            category.is_dir(),
+            entry.is_dir(),
             "{} is a file at the root of {} -- every golden belongs in a category directory",
-            category.display(),
+            entry.display(),
             root.display()
         );
-        let entries = std::fs::read_dir(&category)
-            .unwrap_or_else(|error| panic!("read {}: {error}", category.display()));
-        for entry in entries {
-            let path = entry.expect("golden entry").path();
-            if path.is_dir() {
-                assert!(
-                    path.with_extension("json").is_file(),
-                    "{} is a directory inside the category {} with no {}.json beside it --                      only a project golden's modules may live one level deeper",
-                    path.display(),
-                    category.display(),
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                );
-                continue;
-            }
-            if path.extension().and_then(|found| found.to_str()) == Some(extension) {
-                files.push(path);
-            }
-        }
+        walk_golden_directory(&entry, extension, &mut files);
     }
     files.sort();
     assert!(
@@ -67,6 +49,44 @@ pub fn golden_files(extension: &str) -> Vec<PathBuf> {
         root.display()
     );
     files
+}
+
+/// Collects the goldens with `extension` in `directory`, a category if it
+/// holds any file and a group of directories otherwise.
+fn walk_golden_directory(directory: &Path, extension: &str, files: &mut Vec<PathBuf>) {
+    let entries = directory_entries(directory);
+    assert!(
+        !entries.is_empty(),
+        "{} is empty -- a directory below goldens/ holds goldens or further directories",
+        directory.display()
+    );
+    let is_category = entries.iter().any(|entry| entry.is_file());
+    for path in entries {
+        if path.is_file() {
+            if path.extension().and_then(|found| found.to_str()) == Some(extension) {
+                files.push(path);
+            }
+        } else if !is_category {
+            walk_golden_directory(&path, extension, files);
+        } else {
+            assert!(
+                path.with_extension("json").is_file(),
+                "{} is a directory inside the category {} with no {}.json beside it -- \
+                 a category holds goldens, and only a project golden's modules may live \
+                 one level deeper",
+                path.display(),
+                directory.display(),
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+        }
+    }
+}
+
+fn directory_entries(directory: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
+        .map(|entry| entry.expect("goldens directory entry").path())
+        .collect()
 }
 
 /// Every golden's source: the `.ns` programs only.
@@ -83,21 +103,22 @@ pub fn golden_programs() -> Vec<PathBuf> {
 }
 
 /// One golden's source by its path below `goldens/`, without the extension --
-/// `golden("language/arithmetic")`. Naming the category is what makes the
-/// answer unambiguous: two categories may hold the same name, and a caller
-/// that says which one it means cannot be surprised by a golden added later
-/// somewhere else. Panics on a miss, so a renamed or moved golden fails
+/// `golden("library/number/integer/arithmetic")`. Naming the category is what
+/// makes the answer unambiguous: two categories may hold the same name, and a
+/// caller that says which one it means cannot be surprised by a golden added
+/// later somewhere else. Panics on a miss, so a renamed or moved golden fails
 /// loudly here rather than silently skipping the test that wanted it.
 pub fn golden(path: &str) -> PathBuf {
-    let mut parts = path.split('/');
-    let category = parts.next().unwrap_or_default();
-    let name = parts.next().unwrap_or_default();
+    let parts: Vec<&str> = path.split('/').collect();
     assert!(
-        !category.is_empty() && !name.is_empty() && parts.next().is_none(),
-        "{path} is not `<category>/<name>` -- a golden lives one level below \
-         goldens/, so its path has exactly one directory component"
+        parts.len() >= 2 && parts.iter().all(|part| !part.is_empty()),
+        "{path} is not `<category>/<name>` -- a golden lives in a category \
+         directory below goldens/, so its path has at least one directory component"
     );
-    let source = goldens_root().join(category).join(format!("{name}.ns"));
+    let (name, directories) = parts.split_last().expect("at least two parts");
+    let mut source = goldens_root();
+    source.extend(directories);
+    source.push(format!("{name}.ns"));
     assert!(
         source.is_file(),
         "no golden at {} -- goldens/{path}.ns does not exist",
@@ -106,20 +127,20 @@ pub fn golden(path: &str) -> PathBuf {
     source
 }
 
-/// `<category>/<name>`, the golden's path below `goldens/` without its
-/// extension -- the name `golden` takes, so a failing trial names the
+/// The golden's path below `goldens/` without its extension, `/`-separated on
+/// every platform -- the name `golden` takes, so a failing trial names the
 /// golden the same way a test that wants it does.
 pub fn golden_name(source: &Path) -> String {
-    let category = source
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    let name = source
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    format!("{category}/{name}")
+    let relative = source
+        .with_extension("")
+        .strip_prefix(goldens_root())
+        .unwrap_or_else(|_| panic!("{} is not below goldens/", source.display()))
+        .to_path_buf();
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// A golden's recorded outcome. Every field defaults to the success case, so

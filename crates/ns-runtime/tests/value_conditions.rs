@@ -232,7 +232,7 @@ fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
 /// `docs/design/object-model.md`, "A value object's four conditions",
 /// "Enclosing objects are values", names the specification's own worked
 /// example this follows
-/// (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which creates
+/// (`goldens/language/class/nesting/spec_2_3_superclass_of_a_nested_class.ns`, which creates
 /// such a class and never instantiates it).
 #[test]
 fn a_value_class_over_a_non_value_enclosing_object_is_created_but_not_instantiated() {

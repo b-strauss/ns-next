@@ -29,38 +29,47 @@ fn disasm(golden: &str, arguments: &[&str]) -> String {
 
 #[test]
 fn disasm_arithmetic_main() {
-    insta::assert_snapshot!(disasm("language/arithmetic", &["main:args:"]));
+    insta::assert_snapshot!(disasm("library/number/integer/arithmetic", &["main:args:"]));
 }
 
 #[test]
 fn disasm_arithmetic_initializer() {
-    insta::assert_snapshot!(disasm("language/arithmetic", &["--initializer"]));
+    insta::assert_snapshot!(disasm(
+        "library/number/integer/arithmetic",
+        &["--initializer"]
+    ));
 }
 
 #[test]
 fn disasm_blocks_and_return_find_in() {
-    insta::assert_snapshot!(disasm("language/blocks_and_return", &["find:in:"]));
+    insta::assert_snapshot!(disasm("language/block/blocks_and_return", &["find:in:"]));
 }
 
 #[test]
 fn disasm_while_loop_main() {
-    insta::assert_snapshot!(disasm("language/while_loop", &["main:args:"]));
+    insta::assert_snapshot!(disasm("language/control-flow/while_loop", &["main:args:"]));
 }
 
 #[test]
 fn disasm_control_flow_fallback_main() {
-    insta::assert_snapshot!(disasm("language/control_flow_fallback", &["main:args:"]));
+    insta::assert_snapshot!(disasm(
+        "language/control-flow/control_flow_fallback",
+        &["main:args:"]
+    ));
 }
 
 #[test]
 fn disasm_instance_init_initializer() {
-    insta::assert_snapshot!(disasm("language/instance_init", &["--initializer"]));
+    insta::assert_snapshot!(disasm(
+        "language/class/instantiation/instance_init",
+        &["--initializer"]
+    ));
 }
 
 #[test]
 fn disasm_while_loop_main_under_the_reference_lowering() {
     insta::assert_snapshot!(disasm(
-        "language/while_loop",
+        "language/control-flow/while_loop",
         &["main:args:", "--lowering", "reference"]
     ));
 }
@@ -68,14 +77,14 @@ fn disasm_while_loop_main_under_the_reference_lowering() {
 #[test]
 fn disasm_control_flow_fallback_main_under_the_reference_lowering() {
     insta::assert_snapshot!(disasm(
-        "language/control_flow_fallback",
+        "language/control-flow/control_flow_fallback",
         &["main:args:", "--lowering", "reference"]
     ));
 }
 
 #[test]
 fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
-    let path = common::golden("language/hello");
+    let path = common::golden("library/platform/hello");
     let missing = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
         .arg(&path)
@@ -170,7 +179,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 /// these ever differ, the image's code table is not what the compiler emitted.
 #[test]
 fn disasm_of_an_image_matches_disasm_of_its_source() {
-    let source = common::golden("language/arithmetic");
+    let source = common::golden("library/number/integer/arithmetic");
     let directory = ScratchDirectory::new("disasm-bin");
     let image = directory.join("app.nsi");
 
@@ -198,7 +207,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
         String::from_utf8_lossy(&from_image.stderr)
     );
 
-    let from_source = disasm("language/arithmetic", &["main:args:"]);
+    let from_source = disasm("library/number/integer/arithmetic", &["main:args:"]);
     assert_eq!(
         String::from_utf8_lossy(&from_image.stdout).replace("\r\n", "\n"),
         from_source

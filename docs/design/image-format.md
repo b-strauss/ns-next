@@ -1075,7 +1075,7 @@ future exists runs in the loaded world
 `an_unresolved_future_round_trips_and_computes_after_load`,
 `a_future_record_that_is_not_an_unresolved_future_is_refused`,
 `a_graph_naming_future_as_a_class_is_refused`, `tests/image.rs`;
-`goldens/spec/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose build/load
+`goldens/language/slot/simultaneous/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose build/load
 round trip carries a data cycle through resolved futures).
 
 **`LargeInteger` carries builtin tag 31**, the next free number. A
@@ -1303,13 +1303,13 @@ manifest"). It is neither privileged nor shipped: it has no VM mirror, is
 resolved with `resolve` like a user module and compiled into the program
 beside the modules (`SourceOrigin::Embedded("Manifest.ns")`), so an
 application that keeps its manifest in a slot serializes it like any other
-object (`goldens/manifest/an_application_may_keep_its_manifest`). The host
+object (`goldens/tool/manifest/an_application_may_keep_its_manifest`). The host
 instantiates it with `names: definitions:`, an `Array` of names (`Symbol`s)
 and an `Array` of module definitions (§6.4: the class objects, not
 instances). Its `doesNotUnderstand:` answers the module definition whose
 name is the message's selector, searching linearly, and passes anything else
 to `super`, so `manifest Missing` is an ordinary `doesNotUnderstand:` at run
-time (`goldens/manifest/a_name_the_manifest_does_not_hold_is_not_understood`)
+time (`goldens/tool/manifest/a_name_the_manifest_does_not_hold_is_not_understood`)
 -- the lookup both upstream `Manifest` classes make over a map
 (`Namespacing.ns`, `CompilerApp.ns`).
 

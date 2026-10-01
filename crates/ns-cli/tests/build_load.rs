@@ -29,7 +29,7 @@ fn build_writes_a_started_image_that_inspect_recognizes() {
     let out = directory.join("app.nsi");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        golden("language/arithmetic").as_os_str(),
+        golden("library/number/integer/arithmetic").as_os_str(),
         out.as_os_str(),
     ]);
     assert!(ok, "{error}");
@@ -46,7 +46,7 @@ fn build_writes_a_started_image_that_inspect_recognizes() {
 #[test]
 fn a_built_image_runs_exactly_as_its_source_does() {
     let (ok, out, error) =
-        assert_build_load_matches_run("equivalence", &golden("language/arithmetic"));
+        assert_build_load_matches_run("equivalence", &golden("library/number/integer/arithmetic"));
     assert!(ok, "{error}");
     assert_eq!(out, "42\n");
 }
@@ -138,11 +138,14 @@ ns_runtime::for_each_lowering! {
 /// initializer again.
 #[test]
 fn a_loaded_application_does_not_rerun_its_initializers() {
-    let (ok, out, error) = assert_build_load_matches_run("init", &golden("language/instance_init"));
+    let (ok, out, error) = assert_build_load_matches_run(
+        "init",
+        &golden("language/class/instantiation/instance_init"),
+    );
     assert!(ok, "{error}");
     assert_eq!(
         out,
-        common::expectation_of(&golden("language/instance_init")).stdout
+        common::expectation_of(&golden("language/class/instantiation/instance_init")).stdout
     );
 }
 
@@ -214,7 +217,7 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
 fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
     let directory = ScratchDirectory::new("corruption");
     let image = directory.join("app.nsi");
-    let source = golden("language/blocks_and_return");
+    let source = golden("language/block/blocks_and_return");
     let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     let original = std::fs::read(&image).expect("read image");
@@ -258,7 +261,7 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 /// image can be exported back to `.ns` while no decompiler exists.
 #[test]
 fn a_built_image_is_source_free_unless_debug_source_is_asked_for() {
-    let source = golden("language/arithmetic");
+    let source = golden("library/number/integer/arithmetic");
     let text = std::fs::read_to_string(&source).expect("read golden");
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail
@@ -442,8 +445,8 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
 
 #[test]
 fn a_project_builds_and_loads_as_it_runs() {
-    let project =
-        goldens_root().join("manifest/a_project_reaches_its_modules_through_the_manifest.json");
+    let project = goldens_root()
+        .join("tool/manifest/a_project_reaches_its_modules_through_the_manifest.json");
     let (ok, out, error) = assert_build_load_matches_run("project", &project);
     assert!(ok, "{error}");
     assert_eq!(out, "hello, modules\n2\n");

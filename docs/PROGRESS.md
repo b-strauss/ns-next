@@ -43,7 +43,7 @@ milestones, oldest first.
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
 "Working in this repository"). Four of the eight measurement sources are
-goldens under `goldens/bench/`; the other four -- `bench_new.ns`,
+goldens under `goldens/tool/bench/`; the other four -- `bench_new.ns`,
 `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
 and must be written out from [execution.md](design/execution.md), "What
 spec-conformant lookup moved", never reconstructed from a prose
@@ -1968,7 +1968,7 @@ its minors and recommendations found:
 
 **Two rulings**, both recorded in the SDD ledger as the controller's:
 
-1. `goldens/language/assignment_through_a_setter_answers_the_value_before_the_setter_ran`
+1. `goldens/language/evaluation-order/assignment_through_a_setter_answers_the_value_before_the_setter_ran`
    lost its `Init` case: the program wrote a factory parameter through a
    closure built in a slot initializer, which §3.6 now forbids outright (it
    raises `doesNotUnderstand: #n:`), and an initializer activation's only
@@ -2062,7 +2062,7 @@ build ([execution.md](design/execution.md), "Decisions"):
 
 **What changed**, commit by commit:
 
-- `e7ffe32` — the `goldens/capture/` set recorded on the unconverted tree,
+- `e7ffe32` — the capture goldens, now in `goldens/language/block/`, recorded on the unconverted tree,
   before any code changed, so that every outcome the conversion must preserve
   was pinned by a hand-derived answer first.
 - `2de9780` — `compiler/capture.rs`: the analysis that classifies every local
@@ -2096,7 +2096,7 @@ every real block between it and the declaring scope — was handed no vector to
 write through, and the shapes failed to compile
 (`internal: a variable the capture analysis did not hand this block`). The
 bookkeeping was extracted into `Walker::note_need` and the write path now
-calls it too; `goldens/capture/a_nested_block_that_only_writes.ns` pins all
+calls it too; `goldens/language/block/a_nested_block_that_only_writes.ns` pins all
 three shapes. No recorded outcome moved, because the affected programs did
 not compile before the fix.
 
@@ -2239,9 +2239,9 @@ path has to exist before the rewrite rather than after.
   computes or declines and raises nothing; the lowering emits the
   instruction, an unconditional `Jump` past the fallback, and the ordinary
   `SendPublic` as the fallback, which carries a call site of its own.
-- `e586db9`, `88d86d9` — the goldens: `goldens/arithmetic/` for the fast
+- `e586db9`, `88d86d9` — the goldens: `goldens/library/number/integer/` for the fast
   path beside the two ways the guard declines on ordinary values and floor
-  division on the fast path, and `goldens/errors/` pinning that a zero
+  division on the fast path, and `goldens/library/number/integer/` pinning that a zero
   divisor still carries the primitive's own message.
 - This entry — the measurement and the documents.
 
@@ -2368,7 +2368,7 @@ for the tables and what is left unexplained.
 own `doesNotUnderstand:` is now passed by, as §5.10 says: a declining leaf's
 failure block sends `super …`, which ends in `Object`'s handler rather than
 continuing the receiver's lookup. No golden had pinned the old behaviour;
-`goldens/kernel/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
+`goldens/library/builtin-subclass/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
 pins the new one ([core-library.md](design/core-library.md), "The one
 observable difference"). No other recorded outcome moved.
 
@@ -2467,7 +2467,7 @@ application (`MixinApplication::declared_slots`, beside `nested_slot` and
 `inherits_value`) and read by both Rust walks and both reflective leaves
 through one wrapper, so the leaf and the Newspeak fallback cannot disagree
 about which slots exist or in what order.
-`goldens/kernel/a_values_nested_class_is_not_part_of_its_state.ns` and two
+`goldens/library/value/a_values_nested_class_is_not_part_of_its_state.ns` and two
 unit tests beside the walks pin it, the one-sided and the inherited case
 included ([core-library.md](design/core-library.md), "A value's state is the
 slots its classes *declare*").
@@ -2542,9 +2542,9 @@ first, as a language feature in its own right, and **what it unlocks is
   carries no enclosing object or declaring class, which keeps `Kernel` and
   the VM mirror out of every image ([image-format.md](design/image-format.md),
   "Sections", "Verification").
-- `f1e4d0f`, `de05916`, `77d6e4d` — `goldens/mixin/`, a new category of ten
+- `f1e4d0f`, `de05916`, `77d6e4d` — `goldens/language/class/mixin/`, a new category of ten
   goldens, each derived from §6.2 before it was run, and
-  `goldens/spec/spec_6_2_a_mixin_application_derives_a_class` is no longer
+  `goldens/language/class/mixin/spec_6_2_a_mixin_application_derives_a_class` is no longer
   `skipped`.
 - `1a06417`, `4e83254` and the documentation after them — the whole-branch
   review's fix pass: three more goldens for configurations the review probed
@@ -2616,7 +2616,7 @@ conditions" and "Mixin application", "The root rule".
 - **The two class conditions are decided cold and refused at instantiation**
   (2026-09-24), changed from the plan's refusal at creation because §2.3's
   own example creates a `String` subclass enclosed by a mutable object and
-  never instantiates it (`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`,
+  never instantiates it (`goldens/language/class/nesting/spec_2_3_superclass_of_a_nested_class.ns`,
   which passes as transcribed). Decided where, though, differs between the
   two: the enclosing-object condition at class-object creation, from
   `nested::after_clause`; the identity-method condition, moved by Task 6b's
@@ -2630,7 +2630,7 @@ conditions" and "Mixin application", "The root rule".
   `build_root_mixin` records a `RootClauseDefect`, `apply_mixin` folds it and
   the mutable-slot refusal into one `instantiation_refusal`, and
   `decide_instantiation` refuses it; the encoder and the root-section reader
-  refuse it too. Ten goldens under `goldens/errors/root_*`.
+  refuse it too. Ten goldens under `goldens/language/module/root_*`.
 - `727a613` — `Kernel` is `= Object <: Value`, its `Value` level built with
   `build_applied_levels` like a user root's, and its root mixin with
   `build_root_mixin`; the mirror's class moves below `Value`.
@@ -2648,7 +2648,7 @@ conditions" and "Mixin application", "The root rule".
   the class chain with an early stop at a class already checked, decided in
   `interpreter/value_class.rs` from `after_clause`, recorded on the class
   object (`ClassData::value_class_refusal`) and refused, with the identity
-  method, at instantiation. `goldens/nesting/nested_override.ns`, which
+  method, at instantiation. `goldens/language/class/nesting/nested_override.ns`, which
   instantiated a `String` subclass enclosed by a mutable object, starts its
   overriding slot at `OrderedCollection` instead; its recorded outcome did
   not change.
@@ -2670,7 +2670,7 @@ conditions" and "Mixin application", "The root rule".
   early stop keeps the level its own verdict names, rather than renaming it
   after the class the walk stopped at, so a fault passed on over two levels
   still names the faulty level
-  (`goldens/kernel/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`,
+  (`goldens/library/value/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`,
   new; no recorded outcome moved). `07bd995`: the root-section reader
   refuses a section naming no superclass (`DecodeError::RootWithoutSuperclass`),
   and the encoder refuses to write one. `521e6ec`: comment corrections.
@@ -2759,7 +2759,7 @@ variants" and "Primitive methods".
   `RETIRED_OPCODES`.
 - this entry's commit — the documents.
 
-**Measurement.** No fixture under `goldens/bench/` names a builtin in its
+**Measurement.** No fixture under `goldens/tool/bench/` names a builtin in its
 loop, and all of them are level against `909bf40` within layout noise
 (`bench_block.ns` and `bench_do.ns` read 2–4% faster only because the base's
 two `-C metadata` layouts are slow); start-up is level. A throwaway loop that
@@ -2798,16 +2798,16 @@ Four decisions, taken with the user on 2026-09-24:
   `doesNotUnderstand:`, `false ifTrue: 3` answers `nil`.
 
 **Goldens.** Two changed, both because of the coercion decision:
-`language/and_or_short_circuit` (was `and_or_short_circuit_and_coerce`),
+`language/control-flow/and_or_short_circuit` (was `and_or_short_circuit_and_coerce`),
 whose `true and: [3]` answers `3` where it answered `false`, and
-`language/and_or_answer_their_arguments_value` (was
+`language/control-flow/and_or_answer_their_arguments_value` (was
 `variable_and_block_coerces_its_value_to_a_boolean`), likewise, and which
 now also covers `&` and `|` with a non-block argument. Four are new:
-`kernel/recursion_through_and_or_counts_alike_under_both_lowerings`, which
+`runtime/depth-limit/recursion_through_and_or_counts_alike_under_both_lowerings`, which
 passed before the move too and fails if any `True`/`False` method is not
-recognized as quick; `language/a_short_circuited_conditional_ignores_its_argument`;
-`errors/a_conditional_sends_value_to_its_argument`; and
-`kernel/a_subclass_of_true_inherits_its_methods` — a user subclass of
+recognized as quick; `language/control-flow/a_short_circuited_conditional_ignores_its_argument`;
+`language/control-flow/a_conditional_sends_value_to_its_argument`; and
+`library/builtin-subclass/a_subclass_of_true_inherits_its_methods` — a user subclass of
 `True` now runs its branches, where the leaves used to decline for want of
 a payload.
 
@@ -2840,11 +2840,11 @@ the same six the other way round, as SOMns's and Newspeak's JS kernel do
 `nil printString` answers `'nil'`, as Primordial Soup's does, instead of
 `Object`'s generic `an Object`.
 
-**Goldens.** `spec/spec_5_1_3_nil_answers_is_nil` is no longer skipped. New:
-`kernel/nil_is_the_undefined_object`, `language/the_nil_protocol`,
-`errors/if_not_nil_culls_its_argument` and
-`errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`. One
-changed, because of the new `printString`: `cache/cache_polymorphic_sites`
+**Goldens.** `library/object/spec_5_1_3_nil_answers_is_nil` is no longer skipped. New:
+`library/object/nil_is_the_undefined_object`, `library/object/the_nil_protocol`,
+`language/control-flow/if_not_nil_culls_its_argument` and
+`language/control-flow/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`. One
+changed, because of the new `printString`: `runtime/cache/cache_polymorphic_sites`
 prints `nil` for `nil` where it printed `an Object`.
 
 ## Double-quoted strings replace characters (2026-09-25)
@@ -2864,10 +2864,10 @@ accessor for it and `Mutator::new_character` are gone. Its literal tag 6
 `String` gained `asString`, a `^self` quick method.
 
 **Goldens.** Three changed, each by losing its character lines:
-`kernel/a_value_has_no_identity`, `kernel/value_hashes_follow_value_equality`
-and `kernel/a_subclass_of_a_builtin_falls_to_objects_methods`. New:
-`language/double_quoted_string_literals`, `errors/character_is_not_a_name`
-and `kernel/a_string_s_as_string_is_itself`.
+`library/value/a_value_has_no_identity`, `library/value/value_hashes_follow_value_equality`
+and `library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`. New:
+`library/string/double_quoted_string_literals`, `language/builtin-names/character_is_not_a_name`
+and `library/string/a_string_s_as_string_is_itself`.
 
 ## The reserved words are refused (2026-09-25)
 
@@ -2880,7 +2880,7 @@ still reads them as identifiers, as the canonical grammar does. The
 deviation row in `README.md` is gone. Before, such programs ran, and
 `foo: nil = ( ^nil )` answered the literal whatever it was sent.
 
-`parse-corpus` stays at 210/0/1/0. `goldens/capture/nested_blocks_carry_variables`
+`parse-corpus` stays at 210/0/1/0. `goldens/language/block/nested_blocks_carry_variables`
 named a temporary `outer` and one image test a method `outer`; both were
 renamed, with no recorded outcome moving.
 
@@ -2913,10 +2913,10 @@ The host builds the one platform in the state `Platform new` would give it
 cache; `Platform` alone of the builtins may declare slots. `Transcript` and
 `Collections` took builtin class tags 18 and 19.
 
-**Goldens.** `errors/native_that_fails_on_its_receiver_falls_to_objects`
+**Goldens.** `language/send/native_that_fails_on_its_receiver_falls_to_objects`
 changed one line: `p transcript = p transcript` is now `true`, two
 transcripts being equal values. New:
-`kernel/the_platform_and_its_parts_are_values`. `tests/inline_caches.rs`'s
+`library/platform/the_platform_and_its_parts_are_values`. `tests/inline_caches.rs`'s
 `a_failing_primitive_keeps_its_entry` relied on the shared class and now
 shows the same thing through `Value>>=`, whose leaf declines on a receiver of
 its own class when a slot's class brings its own `=`.
@@ -2971,19 +2971,19 @@ survives a copy and a round trip where a dispatch id does not.
 
 **Goldens.** Two recorded outcomes changed, each justified line by line in
 its commit. `class-side/class_side_super_reaches_object` became
-`class-side/class_side_super_reaches_class`: a class-side `super printString`
+`language/class/class-side/class_side_super_reaches_class`: a class-side `super printString`
 reaches `Class>>printString` and answers the class's name, `Simple`, instead
 of `Object`'s `an Object`, since a metaclass's superclass is now `Class`.
-`cache/cache_class_objects_and_instances_at_one_site` changed three lines:
+`runtime/cache/cache_class_objects_and_instances_at_one_site` changed three lines:
 the class objects `Plain`, `Maker` and `Plain` again declare no class-side
 `printString` and now answer `Class`'s, their names, instead of `Object`'s
-default. New: `class-side/the_class_of_a_class_is_its_metaclass`,
-`class-side/a_class_object_cannot_be_made_by_instantiation`,
-`class-side/a_metaclass_does_not_understand_new`,
-`class-side/a_class_and_its_metaclass_print_their_names`,
-`class-side/a_class_side_does_not_understand_handles_its_class_objects_sends`,
-`kernel/a_value_modules_nested_class_is_a_value` and
-`kernel/a_values_slot_refuses_a_class_that_is_no_value`.
+default. New: `language/class/class-side/the_class_of_a_class_is_its_metaclass`,
+`language/class/class-side/a_class_object_cannot_be_made_by_instantiation`,
+`language/class/class-side/a_metaclass_does_not_understand_new`,
+`language/class/class-side/a_class_and_its_metaclass_print_their_names`,
+`language/class/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends`,
+`library/value/a_value_modules_nested_class_is_a_value` and
+`library/value/a_values_slot_refuses_a_class_that_is_no_value`.
 
 **Measured** against `3defb78`, the `master` it started from
 ([execution.md](design/execution.md), "What `Behavior`, `Class` and
@@ -3075,11 +3075,11 @@ one, when the signalling machinery overran, and with "stack overflow:
 recursion too deep" when a handler did. The stack's bound is 129 × (L +
 `DEPTH_RESERVE`) entries.
 
-**Goldens.** No recorded outcome changed. Twenty-nine new goldens in
-`goldens/exceptions/`. Two golden sources that read the old two-element
+**Goldens.** No recorded outcome changed. Twenty-nine new goldens, now in
+`goldens/library/exception/`, `goldens/runtime/depth-limit/`, `goldens/library/collection/` and `goldens/library/string/`. Two golden sources that read the old two-element
 `doesNotUnderstand:` argument with `at:` —
-`cache/does_not_understand_site_with_three_kinds_of_handler` and
-`class-side/a_class_side_does_not_understand_handles_its_class_objects_sends`
+`runtime/cache/does_not_understand_site_with_three_kinds_of_handler` and
+`language/class/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends`
 — now send `selector` and `arguments`, with their `.toml`s untouched. New
 Rust tests: `crates/ns-runtime/tests/exceptions.rs` (the re-send after a
 resumed `MessageNotUnderstood`, a resumed VM error still ending the run,
@@ -3240,10 +3240,10 @@ ordinary record of the class the path `Platform` names. The boot runs
 interpreter's caches are not empty (four sites, three global entries, pinned
 by a test).
 
-New goldens pin the lazy-slot rules (`goldens/spec/spec_6_3_3_*`,
-`goldens/kernel/a_values_lazy_slot_*`) and
-`goldens/kernel/a_second_platform_writes_like_the_first`;
-`goldens/kernel/the_platform_and_its_parts_are_values` checks
+New goldens pin the lazy-slot rules (`goldens/language/slot/accessor/spec_6_3_3_*`,
+`goldens/library/value/a_values_lazy_slot_*`) and
+`goldens/library/platform/a_second_platform_writes_like_the_first`;
+`goldens/library/platform/the_platform_and_its_parts_are_values` checks
 `platform = platform class new`, and
 `spec_6_3_3_a_lazy_slot_is_initialized_on_first_use` runs, unskipped.
 
@@ -3255,7 +3255,7 @@ lazy getter's first mechanism, a `MethodFastPath::LazySlot` arm in
 and then taking the slot base off the activation, did not recover it, and
 dropping the fast path did: a getter answers a filled slot from its own
 activation, and the activation derives its slot base from its
-`current_class`. All four `goldens/bench/` fixtures are level with `7c6bdbf`
+`current_class`. All four `goldens/tool/bench/` fixtures are level with `7c6bdbf`
 (pooled over three builds a side and two sittings, -0.7% to +0.4%, every
 comparison overlapping); `vm::run` is 6,691 instructions against 6,561, the
 difference an arm no ordinary send runs.
@@ -3266,8 +3266,8 @@ Decided with the user ([core-library.md](design/core-library.md), "The
 platform"): `show:` writes a string and refuses anything else as an ordinary
 error, where `show: 42` wrote nothing; `print:` writes any object's
 `printString`, in Newspeak, as canonical Newspeak's transcript does.
-`goldens/kernel/the_transcript_prints_any_object` and
-`goldens/errors/show_of_something_that_is_no_string_is_an_error` pin both.
+`goldens/library/platform/the_transcript_prints_any_object` and
+`goldens/library/platform/show_of_something_that_is_no_string_is_an_error` pin both.
 
 ## The test harness (2026-09-27)
 
@@ -3301,7 +3301,8 @@ the compile-time error §5.9 makes it. The language server colours `lazy` as
 a keyword and a send named like one of these words as a send.
 
 `parse-corpus` stays at 210/0/1/0 and `run-corpus` at 6/0/205. Six new
-goldens under `goldens/spec/` run every accepted form, and
+goldens, `goldens/language/syntax/spec_4_1_*` and
+`goldens/language/syntax/spec_6_3_3_the_unreserved_words_name_lazy_slots`, run every accepted form, and
 `unreserved_word_tests` in `parser::declaration` pins the refused ones.
 
 ## The syntax is the specification's grammar (2026-09-27)
@@ -3347,7 +3348,7 @@ unimplemented, are recorded as possible future extensions.
 §3.6's one compile-time error the resolver did not report is reported now:
 an activation -- a method, a block or a factory -- declares each name once
 among its parameters and locals (`Resolver::check_activation_names`), and
-`goldens/spec/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error`,
+`goldens/language/method/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error`,
 skipped since it was written, holds. §5.9's other one, `outer N` naming no
 enclosing class, was already a resolver error.
 
@@ -3368,7 +3369,7 @@ environment-specific (e.g., command line) arguments"; the CLI passed `nil`.
 (`entry::entry_arguments`), and the deviations-table row is gone. A golden's
 `.toml` may list `arguments`, which the runners pass to `run` and to `load`
 in both round trips
-(`goldens/spec/spec_8_4_main_args_receives_the_program_arguments`,
+(`goldens/language/module/spec_8_4_main_args_receives_the_program_arguments`,
 `spec_8_4_main_args_without_arguments_is_an_empty_list`).
 
 ## The collections module (2026-09-28)
@@ -3396,12 +3397,12 @@ payload grows in place any more. Three semantics were confirmed with the
 user: `moduleNamed:` keeps nothing, `List>>at:put:` answers the value, and
 `List>>do:` reads the size once. Image tests cover a `List` record, a second
 facet and the refusal of the factory. The one golden whose output changed is
-`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`, seven
+`goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`, seven
 lines to six: there is no builtin `OrderedCollection` left to subclass.
 
 **Measured** ([execution.md](design/execution.md), "What the collections
 module cost"), three builds a side against `6d9974b`: all four
-`goldens/bench/` fixtures are level (-0.2% to +0.5%, every comparison
+`goldens/tool/bench/` fixtures are level (-0.2% to +0.5%, every comparison
 overlapping); a start that never sends `platform collections` is level too
 (+0.03 ms, +0.2%), since each shipped module is resolved on its first
 request, not at boot, and the first `platform collections` costs about
@@ -3434,7 +3435,7 @@ look for a future only on its failure path; ill-founded recursion is an
 ordinary error; an abandoned clause leaves its futures unresolved, to be
 computed on the next touch; an image writes a resolved future as its value
 and an unresolved one as a record. Fourteen new goldens under
-`goldens/spec/` pin it, and
+`goldens/language/slot/simultaneous/` and `goldens/language/method/` pin it, and
 `spec_6_3_2_simultaneous_slots_resolve_mutual_recursion` answers `3`,
 unskipped.
 
@@ -3587,7 +3588,7 @@ levels are named by index. New wire numbers: class tags 6 and 7, hash tags 5
 and 6, origin tags 0 and 1, header flag 4 (`FLAG_START`); retired: class
 tags 1 and 3, hash tag 1, header flag 2 (`FLAG_STATELESS`). Every golden
 reaches the platform only through `main:args:` with its `status`, `stdout`
-and `stderr` unchanged, and `goldens/manifest/` pins the manifest.
+and `stderr` unchanged, and `goldens/tool/manifest/` pins the manifest.
 
 - `b933032`, `3ce757d` — every golden's root is `new`-instantiated and
   reaches the platform only through `main:args:`, with its recorded outcome
@@ -3607,7 +3608,7 @@ and `stderr` unchanged, and `goldens/manifest/` pins the manifest.
   separator in every path and UNC and verbatim prefixes kept.
 - `23bd056`, `898d045` — `run` assembles an application with `new` or a
   project's manifest, and `--send` is gone from `run`.
-- `59407ec` — project goldens pin the manifest (`goldens/manifest/`).
+- `59407ec` — project goldens pin the manifest (`goldens/tool/manifest/`).
 - `bf776f2` — `build` packages the application just before `main:args:`,
   `load` starts it, and the `snapshot` command is gone.
 - `7c9e082` — `bench` times `main:args:` of an application assembled like
@@ -3642,11 +3643,11 @@ instantiation, a project module nothing instantiated ran under `run` while
 `Object` and `Value` that work -- none, `Object`, `Object new`, `Value`,
 `Value new`, `Object <: Value` and `Object new <: Value` -- and now also
 refuses a superclass clause that sends anything but `new`
-(`goldens/errors/root_superclass_sending_other_than_new_is_refused.ns`) and a
+(`goldens/language/module/root_superclass_sending_other_than_new_is_refused.ns`) and a
 `<:` clause that sends anything; `Value <: Value` stays refused. The instantiation
 refusal and the image encoder's and decoder's refusals stay for what does not
 come through the resolver: a `ResolvedModule` a host assembles by hand, and
-an image. The ten `goldens/errors/root_*` goldens now end with the resolve
+an image. The ten `goldens/language/module/root_*` goldens now end with the resolve
 error; the editor underlines the clause.
 
 ## Are We Fast Yet, stage 1 (2026-09-30)
@@ -3664,7 +3665,7 @@ module shape and protocol (decided with the user on 2026-09-30, for stage
 1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
 the root of the project `are-we-fast-yet.json`, which reaches each
 benchmark as `manifest Sieve`. Without `--timed` the harness runs each
-benchmark once and prints `<Name>: ok`, which `goldens/awfy/` pins under
+benchmark once and prints `<Name>: ok`, which `goldens/tool/awfy/` pins under
 both lowerings and `ns-next bench` times; with `--timed` it prints each
 benchmark's runs per second, measured with `platform time Stopwatch`.
 The kernel gained, in Primordial Soup's protocol, `Number`'s `to:do:` and
@@ -3721,7 +3722,7 @@ meeting a `Float` argument, as a `Float`'s meet an integer one; `bitOr:`,
 `bitXor:` and `<<` for `Integer` and `LargeInteger`, over two's complement,
 and `Integer>>bitInvert` in Newspeak; and `Float>>sqrt`. The platform did
 not change. No wire tag changed. One golden's outcome changed on purpose,
-`goldens/errors/a_large_integer_meets_a_float` becoming
+`goldens/library/number/large-integer/a_large_integer_meets_a_float` becoming
 `a_large_integer_meets_nil`, because a `LargeInteger` receiver now answers a
 `Float` argument.
 
@@ -3793,14 +3794,14 @@ collections module's `List` became Primordial Soup's, with a first index,
 and `Map` and `Set` joined it. Every public member of the three shipped
 modules is documented in place, and `CLAUDE.md`'s "Conventions" holds the
 rule. No wire tag changed. Of the existing goldens, only
-`goldens/awfy/all_benchmarks_verify.toml` records a different outcome, a
+`goldens/tool/awfy/all_benchmarks_verify.toml` records a different outcome, a
 `<Name>: ok` line for each of the five new programs, and the four
-`goldens/awfy/*.json` project files list the five new modules. Four
+`goldens/tool/awfy/*.json` project files list the five new modules. Four
 other existing goldens' sources changed, their outcomes not: the comments of
-`goldens/collections/a_list_grows_past_its_first_array` and
+`goldens/library/collection/a_list_grows_past_its_first_array` and
 `a_list_index_error_is_caught_as_an_error` name the new growth;
 `a_user_subclass_of_list_inherits_its_protocol`'s superclass clause sends
-`new: 3`, `List`'s primary factory; and `goldens/nesting/nested_override`'s
+`new: 3`, `List`'s primary factory; and `goldens/language/class/nesting/nested_override`'s
 slot starts at `Stopwatch` rather than `List`, whose primary factory,
 `new:`, is not the `new` that `Nested`'s superclass clause sends.
 

@@ -70,7 +70,7 @@ fn as_boolean<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> bool {
 
 /// §5.1.6: two symbols equal by `=` are the same object, whether one comes
 /// from a literal and the other from `asSymbol`, or both from `asSymbol` --
-/// pinned alongside `goldens/spec/spec_5_1_6_equal_symbols_are_one_object`.
+/// pinned alongside `goldens/library/string/spec_5_1_6_equal_symbols_are_one_object`.
 #[test]
 fn equal_symbols_are_identical() {
     let source = indoc! {"

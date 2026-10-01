@@ -39,7 +39,7 @@ module (`LexerComparisonTest`), and the connection to `ns-next-lsp`.
 `benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
 project, verified by
-`goldens/awfy/` (`docs/design/execution.md`, "The Are We Fast Yet
+`goldens/tool/awfy/` (`docs/design/execution.md`, "The Are We Fast Yet
 benchmarks").
 
 Read `docs/design/README.md` first — it maps the living design documents and says
@@ -161,7 +161,7 @@ clause names (`interpreter/nested.rs`, `build_applied_levels`).
 
 **A `<:` clause's message runs with the applying class's factory arguments, just
 before the initializer of the level it adds** (§6.2; `object-model.md`, "Mixin
-application"; pinned by `goldens/mixin/mixin_initializer_order.ns`).
+application"; pinned by `goldens/language/class/mixin/mixin_initializer_order.ns`).
 
 **The VM mirror is a capability.** Whoever holds it runs every leaf, so only the
 shipped core-library modules reach it. Six locks keep it there; never loosen one

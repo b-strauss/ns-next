@@ -11037,7 +11037,7 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
 ///
 /// `Counter` inherits `Value` directly but is enclosed by a fresh `Holder`
 /// each time `MutableCounter` builds one, so it is a refused value class
-/// from the moment it is created -- `goldens/kernel/a_value_subclass_of_a_
+/// from the moment it is created -- `goldens/library/value/a_value_subclass_of_a_
 /// refused_value_class_is_refused.ns` pins the same shape as a golden.
 /// `Stamped` inherits `Value` only through `Counter`, with no `<:` clause of
 /// its own, so its own refusal is *inherited* from `Counter`'s recorded
@@ -11110,7 +11110,7 @@ fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
 /// with no instance ever made, since `load` builds only the class, never an
 /// instance of it -- so the round trip has to be what catches a root that
 /// slipped past every other check
-/// (`goldens/kernel/a_value_module_defining_identity_is_refused.ns` pins the
+/// (`goldens/library/value/a_value_module_defining_identity_is_refused.ns` pins the
 /// same shape as a golden).
 #[test]
 fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {

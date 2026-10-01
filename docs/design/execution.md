@@ -83,7 +83,7 @@ lowering now does the same ("Closure conversion" below): a captured variable is
 copied into the closure, or lives in its scope's indirection vector, which the
 declaring body and every block that needs it share. A counter block returned
 from the method that declares `n` still goes on writing `n`
-(`goldens/language/closure_variables.ns` pins this) — through the vector rather
+(`goldens/language/block/closure_variables.ns` pins this) — through the vector rather
 than through the frame.
 
 Two things still read an enclosing activation's registers **by reference**,
@@ -616,7 +616,7 @@ about the code.
 ### The Are We Fast Yet benchmarks
 
 `benchmarks/are-we-fast-yet/` holds real programs to measure on, beside the
-microbenchmarks under `goldens/bench/`: all fourteen Are We Fast Yet
+microbenchmarks under `goldens/tool/bench/`: all fourteen Are We Fast Yet
 benchmarks -- Bounce, CD, DeltaBlue, Havlak, Json, List, Mandelbrot,
 NBody, Permute, Queens, Richards, Sieve, Storage and Towers -- and
 Primordial Soup's own Richards and DeltaBlue, `RichardsTon80`, derived from
@@ -671,7 +671,7 @@ one ulp down, the Windows C library's values and a Taylor series off by up
 to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 
 So the tests that run every benchmark are not part of the suite.
-`goldens/awfy/all_benchmarks_verify` runs every benchmark at full size in
+`goldens/tool/awfy/all_benchmarks_verify` runs every benchmark at full size in
 five variants (both lowerings, a two-entry global cache, `build` and
 `load`). With Havlak and CD, the slowest of stage 3, all sixteen programs
 took 57 s under the optimized lowering, 136 s under the reference lowering
@@ -710,7 +710,7 @@ There are two ways to measure, and they report different things:
   compiling are. What carries over from the discarded run is what one
   interpreter keeps between sends: the inline caches and the platform's
   lazy members. The untimed run does the same work every time, which is
-  what lets `goldens/awfy/` pin its output and `bench` time it.
+  what lets `goldens/tool/awfy/` pin its output and `bench` time it.
 - **`ns-next run benchmarks/are-we-fast-yet/are-we-fast-yet.json -- --timed [<Name>]`**
   lets the
   harness measure itself, as Primordial Soup's does: for each benchmark, or
@@ -780,7 +780,7 @@ Replacing `Rc<RefCell<_>>` with an arena of 32-bit handles, for objects and
 activations together (`docs/design/memory.md`, "The representation"), was
 measured before and after in one sitting: the pre-arena binary was built from
 this branch's merge-base into a throwaway worktree, and both binaries ran the
-same `ns-next bench goldens/bench/bench_loop.ns` — ten timed runs after a
+same `ns-next bench goldens/tool/bench/bench_loop.ns` — ten timed runs after a
 discarded warm-up — three times each, alternating.
 
 | Run | Before, bytecode | After, bytecode |
@@ -1371,7 +1371,7 @@ at the deepest, and the cyclic-definition check scanned a list of every
 creation underway at each level, quadratic in the depth, where the bound on
 re-entries had stopped such a recursion at 1,000 levels. With the marker in the
 cache slot the check is one read, and
-`goldens/limits/recursion_through_the_nested_class_accessor_is_bounded_by_the_activation_limit.ns`
+`goldens/runtime/depth-limit/recursion_through_the_nested_class_accessor_is_bounded_by_the_activation_limit.ns`
 takes 0.3 s again.
 
 ### What 2b moved
@@ -2141,7 +2141,7 @@ the earlier commits in throwaway worktrees; no binary imports
 every source first; `ns-next bench <source> --iterations 30`, five rounds,
 the order of the six binaries rotating from round to round; two whole
 sittings, nothing else running. An eighth source joins the seven:
-`goldens/bench/bench_megamorphic.ns`, added with the least-recently-used
+`goldens/tool/bench/bench_megamorphic.ns`, added with the least-recently-used
 groups, whose `value` site sees five receiver classes in turn and is the only
 source that drives a megamorphic site — 50,000 iterations, the count the
 other fixtures use.
@@ -3429,7 +3429,7 @@ imports `VCRUNTIME140.dll` (`dumpbin -dependents`), and each was checked to
 print the expected answer for every source first. The timing is
 `ns-next bench <source> --iterations 30`, five rounds a sitting, the six
 binaries rotating by one position from round to round. The sources are the four
-fixtures under `goldens/bench/` and the throwaway `bench_do.ns`,
+fixtures under `goldens/tool/bench/` and the throwaway `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` of that protocol, and one
 more throwaway source, `bench_newvalue.ns`. Its module is `Object <: Value`, and
 its loop makes 20,000 instantiations of `class Cell = Value new ( | public v =
@@ -3627,7 +3627,7 @@ without an activation. A nested superclass clause such as `= Object new` sends
 arm is gone from `vm::run`. What every send now pays is one more arm in `act`'s
 test of `method.fast_path`, which was a test of `primitive` before.
 
-**Which sources can move.** None of the four fixtures under `goldens/bench/`
+**Which sources can move.** None of the four fixtures under `goldens/tool/bench/`
 names a builtin class in its loop. Each names `Object` only in its module's
 superclass clause, which runs once when the module is instantiated, and
 `bench_megamorphic.ns` also in its five nested classes' `= Object new`
@@ -3744,7 +3744,7 @@ instructions and is still one function, with no `vm::run::closure` of its
 own (`dumpbin -disasm` on a release build with debug information, both
 trees).
 
-**Which sources can move.** The four fixtures under `goldens/bench/` send
+**Which sources can move.** The four fixtures under `goldens/tool/bench/` send
 no Boolean method in their loops: their conditionals and loops take literal
 blocks and are inlined. One throwaway source exercises the change,
 `bench_boolean.ns`, a 200,000-iteration `whileTrue:` loop whose body is
@@ -3790,7 +3790,7 @@ class-side chains are gone. Every class object is created with its metaclass
 instance costs two class objects where it cost one. A class object's `==` and
 `=` go through `Behavior`'s forwarders to the `value:sameAs:ifFail:` leaf.
 
-**Which sources can move.** The four fixtures under `goldens/bench/` create
+**Which sources can move.** The four fixtures under `goldens/tool/bench/` create
 no class object in their loops and send no class-side message there. One
 throwaway source exercises the change, `bench_metaclass.ns`: a
 100,000-iteration `whileTrue:` loop whose body is `Outer new Inner make`,
@@ -3926,7 +3926,7 @@ a signalled VM error resume with; and a `doesNotUnderstand:` now runs
 `Object>>doesNotUnderstand:`, which builds a `MessageNotUnderstood` and a
 `Message`, where a mirror row answered it in Rust.
 
-**The sources.** The four fixtures under `goldens/bench/` use no exception.
+**The sources.** The four fixtures under `goldens/tool/bench/` use no exception.
 Four throwaway sources, not fixtures, each printing what it accumulates:
 
 - `bench_ensure.ns`: 100,000 iterations of
@@ -4167,7 +4167,7 @@ far below what this protocol resolves, consistent with the line count
 above — the platform's classes moved out of `Kernel.ns` rather than being
 added on top of it.
 
-**The four `goldens/bench/` fixtures.** `ns-next bench <source>
+**The four `goldens/tool/bench/` fixtures.** `ns-next bench <source>
 --iterations 30`, five rounds a sitting, the four binaries rotating by one
 position from round to round, two whole sittings, nothing else running.
 Means of the five rounds:
@@ -4399,7 +4399,7 @@ builtin class that was there anyway. That first-use cost is what the design
 expects to pay: parsing and resolving `CollectionsFactory.ns`, compiling it,
 building its root class, and instantiating it and its facet.
 
-**The four `goldens/bench/` fixtures, measured 2026-09-28, `f9d953a`
+**The four `goldens/tool/bench/` fixtures, measured 2026-09-28, `f9d953a`
 against `6d9974b`**, three builds of each by the same protocol; what the
 branch changed after `f9d953a` runs only at boot and on the first request
 for a shipped module, never inside a timed loop. `ns-next bench <source>
@@ -4771,7 +4771,7 @@ Three things the trampoline settles on its own:
   reachable recursion depth was 818 inside an `ifFalse:` block (release
   build), and 307 through `do:` — below the 1000 that Newspeak's own
   `KernelWeakTests.ns` (`deepStack: 1000`) expects. The golden
-  `goldens/limits/thousand_deep_recursion_runs.ns` runs exactly that
+  `goldens/runtime/depth-limit/thousand_deep_recursion_runs.ns` runs exactly that
   recursion, under both lowerings.
 
 ### The depth limit
@@ -4857,7 +4857,7 @@ could only end the run as L, uncatchable and under the wrong name.
   A `signal` push that the used-up reserve refuses ends the run with the
   error being signalled, the same way.
 
-`goldens/exceptions/the_depth_limit_is_caught`,
+`goldens/runtime/depth-limit/the_depth_limit_is_caught`,
 `an_error_just_below_the_depth_limit_is_caught`,
 `a_message_not_understood_just_below_the_depth_limit_is_caught`,
 `recursion_through_on_do_counts_alike` and
@@ -5116,7 +5116,7 @@ bound's error, `stack overflow: too many nested native calls`, are gone with
 the re-entries.
 
 **Three recorded outcomes changed.** The three goldens now under
-`goldens/limits/` that recurse through `do:`, through instantiation and through
+`goldens/runtime/depth-limit/` that recurse through `do:`, through instantiation and through
 the nested-class accessor ended in
 `stack overflow: too many nested native calls`, the bound on re-entries, and
 end in `stack overflow: recursion too deep`. Each of those recursions is made
@@ -5274,7 +5274,7 @@ literal under it — and answers, per body, keyed by `BodyKey::Root` or
   inner one needs, as in Cog — and a block that only *writes* an enclosing
   variable needs that scope's vector just as a reading one does, as does every
   real block between the two
-  (`goldens/capture/a_nested_block_that_only_writes.ns`);
+  (`goldens/language/block/a_nested_block_that_only_writes.ns`);
 - **which locals an inlinable branch of the body assigns**
   (`branch_assigned`), which is what "Fewer protective copies" below reads.
 
@@ -5310,7 +5310,7 @@ An inlined `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:`
 or `or:` keeps a run-time guard whose failure path sends the real message with
 real closures (`emit_guarded_branch`, whose `on_fallback` lowers the block
 literals through `lower_block_literal`), so that inlining stays a pure
-optimization (`goldens/language/control_flow_fallback.ns`). The same block
+optimization (`goldens/language/control-flow/control_flow_fallback.ns`). The same block
 literal is lowered twice: inlined on the common path, a real closure on the
 fallback path. An inlined `whileTrue:` or `whileFalse:` is not affected: its
 fallback is `mustBeBoolean`, with no closure.
@@ -5532,7 +5532,7 @@ binding's depth before resolving. It cannot underflow: the inlining gate admits
 no block with parameters or temporaries, so no binding inside an inlined block
 names that block's own scope. Getting it wrong is a missed copy, which is
 silent wrong output at exit status 0, so it is pinned two levels deep both as
-lowering tests and as a golden (`goldens/capture/writes_two_inlined_levels_deep.ns`,
+lowering tests and as a golden (`goldens/language/block/writes_two_inlined_levels_deep.ns`,
 whose two loop-only methods cannot be rescued by `branch_assigned`).
 
 `lower_assign`'s `debug_assert!`s are unchanged, and `check_writable` carries
@@ -5543,13 +5543,13 @@ ever put in a vector. The invariant in `CLAUDE.md` and
 [compiler.md](compiler.md) keeps its statement and has this as its
 justification. The reference lowering is unaffected. A mistake here is silent
 wrong output with exit status 0; the reference lowering is the oracle for it,
-and `goldens/capture/a_fallback_closure_writes_a_local_a_send_reads.ns` pins the
+and `goldens/language/block/a_fallback_closure_writes_a_local_a_send_reads.ns` pins the
 one shape `a_send_can_write` answers `true` for at run time — a register-resident
 local an inlined `ifTrue:` assigns, whose fallback closure a later send runs — in
 each of the three positions that read such a local across a send: as an operand,
 as an argument and as a setter assignment's value.
 
-The goldens `goldens/language/` holds for the same invariant —
+The goldens `goldens/language/evaluation-order/` holds for the same invariant —
 `operands_that_mutate_each_other_keep_their_evaluated_values.ns` and
 `assignment_through_a_setter_answers_the_value_before_the_setter_ran.ns` — do
 *not* cover it, which is why that one was added: the first writes the local
@@ -5564,8 +5564,8 @@ capture analysis — rule 3 above all — shows as the two lowerings disagreeing
 as a cache defect shows against the uncached reference since 3b. It is an
 interim oracle: **the reference lowering is to be removed at some point, and
 from then on the recorded golden outcomes are how this is tested.** The goldens
-are written with that in mind: `goldens/capture/` was recorded on the
-unconverted `master`, before any of this existed, and covers copied and vector
+are written with that in mind: the capture goldens in `goldens/language/block/` were recorded on the
+unconverted `master`, before any of this existed, and cover copied and vector
 variables; a write before capture, after it, inside a `whileTrue:`, a
 `whileFalse:` and a loop condition; a block that writes; nested blocks three
 deep that carry a variable through a middle block; a variable read only in an

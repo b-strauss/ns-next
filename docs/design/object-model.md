@@ -354,7 +354,7 @@ kernel's.
   private, so §6.3.1 keeps it out of every other module's reach; `Object`
   declares no accessor for it among §3.2's accessors for the predefined
   classes, so a bare `Top` is `self Top` and ends in `doesNotUnderstand:`
-  (`goldens/errors/top_is_not_a_name.ns`); and the image decoder refuses its tag wherever an artifact names a class, as it
+  (`goldens/language/builtin-names/top_is_not_a_name.ns`); and the image decoder refuses its tag wherever an artifact names a class, as it
   refuses the mirror's ([image-format.md](image-format.md), "Verification").
   A program can reach it only as `Object`'s superclass, which is what §3.2
   allows and nothing more.
@@ -454,7 +454,7 @@ breaks it is a resolve error, refused before anything runs.
   puts `Value`'s level below an arbitrary class, so in `P → [Value] → Foo` a
   `| counter ::= 0 |` of `Foo`'s is state of every `P`, and `P new` would
   otherwise answer a "value" with a mutable slot
-  (`goldens/kernel/a_mutable_slot_above_the_value_level_is_refused.ns`).
+  (`goldens/library/value/a_mutable_slot_above_the_value_level_is_refused.ns`).
 - **Step 4 refuses a declared slot that is not a value.** *Deeply* immutable
   means "all objects reachable from it are also deeply immutable", so
   `InitializeSlot` refuses to store anything but a value in an instance of a
@@ -484,7 +484,7 @@ enclosing-object condition (decided with the user on 2026-09-24): with
 `GrandChildOfOuter`'s slot `Inner ::= String`, "`g Nested` returns a subclass
 of `String`" — a value class whose enclosing object `g` is mutable, which the
 specification creates and never instantiates
-(`goldens/spec/spec_2_3_superclass_of_a_nested_class.ns`, which passes as
+(`goldens/language/class/nesting/spec_2_3_superclass_of_a_nested_class.ns`, which passes as
 transcribed). §3.1.1 defines when an *object* is a value; what must never
 exist is an instance that passes for a value and is not one. The texts are
 "cannot instantiate `C`: a value class may not define ==, and `D` defines it"
@@ -506,14 +506,14 @@ for a level above `C`).
   so the class does not define it, and `Value>>==` itself is the declaration
   §3.1.1's next sentence allows. A level a `<:` clause adds below `Value`
   counts like any other
-  (`goldens/kernel/an_identity_method_from_an_applied_mixin_is_refused.ns`).
+  (`goldens/library/value/an_identity_method_from_an_applied_mixin_is_refused.ns`).
   Deciding it on the application rather than the class object is what covers
   a module's root along with every nested class: `Mutator::load_root_class`
   builds no class object through `nested::after_clause`, but it still calls
   `apply_mixin` — the one place every application in the system is built,
   root, nested or decoded alike — so a value module whose root class defines
   `==` is refused exactly as a nested one would be
-  (`goldens/kernel/a_value_module_defining_identity_is_refused.ns`), and
+  (`goldens/library/value/a_value_module_defining_identity_is_refused.ns`), and
   `decide_instantiation` refuses it from `instantiation_refusal`, the same
   field the root clause defect and the mutable slot are refused from.
 - **Enclosing objects are values** is decided once per *class object*, cold,
@@ -536,10 +536,10 @@ for a level above `C`).
   fault instead — a `NonValueEnclosingObject` with the `described` text taken
   from that level's own verdict, naming the level that verdict names, or the
   level the walk stopped at when it names none
-  (`goldens/kernel/a_value_subclass_of_a_refused_value_class_is_refused.ns`).
+  (`goldens/library/value/a_value_subclass_of_a_refused_value_class_is_refused.ns`).
   So a fault inherited over several levels still names the level whose
   enclosing object is at fault, not the last class that passed it on
-  (`goldens/kernel/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`).
+  (`goldens/library/value/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`).
   Any other level — one that does not inherit `Value`, or a `<:` level, which
   is never created through `after_clause` — has its enclosing object checked
   with `instantiate.rs`'s `is_a_value`, the predicate the slot check uses,
@@ -548,11 +548,11 @@ for a level above `C`).
   level's enclosing objects through `outer`: in `class P = Foo new <: Value`,
   `P` inherits `Value`, `Foo` does not, and a method of `Foo` whose enclosing
   object is mutable would make `P`'s instances reach mutable state
-  (`goldens/kernel/a_value_over_a_class_with_a_mutable_enclosing_object_is_refused.ns`).
+  (`goldens/library/value/a_value_over_a_class_with_a_mutable_enclosing_object_is_refused.ns`).
   Requiring `Foo` itself to inherit `Value` would be stricter than §3.1.1: a
   slotless `Foo` in a value module meets every condition, and
   `Foo new <: Value` is how a value variant of it is made
-  (`goldens/kernel/a_value_over_a_slotless_class_in_a_value_module_is_accepted.ns`).
+  (`goldens/library/value/a_value_over_a_slotless_class_in_a_value_module_is_accepted.ns`).
   A module's root class has `nil` for its enclosing object and a chain of
   builtins with at most `<: Value`, so its enclosing objects hold by
   construction, and `load_root_class` does not call the check.
@@ -598,14 +598,14 @@ placeholders first, kernel second").
 **A value class needs a value module.** Since a value class's enclosing
 object must be a value, a value class nested in an ordinary module is refused
 on instantiation
-(`goldens/kernel/a_value_class_in_an_ordinary_module_is_refused.ns`). Every
+(`goldens/library/value/a_value_class_in_an_ordinary_module_is_refused.ns`). Every
 golden and inline test module that declares a value class therefore declares
 itself a value, `= Object <: Value`, and keeps its recorded outcome — the
 rule decided with the user on 2026-09-23 for the two goldens declaring
 `class Text = String new`, extended to every such module. A value's slot may
 not hold the platform or the transcript, so such a module reads the
 transcript where it uses it, or keeps its former module methods in a nested
-`Script` class that is no value. `goldens/nesting/nested_override.ns`, which
+`Script` class that is no value. `goldens/language/class/nesting/nested_override.ns`, which
 instantiates a class whose superclass clause reads an overridden slot, starts
 that slot at `List` rather than `String`, so the class it
 instantiates is no value class in an ordinary module; its recorded outcome
@@ -830,7 +830,8 @@ decoder refuses the class's tag wherever a graph names a class, as it
 refuses `Activation`'s ([image-format.md](image-format.md), "Futures in a
 graph").
 
-**What pins it.** Under `goldens/spec/`:
+**What pins it.** Under `goldens/language/slot/simultaneous/` (the temporaries' under
+`goldens/language/method/`):
 `spec_6_3_2_simultaneous_slots_resolve_mutual_recursion` and
 `spec_6_3_2_simultaneous_temporaries_resolve_mutual_recursion`, a class's
 clause and a code body's; `spec_6_3_2_a_data_cycle_resolves`
@@ -854,7 +855,7 @@ cover the parser's flag (`ns-syntax`'s declaration tests); forcing, chains,
 abandonment, the host's two cases and the collector's replacement
 (`tests/future.rs`); the four instructions driven by hand (`tests/vm.rs`);
 the image's two cases and its refusals (`tests/image.rs`); and the wire tags
-(`tests/opcode_tags.rs`). Three of the four `goldens/bench/` fixtures are
+(`tests/opcode_tags.rs`). Three of the four `goldens/tool/bench/` fixtures are
 level; `bench_megamorphic.ns` measured about 4% slower, a layout effect of
 the dispatch arm the four instructions add, still open
 ([execution.md](execution.md), "What simultaneous slots cost").
@@ -893,12 +894,12 @@ superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
   is the enclosing object of *C*" — **and so is its declaring class.** A method
   of the applied mixin was written where the named class is declared, so
   `outer` inside it reaches the mixin's own enclosing objects, never the
-  applying declaration's (`goldens/mixin/mixin_outer_reaches_the_mixins_enclosing_object.ns`).
+  applying declaration's (`goldens/language/class/mixin/mixin_outer_reaches_the_mixins_enclosing_object.ns`).
 - **Its primary factory selector is the clause's selector** — "Class *I* has a
   primary factory method (6) with the same selector as *m*" — which must name
   the named class's primary factory: a clause sending anything else is §6.1's
   run-time error, raised when `C` is instantiated
-  (`goldens/mixin/mixin_clause_naming_the_wrong_factory_fails.ns`). A clause
+  (`goldens/language/class/mixin/mixin_clause_naming_the_wrong_factory_fails.ns`). A clause
   whose receiver does not evaluate to a class object is §6.1's other run-time
   error, raised where the levels are built.
 
@@ -946,9 +947,9 @@ factory on the way up, a misnamed clause fails before `ms` and the
 superclass initializers run -- the policy the superclass clause already
 follows, whose selector is checked before its arguments are evaluated. An
 applied mixin's own superclass clause is never evaluated: only its mixin is
-applied (`goldens/mixin/mixin_initializer_order.ns`), and so are none of its
+applied (`goldens/language/class/mixin/mixin_initializer_order.ns`), and so are none of its
 own `<:` clauses
-(`goldens/mixin/mixin_applied_mixins_own_clauses_are_not_applied.ns`).
+(`goldens/language/class/mixin/mixin_applied_mixins_own_clauses_are_not_applied.ns`).
 
 **A declaration without `<:` takes the path it took before**, plus one test
 per climbed level, per descent and per nested-class creation; the `<:`
@@ -956,8 +957,8 @@ machinery lives in cold, out-of-line helpers. What that costs is measured in
 [execution.md](execution.md), "What mixin application cost". The image
 carries the clauses on each row and the levels as class records
 ([image-format.md](image-format.md), "Sections"). The goldens are under
-`goldens/mixin/`, with §6.2's own example in
-`goldens/spec/spec_6_2_a_mixin_application_derives_a_class.ns`.
+`goldens/language/class/mixin/`, with §6.2's own example in
+`goldens/language/class/mixin/spec_6_2_a_mixin_application_derives_a_class.ns`.
 
 **At a module's root, `<: Value` is allowed as a rule: it is how a module
 declares itself a value.** `class M … = Object <: Value (…)` makes the
@@ -966,7 +967,7 @@ to be values, and it is the form §3.1.1's other conditions need — a value
 class's enclosing objects must be values, and the outermost one is the module
 — and the one SOMns's `Kernel.ns` writes. It is a sanctioned form, not a side
 effect of how a root clause is resolved
-(`goldens/mixin/mixin_module_declares_itself_a_value.ns`).
+(`goldens/language/class/mixin/mixin_module_declares_itself_a_value.ns`).
 
 **The root rule: only `Object`, `Value` or `Object <: Value`.** A module's
 root class may write every combination of `Object` and `Value` that works
@@ -978,7 +979,7 @@ none (which is `Object`), `Object`, `Object new`, `Value`, `Value new`,
 else is a root defect: any prefix, any other name — the other builtins,
 `Top` and a name nothing declares included — any message but the superclass
 clause's `new` (`Object foo`, `Object new: 3`,
-`goldens/errors/root_superclass_sending_other_than_new_is_refused.ns`), any
+`goldens/language/module/root_superclass_sending_other_than_new_is_refused.ns`), any
 other `<:` clause, a message sent to the `<:` clause's `Value`, and a second
 `<:` clause. `Value <: Value` and `Value new <: Value` stay refused:
 applying `Value` over `Value` adds nothing. A root class has no
@@ -1024,7 +1025,7 @@ same reason, so the format needs no wire field and no tag for one; the
 decoder's root-section reader refuses what the encoder cannot write
 ([image-format.md](image-format.md), "Verification"), so a crafted artifact,
 which is untrusted input, cannot bring the rule back.
-`goldens/errors/root_*` pin one defect each.
+`goldens/language/module/root_*` pin one defect each.
 
 ## Class sides and metaclasses
 
@@ -1092,11 +1093,11 @@ superclass is always `Class`, never the metaclass of `Foo`'s superclass, so
 the ordinary lookup from a class object walks its own class side, then
 `Class`, `Behavior` and `Object`, and a subclass answers a class-side message
 only if its own class side declares it
-(`goldens/class-side/class_side_is_not_inherited_by_a_subclass_with_none_of_its_own.ns`).
+(`goldens/language/class/class-side/class_side_is_not_inherited_by_a_subclass_with_none_of_its_own.ns`).
 §5.10 makes a `super` send's S the superclass of the activation's current
 class, which for a class-side method is `Class`: a class-side
 `super printString` answers `Class>>printString`, the class's name
-(`goldens/class-side/class_side_super_reaches_class.ns`), and a class-side
+(`goldens/language/class/class-side/class_side_super_reaches_class.ns`), and a class-side
 `super new` does not instantiate, because nothing above the metaclass
 declares a factory.
 
@@ -1105,7 +1106,7 @@ declares a factory.
 an instance of its metaclass, and the metaclass an instance of `Metaclass`.
 `Metaclass` is a kernel class with a metaclass of its own, whose class is
 `Metaclass` again, which closes the loop without a regress
-(`goldens/class-side/the_class_of_a_class_is_its_metaclass.ns`:
+(`goldens/language/class/class-side/the_class_of_a_class_is_its_metaclass.ns`:
 `Foo class class == Foo class class class class`). There is no separate
 metaclass field: `Heap::class_metaclass` and `Mutator::metaclass_of` read the
 header, and answer `None` for a metaclass, whose class is `Metaclass`. A
@@ -1176,7 +1177,7 @@ caches guard on the header id as they do for an instance
 `doesNotUnderstand:` handles every send its class object does not understand,
 since §5.5's handler is "defined for the class of the receiver" and that
 class is the metaclass
-(`goldens/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
+(`goldens/language/class/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
 
 **The protocol is minimal, as Primordial Soup's is.** Reflection is a
 mirror's job, which the reflection step builds; a class does not answer
@@ -1186,7 +1187,7 @@ through the leaf `className:ifFail:` and `Class>>printString` answers `name`;
 `Metaclass>>name` answers `thisClass name, ' class'`, reading `this_class`
 through the leaf `metaclassThisClass:ifFail:`, and `Metaclass>>printString`
 answers `name` (`builtins/behavior.rs`;
-`goldens/class-side/a_class_and_its_metaclass_print_their_names.ns`:
+`goldens/language/class/class-side/a_class_and_its_metaclass_print_their_names.ns`:
 `Foo`, `Foo class`, `Metaclass`, `Metaclass class`). `Object` has **no
 accessor** for `Behavior`, `Class` or `Metaclass`: none of the three
 references declares one, §3.2's accessors are for the classes of the built-in
@@ -1205,10 +1206,10 @@ application below it inherits the refusal from its superclass, so
 subclass of them a program manages to declare with an ordinary Newspeak error
 under its factory selector: "cannot instantiate `C`: a class object is made
 only by evaluating its declaration" (`interpreter/instantiate.rs`;
-`goldens/class-side/a_class_object_cannot_be_made_by_instantiation.ns`, which
+`goldens/language/class/class-side/a_class_object_cannot_be_made_by_instantiation.ns`, which
 sends `3 class class class new`). A metaclass itself declares no factory, so
 `Foo class new` is not understood
-(`goldens/class-side/a_metaclass_does_not_understand_new.ns`).
+(`goldens/language/class/class-side/a_metaclass_does_not_understand_new.ns`).
 
 **A class object is a value exactly when its enclosing object is**, as SOMns
 decides it (`SClass.isValue`; `instantiate::class_object_is_a_value`). A
@@ -1224,8 +1225,8 @@ consequences:
 - **Step 4 of the value conditions** ("A value object's four conditions",
   above) accepts a class object that is a value in a slot of a value's
   instance, and still refuses one that is not
-  (`goldens/kernel/a_value_modules_nested_class_is_a_value.ns`,
-  `goldens/kernel/a_values_slot_refuses_a_class_that_is_no_value.ns`).
+  (`goldens/library/value/a_value_modules_nested_class_is_a_value.ns`,
+  `goldens/library/value/a_values_slot_refuses_a_class_that_is_no_value.ns`).
 - **A value class object has no identity.** Its `=` and `hash` are derived
   from its state: two class objects are equal when they share their mixin
   application, their enclosing objects are `=` and their superclass class

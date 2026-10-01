@@ -37,10 +37,10 @@ and `prior-art/newspeak-benchmarks`.
   [core-library.md](design/core-library.md), "Large integers".
 - **Before step 2's second plan, the Are We Fast Yet benchmarks** (decided
   with the user on 2026-09-29, so that every later step is measured on real
-  programs rather than only on the microbenchmarks under `goldens/bench/`).
+  programs rather than only on the microbenchmarks under `goldens/tool/bench/`).
   The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into
   `benchmarks/are-we-fast-yet/`, each a module of the harness's project,
-  verified under both lowerings by `goldens/awfy/` and measured as
+  verified under both lowerings by `goldens/tool/awfy/` and measured as
   [execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
   describes. Each one widens the platform on demand, as `CLAUDE.md` asks,
   so the Newspeak side grows with them. Stage 1 -- Sieve, Permute, Queens,
@@ -381,7 +381,7 @@ value objects are never copied across an actor boundary (§3.1.1).
 - **A private slot of a mixin applied twice in one chain.** Which
   application's slot a lower method reads has no pinned answer; §5.9 does not
   say. Settle it from the specification and SOMns, then add a golden beside
-  `goldens/mixin/mixin_same_mixin_applied_twice_in_one_chain.ns`.
+  `goldens/language/class/mixin/mixin_same_mixin_applied_twice_in_one_chain.ns`.
 - **How a replaced kernel method is compiled.** Its primitive-method mark and
   `SendMirror` rest on `Binding::MirrorSend`, which only shipped source gets;
   recording it for an edit would hand the edit the whole Rust boundary.
@@ -737,9 +737,9 @@ Small, deliberately left, none affecting an outcome.
 
 ## Goldens and documentation
 
-- `goldens/spec/spec_6_3_factory_is_a_class_side_member.ns` has no rationale
+- `goldens/language/class/class-side/spec_6_3_factory_is_a_class_side_member.ns` has no rationale
   comment citing §6.3.
-- `goldens/spec/spec_6_3_3_a_lazy_slot_is_initialized_on_first_use.toml`
+- `goldens/language/slot/accessor/spec_6_3_3_a_lazy_slot_is_initialized_on_first_use.toml`
   records trailing spaces in `stdout` that an editor could strip silently.
 - Golden proposals from the 2026-09-18 audits judged marginal and not built:
   §5.1.8 closure value rules, §5.1.5 doubled quote, §5.1.7 empty and immutable
@@ -749,7 +749,7 @@ Small, deliberately left, none affecting an outcome.
   (`docs/design/compiler.md`, `docs/design/execution.md`), which a search for
   the heading misses.
 - 33 goldens keep a whitespace-only line where the 2026-09-30 migration
-  emptied a slot clause (`goldens/capture/captures_in_initializers.ns:9`
+  emptied a slot clause (`goldens/language/block/captures_in_initializers.ns:9`
   among them); and
-  `goldens/manifest/a_project_reaches_its_modules_through_the_manifest/App.ns`'s
+  `goldens/tool/manifest/a_project_reaches_its_modules_through_the_manifest/App.ns`'s
   comment claims more than the golden pins.

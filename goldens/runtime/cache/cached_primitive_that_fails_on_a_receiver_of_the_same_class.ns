@@ -9,7 +9,7 @@ Newspeak3
    then zero slots. The recorded `true` is unchanged only because every
    line here compares an object with *itself*: two distinct `Text`
    instances would now answer `true` as well, where `Object`'s identity `=`
-   answered `false` (`goldens/kernel/a_value_has_no_identity.ns` records
+   answered `false` (`goldens/library/value/a_value_has_no_identity.ns` records
    that). `show:` answers two transcript streams and fails on the platform
    object, which shares their class, so the third send at the same site --
    the same dispatch id -- ends in `doesNotUnderstand:`

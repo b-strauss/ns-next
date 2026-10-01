@@ -1634,7 +1634,7 @@ mod tests {
     /// rest. If the two ever diverged, a pair `=` answers `true` for could
     /// reach `Value`'s Newspeak walk on one side of `hash` only, and two
     /// equal values would hash apart: exactly the contract
-    /// `goldens/kernel/value_hashes_follow_value_equality.ns` asserts, and
+    /// `goldens/library/value/value_hashes_follow_value_equality.ns` asserts, and
     /// one a change to either walk alone could break silently.
     #[test]
     fn the_equality_and_the_hash_decline_on_the_same_shapes() {

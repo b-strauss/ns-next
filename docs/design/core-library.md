@@ -165,7 +165,7 @@ Both are `Number`'s, Newspeak bodies after Primordial Soup's
 `:2118`): an inclusive bound, a negative step counting down, and `nil` as
 the answer, so an `Integer`, a `LargeInteger` and a `Float` receiver share
 one body and a range crossing into `LargeInteger` keeps counting
-(`goldens/kernel/number_iteration.ns`). They are no leaf, because each
+(`goldens/language/control-flow/number_iteration.ns`). They are no leaf, because each
 iteration sends `value:` to the block and `<=` or `>=` and `+` to the
 counter, and a Rust native that calls back into Newspeak is the ceiling
 "The core library as Newspeak source over a VM mirror" below rules out.
@@ -183,19 +183,19 @@ rather than Primordial Soup's `step + current`. An `Integer` receiver
 with a `Float` bound or step counts too, since an integer's arithmetic
 and ordering meet a `Float` argument: `1 to: 2 by: 0.5 do:` answers `1`,
 `1.5`, `2`, the counter becoming a `Float` once a `Float` step is added
-(`goldens/kernel/an_integer_counts_to_a_float_bound`).
+(`goldens/language/control-flow/an_integer_counts_to_a_float_bound`).
 
 **`asStringFixed:` rounds as Primordial Soup's double-conversion does.**
 `Float>>asStringFixed:` writes a count of fraction digits from 0 to 20,
 and raises for any other count, as Primordial Soup's primitive fails and
-its method raises (`goldens/errors/as_string_fixed_refuses_more_than_twenty_digits.ns`).
+its method raises (`goldens/library/number/float/as_string_fixed_refuses_more_than_twenty_digits.ns`).
 A tie rounds up on the exact binary value, where Rust's formatter would
 round it to even, so `0.125 asStringFixed: 2` is `'0.13'` and
 `1.005 asStringFixed: 2`, just below the tie in binary, is `'1.00'`; the
 sign is the value's even when the digits round to zero (`-0.04
 asStringFixed: 1` is `'-0.0'`); and outside ±1e21, and for a NaN or an
 infinity, it answers the text `printString` does (`fixed_text` in
-`builtins/numbers.rs`; `goldens/arithmetic/as_float_and_as_string_fixed.ns`).
+`builtins/numbers.rs`; `goldens/library/number/float/as_float_and_as_string_fixed.ns`).
 The Are We Fast Yet harness prints its scores with it.
 
 **A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
@@ -238,9 +238,9 @@ code points rather than its bytes:
   is an `Error`, "with: requires a Unicode code point, an Integer from 0 to
   1114111 outside 55296 to 57343, got …".
 
-`goldens/kernel/a_string_answers_its_code_points` and
-`goldens/kernel/a_string_is_its_code_points` pin them in either width,
-`goldens/exceptions/a_string_index_error_is_caught` their errors.
+`goldens/library/string/a_string_answers_its_code_points` and
+`goldens/library/string/a_string_is_its_code_points` pin them in either width,
+`goldens/library/string/a_string_index_error_is_caught` their errors.
 
 **Planned, with road step 3:** `Symbol` becomes a subclass of `String`
 sharing both formats, and `=` stays class-tight both ways as today
@@ -302,7 +302,7 @@ fallback comparing the same slots in the same order — if they disagreed, `=`
 would answer one thing when the leaf decided and another when it declined —
 and it is why the declining path, which asks once per slot read, allocates
 nothing to ask.
-`goldens/kernel/a_values_nested_class_is_not_part_of_its_state.ns` pins it,
+`goldens/library/value/a_values_nested_class_is_not_part_of_its_state.ns` pins it,
 including the case where only one of the two instances has been touched and
 a class that *inherits* the declaration from a value superclass while
 declaring a slot of its own after it.
@@ -527,7 +527,7 @@ declare none, `Stopwatch`'s two slots hold only its own readings, and
 `Platform`'s four lazy slots hold only facets: `t class new` makes a
 transcript equal to `t`, and `platform class new` a platform that writes
 like the first
-(`goldens/kernel/a_second_platform_writes_like_the_first`). The platform
+(`goldens/library/platform/a_second_platform_writes_like_the_first`). The platform
 hands out instances of the facets by lazy slots and their classes by class
 accessors, methods whose whole body is `^outer PlatformFactory <Name>`.
 Because the root is unreachable, no program can instantiate it over forged
@@ -567,7 +567,7 @@ platform; `Platform`'s `collections` answers that instance's
 `newCollections`. So every platform's facet comes from one factory and
 hands out one `List`, one `Map` and one `Set` class, and the facets,
 values, are all equal
-(`goldens/collections/every_platform_shares_one_collections_module`). The
+(`goldens/library/collection/every_platform_shares_one_collections_module`). The
 facet names its own class, `^outer CollectionsFactory Collections`, as
 `Platform>>Platform` does, and `List`, `Map` and `Set` by `^outer
 CollectionsFactory <Name>`: class accessors the compiler recognizes in
@@ -630,8 +630,8 @@ printString )` is Newspeak beside it, as canonical Newspeak's transcript has
 both (`prior-art/newspeak/RuntimeForJS.ns`); it was added with a golden
 rather than on a corpus module's demand. `show:` does not send
 `printString` itself, since a `String`'s `printString` quotes it
-(`goldens/kernel/the_transcript_prints_any_object`,
-`goldens/errors/show_of_something_that_is_no_string_is_an_error`).
+(`goldens/library/platform/the_transcript_prints_any_object`,
+`goldens/library/platform/show_of_something_that_is_no_string_is_an_error`).
 
 **The namespace members are ordinary methods.** `KernelNamespace`'s five
 answer the kernel instance's nested classes. The class-accessor fast path
@@ -654,7 +654,7 @@ has an accessor on `Object`, since a program reaches them through the
 platform it is given, and the platform declares no accessor for a
 predefined class either: `platform Array` reaches `Object`'s (§3.2), which
 it inherits like every object
-(`goldens/kernel/the_platform_and_its_parts_are_values`).
+(`goldens/library/platform/the_platform_and_its_parts_are_values`).
 
 **`platform time` is Primordial Soup's `Time` facet, narrowed to its
 `Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/AreWeFastYet.ns`,
@@ -667,7 +667,7 @@ names that class by its shortest path, `Stopwatch`, never `time Stopwatch`
 `elapsedNanoseconds`, with Primordial Soup's meaning
 (`prior-art/primordialsoup/newspeak/Time.ns`): an
 unstarted stopwatch reads 0, and `start` on a running one changes nothing
-(`goldens/kernel/a_stopwatch_measures_elapsed_time`).
+(`goldens/library/platform/a_stopwatch_measures_elapsed_time`).
 
 **A `Stopwatch` is an object, not a value.** It keeps its start and its
 accumulated time in mutable slots, which §3.1.1 forbids a value, so its
@@ -824,13 +824,13 @@ names it by builtin class tag 31. It is a value object (§3.1.1): `==` is
 `Value`'s, `^self = other`, and `=` and `hash` come from its sign and
 magnitude, never from an identity hash, so a value whose slot holds one
 compares and hashes by state too
-(`goldens/kernel/a_value_with_a_large_integer_slot_compares_by_state.ns`).
+(`goldens/library/value/a_value_with_a_large_integer_slot_compares_by_state.ns`).
 With one representation per integer, the class-tight `=` loses nothing: no
 `LargeInteger` is ever the same number as an `Integer`. An instance of a
 subclass of it, or `LargeInteger new`, holds no digits; every leaf
 declines it on the missing payload, never on the class, and the send falls
 to `Object`'s methods
-(`goldens/kernel/a_subclass_of_large_integer_is_no_number.ns`).
+(`goldens/library/builtin-subclass/a_subclass_of_large_integer_is_no_number.ns`).
 
 **The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`,
 `bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `hash`, `negated`, `abs`, `asFloat`,
@@ -842,10 +842,10 @@ or product that does not fit `i64` is recomputed in `i128`, where two
 `i64::MIN abs` answer `2^63`. The inlined `IntegerBinary` never allocates:
 it declines a result that does not fit and falls back to the send, whose
 leaf promotes ([compiler.md](compiler.md), "Arithmetic inlining";
-`goldens/arithmetic/an_overflowing_integer_operation_answers_a_large_integer.ns`).
+`goldens/library/number/large-integer/an_overflowing_integer_operation_answers_a_large_integer.ns`).
 Both classes' arithmetic and ordering accept an argument of either integer
 class (`integer_operand`), so `5 + big` and `big + 5` both answer
-(`goldens/arithmetic/large_integer_arithmetic.ns`). A `Float`'s leaves
+(`goldens/library/number/large-integer/large_integer_arithmetic.ns`). A `Float`'s leaves
 convert a `LargeInteger` argument to the nearest `double`
 (`ArbitraryInteger::to_f64`, rounded to nearest with ties to even, infinite
 beyond `f64::MAX`), as Primordial Soup's `LargeInteger::AsDouble`
@@ -853,14 +853,14 @@ beyond `f64::MAX`), as Primordial Soup's `LargeInteger::AsDouble`
 convert an `Integer` argument; an integer's `+ - * < > <= >=` convert
 themselves and a `Float` argument to doubles the same way, whichever integer
 class the receiver is, so the two directions agree
-(`goldens/arithmetic/a_float_meets_a_large_integer.ns`). An argument that
+(`goldens/library/number/float/a_float_meets_a_large_integer.ns`). An argument that
 is neither an integer nor a `Float` is a type mismatch naming "a numeric
-argument" (`goldens/errors/a_large_integer_meets_nil.ns`). That is a derived
+argument" (`goldens/library/number/large-integer/a_large_integer_meets_nil.ns`). That is a derived
 choice, pinned by goldens, which the numeric tower may revisit ("Gap: an
 integer has no `/`" below). `//` and `\\` by zero raise "division by zero"
 from either class's leaf
-(`goldens/errors/large_integer_floor_division_by_zero_is_uncaught.ns`,
-`goldens/errors/floor_modulo_by_zero_is_uncaught.ns`).
+(`goldens/library/number/large-integer/large_integer_floor_division_by_zero_is_uncaught.ns`,
+`goldens/library/number/integer/floor_modulo_by_zero_is_uncaught.ns`).
 
 **`//` rounds toward negative infinity**, so `7 // -2` and `-7 // 2` are
 both `-4`: Primordial Soup's `Integer>>//`, commented "Integer division,
@@ -870,7 +870,7 @@ and `num-integer`'s `div_floor`. `checked_floor_divide`
 (`builtins/numbers.rs`) is the one copy of the rule for two `i64`s, which
 the leaf and `IntegerBinary` share, and `ArbitraryInteger::floor_divide` the
 one for everything else
-(`goldens/arithmetic/floor_division_rounds_toward_negative_infinity.ns`).
+(`goldens/library/number/integer/floor_division_rounds_toward_negative_infinity.ns`).
 
 **`\\` is the remainder of that division**, so it takes the divisor's sign:
 `7 \\ -2` is `-1` and `-7 \\ 2` is `1`. For two `i64`s, `floor_modulo`
@@ -880,7 +880,7 @@ overflow. For everything else, `ArbitraryInteger::floor_modulo` derives it
 from `floor_divide`, as the dividend less the quotient times the divisor,
 rather than adapting `num-integer`'s `mod_floor`, so the quotient and the
 remainder can never disagree
-(`goldens/arithmetic/floor_modulo_takes_the_divisors_sign.ns`). `\\` has no
+(`goldens/library/number/integer/floor_modulo_takes_the_divisors_sign.ns`). `\\` has no
 inlined fast path: it is no `IntegerBinary` operation, so every `\\` is a
 send to the leaf.
 
@@ -892,18 +892,18 @@ lays both operands out in two's complement one digit longer than the
 longer magnitude, so that the top digit holds the sign, ands the digits,
 and turns a negative result back into sign and magnitude. Both are checked
 against `i128` and by
-`goldens/arithmetic/bit_and_is_twos_complement.ns`; a sign-and-magnitude
+`goldens/library/number/integer/bit_and_is_twos_complement.ns`; a sign-and-magnitude
 `and` would answer `0` for `-1 bitAnd: 2^64`, which is `2^64`. `bitOr:` and
 `bitXor:` are over two's complement the same way: `ArbitraryInteger`'s
 `bit_and`, `bit_or` and `bit_xor` are one `bitwise` with a different digit
 operation, checked against `i128` and by
-`goldens/arithmetic/bit_or_and_bit_xor_are_twos_complement.ns`, and
+`goldens/library/number/integer/bit_or_and_bit_xor_are_twos_complement.ns`, and
 `-1 bitXor: 2^64` is `-(2^64) - 1`.
 
 **`<<` shifts the magnitude and keeps the sign**, which is exact for a
 negative receiver: `-9223372036854775808 << 1` is `-18446744073709551616`,
 and `-1 << 63` is exactly `i64::MIN`, still an `Integer`
-(`goldens/arithmetic/shift_left_widens_into_a_large_integer.ns`). A negative
+(`goldens/library/number/integer/shift_left_widens_into_a_large_integer.ns`). A negative
 count raises an error that says the count must be non-negative. A result
 whose digits cannot be reserved raises "cannot allocate" rather than
 aborting: `ArbitraryInteger::shift_left` reserves with `try_reserve_exact`,
@@ -918,7 +918,7 @@ Rust's `as`, exact up to 2^53, and a `LargeInteger`'s by
 to an integer argument. A `Float` prints as Rust's `Display` writes it, the
 shortest digits that read back as the same double, so `9223372036854775808
 asFloat` prints `9223372036854776000`
-(`goldens/arithmetic/as_float_and_as_string_fixed.ns`).
+(`goldens/library/number/float/as_float_and_as_string_fixed.ns`).
 
 **The payload.** A `LargeInteger`'s object carries
 `ObjectData::LargeInteger(ArbitraryInteger)`: a sign and a magnitude of
@@ -984,7 +984,7 @@ integer of *n* digits costs time quadratic in *n*
 (`every_algorithm_agrees_with_schoolbook` in `multiplication.rs`, beside
 the transform's and the division's own cross-checks), against values
 computed in Python and pasted into the tests, and by
-`goldens/arithmetic/large_integer_algorithms_agree_at_every_size.ns`.
+`goldens/library/number/large-integer/large_integer_algorithms_agree_at_every_size.ns`.
 
 **The licensing.** Both projects are MIT OR Apache-2.0; ns-next takes them
 under MIT, whose terms require the notice to travel with the code.
@@ -1033,7 +1033,7 @@ The ordering and the arithmetic stay IEEE's: for a NaN `a = b` is true while
 It differs from Primordial Soup and Squeak, where a NaN equals nothing;
 Primordial Soup's `isNaN` is `^(self = self) not`, which no longer answers
 `true` here. Decided with the user on 2026-10-01;
-`goldens/arithmetic/not_a_number_equals_itself` pins it, a NaN found again
+`goldens/library/number/float/not_a_number_equals_itself` pins it, a NaN found again
 as a `Map` key included, and `every_nan_equals_every_other_and_hashes_alike`
 in `builtins/numbers.rs` NaNs of different bit patterns.
 
@@ -1334,9 +1334,9 @@ itself: a receiver of the wrong shape — an instance of a user subclass of
 object's selector — reaches the superclass's method, `Object`'s, and a
 selector `Object` does not have ends in `Object`'s `doesNotUnderstand:`
 through §5.10's super failure path, with the same message text.
-`goldens/errors/native_that_fails_on_its_receiver_falls_to_objects` and
-`goldens/cache/cached_primitive_that_fails_on_a_receiver_of_the_same_class`
-pin it, and `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`
+`goldens/language/send/native_that_fails_on_its_receiver_falls_to_objects` and
+`goldens/runtime/cache/cached_primitive_that_fails_on_a_receiver_of_the_same_class`
+pin it, and `goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`
 pins it family by family. `Object`'s own leaves never decline, so its
 blocks are unreachable; they keep the shape so that one rule, and one
 recognizer, covers every method. The exception machinery's mirror sends
@@ -1408,7 +1408,7 @@ method it is never activated, and the block step it answers is exempt
 exactly as a leaf's was ([compiler.md](compiler.md), "How the limit
 counts"). `interpreter::kernel`'s `QUICK_METHODS` table test pins the fast
 path of every `True` and `False` method, and
-`goldens/kernel/recursion_through_and_or_counts_alike_under_both_lowerings`
+`goldens/runtime/depth-limit/recursion_through_and_or_counts_alike_under_both_lowerings`
 the agreement.
 
 Two semantic decisions came with the move (decided with the user on
@@ -1417,22 +1417,22 @@ Two semantic decisions came with the move (decided with the user on
 - **`and:`, `or:`, `&` and `|` do not coerce.** `true and: [3]` answers `3`,
   as in every prior-art kernel, under both lowerings — the compiler's
   inlined `and:`/`or:` moves the block's value into the result as it is
-  (`goldens/language/and_or_short_circuit`,
-  `goldens/language/and_or_answer_their_arguments_value`).
+  (`goldens/language/control-flow/and_or_short_circuit`,
+  `goldens/language/control-flow/and_or_answer_their_arguments_value`).
 - **An argument that is no block is sent `value`, and nothing answers it**,
   as in Primordial Soup: there is no `Object>>value`, so `true ifTrue: 3`
   ends in `doesNotUnderstand:`
-  (`goldens/errors/a_conditional_sends_value_to_its_argument`), while a
+  (`goldens/language/control-flow/a_conditional_sends_value_to_its_argument`), while a
   side that decides alone never looks at its argument — `false ifTrue: 3`
   answers `nil`
-  (`goldens/language/a_short_circuited_conditional_ignores_its_argument`).
+  (`goldens/language/control-flow/a_short_circuited_conditional_ignores_its_argument`).
 
 A user subclass of `True` inherits these methods, needing no payload for
 them, where a subclass of `Boolean` inherits nothing from it and falls to
 `Value`'s and `Object`'s methods, hashing by its state like any other value
-(`goldens/kernel/a_subclass_of_true_inherits_its_methods`,
-`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`,
-`goldens/kernel/a_subclass_of_boolean_hashes_as_a_value`).
+(`goldens/library/builtin-subclass/a_subclass_of_true_inherits_its_methods`,
+`goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`,
+`goldens/library/builtin-subclass/a_subclass_of_boolean_hashes_as_a_value`).
 
 ### The nil protocol
 
@@ -1445,7 +1445,7 @@ has — `isNil`, `notNil`, `ifNil:`, `ifNotNil:`, `ifNil:ifNotNil:` and
 (`prior-art/newspeak/KernelForJS.ns`) do; `nil ifNotNil:` answers `nil`,
 `3 ifNil:` answers `3`. `nil printString` answers `'nil'`, as Primordial
 Soup's `UndefinedObject` does, where it answered `Object`'s generic
-`an Object` before (`goldens/cache/cache_polymorphic_sites`).
+`an Object` before (`goldens/runtime/cache/cache_polymorphic_sites`).
 
 **A block for the not-nil case is culled with the receiver** (decided on
 2026-09-25, from the corpus): it is handed the receiver when it takes an
@@ -1466,11 +1466,11 @@ which activates a closure argument with the receiver or with nothing by its
 parameter count, and otherwise activates the method). None of these sends
 is inlined by the compiler, so no block they activate is a control-flow
 step: both lowerings send them and count the block alike.
-`goldens/language/the_nil_protocol`,
-`goldens/errors/if_not_nil_culls_its_argument`,
-`goldens/errors/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`
-and `goldens/spec/spec_5_1_3_nil_answers_is_nil` pin it, and
-`goldens/kernel/nil_is_the_undefined_object` the class's name.
+`goldens/library/object/the_nil_protocol`,
+`goldens/language/control-flow/if_not_nil_culls_its_argument`,
+`goldens/language/control-flow/if_not_nil_with_a_two_argument_block_is_a_wrong_arity_error`
+and `goldens/library/object/spec_5_1_3_nil_answers_is_nil` pin it, and
+`goldens/library/object/nil_is_the_undefined_object` the class's name.
 
 ### The bootstrap: placeholders first, kernel second
 
@@ -1813,13 +1813,13 @@ enable — the same order as the search itself, so signalling stays linear in
 the depth it searches, but one small array allocated per handler invocation,
 in place of the growable `OrderedCollection` an in-order walk once needed to
 collect while it searched.
-`goldens/exceptions/a_handlers_exception_is_looked_for_outside_its_on_do`
+`goldens/library/exception/a_handlers_exception_is_looked_for_outside_its_on_do`
 and `a_resumed_handler_is_enabled_again` pin it. The candidate `on:do:` is
 likewise disabled, under an `ensure:`, while its class's `handles:` runs, so
 an exception the test raises — `nil handles:` for `on: nil do:` — is not
 offered to that same `on:do:` again, which would nest one search per level
 and walk the whole stack each time
-(`goldens/exceptions/on_a_non_class_ends_the_run_with_its_handles_error`).
+(`goldens/library/exception/on_a_non_class_ends_the_run_with_its_handles_error`).
 
 **With no handler**, `signal` sets `reachedDefault` and runs
 `defaultAction`: for `Exception`, `Error`, `MessageNotUnderstood` and `Halt`
@@ -1841,7 +1841,7 @@ receives exactly what it received before there were exceptions; for one a
 program signalled, `#signal` and the exception. `MessageNotUnderstood`
 overrides both with its message's selector and its receiver, and falls
 back to `Exception`'s when its `message` is nil — one a program signals
-itself (`goldens/exceptions/a_message_not_understood_a_program_signals_ends_the_run`).
+itself (`goldens/library/exception/a_message_not_understood_a_program_signals_ends_the_run`).
 `defaultAction` is the one place the debugger will replace; until then a
 test stands in for it with `Interpreter::resume_unhandled_exceptions`, a
 `#[doc(hidden)]` hook under which the leaf answers nil instead of
@@ -2000,7 +2000,9 @@ tail-call elimination, since its `^self value` is a tail send and `signal`
 would no longer find the handler ([execution.md](execution.md), "Planned:
 tail calls, skipped but kept").
 
-**Pinned by** the goldens under `goldens/exceptions/` — a handler's value
+**Pinned by** the goldens under `goldens/library/exception/` (the index errors under
+`goldens/library/collection/` and `goldens/library/string/`, the depth limit's under
+`goldens/runtime/depth-limit/`) — a handler's value
 answered by `on:do:`; `return:`, `retry` (with a counter, so it ends),
 `resume:` on an `Exception` and refused on an `Error`, `pass` reaching an
 outer handler; an overridden `handles:`; an exception in a handler
@@ -2090,11 +2092,11 @@ evaluates the initializer while the slot holds `nil`, storing the result
 without a setter and answering it, as §6.3.3 says. An initializer that
 answers `nil`, or that does not complete — it signals and a handler
 returns, or it returns non-locally — leaves the slot `nil`, so the next
-read evaluates it again. `goldens/spec/spec_6_3_3_*` pin first use, the
+read evaluates it again. `goldens/language/slot/accessor/spec_6_3_3_*` pin first use, the
 `nil` answer, the abandoned initializer and one mixin's lazy slot under
 two applications at different field offsets;
-`goldens/spec/spec_6_a_lazy_slot_cannot_name_a_factory_parameter` pins the
-scope rule below, and `goldens/kernel/a_values_lazy_slot_*` the two value
+`goldens/language/slot/accessor/spec_6_a_lazy_slot_cannot_name_a_factory_parameter` pins the
+scope rule below, and `goldens/library/value/a_values_lazy_slot_*` the two value
 rules. An image carries a lazy slot, filled or empty: the mixin table's
 slot record says the slot is lazy, and its getter is one of the row's
 compiled methods ([image-format.md](image-format.md), "Mixin table").
@@ -2228,7 +2230,7 @@ the table has two entries. The design as decided:
   working `show:`, which no golden pinned the other way.
 - **Retired:** `BuiltinClass::Platform`, `Transcript`, `Collections` and
   `KernelNamespace`, with builtin class tags 13, 18, 19 and 29.
-- **One golden changed:** `goldens/kernel/the_platform_and_its_parts_are_values`
+- **One golden changed:** `goldens/library/platform/the_platform_and_its_parts_are_values`
   asked `platform = platform class new`, which `Platform`'s
   `usingVmMirror:kernel:` factory no longer answered; that line was
   replaced, and the other checks kept their recorded output. The factory
@@ -2350,7 +2352,7 @@ its class. That needs its own decision when the first such module arrives.
   `List` is a private class of the factory, handed out by the facet's class
   accessor `public List = ( ^outer CollectionsFactory List )`, path
   `collections List`; a program may still subclass it
-  (`goldens/collections/a_user_subclass_of_list_inherits_its_protocol`).
+  (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`).
 - **`List`, built,** is Primordial Soup's `List` in this runtime's
   Newspeak, with the index of its first element added. Its elements live
   in `data` from `firstIndex` on, `size_` of them, in an `Array` of three
@@ -2379,13 +2381,13 @@ its class. That needs its own decision when the first such module arrives.
   `Vector` does), `anySatisfy:` (Havlak) and `sort:` (DeltaBlue), a
   stable merge sort whose block answers whether its first argument may
   precede its second, Primordial Soup's `lessOrEqual`
-  (`goldens/collections/a_list_is_a_queue_a_stack_and_sorts`). An empty
+  (`goldens/library/collection/a_list_is_a_queue_a_stack_and_sorts`). An empty
   `List`'s `removeFirst` and `removeLast` are `Error`s. Its representation
   -- `data`, `firstIndex` and every helper method -- is private, where
   Primordial Soup's is protected, so that it can change later, to a ring
   buffer say, or under a fuller protocol, without a subclass noticing;
   only `size_` stays protected, as a subclass's view of the size
-  (`goldens/collections/a_user_subclass_of_list_inherits_its_protocol`
+  (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`
   reads it; decided with the user on 2026-10-01). `add:` answers
   the element, and `at:put:` the value, as Smalltalk's and Primordial
   Soup's do, where the kernel's `Array>>at:put:` leaf answers the receiver
@@ -2395,12 +2397,12 @@ its class. That needs its own decision when the first such module arrives.
   sends `value:` to any argument, as any loop written over `at:` would,
   where the `Array>>do:` leaf treats a non-block as a no-op (decided with
   the user on 2026-09-28;
-  `goldens/collections/do_visits_the_elements_a_list_held_when_it_started`).
+  `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`).
   An index outside `1..size` -- whatever capacity the array has spare --
   or one that is no `Integer` is an `Error` signalled through
   `kernelModule Error` with `Array>>at:`'s text, "index 3 out of range:
   valid indices are 1..2 (size 2)", so a program sees one error from
-  either (`goldens/collections/a_list_index_error_is_caught_as_an_error`).
+  either (`goldens/library/collection/a_list_index_error_is_caught_as_an_error`).
 - **`Map` and `Set`, built** (2026-10-01), adapted from Primordial Soup's
   `newspeak/Collections.ns` (Apache 2.0) for DeltaBlue and Havlak, which
   use SOMns's `Dictionary`, `IdentityDictionary`, `Set` and `IdentitySet`.
@@ -2424,7 +2426,7 @@ its class. That needs its own decision when the first such module arrives.
   `Dictionary` does, because Havlak empties and refills its map for every
   loop search. As `List`'s, the representation -- `size_`, `data_`,
   `hashtable_` and every helper -- is private, where Primordial Soup's is
-  protected. `goldens/collections/a_map_and_a_set_keep_insertion_order`
+  protected. `goldens/library/collection/a_map_and_a_set_keep_insertion_order`
   pins both.
 - **The handler search keeps no `OrderedCollection`, built.** `invokeNextHandler`
   counts the enabled `on:do:` activations it passes, and
@@ -2445,14 +2447,14 @@ its class. That needs its own decision when the first such module arrives.
   ([memory.md](memory.md)).
 - **Goldens:** those that wrote `OrderedCollection new` moved to
   `platform collections List new` with their recorded outcomes unchanged;
-  `goldens/nesting/nested_override` starts its slot at the module's `List`,
+  `goldens/language/class/nesting/nested_override` starts its slot at the module's `List`,
   unchanged in output since every ordinary object prints `an Object`;
-  `goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods` lost
+  `goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods` lost
   `MyOrderedCollection`, and one `true an Object` line with it, because
   `List` is no builtin; `the_platform_and_its_parts_are_values`'s
   `c List == OrderedCollection` was replaced by a check that a second
   platform's `List` is the same class. New goldens pin `Array new:`, and
-  `goldens/collections/` pins `List`'s protocol, its growth, its index
+  `goldens/library/collection/` pins `List`'s protocol, its growth, its index
   errors caught and uncaught, a user subclass of `List`, and one module
   shared by every platform.
 
@@ -2481,7 +2483,7 @@ The first `platform collections` now resolves and compiles one more
 module, and `List>>add:` is Newspeak where
 `OrderedCollection>>add:` was a leaf. Each plan measures, release build and
 pinned protocol ([execution.md](execution.md)), the start-up of a module
-that answers at once, and the four `goldens/bench/` fixtures; plan 2 also
+that answers at once, and the four `goldens/tool/bench/` fixtures; plan 2 also
 the start-up of a module that builds one `List`.
 
 **Plan 1, measured 2026-09-27** ([execution.md](execution.md), "What the
@@ -2542,7 +2544,7 @@ handler.
 It follows from the explicit failure block, and nothing short of the
 rejected implicit pass-over could keep the old answer: Newspeak has no send
 that continues a public lookup above a given level. No golden had pinned the
-old behaviour. `goldens/kernel/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
+old behaviour. `goldens/library/builtin-subclass/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
 pins the new one: `Handled = Array new`, declaring
 `doesNotUnderstand:`, answers `Handled new size` with `Object`'s error, not
 with `'handled here'`.
@@ -2674,23 +2676,23 @@ builtin name by inheritance: the constant won before, the inherited member
 wins now, as §2.3.1 says. No existing golden and none of the runnable corpus
 modules had that shape, and no recorded outcome moved. New goldens pin a
 module that declares its own `String`
-(`goldens/nesting/a_module_that_declares_string_uses_its_own.ns`), an
+(`goldens/language/builtin-names/a_module_that_declares_string_uses_its_own.ns`), an
 inherited member named like a builtin
-(`goldens/nesting/an_inherited_member_named_like_a_builtin_wins.ns`), an
+(`goldens/language/builtin-names/an_inherited_member_named_like_a_builtin_wins.ns`), an
 enclosing member named like a builtin as a superclass
-(`goldens/nesting/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
-a class-side `Array` (`goldens/class-side/a_class_side_method_names_a_builtin.ns`),
+(`goldens/language/builtin-names/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
+a class-side `Array` (`goldens/language/class/class-side/a_class_side_method_names_a_builtin.ns`),
 `self Top` and the mirror's class name ending in `doesNotUnderstand:`
-(`goldens/errors/top_is_not_a_name.ns`,
-`goldens/errors/the_mirrors_class_is_not_a_name.ns`), and the super-prefixed
-clause (`goldens/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`).
+(`goldens/language/builtin-names/top_is_not_a_name.ns`,
+`goldens/language/builtin-names/the_mirrors_class_is_not_a_name.ns`), and the super-prefixed
+clause (`goldens/language/class/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`).
 `crates/ns-runtime/tests/object_class_accessors.rs` pins the recognizer and
 the answer under both lowerings.
 
 **Measured** against `909bf40` by the protocol with `-C metadata` layouts
 ([execution.md](execution.md), "What the value conditions cost"), start-up
 included ([execution.md](execution.md), "What the class accessors cost"). The
-four fixtures under `goldens/bench/` name no builtin in their loops and are
+four fixtures under `goldens/tool/bench/` name no builtin in their loops and are
 level, and start-up is level. The throwaway `bench_builtin.ns`, whose loop
 names `Array` and `OrderedCollection` every iteration, is 1.5% slower, about
 1.4 ns per accessor send against the constant load it replaces. `vm::run`

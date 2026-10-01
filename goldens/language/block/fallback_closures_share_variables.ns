@@ -2,7 +2,7 @@ Newspeak3
 'Test'
 (* An inlined ifTrue: keeps a run-time guard: a receiver that is not a
    Boolean gets the real message with a real closure
-   (goldens/language/control_flow_fallback.ns). That closure can be kept
+   (goldens/language/control-flow/control_flow_fallback.ns). That closure can be kept
    and run later, so it must go on reading and writing its frame's
    variables -- which is why closure conversion leaves a fallback closure
    on the by-reference model (docs/design/execution.md, "Fallback

@@ -293,7 +293,7 @@ The reference lowering is unaffected: it reaches everything by reference and
 copies every read of a named local unconditionally, which `check_shape` asserts
 on every body it emits ("What it emits" below). A mistake in the narrower rule
 is silent wrong output at exit status 0, so the reference lowering is the
-oracle for it and `goldens/capture/` pins the cases by hand —
+oracle for it and `goldens/language/block/` pins the cases by hand —
 `a_fallback_closure_writes_a_local_a_send_reads.ns` for the one register shape
 `a_send_can_write` answers `true` for, read as an operand, as an argument and as
 a setter assignment's value.
@@ -420,10 +420,10 @@ the common case: a non-Boolean receiver must still produce the identical
 must produce the identical `mustBeBoolean` error.
 
 Those paths are pinned by recorded answers, which both lowerings must produce:
-`goldens/errors/` holds the non-Boolean receiver and the non-Boolean loop
-condition, and `goldens/language/` a block held in a variable that takes the
-native loop and a `^` out of an inlined loop body;
-`goldens/language/control_flow_fallback.ns` runs a user
+`goldens/language/control-flow/` holds the non-Boolean receiver and the non-Boolean loop
+condition and a block held in a variable that takes the native loop,
+`goldens/language/block/` a `^` out of an inlined loop body;
+`goldens/language/control-flow/control_flow_fallback.ns` runs a user
 `ifTrue:ifFalse:`; and the compiler's own tests (`compiler/lower.rs`,
 `crates/ns-runtime/tests/compiler.rs`) pin the guarded shape the gate emits.
 
@@ -520,12 +520,12 @@ no change, because the field itself is unchanged.
 **Testing.** The paths the guard declines are pinned by recorded answers,
 since a fast path that quietly answered where the primitive would have
 raised passes every other test there is.
-`goldens/arithmetic/integer_leaves_fast_path_and_fallback_agree.ns` runs
+`goldens/library/number/integer/integer_leaves_fast_path_and_fallback_agree.ns` runs
 the fast path beside the two ways the guard declines on ordinary values —
 a `Float` receiver and a non-integer argument to `=` — and floor division on
 the fast path;
-`goldens/arithmetic/an_overflowing_integer_operation_answers_a_large_integer.ns`
-pins the promotion the fallback carries, and `goldens/errors/` holds `//` by
+`goldens/library/number/large-integer/an_overflowing_integer_operation_answers_a_large_integer.ns`
+pins the promotion the fallback carries, and `goldens/library/number/integer/` holds `//` by
 zero, which the primitive turns into an error
 (`inlined_integer_floor_division_by_zero_is_uncaught.ns`), with the
 primitive's own message as the recorded `stderr`. The reference lowering
@@ -955,7 +955,7 @@ that only the reference lowering emits, for exactly the sends
   instance of a user subclass of `True`, which reaches `True`'s quick
   methods: they mark the block as a control-flow step only for a Boolean
   receiver, so its block is counted under both lowerings
-  (`goldens/kernel/recursion_through_a_subclass_of_true_counts_alike_under_both_lowerings`).
+  (`goldens/runtime/depth-limit/recursion_through_a_subclass_of_true_counts_alike_under_both_lowerings`).
 - **The agreement depends on the kernel's fast paths, which is why they
   apply under both lowerings.** The reference lowering's `SendInlinable` of
   `ifTrue:` reaches `True>>ifTrue:`, a kernel method. Activated, that method
@@ -1037,8 +1037,8 @@ activation is reified, so the condition cannot be weakened to "the sender has
 a frame". The control-flow steps sent from Rust, where their continuation
 runs at the floor of the run, answer what they should and leave both depths at
 0. The goldens
-`goldens/limits/thousand_deep_recursion_runs.ns` and
-`goldens/limits/unbounded_recursion_is_a_newspeak_error.ns` pin a thousand-deep
+`goldens/runtime/depth-limit/thousand_deep_recursion_runs.ns` and
+`goldens/runtime/depth-limit/unbounded_recursion_is_a_newspeak_error.ns` pin a thousand-deep
 recursion through an `ifFalse:` block and the overflow's output, exit status and
 error text, under both lowerings.
 
@@ -1093,7 +1093,7 @@ it is never read-only: the capture analysis counts it mutable, and the
 clause's end is a second write after every future's block was created, so a
 sibling's block that reads it shares it through the indirection vector
 rather than copying the **nil** its register held
-(`goldens/spec/spec_6_3_2_a_captured_sibling_is_read_after_the_clause`); the
+(`goldens/language/slot/simultaneous/spec_6_3_2_a_captured_sibling_is_read_after_the_clause`); the
 optimized lowering's writable table agrees. `ResolveFuture` runs user code
 -- the future's block -- as a send does, and runs again once the block has
 answered, reading its source afresh, so its source is protected across it

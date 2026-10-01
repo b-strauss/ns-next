@@ -2362,7 +2362,7 @@ mod tests {
     }
 
     /// The two nested inlined loops of
-    /// `goldens/capture/writes_two_inlined_levels_deep.ns`, as a method body
+    /// `goldens/language/block/writes_two_inlined_levels_deep.ns`, as a method body
     /// and as a block body. Both levels are loops on purpose: a loop's
     /// guard-failure path is `mustBeBoolean`, with no closure, so no
     /// inlinable conditional assigns `t` and `branch_assigned` is false. The

@@ -9,7 +9,7 @@
 # alone or on no benchmark at all.
 
 [profile.default]
-default-filter = "not (test(~awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark))"
+default-filter = "not (test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark))"
 
 [profile.benchmarks]
-default-filter = "test(~awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)"
+default-filter = "test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)"

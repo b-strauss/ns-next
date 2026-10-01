@@ -4,7 +4,7 @@ Newspeak3
    inherits them: its instance runs the true branch and prints as true,
    where Boolean itself declares nothing and an instance of a subclass of
    it falls to Object's methods
-   (`goldens/kernel/a_subclass_of_a_builtin_falls_to_objects_methods`).
+   (`goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`).
 
    The module is a value because §3.1.1 asks a value class's enclosing
    object to be one; the transcript lives in `Script`, which is no value. *)

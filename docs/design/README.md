@@ -89,10 +89,10 @@ guarantee it gives up or the complexity it adds.
 | Editor support: the language server and the JetBrains plugin | [editor-support.md](editor-support.md) | Built — highlighting and errors as you type in every commercial JetBrains IDE from 2026.1.4; the server bundled for Windows x64 | formatting, navigation, more platforms |
 
 Real programs to measure the runtime on, beside the microbenchmarks under
-`goldens/bench/`, live in `benchmarks/`: today
+`goldens/tool/bench/`, live in `benchmarks/`: today
 `benchmarks/are-we-fast-yet/`, the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, which [execution.md](execution.md), "The Are We Fast Yet
-benchmarks", describes and `goldens/awfy/` verifies.
+benchmarks", describes and `goldens/tool/awfy/` verifies.
 
 ## Architecture
 
@@ -214,14 +214,14 @@ root with `packageUsing:` its manifest; either reaches the platform only as
 ([image-format.md](image-format.md), "Packaging"). A project golden's
 modules live in the directory `goldens/<category>/<name>/` beside its
 `<name>.json`, or in a tree several goldens share outside `goldens/`, which
-its project file names by relative paths: each `goldens/awfy/` golden is a
+its project file names by relative paths: each `goldens/tool/awfy/` golden is a
 project file over `benchmarks/are-we-fast-yet/`. The modules are not
-goldens themselves, and `goldens/manifest/` pins the manifest.
+goldens themselves, and `goldens/tool/manifest/` pins the manifest.
 
 A fifth key, `arguments`, lists the program's arguments, which every runner
 passes after `--` to each command that sends the entry -- `run`, and `load` in
 the round trip -- so `main:args:` receives them (§8.4,
-`goldens/spec/spec_8_4_main_args_receives_the_program_arguments`); most
+`goldens/language/module/spec_8_4_main_args_receives_the_program_arguments`); most
 goldens have none and receive an empty list.
 
 A fourth key, `skipped`, carries why the runtime does not answer this one
@@ -238,30 +238,56 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 
 | Directory | What belongs in it |
 |---|---|
-| `arithmetic/` | the inlined integer fast path beside the ways its guard declines, which must answer what the primitive answers; floor division and its remainder, `bitAnd:`, `bitOr:`, `bitXor:`, `bitInvert`, `<<`, `asFloat`, `sqrt`, `sin`, `cos`, `asInteger`, an integer meeting a `Float`, `Float`'s `<=`, `>=` and `asStringFixed:`, a NaN equal to every NaN; large integers -- promotion, their arithmetic at every algorithm's size, mixed operands and literals |
-| `awfy/` | the Are We Fast Yet harness, verified; its sources live in `benchmarks/are-we-fast-yet/` |
-| `bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
-| `cache/` | an outcome an inline cache could change, each added before any cache existed |
-| `capture/` | what a block captures: copied variables, indirection vectors, the fallback closures of an inlined conditional |
-| `class-side/` | class sides and metaclasses: an implicit class side, `outer` from one, class-side `super` reaching `Class`, a class side's `doesNotUnderstand:`, the class of a class and of a metaclass, their names, and the refusal to instantiate a class object |
-| `collections/` | the collections module behind `platform collections`: `List`'s protocol, its queue, its growth, its index errors, a user subclass, `Map` and `Set`, and one module shared by every platform |
-| `errors/` | a program that raises, where the error text and the exit status are the point — among them one golden per kind of module root the root rule refuses |
-| `exceptions/` | §8.6's exceptions: signalling, handling, `return:`, `retry`, `resume:` and `pass`, the handler environment, `ensure:` and `ifCurtailed:` on every way out, VM errors and `doesNotUnderstand:` caught, a String's index errors, and the depth limit's reserve |
-| `kernel/` | the core library in `Kernel.ns` and the platform's: `Number`'s iteration, a String's code points in either width, `timesRepeat:` and `max:`, the stopwatch, what a user subclass of a builtin inherits, the one outcome the move defined, a recursion through kernel methods the two lowerings count alike, and §3.1.1's value semantics — a value's derived equality and hash, its lack of identity, and every one of its value conditions, those decided at class creation included, each refused at instantiation, and a class object that is a value because its enclosing object is |
-| `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
-| `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
-| `manifest/` | projects: a root assembled with `packageUsing:` and the manifest of the other modules, a name the manifest does not hold, and a manifest the application keeps through `build` and `load`; each project's modules in the directory of its name |
-| `mixin/` | §6.2's mixin application: lookup and `super` through the applied levels, `outer` from an applied mixin, the order of several `<:` clauses, the initializer order, the level's factory selector, the errors a clause raises, and a module that declares itself a value with `<: Value` |
-| `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
-| `spec/` | one named rule of `newspeak-spec.pdf`, its section in the file name |
+| `language/` | what the compiler, the resolver and the object model decide |
+| `language/syntax/` | the grammar's rules: the unreserved words, literals and their signs, symbols' forms, precedence, cascades, type parameters |
+| `language/module/` | a module's root: every kind of root the root rule refuses, a module without a category, and `main:args:`'s arguments |
+| `language/builtin-names/` | which names a program sees: no `Character`, no `Top`, no mirror class, and a member of a program's own named like a builtin, which wins |
+| `language/class/` | classes and their objects |
+| `language/class/instantiation/` | factories, superclass clauses and their arguments, the initializer and the order instantiation runs in |
+| `language/class/class-side/` | class sides and metaclasses: an implicit class side, `outer` from one, class-side `super` reaching `Class`, a class side's `doesNotUnderstand:`, the class of a class and of a metaclass, their names, the factory as a class-side member, and the refusal to instantiate a class object |
+| `language/class/nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super`, a slot overriding a nested class |
+| `language/class/mixin/` | §6.2's mixin application: lookup and `super` through the applied levels, `outer` from an applied mixin, the order of several `<:` clauses, the initializer order, the level's factory selector, the errors a clause raises, and a module that declares itself a value with `<: Value` |
+| `language/slot/` | slots |
+| `language/slot/accessor/` | slot accessors and setters, an immutable slot, and §6.3.3's lazy slots |
+| `language/slot/simultaneous/` | §6.3.2's simultaneous slots and temporaries: futures, data cycles, ill-founded recursion and an abandoned clause |
+| `language/method/` | a method body: its answer without a return, its parameters and its temporaries (§3.5, §3.6, §5.1.8) |
+| `language/send/` | sends and lookup: `doesNotUnderstand:`, a native declining to `Object`'s method, public, protected and private access (§5.5, §6.3.1), lexical before inherited (§5.7), `self` and `super` sends |
+| `language/block/` | blocks and closures: what a block captures -- copied variables, indirection vectors, the fallback closures of an inlined conditional --, a closure outliving its method, non-local return and its `cannotReturn:`, an immutable block parameter |
+| `language/control-flow/` | conditionals, `and:`/`or:`, loops and `Number`'s iteration, inlined and through their fallback, and a non-Boolean receiver or condition |
+| `language/evaluation-order/` | an operand or an assignment's value that keeps what it evaluated to while a later send writes its variable |
+| `library/` | the core library: `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns` |
+| `library/object/` | `nil`, `isNil` and the identity hash |
+| `library/number/` | numbers |
+| `library/number/integer/` | the inlined integer fast path beside the ways its guard declines, which must answer what the primitive answers; floor division and its remainder, `bitAnd:`, `bitOr:`, `bitXor:`, `<<` and their errors |
+| `library/number/large-integer/` | large integers: promotion, their arithmetic at every algorithm's size, mixed operands, literals and division by zero |
+| `library/number/float/` | `Float`'s arithmetic, `sqrt`, `sin`, `cos`, `asInteger`, `<=`, `>=` and `asStringFixed:`, an integer meeting a `Float`, a NaN equal to every NaN |
+| `library/string/` | strings and symbols: a String's code points in either width, literals, index errors and equal symbols |
+| `library/collection/` | `Array`'s creation and index errors, and the collections module behind `platform collections`: `List`'s protocol, its queue, its growth, its index errors, a user subclass, `Map` and `Set`, and one module shared by every platform |
+| `library/exception/` | §8.6's exceptions: signalling, handling, `return:`, `retry`, `resume:` and `pass`, the handler environment, `ensure:` and `ifCurtailed:` on every way out, VM errors and `doesNotUnderstand:` caught, and an unhandled one ending the run |
+| `library/value/` | §3.1.1's value semantics: a value's derived equality and hash, its lack of identity, and every one of its value conditions, those decided at class creation included, each refused at instantiation, and a class object that is a value because its enclosing object is |
+| `library/builtin-subclass/` | what a user subclass of a builtin inherits, falls back to and how it hashes, and §5.10's handler passed by through `super` |
+| `library/platform/` | the platform's parts: the transcript, the stopwatch, a second platform, and the platform as a value |
+| `runtime/` | what the VM guarantees beyond the language's rules |
+| `runtime/cache/` | an outcome an inline cache could change, each added before any cache existed |
+| `runtime/depth-limit/` | the activation limit: what still runs at 1000 deep, what overflows, the reserve a handler runs in, and a recursion through the core library the two lowerings count alike |
+| `tool/` | the tools around `ns-next run`: projects and the benchmark harnesses |
+| `tool/manifest/` | projects: a root assembled with `packageUsing:` and the manifest of the other modules, a name the manifest does not hold, and a manifest the application keeps through `build` and `load`; each project's modules in the directory of its name |
+| `tool/awfy/` | the Are We Fast Yet harness, verified; its sources live in `benchmarks/are-we-fast-yet/` |
+| `tool/bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
 
-A golden lives in a category directory, one level down, and the set is found
-by reading `goldens/` and then each category — no list, no count, so adding
-one needs no edit anywhere. A project golden's modules live in the directory
-named like it (`<name>.json` and `<name>/`), the one place a golden nests, or
-in a shared tree outside `goldens/`, as `awfy/`'s do; neither's contents are
-goldens, and neither is walked. Anything else at
-another depth is refused by name rather than skipped, because a golden nothing discovers is not a golden at
+A golden named `spec_<section>_...` pins one named rule of
+`newspeak-spec.pdf`, its section in the file name; it lives with its theme.
+
+The goldens are a tree. A directory that holds files is a category and holds
+goldens only; one that holds none groups categories or further groups. The
+set is found by walking it — no list, no count, so adding a golden needs no
+edit anywhere, and `cargo nextest run -p ns-cli --test run_goldens
+library/number` runs one subtree. A project golden's modules live in the
+directory named like it (`<name>.json` and `<name>/`), the one directory a
+category may hold, or in a shared tree outside `goldens/`, as `tool/awfy/`'s
+do; neither's contents are goldens, and neither is walked. A file at the
+root, a directory beside goldens or an empty directory is refused by name
+rather than skipped, because a golden nothing discovers is not a golden at
 all. `every_golden_is_a_complete_pair` covers the other half: an orphan on
 either side is a golden that stopped being discovered because one half was
 renamed, moved or re-extended. Deleting both halves together is not caught,
@@ -274,7 +300,7 @@ explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `awfy/` goldens share one root, the harness, so theirs is the
 harness's own header in `benchmarks/are-we-fast-yet/AreWeFastYet.ns`, which
 says what an untimed run prints and gives the usage line the refusals pin;
-their file names say which case each is. Every `goldens/awfy/*.json` lists
+their file names say which case each is. Every `goldens/tool/awfy/*.json` lists
 every module of `benchmarks/are-we-fast-yet/are-we-fast-yet.json`, because the
 harness names each benchmark when it is instantiated; a new benchmark is added
 to the harness tuple, the project file, each `awfy` golden `.json`,
