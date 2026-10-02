@@ -1068,7 +1068,7 @@ mkdir -p goldens/runtime/encoding
   echo ") ("
   echo "    public main: platform args: arguments = ("
   printf "        |"; for index in $(seq 1 300); do printf " t%d" "$index"; done; echo " |"
-  for index in $(seq 1 300); do echo "        t$index ::= $index."; done
+  for index in $(seq 1 300); do echo "        t$index:: $index."; done
   echo "        platform transcript show: (t1 + t150 + t300) printString; newLine."
   echo "        platform transcript show: [t300 + t299] value printString; newLine."
   echo "    )"
@@ -1131,9 +1131,9 @@ Run: `cargo nextest run -p ns-cli encoding`
 Expected: both goldens pass under both lowerings. Before trusting the expected output, check each line by hand against the program (`CLAUDE.md`: an outcome is established, never copied from what the code printed).
 
 - [ ] **Step 4: Bodies past sixteen bits.** `tests/compact_encoding.rs` builds three modules with `format!` (each a `main:args:` of 65,537 statements) and runs each under both lowerings as below:
-  - 65,537 assignments of distinct integer literals beyond `i32` (`x ::= 3000000000.`, `x ::= 3000000001.`, …), then `^x`: the last constant is in a `Wide`, and the answer is `3000065536`;
-  - 65,537 sends `x ::= x + 1.` with `x` starting at `0` (under both lowerings the body has 65,537 send sites: the reference lowering's uncached `SendPublic`, the optimized one's fallback send behind each `IntegerAdd`), answering `65537`;
-  - 65,537 string literals `s ::= 'a'.`, then `^s size`, answering `1`.
+  - 65,537 assignments of distinct integer literals beyond `i32` (`x:: 3000000000.`, `x:: 3000000001.`, …), then `^x`: the last constant is in a `Wide`, and the answer is `3000065536`;
+  - 65,537 sends `x:: x + 1.` with `x` starting at `0` (under both lowerings the body has 65,537 send sites: the reference lowering's uncached `SendPublic`, the optimized one's fallback send behind each `IntegerAdd`), answering `65537`;
+  - 65,537 string literals `s:: 'a'.`, then `^s size`, answering `1`.
 
   Each method is `public run = ( | x | … )` on a class built with `indoc!`-free `format!` (the source is generated, not written inline), loaded, instantiated and sent `run` with `tests/vm.rs`'s helpers (`load`, `new_instance`, `send`, `expect_ok`, `integer_of`, copied into the new file), under both lowerings as `tests/reference_lowering.rs` selects them. Each test asserts the answer, and that the method's `CompiledCode::instruction_count()` is what the source implies; each runs in a few seconds in a debug build.
 
