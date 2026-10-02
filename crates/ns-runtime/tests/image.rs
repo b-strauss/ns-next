@@ -2350,9 +2350,9 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
         let ObjectData::Instance(fields) = &snapshot.data else {
             panic!("expected an instance")
         };
-        assert!(fields[0].as_small_integer() == Some(1));
+        assert!(heap.load(fields[0]).as_small_integer() == Some(1));
         assert!(matches!(
-            heap.str_value(object(&fields[1])).as_deref(),
+            heap.str_value(object(&heap.load(fields[1]))).as_deref(),
             Some("two")
         ));
     });
@@ -2425,7 +2425,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         assert_eq!(
             home.temporaries
                 .last()
-                .and_then(|value| value.as_small_integer()),
+                .and_then(|word| heap.load(*word).as_small_integer()),
             Some(9)
         );
         assert!(home.uncontinuable, "`mk` had returned");
@@ -2446,7 +2446,9 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             ),
             "re-resolved against the class's method map"
         );
-        assert!(heap.class_of_object(object(&home.receiver)).same(class));
+        assert!(heap
+            .class_of_object(object(&heap.load(home.receiver)))
+            .same(class));
         assert!(home
             .current_class
             .as_ref()
@@ -3247,7 +3249,7 @@ fn a_closure_capturing_a_block_activation_round_trips() {
             inner
                 .copied
                 .first()
-                .and_then(|value| value.as_small_integer()),
+                .and_then(|word| heap.load(*word).as_small_integer()),
             Some(5)
         );
         assert!(
@@ -3568,7 +3570,7 @@ fn a_closure_records_its_copied_values_and_a_wrong_count_is_refused() {
                 closure_data
                     .copied
                     .iter()
-                    .map(|value| value.as_small_integer())
+                    .map(|word| heap.load(*word).as_small_integer())
                     .collect::<Vec<_>>(),
                 [Some(7), Some(8)]
             );
@@ -8197,10 +8199,13 @@ fn a_frames_sender_survives_a_round_trip() {
             interpreter.enter(|mutator| {
                 let class = class_reference(mutator, class);
                 let foo = method_code(mutator.heap(), class, "foo");
-                let frame_running = |receiver: i64, sender| ns_runtime::Frame {
-                    receiver: Value::small_integer(receiver),
+                let nil = mutator.heap().store(Value::nil());
+                let seven = mutator.heap().store(Value::small_integer(7));
+                let eight = mutator.heap().store(Value::small_integer(8));
+                let frame_running = |receiver, sender| ns_runtime::Frame {
+                    receiver,
                     arguments: vec![],
-                    temporaries: vec![Value::nil(); foo.register_count as usize],
+                    temporaries: vec![nil; foo.register_count as usize],
                     program_counter: 0,
                     sender,
                     home: None,
@@ -8208,10 +8213,12 @@ fn a_frames_sender_survives_a_round_trip() {
                     kind: FrameKind::TopLevel,
                     uncontinuable: true,
                 };
-                let sender = mutator.heap_mut().allocate_frame(frame_running(7, None));
+                let sender = mutator
+                    .heap_mut()
+                    .allocate_frame(frame_running(seven, None));
                 let frame = mutator
                     .heap_mut()
-                    .allocate_frame(frame_running(8, Some(sender)));
+                    .allocate_frame(frame_running(eight, Some(sender)));
                 let block_class = mutator.builtin_class(BuiltinClass::Block);
                 let closure = mutator.heap_mut().allocate_object(
                     block_class,
@@ -10314,7 +10321,7 @@ fn reaches_a_future<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
             pending.extend((0..count).filter_map(|index| heap.instance_field(object, index)));
         }
         if let Some(closure) = heap.closure_data(object) {
-            pending.extend(closure.copied.iter().copied());
+            pending.extend(closure.copied.iter().map(|word| heap.load(*word)));
         }
     }
     false

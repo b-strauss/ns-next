@@ -1449,7 +1449,11 @@ impl<'gc> Mutator<'gc> {
 
     pub fn new_array(&mut self, elements: Vec<Value<'gc>>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Array);
-        self.new_instance_object(class, ObjectData::Array(elements))
+        let words = elements
+            .into_iter()
+            .map(|element| self.heap.store(element))
+            .collect();
+        self.new_instance_object(class, ObjectData::Array(words))
     }
 
     pub fn new_string(&mut self, string: String) -> ObjectReference<'gc> {
@@ -1547,11 +1551,12 @@ impl<'gc> Mutator<'gc> {
             .heap
             .class_application(class)
             .expect("internal: a kernel class has an application");
-        let mut fields = vec![Value::nil(); application.slot_count];
+        let mut fields = vec![Word::NIL; application.slot_count];
         let mut level = Some(application);
         while let Some(current) = level {
             for (position, slot) in current.mixin.slots.iter().enumerate() {
-                fields[current.own_slot_base + position] = slot_value(slot.name.as_str());
+                fields[current.own_slot_base + position] =
+                    self.heap.store(slot_value(slot.name.as_str()));
             }
             level = current.superclass.clone();
         }

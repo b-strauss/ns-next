@@ -1,7 +1,7 @@
 //! What the collector traces (`docs/design/memory.md`, "What the collector
 //! traces"): every field of every runtime type that holds an `ObjectReference`,
-//! a `ClassReference` or a `FrameReference`, handed to a `Tracer` one `&mut` at
-//! a time. Enumerating is this module's; rewriting is `heap.rs`'s `Forwarder`,
+//! a `ClassReference`, a `FrameReference` or a stored `Word`, handed to a
+//! `Tracer` one `&mut` at a time. Enumerating is this module's; rewriting is `heap.rs`'s `Forwarder`,
 //! since only `heap.rs` can mint a handle.
 //!
 //! Every impl names every field and matches every variant, with no `..` and
@@ -14,12 +14,14 @@
 //! stress mode's forwarding walks, which is what keeps the two from
 //! disagreeing about what holds a handle.
 
-use crate::heap::{FrameReference, ObjectReference};
+use crate::heap::{FrameReference, ObjectReference, Word};
 use crate::types::*;
 
 pub(crate) trait Tracer {
     fn object(&mut self, handle: &mut ObjectReference<'_>);
     fn frame(&mut self, handle: &mut FrameReference<'_>);
+    /// A stored word: rewritten by its index, since it carries no epoch.
+    fn word(&mut self, word: &mut Word);
     fn value(&mut self, value: &mut Value<'_>) {
         if let Some(mut object) = value.as_object() {
             self.object(&mut object);
@@ -35,6 +37,12 @@ pub(crate) trait Trace {
 fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
     for value in values {
         tracer.value(value);
+    }
+}
+
+fn trace_words<T: Tracer>(words: &mut [Word], tracer: &mut T) {
+    for word in words {
+        tracer.word(word);
     }
 }
 
@@ -60,9 +68,7 @@ impl Trace for Object<'_> {
 impl Trace for ObjectData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            ObjectData::Instance(values) | ObjectData::Array(values) => {
-                trace_values(values, tracer)
-            }
+            ObjectData::Instance(words) | ObjectData::Array(words) => trace_words(words, tracer),
             ObjectData::String(_)
             | ObjectData::Symbol(_)
             | ObjectData::LargeInteger(_)
@@ -83,7 +89,7 @@ impl Trace for ClosureData<'_> {
             feedback_base: _, // not a handle
         } = self;
         tracer.frame(captured_frame);
-        trace_values(copied, tracer);
+        trace_words(copied, tracer);
     }
 }
 
@@ -123,9 +129,9 @@ impl Trace for Frame<'_> {
             kind,
             uncontinuable: _,
         } = self;
-        tracer.value(receiver);
-        trace_values(arguments, tracer);
-        trace_values(temporaries, tracer);
+        tracer.word(receiver);
+        trace_words(arguments, tracer);
+        trace_words(temporaries, tracer);
         if let Some(sender) = sender {
             tracer.frame(sender);
         }

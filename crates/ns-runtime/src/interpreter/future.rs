@@ -174,9 +174,9 @@ impl<'gc> Mutator<'gc> {
         );
         self.futures_made = true;
         let class = self.builtin_class(BuiltinClass::Future);
-        let mut fields = vec![Value::nil(); FIELD_COUNT];
-        fields[COMPUTATION_FIELD] = Value::object(closure);
-        fields[STATE_FIELD] = Value::small_integer(UNRESOLVED);
+        let mut fields = vec![Word::NIL; FIELD_COUNT];
+        fields[COMPUTATION_FIELD] = self.heap.store(Value::object(closure));
+        fields[STATE_FIELD] = self.heap.store(Value::small_integer(UNRESOLVED));
         self.heap
             .allocate_object(class, ObjectData::Instance(fields))
     }
@@ -378,7 +378,10 @@ pub(crate) fn fields_for_an_image<'gc>(
 /// name a record decoded later, so the closure half is checked once every
 /// record is in (`decode::decode_graph_section`); this answers the closure
 /// it names, if the rest holds.
-pub(crate) fn decoded_future_computation<'gc>(fields: &[Value<'gc>]) -> Option<Value<'gc>> {
+pub(crate) fn decoded_future_computation<'gc>(
+    heap: &Heap<'gc>,
+    fields: &[Word],
+) -> Option<Value<'gc>> {
     if fields.len() != FIELD_COUNT {
         return None;
     }
@@ -386,9 +389,9 @@ pub(crate) fn decoded_future_computation<'gc>(fields: &[Value<'gc>]) -> Option<V
         fields.get(COMPUTATION_FIELD),
         fields
             .get(STATE_FIELD)
-            .and_then(|state| state.as_small_integer()),
+            .and_then(|state| heap.load(*state).as_small_integer()),
     ) {
-        (Some(computation), Some(UNRESOLVED)) => Some(*computation),
+        (Some(computation), Some(UNRESOLVED)) => Some(heap.load(*computation)),
         _ => None,
     }
 }

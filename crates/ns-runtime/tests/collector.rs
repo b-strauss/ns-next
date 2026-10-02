@@ -409,3 +409,75 @@ fn allocating_past_the_limit_collects_during_the_run() {
         "the run reached 5000 closures without the trigger firing a single collection"
     );
 }
+
+/// Every kind of value a heap object stores -- a `SmallInteger`, a boxed
+/// float, a `LargeInteger`, `nil` and another object -- survives being
+/// stored as a bare word through a move and a collection at every
+/// safepoint: the collector rewrites each word by its index, and every word
+/// reads back as the value that was stored.
+#[test]
+#[cfg(debug_assertions)]
+fn every_kind_of_stored_word_survives_moves_and_collections() {
+    let source = indoc! {"
+        class Boxes = Object new () (
+          class Box integer: anInteger float: aFloat large: aLarge empty: anEmpty next: aNext = Object new (|
+            public integer = anInteger.
+            public float = aFloat.
+            public large = aLarge.
+            public empty = anEmpty.
+            public next = aNext.
+          |) ()
+          public build: count = (
+            | boxes = Array new: count. previous |
+            previous:: Box integer: 0 float: 0.0 large: 0 empty: nil next: nil.
+            1 to: count do: [:index |
+              previous:: Box
+                integer: index
+                float: 1.0e300 * index
+                large: 18446744073709551616 + index
+                empty: nil
+                next: previous.
+              boxes at: index put: previous].
+            ^boxes
+          )
+          public check: boxes = (
+            | sum last |
+            sum:: 0.
+            boxes do: [:box |
+              sum:: sum + box integer + box next integer
+                + (box large - 18446744073709551616).
+              box float = (1.0e300 * box integer) ifFalse: [^'a float changed'].
+              box empty isNil ifFalse: [^'a nil field changed']].
+            last:: boxes at: boxes size.
+            ^sum printString, ' ', last float class name, ' ', (last float = 1.0e303) printString,
+              ' ', last large printString,
+              ' ', last empty printString, ' ', last next integer printString
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.set_stress_moves(true);
+    interpreter.set_stress_collect(true);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]));
+    let count = interpreter.stash(Value::small_integer(1000));
+    let boxes = expect_ok(interpreter.send(&instance, Symbol::intern("build:"), &[count]));
+    let answer = expect_ok(interpreter.send(&instance, Symbol::intern("check:"), &[boxes]));
+    let text = interpreter.enter(|mutator| {
+        let Some(string) = mutator.fetch(&answer).as_object() else {
+            panic!("check: answers a String")
+        };
+        mutator.heap().str_value(string).expect("a String")
+    });
+
+    // Each box adds its index twice and its predecessor's once:
+    // 2 * 500500 + 499500.
+    assert_eq!(
+        text, "1500500 Float true 18446744073709552616 nil 999",
+        "every stored word reads back as the value stored"
+    );
+    assert!(interpreter.moves() > 0, "the stress modes never moved");
+    assert!(
+        interpreter.stress_collections() > 0,
+        "the collect stress mode never collected"
+    );
+}

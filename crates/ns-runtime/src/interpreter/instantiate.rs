@@ -560,7 +560,7 @@ impl<'gc> Mutator<'gc> {
         // chain here again would be a second answer to the same question.
         let slot_count = application.map_or(0, |application| application.slot_count);
         let instance =
-            self.new_instance_object(class, ObjectData::Instance(vec![Value::nil(); slot_count]));
+            self.new_instance_object(class, ObjectData::Instance(vec![Word::NIL; slot_count]));
         let state = self.walk_state(Value::object(instance));
         self.climb_levels(state, class, factory_arguments)
     }

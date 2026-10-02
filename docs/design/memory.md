@@ -728,7 +728,10 @@ compares the two, so a handle the tracer missed panics at its first read
 checks the forwarding; the epoch checks the completeness. The `Forwarder`
 checks each handle it rewrites as well — its origin, and that its epoch is the
 one being moved from — because a foreign or stale handle stored in the heap is
-a mistake the move would otherwise make permanent. `ActivationReference` carries no
+a mistake the move would otherwise make permanent. A value stored in a heap
+object or a register is a bare `Word` with no epoch to check, so `Heap::store`
+refuses a foreign or stale value when it is stored, and the move rewrites the
+word by its index. `ActivationReference` carries no
 epoch: no stack entry moves, and its generation already covers an index reused
 after a pop. V8's `--stress-compaction`, SpiderMonkey's compacting GC zeal mode
 and HotSpot's `ScavengeALot` exist for the same reason. Here the stress mode

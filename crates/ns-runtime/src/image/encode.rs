@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::Heap;
+use crate::heap::{Heap, Word};
 use crate::interpreter::future;
 use crate::types::{
     BuiltinClass, ClassData, ClassReference, ClosureData, FrameKind, FrameReference, ObjectData,
@@ -1127,7 +1127,7 @@ impl<'gc> GraphTable<'gc> {
             }
             match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
-                    stack.extend(fields.iter().copied().map(Pending::Value));
+                    stack.extend(fields.iter().map(|word| Pending::Value(heap.load(*word))));
                 }
                 ObjectData::Closure(closure) => {
                     stack.push(Pending::Frame(closure.captured_frame));
@@ -1135,7 +1135,12 @@ impl<'gc> GraphTable<'gc> {
                     // the captured frame on both sides of the wire
                     // (`Heap::closure_home`), so it is never a reference of
                     // its own.
-                    stack.extend(closure.copied.iter().copied().map(Pending::Value));
+                    stack.extend(
+                        closure
+                            .copied
+                            .iter()
+                            .map(|word| Pending::Value(heap.load(*word))),
+                    );
                 }
                 // A metaclass record writes one reference, its class:
                 // everything else about it is derived from that class.
@@ -1179,9 +1184,14 @@ impl<'gc> GraphTable<'gc> {
         let before = stack.len();
         {
             let snapshot = heap.frame_snapshot(frame);
-            stack.push(Pending::Value(snapshot.receiver));
-            stack.extend(snapshot.arguments.iter().copied().map(Pending::Value));
-            stack.extend(snapshot.temporaries.iter().copied().map(Pending::Value));
+            stack.push(Pending::Value(heap.load(snapshot.receiver)));
+            stack.extend(
+                snapshot
+                    .arguments
+                    .iter()
+                    .chain(snapshot.temporaries.iter())
+                    .map(|word| Pending::Value(heap.load(*word))),
+            );
             stack.extend(
                 snapshot
                     .sender
@@ -1468,6 +1478,15 @@ fn encode_values<'gc>(
     }
 }
 
+/// `encode_values` for what a heap object stores, read through
+/// `Heap::load`.
+fn encode_words<'gc>(writer: &mut Writer, words: &[Word], context: &EncodeContext<'_, 'gc>) {
+    writer.write_u32(u32_field("value list length", words.len()));
+    for word in words {
+        encode_value(writer, &context.heap.load(*word), context);
+    }
+}
+
 fn encode_frame_reference<'gc>(
     writer: &mut Writer,
     heap: &Heap<'gc>,
@@ -1506,8 +1525,8 @@ fn encode_closure_record<'gc>(
     writer.write_u32(context.code_ids.id_of(code)?);
     writer.write_u32(context.table.frame_id(context.heap, *captured_frame));
     writer.write_u16(u16_field("closure copied value count", copied.len()));
-    for value in copied.iter() {
-        encode_value(writer, value, context);
+    for word in copied.iter() {
+        encode_value(writer, &context.heap.load(*word), context);
     }
     Ok(())
 }
@@ -1657,7 +1676,7 @@ fn encode_object<'gc>(
         }
         ObjectData::Instance(fields) => {
             writer.write_u8(OBJECT_INSTANCE);
-            encode_values(writer, fields, context);
+            encode_words(writer, fields, context);
         }
         ObjectData::String(string) => {
             writer.write_u8(OBJECT_STRING);
@@ -1671,7 +1690,7 @@ fn encode_object<'gc>(
         }
         ObjectData::Array(elements) => {
             writer.write_u8(OBJECT_ARRAY);
-            encode_values(writer, elements, context);
+            encode_words(writer, elements, context);
         }
         ObjectData::Closure(closure) => {
             writer.write_u8(OBJECT_CLOSURE);
@@ -1714,9 +1733,9 @@ fn encode_frame<'gc>(
     symbols: &mut symbols::Builder,
 ) {
     let snapshot = context.heap.frame_snapshot(frame);
-    encode_value(writer, &snapshot.receiver, context);
-    encode_values(writer, &snapshot.arguments, context);
-    encode_values(writer, &snapshot.temporaries, context);
+    encode_value(writer, &context.heap.load(snapshot.receiver), context);
+    encode_words(writer, &snapshot.arguments, context);
+    encode_words(writer, &snapshot.temporaries, context);
     writer.write_u32(u32_field("frame program counter", snapshot.program_counter));
     // An image's code table holds only compiled bodies, so a frame's
     // `program_counter` is always an instruction index and the record does not

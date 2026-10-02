@@ -8,7 +8,7 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::Heap;
+use crate::heap::{Heap, Word};
 use crate::interpreter::instantiate;
 use crate::mixin::DispatchId;
 use crate::types::{
@@ -2473,6 +2473,22 @@ fn decode_values<'gc>(
     Ok(values)
 }
 
+/// `decode_values` for what a heap object stores: each value goes straight
+/// into its word, so a load holds no second list beside the first.
+fn decode_words<'gc>(
+    reader: &mut Reader,
+    context: &mut DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Vec<Word>, DecodeError> {
+    let count = reader.read_u32()? as usize;
+    let mut words = reserve_for(count, reader);
+    for _ in 0..count {
+        let value = decode_value(reader, context, tables)?;
+        words.push(context.mutator.heap.store(value));
+    }
+    Ok(words)
+}
+
 /// An object id off the wire, resolved against the placeholders the first
 /// pass allocated: in range, or `BadObjectId` before anything indexes by it.
 fn decode_object_id<'gc>(
@@ -2534,7 +2550,8 @@ fn decode_closure_record<'gc>(
     }
     let mut copied = reserve_for(count, reader);
     for _ in 0..count {
-        copied.push(decode_value(reader, context, tables)?);
+        let value = decode_value(reader, context, tables)?;
+        copied.push(context.mutator.heap.store(value));
     }
     Ok(ClosureData {
         code,
@@ -2584,8 +2601,9 @@ fn decode_frame<'gc>(
     symbols: &symbols::Table,
 ) -> Result<Frame<'gc>, DecodeError> {
     let receiver = decode_value(reader, context, tables)?;
-    let arguments = decode_values(reader, context, tables)?;
-    let temporaries = decode_values(reader, context, tables)?;
+    let receiver = context.mutator.heap.store(receiver);
+    let arguments = decode_words(reader, context, tables)?;
+    let temporaries = decode_words(reader, context, tables)?;
     let program_counter = reader.read_u32()? as usize;
     let sender = decode_frame_reference(reader, tables)?;
     let home = decode_frame_reference(reader, tables)?;
@@ -2636,7 +2654,7 @@ fn decode_frame<'gc>(
 /// `decode_graph_section`'s second pass before anything can observe it.
 fn placeholder_frame<'gc>() -> Frame<'gc> {
     Frame {
-        receiver: Value::nil(),
+        receiver: Word::NIL,
         arguments: Vec::new(),
         temporaries: Vec::new(),
         program_counter: 0,
@@ -3301,7 +3319,7 @@ pub fn decode_graph_section<'gc>(
         }
         let data = match body {
             OBJECT_INSTANCE => {
-                let fields = decode_values(reader, context, &tables)?;
+                let fields = decode_words(reader, context, &tables)?;
                 // The loading binary lays a shipped class out, not the image,
                 // so an instance of one must fit that layout exactly.
                 if class_named_by_path {
@@ -3321,16 +3339,18 @@ pub fn decode_graph_section<'gc>(
                 // a closure is checked below, once the record it names has
                 // been read.
                 if future_header {
-                    let computation =
-                        crate::interpreter::future::decoded_future_computation(&fields)
-                            .ok_or(DecodeError::FutureRecord)?;
+                    let computation = crate::interpreter::future::decoded_future_computation(
+                        &context.mutator.heap,
+                        &fields,
+                    )
+                    .ok_or(DecodeError::FutureRecord)?;
                     pending_futures.push(computation);
                 }
                 ObjectData::Instance(fields)
             }
             OBJECT_STRING => ObjectData::String(reader.read_code_points()?),
             OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
-            OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
+            OBJECT_ARRAY => ObjectData::Array(decode_words(reader, context, &tables)?),
             OBJECT_CLOSURE => ObjectData::Closure(decode_closure_record(reader, context, &tables)?),
             // One frame id, resolved like a closure's captured frame: every
             // frame was placeholder-allocated before this pass, so a forward

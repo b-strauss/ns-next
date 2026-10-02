@@ -470,7 +470,11 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 }
                 let copied_values = copied
                     .iter()
-                    .map(|register| mutator.heap.register(register_base, *register))
+                    .map(|register| {
+                        mutator
+                            .heap
+                            .store(mutator.heap.register(register_base, *register))
+                    })
                     .collect();
                 let value = Value::object(mutator.new_closure(ClosureData {
                     code: block.clone(),

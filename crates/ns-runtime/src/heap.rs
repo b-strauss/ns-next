@@ -25,7 +25,7 @@ mod value;
 mod world;
 pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
-pub use value::{fits_small_integer, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+pub use value::{fits_small_integer, Value, ValueKind, Word, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
 pub(crate) use world::World;
 
 /// Hands every `Heap` a distinct id, so a handle can name the heap that
@@ -362,7 +362,7 @@ struct StackEntry<'gc> {
 /// allocates nothing.
 #[derive(Default)]
 struct ActivationStack<'gc> {
-    values: Vec<Value<'gc>>,
+    values: Vec<Word>,
     entries: Vec<StackEntry<'gc>>,
     /// How many of `entries` count against the depth limit. Kept as a
     /// running total, since the limit is checked on every push.
@@ -665,6 +665,14 @@ impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
         }
         handle.index = self.frames.apply(handle.index);
     }
+
+    /// A stored word carries no origin or epoch to check: `Heap::store`
+    /// checked it when it was written, and every move rewrites it here.
+    fn word(&mut self, word: &mut Word) {
+        if let Some(index) = word.object_index() {
+            *word = Word::with_object_index(self.objects.apply(index));
+        }
+    }
 }
 
 impl crate::trace::Trace for StackEntry<'_> {
@@ -952,6 +960,32 @@ impl<'gc> Heap<'gc> {
     // re-check the class it reaches through, which by construction came out
     // of the same heap.
 
+    /// A stored word as a value: given this heap's id and current epoch,
+    /// since every collection rewrites every stored word, so no stored word
+    /// can be stale.
+    #[inline(always)]
+    pub fn load(&self, word: Word) -> Value<'gc> {
+        Value::from_word(
+            word,
+            #[cfg(debug_assertions)]
+            self.heap_id,
+            #[cfg(debug_assertions)]
+            self.epoch,
+        )
+    }
+
+    /// A value as a word to store. In a debug build the value must carry
+    /// this heap's id and current epoch: a stored word has nothing left for
+    /// the next move to check, so a stale handle is refused here or never.
+    #[inline(always)]
+    pub fn store(&self, value: Value<'gc>) -> Word {
+        #[cfg(debug_assertions)]
+        if let Some(object) = value.as_object() {
+            self.check_object_origin(object);
+        }
+        value.word()
+    }
+
     /// Refuses a handle that another heap allocated. Compiles to nothing in
     /// a release build: the origin field does not exist there, so this is a
     /// no-op the optimizer removes entirely. The message names the two ids
@@ -1159,7 +1193,7 @@ impl<'gc> Heap<'gc> {
     pub fn array_elements(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
-            ObjectData::Array(items) => Some(items.clone()),
+            ObjectData::Array(items) => Some(items.iter().map(|word| self.load(*word)).collect()),
             _ => None,
         }
     }
@@ -1167,7 +1201,7 @@ impl<'gc> Heap<'gc> {
     pub fn array_at(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
-            ObjectData::Array(items) => items.get(index).copied(),
+            ObjectData::Array(items) => items.get(index).map(|word| self.load(*word)),
             _ => None,
         }
     }
@@ -1183,9 +1217,10 @@ impl<'gc> Heap<'gc> {
         value: Value<'gc>,
     ) -> bool {
         self.check_object_origin(object);
+        let word = self.store(value);
         if let ObjectData::Array(items) = &mut self.objects[object.index as usize].data {
             if index < items.len() {
-                items[index] = value;
+                items[index] = word;
                 return true;
             }
         }
@@ -1198,7 +1233,7 @@ impl<'gc> Heap<'gc> {
     pub fn instance_field(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
-            ObjectData::Instance(fields) => fields.get(index).copied(),
+            ObjectData::Instance(fields) => fields.get(index).map(|word| self.load(*word)),
             _ => None,
         }
     }
@@ -1211,9 +1246,10 @@ impl<'gc> Heap<'gc> {
         value: Value<'gc>,
     ) -> bool {
         self.check_object_origin(object);
+        let word = self.store(value);
         if let ObjectData::Instance(fields) = &mut self.objects[object.index as usize].data {
             if index < fields.len() {
-                fields[index] = value;
+                fields[index] = word;
                 return true;
             }
         }
@@ -2202,7 +2238,7 @@ impl<'gc> Heap<'gc> {
     /// needs no redirect while the frame is married.
     pub fn frame_receiver(&self, frame: FrameReference<'gc>) -> Value<'gc> {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.receiver
+        self.load(self.frames[frame.index as usize].frame.receiver)
     }
 
     pub fn frame_current_class(&self, frame: FrameReference<'gc>) -> Option<ClassReference<'gc>> {
@@ -2223,7 +2259,7 @@ impl<'gc> Heap<'gc> {
         );
         let stored_frame = &mut self.frames[frame.index as usize].frame;
         if stored_frame.temporaries.len() < needed {
-            stored_frame.temporaries.resize(needed, Value::nil());
+            stored_frame.temporaries.resize(needed, Word::NIL);
         }
     }
 
@@ -2367,9 +2403,13 @@ impl<'gc> Heap<'gc> {
             u32::try_from(arguments.len()).expect("more than u32::MAX arguments to one activation");
         let index = u32::try_from(self.stack.entries.len())
             .expect("more than u32::MAX live activations in one heap");
-        self.stack.values.extend_from_slice(arguments);
+        self.stack.values.reserve(arguments.len() + temporary_count);
+        for argument in arguments {
+            let word = self.store(*argument);
+            self.stack.values.push(word);
+        }
         let end = self.stack.values.len() + temporary_count;
-        self.stack.values.resize(end, Value::nil());
+        self.stack.values.resize(end, Word::NIL);
         self.stack.counted += usize::from(header.counted);
         #[cfg(debug_assertions)]
         let generation = {
@@ -2463,7 +2503,7 @@ impl<'gc> Heap<'gc> {
         }
         let entry = &self.stack.entries[entry_index];
         let frame = Frame {
-            receiver: entry.receiver,
+            receiver: self.store(entry.receiver),
             arguments: Vec::new(),
             temporaries: Vec::new(),
             program_counter: entry.program_counter,
@@ -2508,7 +2548,7 @@ impl<'gc> Heap<'gc> {
 
     pub fn activation_local(&self, activation: ActivationReference, index: u16) -> Value<'gc> {
         self.check_activation(activation);
-        self.stack.values[self.register_slot(activation.index, index)]
+        self.load(self.stack.values[self.register_slot(activation.index, index)])
     }
 
     /// The register window of `activation`, computed once per switch to it.
@@ -2528,14 +2568,15 @@ impl<'gc> Heap<'gc> {
     pub fn register(&self, base: RegisterBase, index: u16) -> Value<'gc> {
         #[cfg(debug_assertions)]
         self.check_register(base, index);
-        self.stack.values[base.index as usize + index as usize]
+        self.load(self.stack.values[base.index as usize + index as usize])
     }
 
     #[inline(always)]
     pub fn set_register(&mut self, base: RegisterBase, index: u16, value: Value<'gc>) {
         #[cfg(debug_assertions)]
         self.check_register(base, index);
-        self.stack.values[base.index as usize + index as usize] = value;
+        let word = self.store(value);
+        self.stack.values[base.index as usize + index as usize] = word;
     }
 
     #[cfg(debug_assertions)]
@@ -2552,7 +2593,8 @@ impl<'gc> Heap<'gc> {
     ) {
         self.check_activation(activation);
         let slot = self.register_slot(activation.index, index);
-        self.stack.values[slot] = value;
+        let word = self.store(value);
+        self.stack.values[slot] = word;
     }
 
     pub fn activation_receiver(&self, activation: ActivationReference) -> Value<'gc> {
@@ -2768,7 +2810,7 @@ impl<'gc> Heap<'gc> {
     pub fn frame_local(&self, frame: FrameReference<'gc>, index: u16) -> Value<'gc> {
         self.check_frame_origin(frame);
         let slot = &self.frames[frame.index as usize];
-        match slot.live {
+        let word = match slot.live {
             Some(entry) => self.stack.values[self.register_slot(entry, index)],
             None => {
                 let stored_frame = &slot.frame;
@@ -2780,10 +2822,11 @@ impl<'gc> Heap<'gc> {
                         .temporaries
                         .get(register_index - stored_frame.arguments.len())
                         .copied()
-                        .unwrap_or(Value::nil())
+                        .unwrap_or(Word::NIL)
                 }
             }
-        }
+        };
+        self.load(word)
     }
 
     /// `frame_local`'s twin, and silently a no-op for an index a dead
@@ -2793,20 +2836,21 @@ impl<'gc> Heap<'gc> {
         // Copied out first, so neither arm below holds a borrow of `frames`
         // while it writes.
         let live = self.frames[frame.index as usize].live;
+        let word = self.store(value);
         match live {
             Some(entry) => {
                 let slot = self.register_slot(entry, index);
-                self.stack.values[slot] = value;
+                self.stack.values[slot] = word;
             }
             None => {
                 let stored_frame = &mut self.frames[frame.index as usize].frame;
                 let register_index = index as usize;
                 if register_index < stored_frame.arguments.len() {
-                    stored_frame.arguments[register_index] = value;
+                    stored_frame.arguments[register_index] = word;
                 } else {
                     let temporary_index = register_index - stored_frame.arguments.len();
                     if let Some(slot) = stored_frame.temporaries.get_mut(temporary_index) {
-                        *slot = value;
+                        *slot = word;
                     }
                 }
             }
@@ -2994,8 +3038,8 @@ impl<'gc> Heap<'gc> {
         for entry in &mut self.stack.entries {
             entry.trace(forwarder);
         }
-        for value in &mut self.stack.values {
-            forwarder.value(value);
+        for word in &mut self.stack.values {
+            forwarder.word(word);
         }
         // The table is weak -- `begin_marking` deliberately does not walk it
         // (see its doc comment) -- but by the time a caller reaches
@@ -3076,8 +3120,9 @@ impl<'gc> Heap<'gc> {
         resolved: i64,
     ) -> usize {
         // First pass: every resolved future's arena index and its value.
-        let mut values: std::collections::HashMap<u32, Value<'gc>> =
-            std::collections::HashMap::new();
+        // Words, not values: the replacement copies a stored word into
+        // another field, so it needs no check and no epoch.
+        let mut values: std::collections::HashMap<u32, Word> = std::collections::HashMap::new();
         for (index, object) in self.objects.iter().enumerate() {
             if !object.class.same(future_class) {
                 continue;
@@ -3088,13 +3133,14 @@ impl<'gc> Heap<'gc> {
             if let (Some(state), Some(value)) = (
                 fields
                     .get(state_index)
-                    .and_then(|state| state.as_small_integer()),
+                    .and_then(|state| self.load(*state).as_small_integer()),
                 fields.get(computation_index),
             ) {
                 // A "resolved" future whose value is a future is one crafted
                 // code corrupted (`FutureState::Malformed`): it is left in
                 // place, for a forcing to refuse.
-                let value_is_a_future = value
+                let value_is_a_future = self
+                    .load(*value)
                     .as_object()
                     .is_some_and(|target| self.class_of_object(target).same(future_class));
                 if state == resolved && !value_is_a_future {
@@ -3109,10 +3155,10 @@ impl<'gc> Heap<'gc> {
         }
         // Second pass: rewrite every field an object owns that names one.
         let mut replaced = 0;
-        let mut replace = |fields: &mut [Value<'gc>]| {
+        let mut replace = |fields: &mut [Word]| {
             for field in fields {
-                if let Some(handle) = field.as_object() {
-                    if let Some(value) = values.get(&handle.index) {
+                if let Some(index) = field.object_index() {
+                    if let Some(value) = values.get(&index) {
                         *field = *value;
                         replaced += 1;
                     }
@@ -3167,8 +3213,8 @@ impl<'gc> Heap<'gc> {
         for entry in &mut self.stack.entries {
             entry.trace(&mut marker);
         }
-        for value in &mut self.stack.values {
-            marker.value(value);
+        for word in &mut self.stack.values {
+            marker.word(word);
         }
         let roots = self.host_roots.get_mut();
         roots.sweep();
@@ -3252,7 +3298,7 @@ mod tests {
     #[cfg(debug_assertions)]
     fn bare_frame<'gc>() -> Frame<'gc> {
         Frame {
-            receiver: Value::nil(),
+            receiver: Word::NIL,
             arguments: Vec::new(),
             temporaries: Vec::new(),
             program_counter: 0,
@@ -3432,7 +3478,7 @@ mod tests {
 
     fn top_level_frame<'gc>() -> Frame<'gc> {
         Frame {
-            receiver: Value::nil(),
+            receiver: Word::NIL,
             arguments: vec![],
             temporaries: vec![],
             program_counter: 0,
@@ -3456,8 +3502,8 @@ mod tests {
         temporary_count: usize,
     ) -> Frame<'gc> {
         Frame {
-            arguments: vec![Value::nil(); argument_count],
-            temporaries: vec![Value::nil(); temporary_count],
+            arguments: vec![Word::NIL; argument_count],
+            temporaries: vec![Word::NIL; temporary_count],
             program_counter,
             ..top_level_frame()
         }
@@ -3737,7 +3783,10 @@ mod tests {
             ObjectData::Closure(ClosureData {
                 code: trivial_code(),
                 captured_frame,
-                copied: Box::new([Value::small_integer(7), Value::small_integer(8)]),
+                copied: Box::new([
+                    heap.store(Value::small_integer(7)),
+                    heap.store(Value::small_integer(8)),
+                ]),
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
@@ -4034,9 +4083,12 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let string = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("a")));
-        let array = heap.allocate_object(class, ObjectData::Array(vec![Value::object(string)]));
+        let array = heap.allocate_object(
+            class,
+            ObjectData::Array(vec![heap.store(Value::object(string))]),
+        );
         let frame = heap.allocate_frame(Frame {
-            receiver: Value::object(string),
+            receiver: heap.store(Value::object(string)),
             ..top_level_frame()
         });
         heap.allocate_frame(top_level_frame());
@@ -4045,7 +4097,7 @@ mod tests {
             ObjectData::Closure(ClosureData {
                 code: trivial_code(),
                 captured_frame: frame,
-                copied: Box::new([Value::object(string)]),
+                copied: Box::new([heap.store(Value::object(string))]),
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
@@ -4089,7 +4141,7 @@ mod tests {
         assert_eq!(heap.str_value(string).as_deref(), Some("a"));
         let data = heap.closure_data(closure).expect("still a closure");
         assert!(
-            matches!(data.copied[..], [copied] if copied.as_object().is_some_and(|copied| copied.same(string))),
+            matches!(data.copied[..], [copied] if heap.load(copied).as_object().is_some_and(|copied| copied.same(string))),
             "a copied value is rewritten"
         );
         assert_ne!(
@@ -4142,24 +4194,23 @@ mod tests {
     }
 
     /// A stale handle written into the heap -- a host that stored a value it
-    /// kept past a run -- is caught by the next move, which finds it among
-    /// the handles it forwards, rather than forwarded as if it were current.
-    #[test]
+    /// kept past a run -- is refused by the store itself: a stored word
+    /// carries no epoch, so the next move could no longer tell it is stale.
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "stale handle is stored in the heap")]
-    fn a_stale_handle_stored_in_the_heap_is_caught_by_the_next_move() {
+    #[test]
+    #[should_panic(expected = "stale handle")]
+    fn a_stale_handle_is_caught_where_it_is_stored() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let stale =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("stale")));
-        let array = heap.allocate_object(class, ObjectData::Array(vec![Value::nil()]));
+        let array = heap.allocate_object(class, ObjectData::Array(vec![Word::NIL]));
         let root = heap.stash(Value::object(array));
         move_bare_heap(&mut heap);
         let Some(array) = heap.fetch(&root).as_object() else {
             panic!("a root keeps its object")
         };
         heap.array_set(array, 0, Value::object(stale));
-        move_bare_heap(&mut heap);
     }
 
     /// A class object whose data is not a class -- only a crafted image makes
@@ -4225,7 +4276,10 @@ mod tests {
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let target =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("target")));
-        let holder = heap.allocate_object(class, ObjectData::Instance(vec![Value::object(target)]));
+        let holder = heap.allocate_object(
+            class,
+            ObjectData::Instance(vec![heap.store(Value::object(target))]),
+        );
         let activation = heap.push_activation(header(), &[Value::object(holder)], 1);
 
         let marker = heap.mark_from_roots_for_test();
@@ -4301,8 +4355,11 @@ mod tests {
     fn marking_terminates_on_a_cycle_between_two_ordinary_objects() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
-        let first = heap.allocate_object(class, ObjectData::Instance(vec![Value::nil()]));
-        let second = heap.allocate_object(class, ObjectData::Instance(vec![Value::object(first)]));
+        let first = heap.allocate_object(class, ObjectData::Instance(vec![Word::NIL]));
+        let second = heap.allocate_object(
+            class,
+            ObjectData::Instance(vec![heap.store(Value::object(first))]),
+        );
         heap.set_instance_field(first, 0, Value::object(second));
         let activation = heap.push_activation(header(), &[Value::object(first)], 1);
 

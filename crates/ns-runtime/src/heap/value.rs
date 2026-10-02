@@ -67,6 +67,37 @@ const TRUE_WORD: u64 = (2 << TAG_BITS) | CONSTANT_TAG;
 /// sits: the eight-bit exponent the word keeps starts at 897.
 const SMALL_FLOAT_EXPONENT_OFFSET: u64 = 896 << 53;
 
+/// A value as a heap object stores it: the bare word, eight bytes in every
+/// build, with no origin, epoch or brand (`docs/design/object-model.md`,
+/// "The debug build keeps its exact check"). Only `Heap::load` and
+/// `Heap::store` convert, so a stored word is always one the heap checked.
+#[derive(Clone, Copy)]
+pub struct Word(u64);
+
+impl Word {
+    pub(crate) const NIL: Word = Word(NIL_WORD);
+
+    /// The arena index of the object this word names, for the collector.
+    pub(super) fn object_index(self) -> Option<u32> {
+        // An object's word is its 32-bit index shifted past the tag, so the
+        // shift back loses nothing.
+        (self.0 & TAG_MASK == OBJECT_TAG).then_some((self.0 >> TAG_BITS) as u32)
+    }
+
+    pub(super) fn with_object_index(index: u32) -> Word {
+        Word(u64::from(index) << TAG_BITS)
+    }
+}
+
+/// Never `{:?}` a `Word` in Newspeak-facing text; this exists so that the
+/// types holding one can derive `Debug`, and prints the raw word, since a
+/// word alone cannot be read without the heap that stored it.
+impl std::fmt::Debug for Word {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Word({:#x})", self.0)
+    }
+}
+
 /// What a `Value` is, for an exhaustive `match`: the view every site
 /// matches on, so that no code outside the representation names it
 /// (`docs/design/object-model.md`, "How it is built"). `SmallFloat` is the
@@ -133,6 +164,33 @@ impl<'gc> Value<'gc> {
             rotated -= SMALL_FLOAT_EXPONENT_OFFSET;
         }
         Value::immediate((rotated << TAG_BITS) | SMALL_FLOAT_TAG)
+    }
+
+    /// The word a heap object stores; only `Heap::store` asks, after its
+    /// check.
+    #[inline(always)]
+    pub(super) fn word(self) -> Word {
+        Word(self.word)
+    }
+
+    /// The value a stored word is, stamped with the heap's id and current
+    /// epoch when it names an object; only `Heap::load` asks.
+    #[inline(always)]
+    pub(super) fn from_word(
+        word: Word,
+        #[cfg(debug_assertions)] origin: u32,
+        #[cfg(debug_assertions)] epoch: u32,
+    ) -> Value<'gc> {
+        #[cfg(debug_assertions)]
+        let is_object = word.0 & TAG_MASK == OBJECT_TAG;
+        Value {
+            word: word.0,
+            #[cfg(debug_assertions)]
+            origin: if is_object { origin } else { 0 },
+            #[cfg(debug_assertions)]
+            epoch: if is_object { epoch } else { 0 },
+            brand: std::marker::PhantomData,
+        }
     }
 
     pub fn kind(self) -> ValueKind<'gc> {
@@ -348,6 +406,11 @@ mod tests {
         assert_eq!(Value::<'static>::small_float(0.0).word, 0b100);
         assert_eq!(Value::<'static>::small_float(-0.0).word, (1 << 3) | 0b100);
         assert_ne!(Value::<'static>::small_float(1.0).word & 0b111, 0);
+    }
+
+    #[test]
+    fn a_word_is_eight_bytes_in_every_build() {
+        assert_eq!(std::mem::size_of::<super::Word>(), 8);
     }
 
     #[cfg(not(debug_assertions))]

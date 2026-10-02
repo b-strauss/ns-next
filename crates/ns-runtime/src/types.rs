@@ -19,7 +19,7 @@ use crate::Symbol;
 /// where the object model reads as a whole, and because `lib.rs`'s
 /// `pub use types::*` is how the rest of the workspace names them.
 pub use crate::heap::{
-    fits_small_integer, ClassReference, FrameReference, ObjectReference, Value, ValueKind,
+    fits_small_integer, ClassReference, FrameReference, ObjectReference, Value, ValueKind, Word,
     SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
 };
 
@@ -45,10 +45,10 @@ pub struct Object<'gc> {
 
 #[derive(Debug, Clone)]
 pub enum ObjectData<'gc> {
-    Instance(Vec<Value<'gc>>),
+    Instance(Vec<Word>),
     String(crate::CodePoints),
     Symbol(Symbol),
-    Array(Vec<Value<'gc>>),
+    Array(Vec<Word>),
     Closure(ClosureData<'gc>),
     /// Boxed: a class object's data is what would otherwise set every
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
@@ -358,7 +358,7 @@ pub struct ClosureData<'gc> {
     /// `code.argument_count + position`. `Box<[_]>`, not a `Vec`, because
     /// `ClosureData` is `ObjectData`'s largest payload and an `Object` is
     /// pinned at 56 bytes in a release build (`heap.rs`).
-    pub copied: Box<[Value<'gc>]>,
+    pub copied: Box<[Word]>,
     /// The start of its family's range in the heap's cache table, copied from
     /// the activation that created it, since a block belongs to its method's
     /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`
@@ -680,11 +680,11 @@ pub enum InstantiationPhase<'gc> {
 /// See `docs/design/execution.md`, "Activations".
 #[derive(Debug, Clone)]
 pub struct Frame<'gc> {
-    pub receiver: Value<'gc>,
-    pub arguments: Vec<Value<'gc>>,
+    pub receiver: Word,
+    pub arguments: Vec<Word>,
     /// Indexable by resolver slot index, growable (liveness spec's
     /// reified-activation constraint).
-    pub temporaries: Vec<Value<'gc>>,
+    pub temporaries: Vec<Word>,
     /// How far this activation has progressed: an instruction index into
     /// the `CompiledCode` it runs.
     pub program_counter: usize,
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn frame_kind_top_level_has_no_current_class() {
         let frame = Frame {
-            receiver: Value::nil(),
+            receiver: Word::NIL,
             arguments: vec![],
             temporaries: vec![],
             program_counter: 0,
