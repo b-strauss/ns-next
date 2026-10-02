@@ -21,9 +21,9 @@ pub(crate) trait Tracer {
     fn object(&mut self, handle: &mut ObjectReference<'_>);
     fn frame(&mut self, handle: &mut FrameReference<'_>);
     fn value(&mut self, value: &mut Value<'_>) {
-        match value {
-            Value::Object(handle) => self.object(handle),
-            Value::Nil | Value::Boolean(_) | Value::SmallInteger(_) | Value::Float(_) => {}
+        if let Some(mut object) = value.as_object() {
+            self.object(&mut object);
+            *value = Value::object(object);
         }
     }
 }

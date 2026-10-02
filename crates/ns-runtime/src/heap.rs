@@ -21,7 +21,10 @@ use crate::types::*;
 use crate::Symbol;
 
 pub(crate) mod mark;
+mod value;
 mod world;
+use value::{at_rest, branded};
+pub use value::{Value, ValueKind};
 pub(crate) use world::World;
 
 /// Hands every `Heap` a distinct id, so a handle can name the heap that
@@ -311,51 +314,6 @@ pub struct Popped<'gc> {
 #[derive(Clone)]
 pub struct Root {
     slot: std::rc::Rc<std::cell::Cell<Value<'static>>>,
-}
-
-/// The two conversions of a brand (`docs/design/memory.md`, "The brand"): a
-/// host root's slot is shared with a host outside every entry, so it holds
-/// `Value<'static>`, and `stash` passes a value through `at_rest` on the
-/// way in, `fetch` through `branded` on the way out. Each is monomorphic in
-/// its direction, so no single call carries a value from one entry's brand
-/// to another's: composing them, `branded(at_rest(value))`, does, but a
-/// misuse inside this module has to spell out both calls and pass visibly
-/// through `'static` at the call site. Both are private to this module, and
-/// there is no public counterpart: code outside `heap.rs` cannot change a
-/// handle's brand at all.
-fn at_rest(value: Value<'_>) -> Value<'static> {
-    match value {
-        Value::Nil => Value::Nil,
-        Value::Boolean(boolean) => Value::Boolean(boolean),
-        Value::SmallInteger(integer) => Value::SmallInteger(integer),
-        Value::Float(float) => Value::Float(float),
-        Value::Object(object) => Value::Object(ObjectReference {
-            index: object.index,
-            #[cfg(debug_assertions)]
-            origin: object.origin,
-            #[cfg(debug_assertions)]
-            epoch: object.epoch,
-            brand: std::marker::PhantomData,
-        }),
-    }
-}
-
-/// See `at_rest`.
-fn branded<'gc>(value: Value<'static>) -> Value<'gc> {
-    match value {
-        Value::Nil => Value::Nil,
-        Value::Boolean(boolean) => Value::Boolean(boolean),
-        Value::SmallInteger(integer) => Value::SmallInteger(integer),
-        Value::Float(float) => Value::Float(float),
-        Value::Object(object) => Value::Object(ObjectReference {
-            index: object.index,
-            #[cfg(debug_assertions)]
-            origin: object.origin,
-            #[cfg(debug_assertions)]
-            epoch: object.epoch,
-            brand: std::marker::PhantomData,
-        }),
-    }
 }
 
 /// The host roots. Swept of slots nothing else holds at every move, and
@@ -1350,8 +1308,8 @@ impl<'gc> Heap<'gc> {
 
     /// Any float, immediate or boxed; `None` for anything else.
     pub fn float_value(&self, value: Value<'gc>) -> Option<f64> {
-        match value {
-            Value::Float(number) => Some(number),
+        match value.kind() {
+            ValueKind::SmallFloat(number) => Some(number),
             _ => None,
         }
     }
