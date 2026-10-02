@@ -761,7 +761,6 @@ Small, deliberately left, none affecting an outcome.
 - `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by
   `read_local` indexing `arguments`, which it no longer does (it reads the flat
   register window); the check is still needed.
-- `compiler/capture.rs`: `Captures::keys` is test-only.
 - `heap.rs`: `closure_home` indexes the frame arena without checking the
   captured frame's handle origin, as every neighbouring accessor does;
   `closure_activation` answers a parameter count that is only its body's own
