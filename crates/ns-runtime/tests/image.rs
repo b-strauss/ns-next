@@ -101,7 +101,7 @@ fn every_scalar_value_variant_round_trips() {
             assert!(encode::encode_scalar_value(&mut writer, value));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+            let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
             match (value.kind(), decoded.kind()) {
                 (ValueKind::Nil, ValueKind::Nil) => {}
                 (ValueKind::Boolean(expected), ValueKind::Boolean(actual)) => {
@@ -161,7 +161,7 @@ fn scalar_value_boundary_cases_round_trip() {
             assert!(encode::encode_scalar_value(&mut writer, value));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+            let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
             match (value.kind(), decoded.kind()) {
                 (ValueKind::SmallInteger(expected), ValueKind::SmallInteger(actual)) => {
                     assert_eq!(expected, actual)
@@ -180,7 +180,7 @@ fn scalar_value_boundary_cases_round_trip() {
         writer.write_i64(i64::MAX);
         let bytes = writer.into_bytes();
         let mut reader = decode::Reader::new(&bytes);
-        let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+        let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
         let large = decoded
             .as_object()
             .and_then(|object| mutator.heap().large_integer(object));
@@ -204,7 +204,7 @@ fn scalar_value_boundary_cases_round_trip() {
             writer.write_f64(f64::from_bits(bits));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+            let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
             assert!(decoded.as_object().is_some(), "{bits:#x} is boxed");
             assert_eq!(
                 mutator.heap().float_value(decoded).map(f64::to_bits),
@@ -280,7 +280,7 @@ fn an_invalid_scalar_tag_is_an_error_not_a_panic() {
     let mut reader = decode::Reader::new(&bytes);
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(
-        |mutator| match decode::decode_scalar_value(&mut reader, mutator) {
+        |mutator| match decode::decode_scalar_value(mutator, &mut reader) {
             Err(decode::DecodeError::InvalidTag {
                 what: "value",
                 tag: 200,
@@ -769,10 +769,10 @@ fn round_trip_code_table<'gc>(
 ) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
     let mut writer = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
-    let ids = encode::encode_code_table(&mut writer, heap, &[class], &mut symbols)
+    let ids = encode::encode_code_table(heap, &mut writer, &[class], &mut symbols)
         .expect("encode code table");
     let mut mixin_writer = encode::Writer::new();
-    mixins::encode(&mut mixin_writer, heap, &[class], &mut symbols, &ids)
+    mixins::encode(heap, &mut mixin_writer, &[class], &mut symbols, &ids)
         .expect("encode mixin table");
     let bytes = writer.into_bytes();
     let mixin_bytes = mixin_writer.into_bytes();
@@ -1927,7 +1927,7 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
         let class = class_reference(mutator, &class);
         let mut writer = encode::Writer::new();
         let mut symbols = symbols::Builder::new();
-        encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
+        encode::encode_code_table(mutator.heap(), &mut writer, &[class], &mut symbols)
             .expect("encode code table");
         (symbols.build(), writer.into_bytes())
     });
@@ -2330,13 +2330,13 @@ fn expect_error(result: HostResult, what: &str) -> String {
 /// one needs exactly the map `image::snapshot` builds. Called from inside an
 /// entry, alongside the rest of the encoding its callers do.
 fn mixin_ids_for<'gc>(
-    class: ClassReference<'gc>,
     mutator: &Mutator<'gc>,
+    class: ClassReference<'gc>,
     symbols: &mut symbols::Builder,
     ids: &encode::CodeIds,
 ) -> HashMap<usize, u32> {
     let mut scratch = encode::Writer::new();
-    mixins::encode(&mut scratch, mutator.heap(), &[class], symbols, ids).expect("mixin table")
+    mixins::encode(mutator.heap(), &mut scratch, &[class], symbols, ids).expect("mixin table")
 }
 
 /// Loads `source`, lets `make_roots` build the roots, encodes code table +
@@ -2358,12 +2358,12 @@ fn round_trip_graph(
         let platform_value = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
+        let ids = encode::encode_code_table(mutator.heap(), &mut writer, &[class], &mut symbols)
             .expect("encode code table");
-        let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
+        let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
         encode::encode_graph_section(
-            &mut writer,
             mutator.heap(),
+            &mut writer,
             &root_values,
             platform_value,
             &ids,
@@ -2703,12 +2703,12 @@ fn the_graph_section_encoding_is_deterministic() {
             let mut symbols = symbols::Builder::new();
             let mut writer = encode::Writer::new();
             let ids =
-                encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
+                encode::encode_code_table(mutator.heap(), &mut writer, &[class], &mut symbols)
                     .expect("encode code table");
-            let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
+            let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
             encode::encode_graph_section(
-                &mut writer,
                 mutator.heap(),
+                &mut writer,
                 &roots,
                 platform,
                 &ids,
@@ -3350,14 +3350,14 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let platform = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
+        let ids = encode::encode_code_table(mutator.heap(), &mut writer, &[class], &mut symbols)
             .expect("encode code table");
         let before = writer.into_bytes().len();
         let mut writer = encode::Writer::new();
-        let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
+        let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
         encode::encode_graph_section(
-            &mut writer,
             mutator.heap(),
+            &mut writer,
             &roots,
             platform,
             &ids,
@@ -5115,7 +5115,7 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
         &closure_over_frame(foo_frame(2)),
         "decode",
         |heap, graph| {
-            decode::verify_graph(graph, &table, heap).expect("the captured frame runs `foo`");
+            decode::verify_graph(heap, graph, &table).expect("the captured frame runs `foo`");
         },
     );
 }
@@ -5131,7 +5131,7 @@ fn a_frame_with_no_registers_at_all_verifies() {
         &closure_over_frame(foo_frame(0)),
         "decode",
         |heap, graph| {
-            decode::verify_graph(graph, &table, heap)
+            decode::verify_graph(heap, graph, &table)
                 .expect("a frame that kept no registers is what an unmarked return leaves");
         },
     );
@@ -5145,7 +5145,7 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     // `locals::read_local`, reached from a version-matching image.
     let (mut fixture, table) = closure_world();
     fixture.decoded(&closure_over_frame(foo_frame(1)), "decode", |heap, graph| {
-        let error = decode::verify_graph(graph, &table, heap).expect_err("undersized frame");
+        let error = decode::verify_graph(heap, graph, &table).expect_err("undersized frame");
         assert_eq!(
             error,
             decode::DecodeError::FrameRegisterFile {
@@ -5181,7 +5181,7 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
     });
     fixture.decoded(&bytes, "decode", |heap, graph| {
         assert_eq!(
-            decode::verify_graph(graph, &table, heap),
+            decode::verify_graph(heap, graph, &table),
             Err(decode::DecodeError::CapturedFrameMismatch)
         );
     });
@@ -5668,7 +5668,7 @@ fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
         let class = class_reference(mutator, &class);
         let modules = image::ModuleClasses::of(mutator.heap(), &[class]);
         let mut reader = decode::Reader::new(bytes);
-        decode::decode_tag_named_hashes(&mut reader, mutator, &modules, &[])
+        decode::decode_tag_named_hashes(mutator, &mut reader, &modules, &[])
     })
 }
 
@@ -7645,10 +7645,10 @@ fn two_modules_encode_as_two_trees_in_module_order() {
         assert!(!names[second_at..].contains(&"Inner"));
         let mut symbols = symbols::Builder::new();
         let mut code = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut code, mutator.heap(), &roots, &mut symbols)
+        let ids = encode::encode_code_table(mutator.heap(), &mut code, &roots, &mut symbols)
             .expect("encode code table");
         let mut writer = encode::Writer::new();
-        mixins::encode(&mut writer, mutator.heap(), &roots, &mut symbols, &ids)
+        mixins::encode(mutator.heap(), &mut writer, &roots, &mut symbols, &ids)
             .expect("encode mixin table");
         let table = symbols.build();
         let code_bytes = code.into_bytes();
@@ -8282,7 +8282,7 @@ fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
     let bytes = closure_over_frame(foo_frame_at_program_counter(2, 99));
     fixture.decoded(&bytes, "decode", |heap, graph| {
         let error =
-            decode::verify_graph(graph, &table, heap).expect_err("out-of-range program counter");
+            decode::verify_graph(heap, graph, &table).expect_err("out-of-range program counter");
         assert_eq!(
             error,
             decode::DecodeError::ProgramCounterOutOfRange {
@@ -12060,8 +12060,8 @@ fn decode_tag_named_with_the_transcript(bytes: &[u8]) -> (Result<u32, decode::De
         let transcript = mutator.fetch(&transcript);
         let mut reader = decode::Reader::new(bytes);
         let result = decode::decode_tag_named_hashes(
-            &mut reader,
             mutator,
+            &mut reader,
             &image::ModuleClasses::of(mutator.heap(), &[class]),
             &[transcript],
         );
@@ -12122,8 +12122,8 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
         let metaclass_hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
         let mut writer = encode::Writer::new();
         encode::encode_tag_named_hashes(
-            &mut writer,
             mutator,
+            &mut writer,
             &image::ModuleClasses::of(mutator.heap(), &[class]),
             platform,
             &[array],
@@ -12132,8 +12132,8 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
         let entries = u32::from_le_bytes(bytes[..4].try_into().expect("a count"));
         let mut reader = decode::Reader::new(&bytes);
         let decoded = decode::decode_tag_named_hashes(
-            &mut reader,
             mutator,
+            &mut reader,
             &image::ModuleClasses::of(mutator.heap(), &[class]),
             &[Value::object(array)],
         );

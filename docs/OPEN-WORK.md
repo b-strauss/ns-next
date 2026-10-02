@@ -785,11 +785,6 @@ Small, deliberately left, none affecting an outcome.
   what the image encoder walks.
 - `tests/image.rs:9463`: `a_level_applying_the_mirrors_or_tops_mixin_is_refused`
   has a stale name.
-- `heap.rs`: accessor names grew by accretion (`class_of_object` beside
-  `class_application`, `array_at` beside `instance_field`, verb-second names
-  such as `set_frame_program_counter`), and the `heap` parameter sits first in
-  some signatures and last in others. [memory.md](design/memory.md), "Known
-  rough edges in the seam".
 - `image::encode_code_table` and `image::mixins::plan` take a `ClassReference`
   and a `&Heap` only to reach a mixin, and `disasm` builds a class object for
   the same reason. [compiler.md](design/compiler.md), "Follow-up: entry points

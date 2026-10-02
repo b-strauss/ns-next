@@ -52,8 +52,8 @@ struct Describing {
 /// the way. The symbol table cannot be written before both are encoded, since
 /// it is the table's *contents* that fill it.
 fn encode_describing<'gc>(
-    modules: &[ModuleSource<'_, 'gc>],
     heap: &Heap<'gc>,
+    modules: &[ModuleSource<'_, 'gc>],
 ) -> Result<Describing, String> {
     let module_roots: Vec<ClassReference<'gc>> =
         modules.iter().map(|module| module.class).collect();
@@ -73,11 +73,11 @@ fn encode_describing<'gc>(
     }
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut code, heap, module_roots, &mut symbols)?;
+    let ids = encode::encode_code_table(heap, &mut code, module_roots, &mut symbols)?;
     // After the code table, whose ids its rows name; before the graph, whose
     // class objects might name its rows.
     let mut mixin_writer = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_writer, heap, module_roots, &mut symbols, &ids)?;
+    let mixin_ids = mixins::encode(heap, &mut mixin_writer, module_roots, &mut symbols, &ids)?;
     Ok(Describing {
         symbols,
         code,
@@ -94,11 +94,11 @@ fn encode_describing<'gc>(
 /// `encode_modules` then refuses a module handed none, so a mix is an `Err`
 /// rather than an artifact that silently drops one module's text.
 fn write_describing<'gc>(
+    heap: &Heap<'gc>,
     writer: &mut encode::Writer,
     modules: &[ModuleSource<'_, 'gc>],
     flags: u8,
     describing: Describing,
-    heap: &Heap<'gc>,
 ) -> Result<(), String> {
     let with_source = modules.iter().any(|module| module.source.is_some());
     encode::write_header(
@@ -118,7 +118,7 @@ fn write_describing<'gc>(
     describing.symbols.write(writer);
     writer.write_raw(&describing.code.into_bytes());
     writer.write_raw(&describing.mixins.into_bytes());
-    modules::encode_modules(writer, heap, modules, with_source)
+    modules::encode_modules(heap, writer, modules, with_source)
 }
 
 /// Serializes a quiesced world: `roots` (the root instance and, if any,
@@ -190,7 +190,7 @@ fn write_image<'gc>(
                 .to_string(),
         );
     }
-    let mut describing = encode_describing(modules, heap)?;
+    let mut describing = encode_describing(heap, modules)?;
     let classes: Vec<ClassReference<'gc>> = modules.iter().map(|module| module.class).collect();
     let module_classes = ModuleClasses::of(heap, &classes);
     // The graph section is encoded into its own buffer, against the same
@@ -199,8 +199,8 @@ fn write_image<'gc>(
     // those exist only on `describing.mixin_ids`.
     let mut graph_writer = encode::Writer::new();
     let used_paths = encode::encode_graph_section(
-        &mut graph_writer,
         heap,
+        &mut graph_writer,
         roots,
         platform,
         &describing.ids,
@@ -209,8 +209,8 @@ fn write_image<'gc>(
         &mut describing.symbols,
     )?;
     encode::encode_tag_named_hashes(
-        &mut graph_writer,
         mutator,
+        &mut graph_writer,
         &module_classes,
         platform,
         &used_paths.objects,
@@ -221,7 +221,7 @@ fn write_image<'gc>(
     let mut path_writer = encode::Writer::new();
     platform_paths::encode_section(&mut path_writer, &used_paths.paths, &mut describing.symbols);
     let mut writer = encode::Writer::new();
-    write_describing(&mut writer, modules, flags, describing, heap)?;
+    write_describing(heap, &mut writer, modules, flags, describing)?;
     writer.write_raw(&path_writer.into_bytes());
     writer.write_raw(&graph_writer.into_bytes());
     Ok(writer.into_bytes())
@@ -391,9 +391,9 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             .to_string());
         }
         let tag_named_max =
-            decode::decode_tag_named_hashes(&mut reader, mutator, &module_classes, &platform_paths)
+            decode::decode_tag_named_hashes(mutator, &mut reader, &module_classes, &platform_paths)
                 .map_err(|error| error.to_string())?;
-        decode::verify_graph(&graph, &table, &mutator.heap).map_err(|error| error.to_string())?;
+        decode::verify_graph(&mutator.heap, &graph, &table).map_err(|error| error.to_string())?;
         mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
         // A byte sequence past the last section is refused, not ignored: an
         // unchecked tail would let a padded image load as something its author

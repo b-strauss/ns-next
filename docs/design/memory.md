@@ -262,22 +262,35 @@ measurements section). On the activation stack those are two field reads of one
 entry rather than two borrows, so the cost batching removes is smaller than it
 was; whether it still pays is a measurement nobody has taken.
 
+**An accessor is named noun first.** One that reads or writes the state behind
+a handle starts with what it reads through: the handle's kind -- `object_`,
+`class_`, `frame_`, `activation_` -- or, for state only one kind of object
+carries, that kind -- `array_`, `instance_`, `closure_`, `string_`,
+`activation_object_`. Then comes what it reads (`object_class`,
+`array_element`, `array_element_count`, `instance_field_count`, `frame_home`),
+or, for a write, its verb -- `set_` unless the write does more than set -- and
+what it writes (`object_set_class`, `instance_set_field`,
+`class_set_application`, `frame_set_program_counter`,
+`activation_set_program_counter`, `class_clear_superclass`,
+`object_ensure_identity_hash`, `frame_grow_temporaries`), or `replace` for a
+whole record (`object_replace`, `frame_replace`). Three kinds of name are not
+accessors of one handle's state and keep their own shape: a predicate on what
+an object is (`is_class`, `is_closure`, `is_string`, ...), a conversion of a
+payload to its Rust value (`str_value`, `symbol_value`, `float_value`,
+`large_integer`), and an operation named by its verb -- the allocators, the
+stack's (`push_activation`, `pop_activation`, `top_activation`, `reify`,
+`retain_registers`), `fill_copied_values`, `stamp_dispatch_ids` and the
+collector's. `with_class_declared_slots` lends its slice to a closure rather
+than copying it out, and its `with_` says so. A register is read and written
+through a `RegisterBase`, not a handle, so the register is itself the noun:
+`register` and `set_register`. A free function that takes the `Heap` or the
+`Mutator` takes it as its first parameter.
+
 ### Known rough edges in the seam
 
 Carried deliberately rather than fixed. Recorded so that whoever reshapes this
 file next starts from a list rather than from rediscovery.
 
-- **The accessor names grew by accretion.** `object_class` reads an *object*
-  while `class_application` and its neighbours read a *class* — the same prefix
-  for opposite directions. `array_element`/`array_element_count` and
-  `instance_field`/`instance_field_count` are parallel operations under
-  divergent names. The activation side is uniform: an accessor through a
-  `FrameReference` is `frame_*` and one through an `ActivationReference` is
-  `activation_*`. The exceptions are verbs that put the noun second — `frame_set_program_counter`,
-  `activation_set_program_counter`, `frame_replace` — and the stack operations themselves,
-  `push_activation`, `pop_activation`, `top_activation` and `reify`.
-- **The `heap` parameter sits first in some signatures and last in others**,
-  across `image/`, `compiler/` and `interpreter/`.
 - **Copy-out costs, and the accessor that could now avoid them.**
   `builtins/text.rs`'s string dispatch no longer clones the payload: its
   accessors -- `string_size`, `string_code_point_at`, `string_slice`,

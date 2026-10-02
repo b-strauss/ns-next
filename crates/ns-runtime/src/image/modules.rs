@@ -88,8 +88,8 @@ impl<'gc> ModuleClasses<'gc> {
 /// which, so a module handed none while another carries its own could only
 /// be written by inventing an empty text for it.
 pub fn encode_modules<'gc>(
-    writer: &mut Writer,
     heap: &Heap<'gc>,
+    writer: &mut Writer,
     modules: &[ModuleSource<'_, 'gc>],
     with_source: bool,
 ) -> Result<(), String> {
@@ -106,7 +106,7 @@ pub fn encode_modules<'gc>(
             };
             writer.write_str(source);
         }
-        encode::encode_root_class(writer, heap, module.class)?;
+        encode::encode_root_class(heap, writer, module.class)?;
     }
     Ok(())
 }

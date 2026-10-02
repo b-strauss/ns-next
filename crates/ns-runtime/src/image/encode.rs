@@ -299,8 +299,8 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
 /// reaches here: `encode_describing` refuses it first, and the decoder
 /// refuses any level but that one (`decode::decode_root_section`).
 pub fn encode_root_class<'gc>(
-    writer: &mut Writer,
     heap: &Heap<'gc>,
+    writer: &mut Writer,
     root_class: ClassReference<'gc>,
 ) -> Result<(), String> {
     if !heap.is_class(root_class) {
@@ -411,8 +411,8 @@ fn named_builtin(applied: &crate::mixin::AppliedClause) -> Result<BuiltinClass, 
 /// order the mixin table's rows are written in -- so the same module always encodes to the same
 /// bytes.
 pub fn encode_code_table<'gc>(
-    writer: &mut Writer,
     heap: &Heap<'gc>,
+    writer: &mut Writer,
     module_roots: &[ClassReference<'gc>],
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
@@ -1529,8 +1529,8 @@ fn encode_words<'gc>(
 }
 
 fn encode_frame_reference<'gc>(
-    writer: &mut Writer,
     heap: &Heap<'gc>,
+    writer: &mut Writer,
     frame: Option<&FrameReference<'gc>>,
     table: &GraphTable<'gc>,
 ) {
@@ -1787,12 +1787,12 @@ fn encode_frame<'gc>(
     // `program_counter` is always an instruction index and the record does not
     // say so.
     encode_frame_reference(
-        writer,
         context.heap,
+        writer,
         snapshot.sender.as_ref(),
         context.table,
     );
-    encode_frame_reference(writer, context.heap, snapshot.home.as_ref(), context.table);
+    encode_frame_reference(context.heap, writer, snapshot.home.as_ref(), context.table);
     encode_optional_class(writer, snapshot.current_class.as_ref(), context);
     match &snapshot.kind {
         FrameKind::Method(method) => {
@@ -1843,8 +1843,8 @@ pub struct UsedPlatformPaths<'gc> {
 /// (`platform_paths::discover`) is named by its index there, not written.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_graph_section<'gc>(
-    writer: &mut Writer,
     heap: &Heap<'gc>,
+    writer: &mut Writer,
     roots: &[Value<'gc>],
     platform: Value<'gc>,
     code_ids: &CodeIds,
@@ -1937,8 +1937,8 @@ pub fn encode_graph_section<'gc>(
 /// does wherever the graph names a class, and no program can reach any of
 /// the three metaclasses to give it a hash.
 pub fn encode_tag_named_hashes<'gc>(
-    writer: &mut Writer,
     mutator: &Mutator<'gc>,
+    writer: &mut Writer,
     modules: &ModuleClasses<'gc>,
     platform: Value<'gc>,
     used_platform_objects: &[ObjectReference<'gc>],

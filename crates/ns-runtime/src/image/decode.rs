@@ -873,14 +873,14 @@ pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeE
 }
 
 pub fn decode_scalar_value<'gc>(
-    reader: &mut Reader,
     mutator: &mut Mutator<'gc>,
+    reader: &mut Reader,
 ) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
         0 => Ok(Value::nil()),
         1 => Ok(Value::boolean(false)),
         2 => Ok(Value::boolean(true)),
-        3 => Ok(integer_value(reader.read_i64()?, mutator)),
+        3 => Ok(integer_value(mutator, reader.read_i64()?)),
         4 => Ok(mutator.new_float(reader.read_f64()?)),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
@@ -889,7 +889,7 @@ pub fn decode_scalar_value<'gc>(
 /// An integer the wire carries as an `i64`, as the one representation it
 /// has: a `SmallInteger` in 61 bits, without allocating, which is nearly
 /// every one; a `LargeInteger` beyond them.
-fn integer_value<'gc>(number: i64, mutator: &mut Mutator<'gc>) -> Value<'gc> {
+fn integer_value<'gc>(mutator: &mut Mutator<'gc>, number: i64) -> Value<'gc> {
     if fits_small_integer(number) {
         Value::small_integer(number)
     } else {
@@ -2305,12 +2305,12 @@ fn decode_class_tag_after<'gc>(
         CLASS_MODULE => read_module_class(reader, context.modules),
         CLASS_MODULE_LEVEL => read_module_level(reader, context.modules),
         CLASS_PLATFORM_PATH => {
-            read_platform_path_class(reader, &context.mutator.heap, context.platform_paths)
+            read_platform_path_class(&context.mutator.heap, reader, context.platform_paths)
         }
         CLASS_METACLASS => {
             let class = read_prebuilt_class(
-                reader,
                 context.mutator,
+                reader,
                 context.modules,
                 context.platform_paths,
             )?;
@@ -2331,8 +2331,8 @@ fn decode_class_tag_after<'gc>(
 /// which bounds the nesting at one: a class record's metaclass is a record of
 /// its own and is named by its id.
 fn read_prebuilt_class<'gc>(
-    reader: &mut Reader,
     mutator: &Mutator<'gc>,
+    reader: &mut Reader,
     modules: &ModuleClasses<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
@@ -2340,7 +2340,7 @@ fn read_prebuilt_class<'gc>(
         CLASS_BUILTIN => Ok(mutator.builtin_class(read_referenced_builtin_class(reader)?)),
         CLASS_MODULE => read_module_class(reader, modules),
         CLASS_MODULE_LEVEL => read_module_level(reader, modules),
-        CLASS_PLATFORM_PATH => read_platform_path_class(reader, &mutator.heap, platform_paths),
+        CLASS_PLATFORM_PATH => read_platform_path_class(&mutator.heap, reader, platform_paths),
         tag => Err(DecodeError::InvalidTag {
             what: "prebuilt class",
             tag,
@@ -2365,8 +2365,8 @@ fn read_platform_path<'gc>(
 /// `read_platform_path` where the format types the reference as a class:
 /// its object must be a class object.
 fn read_platform_path_class<'gc>(
-    reader: &mut Reader,
     heap: &Heap<'gc>,
+    reader: &mut Reader,
     platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match read_platform_path(reader, platform_paths)?.as_object() {
@@ -2428,7 +2428,7 @@ fn decode_value<'gc>(
         // 64/9 = 7.1x in a release build and 80/9 = 8.9x in a debug one, on
         // top of the placeholders' 16.0x and 20.0x: about 23.1x and 28.9x
         // in all, the worst case of a rejected load.
-        VALUE_SMALL_INTEGER => Ok(integer_value(reader.read_i64()?, context.mutator)),
+        VALUE_SMALL_INTEGER => Ok(integer_value(context.mutator, reader.read_i64()?)),
         // A float outside the immediate range allocates its boxed `Float`:
         // 9 bytes (tag, `f64`) for an `Object` alone, its payload inline,
         // 56/9 = 6.2x in a release build and 72/9 = 8.0x in a debug one, on
@@ -3483,8 +3483,8 @@ pub fn decode_graph_section<'gc>(
 /// repeated object and `u32::MAX` are refused, each for the reason its
 /// `DecodeError` gives.
 pub fn decode_tag_named_hashes<'gc>(
-    reader: &mut Reader,
     mutator: &mut Mutator<'gc>,
+    reader: &mut Reader,
     modules: &ModuleClasses<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<u32, DecodeError> {
@@ -3515,7 +3515,7 @@ pub fn decode_tag_named_hashes<'gc>(
                 }
             }
             HASHED_METACLASS => {
-                let class = read_prebuilt_class(reader, mutator, modules, platform_paths)?;
+                let class = read_prebuilt_class(mutator, reader, modules, platform_paths)?;
                 mutator
                     .heap
                     .class_metaclass(class)
@@ -3762,9 +3762,9 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    walks the *static* `MakeClosure` nesting -- is only a bound on the
 ///    real `frame_at_depth` walk because of this.
 pub fn verify_graph<'gc>(
+    heap: &Heap<'gc>,
     graph: &DecodedGraph<'gc>,
     table: &DecodedCodeTable,
-    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     // Recomputed rather than threaded through from `verify_code_table`:
     // one more linear pass over the code table at load time, in exchange
@@ -3808,18 +3808,18 @@ pub fn verify_graph<'gc>(
     // activation.
     for object in &graph.objects {
         if let Some(closure) = heap.closure_data(*object) {
-            verify_closure(&closure, table, &parents, &index_of, heap)?;
+            verify_closure(heap, &closure, table, &parents, &index_of)?;
         }
     }
     Ok(())
 }
 
 fn verify_closure<'gc>(
+    heap: &Heap<'gc>,
     closure: &ClosureData<'gc>,
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
     index_of: &HashMap<usize, usize>,
-    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     let code = &closure.code;
     if code.kind != CodeKind::Block {

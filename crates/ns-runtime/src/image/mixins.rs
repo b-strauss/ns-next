@@ -242,8 +242,8 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 /// Writes the mixin table and returns the `mixin_key` -> row id map the
 /// object graph addresses a class object's mixin by.
 pub fn encode<'gc>(
-    writer: &mut Writer,
     heap: &Heap<'gc>,
+    writer: &mut Writer,
     module_roots: &[ClassReference<'gc>],
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
