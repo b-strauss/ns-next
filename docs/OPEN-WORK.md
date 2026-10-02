@@ -749,10 +749,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `heap.rs`: `Heap::allocate_returned_top_level_frame` is public only so
-  that `tests/image.rs`'s sender round trip can build a frame from values;
-  its doc says "a handle from another heap is refused here", which holds for
-  the values it stores, while `sender` and `current_class` rely on the brand.
 - Wrapping: `Interpreter::stash`'s doc has a 102-column line; memory.md's
   "The brand" and object-model.md's paragraph on stored words are wrapped
   unevenly (left by the eight-byte value's final review).
@@ -761,10 +757,6 @@ Small, deliberately left, none affecting an outcome.
 - `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by
   `read_local` indexing `arguments`, which it no longer does (it reads the flat
   register window); the check is still needed.
-- `heap.rs`: `closure_home` indexes the frame arena without checking the
-  captured frame's handle origin, as every neighbouring accessor does;
-  `closure_activation` answers a parameter count that is only its body's own
-  `argument_count`, which the caller already holds.
 - `image/inspect.rs`: `read_closure_record` bounds its pre-allocation with
   `min(1024)` rather than `reserve_for`, as the rest of the walk does.
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)

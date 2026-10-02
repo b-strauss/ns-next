@@ -1128,13 +1128,16 @@ impl<'gc> Mutator<'gc> {
             } => {
                 let control_flow = matches!(arguments, StepArguments::ControlFlow);
                 let arguments = arguments.slice(send_arguments);
-                let (code, parameter_count, captured_frame, closure_feedback_base) = self
+                let (code, captured_frame, closure_feedback_base) = self
                     .heap
                     .closure_activation(closure)
                     .expect("internal: a block step is decided only for a closure object");
-                if let Err(signal) =
-                    check_block_arity(&self.heap, parameter_count, captured_frame, arguments.len())
-                {
+                if let Err(signal) = check_block_arity(
+                    &self.heap,
+                    code.argument_count as usize,
+                    captured_frame,
+                    arguments.len(),
+                ) {
                     // The block never runs, so its continuation is thrown
                     // away as a popped one's is: a future being forced is
                     // unresolved again rather than left resolving.

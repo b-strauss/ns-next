@@ -954,12 +954,17 @@ impl<'gc> Heap<'gc> {
         self.frame_handle(index)
     }
 
-    /// A returned top-level frame no activation produced, built from values:
-    /// for a host or test that needs a hand-made frame, such as the image
-    /// tests' `sender` chain, which the runtime never builds. Each value is
-    /// stored through `store`, so a handle from another heap is refused here
-    /// as everywhere else; `Frame`'s own fields are bare words, which only
-    /// the crate can make.
+    /// A returned top-level frame no activation produced, built from values.
+    /// Test support, public only for `tests/image.rs`'s `sender` round trip:
+    /// the runtime never sets a frame's `sender`, so only a hand-made frame
+    /// carries one into the encoder; `Frame`'s own fields are bare words,
+    /// which only the crate can make.
+    ///
+    /// A handle from another interpreter's heap carries another brand and
+    /// does not compile here. A debug build also checks every handle's
+    /// origin and move epoch at run time: each value as `store` stores it,
+    /// `sender` and `current_class` before the frame is built.
+    #[doc(hidden)]
     pub fn allocate_returned_top_level_frame(
         &mut self,
         receiver: Value<'gc>,
@@ -967,6 +972,12 @@ impl<'gc> Heap<'gc> {
         sender: Option<FrameReference<'gc>>,
         current_class: Option<ClassReference<'gc>>,
     ) -> FrameReference<'gc> {
+        if let Some(sender) = sender {
+            self.check_frame_origin(sender);
+        }
+        if let Some(current_class) = current_class {
+            self.check_object_origin(current_class);
+        }
         let frame = Frame {
             receiver: self.store(receiver),
             arguments: Vec::new(),
@@ -1481,24 +1492,22 @@ impl<'gc> Heap<'gc> {
     }
 
     /// What activating closure `object` needs, read in one borrow: its body,
-    /// how many parameters it declares, the frame it captured, whose
-    /// receiver and current class the activation takes, and its feedback
-    /// base, `FeedbackBase::NOT_ASSIGNED` for a closure an image decoded
-    /// rather than one `MakeClosure` built. `None` when `object` is not a
-    /// closure.
+    /// whose `argument_count` is the parameter count a call is checked
+    /// against, the frame it captured, whose receiver and current class the
+    /// activation takes, and its feedback base, `FeedbackBase::NOT_ASSIGNED`
+    /// for a closure an image decoded rather than one `MakeClosure` built.
+    /// `None` when `object` is not a closure.
     pub(crate) fn closure_activation(
         &self,
         object: ObjectReference<'gc>,
     ) -> Option<(
         std::rc::Rc<crate::bytecode::CompiledCode>,
-        usize,
         FrameReference<'gc>,
         FeedbackBase,
     )> {
         self.closure(object).map(|closure| {
             (
                 closure.code.clone(),
-                closure.code.argument_count as usize,
                 closure.captured_frame,
                 closure.feedback_base,
             )
@@ -1619,6 +1628,7 @@ impl<'gc> Heap<'gc> {
     /// `raise_return` already raises for a dead home.
     pub fn closure_home(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
         let captured = self.closure(object)?.captured_frame;
+        self.check_frame_origin(captured);
         let slot = &self.frames[captured.index as usize];
         Some(match &slot.frame.kind {
             FrameKind::Closure(_) => slot.frame.home.unwrap_or(captured),

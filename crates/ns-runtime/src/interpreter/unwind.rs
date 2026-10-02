@@ -466,7 +466,7 @@ impl<'gc> Mutator<'gc> {
         then: Box<PendingUnwind<'gc>>,
     ) -> Result<ActivationReference, Signal<'gc>> {
         if let Some(closure) = block.as_object() {
-            if self.heap.closure_activation(closure).is_some() {
+            if self.heap.is_closure(closure) {
                 return self.push_step(
                     Step::Block {
                         closure,

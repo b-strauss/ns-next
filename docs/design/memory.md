@@ -142,14 +142,14 @@ Reading a handle through the wrong heap is the one new failure mode the arena
 introduces, and it is silent — an index minted by another heap is in range and
 names a different, perfectly valid object, so the read answers the wrong thing
 rather than failing. A `debug_assertions`-only guard makes that explicit rather
-than conventional: each `Heap` carries a distinct id, each handle records the id
-of the heap that minted it, and every accessor that takes a handle asserts the two
-match — 69 sites in `heap.rs`, 16 of them through an `ActivationReference`, whose check
-also compares a generation, because a stack index is reused as soon as its entry
-is popped. An `ObjectReference` or a `FrameReference` also carries the heap's move epoch, which
-the same check compares ("The move stress mode" below). In a release build
-neither the fields nor the checks
-exist, and a handle is exactly its 32-bit index.
+than conventional: each `Heap` carries a distinct id, each handle records the
+id of the heap that minted it, and every accessor in `heap.rs` that takes a
+handle asserts the two match. The check of an `ActivationReference` also
+compares a generation, because a stack index is reused as soon as its entry
+is popped. An `ObjectReference` or a `FrameReference` also carries the heap's
+move epoch, which the same check compares ("The move stress mode" below). In
+a release build neither the fields nor the checks exist, and a handle is
+exactly its 32-bit index.
 
 The room the actor milestone needs is still there. Actors are designed to get one
 heap each so that pauses stay local
