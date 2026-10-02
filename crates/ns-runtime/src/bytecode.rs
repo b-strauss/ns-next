@@ -585,7 +585,8 @@ impl Instruction {
     }
 
     /// `call_site`'s mutable twin, for the one place that assigns a call
-    /// site rather than reads one (`image::decode::number_call_sites`).
+    /// site rather than reads one (`EncodedBody::for_each_emitted_mut`,
+    /// through which the image decoder numbers call sites).
     /// Shares `call_site_variants!` with `call_site` above.
     pub fn call_site_mut(&mut self) -> Option<&mut CallSite> {
         match self {

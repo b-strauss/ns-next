@@ -2109,6 +2109,71 @@ mod tests {
         ));
     }
 
+    /// The block, mirror-site and register-list tables each have their own
+    /// limit check in `fits_narrow`; the entry after the last narrow one must
+    /// take `Wide` and read back exactly. `never_wide_by_stress` keeps
+    /// `NS_NEXT_STRESS_WIDE` from making every entry wide and so hiding the
+    /// boundary.
+    #[test]
+    fn past_sixteen_bits_the_other_tables_take_the_wide_form() {
+        let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            0,
+            1,
+            0,
+            vec![(0, 0..1)],
+            ns_syntax::Span::new(0, 1),
+        ));
+        let primitive =
+            crate::builtins::primitive::mirror_primitive_named("string:concatenate:ifFail:")
+                .expect("the mirror primitive exists");
+        let count = usize::from(u16::MAX) + 2;
+        let instructions = [
+            Instruction::MakeClosure {
+                destination: 1,
+                parameters: std::rc::Rc::new(vec![]),
+                code: block,
+                copied: vec![],
+            },
+            Instruction::SendMirror {
+                primitive,
+                mirror_register: 1,
+                subject_register: 2,
+                argument_registers: vec![3, 4],
+                destination: 5,
+                failure: 0,
+            },
+            Instruction::MakeArray {
+                destination: 1,
+                element_registers: vec![2, 3],
+            },
+        ];
+        for instruction in instructions {
+            let mut builder = CodeBuilder::never_wide_by_stress();
+            for _ in 0..count {
+                builder.emit(instruction.clone());
+            }
+            let body = builder.finish();
+            assert!(
+                !matches!(body.slot(0), CompactInstruction::Wide { .. }),
+                "{instruction:?} starts narrow"
+            );
+            assert!(
+                !matches!(body.slot(count - 2), CompactInstruction::Wide { .. }),
+                "{instruction:?} is narrow at the 65,536th entry"
+            );
+            assert!(
+                matches!(body.slot(count - 1), CompactInstruction::Wide { .. }),
+                "{instruction:?} is wide at the 65,537th entry"
+            );
+            assert_eq!(
+                format!("{:?}", body.instruction(count - 1)),
+                format!("{instruction:?}")
+            );
+        }
+    }
+
     #[test]
     fn call_sites_and_blocks_are_visited_in_emission_order() {
         let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(
