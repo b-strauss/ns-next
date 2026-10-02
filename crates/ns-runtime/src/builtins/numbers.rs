@@ -326,12 +326,12 @@ pub(crate) fn execute_integer<'gc>(
     // A result that fits a `SmallInteger` is answered without allocating.
     // One that does not is recomputed in `i128`, where two `i64`s' sum,
     // difference or product always fits, and one with a `LargeInteger`
-    // argument as an
-    // `ArbitraryInteger`; either is handed back as an `Answer::Integer` for
-    // the caller to make a `Value` of -- the closure holds `mutator` shared,
-    // so it cannot allocate the `LargeInteger` itself. A `Float` argument
-    // makes it a double operation on the converted receiver, handed back as
-    // an `Answer::Float` for the same reason.
+    // argument as an `ArbitraryInteger`; either is handed back as an
+    // `Answer::Integer` for the caller to make a `Value` of -- the closure
+    // holds `mutator` shared, so it cannot allocate the `LargeInteger`
+    // itself. A `Float` argument makes it a double operation on the
+    // converted receiver, handed back as an `Answer::Float` for the same
+    // reason.
     let arithmetic = |operator: &str,
                       tagged: fn(Value<'gc>, Value<'gc>) -> Option<Value<'gc>>,
                       wide: fn(i128, i128) -> i128,
@@ -360,12 +360,11 @@ pub(crate) fn execute_integer<'gc>(
     // Ordering comparisons: an argument of the wrong type is an error, not a
     // silent `false`. `partial_cmp` answers `None` for a NaN, which is
     // ordered with nothing, as `Float`'s own ordering answers.
-    let compare = |operator: &str, operation: fn(Ordering) -> bool| match argument_integer() {
-        Some(_) => Ok(Value::boolean(operation(
-            receiver
-                .small_integer_order(arguments[0])
-                .expect("both operands are SmallIntegers"),
-        ))),
+    let compare = |operator: &str, operation: fn(Ordering) -> bool| match arguments
+        .first()
+        .and_then(|argument| receiver.small_integer_order(*argument))
+    {
+        Some(order) => Ok(Value::boolean(operation(order))),
         None => match large_argument() {
             Some(argument) => Ok(Value::boolean(operation(
                 ArbitraryInteger::from_i64(receiver_integer).cmp(&argument),

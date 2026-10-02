@@ -485,8 +485,11 @@ both calls and pass visibly through `'static` at the call site. They are the
 only conversions of a brand, and there is **no public
 `unbind`** — which is where Nova's discipline leaves a hole that its own
 documentation closes by convention ("NEVER unbind a `Value` into a local
-variable"). `Heap::new` and `Heap::move_everything` are private to the heap
-module, so only `World` builds the heap an interpreter has and only `World`
+variable"). A stored `Word` carries no brand either, so `Heap::load` and
+`Heap::store` are `pub(crate)`: public, the pair would carry a value from
+one heap's brand into another's, `heap_b.load(heap_a.store(value))`, past
+every debug check. `Heap::new` and `Heap::move_everything` are private to
+the heap module, so only `World` builds the heap an interpreter has and only `World`
 moves it — never while a `Mutator` is lent out, since `enter` holds `&mut
 self`.
 
@@ -1065,11 +1068,11 @@ creator's frame record without registers.
   its program counter (8), its sender, home and current class (three
   optional handles, 8 bytes each in a release build, 16 in a debug one),
   its kind (16) and one flag, 105 bytes in a release build and 129 in a
-  debug one, each padded to a multiple of 8. No test pins the `Frame`, so
-  these sizes are derived from its fields, not measured. The debug sizes are
-  larger because every handle there carries, besides its index, the id of
-  the heap that minted it and the move epoch the stress mode checks it
-  against.
+  debug one, each padded to a multiple of 8. A release-build test pins both
+  release sizes (`a_frame_slot_is_the_size_the_amplification_figure_assumes`,
+  `heap.rs`); the debug sizes are measured, not pinned. They are larger
+  because every handle there carries, besides its index, the id of the heap
+  that minted it and the move epoch the stress mode checks it against.
 
   `bounded_count` is what keeps this proportional to the input at all rather
   than to a 32-bit count — without it a crafted `u32::MAX` would allocate

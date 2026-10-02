@@ -600,8 +600,11 @@ fn a_collection_replaces_a_resolved_future_in_a_closures_copied_value() {
             let Some(closure) = mutator.fetch(&block).as_object() else {
                 panic!("answering: answers a block");
             };
-            let data = mutator.heap().closure_data(closure).expect("a closure");
-            match data.copied.first().map(|word| mutator.heap().load(*word)) {
+            let copied = mutator
+                .heap()
+                .closure_copied_values(closure)
+                .expect("a closure");
+            match copied.first().copied() {
                 Some(value) if value.as_small_integer() == Some(3) => "the value",
                 Some(value) if mutator.as_future(value).is_some() => "the future",
                 _ => "something else",

@@ -1386,6 +1386,92 @@ fn a_large_integer_literal_round_trips() {
     });
 }
 
+/// A crafted code table can carry an `i64` beyond 61 bits under
+/// `LITERAL_SMALL_INTEGER`, which the encoder never writes for one. The
+/// decoder decides by range, so the literal loads as a `LargeInteger` rather
+/// than as a `SmallInteger` whose tagged word would answer a different,
+/// valid integer, and the method answers the integer the bytes say.
+#[test]
+fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public answer = ( ^1152921504606846975 )
+          public answerText = ( ^answer printString )
+          public answerClass = ( ^answer class printString )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let mut bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    // The literal `SMALL_INTEGER_MAX` as the encoder writes it, overwritten
+    // in place with `i64::MAX`: same tag, same length, so nothing else in
+    // the image moves.
+    let mut needle = vec![LITERAL_SMALL_INTEGER];
+    needle.extend_from_slice(&SMALL_INTEGER_MAX.to_le_bytes());
+    assert_eq!(
+        occurrences(&bytes, &needle),
+        1,
+        "the literal is written once"
+    );
+    let offset = bytes
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())
+        .expect("the literal is written once")
+        + 1;
+    bytes[offset..offset + 8].copy_from_slice(&i64::MAX.to_le_bytes());
+
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let module_class = loaded.modules[0].class.clone();
+    loaded.interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &module_class);
+        let code = method_code(mutator.heap(), class, "answer");
+        let expected = Literal::LargeInteger(ArbitraryInteger::from_i64(i64::MAX));
+        assert!(
+            code.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instruction::LoadLiteral { literal, .. } if *literal == expected
+            )),
+            "the literal decodes as a LargeInteger"
+        );
+    });
+    for (selector, expected) in [
+        ("answerText", "9223372036854775807"),
+        ("answerClass", "LargeInteger"),
+    ] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            let Some(string) = mutator.fetch(&answer).as_object() else {
+                panic!("{selector}: expected a string")
+            };
+            assert_eq!(
+                mutator.heap().str_value(string).as_deref(),
+                Some(expected),
+                "{selector}"
+            );
+        });
+    }
+}
+
 /// The payload of a `LargeInteger`, after its tag, that the decoder must
 /// refuse, each with the error it answers. (a) to (c) and the `i64::MIN`
 /// case are well formed but not the one encoding the encoder writes: an
@@ -2345,14 +2431,15 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
         let class = class_reference(mutator, &class);
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let snapshot = heap.object_snapshot(object(decoded_0));
-        assert!(snapshot.class.same(class));
-        let ObjectData::Instance(fields) = &snapshot.data else {
-            panic!("expected an instance")
+        assert!(heap.class_of_object(object(decoded_0)).same(class));
+        assert_eq!(heap.instance_field_count(object(decoded_0)), Some(2));
+        let field = |index| {
+            heap.instance_field(object(decoded_0), index)
+                .expect("expected an instance")
         };
-        assert!(heap.load(fields[0]).as_small_integer() == Some(1));
+        assert!(field(0).as_small_integer() == Some(1));
         assert!(matches!(
-            heap.str_value(object(heap.load(fields[1]))).as_deref(),
+            heap.str_value(object(field(1))).as_deref(),
             Some("two")
         ));
     });
@@ -2422,10 +2509,11 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         );
         let home = heap.frame_snapshot(closure_home);
         assert_eq!(home.program_counter, 1);
+        let (_, argument_count, temporary_count) = heap.frame_register_shape(closure_home);
+        assert_eq!(temporary_count, home.temporaries.len());
         assert_eq!(
-            home.temporaries
-                .last()
-                .and_then(|word| heap.load(*word).as_small_integer()),
+            heap.frame_local(closure_home, (argument_count + temporary_count - 1) as u16)
+                .as_small_integer(),
             Some(9)
         );
         assert!(home.uncontinuable, "`mk` had returned");
@@ -2447,7 +2535,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             "re-resolved against the class's method map"
         );
         assert!(heap
-            .class_of_object(object(heap.load(home.receiver)))
+            .class_of_object(object(heap.frame_receiver(closure_home)))
             .same(class));
         assert!(home
             .current_class
@@ -3246,10 +3334,10 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         // the closure, not in the frame.
         assert!(captured.arguments.is_empty());
         assert_eq!(
-            inner
-                .copied
+            heap.closure_copied_values(object(decoded_0))
+                .expect("expected a closure")
                 .first()
-                .and_then(|word| heap.load(*word).as_small_integer()),
+                .and_then(|value| value.as_small_integer()),
             Some(5)
         );
         assert!(
@@ -3563,14 +3651,13 @@ fn a_closure_records_its_copied_values_and_a_wrong_count_is_refused() {
         &closure_object_with_copied_values(&[7, 8]),
         "the copied count agrees",
         |heap, decoded| {
-            let closure_data = heap
-                .closure_data(object(decoded.roots[0]))
+            let copied = heap
+                .closure_copied_values(object(decoded.roots[0]))
                 .expect("expected a closure");
             assert_eq!(
-                closure_data
-                    .copied
+                copied
                     .iter()
-                    .map(|word| heap.load(*word).as_small_integer())
+                    .map(|value| value.as_small_integer())
                     .collect::<Vec<_>>(),
                 [Some(7), Some(8)]
             );
@@ -8199,26 +8286,19 @@ fn a_frames_sender_survives_a_round_trip() {
             interpreter.enter(|mutator| {
                 let class = class_reference(mutator, class);
                 let foo = method_code(mutator.heap(), class, "foo");
-                let nil = mutator.heap().store(Value::nil());
-                let seven = mutator.heap().store(Value::small_integer(7));
-                let eight = mutator.heap().store(Value::small_integer(8));
-                let frame_running = |receiver, sender| ns_runtime::Frame {
-                    receiver,
-                    arguments: vec![],
-                    temporaries: vec![nil; foo.register_count as usize],
-                    program_counter: 0,
-                    sender,
-                    home: None,
-                    current_class: Some(class),
-                    kind: FrameKind::TopLevel,
-                    uncontinuable: true,
-                };
-                let sender = mutator
-                    .heap_mut()
-                    .allocate_frame(frame_running(seven, None));
-                let frame = mutator
-                    .heap_mut()
-                    .allocate_frame(frame_running(eight, Some(sender)));
+                let temporaries = vec![Value::nil(); foo.register_count as usize];
+                let sender = mutator.heap_mut().allocate_returned_top_level_frame(
+                    Value::small_integer(7),
+                    &temporaries,
+                    None,
+                    Some(class),
+                );
+                let frame = mutator.heap_mut().allocate_returned_top_level_frame(
+                    Value::small_integer(8),
+                    &temporaries,
+                    Some(sender),
+                    Some(class),
+                );
                 let block_class = mutator.builtin_class(BuiltinClass::Block);
                 let closure = mutator.heap_mut().allocate_object(
                     block_class,
@@ -10320,8 +10400,8 @@ fn reaches_a_future<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
         if let Some(count) = heap.instance_field_count(object) {
             pending.extend((0..count).filter_map(|index| heap.instance_field(object, index)));
         }
-        if let Some(closure) = heap.closure_data(object) {
-            pending.extend(closure.copied.iter().map(|word| heap.load(*word)));
+        if let Some(copied) = heap.closure_copied_values(object) {
+            pending.extend(copied);
         }
     }
     false

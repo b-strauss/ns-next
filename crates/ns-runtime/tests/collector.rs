@@ -48,7 +48,6 @@ fn integer_of(value: Value<'_>) -> i64 {
 /// A module whose entry allocates a great many short-lived closures and
 /// keeps none of them. Collecting between runs must give the arena back.
 #[test]
-#[cfg(debug_assertions)]
 fn a_collection_gives_back_what_a_run_discarded() {
     // `timesRepeat:` is a kernel-library convenience the bare bootstrap does
     // not load, so the loop is written with `whileTrue:`, which is a native
@@ -100,7 +99,6 @@ fn a_collection_gives_back_what_a_run_discarded() {
 /// has already pruned `#transient`, and the two occurrences must still be
 /// the same object (`docs/design/memory.md`, "Weak references").
 #[test]
-#[cfg(debug_assertions)]
 fn a_symbol_nothing_holds_is_collected_and_minted_again() {
     let source = indoc! {"
         class Symbols = Object new () (
@@ -134,7 +132,6 @@ fn a_symbol_nothing_holds_is_collected_and_minted_again() {
 /// row finding a heap that has not changed -- which a *strong* table would
 /// pass just as well, since nothing would have changed between them either.
 #[test]
-#[cfg(debug_assertions)]
 fn the_symbol_table_does_not_keep_its_objects_alive() {
     let baseline_source = indoc! {"
         class Baseline = Object new () (
@@ -195,7 +192,6 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
 /// also calls one of the kept closures back after the collection and checks
 /// the number it answers, not merely that it answers at all.
 #[test]
-#[cfg(debug_assertions)]
 fn kept_closures_keep_their_frames() {
     let source = indoc! {"
         class Keeper = Object new (| public blocks ::= nil. |) (
@@ -271,7 +267,6 @@ fn kept_closures_keep_their_frames() {
 /// kept, must leave the same live objects and the same live frames behind
 /// as a hundredth as much work would.
 #[test]
-#[cfg(debug_assertions)]
 fn discarding_everything_returns_to_the_starting_size() {
     let source = indoc! {"
         class Discard = Object new () (
@@ -315,7 +310,6 @@ fn discarding_everything_returns_to_the_starting_size() {
 /// safepoint, so a missed root kills its object at the earliest possible
 /// moment. The program's answer must not change.
 #[test]
-#[cfg(debug_assertions)]
 fn the_collect_stress_mode_does_not_change_an_answer() {
     let source = indoc! {"
         class Sum = Object new () (
@@ -364,7 +358,6 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
 /// collects (`docs/design/memory.md`, "The trigger and the growth
 /// policy").
 #[test]
-#[cfg(debug_assertions)]
 fn allocating_past_the_limit_collects_during_the_run() {
     let source = indoc! {"
         class Churn = Object new () (
@@ -418,7 +411,6 @@ fn allocating_past_the_limit_collects_during_the_run() {
 /// safepoint: the collector rewrites each word by its index, and every word
 /// reads back as the value that was stored.
 #[test]
-#[cfg(debug_assertions)]
 fn every_kind_of_stored_word_survives_moves_and_collections() {
     let source = indoc! {"
         class Boxes = Object new () (

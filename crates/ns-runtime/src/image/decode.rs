@@ -2421,13 +2421,13 @@ fn decode_value<'gc>(
         // to the load's peak as `VALUE_LARGE_INTEGER` does (below), and more
         // per wire byte: 9 bytes (tag, `i64`) for an `Object` and one digit,
         // 64/9 = 7.1x in a release build and 80/9 = 8.9x in a debug one, on
-        // top of the placeholders' 16.4x and 20.4x: about 23.5x and 29.3x
+        // top of the placeholders' 16.0x and 20.0x: about 23.1x and 28.9x
         // in all, the worst case of a rejected load.
         VALUE_SMALL_INTEGER => Ok(integer_value(reader.read_i64()?, context.mutator)),
         // A float outside the immediate range allocates its boxed `Float`:
         // 9 bytes (tag, `f64`) for an `Object` alone, its payload inline,
         // 56/9 = 6.2x in a release build and 72/9 = 8.0x in a debug one, on
-        // top of the placeholders: about 22.6x and 28.4x, below
+        // top of the placeholders: about 22.2x and 28.0x, below
         // `VALUE_SMALL_INTEGER`'s, which stays the worst case.
         VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
         VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
@@ -2446,8 +2446,8 @@ fn decode_value<'gc>(
         // digit) and costs `size_of::<Object>()` plus 8 bytes a digit. With
         // an `Object` of 56 bytes in a release build and 72 in a debug one,
         // that is 64/14 = 4.6x and 80/14 = 5.7x of those bytes, on top of
-        // the placeholders' 9.3x + 7.1x (release) and 12.0x + 8.4x (debug):
-        // about 21.0x and 26.2x in all, below `VALUE_SMALL_INTEGER`'s
+        // the placeholders' 9.3x + 6.7x (release) and 12.0x + 8.0x (debug):
+        // about 20.6x and 25.7x in all, below `VALUE_SMALL_INTEGER`'s
         // worst case (above). It stays proportional to the input
         // because the digit count is bounded against the bytes left before
         // anything is allocated for it (`read_large_integer_parts`), and each

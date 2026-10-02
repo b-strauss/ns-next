@@ -951,6 +951,36 @@ impl<'gc> Heap<'gc> {
         self.frame_handle(index)
     }
 
+    /// A returned top-level frame no activation produced, built from values:
+    /// for a host or test that needs a hand-made frame, such as the image
+    /// tests' `sender` chain, which the runtime never builds. Each value is
+    /// stored through `store`, so a handle from another heap is refused here
+    /// as everywhere else; `Frame`'s own fields are bare words, which only
+    /// the crate can make.
+    pub fn allocate_returned_top_level_frame(
+        &mut self,
+        receiver: Value<'gc>,
+        temporaries: &[Value<'gc>],
+        sender: Option<FrameReference<'gc>>,
+        current_class: Option<ClassReference<'gc>>,
+    ) -> FrameReference<'gc> {
+        let frame = Frame {
+            receiver: self.store(receiver),
+            arguments: Vec::new(),
+            temporaries: temporaries
+                .iter()
+                .map(|temporary| self.store(*temporary))
+                .collect(),
+            program_counter: 0,
+            sender,
+            home: None,
+            current_class,
+            kind: FrameKind::TopLevel,
+            uncontinuable: true,
+        };
+        self.allocate_frame(frame)
+    }
+
     // ---------- Handle-origin checks ----------
     //
     // Called as the first line of every accessor below that takes a handle:
@@ -962,9 +992,12 @@ impl<'gc> Heap<'gc> {
 
     /// A stored word as a value: given this heap's id and current epoch,
     /// since every collection rewrites every stored word, so no stored word
-    /// can be stale.
+    /// can be stale. Crate-private, as `store` is: a `Word` carries no
+    /// brand, so a public pair would carry a value from one heap's brand
+    /// into another's past every check (`docs/design/memory.md`, "The
+    /// brand").
     #[inline(always)]
-    pub fn load(&self, word: Word) -> Value<'gc> {
+    pub(crate) fn load(&self, word: Word) -> Value<'gc> {
         Value::from_word(
             word,
             #[cfg(debug_assertions)]
@@ -978,7 +1011,7 @@ impl<'gc> Heap<'gc> {
     /// this heap's id and current epoch: a stored word has nothing left for
     /// the next move to check, so a stale handle is refused here or never.
     #[inline(always)]
-    pub fn store(&self, value: Value<'gc>) -> Word {
+    pub(crate) fn store(&self, value: Value<'gc>) -> Word {
         #[cfg(debug_assertions)]
         if let Some(object) = value.as_object() {
             self.check_object_origin(object);
@@ -1560,6 +1593,13 @@ impl<'gc> Heap<'gc> {
         object: ObjectReference<'gc>,
     ) -> Option<FrameReference<'gc>> {
         self.closure(object).map(|closure| closure.captured_frame)
+    }
+
+    /// Closure `object`'s copied values, in order, or `None` when `object`
+    /// is not a closure.
+    pub fn closure_copied_values(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
+        self.closure(object)
+            .map(|closure| closure.copied.iter().map(|word| self.load(*word)).collect())
     }
 
     /// A closure's home: the activation a `^` in its body returns from.
@@ -2404,10 +2444,16 @@ impl<'gc> Heap<'gc> {
         let index = u32::try_from(self.stack.entries.len())
             .expect("more than u32::MAX live activations in one heap");
         self.stack.values.reserve(arguments.len() + temporary_count);
+        // `store`'s check, made apart from the copy so that a release build,
+        // which has no check, copies the arguments in one trusted-length
+        // extend rather than a push per word.
+        #[cfg(debug_assertions)]
         for argument in arguments {
-            let word = self.store(*argument);
-            self.stack.values.push(word);
+            self.store(*argument);
         }
+        self.stack
+            .values
+            .extend(arguments.iter().map(|argument| argument.word()));
         let end = self.stack.values.len() + temporary_count;
         self.stack.values.resize(end, Word::NIL);
         self.stack.counted += usize::from(header.counted);
@@ -4241,6 +4287,17 @@ mod tests {
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {
         assert_eq!(std::mem::size_of::<Object>(), 56);
+    }
+
+    /// The frame-arena entry's twin of the pin above: `docs/design/memory.md`
+    /// derives the placeholder amplification from a `FrameSlot`'s release
+    /// size as well, so a field that grows the `Frame` or the slot fails
+    /// here rather than leaving that figure silently wrong.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn a_frame_slot_is_the_size_the_amplification_figure_assumes() {
+        assert_eq!(std::mem::size_of::<Frame>(), 112);
+        assert_eq!(std::mem::size_of::<FrameSlot>(), 120);
     }
 
     /// Liveness is reachability from the roots, and the roots are what the

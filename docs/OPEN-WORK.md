@@ -219,6 +219,15 @@ to be decided against the code:
   by keeping the digits inline in the object, where a leaf can read them
   in place.
   [core-library.md](design/core-library.md), "Large integers".
+- **`Object>>==` reads the arena for every two distinct objects.** The
+  identity leaf (`builtins/object_class.rs`, `identical`) gives a boxed
+  `Float` bit identity, so `==` of two distinct handles asks the heap
+  whether both are boxed floats before it answers `false`. Spur and
+  Primordial Soup compare a boxed float by its object identity and read
+  nothing; giving bit identity up for that is a design question, an input
+  to the compact instruction encoding's measurements. Unmeasured; noted
+  2026-10-02. [object-model.md](design/object-model.md), "Values and
+  objects".
 
 ## Planned: language and library
 
@@ -609,15 +618,20 @@ where every reified frame will carry its full register file on the wire.
   [memory.md](design/memory.md), "The interim cost, and the one question
   still open".
 - **A `Word` can cross heaps outside the crate without `Heap::store`'s
-  check.** `ObjectData`'s, `Frame`'s and `ClosureData`'s payload fields are
-  public, as are `Heap::allocate_object` and `Heap::allocate_frame`, and
-  `Word` is public (opaque, but `Copy`), so a host can copy a `Word` out of
-  one heap's snapshot of an object or frame into a record it allocates in
-  another heap; the word then names whatever the other heap holds at that
-  index, and no debug check sees it, since only `Heap::store` checks and a
-  stored word carries no origin. Making those payload fields `pub(crate)`
-  would close it; nothing outside the crate builds a record from another
-  heap's today. Noted 2026-10-02. [object-model.md](design/object-model.md),
+  check.** A value's brand can no longer be changed through a `Word`:
+  `Heap::load` and `Heap::store` are `pub(crate)`. But `Word` is public
+  (opaque, but `Copy`), and so are the snapshots that hand one out
+  (`Heap::object_snapshot`, `Heap::frame_snapshot`, `Heap::closure_data`,
+  and the payload fields of `ObjectData`, `Frame` and `ClosureData`) and the
+  allocators that take one (`Heap::allocate_object`,
+  `Heap::allocate_frame`). A host can therefore copy a `Word` out of one
+  heap's snapshot into a record it allocates in another heap; the word then
+  names whatever the other heap holds at that index, and no debug check sees
+  it, since only `store` checks and a stored word carries no origin. Making
+  those snapshot and allocation APIs `pub(crate)`, or having them take and
+  answer `Value`s, which the allocators would store themselves, would close
+  it; nothing outside the crate builds a record from another heap's today.
+  Noted 2026-10-02. [object-model.md](design/object-model.md),
   "The debug build keeps its exact check"; [memory.md](design/memory.md), "A
   handle is arena-relative".
 - **`Heap::traced_size` counts the canonical symbol table's empty slots**

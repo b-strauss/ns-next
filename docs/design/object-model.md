@@ -132,7 +132,8 @@ copied closure value -- so that the layout is the same in both. Only
 current id and epoch, and a store checks, in a debug build, that the value
 carries both before it becomes a word, so a stale handle is caught where it
 is stored (`a_stale_handle_is_caught_where_it_is_stored`) and cannot be
-laundered into a field. A stored word cannot go stale the way a Rust-side
+laundered into a field. Both are crate-private, since a word carries no
+brand ([memory.md](memory.md), "The brand"). A stored word cannot go stale the way a Rust-side
 handle can, because every collection and every stress move rewrites it in
 place, through the `Trace` impls' `Tracer::word` ([memory.md](memory.md),
 "What the collector traces"). What still holds a Rust-side value or handle

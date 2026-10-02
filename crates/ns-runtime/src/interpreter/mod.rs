@@ -57,11 +57,11 @@ pub(crate) enum Signal<'gc> {
     /// error, which the host receives as it received every error before
     /// there were exceptions. Boxed, as the rarest of the four, so that
     /// `Error` is the one variant holding a `NewspeakError` in place and the
-    /// others fit in its niche: two in place made `Signal` 56 bytes rather
-    /// than 48, and every `Result<Step, Signal>` a send decides 64 rather
-    /// than 56, which cost about 6% on a benchmark of deep sends and returns
-    /// that never signals (`docs/design/execution.md`, "What exceptions
-    /// cost").
+    /// others fit in its niche: `Signal` is 40 bytes in a release build and
+    /// every `Result<Step, Signal>` a send decides 56. A second variant in
+    /// place added eight bytes to each, which cost about 6% on a benchmark
+    /// of deep sends and returns that never signals
+    /// (`docs/design/execution.md`, "What exceptions cost").
     Terminate(Box<NewspeakError<'gc>>),
 }
 
@@ -542,8 +542,9 @@ impl Interpreter {
         self.world.enter(body)
     }
 
-    /// Roots an immediate -- `nil`, a Boolean, a `SmallInteger`, a `Float`
-    /// -- a host built itself, outside any entry. An object is rooted with
+    /// Roots an immediate -- `nil`, a Boolean or a `SmallInteger` -- a host
+    /// built itself, outside any entry; a float is made only inside one, by
+    /// `Mutator::new_float`, since one outside the immediate range is boxed. An object is rooted with
     /// `Mutator::stash`, inside the entry that reached it. A host can build
     /// an immediate but never hold an object handle outside an entry, so a
     /// `Value<'static>` holds none.
@@ -1471,7 +1472,7 @@ impl<'gc> Mutator<'gc> {
     /// The one way an `f64` becomes a `Value`, so that every float has one
     /// representation: one inside the `SmallFloat64` range is immediate,
     /// every other a boxed `Float`, which `Float>>=` and `hash` rely on
-    /// (`docs/design/object-model.md`, "Planned: an eight-byte value").
+    /// (`docs/design/object-model.md`, "Values and objects").
     pub fn new_float(&mut self, value: f64) -> Value<'gc> {
         if crate::heap::is_small_float_bits(value.to_bits()) {
             Value::small_float(value)

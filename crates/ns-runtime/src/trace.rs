@@ -1,8 +1,8 @@
 //! What the collector traces (`docs/design/memory.md`, "What the collector
 //! traces"): every field of every runtime type that holds an `ObjectReference`,
 //! a `ClassReference`, a `FrameReference` or a stored `Word`, handed to a
-//! `Tracer` one `&mut` at a time. Enumerating is this module's; rewriting is `heap.rs`'s `Forwarder`,
-//! since only `heap.rs` can mint a handle.
+//! `Tracer` one `&mut` at a time. Enumerating is this module's; rewriting is
+//! `heap.rs`'s `Forwarder`, since only `heap.rs` can mint a handle.
 //!
 //! Every impl names every field and matches every variant, with no `..` and
 //! no `_`: a field or variant added later fails to compile here until

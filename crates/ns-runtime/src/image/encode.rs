@@ -1060,7 +1060,7 @@ impl<'gc> GraphTable<'gc> {
         // A resolved future is never entered: every reference to one is
         // written as its value (`encode_value`), so its value is what the
         // graph holds.
-        let value = &future::seen_through(heap, value);
+        let value = future::seen_through(heap, value);
         let Some(object) = value.as_object() else {
             return;
         };
@@ -1070,7 +1070,7 @@ impl<'gc> GraphTable<'gc> {
         if heap.is_large_integer(object) || heap.is_boxed_float(object) {
             return;
         }
-        if is_same_object(*value, platform) {
+        if is_same_object(value, platform) {
             return;
         }
         // Named by its path, like the platform by its tag: the loading
@@ -1308,7 +1308,7 @@ impl<'gc> GraphTable<'gc> {
 pub struct EncodeContext<'a, 'gc> {
     pub table: &'a GraphTable<'gc>,
     pub code_ids: &'a CodeIds,
-    pub platform: &'a Value<'gc>,
+    pub platform: Value<'gc>,
     /// Each carried module's root class and levels: what a class tag names
     /// by module index (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`).
     pub modules: &'a ModuleClasses<'gc>,
@@ -1415,8 +1415,8 @@ fn encode_optional_class<'gc>(
 fn encode_value<'gc>(writer: &mut Writer, value: Value<'gc>, context: &EncodeContext<'_, 'gc>) {
     // A resolved future is written as its value, which is what the graph
     // walk recorded in its place (`GraphTable::visit_value`).
-    let value = &future::seen_through(context.heap, value);
-    if encode_scalar_value(writer, *value) {
+    let value = future::seen_through(context.heap, value);
+    if encode_scalar_value(writer, value) {
         return;
     }
     let Some(object) = value.as_object() else {
@@ -1444,12 +1444,12 @@ fn encode_value<'gc>(writer: &mut Writer, value: Value<'gc>, context: &EncodeCon
     // A boxed float likewise, under the one tag every float travels as: the
     // decoder's `Mutator::new_float` decides by the range again which
     // representation it loads as.
-    if let Some(float) = context.heap.float_value(*value) {
+    if let Some(float) = context.heap.float_value(value) {
         writer.write_u8(VALUE_FLOAT);
         writer.write_f64(float);
         return;
     }
-    if is_same_object(*value, *context.platform) {
+    if is_same_object(value, context.platform) {
         writer.write_u8(VALUE_PLATFORM);
         return;
     }
@@ -1848,7 +1848,7 @@ pub fn encode_graph_section<'gc>(
     let context = EncodeContext {
         table: &table,
         code_ids,
-        platform: &platform,
+        platform,
         modules,
         mixin_ids,
         heap,

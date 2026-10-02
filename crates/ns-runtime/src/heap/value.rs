@@ -1,14 +1,14 @@
 //! A Newspeak value as the runtime holds it: opaque, made by constructors
 //! and read through accessors and `ValueKind`, so that its representation
 //! can change without touching a single site
-//! (`docs/design/object-model.md`, "How it is built"). It lives under
+//! (`docs/design/object-model.md`, "Values and objects"). It lives under
 //! `heap` because a handle's fields are private to `heap`.
 
 use super::{Brand, ObjectReference};
 
 /// The bounds of a `SmallInteger`: 61 bits, what the tagged word leaves
-/// (`docs/design/object-model.md`, "Planned: an eight-byte value"). Every
-/// integer outside them is a `LargeInteger`.
+/// (`docs/design/object-model.md`, "Values and objects"). Every integer
+/// outside them is a `LargeInteger`.
 pub const SMALL_INTEGER_MIN: i64 = -(1 << 60);
 pub const SMALL_INTEGER_MAX: i64 = (1 << 60) - 1;
 
@@ -18,8 +18,8 @@ pub const fn fits_small_integer(value: i64) -> bool {
 
 /// Spur's `isSmallFloatValueBits`: an exponent of 897 to 1151, or 896 with a
 /// non-zero mantissa, or ±0.0. That is the eight-bit subset of the exponent
-/// the tagged word keeps (`docs/design/object-model.md`, "Planned: an
-/// eight-byte value"); every other float is a boxed `Float`.
+/// the tagged word keeps (`docs/design/object-model.md`, "Values and
+/// objects"); every other float is a boxed `Float`.
 pub(crate) const fn is_small_float_bits(bits: u64) -> bool {
     const OFFSET: u64 = 896;
     let exponent = (bits >> 52) & 0x7FF;
@@ -34,12 +34,12 @@ pub(crate) const fn is_small_float_bits(bits: u64) -> bool {
 }
 
 /// One tagged word, Spur's: the low three bits say what the rest is
-/// (`docs/design/object-model.md`, "Planned: an eight-byte value"). An
-/// object is its arena index shifted past the tag; a `SmallInteger` its
-/// 61 bits over `0b001`; `nil`, `false` and `true` the payloads 0, 1 and 2
-/// over `0b010`; a `SmallFloat` Spur's rotated float over `0b100`. Tags
-/// `0b011`, `0b101`, `0b110` and `0b111` are never made, so bit 0 alone tells
-/// a `SmallInteger`.
+/// (`docs/design/object-model.md`, "Values and objects"). An object is its
+/// arena index shifted past the tag; a `SmallInteger` its 61 bits over
+/// `0b001`; `nil`, `false` and `true` the payloads 0, 1 and 2 over `0b010`;
+/// a `SmallFloat` Spur's rotated float over `0b100`. Tags `0b011`, `0b101`,
+/// `0b110` and `0b111` are never made, so bit 0 alone tells a
+/// `SmallInteger`.
 #[derive(Clone, Copy)]
 pub struct Value<'gc> {
     word: u64,
@@ -100,7 +100,7 @@ impl std::fmt::Debug for Word {
 
 /// What a `Value` is, for an exhaustive `match`: the view every site
 /// matches on, so that no code outside the representation names it
-/// (`docs/design/object-model.md`, "How it is built"). `SmallFloat` is the
+/// (`docs/design/object-model.md`, "Values and objects"). `SmallFloat` is the
 /// immediate float only; code that reads a float asks `Heap::float_value`,
 /// which also answers a boxed one.
 #[derive(Clone, Copy)]
@@ -132,8 +132,12 @@ impl<'gc> Value<'gc> {
         Value::immediate(if value { TRUE_WORD } else { FALSE_WORD })
     }
 
+    /// A `SmallInteger`. Panics in every build when `value` is outside 61
+    /// bits: a host reaches this constructor, and a word built from such a
+    /// value would answer a different, valid integer. The run loop's tagged
+    /// arithmetic builds its results without passing through here.
     pub fn small_integer(value: i64) -> Value<'gc> {
-        debug_assert!(fits_small_integer(value), "a SmallInteger outside 61 bits");
+        assert!(fits_small_integer(value), "a SmallInteger outside 61 bits");
         Value::immediate((value.cast_unsigned() << TAG_BITS) | SMALL_INTEGER_TAG)
     }
 
@@ -453,6 +457,12 @@ mod tests {
         assert!(Value::<'static>::boolean(true)
             .small_integer_order(small(1))
             .is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "a SmallInteger outside 61 bits")]
+    fn a_small_integer_outside_61_bits_is_refused_in_every_build() {
+        let _ = Value::<'static>::small_integer(super::SMALL_INTEGER_MAX + 1);
     }
 
     #[test]

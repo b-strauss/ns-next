@@ -98,11 +98,11 @@ not bounded by `bounded_count`. `image::load` verifies structure and reconciles
 mixins before any decoded code runs (`image-format.md`, "Verification"). The
 transient peak of a rejected load is about 16.0x the graph section's bytes in a
 release build, 23.1x with the integers and floats it allocates (debug 20.0x and
-28.9x; `memory.md` has the breakdown and what is not counted). The guarantee covers decoding only:
-`ns-next load` runs the packaged application's code, recursion bounded by the
-100,000-activation depth limit plus its 1,000 reserve (`execution.md`, "The
-depth limit"), and an image that names platform paths first follows them
-through shipped code only.
+28.9x; `memory.md` has the breakdown and what is not counted). The guarantee
+covers decoding only: `ns-next load` runs the packaged application's code,
+recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
+(`execution.md`, "The depth limit"), and an image that names platform paths
+first follows them through shipped code only.
 
 **A wire tag is assigned once and never renumbered or reused.** Every tag lives in
 `crates/ns-runtime/src/image/opcodes.rs`, pinned by `tests/opcode_tags.rs`; a new
@@ -123,8 +123,9 @@ handle is arena-relative", "The move stress mode").
 `Mutator` to a closure generic over `'gc`, in safe Rust. Never add a public way
 to change a handle's brand (`heap::value`'s `pub(super)` `at_rest`/`branded` are
 the only conversions; there is no `unbind`), and never give `Mutator` a way to
-reach the `Interpreter`. Three `compile_fail` doctests on `Interpreter::enter`
-pin it (`memory.md`, "The brand").
+reach the `Interpreter`. A stored `Word` carries no brand, so `Heap::load` and
+`Heap::store` are part of the seam and stay `pub(crate)`. Three `compile_fail`
+doctests on `Interpreter::enter` pin it (`memory.md`, "The brand").
 
 **A running activation is an `ActivationReference`; only a `FrameReference` is
 ever stored.** An activation's index is reused after its pop; `ClosureData`,
