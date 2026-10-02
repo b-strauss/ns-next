@@ -1564,8 +1564,9 @@ golden:
    `left & right & 1`, checks both operands; addition and subtraction work
    on the words with one overflow test, since an `i64` overflow of the
    tagged word is exactly a 61-bit overflow; comparisons compare the words;
-   multiplication and `//` untag one operand, as Cog's and Soup's do. An
-   inline cache reads an immediate's class from its tag.
+   multiplication untags one operand, as Cog's and Soup's does, and `//`
+   untags both, since a floor quotient of a tagged word is not the tagged
+   floor quotient. An inline cache reads an immediate's class from its tag.
 7. **Measured, then documented.** Against the tree the branch started from,
    in one sitting, by the protocol of "The Are We Fast Yet benchmarks"' baseline
    ([execution.md](execution.md)): three pinned builds a side, three rounds
