@@ -247,6 +247,78 @@ impl<'gc> Value<'gc> {
         }
     }
 
+    /// Whether both are `SmallInteger`s: one test on the two words, since
+    /// bit 0 alone tells a `SmallInteger`.
+    #[inline(always)]
+    fn both_small_integers(self, other: Value<'gc>) -> bool {
+        self.word & other.word & SMALL_INTEGER_TAG == SMALL_INTEGER_TAG
+    }
+
+    /// `(a << 3 | 1) + (b << 3)` is `(a + b) << 3 | 1`, and it overflows
+    /// `i64` exactly when `a + b` leaves 61 bits, so the one overflow test
+    /// is the range test. `None` for a non-`SmallInteger` operand or a sum
+    /// that is not one.
+    #[inline(always)]
+    pub(crate) fn small_integer_sum(self, other: Value<'gc>) -> Option<Value<'gc>> {
+        if !self.both_small_integers(other) {
+            return None;
+        }
+        let word = self
+            .word
+            .cast_signed()
+            .checked_add(other.word.cast_signed() - 1)?;
+        Some(Value::immediate(word.cast_unsigned()))
+    }
+
+    /// `(a << 3 | 1) - (b << 3)` is `(a - b) << 3 | 1`, with the same one test.
+    #[inline(always)]
+    pub(crate) fn small_integer_difference(self, other: Value<'gc>) -> Option<Value<'gc>> {
+        if !self.both_small_integers(other) {
+            return None;
+        }
+        let word = self
+            .word
+            .cast_signed()
+            .checked_sub(other.word.cast_signed() - 1)?;
+        Some(Value::immediate(word.cast_unsigned()))
+    }
+
+    /// One operand untagged, as Cog's and Soup's: `a * (b << 3)` is
+    /// `(a * b) << 3`, overflowing `i64` exactly when `a * b` leaves 61 bits.
+    #[inline(always)]
+    pub(crate) fn small_integer_product(self, other: Value<'gc>) -> Option<Value<'gc>> {
+        if !self.both_small_integers(other) {
+            return None;
+        }
+        let shifted =
+            (self.word.cast_signed() >> TAG_BITS).checked_mul(other.word.cast_signed() - 1)?;
+        Some(Value::immediate(
+            shifted.cast_unsigned() | SMALL_INTEGER_TAG,
+        ))
+    }
+
+    /// Both untagged: the floor quotient of a tagged word is not the tagged
+    /// floor quotient. `checked_floor_divide` is the leaves' own, so the
+    /// rounding rule has one copy.
+    #[inline(always)]
+    pub(crate) fn small_integer_floor_quotient(self, other: Value<'gc>) -> Option<Value<'gc>> {
+        if !self.both_small_integers(other) {
+            return None;
+        }
+        let quotient = crate::builtins::numbers::checked_floor_divide(
+            self.word.cast_signed() >> TAG_BITS,
+            other.word.cast_signed() >> TAG_BITS,
+        )?;
+        fits_small_integer(quotient).then(|| Value::small_integer(quotient))
+    }
+
+    /// Tagging preserves order, so the words compare as the integers do.
+    #[inline(always)]
+    pub(crate) fn small_integer_order(self, other: Value<'gc>) -> Option<std::cmp::Ordering> {
+        self.both_small_integers(other)
+            .then(|| self.word.cast_signed().cmp(&other.word.cast_signed()))
+    }
+
     /// The arithmetic shift restores the sign the tag shifted up.
     fn small_integer_payload(self) -> i64 {
         self.word.cast_signed() >> TAG_BITS
@@ -318,6 +390,70 @@ pub(super) fn branded<'gc>(value: Value<'static>) -> Value<'gc> {
 #[cfg(test)]
 mod tests {
     use super::Value;
+
+    #[test]
+    fn tagged_arithmetic_answers_what_untagged_arithmetic_answers() {
+        use super::{SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+        let small = Value::<'static>::small_integer;
+        let samples = [
+            0,
+            1,
+            -1,
+            7,
+            -7,
+            3,
+            1 << 30,
+            -(1 << 30),
+            SMALL_INTEGER_MIN,
+            SMALL_INTEGER_MAX,
+            SMALL_INTEGER_MIN + 1,
+            SMALL_INTEGER_MAX - 1,
+        ];
+        for left in samples {
+            for right in samples {
+                let expect = |result: Option<i64>| {
+                    result.filter(|number| super::fits_small_integer(*number))
+                };
+                assert_eq!(
+                    small(left)
+                        .small_integer_sum(small(right))
+                        .and_then(Value::as_small_integer),
+                    expect(left.checked_add(right)),
+                    "{left} + {right}"
+                );
+                assert_eq!(
+                    small(left)
+                        .small_integer_difference(small(right))
+                        .and_then(Value::as_small_integer),
+                    expect(left.checked_sub(right)),
+                    "{left} - {right}"
+                );
+                assert_eq!(
+                    small(left)
+                        .small_integer_product(small(right))
+                        .and_then(Value::as_small_integer),
+                    expect(left.checked_mul(right)),
+                    "{left} * {right}"
+                );
+                assert_eq!(
+                    small(left)
+                        .small_integer_floor_quotient(small(right))
+                        .and_then(Value::as_small_integer),
+                    expect(crate::builtins::numbers::checked_floor_divide(left, right)),
+                    "{left} // {right}"
+                );
+                assert_eq!(
+                    small(left).small_integer_order(small(right)),
+                    Some(left.cmp(&right)),
+                    "{left} <=> {right}"
+                );
+            }
+        }
+        assert!(small(1).small_integer_sum(Value::nil()).is_none());
+        assert!(Value::<'static>::boolean(true)
+            .small_integer_order(small(1))
+            .is_none());
+    }
 
     #[test]
     fn a_value_is_copied_whole_and_unchanged() {

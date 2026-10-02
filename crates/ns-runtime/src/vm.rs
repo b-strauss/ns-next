@@ -657,45 +657,32 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             } => {
                 let left_value = mutator.heap.register(register_base, *left);
                 let right_value = mutator.heap.register(register_base, *right);
-                let (Some(left_integer), Some(right_integer)) = (
-                    left_value.as_small_integer(),
-                    right_value.as_small_integer(),
-                ) else {
-                    jump_to!(*target)
-                };
+                // Each `small_integer_*` answers `None` for a non-integer
+                // operand too, so the one `match` below declines every case.
+                // A zero divisor and `SMALL_INTEGER_MIN // -1` decline in
+                // `small_integer_floor_quotient`.
                 let result = match operation {
-                    IntegerOperation::Add => left_integer
-                        .checked_add(right_integer)
-                        .filter(|number| fits_small_integer(*number))
-                        .map(Value::small_integer),
-                    IntegerOperation::Subtract => left_integer
-                        .checked_sub(right_integer)
-                        .filter(|number| fits_small_integer(*number))
-                        .map(Value::small_integer),
-                    IntegerOperation::Multiply => left_integer
-                        .checked_mul(right_integer)
-                        .filter(|number| fits_small_integer(*number))
-                        .map(Value::small_integer),
-                    // `checked_floor_divide` answers `None` for a zero
-                    // divisor, and the range test declines
-                    // `SMALL_INTEGER_MIN // -1`, so both take the fallback and
-                    // the primitive decides what they answer. It is
-                    // `builtins::numbers`' own function, so the rounding rule
-                    // has one copy.
+                    IntegerOperation::Add => left_value.small_integer_sum(right_value),
+                    IntegerOperation::Subtract => left_value.small_integer_difference(right_value),
+                    IntegerOperation::Multiply => left_value.small_integer_product(right_value),
                     IntegerOperation::FloorDivide => {
-                        crate::builtins::numbers::checked_floor_divide(left_integer, right_integer)
-                            .filter(|number| fits_small_integer(*number))
-                            .map(Value::small_integer)
+                        left_value.small_integer_floor_quotient(right_value)
                     }
-                    IntegerOperation::Less => Some(Value::boolean(left_integer < right_integer)),
-                    IntegerOperation::Greater => Some(Value::boolean(left_integer > right_integer)),
-                    IntegerOperation::LessOrEqual => {
-                        Some(Value::boolean(left_integer <= right_integer))
-                    }
-                    IntegerOperation::GreaterOrEqual => {
-                        Some(Value::boolean(left_integer >= right_integer))
-                    }
-                    IntegerOperation::Equal => Some(Value::boolean(left_integer == right_integer)),
+                    IntegerOperation::Less => left_value
+                        .small_integer_order(right_value)
+                        .map(|order| Value::boolean(order.is_lt())),
+                    IntegerOperation::Greater => left_value
+                        .small_integer_order(right_value)
+                        .map(|order| Value::boolean(order.is_gt())),
+                    IntegerOperation::LessOrEqual => left_value
+                        .small_integer_order(right_value)
+                        .map(|order| Value::boolean(order.is_le())),
+                    IntegerOperation::GreaterOrEqual => left_value
+                        .small_integer_order(right_value)
+                        .map(|order| Value::boolean(order.is_ge())),
+                    IntegerOperation::Equal => left_value
+                        .small_integer_order(right_value)
+                        .map(|order| Value::boolean(order.is_eq())),
                 };
                 match result {
                     Some(value) => {

@@ -333,22 +333,18 @@ pub(crate) fn execute_integer<'gc>(
     // makes it a double operation on the converted receiver, handed back as
     // an `Answer::Float` for the same reason.
     let arithmetic = |operator: &str,
-                      checked: fn(i64, i64) -> Option<i64>,
+                      tagged: fn(Value<'gc>, Value<'gc>) -> Option<Value<'gc>>,
                       wide: fn(i128, i128) -> i128,
                       large: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger,
                       float: fn(f64, f64) -> f64| {
         match argument_integer() {
-            Some(argument) => Ok(
-                match checked(receiver_integer, argument)
-                    .filter(|number| fits_small_integer(*number))
-                {
-                    Some(result) => Answer::Value(Value::small_integer(result)),
-                    None => Answer::Integer(ArbitraryInteger::from_i128(wide(
-                        i128::from(receiver_integer),
-                        i128::from(argument),
-                    ))),
-                },
-            ),
+            Some(argument) => Ok(match tagged(receiver, arguments[0]) {
+                Some(result) => Answer::Value(result),
+                None => Answer::Integer(ArbitraryInteger::from_i128(wide(
+                    i128::from(receiver_integer),
+                    i128::from(argument),
+                ))),
+            }),
             None => match large_argument() {
                 Some(argument) => Ok(Answer::Integer(large(
                     &ArbitraryInteger::from_i64(receiver_integer),
@@ -365,7 +361,11 @@ pub(crate) fn execute_integer<'gc>(
     // silent `false`. `partial_cmp` answers `None` for a NaN, which is
     // ordered with nothing, as `Float`'s own ordering answers.
     let compare = |operator: &str, operation: fn(Ordering) -> bool| match argument_integer() {
-        Some(argument) => Ok(Value::boolean(operation(receiver_integer.cmp(&argument)))),
+        Some(_) => Ok(Value::boolean(operation(
+            receiver
+                .small_integer_order(arguments[0])
+                .expect("both operands are SmallIntegers"),
+        ))),
         None => match large_argument() {
             Some(argument) => Ok(Value::boolean(operation(
                 ArbitraryInteger::from_i64(receiver_integer).cmp(&argument),
@@ -384,7 +384,7 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::Add => Some(
             arithmetic(
                 "+",
-                i64::checked_add,
+                Value::small_integer_sum,
                 |left, right| left + right,
                 ArbitraryInteger::add,
                 |left, right| left + right,
@@ -394,7 +394,7 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::Subtract => Some(
             arithmetic(
                 "-",
-                i64::checked_sub,
+                Value::small_integer_difference,
                 |left, right| left - right,
                 ArbitraryInteger::subtract,
                 |left, right| left - right,
@@ -404,7 +404,7 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::Multiply => Some(
             arithmetic(
                 "*",
-                i64::checked_mul,
+                Value::small_integer_product,
                 |left, right| left * right,
                 ArbitraryInteger::multiply,
                 |left, right| left * right,
