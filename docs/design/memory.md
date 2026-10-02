@@ -34,7 +34,8 @@
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
 > doctests that pin the brand), `trace.rs` (everything the collector
 > traces, marking and forwarding alike, in every build), `interpreter/safepoint.rs`
-> (the safepoint, `Interpreter::collect_now` and the three stress modes),
+> (the safepoint, `Interpreter::collect_now` and the switches of the four
+> stress modes: moves, caches, collection, and every instruction wide),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `types.rs` (`Object`, `Frame`), `mixin.rs` (layout, and the one remaining iterative
@@ -1671,8 +1672,8 @@ instruction encoding.
   reset after each collection, as the slot count is compared today ("The
   trigger and the growth policy").
 - **The stress modes stay**: `NS_NEXT_STRESS_MOVES` shifts every object by an
-  offset, so every handle changes; `NS_NEXT_STRESS_COLLECT` and
-  `NS_NEXT_STRESS_CACHES` are unchanged.
+  offset, so every handle changes; `NS_NEXT_STRESS_COLLECT`,
+  `NS_NEXT_STRESS_CACHES` and `NS_NEXT_STRESS_WIDE` are unchanged.
 - **The space belongs to a `Heap`**, never to a thread or the process, because
   an actor is meant to be a per-heap scope
   ([liveness-and-reflection.md](liveness-and-reflection.md)).
@@ -1790,7 +1791,7 @@ Road step 4.
   young entry whose symbol was not copied becomes `None`, a copied one is
   rewritten to its new location, and an old entry is left alone; the table
   is not a strong root.
-- **A fourth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
+- **A fifth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
   safepoint, which is what finds a store that missed the barrier. So that a
   stale young word into eden faults as well as one into a survivor space, a
   debug build under it alternates eden between two regions and protects the

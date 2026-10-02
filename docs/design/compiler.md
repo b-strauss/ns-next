@@ -2,8 +2,9 @@
 
 > **Status:** built, including the reference lowering it is checked against.
 > **Code:** `crates/ns-runtime/src/bytecode.rs` (the instruction set and the
-> compiled-code shapes), `compiler/mod.rs` (entry points), `compiler/lower.rs`
-> (lowering, register allocation, the scope stack, the converted register
+> compiled-code shapes), `bytecode/compact.rs` (the `CodeBuilder` and the
+> eight-byte form a body is stored in), `compiler/mod.rs` (entry points),
+> `compiler/lower.rs` (lowering, register allocation, the scope stack, the converted register
 > layout), `compiler/capture.rs` (the capture analysis closure conversion runs
 > ahead of the optimized lowering), `compiler/control_flow.rs`
 > (inlining, and `recognize_mirror_send`), `compiler/primitive_method.rs`
@@ -15,19 +16,27 @@ the dispatch loop — is [execution.md](execution.md).
 
 ## The instruction set
 
-`Instruction` is a plain Rust enum dispatched by `match`, not hand-packed bytes.
-"Architecture-neutral and versioned" is a property of the *image encoding* of
-compiled code — a tag byte and a fixed operand layout per instruction, with the
-tag numbers fixed for good; see [image-format.md](image-format.md) — not a
-requirement on the in-memory representation. Manual opcode packing is a technique
-that pays off once a JIT or a very hot interpreter loop demands it. The profile
-of the loop over locals found that point: every dispatch decodes the enum's
-discriminant through a niche, and `program_counter` and the code pointer are
-spilled to `vm::run`'s stack frame ([execution.md](execution.md), "Where the 3%
-goes"). A compact encoding is planned, designed against the one-word value
-([execution.md](execution.md), "Planned: the compact instruction encoding").
+`Instruction` is the vocabulary a lowering emits: a plain Rust enum, which
+both lowerings and the image decoder hand to a `CodeBuilder`
+(`bytecode/compact.rs`). The builder encodes each instruction at once into
+the form a body is stored and run in -- one eight-byte `CompactInstruction`
+per instruction, with side tables for whatever does not fit -- and every
+tool, `disasm`, the image encoder, the decoder's verification and the tests,
+reads a body back as `Instruction`s through an exact decoded view
+([execution.md](execution.md), "The compact instruction encoding"). One
+instruction is one slot, so an instruction index is the same number in
+either form. "Architecture-neutral and versioned" is a property of the
+*image encoding* of compiled code — a tag byte and a fixed operand layout per
+`Instruction`, with the tag numbers fixed for good; see
+[image-format.md](image-format.md) — not of the in-memory form. The stored
+form became packed when the profile of the loop over locals showed what the
+enum cost the loop: every dispatch decoded its discriminant through a niche,
+and `program_counter` and the code pointer were spilled to `vm::run`'s stack
+frame ([execution.md](execution.md), "Where the 3% goes").
 
-Every register operand is a `u16`; every jump target is an instruction index. The
+Every register operand is a `u16`; every jump target is an instruction index.
+The eight-byte form narrows a register to a byte where it fits and takes a
+wide form where it does not, which the vocabulary never shows. The
 set follows the resolver's `Binding` variants and the lookup shapes directly, so
 that lowering is mostly a transliteration rather than a translation.
 
@@ -139,7 +148,10 @@ not a `SmallInteger` or the operation declines ("Arithmetic inlining" below).
 ```rust
 CompiledCode {
     kind: CodeKind,           // Method | Block | Initializer
-    instructions: Vec<Instruction>,
+    body: EncodedBody,         // the eight-byte slots and their side tables:
+                               // instruction(index), instructions() and
+                               // instruction_count() read it back as
+                               // Instructions; the run loop reads slot(index)
     argument_count: u16,
     register_count: u16,       // arguments + copied values + named temporaries
                                // + the vector register + scratch
@@ -164,6 +176,10 @@ image decoder alike (`bytecode::outer_reach_of`), and decides whether the
 activation that creates a closure keeps its registers when it returns
 ([execution.md](execution.md), "Converted representation").
 `copied_count` is on the wire; `outer_reach` and `family_size` are not.
+A body is made from the `CodeBuilder` a lowering or the decoder emitted it
+into (`CompiledCode::from_builder`), or from a list of instructions encoded
+at once (`CompiledCode::new`), and either way derives both from what was
+emitted.
 
 A method's or a block's own statements are its local slot initializers first,
 one per declared local that has one, each `initializer_expression; StoreLocal`
@@ -659,11 +675,16 @@ Each `CompiledCode` records its `family_size`, one past the highest number
 among its own sends and its nested blocks' sizes, 0 when there is none
 (`bytecode::family_size_of`). A block is finished before the root that
 contains it, so a block's size is its own subtree's, and the root's is the
-family's. Neither the number nor the size is on the wire: the decoder
+family's. A send's `CallSite` is stored in its `SendSite`, in the body's
+`send_sites` table, whichever of its eight-byte or wide forms the send
+took. Neither the number nor the size is on the wire: the decoder
 assigns every family's numbers itself, in this same emission order, once the
 whole code table is read, and derives the size from them with the same
 function, so a family is dense by construction rather than checked for it
-([image-format.md](image-format.md), "Verification").
+([image-format.md](image-format.md), "Verification"). It numbers them in
+place through `EncodedBody::for_each_emitted_mut`, which visits every send's
+call site and every block in emission order, whatever form each took -- a
+`MakeClosure` kept in the `wide` table included.
 
 The number indexes the running heap's cache table from the activation's
 `feedback_base`; a send whose number is at or past its body's `family_size`
@@ -1133,10 +1154,11 @@ signatures is a design change to the image module's interface, not a migration.
 
 ## Decisions
 
-- **`Instruction` is a Rust enum, not packed bytes**; the loop-over-locals
-  profile shows its dispatch cost, and a compact encoding is planned,
-  designed against the one-word value ([execution.md](execution.md),
-  "Planned: the compact instruction encoding").
+- **`Instruction` is a Rust enum, the vocabulary every lowering and tool
+  speaks; a body is stored and run in eight-byte slots** (2026-10-02),
+  encoded as it is emitted and read back through an exact view, since the
+  loop-over-locals profile showed what dispatching the enum cost
+  ([execution.md](execution.md), "The compact instruction encoding").
 - **A local's read costs no instruction**, which makes its register live storage
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run

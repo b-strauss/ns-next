@@ -1488,9 +1488,9 @@ road, each step landing green on its own:
 2. **An eight-byte value**, on today's arena -- built: its first plan,
    `LargeInteger` ([core-library.md](core-library.md), "Large integers"),
    and its second, the tagged word ("Values and objects" above).
-   - **After road step 2, the compact instruction encoding**, designed
-     against the one-word value ([execution.md](execution.md), "Planned:
-     the compact instruction encoding").
+   - **After road step 2, the compact instruction encoding** -- built:
+     eight-byte instructions designed against the one-word value
+     ([execution.md](execution.md), "The compact instruction encoding").
 3. **The object space** -- one header word, the class word, the fields
    inline ("Planned: the object layout" below; [memory.md](memory.md),
    "Planned: the object space").

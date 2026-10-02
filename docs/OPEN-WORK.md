@@ -13,12 +13,14 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**The compact instruction encoding** ("After road step 2, the compact
-instruction encoding" below), designed on 2026-10-02 and planned in
-[its plan](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md):
-fixed eight-byte instructions, measured against `master` before they are
-built ([execution.md](design/execution.md), "Planned: the compact
-instruction encoding").
+**Road step 3, the object space** ("Step 3, the object space" below): one
+header word and a class word, the fields inline, variably sized objects in
+one VM-owned space with byte-offset handles
+([memory.md](design/memory.md), "Planned: the object space";
+[object-model.md](design/object-model.md), "Planned: the object layout").
+Its plan starts from the details "To settle when planning" lists for it.
+Everything before it on the road is built, the compact instruction
+encoding included.
 
 ## The road to a high-performance VM
 
@@ -68,11 +70,12 @@ and `prior-art/newspeak-benchmarks`.
   the constants `nil`, `true` and `false`, and handles -- with every other
   number a `LargeInteger` or a boxed `Float`.
   [object-model.md](design/object-model.md), "Values and objects".
-- **After road step 2, the compact instruction encoding**, designed against the
-  one-word value, from the dispatch findings of "Where the 3% goes": one
-  eight-byte slot per instruction, side tables for the rest, measured before
-  it is built (designed with the user on 2026-10-02).
-  [execution.md](design/execution.md), "Planned: the compact instruction
+- **After road step 2, the compact instruction encoding -- built**,
+  designed against the one-word value from the dispatch findings of "Where
+  the 3% goes": one eight-byte slot per instruction, side tables for the
+  rest, measured before it was built (designed with the user on
+  2026-10-02, built the same day).
+  [execution.md](design/execution.md), "The compact instruction
   encoding".
 - **Step 3, the object space.** One header word (the application id as the
   cache guard, the identity hash, format, size, GC bits, a `LargeInteger`'s
@@ -141,13 +144,14 @@ to be decided against the code:
   loop to `become` and measuring it against the `match` loop. Whether the
   project then moves to nightly is a decision of its own, taken on those
   numbers (decided with the user on 2026-10-02 to note it, not to plan it).
-  [execution.md](design/execution.md), "Planned: the compact instruction
+  [execution.md](design/execution.md), "The compact instruction
   encoding".
 - **`IntegerBinary` with an immediate operand.** `i + 1` loads the `1` into
   a register before the inlined operation reads it, one more dispatch on
   every iteration of a counting loop; a form that carries a small integer
-  operand in the slot would drop it. A compiler change after the compact
-  instruction encoding (noted with the user on 2026-10-02).
+  operand in the slot would drop it: a compiler change and one more
+  eight-byte form of the compact instruction encoding (noted with the user
+  on 2026-10-02).
   [compiler.md](design/compiler.md), "Arithmetic inlining".
 - **`IntegerBinary` without its `Jump`.** A successful inlined integer
   operation executes an unconditional `Jump` past its fallback send
@@ -246,9 +250,9 @@ to be decided against the code:
   `Float` bit identity, so `==` of two distinct handles asks the heap
   whether both are boxed floats before it answers `false`. Spur and
   Primordial Soup compare a boxed float by its object identity and read
-  nothing; giving bit identity up for that is a design question, an input
-  to the compact instruction encoding's measurements. Unmeasured; noted
-  2026-10-02. [object-model.md](design/object-model.md), "Values and
+  nothing; giving bit identity up for that is a design question, which a
+  measurement of what the read costs a program should inform. Unmeasured;
+  noted 2026-10-02. [object-model.md](design/object-model.md), "Values and
   objects".
 
 ## Planned: language and library
@@ -524,6 +528,12 @@ value objects are never copied across an actor boundary (§3.1.1).
   `=` or `==`. [core-library.md](design/core-library.md).
 - `bench_block.ns` measures 16% apart between two builds of the same tree —
   a standing protocol caveat, not a defect: pool several builds per tree.
+- **The memory the compact instruction encoding saves is counted, not
+  measured.** The forms compared put the eight-byte slots at 189 KB plus
+  small tables against 1.13 MB for the stored enum over the benchmark
+  programs' 23,635 instructions; no working set was measured before and
+  after. Noted 2026-10-02. [execution.md](design/execution.md), "What the
+  compact instruction encoding moved".
 
 ## Defects that change a correct program's output
 
@@ -747,6 +757,15 @@ where every reified frame will carry its full register file on the wire.
   `two_modules_draw_the_same_identity_hashes_under_run_and_load`'s comment
   claims it pins module order, which a review judged its fixture probably
   cannot tell apart from a load that merely draws no new hash.
+- The compact instruction encoding (noted 2026-10-02 by the branch's task
+  reviews): no test patches the failure target of a narrow `SendMirror`, or
+  the target of a `JumpIfNotBoolean`, `BranchIfFalse` or `BranchIfTrue`,
+  through `CodeBuilder::patch_target`, or checks that
+  `EncodedBody::for_each_emitted_mut` stops at the first `Err`;
+  `tests/compact_encoding.rs` asserts each body's answer and instruction
+  count, not that its last entry took the wide form; and the round-trip
+  tests' `same` compares `Debug` text, which cannot tell two NaN payloads
+  apart (the encoding itself keeps them, a NaN going to `literals`).
 
 ## Code quality follow-ups
 
@@ -825,6 +844,20 @@ Small, deliberately left, none affecting an outcome.
   three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
   message for a stray golden directory carries a run of spaces from a lost
   line continuation.
+- The compact instruction encoding (noted 2026-10-02 by the branch's task
+  reviews): `EncodedBody`'s tables are `pub(crate)` and `SendSite::wide` is
+  public, so crate code other than `CodeBuilder` could build a body whose
+  slot and site disagree, which a decoded read answers with a panic; only
+  `CodeBuilder` builds one today. `CompiledCode`'s derived `PartialEq`
+  compares encodings, so a body built wide by `CodeBuilder::always_wide`
+  differs from the same body built narrow. `PendingSend::wide` lacks the
+  `#[inline(always)]` `PendingSend::inline` has. The run loop's `match` sits
+  five labelled blocks deep, the price of one send path per kind.
+  `tests/image.rs` says the VM fetches `code.instruction(program_counter)`,
+  where it reads `code.slot(program_counter)`. `heap/value.rs`:
+  `Immediate::boolean`, `Immediate::kind` and `Immediate::NIL` have no doc
+  comment, and a test there imports `SMALL_INTEGER_MAX` and
+  `SMALL_INTEGER_MIN` again inside its test module, which already does.
 
 ## Goldens and documentation
 

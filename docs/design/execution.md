@@ -1,8 +1,8 @@
 # Execution — activations, the VM
 
 > **Status:** built, including the trampoline; nothing re-enters the run loop
-> from Rust, the loop polls a safepoint, it runs over the running frame's
-> state in locals, each stretch between two safepoints one entry of the step
+> from Rust, the loop polls a safepoint, it runs eight-byte instructions
+> over the running frame's state in locals, each stretch between two safepoints one entry of the step
 > state, the sends it executes go through inline
 > caches, except the reference lowering's, and the optimized lowering converts
 > closures, so only by-reference code keeps a returning frame's registers;
@@ -13,7 +13,8 @@
 > activation, the copied values a closure carries and whether a frame keeps its
 > registers), `heap/world.rs` (the step state at rest, and its entry),
 > `types.rs` (`Frame`, `ClosureData`, `Continuation` and the state its variants
-> carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
+> carry), `bytecode/compact.rs` (the eight-byte encoding the loop runs),
+> `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path, the indirection vector's reads and writes in
 > `interpreter/locals.rs`, and the unwinder and the depth limit's reserve in
@@ -317,8 +318,9 @@ Everything in `interpreter/` decides *what* to run; `vm.rs` runs it.
 `vm::run(interpreter, base)` is the run loop. It is handed an activation its caller
 has just pushed — its *base* — and runs it and everything it activates, in a
 loop over the running frame's state held in locals (`run_stretch`, a `match`
-over `Instruction`; "The loop over locals" below). **Each stretch between two
-safepoints is one entry** (`Interpreter::enter`, [memory.md](memory.md), "The
+over the running body's eight-byte `CompactInstruction`s; "The loop over
+locals" and "The compact instruction encoding" below). **Each stretch
+between two safepoints is one entry** (`Interpreter::enter`, [memory.md](memory.md), "The
 brand"): `run_stretch` runs inside it with a `&mut Mutator`, and `run` itself —
 the frame it carries from one stretch to the next (`FrameRegisters`) and the
 safepoint — is outside every one, so nothing `run` carries can name a brand.
@@ -415,7 +417,8 @@ its entry (`Leave::Safepoint`), and `run` calls `Interpreter::safepoint`
 (`interpreter/safepoint.rs`), out of line, which is where a collection runs
 ([memory.md](memory.md), "Where a collection can happen"), and enters again.
 A collection is requested by an allocation past an arena's limit, and the
-debug-build stress modes set the flag at every safepoint their schedule picks.
+debug-build move, cache and collection stress modes set the flag at every
+safepoint their schedule picks.
 That is sound because of what `run` carries across the safepoint, which the
 compiler holds it to, since the stretch's entry has ended before it:
 `FrameRegisters` — the running `ActivationReference`, which indexes the
@@ -941,8 +944,8 @@ is faster for it.
 What the measurement does not cover: one machine and one operating system;
 data layout, which `-C metadata` does not vary; for the `bench` figures,
 what each timed `main:args:` does once per application; the memory the
-encoding saves, which is counted in "Planned: the compact instruction
-encoding" ("The forms compared"), not measured as a working set; and code
+encoding saves, which is counted in "The compact instruction encoding"
+("The forms compared"), not measured as a working set; and code
 that runs wide forms, which no measured program reaches.
 
 ### What a send costs, and where it goes
@@ -4909,8 +4912,9 @@ itself, and a value is now one tagged word, read and written whole
 ([object-model.md](object-model.md), "Values and objects"); what that moved
 is "What the eight-byte value moved". The dispatch findings -- the spilled
 `program_counter` and code pointer, the discriminant decoded through a
-niche -- are the input of "Planned: the compact instruction encoding"
-below. Until it lands, an instruction arm is not free.
+niche -- are the input of "The compact instruction encoding" below, which
+replaced the stored enum with eight-byte slots; what that moved is "What
+the compact instruction encoding moved".
 
 ## The trampoline
 
@@ -5875,8 +5879,8 @@ to test. Designed with the user on 2026-09-28, after "What simultaneous
 slots cost" above traced a 4% loss on `bench_megamorphic.ns` to where LLVM
 placed the block that tested a send's answer, and built the same day
 ([plan](../superpowers/plans/2026-09-28-1808-ns-next-loop-over-locals.md)).
-The instruction encoding it dispatches on is unchanged ("Planned: the compact
-instruction encoding" below).
+It dispatches on the eight-byte slots of "The compact instruction
+encoding" below.
 
 **Why.** Two costs sat on every instruction when each was one entry. The
 answer each instruction gave the loop, `Flow`, was too large for registers
@@ -5914,7 +5918,7 @@ answers `Leave::Safepoint`, and `run` runs the safepoint and enters again,
 or `Leave::Exit(result)`, and the run ends with it. The inner loop,
 `run_stretch` (`#[inline(always)]`, as is the closure), copies the frame
 into its own locals -- Cog's `localIP` and `localFP` -- and dispatches
-`code.instructions[program_counter]` until a safepoint is requested or the
+`code.slot(program_counter)` until a safepoint is requested or the
 run's base activation is done; only when it leaves for a safepoint does it
 write the frame back, in one place every safepoint shares. A move or
 collection happens only between two entries, so within a stretch every
@@ -5924,7 +5928,8 @@ brand"). The safepoint is tested where it always was -- every switch to
 another activation and every backward jump, the latter in the one
 `jump_to!` macro every jumping arm goes through -- as a compare of the
 heap's flag, and only when it is set does the stretch leave its entry. Under
-the stress modes it is set at every safepoint their schedule picks, so the
+the move, cache and collection stress modes it is set at every safepoint
+their schedule picks, so the
 suite still meets every handle held across one.
 
 **No per-instruction answer.** A straight-line arm writes its register,
@@ -5959,9 +5964,9 @@ it always was. `read_local` and `write_local` remain for every caller
 outside the loop, the out-of-line arms among them. No `unsafe`.
 
 **What pins it.** The semantics are the suite's: every golden under both
-lowerings, the image round trips, the corpus, and the three stress modes,
-which catch a handle held across a safepoint because the stretch still
-leaves its entry there. `heap.rs`'s unit tests pin that a stale
+lowerings, the image round trips, the corpus, and the four stress modes,
+of which the move and the collection modes catch a handle held across a
+safepoint because the stretch still leaves its entry there. `heap.rs`'s unit tests pin that a stale
 `RegisterBase` panics in a debug build and that one survives a deeper push.
 What it moved is measured in "What the loop over locals moved" above.
 
@@ -6033,32 +6038,35 @@ stall is a property of a 16-byte enum `Value`, and the one-word value
 everywhere. A revisit, should one be wanted, starts from the forced-inline
 variant's numbers above.
 
-## Planned: the compact instruction encoding
+## The compact instruction encoding
 
-**Status: designed with the user on 2026-10-02, not built.** Would change:
-`CompiledCode` stores its body as fixed eight-byte instructions, a
-`#[repr(u8)]` enum with no heap field, and keeps everything that does not fit
-eight bytes in side tables beside them; the run loop matches on that enum.
-`Instruction`, today's enum of 48 bytes, stays the compiler's and every
-tool's vocabulary, but nothing stores it any more: a body is encoded as it is
-emitted and read back through a decoded view. It comes after the eight-byte
-value ([object-model.md](object-model.md), "Values and objects"), and before
-the object space ([memory.md](memory.md), "Planned: the object space"), so
-that it is designed against the value the loop actually moves -- one tagged
-word -- and the interpreter stays the first tier in front of the JIT, as
-Cog's does.
+**Status: built** (designed with the user on 2026-10-02 and built the same
+day; [plan](../superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md)).
+`CompiledCode` stores its body as fixed eight-byte instructions
+(`bytecode/compact.rs`), a `#[repr(u8)]` enum with no heap field, and keeps
+everything that does not fit eight bytes in side tables beside them; the run
+loop matches on that enum. `Instruction` stays the compiler's and every
+tool's vocabulary, but no body is stored as a list of them: a body is encoded as it is emitted and read back through a decoded
+view, and only an instruction with no eight-byte form keeps its
+`Instruction`, in the body's `wide` table. The encoding came after the
+eight-byte value ([object-model.md](object-model.md), "Values and
+objects"), and before the object space ([memory.md](memory.md), "Planned:
+the object space"), so that it was designed against the value the loop
+actually moves -- one tagged word -- and the interpreter stays the first
+tier in front of the JIT, as Cog's does. What it moved is "What the compact
+instruction encoding moved" above.
 
 ### What it starts from
 
-**The dispatch findings** of "Where the 3% goes" above: every dispatch
-decodes `Instruction`'s discriminant through a niche (`xor`, `cmovns`) before
-its jump, because the enum's payloads -- a `Literal` of 32 bytes holding a
-`String` or a boxed digit array, a `Vec<u16>` of argument registers, an
-`Rc<CompiledCode>` -- give it one; and `vm::run` is large enough that
-`program_counter` and the code pointer are spilled to its stack frame. A
-send's argument registers are a separate heap allocation the loop chases on
-every send, and `LoadLiteral` matches on the literal's kind every time it
-runs, a constant included.
+**The dispatch findings** of "Where the 3% goes" above: with `Instruction`
+as the stored form, every dispatch decoded its discriminant through a niche
+(`xor`, `cmovns`) before its jump, because the enum's payloads -- a
+`Literal` of 32 bytes holding a `String` or a boxed digit array, a
+`Vec<u16>` of argument registers, an `Rc<CompiledCode>` -- give it one; and
+`vm::run` was large enough that `program_counter` and the code pointer were
+spilled to its stack frame. A send's argument registers were a separate
+heap allocation the loop chased on every send, and `LoadLiteral` matched on
+the literal's kind every time it ran, a constant included.
 
 **What the code holds**, counted on 2026-10-02 over the sixteen benchmark
 programs and the harness under `benchmarks/are-we-fast-yet/`,
@@ -6119,22 +6127,23 @@ size its gain). What carries over is what all three share: constants with
 their own opcodes, an integer immediate, sends specialized by arity, and
 everything rare or wide kept out of the common form.
 
-**The forms compared** on the same 23,635 instructions: today's 48-byte
-enum, 1.13 MB plus a heap allocation per argument list; a fixed 16-byte
-slot with `u16` operands, 378 KB; a fixed eight-byte slot with byte
-operands, 189 KB plus small tables; a stream of 32-bit units, as Lua's and
-Dalvik's register machines encode, about 133 KB; a register byte stream,
-about 95 KB. The eight-byte slot was chosen (2026-10-02): a sixth of today's
-size and about 1.4 times the 32-bit stream's, and it keeps the program
-counter an instruction index, so that jump targets, the statement map, a
-frame's `program_counter` in an image, the wire format and a later JIT's
-pc map stay exactly what they are, and the compiler, not a hand-written
-decoder, checks every form. A variable-length stream would make the
-program counter an offset everywhere it is stored, and an encoding error in
-a decoder both lowerings share would not show as a difference between them:
-the reference lowering is no oracle for the encoding. A stack form was not
-considered further: it would undo the register assignment, the closure
-conversion and the value-register invariant the compiler is built on.
+**The forms compared** on the same 23,635 instructions: `Instruction`
+itself, 48 bytes an instruction, 1.13 MB plus a heap allocation per
+argument list; a fixed 16-byte slot with `u16` operands, 378 KB; a fixed
+eight-byte slot with byte operands, 189 KB plus small tables; a stream of
+32-bit units, as Lua's and Dalvik's register machines encode, about 133 KB;
+a register byte stream, about 95 KB. The eight-byte slot was chosen
+(2026-10-02): a sixth of the enum's size and about 1.4 times the 32-bit
+stream's, and it keeps the program counter an instruction index, so that
+jump targets, the statement map, a frame's `program_counter` in an image,
+the wire format and a later JIT's pc map stay exactly what they were, and
+the compiler, not a hand-written decoder, checks every form. A
+variable-length stream would make the program counter an offset everywhere
+it is stored, and an encoding error in a decoder both lowerings share would
+not show as a difference between them: the reference lowering is no oracle
+for the encoding. A stack form was not considered further: it would undo
+the register assignment, the closure conversion and the value-register
+invariant the compiler is built on.
 
 ### The encoding
 
@@ -6147,7 +6156,7 @@ struct after the tag, so fields are declared narrowest first. The loop copies
 the slot out (`code.slot(program_counter)`), so the match runs on a value in
 registers, with no niche to decode.
 
-**The side tables**, each a boxed slice on the `CompiledCode`:
+**The side tables**, each a boxed slice of the body's `EncodedBody`:
 
 - `constants`, the `Immediate` words `LoadConstant` reads -- a
   `SmallInteger` beyond 32 bits or a `SmallFloat64`, which hold no handle,
@@ -6163,29 +6172,32 @@ registers, with no niche to decode.
 - `mirror_sites`, one per `SendMirror`: its argument registers and its
   failure target;
 - `register_lists`, the element registers of a `MakeArray`;
-- `wide`, the full `Instruction` of every instruction that has no
-  eight-byte form here.
+- `wide`, the full `Instruction` of every instruction other than a send
+  that has no eight-byte form here.
 
 **Constants** (2026-10-02): `LoadNil`, `LoadTrue` and `LoadFalse` take only
 a destination; `LoadSmallInteger` carries an `i32` in the slot, which
 covers every integer literal counted above but 16, without a table read;
 `LoadConstant` reads the `constants` table; `LoadLiteral` reads `literals`
-and allocates. The compiler and the decoder both choose by the literal, so
-the wire format is unchanged.
+and allocates. The encoder chooses by the literal, for a lowering and for
+the image decoder alike, so the wire format is unchanged.
 
 **Sends** (2026-10-02): `SendPublic`, `SendLexical`, `SendSuper` and
 `SendInlinable` each come in four forms, for no argument, one, two, and a
 `Wide` form that reads everything from its `SendSite` -- three arguments or
 more, or a register above 255. The two-argument `SendPublic` is
-`{ destination, receiver, arguments: [u8; 2], site: u16 }`, eight bytes.
-`SendMirror` has one form, its arguments and failure target in its
-`MirrorSite`. Every send arm only gathers its receiver, its arguments and
-its site into a pending send and leaves the match through its kind's
-labelled block (the pending send carries no kind, so no shared aggregate
-and no second dispatch on it); **one send path per kind** after that block
-runs it, so each kind's cache hit path is inlined into `vm::run` once, as
-today, not once per form -- which `dumpbin` checks (`vm::run`'s size and
-stack frame against today's).
+`{ destination, receiver, arguments: [u8; 2], site: u16 }`, eight bytes, and
+an eight-byte form's argument registers reach `send` by value, from the
+slot, with no allocation to chase. `SendMirror` has one form, its arguments
+and failure target in its `MirrorSite`. Every send arm only gathers its
+receiver, its arguments and its site into a `PendingSend` and leaves the
+match through its kind's labelled block; **one send path per kind** follows
+that block, so each kind's cache hit path is inlined into `vm::run` once,
+not once per form. The pending send carries no kind: a single join for all
+four kinds needs one, and was measured to cost `bench_loop.ns` 3.5% --
+LLVM built a stack aggregate with narrow stores and dispatched a second
+jump table on the kind ("What the compact instruction encoding moved"
+above).
 
 **`IntegerBinary` is one opcode per operation** (2026-10-02) --
 `IntegerAdd`, `IntegerSubtract`, `IntegerMultiply`, `IntegerFloorDivide`,
@@ -6197,43 +6209,52 @@ right, target: u32 }`, as Cog's `bytecodePrimAdd` and Strongtalk's
 **`Wide { index: u32 }`** is every other instruction that does not fit: a
 register above 255, a table index beyond 16 bits, a depth beyond 16 bits.
 Its `Instruction` sits in `wide`, and the loop runs it in one out-of-line
-function that answers how to go on -- the next instruction, a jump, a
-pending send for the shared path, or a transfer. That a body with more than
-255 registers runs slower is a cost, not a semantic difference; every form
+function, `run_wide`, that answers how to go on -- the next instruction, a
+jump, or a transfer to another frame or out of the run. Each instruction's
+effect is one function that its narrow arm and `run_wide` both call, so the
+two forms cannot drift apart, and the rare wide operands cost `vm::run` one
+call rather than a second copy of every arm. A send is never a `Wide`: its
+own wide forms join its kind's path. That a body with more than 255
+registers runs slower is a cost, not a semantic difference; every form
 runs.
 
-**One stored form** (2026-10-02). The compiler, both lowerings, and the
-image decoder emit `Instruction` values into a `CodeBuilder`, which encodes
-each at once and patches jump targets in place; `CompiledCode` stores only
-the slots and their tables. `CompiledCode::instruction(index)` and
-`instructions()` decode the view back -- for `disasm`, the image encoder,
-the decoder's verification, `outer_reach_of`, `family_size_of` and the
-tests -- and the round trip is exact. The decoder numbers a family's call
-sites in the `send_sites` and the `wide` table, in emission order, as it
-does today.
+**One stored form** (2026-10-02). Both lowerings and the image decoder emit
+`Instruction` values into a `CodeBuilder`, which encodes each at once and
+patches jump targets in place (`Instruction::set_target` for a target in
+`wide`); `CompiledCode` stores only the `EncodedBody`, the slots and their
+tables. `CompiledCode::instruction(index)` and `instructions()` decode the
+view back -- for `disasm`, the image encoder, the decoder's verification,
+`outer_reach_of`, `family_size_of` and the tests -- and the round trip is
+exact; `instruction_count()` answers the body's length, and only `vm.rs`
+reads `slot(index)`. The decoder numbers a family's call sites in place
+through `EncodedBody::for_each_emitted_mut`, which visits every send's
+`CallSite`, in `send_sites` or in `wide`, and every block, in emission
+order whatever form each took -- the compiler's own order
+([compiler.md](compiler.md), "Safepoints and call-site identity").
 
 **The wide forms run under a stress mode** (2026-10-02):
-`NS_NEXT_STRESS_WIDE=1`, debug builds only like the other three, makes the
-builder encode every instruction in a wide form, so that the whole golden
-suite runs through the `Wide` arm and the four wide send forms. It joins
-the end-of-batch gates. Goldens pin the forms no program measured above
-reaches: a method of more than 255 registers, sends of three to eight
-arguments under both lowerings, and tests that build a body with more than
-65,536 constants and send sites.
+`NS_NEXT_STRESS_WIDE=1`, debug builds only like the move, cache and
+collection modes and read once per process
+(`interpreter/safepoint.rs`), makes `CodeBuilder::new` encode every
+instruction in a wide form, so that the whole golden suite runs through the
+`Wide` arm and the four wide send forms. It is one of the end-of-batch
+gates. A test of the narrow forms builds with
+`CodeBuilder::never_wide_by_stress`, so its assertions hold under every
+mode. Goldens and tests pin the forms no measured program reaches:
+`goldens/runtime/encoding/` a method of three hundred registers and sends
+of three to eight arguments, under both lowerings, and
+`crates/ns-runtime/tests/compact_encoding.rs` bodies past 65,536 constants,
+send sites and allocated literals, under the optimized lowering only, since
+the reference lowering runs out of registers first
+([OPEN-WORK.md](../OPEN-WORK.md), "Known defects and gaps").
 
-### How it is built: measured first
-
-Like the decision sink ("A send's value delivered where it is decided"
-above), the encoding is measured before it is built (2026-10-02). A
-throwaway copy encodes every body beside today's instructions, runs
-`vm::run` on the eight-byte slots, and is measured against `master` by the
-protocol of "What the eight-byte value moved". The user decides on its
-numbers. If the slots are not faster, a second experiment measures the
-32-bit stream the same way before anything is built, and the user decides
-again. Built, it lands in stages that are each green: the `Immediate`
-word, the encoding and its round trip, `CompiledCode` storing only the
-encoding with the loop reading the decoded view, the loop on the slots, the
-wide goldens and the stress mode, the measurement.
+**Measured before it was built** (2026-10-02), like the decision sink ("A
+send's value delivered where it is decided" above): a throwaway copy ran
+`vm::run` on the eight-byte slots and was measured against `master`, and
+the user decided on its numbers to build the slots, so the 32-bit stream
+was never measured. What the gate showed, the join it led to, and what the
+built encoding moved are "What the compact instruction encoding moved"
+above.
 
 ## Planned: tail calls, skipped but kept
 
@@ -6382,6 +6403,15 @@ HotSpot's.
   per-instruction answer, Cog's `localIP`/`localFP` rather than Primordial
   Soup's interpreter fields, since locals of one function are what LLVM keeps
   in registers ([dispatch.md](dispatch.md), "Decisions").
+- **A body is stored and run as eight-byte instructions** (decided with the
+  user on 2026-10-02 on a measured gate, built the same day; "The compact
+  instruction encoding"): one `#[repr(u8)]` slot per instruction and side
+  tables for what does not fit, so the program counter stays an instruction
+  index and the wire format, the statement map and a frame's
+  `program_counter` are unchanged; chosen over a 32-bit or byte stream,
+  which would make the program counter an offset, and over a stack form,
+  which would undo the register assignment. Each send kind joins its own
+  send path, since one join shared by the four cost `bench_loop.ns` 3.5%.
 - **The run loop polls a safepoint at every switch and every backward jump**
   ("The VM"): one compare of a flag the heap owns, and when it is set the
   stretch leaves its entry and `run` makes a cold call, at the points where

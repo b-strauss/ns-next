@@ -6,8 +6,9 @@ Rust 1.98.0, edition 2021, five crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
-  checked against the reference lowering in `compiler/reference.rs`), the VM
-  (`vm.rs`) and the send machinery it calls (`interpreter/`: inline caches in
+  checked against the reference lowering in `compiler/reference.rs`), the
+  instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
+  `bytecode/compact.rs`), the VM (`vm.rs`) and the send machinery it calls (`interpreter/`: inline caches in
   `inline_cache.rs` in front of the lookups in `resolve.rs`, the one unwinder in
   `unwind.rs`, the VM mirror in `mirror.rs` and its leaves in `builtins/`), the
   core library (`core-library/Kernel.ns`, `PlatformFactory.ns`,
@@ -218,7 +219,8 @@ benchmarking, and once at the end of a branch, never under a stress mode:
 `cargo nextest run -p ns-cli --profile benchmarks` (`execution.md`, "The Are
 We Fast Yet benchmarks").
 
-The end-of-batch gates (the three stress modes, `run-corpus` plain and under
+The end-of-batch gates (the four stress modes: moves, caches, collection and
+every instruction wide; `run-corpus` plain and under
 stress, the benchmarks profile, `verifyPlugin`) are in the `finishing-a-batch`
 skill. A commit that
 never saw them is work in progress, not finished work; a subagent implementing

@@ -384,8 +384,8 @@ pub enum CodeKind {
 pub struct CompiledCode {
     pub kind: CodeKind,
     /// The instructions, stored only in their eight-byte encoding
-    /// (`docs/design/execution.md`, "Planned: the compact instruction
-    /// encoding"): the loop runs the slots, and every tool reads the decoded
+    /// (`docs/design/execution.md`, "The compact instruction encoding"):
+    /// the loop runs the slots, and every tool reads the decoded
     /// view (`instruction`, `instructions`).
     body: EncodedBody,
     pub argument_count: u16,

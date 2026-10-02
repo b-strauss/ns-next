@@ -101,8 +101,8 @@ impl std::fmt::Debug for Word {
 /// A value that holds no handle -- `nil`, a Boolean, a `SmallInteger`, a
 /// `SmallFloat64` -- kept as the word it is, so that compiled code can
 /// carry its constants beside its instructions
-/// (`docs/design/execution.md`, "Planned: the compact instruction
-/// encoding"). It means the same in every heap and across every move, so
+/// (`docs/design/execution.md`, "The compact instruction encoding").
+/// It means the same in every heap and across every move, so
 /// code holding one needs no `Trace`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Immediate(u64);

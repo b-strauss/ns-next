@@ -1,8 +1,8 @@
 //! The encoding a compiled body is stored and run in: one eight-byte
 //! `CompactInstruction` per `Instruction`, with everything that does not
 //! fit eight bytes in side tables beside them
-//! (`docs/design/execution.md`, "Planned: the compact instruction
-//! encoding"). `Instruction` stays the vocabulary: a lowering or the image
+//! (`docs/design/execution.md`, "The compact instruction encoding").
+//! `Instruction` stays the vocabulary: a lowering or the image
 //! decoder emits one into a `CodeBuilder`, which encodes it at once, and
 //! every tool reads a body back through `EncodedBody::instruction`, an
 //! exact inverse.

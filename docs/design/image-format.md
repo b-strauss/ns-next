@@ -214,12 +214,21 @@ a load; nothing recompiles. How each instruction is encoded is below.
 
 ## The instruction encoding
 
-In memory an instruction is a Rust enum; on the wire it is **a tag byte followed
-by a fixed operand layout** for that tag. Registers are `u16`, jump targets are
-instruction indices, a send's call site is its `u32` number within its code
-family, selectors and names are symbol-table ids, and a literal
-carries its own tag byte from a second table. No instruction's operands
-nest.
+On the wire an instruction is a `bytecode::Instruction`, written as **a tag
+byte followed by a fixed operand layout** for that tag. Registers are `u16`,
+jump targets are instruction indices, a send's call site is its `u32` number
+within its code family, selectors and names are symbol-table ids, and a
+literal carries its own tag byte from a second table. No instruction's
+operands nest.
+
+In memory a body is stored in a different form, eight bytes an instruction
+with side tables ([execution.md](execution.md), "The compact instruction
+encoding"), which the wire does not see: the encoder writes the
+`Instruction`s it reads back through the body's decoded view, and the
+decoder emits every `Instruction` it reads into a `CodeBuilder`. One
+instruction is one eight-byte slot, so a jump target, the statement map and
+a frame's `program_counter` are the same instruction index on the wire and
+in memory.
 
 **A tag is assigned once and never changes.** A new instruction takes the next
 free number; a removed one retires its number rather than freeing it for reuse.
@@ -360,7 +369,8 @@ Literals:
 It is feedback-table bookkeeping, not program meaning: the decoder assigns
 every family's numbers itself, in the compiler's own emission order, once
 the whole code table is read (`decode::number_call_site_families`), rather
-than trusting a number the file claims. A code record carries one flag,
+than trusting a number the file claims, writing each into the decoded body
+in place through `EncodedBody::for_each_emitted_mut`. A code record carries one flag,
 whether its sends were compiled uncached (the reference lowering never
 numbers a send at all, so it marks the whole body rather than leaving each
 send to say so), and one count, `copied_count`, so that a block's register
