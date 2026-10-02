@@ -7,6 +7,7 @@ use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction};
 use ns_runtime::interpreter::FeedbackBase;
 use ns_runtime::types::{Continuation, FrameKind, Value};
 use ns_runtime::Interpreter;
+use ns_runtime::ValueKind;
 use ns_runtime::{
     ActivationHeader, BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol,
 };
@@ -437,5 +438,16 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         );
         assert!(matches!(heap.frame_local(kept, 0), Value::SmallInteger(1)));
         assert!(matches!(heap.frame_local(kept, 1), Value::SmallInteger(2)));
+    });
+}
+
+#[test]
+fn a_float_is_made_by_the_mutator_and_read_by_the_heap() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let value = mutator.new_float(2.5);
+        assert_eq!(mutator.heap().float_value(value), Some(2.5));
+        assert_eq!(mutator.heap().float_value(Value::small_integer(2)), None);
+        assert!(matches!(value.kind(), ValueKind::SmallFloat(number) if number == 2.5));
     });
 }

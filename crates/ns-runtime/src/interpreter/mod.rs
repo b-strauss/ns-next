@@ -1464,6 +1464,13 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::String(code_points))
     }
 
+    /// The one way an `f64` becomes a `Value`, so that every float has one
+    /// representation once floats outside the `SmallFloat64` range are boxed
+    /// (`docs/design/object-model.md`, "Planned: an eight-byte value").
+    pub fn new_float(&mut self, value: f64) -> Value<'gc> {
+        Value::Float(value)
+    }
+
     /// The one way an `ArbitraryInteger` becomes a `Value`, so that every
     /// integer has one representation: one that fits `i64` is a
     /// `SmallInteger`, never a `LargeInteger` object, which `Integer>>=`,

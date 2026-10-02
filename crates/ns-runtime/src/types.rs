@@ -29,6 +29,73 @@ pub enum Value<'gc> {
     Object(ObjectReference<'gc>),
 }
 
+/// What a `Value` is, for an exhaustive `match`: the view every site
+/// matches on, so that no code outside the representation names it
+/// (`docs/design/object-model.md`, "How it is built"). `SmallFloat` is the
+/// immediate float only; code that reads a float asks `Heap::float_value`,
+/// which also answers a boxed one.
+#[derive(Clone, Copy)]
+pub enum ValueKind<'gc> {
+    Nil,
+    Boolean(bool),
+    SmallInteger(i64),
+    SmallFloat(f64),
+    Object(ObjectReference<'gc>),
+}
+
+impl<'gc> Value<'gc> {
+    pub const fn nil() -> Value<'gc> {
+        Value::Nil
+    }
+
+    pub const fn boolean(value: bool) -> Value<'gc> {
+        Value::Boolean(value)
+    }
+
+    pub fn small_integer(value: i64) -> Value<'gc> {
+        Value::SmallInteger(value)
+    }
+
+    pub const fn object(object: ObjectReference<'gc>) -> Value<'gc> {
+        Value::Object(object)
+    }
+
+    pub fn kind(self) -> ValueKind<'gc> {
+        match self {
+            Value::Nil => ValueKind::Nil,
+            Value::Boolean(flag) => ValueKind::Boolean(flag),
+            Value::SmallInteger(number) => ValueKind::SmallInteger(number),
+            Value::Float(number) => ValueKind::SmallFloat(number),
+            Value::Object(object) => ValueKind::Object(object),
+        }
+    }
+
+    pub fn is_nil(self) -> bool {
+        matches!(self, Value::Nil)
+    }
+
+    pub fn as_boolean(self) -> Option<bool> {
+        match self {
+            Value::Boolean(flag) => Some(flag),
+            _ => None,
+        }
+    }
+
+    pub fn as_small_integer(self) -> Option<i64> {
+        match self {
+            Value::SmallInteger(number) => Some(number),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(self) -> Option<ObjectReference<'gc>> {
+        match self {
+            Value::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Object<'gc> {
     pub class: ClassReference<'gc>,
@@ -817,5 +884,30 @@ mod tests {
         let copy = original;
         assert_eq!(original, copy);
         assert_ne!(original, Binding::SuperSend);
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::{Value, ValueKind};
+
+    #[test]
+    fn each_constructor_answers_through_its_accessor_and_no_other() {
+        let nil: Value<'static> = Value::nil();
+        assert!(nil.is_nil());
+        assert_eq!(nil.as_boolean(), None);
+        let truth: Value<'static> = Value::boolean(true);
+        assert_eq!(truth.as_boolean(), Some(true));
+        assert!(!truth.is_nil());
+        let three: Value<'static> = Value::small_integer(3);
+        assert_eq!(three.as_small_integer(), Some(3));
+        assert_eq!(three.as_boolean(), None);
+        assert!(three.as_object().is_none());
+        assert!(matches!(three.kind(), ValueKind::SmallInteger(3)));
+        assert!(matches!(
+            Value::<'static>::boolean(false).kind(),
+            ValueKind::Boolean(false)
+        ));
+        assert!(matches!(Value::<'static>::nil().kind(), ValueKind::Nil));
     }
 }

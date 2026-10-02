@@ -1348,6 +1348,14 @@ impl<'gc> Heap<'gc> {
             .map(crate::CodePoints::content_hash)
     }
 
+    /// Any float, immediate or boxed; `None` for anything else.
+    pub fn float_value(&self, value: Value<'gc>) -> Option<f64> {
+        match value {
+            Value::Float(number) => Some(number),
+            _ => None,
+        }
+    }
+
     /// The integer a `LargeInteger` object holds; `None` for any other
     /// object. Copies out, as every accessor does (`docs/design/memory.md`,
     /// "The seam").
