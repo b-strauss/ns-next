@@ -2972,7 +2972,7 @@ fn rebuild_applications<'gc>(
             if !context
                 .mutator
                 .heap
-                .install_class_application(object, application)
+                .class_install_application(object, application)
             {
                 unreachable!("this object was filled in as a class record");
             }
@@ -3032,7 +3032,7 @@ fn rebuild_applications<'gc>(
             context
                 .mutator
                 .heap
-                .set_class_value_refusal(object, refusal);
+                .class_set_value_refusal(object, refusal);
         }
     }
     Ok(())
@@ -3087,8 +3087,8 @@ fn rebuild_metaclasses<'gc>(
         let heap = &mut context.mutator.heap;
         let enclosing = heap.class_enclosing(this_class);
         let declaring_class = heap.class_declaring(this_class);
-        if !heap.install_class_application(metaclass, application)
-            || !heap.set_class_lexical_context(metaclass, enclosing, declaring_class)
+        if !heap.class_install_application(metaclass, application)
+            || !heap.class_set_lexical_context(metaclass, enclosing, declaring_class)
         {
             unreachable!("this object was filled in as a metaclass record");
         }
@@ -3117,7 +3117,7 @@ fn pair_metaclasses<'gc>(
         if heap.class_metaclass(class).is_none() {
             return Err(DecodeError::MetaclassPairing);
         }
-        let metaclass = heap.class_of_object(class);
+        let metaclass = heap.object_class(class);
         *named
             .entry(heap.object_identity_key(metaclass))
             .or_insert(0) += 1;
@@ -3188,7 +3188,7 @@ fn check_class_references<'gc>(
     frames: &[FrameReference<'gc>],
 ) -> Result<(), DecodeError> {
     for object in objects {
-        let class = heap.class_of_object(*object);
+        let class = heap.object_class(*object);
         if !heap.is_class(class) {
             return Err(DecodeError::NotAClassReference);
         }
@@ -3407,7 +3407,7 @@ pub fn decode_graph_section<'gc>(
             ObjectData::Symbol(symbol) => Some(*symbol),
             _ => None,
         };
-        context.mutator.heap.replace_object(
+        context.mutator.heap.object_replace(
             *object,
             Object {
                 class,
@@ -3464,7 +3464,7 @@ pub fn decode_graph_section<'gc>(
     context.mutator.heap.stamp_dispatch_ids(&objects);
     for frame in &frames {
         let decoded = decode_frame(reader, context, &tables, symbols)?;
-        context.mutator.heap.replace_frame(*frame, decoded);
+        context.mutator.heap.frame_replace(*frame, decoded);
     }
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     let roots = decode_values(reader, context, &tables)?;
@@ -3539,7 +3539,7 @@ pub fn decode_tag_named_hashes<'gc>(
             return Err(DecodeError::DuplicateTagNamedHash);
         }
         restored.push(target);
-        mutator.heap.set_identity_hash(target, hash);
+        mutator.heap.object_set_identity_hash(target, hash);
         max = max.max(hash);
     }
     Ok(max)

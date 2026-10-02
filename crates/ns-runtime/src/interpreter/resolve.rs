@@ -294,7 +294,7 @@ fn resolved_for<'gc>(
 ) -> Resolved<'gc> {
     match (lookup, receiver.as_object()) {
         (Lookup::Factory(level), Some(class_object))
-            if heap.is_class(class_object) && heap.class_of_object(class_object).same(level) =>
+            if heap.is_class(class_object) && heap.object_class(class_object).same(level) =>
         {
             Resolved::Factory {
                 level: class_object,

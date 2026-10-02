@@ -844,7 +844,7 @@ the image under the new representation" below).
 one of the counts these passes bound.** `verify_mixins` checks a body's kind and
 arity against its declaration, but nothing checks that a slot instruction's
 index falls within the mixin's own slot count. This is harmless at run time:
-`Heap::set_instance_field` and `Heap::instance_field` are total, so an
+`Heap::instance_set_field` and `Heap::instance_field` are total, so an
 out-of-range index writes nothing and reads as an empty slot, and an in-range
 but wrong one writes or reads a different slot of the instance -- silently
 wrong output, never a panic. That is acceptable for

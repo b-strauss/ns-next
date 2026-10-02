@@ -218,15 +218,15 @@ impl<'gc> Mutator<'gc> {
                 self.behavior_mixin = Some(mixin.clone());
             }
             let application = self.apply_mixin(&mixin, super_application.as_ref());
-            if !self.heap.set_class_application(class, application) {
+            if !self.heap.class_set_application(class, application) {
                 unreachable!("internal: a builtin class is a class object");
             }
             let linked = match superclass {
                 Some(superclass) => {
                     let superclass_object = self.builtin_class(superclass);
-                    self.heap.set_class_superclass(class, superclass_object)
+                    self.heap.class_set_superclass(class, superclass_object)
                 }
-                None => self.heap.clear_class_superclass(class),
+                None => self.heap.class_clear_superclass(class),
             };
             if !linked {
                 unreachable!("internal: a builtin class is a class object");
@@ -309,13 +309,13 @@ impl<'gc> Mutator<'gc> {
             );
             if !self
                 .heap
-                .set_instance_field(kernel, field, Value::object(class))
+                .instance_set_field(kernel, field, Value::object(class))
             {
                 unreachable!("internal: the kernel instance has a field per nested class");
             }
             if !self
                 .heap
-                .set_class_lexical_context(class, Some(kernel), Some(kernel_class))
+                .class_set_lexical_context(class, Some(kernel), Some(kernel_class))
             {
                 unreachable!("internal: a builtin class is a class object");
             }
@@ -334,7 +334,7 @@ impl<'gc> Mutator<'gc> {
             }
             if !self
                 .heap
-                .set_class_lexical_context(class, Some(kernel), Some(kernel_class))
+                .class_set_lexical_context(class, Some(kernel), Some(kernel_class))
             {
                 unreachable!("internal: an applied level is a class object");
             }
@@ -355,7 +355,7 @@ impl<'gc> Mutator<'gc> {
         if let Some(metaclass) = self.heap.class_metaclass(class) {
             if !self
                 .heap
-                .set_class_lexical_context(metaclass, Some(kernel), Some(kernel_class))
+                .class_set_lexical_context(metaclass, Some(kernel), Some(kernel_class))
             {
                 unreachable!("internal: a metaclass is a class object");
             }
@@ -594,7 +594,7 @@ fn kernel_application<'gc>(
     kernel: ObjectReference<'gc>,
 ) -> Rc<crate::mixin::MixinApplication> {
     let heap = mutator.heap();
-    heap.class_application(heap.class_of_object(kernel))
+    heap.class_application(heap.object_class(kernel))
         .expect("internal: the kernel's class is a class object")
 }
 
@@ -1167,7 +1167,7 @@ mod tests {
             let Some(platform) = mutator.platform_value().as_object() else {
                 panic!("the platform is an object");
             };
-            let platform_class = mutator.heap().class_of_object(platform);
+            let platform_class = mutator.heap().object_class(platform);
             let application = mutator
                 .heap()
                 .class_application(platform_class)
@@ -1345,7 +1345,7 @@ mod tests {
             let Some(platform) = mutator.platform_value().as_object() else {
                 panic!("the platform is an object");
             };
-            let platform_class = mutator.heap().class_of_object(platform);
+            let platform_class = mutator.heap().object_class(platform);
             let application = mutator
                 .heap()
                 .class_application(platform_class)
@@ -1794,12 +1794,12 @@ mod tests {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
-            let kernel_class = mutator.heap().class_of_object(kernel);
+            let kernel_class = mutator.heap().object_class(kernel);
             assert!(mutator.heap().class_inherits_value(kernel_class));
             let Some(mirror) = mutator.vm_mirror().as_object() else {
                 panic!("the mirror is an object");
             };
-            let mirror_class = mutator.heap().class_of_object(mirror);
+            let mirror_class = mutator.heap().object_class(mirror);
             assert!(mutator.heap().class_inherits_value(mirror_class));
         });
     }
@@ -1814,7 +1814,7 @@ mod tests {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
-            let kernel_class = mutator.heap().class_of_object(kernel);
+            let kernel_class = mutator.heap().object_class(kernel);
             let level = mutator
                 .heap()
                 .class_superclass(kernel_class)

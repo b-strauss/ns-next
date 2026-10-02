@@ -470,7 +470,7 @@ activation to an observer**: every send, since a nested activation runs above it
 comes just before `reify`, which copies it into the frame it creates; and
 `NonLocalReturn`, since control leaves with a signal.
 
-The stores go to the stack entry (`Heap::set_activation_program_counter`), so they keep the
+The stores go to the stack entry (`Heap::activation_set_program_counter`), so they keep the
 activation's `program_counter` current for as long as it runs; a frame married to it holds no
 `program_counter` of its own that anything reads meanwhile. When the activation returns, the
 divorce gives the frame the last `program_counter` stored — often a later send's, not the
@@ -5955,7 +5955,7 @@ caches, `act`, the continuations, the unwinder -- behind the interfaces it
 had, which a JIT tier will reach the same way.
 
 **The register base.** `heap.rs` hands out an opaque `RegisterBase`, which
-only `Heap` can mint: `Heap::register_base(activation)` computes an
+only `Heap` can mint: `Heap::activation_register_base(activation)` computes an
 activation's window start once per switch, and `Heap::register(base,
 index)` and `Heap::set_register(base, index, value)` reach `stack.values`
 with one index and one bounds check. It is an index, not a pointer: it
@@ -6035,7 +6035,7 @@ every fixture faster -- `bench_loop.ns` -17.1% (separated),
 `bench_send.ns` -3.5%, `bench_block.ns` -0.9%, `bench_megamorphic.ns`
 -1.5% -- at the price of `vm::run` growing from 7,143 to 13,371
 instructions and its frame from 0x3E8 to 0x7D8 bytes, with
-`Heap::instance_field` and `set_instance_field` left out of line (13.8% of
+`Heap::instance_field` and `instance_set_field` left out of line (13.8% of
 samples) and `LoadLiteral`'s own stall (through `make_value`, 12.3% of
 `vm::run` on `master`, 18.6% after) untouched. What the experiment showed
 beyond the send path: LLVM copied the 16-byte enum `Value` as its tag byte and two

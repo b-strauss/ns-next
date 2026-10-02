@@ -1435,7 +1435,7 @@ pub(crate) fn check_value_slot<'gc>(
     let Some(instance) = receiver.as_object() else {
         return Ok(());
     };
-    let class = mutator.heap().class_of_object(instance);
+    let class = mutator.heap().object_class(instance);
     if !mutator.heap().class_inherits_value(class) {
         return Ok(());
     }
@@ -1466,7 +1466,7 @@ pub(crate) fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'g
     }
     mutator
         .heap()
-        .class_inherits_value(mutator.heap().class_of_object(object))
+        .class_inherits_value(mutator.heap().object_class(object))
 }
 
 /// Whether the class object `class` is a value: exactly when its enclosing
@@ -1494,7 +1494,7 @@ pub(crate) fn class_object_is_a_value<'gc>(
             !mutator.heap().is_class(enclosing)
                 && mutator
                     .heap()
-                    .class_inherits_value(mutator.heap().class_of_object(enclosing))
+                    .class_inherits_value(mutator.heap().object_class(enclosing))
         }
     }
 }

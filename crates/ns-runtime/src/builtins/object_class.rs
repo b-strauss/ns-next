@@ -65,7 +65,7 @@ fn identity_hash_of<'gc>(heap: &mut Heap<'gc>, value: Value<'gc>) -> u32 {
         // A boxed float hashes as an immediate one does, since `identical`
         // makes it the same float as every other allocation of its bits.
         ValueKind::Object(object) if heap.is_boxed_float(object) => 0,
-        ValueKind::Object(object) => heap.ensure_identity_hash(object),
+        ValueKind::Object(object) => heap.object_ensure_identity_hash(object),
         // Immediates are values and get no distinct identity hash.
         _ => 0,
     }

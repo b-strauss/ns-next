@@ -1523,7 +1523,7 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    at the end of `ALL` and in the middle of the hierarchy. Each class gets the
    nested mixin named like it, applied to the application of the class its
    clause names — `Top`'s to none, `Object`'s to `Top`'s, and so on down —
-   installed with `Heap::set_class_application`, which restamps the dispatch
+   installed with `Heap::class_set_application`, which restamps the dispatch
    id of the few objects that exist this early, and the class object's
    superclass link set to match. `Value`'s *mixin* is recorded just before
    `Value` is filled, and `Behavior`'s just before `Behavior` is, rather than

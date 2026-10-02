@@ -389,7 +389,7 @@ const COLLECTION_FLOOR: usize = 4096;
 
 pub struct Heap<'gc> {
     /// The next identity hash to hand out. Hashes are assigned lazily, the
-    /// first time `ensure_identity_hash` is asked for one, and never derived
+    /// first time `object_ensure_identity_hash` is asked for one, and never derived
     /// from an address or an arena index, so identity survives both a moving
     /// collector and a snapshot (`docs/design/memory.md`) and allocation
     /// order stays unobservable (`docs/design/object-model.md`).
@@ -820,7 +820,7 @@ impl<'gc> Heap<'gc> {
     // what backs a handle only ever touches this file.
 
     /// Allocates `data` under `class`. It carries no identity hash until
-    /// something asks for one (`ensure_identity_hash`), so allocating draws
+    /// something asks for one (`object_ensure_identity_hash`), so allocating draws
     /// nothing from the counter.
     pub fn allocate_object(
         &mut self,
@@ -923,7 +923,7 @@ impl<'gc> Heap<'gc> {
     // to objects, not activation records -- so there is only one
     // constructor, used for both a real activation and the placeholder
     // `image::decode::decode_graph_section`'s first pass allocates and its
-    // second pass overwrites wholesale via `replace_frame`.
+    // second pass overwrites wholesale via `frame_replace`.
 
     /// Allocates `frame`. The only constructor of a `FrameReference` in the
     /// workspace -- `reify`, the image decoder and tests all come through
@@ -939,7 +939,7 @@ impl<'gc> Heap<'gc> {
     /// fields at an existing one -- would record a return target that
     /// disagrees with the frame's own closure silently rather than fail
     /// loudly. Checked here, once, rather than at every constructor. Not
-    /// checked in `replace_frame`: the decoder fills a placeholder through
+    /// checked in `frame_replace`: the decoder fills a placeholder through
     /// that path with fields read off the wire, and nothing reactivates a
     /// decoded frame, so it need not satisfy this.
     pub fn allocate_frame(&mut self, frame: Frame<'gc>) -> FrameReference<'gc> {
@@ -1138,7 +1138,7 @@ impl<'gc> Heap<'gc> {
     /// The identity hash stored on `object`, 0 if nothing has asked for one
     /// yet. A read never assigns one: the image encoder writes exactly what is
     /// stored, so snapshotting a world does not change it.
-    pub fn identity_hash(&self, object: ObjectReference<'gc>) -> u32 {
+    pub fn object_identity_hash(&self, object: ObjectReference<'gc>) -> u32 {
         self.check_object_origin(object);
         self.objects[object.index as usize].identity_hash
     }
@@ -1150,7 +1150,7 @@ impl<'gc> Heap<'gc> {
     /// unobservable: the reference lowering allocates closures the optimized
     /// one does not, and closure conversion and a JIT's escape analysis will
     /// add and remove allocations the same way (`docs/design/object-model.md`).
-    pub fn ensure_identity_hash(&mut self, object: ObjectReference<'gc>) -> u32 {
+    pub fn object_ensure_identity_hash(&mut self, object: ObjectReference<'gc>) -> u32 {
         self.check_object_origin(object);
         let stored = self.objects[object.index as usize].identity_hash;
         if stored != 0 {
@@ -1201,12 +1201,12 @@ impl<'gc> Heap<'gc> {
     /// rest on: it can leave two live objects sharing a hash, and every
     /// identity-keyed collection and `become:`'s stability guarantee then
     /// silently breaks, with nothing anywhere raising an error to say so.
-    pub fn set_identity_hash(&mut self, object: ObjectReference<'gc>, hash: u32) {
+    pub fn object_set_identity_hash(&mut self, object: ObjectReference<'gc>, hash: u32) {
         self.check_object_origin(object);
         self.objects[object.index as usize].identity_hash = hash;
     }
 
-    pub fn class_of_object(&self, object: ObjectReference<'gc>) -> ClassReference<'gc> {
+    pub fn object_class(&self, object: ObjectReference<'gc>) -> ClassReference<'gc> {
         self.check_object_origin(object);
         self.objects[object.index as usize].class
     }
@@ -1219,7 +1219,7 @@ impl<'gc> Heap<'gc> {
         )
     }
 
-    pub fn array_length(&self, object: ObjectReference<'gc>) -> Option<usize> {
+    pub fn array_element_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Array(items) => Some(items.len()),
@@ -1228,7 +1228,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The number of fields in `object`'s `ObjectData::Instance`, mirroring
-    /// `array_length`; `None` for any other shape.
+    /// `array_element_count`; `None` for any other shape.
     pub fn instance_field_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
@@ -1245,7 +1245,7 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    pub fn array_at(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
+    pub fn array_element(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Array(items) => items.get(index).map(|word| self.load(*word)),
@@ -1257,7 +1257,7 @@ impl<'gc> Heap<'gc> {
     /// out-of-range index is a caller's concern -- the natives that reach
     /// here have already produced their own Newspeak error for it -- so
     /// this reports rather than panics.
-    pub fn array_set(
+    pub fn array_set_element(
         &mut self,
         object: ObjectReference<'gc>,
         index: usize,
@@ -1285,8 +1285,8 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Answers whether the write happened, mirroring `array_set`.
-    pub fn set_instance_field(
+    /// Answers whether the write happened, mirroring `array_set_element`.
+    pub fn instance_set_field(
         &mut self,
         object: ObjectReference<'gc>,
         index: usize,
@@ -1584,7 +1584,7 @@ impl<'gc> Heap<'gc> {
     /// the same closure object reuses it instead of minting again. On a
     /// non-closure it does nothing: `image::decode`'s reconciliation is what
     /// guarantees the caller's object is a closure, not this accessor.
-    pub(crate) fn set_closure_feedback_base(
+    pub(crate) fn closure_set_feedback_base(
         &mut self,
         object: ObjectReference<'gc>,
         feedback_base: FeedbackBase,
@@ -1621,7 +1621,7 @@ impl<'gc> Heap<'gc> {
     ///
     /// A closure frame the runtime reified always carries a `home`
     /// (`allocate_frame` asserts it), so the fallback below is reached only
-    /// by a *decoded* closure frame, which `replace_frame` fills straight
+    /// by a *decoded* closure frame, which `frame_replace` fills straight
     /// from the wire. Answering the captured frame for one is what keeps an
     /// untrusted image from panicking here: a decoded frame is never married
     /// to an activation, so a `^` aimed at it is the `cannotReturn` error
@@ -1679,7 +1679,7 @@ impl<'gc> Heap<'gc> {
     /// header until `stamp_dispatch_ids` runs -- `filled`'s class may itself
     /// be a still-placeholder record with no application yet -- and must not
     /// be dispatched on before then.
-    pub fn replace_object(&mut self, object: ObjectReference<'gc>, filled: Object<'gc>) {
+    pub fn object_replace(&mut self, object: ObjectReference<'gc>, filled: Object<'gc>) {
         self.check_object_origin(object);
         self.objects[object.index as usize] = filled;
     }
@@ -2070,12 +2070,12 @@ impl<'gc> Heap<'gc> {
     /// Makes `class` `object`'s class and restamps `object`'s dispatch id
     /// from it, so a cache guard never reads an id its header no longer
     /// answers. Answers whether the write happened -- `false` when `class`
-    /// is no class object -- mirroring `set_class_superclass` and
-    /// `set_class_application`. `Mutator::attach_metaclass` is the one
+    /// is no class object -- mirroring `class_set_superclass` and
+    /// `class_set_application`. `Mutator::attach_metaclass` is the one
     /// caller: a class object's header becomes its metaclass, and the
     /// metaclass's `Metaclass` (`newspeak-spec.pdf` §3.2); the caller turns
     /// a `false` into an `unreachable!` rather than swallowing it.
-    pub(crate) fn set_object_class(
+    pub(crate) fn object_set_class(
         &mut self,
         object: ObjectReference<'gc>,
         class: ClassReference<'gc>,
@@ -2099,7 +2099,7 @@ impl<'gc> Heap<'gc> {
     /// whether the write happened, like the other class setters;
     /// `Mutator::attach_metaclass` is the one caller, on a metaclass it has
     /// just built.
-    pub(crate) fn set_class_this_class(
+    pub(crate) fn class_set_this_class(
         &mut self,
         metaclass: ClassReference<'gc>,
         class: ClassReference<'gc>,
@@ -2113,7 +2113,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Relinks `class`'s superclass pointer. Answers whether the write
-    /// happened, mirroring `set_class_application` -- the matching relink on
+    /// happened, mirroring `class_set_application` -- the matching relink on
     /// the application chain that carries the layout, called right alongside
     /// this one. Two callers: the bootstrap's kernel phase, which links each
     /// builtin class to the one its `Kernel.ns` clause names
@@ -2123,7 +2123,7 @@ impl<'gc> Heap<'gc> {
     /// (the root rule, `resolver::root_clause_defect`), so linking a
     /// subclass to an already-loaded sibling *user-defined* class has to
     /// happen by hand on the class-object chain `super`/`instantiate` walk.
-    pub fn set_class_superclass(
+    pub fn class_set_superclass(
         &mut self,
         class: ClassReference<'gc>,
         superclass: ClassReference<'gc>,
@@ -2137,10 +2137,10 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Unlinks `class`'s superclass pointer, answering whether the write
-    /// happened like `set_class_superclass`. The bootstrap's kernel phase
+    /// happened like `class_set_superclass`. The bootstrap's kernel phase
     /// is the one caller: it states that the kernel's `Object` has no
     /// superclass rather than rely on the placeholder already having none.
-    pub fn clear_class_superclass(&mut self, class: ClassReference<'gc>) -> bool {
+    pub fn class_clear_superclass(&mut self, class: ClassReference<'gc>) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.superclass = None;
@@ -2154,7 +2154,7 @@ impl<'gc> Heap<'gc> {
     /// the kernel instance that encloses it can, because a literal needs its
     /// class from the first instruction on. Answers whether the write
     /// happened, like the other class setters.
-    pub fn set_class_lexical_context(
+    pub fn class_set_lexical_context(
         &mut self,
         class: ClassReference<'gc>,
         enclosing: Option<ObjectReference<'gc>>,
@@ -2175,7 +2175,7 @@ impl<'gc> Heap<'gc> {
     /// `image::decode::rebuild_applications`, which recomputes the verdict
     /// for a decoded one rather than trusting it from the wire. Answers
     /// whether the write happened, like the other class setters.
-    pub fn set_class_value_refusal(
+    pub fn class_set_value_refusal(
         &mut self,
         class: ClassReference<'gc>,
         refusal: crate::types::ValueClassRefusal,
@@ -2191,20 +2191,20 @@ impl<'gc> Heap<'gc> {
     /// Gives `class` a new application and moves every live object of that
     /// class to its ids -- a walk of the arena, which is why the decoder,
     /// which installs one application per class record, calls
-    /// `install_class_application` instead and stamps once afterwards
+    /// `class_install_application` instead and stamps once afterwards
     /// (`stamp_dispatch_ids`). Answers whether the write happened, mirroring
-    /// `array_set` and `set_instance_field`. Its callers are the bootstrap's
+    /// `array_set_element` and `instance_set_field`. Its callers are the bootstrap's
     /// kernel phase, filling each builtin placeholder once
     /// (`interpreter::kernel`), and tests editing an already-live class
     /// (`install_mixin` in `tests/image.rs`, `tests/instantiate.rs`,
     /// `ns-cli`'s `disasm_snapshots.rs`) -- a wrong-shape `class` there is a
     /// bug of the caller's, not an untrusted-input case.
-    pub fn set_class_application(
+    pub fn class_set_application(
         &mut self,
         class: ClassReference<'gc>,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
-        if !self.install_class_application(class, application) {
+        if !self.class_install_application(class, application) {
             return false;
         }
         for index in 0..self.objects.len() {
@@ -2217,13 +2217,13 @@ impl<'gc> Heap<'gc> {
         true
     }
 
-    /// `set_class_application` without the walk: `class`'s own header is
+    /// `class_set_application` without the walk: `class`'s own header is
     /// restamped from its header class, its instances' are not. The decoder's
     /// `rebuild_applications` uses this to install one application per
     /// decoded class record -- walking the arena on every one of those would
     /// be quadratic in a count the image controls -- and stamps every
     /// decoded object once afterwards, with `stamp_dispatch_ids`.
-    pub(crate) fn install_class_application(
+    pub(crate) fn class_install_application(
         &mut self,
         class: ClassReference<'gc>,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
@@ -2271,7 +2271,7 @@ impl<'gc> Heap<'gc> {
     //
     // Only the accessors a caller actually needs are added here;
     // `frame_argument_count` and `frame_program_counter` have no caller yet, so they
-    // are not here. Three have only test callers: `set_frame_program_counter`,
+    // are not here. Three have only test callers: `frame_set_program_counter`,
     // `frame_sender` and `frame_is_uncontinuable` read or write fields the
     // image format records per frame, and the image and interpreter tests build
     // and check frame records through them. Nothing in the runtime decides
@@ -2319,8 +2319,8 @@ impl<'gc> Heap<'gc> {
     /// Test and format level: the image tests use it to give a dead frame a
     /// synthetic paused `program_counter` before a snapshot. The runtime stores
     /// a running activation's `program_counter` on its stack entry
-    /// (`set_activation_program_counter`), and the divorce copies it here.
-    pub fn set_frame_program_counter(
+    /// (`activation_set_program_counter`), and the divorce copies it here.
+    pub fn frame_set_program_counter(
         &mut self,
         frame: FrameReference<'gc>,
         program_counter: usize,
@@ -2420,7 +2420,7 @@ impl<'gc> Heap<'gc> {
         self.frames[frame.index as usize].frame.clone()
     }
 
-    /// The frame equivalent of `replace_object`.
+    /// The frame equivalent of `object_replace`.
     /// `image::decode::decode_graph_section`'s second pass is the only caller,
     /// and it only ever calls this on a handle its first pass
     /// placeholder-allocated and nothing else has observed yet -- before
@@ -2429,7 +2429,7 @@ impl<'gc> Heap<'gc> {
     /// replaces that frame's already-verified `program_counter`/register-file
     /// shape with an unverified one: no error, and no way for `verify_graph` to
     /// notice, because it has already finished.
-    pub fn replace_frame(&mut self, frame: FrameReference<'gc>, filled: Frame<'gc>) {
+    pub fn frame_replace(&mut self, frame: FrameReference<'gc>, filled: Frame<'gc>) {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame = filled;
     }
@@ -2611,7 +2611,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The register window of `activation`, computed once per switch to it.
-    pub fn register_base(&self, activation: ActivationReference) -> RegisterBase {
+    pub fn activation_register_base(&self, activation: ActivationReference) -> RegisterBase {
         self.check_activation(activation);
         RegisterBase {
             index: self.stack.entries[activation.index as usize].base,
@@ -2709,7 +2709,7 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].feedback_base
     }
 
-    pub fn set_activation_program_counter(
+    pub fn activation_set_program_counter(
         &mut self,
         activation: ActivationReference,
         program_counter: usize,
@@ -2767,7 +2767,7 @@ impl<'gc> Heap<'gc> {
     /// unwinder's one use: the activation it pushes to run an `ensure:`
     /// argument that is no block is pushed as a method, which delivers, and
     /// its return has to carry the unwind on instead.
-    pub(crate) fn set_activation_continuation(
+    pub(crate) fn activation_set_continuation(
         &mut self,
         activation: ActivationReference,
         then: Continuation<'gc>,
@@ -3216,7 +3216,7 @@ impl<'gc> Heap<'gc> {
                 let value_is_a_future = self
                     .load(*value)
                     .as_object()
-                    .is_some_and(|target| self.class_of_object(target).same(future_class));
+                    .is_some_and(|target| self.object_class(target).same(future_class));
                 if state == resolved && !value_is_a_future {
                     let index = u32::try_from(index)
                         .expect("internal: an arena index fits the handle's u32");
@@ -3477,8 +3477,11 @@ mod tests {
         let first = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
         let second = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
 
-        assert_eq!(heap.identity_hash(first), 0);
-        assert_eq!(heap.identity_hash(first), heap.identity_hash(second));
+        assert_eq!(heap.object_identity_hash(first), 0);
+        assert_eq!(
+            heap.object_identity_hash(first),
+            heap.object_identity_hash(second)
+        );
         assert_ne!(
             heap.object_identity_key(first),
             heap.object_identity_key(second)
@@ -3547,7 +3550,7 @@ mod tests {
         // would otherwise still pass this test.
         heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
-        assert!(heap.class_of_object(class).same(class));
+        assert!(heap.object_class(class).same(class));
     }
 
     fn top_level_frame<'gc>() -> Frame<'gc> {
@@ -3626,7 +3629,7 @@ mod tests {
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("filler")));
         }
         assert_eq!(heap.str_value(first).as_deref(), Some("first"));
-        assert!(heap.class_of_object(first).same(class));
+        assert!(heap.object_class(first).same(class));
 
         let twin =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("first")));
@@ -3816,7 +3819,7 @@ mod tests {
     fn popping_a_reified_activation_divorces_its_frame() {
         let mut heap = Heap::new();
         let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
-        heap.set_activation_program_counter(activation, 4);
+        heap.activation_set_program_counter(activation, 4);
         let frame = heap.reify(activation);
         // What a `MakeClosure` whose block reads this frame by reference
         // does, and the only reason the registers below survive the pop.
@@ -3899,7 +3902,7 @@ mod tests {
     fn a_register_base_reads_and_writes_its_activations_registers() {
         let mut heap = Heap::new();
         let activation = heap.push_activation(header(), &[Value::small_integer(7)], 2);
-        let base = heap.register_base(activation);
+        let base = heap.activation_register_base(activation);
         assert_eq!(heap.register(base, 0).as_small_integer(), Some(7));
         heap.set_register(base, 2, Value::small_integer(9));
         assert_eq!(
@@ -3918,7 +3921,7 @@ mod tests {
     fn reading_through_a_stale_register_base_panics() {
         let mut heap = Heap::new();
         let first = heap.push_activation(header(), &[], 1);
-        let base = heap.register_base(first);
+        let base = heap.activation_register_base(first);
         heap.pop_activation(first);
         let _second = heap.push_activation(header(), &[], 1);
         let _ = heap.register(base, 0);
@@ -3930,7 +3933,7 @@ mod tests {
     fn a_register_base_survives_a_deeper_push() {
         let mut heap = Heap::new();
         let caller = heap.push_activation(header(), &[Value::small_integer(1)], 1);
-        let base = heap.register_base(caller);
+        let base = heap.activation_register_base(caller);
         let callee = heap.push_activation(header(), &[], 4096);
         assert_eq!(heap.register(base, 0).as_small_integer(), Some(1));
         heap.pop_activation(callee);
@@ -4024,20 +4027,32 @@ mod tests {
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let first = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
         let second = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
-        assert_eq!(heap.identity_hash(first), 0, "allocation assigns no hash");
-        assert_eq!(heap.identity_hash(second), 0, "allocation assigns no hash");
         assert_eq!(
-            heap.ensure_identity_hash(second),
+            heap.object_identity_hash(first),
+            0,
+            "allocation assigns no hash"
+        );
+        assert_eq!(
+            heap.object_identity_hash(second),
+            0,
+            "allocation assigns no hash"
+        );
+        assert_eq!(
+            heap.object_ensure_identity_hash(second),
             1,
             "the first request draws the first number"
         );
-        assert_eq!(heap.ensure_identity_hash(first), 2);
+        assert_eq!(heap.object_ensure_identity_hash(first), 2);
         assert_eq!(
-            heap.ensure_identity_hash(second),
+            heap.object_ensure_identity_hash(second),
             1,
             "a second request answers the same hash"
         );
-        assert_eq!(heap.identity_hash(second), 1, "the assigned hash is stored");
+        assert_eq!(
+            heap.object_identity_hash(second),
+            1,
+            "the assigned hash is stored"
+        );
     }
 
     /// Every test above pushes `FrameKind::TopLevel`, which is `None` on
@@ -4194,11 +4209,11 @@ mod tests {
         }
         let (class, string, array, closure) = (after[0], after[1], after[2], after[3]);
         assert!(
-            heap.class_of_object(class).same(class),
+            heap.object_class(class).same(class),
             "a class's own class is rewritten"
         );
         assert!(heap
-            .array_at(array, 0)
+            .array_element(array, 0)
             .and_then(|element| element.as_object())
             .is_some_and(|element| element.same(string)));
         assert_eq!(heap.str_value(string).as_deref(), Some("a"));
@@ -4273,7 +4288,7 @@ mod tests {
         let Some(array) = heap.fetch(&root).as_object() else {
             panic!("a root keeps its object")
         };
-        heap.array_set(array, 0, Value::object(stale));
+        heap.array_set_element(array, 0, Value::object(stale));
     }
 
     /// A class object whose data is not a class -- only a crafted image makes
@@ -4434,7 +4449,7 @@ mod tests {
             class,
             ObjectData::Instance(vec![heap.store(Value::object(first))]),
         );
-        heap.set_instance_field(first, 0, Value::object(second));
+        heap.instance_set_field(first, 0, Value::object(second));
         let activation = heap.push_activation(header(), &[Value::object(first)], 1);
 
         let marker = heap.mark_from_roots_for_test();

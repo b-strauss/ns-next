@@ -997,7 +997,7 @@ fn shipped_without_path<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> 
         }
         return None;
     }
-    let class = heap.class_of_object(object);
+    let class = heap.object_class(object);
     if platform_paths::is_shipped_object(heap, object) && heap.class_enclosing(class).is_none() {
         return Some(format!(
             "image encoding refuses a module instance of {}: it holds the core library's \
@@ -1864,7 +1864,7 @@ pub fn encode_graph_section<'gc>(
     // graph reaching the mirror reaches too (its class), so that the
     // refusal names the capability rather than its class.
     for object in table.objects() {
-        if heap.class_builtin(heap.class_of_object(*object)) == Some(BuiltinClass::VmMirror) {
+        if heap.class_builtin(heap.object_class(*object)) == Some(BuiltinClass::VmMirror) {
             return Err(
                 "image encoding refuses the VM mirror: it is a capability the \
                  bootstrap hands to the core library alone, and an artifact that \
@@ -1957,14 +1957,14 @@ pub fn encode_tag_named_hashes<'gc>(
     for kind in BuiltinClass::ALL {
         let class = mutator.builtin_class(kind);
         entered.insert(heap.object_identity_key(class));
-        let hash = heap.identity_hash(class);
+        let hash = heap.object_identity_hash(class);
         if hash != 0 {
             entries.push((HASHED_BUILTIN_CLASS, vec![builtin_class_tag(kind)], hash));
         }
     }
     for (module, root) in modules.roots.iter().enumerate() {
         entered.insert(heap.object_identity_key(*root));
-        let hash = heap.identity_hash(*root);
+        let hash = heap.object_identity_hash(*root);
         if hash != 0 {
             let module = u32_field("module index", module);
             entries.push((HASHED_MODULE_CLASS, module.to_le_bytes().to_vec(), hash));
@@ -1976,7 +1976,7 @@ pub fn encode_tag_named_hashes<'gc>(
     for (module, levels) in modules.levels.iter().enumerate() {
         for (position, level) in levels.iter().enumerate() {
             entered.insert(heap.object_identity_key(*level));
-            let hash = heap.identity_hash(*level);
+            let hash = heap.object_identity_hash(*level);
             if hash != 0 {
                 let mut reference = Writer::new();
                 reference.write_u32(u32_field("module index", module));
@@ -1987,7 +1987,7 @@ pub fn encode_tag_named_hashes<'gc>(
     }
     if let Some(platform) = platform.as_object() {
         entered.insert(heap.object_identity_key(platform));
-        let hash = heap.identity_hash(platform);
+        let hash = heap.object_identity_hash(platform);
         if hash != 0 {
             entries.push((HASHED_PLATFORM, Vec::new(), hash));
         }
@@ -1996,7 +1996,7 @@ pub fn encode_tag_named_hashes<'gc>(
         if !entered.insert(heap.object_identity_key(*object)) {
             continue;
         }
-        let hash = heap.identity_hash(*object);
+        let hash = heap.object_identity_hash(*object);
         if hash != 0 {
             entries.push((HASHED_PLATFORM_PATH, index.to_le_bytes().to_vec(), hash));
         }
@@ -2049,7 +2049,7 @@ pub fn encode_tag_named_hashes<'gc>(
         if !entered.insert(heap.object_identity_key(metaclass)) {
             continue;
         }
-        let hash = heap.identity_hash(metaclass);
+        let hash = heap.object_identity_hash(metaclass);
         if hash != 0 {
             entries.push((HASHED_METACLASS, reference, hash));
         }

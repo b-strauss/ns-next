@@ -70,7 +70,7 @@ fn size<'gc>(
     let object = receiver.as_object()?;
     mutator
         .heap
-        .array_length(object)
+        .array_element_count(object)
         .map(|length| Ok(Value::small_integer(length as i64)))
 }
 
@@ -82,14 +82,14 @@ fn element_at<'gc>(
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
-    let length = mutator.heap.array_length(object)?;
+    let length = mutator.heap.array_element_count(object)?;
     Some(
         match integer_argument(&mutator.heap, arguments.first().copied()) {
             Some(IntegerArgument::Small(index)) => {
                 if index >= 1 && (index as usize) <= length {
                     Ok(mutator
                         .heap
-                        .array_at(object, (index as usize) - 1)
+                        .array_element(object, (index as usize) - 1)
                         .unwrap_or(Value::nil()))
                 } else {
                     Err(out_of_range(receiver, selector, index, length))
@@ -119,7 +119,7 @@ fn element_at_put<'gc>(
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
-    let length = mutator.heap.array_length(object)?;
+    let length = mutator.heap.array_element_count(object)?;
     let index = match integer_argument(&mutator.heap, arguments.first().copied()) {
         Some(IntegerArgument::Small(index)) => index,
         Some(IntegerArgument::Large { .. }) => {
@@ -143,7 +143,9 @@ fn element_at_put<'gc>(
         return Some(Err(out_of_range(receiver, selector, index, length)));
     }
     let value = arguments.get(1).copied().unwrap_or(Value::nil());
-    mutator.heap.array_set(object, (index as usize) - 1, value);
+    mutator
+        .heap
+        .array_set_element(object, (index as usize) - 1, value);
     Some(Ok(receiver))
 }
 

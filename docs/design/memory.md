@@ -267,14 +267,14 @@ was; whether it still pays is a measurement nobody has taken.
 Carried deliberately rather than fixed. Recorded so that whoever reshapes this
 file next starts from a list rather than from rediscovery.
 
-- **The accessor names grew by accretion.** `class_of_object` reads an *object*
+- **The accessor names grew by accretion.** `object_class` reads an *object*
   while `class_application` and its neighbours read a *class* — the same prefix
-  for opposite directions. `array_at`/`array_length` and
+  for opposite directions. `array_element`/`array_element_count` and
   `instance_field`/`instance_field_count` are parallel operations under
   divergent names. The activation side is uniform: an accessor through a
   `FrameReference` is `frame_*` and one through an `ActivationReference` is
-  `activation_*`. The exceptions are verbs that put the noun second — `set_frame_program_counter`,
-  `set_activation_program_counter`, `replace_frame` — and the stack operations themselves,
+  `activation_*`. The exceptions are verbs that put the noun second — `frame_set_program_counter`,
+  `activation_set_program_counter`, `frame_replace` — and the stack operations themselves,
   `push_activation`, `pop_activation`, `top_activation` and `reify`.
 - **The `heap` parameter sits first in some signatures and last in others**,
   across `image/`, `compiler/` and `interpreter/`.
@@ -1298,7 +1298,7 @@ its table entry freed, no declaration, enclosing mixin or code holding it --
 and no application, no application-cache key or value and no class object's
 applied-clause field names it ([object-model.md](object-model.md), "Planned:
 the object layout"). A class's change of application will restamp every
-instance's header by a heap walk, as `Heap::set_class_application` walks the
+instance's header by a heap walk, as `Heap::class_set_application` walks the
 arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard
 id can become reclaimable. The cache's unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) will end with it.

@@ -27,7 +27,7 @@ pub use crate::heap::{
 pub struct Object<'gc> {
     pub class: ClassReference<'gc>,
     /// 0 until something asks for it; then drawn from a monotonic counter
-    /// (`Heap::ensure_identity_hash`), so allocation order stays
+    /// (`Heap::object_ensure_identity_hash`), so allocation order stays
     /// unobservable. Never derived from the arena index, which a moving
     /// collector or `become:` would change (liveness spec's stable-identity
     /// constraint).
@@ -37,7 +37,7 @@ pub struct Object<'gc> {
     /// id -- a class object's class is its metaclass. A copy, so that a
     /// guard is one load and one compare rather than a walk to the class --
     /// which makes every place a class's application changes responsible for
-    /// restamping it (`Heap::set_class_application`,
+    /// restamping it (`Heap::class_set_application`,
     /// `Heap::stamp_dispatch_ids`). Not a handle; a move carries it along.
     pub(crate) dispatch_id: crate::mixin::DispatchId,
     pub data: ObjectData<'gc>,
@@ -169,7 +169,7 @@ pub struct ClassData<'gc> {
     /// class, `Heap::class_dispatch_ids` and restamping
     /// (`Heap::header_dispatch_id`) read the instances id from. Kept equal to
     /// the application's by `ClassData::new` and
-    /// `Heap::install_class_application`, the only ways either changes. A
+    /// `Heap::class_install_application`, the only ways either changes. A
     /// class object's own id is not this one but its metaclass's, read off
     /// its header like any object's.
     pub dispatch_id: crate::mixin::DispatchId,

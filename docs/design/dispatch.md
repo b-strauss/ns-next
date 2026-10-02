@@ -882,7 +882,7 @@ for the objects whose class it is.
 **The id a guard reads is in the object header** (`Object.dispatch_id`), stamped
 at allocation from the object's class's instances id — an instance's from its
 class, a class object's from its metaclass — and restamped by
-`Heap::set_object_class` when `Mutator::attach_metaclass` changes a header, so
+`Heap::object_set_class` when `Mutator::attach_metaclass` changes a header, so
 `Heap::dispatch_id(value)` answers an object's in one arena load, and a guard is
 that load and one compare, for instances and class objects alike. It is where V8
 (the map), HotSpot (the klass pointer), Cog (the class index) and Primordial
@@ -898,11 +898,11 @@ amplification figure assumes, which a release-build test pins
 bytes, is now `ObjectData`'s largest payload.
 
 The header holds a copy, so every place a class's application changes must
-restamp: `Heap::set_class_application` walks the arena and restamps every
+restamp: `Heap::class_set_application` walks the arena and restamps every
 live instance of the class along with the class object itself. The decoder
 does not use that path, since a walk per class record would be quadratic in
 a count the image controls: `rebuild_applications` installs each class
-record's application without the walk (`Heap::install_class_application`),
+record's application without the walk (`Heap::class_install_application`),
 and one pass afterwards stamps every decoded object (`Heap::stamp_dispatch_ids`).
 A decoded record carries `DispatchId::NONE` from the moment it is filled
 until that pass — its class may not have its application yet — and nothing
@@ -1460,7 +1460,7 @@ interpreter's measurement cannot see:
 `metaclass_of`, the miss path, instantiation — measured level on
 `bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_block.ns`; an
 allocation per class object; and a copy that must be restamped wherever a
-class's application changes (`Heap::set_class_application`, the decoder's
+class's application changes (`Heap::class_set_application`, the decoder's
 one stamping pass). The planned `become:` will need no restamp: its forwarder
 will carry a reserved id and the target will keep its own
 ([object-model.md](object-model.md), "Planned: `become:` through
@@ -1519,7 +1519,7 @@ freed, no declaration, enclosing mixin or code holding it -- and no
 application, no application-cache key or value and no class object's
 applied-clause field names it. The collector can tell all three. A class's
 change of application restamps every instance's header by a heap walk, as
-`Heap::set_class_application` walks the arena today
+`Heap::class_set_application` walks the arena today
 (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
 become reclaimable. The debug build's check in `Heap::dispatch_id`, which
 recomputes an object's id from its class and asserts that the header agrees,

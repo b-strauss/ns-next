@@ -185,7 +185,7 @@ fn with_declared_slots<'gc, T>(
     // shape this leaf does not serve still declines rather than answering
     // an empty state.
     mutator.heap().instance_field_count(object)?;
-    let class = mutator.heap().class_of_object(object);
+    let class = mutator.heap().object_class(object);
     // `None` here would mean the receiver's class is not a class object,
     // which nothing an image can encode should produce -- and if it ever
     // did, declining is the safe answer, not a panic on untrusted input.
@@ -242,7 +242,7 @@ fn state_is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -
     if mutator.heap().is_class(object) || mutator.heap().instance_field_count(object).is_none() {
         return false;
     }
-    let class = mutator.heap().class_of_object(object);
+    let class = mutator.heap().object_class(object);
     match dispatch::lookup_public(mutator.heap(), class, Symbol::EQUALS) {
         Lookup::Method(found, _) => Rc::ptr_eq(&found, recorded),
         _ => false,

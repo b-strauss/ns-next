@@ -477,7 +477,7 @@ impl Interpreter {
     /// let _ = interpreter.send(&root, Symbol::intern("size"), &[]);
     /// let length = interpreter.enter(|mutator| {
     ///     let array = mutator.fetch(&root).as_object()?;
-    ///     mutator.heap().array_length(array)
+    ///     mutator.heap().array_element_count(array)
     /// });
     /// assert_eq!(length, Some(1));
     /// ```
@@ -1151,7 +1151,7 @@ impl<'gc> Mutator<'gc> {
                 // which never ran `MakeClosure` at all.
                 let feedback_base = if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
                     let fresh = self.caches.fresh_range(code.family_size);
-                    self.heap.set_closure_feedback_base(closure, fresh);
+                    self.heap.closure_set_feedback_base(closure, fresh);
                     fresh
                 } else {
                     closure_feedback_base
@@ -1417,7 +1417,7 @@ impl<'gc> Mutator<'gc> {
 
     pub fn class_of(&self, value: Value<'gc>) -> ClassReference<'gc> {
         match value.as_object() {
-            Some(object) => self.heap.class_of_object(object),
+            Some(object) => self.heap.object_class(object),
             // Nil/Boolean/SmallInteger/Float classes are wired up by the
             // bootstrap into interpreter-held globals, read from there via
             // `Mutator::builtin_class(kind)`.
@@ -2041,7 +2041,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         let length = interpreter.enter(|mutator| {
             let array = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
-            mutator.heap().array_length(array)
+            mutator.heap().array_element_count(array)
         });
         assert_eq!(length, Some(2));
         assert_eq!(

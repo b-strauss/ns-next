@@ -104,7 +104,7 @@ fn install_mixin<'gc>(mutator: &mut Mutator<'gc>, class: ClassReference<'gc>, mi
         .clone();
     let application = mutator.apply_mixin(&Rc::new(mixin), super_application.as_ref());
     assert!(
-        mutator.heap_mut().set_class_application(class, application),
+        mutator.heap_mut().class_set_application(class, application),
         "a class object"
     );
 }
@@ -669,7 +669,7 @@ fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
 }
 
 /// The case a crafted image most plausibly produces: a real `Array`, just
-/// too short for the index the body addresses. `Heap::array_at`/`array_set`
+/// too short for the index the body addresses. `Heap::array_element`/`array_set_element`
 /// answer `None`/`false` rather than panicking, and `load_vector`/
 /// `store_vector` turn that into the same Newspeak error as a
 /// completely-wrong-shaped vector.
@@ -1020,26 +1020,26 @@ fn a_corrupted_future(
         let heap = mutator.heap_mut();
         match corruption {
             Corruption::ComputationNoObject => {
-                heap.set_instance_field(future, 0, Value::small_integer(5));
+                heap.instance_set_field(future, 0, Value::small_integer(5));
             }
             Corruption::ComputationNoClosure => {
-                heap.set_instance_field(future, 0, Value::object(receiver));
+                heap.instance_set_field(future, 0, Value::object(receiver));
             }
             Corruption::StateNoneOfTheThree => {
-                heap.set_instance_field(future, 1, Value::small_integer(7));
+                heap.instance_set_field(future, 1, Value::small_integer(7));
             }
             Corruption::ResolvedToEachOther => {
                 let other = mutator.new_future(closure);
                 let heap = mutator.heap_mut();
-                heap.set_instance_field(future, 0, Value::object(other));
-                heap.set_instance_field(future, 1, Value::small_integer(2));
-                heap.set_instance_field(other, 0, Value::object(future));
-                heap.set_instance_field(other, 1, Value::small_integer(2));
+                heap.instance_set_field(future, 0, Value::object(other));
+                heap.instance_set_field(future, 1, Value::small_integer(2));
+                heap.instance_set_field(other, 0, Value::object(future));
+                heap.instance_set_field(other, 1, Value::small_integer(2));
             }
         }
         mutator
             .heap_mut()
-            .set_instance_field(receiver, 0, Value::object(future));
+            .instance_set_field(receiver, 0, Value::object(future));
         mutator.stash(Value::object(future))
     })
 }

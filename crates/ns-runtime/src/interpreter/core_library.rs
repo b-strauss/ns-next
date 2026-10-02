@@ -200,7 +200,7 @@ fn check_factory_holds_the_mirror<'gc>(mutator: &Mutator<'gc>, factory: Value<'g
     };
     let heap = mutator.heap();
     let application = heap
-        .class_application(heap.class_of_object(factory))
+        .class_application(heap.object_class(factory))
         .expect("internal: the factory's class is a class object");
     let position = application
         .mixin

@@ -18,22 +18,22 @@ fn array_accessors_read_and_write_through_the_seam() {
     interpreter.enter(|mutator| {
         let object = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
 
-        assert_eq!(mutator.heap().array_length(object), Some(2));
+        assert_eq!(mutator.heap().array_element_count(object), Some(2));
         assert!(
             mutator
                 .heap()
-                .array_at(object, 0)
+                .array_element(object, 0)
                 .and_then(Value::as_small_integer)
                 == Some(1)
         );
 
         assert!(mutator
             .heap_mut()
-            .array_set(object, 0, Value::small_integer(9)));
+            .array_set_element(object, 0, Value::small_integer(9)));
         assert!(
             mutator
                 .heap()
-                .array_at(object, 0)
+                .array_element(object, 0)
                 .and_then(Value::as_small_integer)
                 == Some(9)
         );
@@ -45,8 +45,8 @@ fn an_array_accessor_on_a_non_array_answers_none_rather_than_panicking() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let object = mutator.new_string("not an array".to_string());
-        assert_eq!(mutator.heap().array_length(object), None);
-        assert!(mutator.heap().array_at(object, 0).is_none());
+        assert_eq!(mutator.heap().array_element_count(object), None);
+        assert!(mutator.heap().array_element(object, 0).is_none());
     });
 }
 
@@ -56,10 +56,10 @@ fn an_out_of_range_index_answers_none_or_false_rather_than_panicking() {
     interpreter.enter(|mutator| {
         let object = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
 
-        assert!(mutator.heap().array_at(object, 99).is_none());
+        assert!(mutator.heap().array_element(object, 99).is_none());
         assert!(!mutator
             .heap_mut()
-            .array_set(object, 99, Value::small_integer(9)));
+            .array_set_element(object, 99, Value::small_integer(9)));
     });
 }
 
@@ -357,7 +357,7 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
         let reapplied = mutator.apply_mixin(&edited, application.superclass.as_ref());
         assert!(mutator
             .heap_mut()
-            .set_class_application(class_object, reapplied));
+            .class_set_application(class_object, reapplied));
         let after = mutator.heap().class_dispatch_ids(class_object);
         assert_ne!(before, after, "a new application mints new ids");
         let instance = mutator.fetch(&instance);
@@ -414,7 +414,7 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         let heap = mutator.heap_mut();
 
         let unmarked = heap.push_activation(activation_header(), &[Value::small_integer(1)], 1);
-        heap.set_activation_program_counter(unmarked, 0);
+        heap.activation_set_program_counter(unmarked, 0);
         let forgetful = heap.reify(unmarked);
         heap.activation_set_local(unmarked, 1, Value::small_integer(2));
         heap.pop_activation(unmarked);
@@ -431,7 +431,7 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         assert!(heap.frame_local(forgetful, 1).is_nil());
 
         let marked = heap.push_activation(activation_header(), &[Value::small_integer(1)], 1);
-        heap.set_activation_program_counter(marked, 0);
+        heap.activation_set_program_counter(marked, 0);
         let kept = heap.reify(marked);
         // What `MakeClosure` does for a block whose `outer_reach` is
         // non-zero.

@@ -725,7 +725,7 @@ fn install_mixin<'gc>(mutator: &mut Mutator<'gc>, class: ClassReference<'gc>, mi
         .clone();
     let application = mutator.apply_mixin(&Rc::new(mixin), super_application.as_ref());
     assert!(
-        mutator.heap_mut().set_class_application(class, application),
+        mutator.heap_mut().class_set_application(class, application),
         "a class object"
     );
 }
@@ -2457,8 +2457,8 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
                 let first = mutator.new_string("x".to_string());
                 let second = mutator.new_string("y".to_string());
                 // Requested in this order, so `second` holds the higher hash.
-                mutator.heap_mut().ensure_identity_hash(first);
-                mutator.heap_mut().ensure_identity_hash(second);
+                mutator.heap_mut().object_ensure_identity_hash(first);
+                mutator.heap_mut().object_ensure_identity_hash(second);
                 vec![
                     mutator.stash(Value::object(second)),
                     mutator.stash(Value::object(first)),
@@ -2471,11 +2471,11 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
         let decoded_0 = mutator.fetch(&decoded[0]);
         let decoded_1 = mutator.fetch(&decoded[1]);
         let heap = mutator.heap();
-        let higher = heap.identity_hash(object(original_0));
-        let lower = heap.identity_hash(object(original_1));
+        let higher = heap.object_identity_hash(object(original_0));
+        let lower = heap.object_identity_hash(object(original_1));
         assert!(higher > lower, "hashes are handed out in request order");
-        assert_eq!(heap.identity_hash(object(decoded_0)), higher);
-        assert_eq!(heap.identity_hash(object(decoded_1)), lower);
+        assert_eq!(heap.object_identity_hash(object(decoded_0)), higher);
+        assert_eq!(heap.object_identity_hash(object(decoded_1)), lower);
         assert_eq!(max, higher);
     });
 }
@@ -2530,7 +2530,7 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
         let class = class_reference(mutator, &class);
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        assert!(heap.class_of_object(object(decoded_0)).same(class));
+        assert!(heap.object_class(object(decoded_0)).same(class));
         assert_eq!(heap.instance_field_count(object(decoded_0)), Some(2));
         let field = |index| {
             heap.instance_field(object(decoded_0), index)
@@ -2578,7 +2578,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
                     (argument_count + temporary_count) as u16,
                     Value::small_integer(9),
                 );
-                mutator.heap_mut().set_frame_program_counter(home, 1);
+                mutator.heap_mut().frame_set_program_counter(home, 1);
             });
             vec![closure]
         });
@@ -2634,7 +2634,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             "re-resolved against the class's method map"
         );
         assert!(heap
-            .class_of_object(object(heap.frame_receiver(closure_home)))
+            .object_class(object(heap.frame_receiver(closure_home)))
             .same(class));
         assert!(home
             .current_class
@@ -3820,7 +3820,9 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     let platform = interpreter.platform();
     let (bytes, max_hash) = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
-        let max_hash = mutator.heap_mut().ensure_identity_hash(object(instance));
+        let max_hash = mutator
+            .heap_mut()
+            .object_ensure_identity_hash(object(instance));
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
@@ -3843,10 +3845,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
             "the image's methods are rebuilt, each carrying its body"
         );
         let root_0 = mutator.fetch(&loaded.roots[0]);
-        assert!(mutator
-            .heap()
-            .class_of_object(object(root_0))
-            .same(root_class));
+        assert!(mutator.heap().object_class(object(root_0)).same(root_class));
     });
     let bumped = expect_ok(
         loaded
@@ -3861,7 +3860,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         );
         let fresh = mutator.new_string("fresh".to_string());
         assert!(
-            mutator.heap_mut().ensure_identity_hash(fresh) > max_hash,
+            mutator.heap_mut().object_ensure_identity_hash(fresh) > max_hash,
             "no hash collision with loaded objects"
         );
     });
@@ -3972,7 +3971,7 @@ fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
         let instance = mutator.fetch(&loaded.roots[0]);
-        let decoded_alpha_class = mutator.heap().class_of_object(object(instance));
+        let decoded_alpha_class = mutator.heap().object_class(object(instance));
         let ids = mutator.heap().class_dispatch_ids(decoded_alpha_class);
         assert_ne!(ids.instances, DispatchId::NONE);
         assert_eq!(mutator.heap().dispatch_id(instance), ids.instances);
@@ -5494,7 +5493,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let instance_object = object(mutator.fetch(&instance));
         mutator
             .heap_mut()
-            .set_identity_hash(instance_object, u32::MAX - 1);
+            .object_set_identity_hash(instance_object, u32::MAX - 1);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -5512,16 +5511,16 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     loaded.interpreter.enter(|mutator| {
         let root_0 = mutator.fetch(&loaded.roots[0]);
         assert_eq!(
-            mutator.heap().identity_hash(object(root_0)),
+            mutator.heap().object_identity_hash(object(root_0)),
             u32::MAX - 1,
             "the image's hash is preserved, not clamped"
         );
         let first = mutator.new_string("a".to_string());
         let second = mutator.new_string("b".to_string());
         let heap = mutator.heap_mut();
-        assert_eq!(heap.ensure_identity_hash(first), u32::MAX);
+        assert_eq!(heap.object_ensure_identity_hash(first), u32::MAX);
         assert_eq!(
-            heap.ensure_identity_hash(second),
+            heap.object_ensure_identity_hash(second),
             u32::MAX,
             "an exhausted counter shares its last hash instead of overflowing"
         );
@@ -5546,7 +5545,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         let hashed_value = mutator.fetch(&hashed);
         let assigned = mutator
             .heap_mut()
-            .ensure_identity_hash(object(hashed_value));
+            .object_ensure_identity_hash(object(hashed_value));
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let unhashed_value = mutator.fetch(&unhashed);
@@ -5560,7 +5559,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         )
         .expect("snapshot");
         assert_eq!(
-            mutator.heap().identity_hash(object(unhashed_value)),
+            mutator.heap().object_identity_hash(object(unhashed_value)),
             0,
             "snapshotting assigns no hash"
         );
@@ -5574,16 +5573,16 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         );
         let heap = mutator.heap_mut();
         assert_eq!(
-            heap.identity_hash(kept),
+            heap.object_identity_hash(kept),
             assigned,
             "an assigned hash is preserved"
         );
         assert_eq!(
-            heap.identity_hash(fresh),
+            heap.object_identity_hash(fresh),
             0,
             "an unassigned hash stays unassigned"
         );
-        assert!(heap.ensure_identity_hash(fresh) > assigned);
+        assert!(heap.object_ensure_identity_hash(fresh) > assigned);
     });
 }
 
@@ -5607,9 +5606,11 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let integer = mutator.builtin_class(BuiltinClass::Integer);
-        let integer_hash = mutator.heap_mut().ensure_identity_hash(integer);
-        let class_hash = mutator.heap_mut().ensure_identity_hash(class);
-        let platform_hash = mutator.heap_mut().ensure_identity_hash(object(platform));
+        let integer_hash = mutator.heap_mut().object_ensure_identity_hash(integer);
+        let class_hash = mutator.heap_mut().object_ensure_identity_hash(class);
+        let platform_hash = mutator
+            .heap_mut()
+            .object_ensure_identity_hash(object(platform));
         let bytes = snapshot_one(
             mutator,
             None,
@@ -5641,17 +5642,20 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         let loaded_integer = mutator.builtin_class(BuiltinClass::Integer);
         let loaded_string = mutator.builtin_class(BuiltinClass::String);
         let heap = mutator.heap_mut();
-        assert_eq!(heap.identity_hash(loaded_integer), integer_hash);
-        assert_eq!(heap.identity_hash(loaded_class), class_hash);
-        assert_eq!(heap.identity_hash(object(loaded_platform)), platform_hash);
+        assert_eq!(heap.object_identity_hash(loaded_integer), integer_hash);
+        assert_eq!(heap.object_identity_hash(loaded_class), class_hash);
         assert_eq!(
-            heap.identity_hash(loaded_string),
+            heap.object_identity_hash(object(loaded_platform)),
+            platform_hash
+        );
+        assert_eq!(
+            heap.object_identity_hash(loaded_string),
             0,
             "a builtin nothing asked for its hash stays unassigned"
         );
         let largest = integer_hash.max(class_hash).max(platform_hash);
         assert!(
-            heap.ensure_identity_hash(loaded_string) > largest,
+            heap.object_ensure_identity_hash(loaded_string) > largest,
             "the counter is advanced past the tag-named hashes too"
         );
     });
@@ -6049,7 +6053,7 @@ fn class_name<'gc>(heap: &ns_runtime::Heap<'gc>, class: ClassReference<'gc>) -> 
 }
 
 fn class_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> ClassReference<'gc> {
-    heap.class_of_object(object(value))
+    heap.object_class(object(value))
 }
 
 /// The value sitting in `enclosing`'s hidden cache slot for nested
@@ -6995,7 +6999,7 @@ fn a_module_levels_own_hash_survives_an_image() {
             .heap()
             .class_superclass(class)
             .expect("the level `<: Value` added");
-        let hash = mutator.heap_mut().ensure_identity_hash(level);
+        let hash = mutator.heap_mut().object_ensure_identity_hash(level);
         let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
             mutator,
@@ -7024,7 +7028,7 @@ fn a_module_levels_own_hash_survives_an_image() {
         let level = heap
             .class_superclass(class_reference(mutator, &module_class))
             .expect("the loaded level");
-        assert_eq!(heap.identity_hash(level), hash);
+        assert_eq!(heap.object_identity_hash(level), hash);
     });
 }
 
@@ -8443,7 +8447,7 @@ fn an_activation_object_round_trips() {
         assert!(
             mutator
                 .heap_mut()
-                .set_instance_field(object(instance), 0, Value::object(activation)),
+                .instance_set_field(object(instance), 0, Value::object(activation)),
             "the holder has a slot"
         );
         let class = class_reference(mutator, &class);
@@ -8468,7 +8472,7 @@ fn an_activation_object_round_trips() {
             .instance_field(holder, 0)
             .expect("the loaded holder has its slot");
         let held = object(held);
-        assert!(heap.class_of_object(held).same(activation_class));
+        assert!(heap.object_class(held).same(activation_class));
         let frame = heap
             .activation_object_frame(held)
             .expect("the slot holds an activation object");
@@ -8508,7 +8512,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         let mut forged = mutator.heap().frame_snapshot(home);
         assert!(forged.uncontinuable, "`mk` had returned");
         forged.uncontinuable = false;
-        mutator.heap_mut().replace_frame(home, forged);
+        mutator.heap_mut().frame_replace(home, forged);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -9149,7 +9153,7 @@ fn a_metaclass_in_a_slot_is_the_decoded_class_metaclass() {
             .expect("the decoded class record has its metaclass");
         assert!(kept.same(metaclass), "one metaclass, not two");
         assert!(
-            mutator.heap().class_of_object(loaded_holder).same(kept),
+            mutator.heap().object_class(loaded_holder).same(kept),
             "the decoded class is an instance of the decoded metaclass"
         );
         assert!(
@@ -9208,8 +9212,8 @@ fn a_builtin_metaclass_round_trips_by_tag() {
             .metaclass_of(loaded_class)
             .is_some_and(|metaclass| metaclass.same(other)));
         // Each is its class's class, as the header says.
-        assert!(mutator.heap().class_of_object(integer).same(kept));
-        assert!(mutator.heap().class_of_object(loaded_class).same(other));
+        assert!(mutator.heap().object_class(integer).same(kept));
+        assert!(mutator.heap().object_class(loaded_class).same(other));
     });
 }
 
@@ -9235,7 +9239,7 @@ fn a_metaclass_identity_hash_survives() {
             .collect();
         metaclasses
             .into_iter()
-            .map(|metaclass| mutator.heap_mut().ensure_identity_hash(metaclass))
+            .map(|metaclass| mutator.heap_mut().object_ensure_identity_hash(metaclass))
             .collect::<Vec<u32>>()
     });
     let bytes = snapshot_world(
@@ -9270,7 +9274,7 @@ fn a_metaclass_identity_hash_survives() {
             .into_iter()
             .map(|class| {
                 let metaclass = mutator.metaclass_of(class).expect("a metaclass");
-                mutator.heap().identity_hash(metaclass)
+                mutator.heap().object_identity_hash(metaclass)
             })
             .collect();
         assert_eq!(loaded_hashes, hashes);
@@ -9295,7 +9299,7 @@ fn a_root_level_metaclass_round_trips_by_tag() {
             .class_superclass(root_class)
             .expect("the root's level");
         let metaclass = mutator.metaclass_of(level).expect("a metaclass");
-        let hash = mutator.heap_mut().ensure_identity_hash(metaclass);
+        let hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
         let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
             mutator,
@@ -9330,8 +9334,8 @@ fn a_root_level_metaclass_round_trips_by_tag() {
         assert!(mutator
             .metaclass_of(level)
             .is_some_and(|level_metaclass| level_metaclass.same(metaclass)));
-        assert!(mutator.heap().class_of_object(level).same(metaclass));
-        assert_eq!(mutator.heap().identity_hash(metaclass), hash);
+        assert!(mutator.heap().object_class(level).same(metaclass));
+        assert_eq!(mutator.heap().object_identity_hash(metaclass), hash);
     });
 }
 
@@ -9424,7 +9428,7 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
         let mirror = (0..field_count)
             .filter_map(|index| heap.instance_field(kernel, index))
             .find(|field| match field.kind() {
-                ValueKind::Object(field) => heap.class_of_object(field).same(mirror_class),
+                ValueKind::Object(field) => heap.object_class(field).same(mirror_class),
                 _ => false,
             })
             .expect("the kernel holds the mirror");
@@ -9548,7 +9552,7 @@ fn a_nested_metaclass_reference_is_refused() {
     one_level.extend_from_slice(&[0, 0, 0, 0]); // no roots
     fixture.decoded(&one_level, "Integer's metaclass by tag", |heap, graph| {
         let Some(element) = heap
-            .array_at(graph.objects[0], 0)
+            .array_element(graph.objects[0], 0)
             .and_then(Value::as_object)
         else {
             panic!("the array holds a class object");
@@ -10472,7 +10476,7 @@ fn reaches_a_future<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
             continue;
         }
         seen.push(object);
-        if heap.class_of_object(object).same(future_class) {
+        if heap.object_class(object).same(future_class) {
             return true;
         }
         if let Some(elements) = heap.array_elements(object) {
@@ -10535,7 +10539,7 @@ fn a_resolved_future_is_written_as_its_value() {
         assert!(
             mutator
                 .heap_mut()
-                .set_instance_field(object(holder), 1, Value::object(kept)),
+                .instance_set_field(object(holder), 1, Value::object(kept)),
             "the holder has its kept slot"
         );
         assert!(reaches_a_future(mutator, holder), "the premise");
@@ -10573,14 +10577,18 @@ fn a_resolved_future_is_written_as_its_value() {
         let first = object(mutator.fetch(&first));
         let second = object(mutator.fetch(&second));
         let kept = object(mutator.fetch(&kept));
-        let element = heap.array_at(first, 0).expect("first holds one element");
+        let element = heap
+            .array_element(first, 0)
+            .expect("first holds one element");
         assert!(
             object(element).same(second),
             "first's element is second's array itself"
         );
-        let back = heap.array_at(second, 0).expect("second holds one element");
+        let back = heap
+            .array_element(second, 0)
+            .expect("second holds one element");
         assert!(object(back).same(first), "and second's is first's");
-        let kept_element = heap.array_at(kept, 0).expect("kept holds one element");
+        let kept_element = heap.array_element(kept, 0).expect("kept holds one element");
         assert!(
             object(kept_element).same(second),
             "kept's element is second's array itself"
@@ -10705,19 +10713,19 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
             let heap = mutator.heap_mut();
             match corruption {
                 "no closure" => {
-                    heap.set_instance_field(future, 0, Value::small_integer(5));
+                    heap.instance_set_field(future, 0, Value::small_integer(5));
                 }
                 "state 7" => {
-                    heap.set_instance_field(future, 1, Value::small_integer(7));
+                    heap.instance_set_field(future, 1, Value::small_integer(7));
                 }
                 _ => {
-                    heap.set_instance_field(future, 0, Value::object(other));
-                    heap.set_instance_field(future, 1, Value::small_integer(2));
-                    heap.set_instance_field(other, 0, Value::object(future));
-                    heap.set_instance_field(other, 1, Value::small_integer(2));
+                    heap.instance_set_field(future, 0, Value::object(other));
+                    heap.instance_set_field(future, 1, Value::small_integer(2));
+                    heap.instance_set_field(other, 0, Value::object(future));
+                    heap.instance_set_field(other, 1, Value::small_integer(2));
                 }
             }
-            heap.set_instance_field(object(holder), 0, Value::object(future));
+            heap.instance_set_field(object(holder), 0, Value::object(future));
             let class = class_reference(mutator, &class);
             let platform = mutator.fetch(&platform);
             match snapshot_one(
@@ -10826,7 +10834,7 @@ fn a_root_level_class_tag_names_the_root_classs_own_level() {
             .heap()
             .class_superclass(root)
             .expect("the root's level");
-        mutator.heap_mut().ensure_identity_hash(level)
+        mutator.heap_mut().object_ensure_identity_hash(level)
     });
     fixture.decoded(&bytes, "a root level", |heap, graph| {
         let element = heap
@@ -10838,7 +10846,7 @@ fn a_root_level_class_tag_names_the_root_classs_own_level() {
         let Some(level) = element.as_object() else {
             panic!("the element is a class object")
         };
-        assert_eq!(heap.identity_hash(level), level_hash);
+        assert_eq!(heap.object_identity_hash(level), level_hash);
         assert!(heap.class_applied_clause(level).is_some());
     });
 }
@@ -11926,13 +11934,13 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
             .heap()
             .class_enclosing(object)
             .expect("the kernel instance encloses Object");
-        let kernel_class = mutator.heap().class_of_object(kernel);
+        let kernel_class = mutator.heap().object_class(kernel);
         let collections_class = class_reference(mutator, &collections_class);
         let collections_factory = mutator
             .heap()
             .class_enclosing(collections_class)
             .expect("the collections factory instance encloses the facet class");
-        let collections_factory_class = mutator.heap().class_of_object(collections_factory);
+        let collections_factory_class = mutator.heap().object_class(collections_factory);
         for (shipped, expected) in [
             (
                 kernel,
@@ -12057,7 +12065,10 @@ fn decode_tag_named_with_the_transcript(bytes: &[u8]) -> (Result<u32, decode::De
             &image::ModuleClasses::of(mutator.heap(), &[class]),
             &[transcript],
         );
-        (result, mutator.heap().identity_hash(object(transcript)))
+        (
+            result,
+            mutator.heap().object_identity_hash(object(transcript)),
+        )
     })
 }
 
@@ -12107,8 +12118,8 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
             .heap()
             .class_metaclass(array)
             .expect("Array has a metaclass");
-        let class_hash = mutator.heap_mut().ensure_identity_hash(array);
-        let metaclass_hash = mutator.heap_mut().ensure_identity_hash(metaclass);
+        let class_hash = mutator.heap_mut().object_ensure_identity_hash(array);
+        let metaclass_hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
         let mut writer = encode::Writer::new();
         encode::encode_tag_named_hashes(
             &mut writer,

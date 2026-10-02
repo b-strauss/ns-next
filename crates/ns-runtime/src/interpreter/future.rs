@@ -154,7 +154,7 @@ impl<'gc> Mutator<'gc> {
     pub fn as_future(&self, value: Value<'gc>) -> Option<ObjectReference<'gc>> {
         let object = value.as_object()?;
         self.heap
-            .class_of_object(object)
+            .object_class(object)
             .same(self.builtin_class(BuiltinClass::Future))
             .then_some(object)
     }
@@ -188,16 +188,16 @@ impl<'gc> Mutator<'gc> {
         state: i64,
     ) {
         self.heap
-            .set_instance_field(future, COMPUTATION_FIELD, computation);
+            .instance_set_field(future, COMPUTATION_FIELD, computation);
         self.heap
-            .set_instance_field(future, STATE_FIELD, Value::small_integer(state));
+            .instance_set_field(future, STATE_FIELD, Value::small_integer(state));
     }
 
     /// Marks `future` resolving, its closure kept for an abandonment to
     /// restore.
     fn set_future_resolving(&mut self, future: ObjectReference<'gc>) {
         self.heap
-            .set_instance_field(future, STATE_FIELD, Value::small_integer(RESOLVING));
+            .instance_set_field(future, STATE_FIELD, Value::small_integer(RESOLVING));
     }
 
     /// `forcing`'s activation returned `value`: record it, unless it is
@@ -295,11 +295,7 @@ fn state_in<'gc>(heap: &Heap<'gc>, future: ObjectReference<'gc>) -> FutureState<
         return FutureState::Malformed;
     };
     match (state, computation.as_object()) {
-        (RESOLVED, Some(value))
-            if heap
-                .class_of_object(value)
-                .same(heap.class_of_object(future)) =>
-        {
+        (RESOLVED, Some(value)) if heap.object_class(value).same(heap.object_class(future)) => {
             FutureState::Malformed
         }
         (RESOLVED, _) => FutureState::Resolved(computation),
@@ -330,7 +326,7 @@ pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'g
     let Some(object) = value.as_object() else {
         return value;
     };
-    if heap.class_builtin(heap.class_of_object(object)) != Some(BuiltinClass::Future) {
+    if heap.class_builtin(heap.object_class(object)) != Some(BuiltinClass::Future) {
         return value;
     }
     match state_in(heap, object) {

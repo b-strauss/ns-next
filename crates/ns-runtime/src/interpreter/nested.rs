@@ -248,7 +248,7 @@ pub(crate) fn after_clause<'gc>(
         Some(superclass),
     );
     if let Some(refusal) = value_class_refusal {
-        mutator.heap.set_class_value_refusal(class, refusal);
+        mutator.heap.class_set_value_refusal(class, refusal);
     }
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
@@ -467,7 +467,7 @@ pub(super) fn begin_creation<'gc>(
 ) {
     mutator
         .heap
-        .set_instance_field(enclosing, index, creation_in_progress());
+        .instance_set_field(enclosing, index, creation_in_progress());
     #[cfg(debug_assertions)]
     {
         mutator.creations_in_progress += 1;
@@ -491,7 +491,7 @@ pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedCla
     {
         mutator
             .heap
-            .set_instance_field(creation.enclosing, creation.index, Value::nil());
+            .instance_set_field(creation.enclosing, creation.index, Value::nil());
     }
     #[cfg(debug_assertions)]
     {

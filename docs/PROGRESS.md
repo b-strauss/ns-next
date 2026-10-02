@@ -654,7 +654,7 @@ design:
 **What changed**, in the plan's order:
 
 1. **Lazy identity hashes** — a behaviour change of its own. An object carries
-   0 until `Object>>hash` asks, through `Heap::ensure_identity_hash`; the
+   0 until `Object>>hash` asks, through `Heap::object_ensure_identity_hash`; the
    encoder writes what is stored without assigning one, and the decoder keeps
    every value, 0 included. `hash` values change, which the specification
    leaves open and no recorded outcome pinned. A new fixture,
@@ -711,7 +711,7 @@ verbatim"). Fixed; see "M4 — Tag-named identity hashes" below.
 **What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
 `allocate_object`, since every object starts at hash 0;
 `Interpreter::allocate_identity_hash` (the `Heap`'s own `allocate_identity_hash` is
-now private, with `ensure_identity_hash` its only caller outside tests); and
+now private, with `object_ensure_identity_hash` its only caller outside tests); and
 the discarded `Object` allocation in
 `build_builtin_classes`, kept by step B only because removing it shifted every
 later hash.
@@ -1839,7 +1839,7 @@ dispatch id in the object header").
 
 **What changed:** two tests pinning the ids of a reapplied class and of a
 decoded graph (`27797ed`); the id in the header, stamped at allocation,
-restamped for every live instance when `Heap::set_class_application` changes
+restamped for every live instance when `Heap::class_set_application` changes
 a class's application, and stamped once for every decoded object after
 `rebuild_applications`, with a debug-build check in `Heap::dispatch_id` that
 the header agrees with the class (`681126d`); `ClassData` boxed (`5d3aeff`).

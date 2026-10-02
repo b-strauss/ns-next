@@ -201,7 +201,7 @@ fn arrive<'gc>(
     match action {
         UnwindAction::Return(value) => UnwindOutcome::Returned { target, value },
         UnwindAction::Restart => {
-            mutator.heap.set_activation_program_counter(target, 0);
+            mutator.heap.activation_set_program_counter(target, 0);
             UnwindOutcome::Restarted { target }
         }
         UnwindAction::Terminate(_) => {
@@ -296,7 +296,7 @@ fn start_signalling<'gc>(
     mutator.taking_depth_reserve = false;
     match pushed {
         Ok(activation) => {
-            mutator.heap.set_activation_continuation(
+            mutator.heap.activation_set_continuation(
                 activation,
                 Continuation::VmErrorSignalled(Box::new(error.clone())),
             );
@@ -508,7 +508,7 @@ impl<'gc> Mutator<'gc> {
             false,
         )?;
         self.heap
-            .set_activation_continuation(activation, Continuation::Unwind(then));
+            .activation_set_continuation(activation, Continuation::Unwind(then));
         Ok(activation)
     }
 }
@@ -628,7 +628,7 @@ mod tests {
             let class = mutator.builtin_class(BuiltinClass::Object);
             let floor = mutator.heap.activation_depth();
             let target = mutator.heap.push_activation(header(class), &[], 1);
-            mutator.heap.set_activation_program_counter(target, 5);
+            mutator.heap.activation_set_program_counter(target, 5);
             let frame = mutator.heap.reify(target);
             mutator.heap.push_activation(header(class), &[], 1);
             let outcome = unwind(

@@ -94,7 +94,7 @@ pub(crate) fn load_vector<'gc>(
 ) -> EvaluationResult<'gc> {
     let value = heap.activation_local(activation, vector);
     match value.as_object() {
-        Some(object) => match heap.array_at(object, index as usize) {
+        Some(object) => match heap.array_element(object, index as usize) {
             Some(element) => Ok(element),
             None => Err(vector_error(value)),
         },
@@ -103,7 +103,7 @@ pub(crate) fn load_vector<'gc>(
 }
 
 /// The VM's `StoreVector`; the mirror of `load_vector` through
-/// `Heap::array_set`.
+/// `Heap::array_set_element`.
 pub(crate) fn store_vector<'gc>(
     heap: &mut Heap<'gc>,
     activation: ActivationReference,
@@ -115,7 +115,7 @@ pub(crate) fn store_vector<'gc>(
     let written = match value.as_object() {
         Some(object) => {
             let source_value = heap.activation_local(activation, source);
-            heap.array_set(object, index as usize, source_value)
+            heap.array_set_element(object, index as usize, source_value)
         }
         _ => false,
     };
@@ -186,6 +186,6 @@ pub(crate) fn store_instance_field<'gc>(
     value: Value<'gc>,
 ) {
     if let Some(object) = instance.as_object() {
-        heap.set_instance_field(object, index, value);
+        heap.instance_set_field(object, index, value);
     }
 }

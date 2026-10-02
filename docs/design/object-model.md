@@ -186,7 +186,7 @@ means nothing against a different `Heap` are in [memory.md](memory.md).
 
 **The identity hash is drawn from a monotonic counter the first time `hash`
 asks for one**, never derived from an address and never from the arena index,
-and 0 means "not yet assigned" (`Heap::ensure_identity_hash`). An address- or
+and 0 means "not yet assigned" (`Heap::object_ensure_identity_hash`). An address- or
 index-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
 snapshot; see [memory.md](memory.md). Assigning it lazily, as Cog/Spur
@@ -430,7 +430,7 @@ its kind, and whose behaviour is a nested class of `Kernel.ns`
 kernel second"). The bootstrap builds each class object first, over a
 placeholder mixin, because a literal needs its class before any Newspeak has
 been read, and then gives it its kernel class's application with
-`Heap::set_class_application`. So the class object is the same one every
+`Heap::class_set_application`. So the class object is the same one every
 literal has had from the first instruction on, and its behaviour is the
 kernel's.
 
@@ -1577,7 +1577,7 @@ reclaimed once the `Mixin` itself is dropped -- its table entry freed, no
 declaration, enclosing mixin or code holding it -- and no application, no
 application-cache key or value and no class object's applied-clause field
 names it. A class's change of application restamps every instance's header
-by a heap walk, as `Heap::set_class_application` walks the arena today
+by a heap walk, as `Heap::class_set_application` walks the arena today
 (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
 become reclaimable.
 

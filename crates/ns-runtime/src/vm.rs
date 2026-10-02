@@ -146,7 +146,7 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                 code: mutator.heap.activation_code(base),
                 program_counter: 0,
                 feedback_base: mutator.heap.activation_feedback_base(base),
-                register_base: mutator.heap.register_base(base),
+                register_base: mutator.heap.activation_register_base(base),
             },
         )
     });
@@ -1000,7 +1000,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     .expect("internal: a switch names its code");
                 program_counter = handoff.program_counter;
                 feedback_base = handoff.feedback_base;
-                register_base = mutator.heap.register_base(activation);
+                register_base = mutator.heap.activation_register_base(activation);
                 if mutator.heap.safepoint_requested() {
                     break 'run;
                 }
@@ -1463,7 +1463,7 @@ fn send_mirror(
     );
     mutator
         .heap
-        .set_activation_program_counter(activation, program_counter);
+        .activation_set_program_counter(activation, program_counter);
     // `None`, the leaf declined: the jump to the failure target waits until
     // the buffer is handed back. The closure is forced inline: once the arm
     // moved into this function, LLVM left it out of line, a call on every
@@ -1508,7 +1508,7 @@ fn make_closure_into(
     // program counter.
     mutator
         .heap
-        .set_activation_program_counter(activation, program_counter);
+        .activation_set_program_counter(activation, program_counter);
     let captured_frame = mutator.heap.reify(activation);
     // A closure that reads enclosing registers by reference -- the
     // reference lowering's, and an optimized fallback closure -- is what
@@ -1628,7 +1628,7 @@ fn non_local_return(
     let value = mutator.heap.register(register_base, register);
     mutator
         .heap
-        .set_activation_program_counter(activation, program_counter);
+        .activation_set_program_counter(activation, program_counter);
     let signal = mutator.raise_return(activation, value);
     unwind(mutator, signal, floor, handoff)
 }
@@ -1724,7 +1724,7 @@ fn send<'gc>(
     );
     mutator
         .heap
-        .set_activation_program_counter(sender.activation, program_counter);
+        .activation_set_program_counter(sender.activation, program_counter);
     let decided = decide(mutator, &arguments);
     let transfer = deliver(mutator, sender, decided, &arguments, floor, handoff);
     mutator.return_argument_buffer(arguments);
@@ -2063,7 +2063,7 @@ fn force_and_reexecute<'gc>(
 ) -> Transfer {
     mutator
         .heap
-        .set_activation_program_counter(activation, program_counter);
+        .activation_set_program_counter(activation, program_counter);
     match mutator.push_step(step, &[], Some(activation), false) {
         Ok(callee) => handoff.switch_to(mutator, callee, 0),
         Err(signal) => unwind(mutator, signal, floor, handoff),
