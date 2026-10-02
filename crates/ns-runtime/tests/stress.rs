@@ -5,7 +5,7 @@
 #![cfg(debug_assertions)]
 
 use indoc::indoc;
-use ns_runtime::{HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Root, Symbol, ValueKind};
 
 fn load(source: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
@@ -76,8 +76,8 @@ fn run_sum(interpreter: &mut Interpreter, class: &Root) -> i64 {
         interpreter.send(&instance, Symbol::intern("run"), &[]),
         "run",
     );
-    interpreter.enter(|mutator| match mutator.fetch(&sum) {
-        Value::SmallInteger(sum) => sum,
+    interpreter.enter(|mutator| match mutator.fetch(&sum).kind() {
+        ValueKind::SmallInteger(sum) => sum,
         _ => panic!("run answers a small integer"),
     })
 }

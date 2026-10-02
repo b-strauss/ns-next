@@ -10,7 +10,9 @@ use indoc::formatdoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value};
+use ns_runtime::{
+    Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value, ValueKind,
+};
 
 /// Returns the `Interpreter` alongside the send's result -- every caller
 /// reads the result through the interpreter that holds its root, and
@@ -44,17 +46,17 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 }
 
 fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
-    match value {
-        Value::SmallInteger(integer) => *integer,
+    match value.kind() {
+        ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
 
 fn string_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
-    let Value::Object(object) = value else {
+    let Some(object) = value.as_object() else {
         panic!("expected a string object")
     };
-    heap.str_value(*object)
+    heap.str_value(object)
         .unwrap_or_else(|| panic!("expected ObjectData::String"))
 }
 
@@ -81,7 +83,7 @@ fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
     let (mut interpreter, result) =
         run_method(&module("| c | c:: [false]. ^c whileTrue: [nil]"), "run");
     let value = expect_ok(result, "run");
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Nil)));
+    assert!(interpreter.enter(|mutator| mutator.fetch(&value).is_nil()));
 }
 
 #[test]

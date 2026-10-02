@@ -88,8 +88,11 @@ ns_runtime::for_each_lowering! {
             "{lowering:?}"
         );
         let receiver_is_the_probe = interpreter.enter(|mutator| {
-            match (mutator.fetch(&error.receiver), mutator.fetch(&probe)) {
-                (ns_runtime::Value::Object(receiver), ns_runtime::Value::Object(expected)) => {
+            match (
+                mutator.fetch(&error.receiver).as_object(),
+                mutator.fetch(&probe).as_object(),
+            ) {
+                (Some(receiver), Some(expected)) => {
                     receiver.same(expected)
                 }
                 _ => false,
@@ -188,7 +191,7 @@ fn send_integers(
 ) -> HostResult {
     let arguments: Vec<Root> = arguments
         .iter()
-        .map(|&argument| interpreter.stash(ns_runtime::Value::SmallInteger(argument)))
+        .map(|&argument| interpreter.stash(ns_runtime::Value::small_integer(argument)))
         .collect();
     interpreter.send(receiver, Symbol::intern(selector), &arguments)
 }
@@ -199,8 +202,8 @@ fn integer_slot(interpreter: &mut Interpreter, receiver: &Root, selector: &str) 
         interpreter.send(receiver, Symbol::intern(selector), &[]),
         selector,
     );
-    interpreter.enter(|mutator| match mutator.fetch(&value) {
-        ns_runtime::Value::SmallInteger(integer) => integer,
+    interpreter.enter(|mutator| match mutator.fetch(&value).kind() {
+        ns_runtime::ValueKind::SmallInteger(integer) => integer,
         _ => panic!("{selector} answers a small integer"),
     })
 }
@@ -275,7 +278,7 @@ ns_runtime::for_each_lowering! {
             "failInTheReserveAt: with room",
         );
         let caught_outside = interpreter
-            .enter(|mutator| matches!(mutator.fetch(&caught), ns_runtime::Value::SmallInteger(7)));
+            .enter(|mutator| mutator.fetch(&caught).as_small_integer() == Some(7));
         assert!(
             caught_outside,
             "{lowering:?}: with room, the outer handler catches the error"

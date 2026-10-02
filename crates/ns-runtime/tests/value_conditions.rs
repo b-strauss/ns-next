@@ -4,7 +4,7 @@
 
 use indoc::indoc;
 
-use ns_runtime::{HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Root, Symbol};
 
 /// Parses, resolves and loads `source` (the module's root class, into a
 /// bootstrapped `Interpreter`) into a real class object, returning both.
@@ -80,7 +80,7 @@ fn a_defective_root_built_past_the_resolver_refuses_only_an_instance() {
         "Defective answer",
     );
     interpreter.enter(|mutator| {
-        assert!(matches!(mutator.fetch(&answer), Value::SmallInteger(42)));
+        assert_eq!(mutator.fetch(&answer).as_small_integer(), Some(42));
     });
     let message = expect_error(interpreter.instantiate(&class, &[]), "Defective new");
     assert_eq!(

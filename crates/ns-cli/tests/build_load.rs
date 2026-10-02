@@ -445,7 +445,7 @@ fn a_project_builds_and_loads_as_it_runs() {
 /// `main:args:` to.
 #[test]
 fn load_refuses_an_image_that_is_not_started() {
-    use ns_runtime::{Interpreter, SourceOrigin, Value};
+    use ns_runtime::{Interpreter, SourceOrigin};
     use std::rc::Rc;
 
     let source = indoc! {"
@@ -464,7 +464,7 @@ fn load_refuses_an_image_that_is_not_started() {
     let class = interpreter.load_module(&resolved);
     let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
-        let Value::Object(class) = mutator.fetch(&class) else {
+        let Some(class) = mutator.fetch(&class).as_object() else {
             panic!("load_module answers a class object")
         };
         let origin = SourceOrigin::File("plain.ns".into());

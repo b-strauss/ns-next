@@ -3,7 +3,7 @@
 //! (`docs/design/memory.md`, "The gates the collector needs").
 
 use indoc::indoc;
-use ns_runtime::{Interpreter, Root, Symbol, Value};
+use ns_runtime::{Interpreter, Root, Symbol, Value, ValueKind};
 
 /// Loads `source` and answers the interpreter and its module's root class,
 /// the way `crates/ns-runtime/tests/heap.rs`, `roots.rs` and `stress.rs`
@@ -37,8 +37,8 @@ fn expect_ok(result: ns_runtime::HostResult) -> ns_runtime::Root {
 /// a kept closure back after a collection and checks what it answers, not
 /// merely that it still exists.
 fn integer_of(value: &Value<'_>) -> i64 {
-    match value {
-        Value::SmallInteger(integer) => *integer,
+    match value.kind() {
+        ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
@@ -68,7 +68,7 @@ fn a_collection_gives_back_what_a_run_discarded() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(2000));
+    let count = interpreter.stash(Value::small_integer(2000));
     let selector = Symbol::intern("run:");
 
     interpreter.collect_now();
@@ -120,7 +120,10 @@ fn a_symbol_nothing_holds_is_collected_and_minted_again() {
     // pruning; identity between the two occurrences is what the canonical
     // table still owes them.
     let answer = expect_ok(interpreter.send(&instance, same, &[]));
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&answer), Value::Boolean(true))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&answer).as_boolean()),
+        Some(true)
+    );
 }
 
 /// The table is not a root: a symbol nothing holds does not outlive the
@@ -138,7 +141,7 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
     "};
     let (mut baseline_interpreter, baseline_class) = load(baseline_source);
     let baseline_instance = expect_ok(baseline_interpreter.instantiate(&baseline_class, &[]));
-    let baseline_count = baseline_interpreter.stash(Value::SmallInteger(10));
+    let baseline_count = baseline_interpreter.stash(Value::small_integer(10));
     let baseline_selector = Symbol::intern("make:");
     let _ = expect_ok(baseline_interpreter.send(
         &baseline_instance,
@@ -165,7 +168,7 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
     "};
     let (mut transient_interpreter, transient_class) = load(transient_source);
     let transient_instance = expect_ok(transient_interpreter.instantiate(&transient_class, &[]));
-    let transient_count = transient_interpreter.stash(Value::SmallInteger(10));
+    let transient_count = transient_interpreter.stash(Value::small_integer(10));
     let transient_selector = Symbol::intern("make:");
     let _ = expect_ok(transient_interpreter.send(
         &transient_instance,
@@ -213,7 +216,7 @@ fn kept_closures_keep_their_frames() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(50));
+    let count = interpreter.stash(Value::small_integer(50));
     let fill = Symbol::intern("fill:");
 
     let _ = expect_ok(interpreter.send(&instance, fill, &[count]));
@@ -250,7 +253,7 @@ fn kept_closures_keep_their_frames() {
     // answer 51: a frame forwarded to the wrong slot would answer some
     // other, perfectly valid closure's captured value instead of crashing.
     let block_at = Symbol::intern("blockAt:");
-    let first_index = interpreter.stash(Value::SmallInteger(1));
+    let first_index = interpreter.stash(Value::small_integer(1));
     let first_block = expect_ok(interpreter.send(&instance, block_at, &[first_index]));
     let value_selector = Symbol::intern("value");
     let answer = expect_ok(interpreter.send(&first_block, value_selector, &[]));
@@ -286,12 +289,12 @@ fn discarding_everything_returns_to_the_starting_size() {
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
     let fill = Symbol::intern("fill:");
 
-    let small = interpreter.stash(Value::SmallInteger(5));
+    let small = interpreter.stash(Value::small_integer(5));
     let _ = expect_ok(interpreter.send(&instance, fill, &[small]));
     interpreter.collect_now();
     let after_small = interpreter.heap_statistics();
 
-    let large = interpreter.stash(Value::SmallInteger(500));
+    let large = interpreter.stash(Value::small_integer(500));
     let _ = expect_ok(interpreter.send(&instance, fill, &[large]));
     interpreter.collect_now();
     let after_large = interpreter.heap_statistics();
@@ -333,13 +336,13 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
     // quiet-versus-stressed comparison.
     interpreter.set_stress_collect(false);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(100));
+    let count = interpreter.stash(Value::small_integer(100));
     let selector = Symbol::intern("upTo:");
 
     let quiet = expect_ok(interpreter.send(&instance, selector, &[count]));
     let quiet_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&quiet)));
     interpreter.set_stress_collect(true);
-    let count_again = interpreter.stash(Value::SmallInteger(100));
+    let count_again = interpreter.stash(Value::small_integer(100));
     let stressed = expect_ok(interpreter.send(&instance, selector, &[count_again]));
     let stressed_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&stressed)));
 
@@ -379,7 +382,7 @@ fn allocating_past_the_limit_collects_during_the_run() {
     let (mut interpreter, class) = load(source);
     interpreter.set_collection_floor(256);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(5000));
+    let count = interpreter.stash(Value::small_integer(5000));
     let selector = Symbol::intern("run:");
 
     let answer = expect_ok(interpreter.send(&instance, selector, &[count]));

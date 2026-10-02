@@ -3,7 +3,7 @@
 //! and non-local return from a block to a live home and into a dead one.
 
 use indoc::indoc;
-use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol};
 
 /// Loads `source`, instantiates its root class and returns both.
 fn instance_of(source: &str) -> (Interpreter, Root) {
@@ -58,7 +58,7 @@ fn method_with_no_explicit_return_returns_self() {
     interpreter.enter(|mutator| {
         let (result, receiver) = (mutator.fetch(&result), mutator.fetch(&receiver));
         assert!(
-            matches!((&result, &receiver), (Value::Object(result_object), Value::Object(receiver_object)) if result_object.same(*receiver_object)),
+            matches!((result.as_object(), receiver.as_object()), (Some(result_object), Some(receiver_object)) if result_object.same(receiver_object)),
             "a method with no explicit return must yield the receiver, not the last expression's value"
         );
     });
@@ -76,7 +76,10 @@ fn method_with_explicit_return_returns_the_returned_value() {
         interpreter.send(&receiver, Symbol::intern("answer"), &[]),
         "answer",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(42))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&result).as_small_integer()),
+        Some(42)
+    );
 }
 
 /// A bare `Array` (no `platform` prefix, outside any superclass clause) is
@@ -95,7 +98,7 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
         "bar",
     );
     interpreter.enter(|mutator| {
-        let Value::Object(object) = mutator.fetch(&result) else {
+        let Some(object) = mutator.fetch(&result).as_object() else {
             panic!("expected an Array instance")
         };
         assert!(matches!(
@@ -116,7 +119,10 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
         ) : ()
     "});
     let result = expect_ok(interpreter.send(&receiver, Symbol::intern("m"), &[]), "m");
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(1))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&result).as_small_integer()),
+        Some(1)
+    );
     assert_eq!(
         interpreter.enter(|mutator| mutator.heap().activation_depth()),
         0
@@ -134,7 +140,10 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
         ) : ()
     "});
     let first = expect_ok(interpreter.send(&receiver, Symbol::intern("m"), &[]), "m");
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&first), Value::SmallInteger(1))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&first).as_small_integer()),
+        Some(1)
+    );
     expect_cannot_return(
         interpreter.send(&receiver, Symbol::intern("again"), &[]),
         "again",

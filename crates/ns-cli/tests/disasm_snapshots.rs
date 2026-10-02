@@ -251,7 +251,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
 /// would present it.
 #[test]
 fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
-    use ns_runtime::{Interpreter, Mixin, SourceOrigin, Value};
+    use ns_runtime::{Interpreter, Mixin, SourceOrigin};
     use std::rc::Rc;
 
     let source = indoc! {"
@@ -273,7 +273,7 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     };
     // Nothing runs from here on, so the whole rewrite happens in one entry.
     let bytes = interpreter.enter(|mutator| {
-        let Value::Object(class) = mutator.fetch(&class) else {
+        let Some(class) = mutator.fetch(&class).as_object() else {
             panic!("load_module answers a class object")
         };
         let application = mutator

@@ -4,7 +4,9 @@
 //! numbered steps this exercises.
 
 use indoc::indoc;
-use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Mutator, Root, Symbol, Value};
+use ns_runtime::{
+    HostResult, HostSignal, Interpreter, Lowering, Mutator, Root, Symbol, Value, ValueKind,
+};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both.
@@ -42,8 +44,8 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 /// The object `root` holds, for the heap accessors that take one. Every
 /// caller is already inside an entry.
 fn object<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ns_runtime::ObjectReference<'gc> {
-    match mutator.fetch(root) {
-        Value::Object(object) => object,
+    match mutator.fetch(root).kind() {
+        ValueKind::Object(object) => object,
         _ => panic!("expected an object"),
     }
 }
@@ -63,11 +65,11 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
     let result = interpreter.send(&receiver, Symbol::intern("bar"), &[]);
 
     match result {
-        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
-            Value::SmallInteger(42) => {}
-            other => panic!(
-                "expected Value::SmallInteger(42), got {}",
-                mutator.heap().describe(&other)
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root).kind() {
+            ValueKind::SmallInteger(42) => {}
+            _ => panic!(
+                "expected the small integer 42, got {}",
+                mutator.heap().describe(&mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -157,15 +159,15 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     let result = interpreter.send(&receiver, Symbol::intern("getB"), &[]);
 
     match result {
-        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
-            Value::SmallInteger(10) => {}
-            Value::Nil => panic!(
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root).kind() {
+            ValueKind::SmallInteger(10) => {}
+            ValueKind::Nil => panic!(
                 "getB returned nil -- the superclass's own slot initializer (a = 10) did not run \
                  before the subclass's own slot initializer (b = a) read it"
             ),
-            other => panic!(
-                "expected Value::SmallInteger(10), got {}",
-                mutator.heap().describe(&other)
+            _ => panic!(
+                "expected the small integer 10, got {}",
+                mutator.heap().describe(&mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -189,18 +191,18 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
     let (mut interpreter, class) = load(source);
 
     let receiver = expect_ok(
-        interpreter.instantiate(&class, &[interpreter.stash(Value::SmallInteger(99))]),
+        interpreter.instantiate(&class, &[interpreter.stash(Value::small_integer(99))]),
         "instantiate",
     );
 
     let result = interpreter.send(&receiver, Symbol::intern("getT"), &[]);
 
     match result {
-        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
-            Value::SmallInteger(99) => {}
-            other => panic!(
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root).kind() {
+            ValueKind::SmallInteger(99) => {}
+            _ => panic!(
                 "expected the slot to hold the factory argument (SmallInteger(99)), got {}",
-                mutator.heap().describe(&other)
+                mutator.heap().describe(&mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -223,7 +225,7 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
         interpreter.send(
             &class,
             Symbol::intern("usingPlatform:"),
-            &[interpreter.stash(Value::SmallInteger(99))],
+            &[interpreter.stash(Value::small_integer(99))],
         ),
         "M usingPlatform: 99",
     );
@@ -235,17 +237,17 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
 
     interpreter.enter(|mutator| {
         let result = mutator.fetch(&result);
-        match &result {
-            Value::Object(object) => match mutator.heap().str_value(*object) {
+        match &result.kind() {
+            ValueKind::Object(object) => match mutator.heap().str_value(*object) {
                 Some(string) => assert_eq!(string, "99"),
                 None => panic!(
                     "expected ObjectData::String(\"99\"), got {}",
                     mutator.heap().describe(&result)
                 ),
             },
-            other => panic!(
-                "expected Value::Object(<String>), got {}",
-                mutator.heap().describe(other)
+            _ => panic!(
+                "expected a String object, got {}",
+                mutator.heap().describe(&result)
             ),
         }
     });
@@ -271,18 +273,18 @@ fn a_factory_parameter_is_visible_in_an_initializer_expression() {
     let (mut interpreter, class) = load(source);
 
     let receiver = expect_ok(
-        interpreter.instantiate(&class, &[interpreter.stash(Value::SmallInteger(7))]),
+        interpreter.instantiate(&class, &[interpreter.stash(Value::small_integer(7))]),
         "instantiate",
     );
 
     let result = interpreter.send(&receiver, Symbol::intern("getT"), &[]);
 
     match result {
-        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
-            Value::SmallInteger(7) => {}
-            other => panic!(
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root).kind() {
+            ValueKind::SmallInteger(7) => {}
+            _ => panic!(
                 "expected SmallInteger(7) assigned by the initializer expression, got {}",
-                mutator.heap().describe(&other)
+                mutator.heap().describe(&mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -305,7 +307,7 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
     "};
     let (mut interpreter, class) = load(source);
 
-    let result = interpreter.instantiate(&class, &[interpreter.stash(Value::SmallInteger(1))]);
+    let result = interpreter.instantiate(&class, &[interpreter.stash(Value::small_integer(1))]);
 
     match result {
         Err(HostSignal::Error(error)) => {
@@ -387,7 +389,7 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
         "base",
     );
     assert!(
-        interpreter.enter(|mutator| matches!(mutator.fetch(&stored), Value::SmallInteger(7))),
+        interpreter.enter(|mutator| mutator.fetch(&stored).as_small_integer() == Some(7)),
         "the superclass's slot initializer did not see the clause's own argument"
     );
 }
@@ -444,7 +446,7 @@ ns_runtime::for_each_lowering! {
         for (name, slots) in cases {
             let class = expect_ok(interpreter.send(&module, Symbol::intern(name), &[]), name);
             interpreter.enter(|mutator| {
-                let Value::Object(_) = mutator.fetch(&class) else {
+                let Some(_) = mutator.fetch(&class).as_object() else {
                     panic!("{name} answers a class object")
                 };
             });
@@ -467,8 +469,8 @@ ns_runtime::for_each_lowering! {
                 // Every handle compared below is read after `lastSeen`, the
                 // last run before the comparisons.
                 interpreter.enter(|mutator| {
-                    let (Value::Object(instance_object), Value::Object(seen_object)) =
-                        (mutator.fetch(&instance), mutator.fetch(&seen))
+                    let (Some(instance_object), Some(seen_object)) =
+                        (mutator.fetch(&instance).as_object(), mutator.fetch(&seen).as_object())
                     else {
                         panic!("{what}: answered something other than an object");
                     };
@@ -479,7 +481,7 @@ ns_runtime::for_each_lowering! {
                     );
                     assert!(
                         mutator
-                            .class_of(&Value::Object(instance_object))
+                            .class_of(&Value::object(instance_object))
                             .same(class_object),
                         "{what}: answered an instance of another class"
                     );
@@ -491,7 +493,7 @@ ns_runtime::for_each_lowering! {
                     );
                     assert!(
                         interpreter.enter(
-                            |mutator| matches!(mutator.fetch(&value), Value::SmallInteger(integer) if integer == *expected)
+                            |mutator| mutator.fetch(&value).as_small_integer() == Some(*expected)
                         ),
                         "{what}: slot {getter}"
                     );
@@ -524,7 +526,7 @@ fn a_value_class_that_declares_a_mutable_slot_cannot_be_instantiated() {
         ) () : ()
     "};
     let (mut interpreter, class) = load(source);
-    let one = interpreter.stash(Value::SmallInteger(1));
+    let one = interpreter.stash(Value::small_integer(1));
     let error = expect_error(interpreter.instantiate(&class, &[one]), "Counter start: 1");
     assert_eq!(error.selector, Symbol::intern("start:"));
     assert!(
@@ -664,11 +666,11 @@ fn a_value_class_accepts_a_slot_holding_an_instance_of_value_itself() {
         ),
         "sameContentsAs:",
     );
-    interpreter.enter(|mutator| match mutator.fetch(&equal) {
-        Value::Boolean(true) => {}
-        other => panic!(
+    interpreter.enter(|mutator| match mutator.fetch(&equal).kind() {
+        ValueKind::Boolean(true) => {}
+        _ => panic!(
             "two separately built `Value new`s are one value, got {}",
-            mutator.heap().describe(&other)
+            mutator.heap().describe(&mutator.fetch(&equal))
         ),
     });
 }
@@ -754,11 +756,11 @@ ns_runtime::for_each_lowering! {
             interpreter.send(&module, Symbol::intern("applied"), &[]),
             "applied",
         );
-        interpreter.enter(|mutator| match mutator.fetch(&log) {
-            Value::SmallInteger(12_04_08_34) => {}
-            other => panic!(
+        interpreter.enter(|mutator| match mutator.fetch(&log).kind() {
+            ValueKind::SmallInteger(12_04_08_34) => {}
+            _ => panic!(
                 "{lowering:?}: expected the log 12 04 08 34, got {}",
-                mutator.heap().describe(&other)
+                mutator.heap().describe(&mutator.fetch(&log))
             ),
         });
     }
@@ -778,11 +780,11 @@ ns_runtime::for_each_lowering! {
             interpreter.send(&module, Symbol::intern("stacked"), &[]),
             "stacked",
         );
-        interpreter.enter(|mutator| match mutator.fetch(&log) {
-            Value::SmallInteger(12_04_08_07_34) => {}
-            other => panic!(
+        interpreter.enter(|mutator| match mutator.fetch(&log).kind() {
+            ValueKind::SmallInteger(12_04_08_07_34) => {}
+            _ => panic!(
                 "{lowering:?}: expected the log 12 04 08 07 34, got {}",
-                mutator.heap().describe(&other)
+                mutator.heap().describe(&mutator.fetch(&log))
             ),
         });
     }
@@ -869,11 +871,11 @@ ns_runtime::for_each_lowering! {
                 interpreter.send(&module, Symbol::intern(selector), &[]),
                 selector,
             );
-            interpreter.enter(|mutator| match mutator.fetch(&log) {
-                Value::SmallInteger(actual) if actual == expected => {}
-                other => panic!(
+            interpreter.enter(|mutator| match mutator.fetch(&log).kind() {
+                ValueKind::SmallInteger(actual) if actual == expected => {}
+                _ => panic!(
                     "{lowering:?} {selector}: expected the log {expected}, got {}",
-                    mutator.heap().describe(&other)
+                    mutator.heap().describe(&mutator.fetch(&log))
                 ),
             });
         }

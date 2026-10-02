@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use ns_runtime::bytecode::{CallSite, Instruction};
-use ns_runtime::{
-    HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
-};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
 
 fn load(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
@@ -77,7 +75,7 @@ ns_runtime::for_each_lowering! {
                 selector,
             );
             assert!(
-                interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::SmallInteger(integer) if integer == answer)),
+                interpreter.enter(|mutator| mutator.fetch(&value).as_small_integer() == Some(answer)),
                 "{selector} under {lowering:?} did not answer {answer}"
             );
         }
@@ -98,7 +96,7 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
     "};
     let (mut interpreter, class) = load(source, Lowering::Reference);
     let code = interpreter.enter(|mutator| {
-        let Value::Object(class) = mutator.fetch(&class) else {
+        let Some(class) = mutator.fetch(&class).as_object() else {
             panic!("load_module answers a class object")
         };
         let mixin = mutator
@@ -171,7 +169,7 @@ fn the_reference_lowering_emits_every_send_uncached() {
     "};
     let (mut interpreter, class) = load(source, Lowering::Reference);
     let code = interpreter.enter(|mutator| {
-        let Value::Object(object) = mutator.fetch(&class) else {
+        let Some(object) = mutator.fetch(&class).as_object() else {
             panic!("the module's class is a class object")
         };
         let application = mutator.heap().class_application(object).expect("a class");

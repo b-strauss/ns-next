@@ -7,7 +7,7 @@
 
 use indoc::indoc;
 use ns_runtime::interpreter::future::FutureState;
-use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Root, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Root, Symbol, Value, ValueKind};
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
@@ -69,11 +69,11 @@ fn a_future(interpreter: &mut Interpreter, holder: &Root, selector: &str) -> Roo
         selector,
     );
     interpreter.enter(|mutator| {
-        let Value::Object(closure) = mutator.fetch(&block) else {
+        let Some(closure) = mutator.fetch(&block).as_object() else {
             panic!("{selector} answers a block");
         };
         let future = mutator.new_future(closure);
-        mutator.stash(Value::Object(future))
+        mutator.stash(Value::object(future))
     })
 }
 
@@ -83,8 +83,8 @@ fn runs(interpreter: &mut Interpreter, holder: &Root) -> i64 {
         interpreter.send(holder, Symbol::intern("runs"), &[]),
         "runs",
     );
-    interpreter.enter(|mutator| match mutator.fetch(&runs) {
-        Value::SmallInteger(count) => count,
+    interpreter.enter(|mutator| match mutator.fetch(&runs).kind() {
+        ValueKind::SmallInteger(count) => count,
         _ => panic!("runs is an integer"),
     })
 }
@@ -93,7 +93,7 @@ fn runs(interpreter: &mut Interpreter, holder: &Root) -> i64 {
 /// `FutureState` carries handles that cannot leave the entry.
 fn state_of(interpreter: &mut Interpreter, future: &Root) -> &'static str {
     interpreter.enter(|mutator| {
-        let Value::Object(future) = mutator.fetch(future) else {
+        let Some(future) = mutator.fetch(future).as_object() else {
             panic!("a future is an object");
         };
         match mutator.future_state(future) {
@@ -109,7 +109,7 @@ ns_runtime::for_each_lowering! {
     fn a_message_to_a_future_is_answered_by_its_value_computed_once(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
-        let four = interpreter.stash(Value::SmallInteger(4));
+        let four = interpreter.stash(Value::small_integer(4));
         let sum = expect_ok(
             interpreter.send(&future, Symbol::intern("+"), std::slice::from_ref(&four)),
             "future + 4",
@@ -119,8 +119,8 @@ ns_runtime::for_each_lowering! {
             "future + 4 again",
         );
         interpreter.enter(|mutator| {
-            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
-            assert!(matches!(mutator.fetch(&again), Value::SmallInteger(7)));
+            assert_eq!(mutator.fetch(&sum).as_small_integer(), Some(7));
+            assert_eq!(mutator.fetch(&again).as_small_integer(), Some(7));
         });
         assert_eq!(runs(&mut interpreter, &holder), 1, "the block ran once");
         assert_eq!(state_of(&mut interpreter, &future), "resolved");
@@ -142,7 +142,7 @@ ns_runtime::for_each_lowering! {
             interpreter.send(&future, Symbol::intern("printString"), &[]),
             "printString",
         );
-        let three = interpreter.stash(Value::SmallInteger(3));
+        let three = interpreter.stash(Value::small_integer(3));
         let identical = expect_ok(
             interpreter.send(&future, Symbol::intern("=="), &[three]),
             "future == 3",
@@ -152,7 +152,7 @@ ns_runtime::for_each_lowering! {
             "future isNil",
         );
         interpreter.enter(|mutator| {
-            let Value::Object(class) = mutator.fetch(&class) else {
+            let Some(class) = mutator.fetch(&class).as_object() else {
                 panic!("a class")
             };
             assert!(class.same(mutator.builtin_class(ns_runtime::BuiltinClass::Integer)));
@@ -160,8 +160,8 @@ ns_runtime::for_each_lowering! {
                 mutator.heap().describe(&mutator.fetch(&printed)),
                 "the String \"3\""
             );
-            assert!(matches!(mutator.fetch(&identical), Value::Boolean(true)));
-            assert!(matches!(mutator.fetch(&is_nil), Value::Boolean(false)));
+            assert_eq!(mutator.fetch(&identical).as_boolean(), Some(true));
+            assert_eq!(mutator.fetch(&is_nil).as_boolean(), Some(false));
         });
         assert_eq!(runs(&mut interpreter, &holder), 1, "the block ran once");
     }
@@ -201,7 +201,7 @@ ns_runtime::for_each_lowering! {
             interpreter.send(&holder, Symbol::intern("held:"), std::slice::from_ref(&future)),
             "held:",
         );
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let message = expect_error_message(
             interpreter.send(&future, Symbol::intern("+"), &[one]),
             "a future forcing itself",
@@ -218,7 +218,7 @@ ns_runtime::for_each_lowering! {
     fn abandoning_a_forcing_resets_the_future(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "failing");
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         for attempt in 0..2 {
             let message = expect_error_message(
                 interpreter.send(&future, Symbol::intern("+"), std::slice::from_ref(&one)),
@@ -243,20 +243,20 @@ ns_runtime::for_each_lowering! {
             "held:",
         );
         let outer = a_future(&mut interpreter, &holder, "answeringHeld");
-        let four = interpreter.stash(Value::SmallInteger(4));
+        let four = interpreter.stash(Value::small_integer(4));
         let sum = expect_ok(
             interpreter.send(&outer, Symbol::intern("+"), &[four]),
             "outer + 4",
         );
         interpreter.enter(|mutator| {
-            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
-            let Value::Object(outer) = mutator.fetch(&outer) else {
+            assert_eq!(mutator.fetch(&sum).as_small_integer(), Some(7));
+            let Some(outer) = mutator.fetch(&outer).as_object() else {
                 panic!("a future is an object");
             };
             // Resolved to the value, never to the inner future.
             assert!(matches!(
                 mutator.future_state(outer),
-                FutureState::Resolved(Value::SmallInteger(3))
+                FutureState::Resolved(resolved) if resolved.as_small_integer() == Some(3)
             ));
         });
         assert_eq!(state_of(&mut interpreter, &inner), "resolved");
@@ -276,7 +276,7 @@ ns_runtime::for_each_lowering! {
             "held:",
         );
         let outer = a_future(&mut interpreter, &holder, "answeringHeld");
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let message = expect_error_message(
             interpreter.send(&outer, Symbol::intern("+"), &[one]),
             "the chain",
@@ -295,7 +295,7 @@ ns_runtime::for_each_lowering! {
     fn a_refused_forcing_leaves_the_future_unresolved(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "taking");
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         for attempt in 0..2 {
             let _ = expect_error_message(
                 interpreter.send(&future, Symbol::intern("+"), std::slice::from_ref(&one)),
@@ -322,7 +322,7 @@ ns_runtime::for_each_lowering! {
         let mut refused_forcing = false;
         for depth in (limit - 10..limit).rev() {
             let arguments = [
-                interpreter.stash(Value::SmallInteger(depth)),
+                interpreter.stash(Value::small_integer(depth)),
                 future.clone(),
             ];
             let error = match interpreter.send(
@@ -344,13 +344,13 @@ ns_runtime::for_each_lowering! {
         }
         assert!(refused_forcing, "{lowering:?}: some depth refused the forcing's push");
         // The next touch computes it.
-        let four = interpreter.stash(Value::SmallInteger(4));
+        let four = interpreter.stash(Value::small_integer(4));
         let sum = expect_ok(
             interpreter.send(&future, Symbol::intern("+"), &[four]),
             "future + 4",
         );
         interpreter.enter(|mutator| {
-            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
+            assert_eq!(mutator.fetch(&sum).as_small_integer(), Some(7));
         });
         assert_eq!(state_of(&mut interpreter, &future), "resolved");
     }
@@ -365,8 +365,8 @@ fn only_a_future_is_a_future() {
         let future = mutator.fetch(&future);
         assert!(mutator.as_future(future).is_some());
         assert!(mutator.as_future(mutator.fetch(&holder)).is_none());
-        assert!(mutator.as_future(Value::SmallInteger(3)).is_none());
-        assert!(mutator.as_future(Value::Nil).is_none());
+        assert!(mutator.as_future(Value::small_integer(3)).is_none());
+        assert!(mutator.as_future(Value::nil()).is_none());
     });
 }
 
@@ -378,7 +378,7 @@ ns_runtime::for_each_lowering! {
     fn a_host_passing_an_unresolved_future_to_a_leaf_is_an_error(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let message = expect_error_message(
             interpreter.send(&one, Symbol::intern("+"), &[future]),
             "1 + an unresolved future from the host",
@@ -393,18 +393,18 @@ ns_runtime::for_each_lowering! {
     fn a_host_passing_a_resolved_future_to_a_leaf_is_answered_by_its_value(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
-        let four = interpreter.stash(Value::SmallInteger(4));
+        let four = interpreter.stash(Value::small_integer(4));
         expect_ok(
             interpreter.send(&future, Symbol::intern("+"), &[four]),
             "future + 4, which resolves it",
         );
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let sum = expect_ok(
             interpreter.send(&one, Symbol::intern("+"), &[future]),
             "1 + a resolved future",
         );
         interpreter.enter(|mutator| {
-            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(4)));
+            assert_eq!(mutator.fetch(&sum).as_small_integer(), Some(4));
         });
     }
 }
@@ -443,13 +443,13 @@ ns_runtime::for_each_lowering! {
     fn a_long_chain_of_futures_resolves_without_recursing_per_link(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let next = a_chain(&mut interpreter, &holder, "three");
-        let four = interpreter.stash(Value::SmallInteger(4));
+        let four = interpreter.stash(Value::small_integer(4));
         let sum = expect_ok(
             interpreter.send(&next, Symbol::intern("+"), &[four]),
             "head + 4",
         );
         interpreter.enter(|mutator| {
-            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
+            assert_eq!(mutator.fetch(&sum).as_small_integer(), Some(7));
         });
         assert_eq!(state_of(&mut interpreter, &next), "resolved");
         assert_eq!(runs(&mut interpreter, &holder), 1, "the last block ran once");
@@ -462,7 +462,7 @@ ns_runtime::for_each_lowering! {
     fn a_long_chain_of_futures_is_abandoned_without_recursing_per_link(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let next = a_chain(&mut interpreter, &holder, "failing");
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let message = expect_error_message(
             interpreter.send(&next, Symbol::intern("+"), &[one]),
             "head + 1",
@@ -486,11 +486,11 @@ fn a_chain(interpreter: &mut Interpreter, holder: &Root, last: &str) -> Root {
             "answering:",
         );
         next = interpreter.enter(|mutator| {
-            let Value::Object(closure) = mutator.fetch(&block) else {
+            let Some(closure) = mutator.fetch(&block).as_object() else {
                 panic!("answering: answers a block");
             };
             let future = mutator.new_future(closure);
-            mutator.stash(Value::Object(future))
+            mutator.stash(Value::object(future))
         });
     }
     next
@@ -506,12 +506,12 @@ ns_runtime::for_each_lowering! {
     fn a_collection_replaces_a_resolved_future_in_an_array(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
-        let four = interpreter.stash(Value::SmallInteger(4));
+        let four = interpreter.stash(Value::small_integer(4));
         let _ = expect_ok(interpreter.send(&future, Symbol::intern("+"), &[four]), "force it");
         let array = interpreter.enter(|mutator| {
             let future = mutator.fetch(&future);
             let array = mutator.new_array(vec![future]);
-            mutator.stash(Value::Object(array))
+            mutator.stash(Value::object(array))
         });
         // A first collection, with the future still rooted, gives back
         // whatever else the setup left behind, so the second one's count
@@ -525,13 +525,10 @@ ns_runtime::for_each_lowering! {
             "the future, reachable from nothing once its root is dropped, is collected"
         );
         interpreter.enter(|mutator| {
-            let Value::Object(array) = mutator.fetch(&array) else {
+            let Some(array) = mutator.fetch(&array).as_object() else {
                 panic!("an array");
             };
-            assert!(matches!(
-                mutator.heap().array_at(array, 0),
-                Some(Value::SmallInteger(3))
-            ));
+            assert_eq!(mutator.heap().array_at(array, 0).and_then(Value::as_small_integer), Some(3));
         });
     }
 }
@@ -543,35 +540,32 @@ ns_runtime::for_each_lowering! {
     fn a_collection_replaces_a_resolved_future_in_an_instance_slot(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
-        let four = interpreter.stash(Value::SmallInteger(4));
+        let four = interpreter.stash(Value::small_integer(4));
         let _ = expect_ok(interpreter.send(&future, Symbol::intern("+"), &[four]), "force it");
         let _ = expect_ok(
             interpreter.send(&holder, Symbol::intern("held:"), std::slice::from_ref(&future)),
             "held:",
         );
         interpreter.enter(|mutator| {
-            let Value::Object(holder) = mutator.fetch(&holder) else {
+            let Some(holder) = mutator.fetch(&holder).as_object() else {
                 panic!("an instance");
             };
             // Or the value already, where a stress mode collected since.
             let held = mutator.heap().instance_field(holder, 1).expect("held");
             assert!(
-                mutator.as_future(held).is_some() || matches!(held, Value::SmallInteger(3)),
+                mutator.as_future(held).is_some() || held.as_small_integer() == Some(3),
                 "held holds the future first"
             );
         });
         drop(future);
         interpreter.collect_now();
         interpreter.enter(|mutator| {
-            let Value::Object(holder) = mutator.fetch(&holder) else {
+            let Some(holder) = mutator.fetch(&holder).as_object() else {
                 panic!("an instance");
             };
             // `held` is `Holder`'s second slot, after `runs`.
             assert!(
-                matches!(
-                    mutator.heap().instance_field(holder, 1),
-                    Some(Value::SmallInteger(3))
-                ),
+                mutator.heap().instance_field(holder, 1).and_then(Value::as_small_integer) == Some(3),
                 "held holds the value, not the future"
             );
         });
@@ -588,7 +582,7 @@ ns_runtime::for_each_lowering! {
 fn a_collection_replaces_a_resolved_future_in_a_closures_copied_value() {
     let (mut interpreter, holder) = a_holder(Lowering::Optimized);
     let future = a_future(&mut interpreter, &holder, "three");
-    let four = interpreter.stash(Value::SmallInteger(4));
+    let four = interpreter.stash(Value::small_integer(4));
     let _ = expect_ok(
         interpreter.send(&future, Symbol::intern("+"), &[four]),
         "force it",
@@ -603,12 +597,12 @@ fn a_collection_replaces_a_resolved_future_in_a_closures_copied_value() {
     );
     let copied_first = |interpreter: &mut Interpreter| {
         interpreter.enter(|mutator| {
-            let Value::Object(closure) = mutator.fetch(&block) else {
+            let Some(closure) = mutator.fetch(&block).as_object() else {
                 panic!("answering: answers a block");
             };
             let data = mutator.heap().closure_data(closure).expect("a closure");
             match data.copied.first() {
-                Some(Value::SmallInteger(3)) => "the value",
+                Some(value) if value.as_small_integer() == Some(3) => "the value",
                 Some(value) if mutator.as_future(*value).is_some() => "the future",
                 _ => "something else",
             }
@@ -632,6 +626,6 @@ fn a_collection_replaces_a_resolved_future_in_a_closures_copied_value() {
         "block value",
     );
     interpreter.enter(|mutator| {
-        assert!(matches!(mutator.fetch(&answer), Value::SmallInteger(3)));
+        assert_eq!(mutator.fetch(&answer).as_small_integer(), Some(3));
     });
 }

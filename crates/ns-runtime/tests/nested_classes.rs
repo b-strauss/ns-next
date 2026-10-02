@@ -7,7 +7,9 @@ use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value};
+use ns_runtime::{
+    Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value, ValueKind,
+};
 
 fn load(source: &str) -> (Interpreter, Root) {
     load_with(source, ns_runtime::Lowering::Optimized)
@@ -44,11 +46,11 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 /// result is compared through this rather than `assert_eq!` on the `Value`
 /// itself.
 fn string_contents<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
-    match value {
-        Value::Object(object) => heap
-            .str_value(*object)
+    match value.kind() {
+        ValueKind::Object(object) => heap
+            .str_value(object)
             .unwrap_or_else(|| panic!("expected ObjectData::String")),
-        _ => panic!("expected Value::Object"),
+        _ => panic!("expected an object"),
     }
 }
 
@@ -87,9 +89,10 @@ fn the_accessor_returns_the_same_class_object_every_time() {
         "second Inner",
     );
     interpreter.enter(|mutator| {
-        let (Value::Object(first_object), Value::Object(second_object)) =
-            (mutator.fetch(&first), mutator.fetch(&second))
-        else {
+        let (Some(first_object), Some(second_object)) = (
+            mutator.fetch(&first).as_object(),
+            mutator.fetch(&second).as_object(),
+        ) else {
             panic!("a nested class access must yield a class object");
         };
         assert!(first_object.same(second_object), "spec 6: cached within r");
@@ -117,9 +120,10 @@ fn two_enclosing_instances_get_distinct_nested_classes() {
         "second",
     );
     interpreter.enter(|mutator| {
-        let (Value::Object(first_inner), Value::Object(second_inner)) =
-            (mutator.fetch(&first_inner), mutator.fetch(&second_inner))
-        else {
+        let (Some(first_inner), Some(second_inner)) = (
+            mutator.fetch(&first_inner).as_object(),
+            mutator.fetch(&second_inner).as_object(),
+        ) else {
             panic!("class objects")
         };
         assert!(
@@ -153,9 +157,10 @@ fn the_nested_class_remembers_its_enclosing_object() {
         "Inner",
     );
     interpreter.enter(|mutator| {
-        let (Value::Object(inner), Value::Object(outer)) =
-            (mutator.fetch(&inner), mutator.fetch(&outer))
-        else {
+        let (Some(inner), Some(outer)) = (
+            mutator.fetch(&inner).as_object(),
+            mutator.fetch(&outer).as_object(),
+        ) else {
             panic!("class object and instance")
         };
         let enclosing = mutator
@@ -182,8 +187,8 @@ fn a_nested_class_can_be_instantiated_through_its_accessor() {
         interpreter.send(&instance, Symbol::intern("value"), &[]),
         "value",
     );
-    let value = interpreter.enter(|mutator| match mutator.fetch(&value) {
-        Value::SmallInteger(value) => value,
+    let value = interpreter.enter(|mutator| match mutator.fetch(&value).kind() {
+        ValueKind::SmallInteger(value) => value,
         _ => panic!("expected a SmallInteger from `Inner new value`"),
     });
     assert_eq!(value, 42);
@@ -243,8 +248,8 @@ fn a_nested_class_defaults_to_protected_accessibility() {
         interpreter.send(&outer, Symbol::intern("reach"), &[]),
         "reach",
     );
-    let value = interpreter.enter(|mutator| match mutator.fetch(&value) {
-        Value::SmallInteger(value) => value,
+    let value = interpreter.enter(|mutator| match mutator.fetch(&value).kind() {
+        ValueKind::SmallInteger(value) => value,
         _ => panic!("expected a SmallInteger from `Hidden new value`"),
     });
     assert_eq!(value, 7);
@@ -293,9 +298,10 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     // its hidden cache slot is the inherited entry in Derived's layout.
     let n_class = expect_ok(interpreter.send(&derived, Symbol::intern("N"), &[]), "N");
     interpreter.enter(|mutator| {
-        let (Value::Object(n_class_object), Value::Object(derived_object)) =
-            (mutator.fetch(&n_class), mutator.fetch(&derived))
-        else {
+        let (Some(n_class_object), Some(derived_object)) = (
+            mutator.fetch(&n_class).as_object(),
+            mutator.fetch(&derived).as_object(),
+        ) else {
             panic!("class object and instance")
         };
         let enclosing = mutator
@@ -314,9 +320,10 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
         "N again",
     );
     interpreter.enter(|mutator| {
-        let (Value::Object(n_class_object), Value::Object(again)) =
-            (mutator.fetch(&n_class), mutator.fetch(&again))
-        else {
+        let (Some(n_class_object), Some(again)) = (
+            mutator.fetch(&n_class).as_object(),
+            mutator.fetch(&again).as_object(),
+        ) else {
             panic!("class object")
         };
         assert!(n_class_object.same(again), "spec 6: cached within r");
@@ -326,8 +333,8 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
         interpreter.send(&instance, Symbol::intern("tag"), &[]),
         "tag",
     );
-    let tag = interpreter.enter(|mutator| match mutator.fetch(&tag) {
-        Value::SmallInteger(tag) => tag,
+    let tag = interpreter.enter(|mutator| match mutator.fetch(&tag).kind() {
+        ValueKind::SmallInteger(tag) => tag,
         _ => panic!("expected a SmallInteger from `N new tag`"),
     });
     assert_eq!(tag, 11);
@@ -360,7 +367,7 @@ fn a_super_prefixed_clause_answers_a_class_object() {
         "innerClass",
     );
     interpreter.enter(|mutator| {
-        let Value::Object(inner) = mutator.fetch(&inner) else {
+        let Some(inner) = mutator.fetch(&inner).as_object() else {
             panic!("the accessor must yield a class object")
         };
         assert!(mutator.heap().is_class(inner));
@@ -533,7 +540,7 @@ fn a_subclass_with_no_class_side_of_its_own_does_not_inherit_one() {
 fn nested_class_object(interpreter: &mut Interpreter, enclosing: &Root, name: &str) -> Root {
     let class = expect_ok(interpreter.send(enclosing, Symbol::intern(name), &[]), name);
     interpreter.enter(|mutator| {
-        let Value::Object(_) = mutator.fetch(&class) else {
+        let Some(_) = mutator.fetch(&class).as_object() else {
             panic!("{name} answers a class object")
         };
     });
@@ -579,9 +586,10 @@ fn two_class_objects_sharing_an_application_share_their_class_sides_application(
     // class objects, building their metaclasses, and comparing applications
     // -- runs nothing, so it all happens in one entry.
     interpreter.enter(|mutator| {
-        let (Value::Object(first_widget), Value::Object(second_widget)) =
-            (mutator.fetch(&first_widget), mutator.fetch(&second_widget))
-        else {
+        let (Some(first_widget), Some(second_widget)) = (
+            mutator.fetch(&first_widget).as_object(),
+            mutator.fetch(&second_widget).as_object(),
+        ) else {
             panic!("Widget answers a class object")
         };
         assert!(
@@ -880,7 +888,7 @@ fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
         "the second access",
     );
     interpreter.enter(|mutator| {
-        let Value::Object(inner) = mutator.fetch(&inner) else {
+        let Some(inner) = mutator.fetch(&inner).as_object() else {
             panic!("a class object");
         };
         assert!(mutator.heap().is_class(inner));
@@ -1016,7 +1024,7 @@ ns_runtime::for_each_lowering! {
         interpreter.enter(|mutator| {
             let heap = mutator.heap();
             let level_of = |root: &Root| {
-                let Value::Object(applied) = mutator.fetch(root) else {
+                let Some(applied) = mutator.fetch(root).as_object() else {
                     panic!("appliedClass answers a class object")
                 };
                 heap.class_superclass(applied)

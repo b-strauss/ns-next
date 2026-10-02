@@ -35,8 +35,8 @@ fn manifest_over(interpreter: &mut Interpreter, name: &str, module: &Root) -> Ro
         let definition = mutator.fetch(module);
         let definitions = mutator.new_array(vec![definition]);
         (
-            mutator.stash(Value::Object(names)),
-            mutator.stash(Value::Object(definitions)),
+            mutator.stash(Value::object(names)),
+            mutator.stash(Value::object(definitions)),
         )
     });
     expect_ok(
@@ -62,12 +62,15 @@ fn a_manifest_answers_a_module_definition_by_its_name() {
         interpreter.send(&manifest, Symbol::intern("Sieve"), &[]),
         "manifest Sieve",
     );
-    interpreter.enter(
-        |mutator| match (mutator.fetch(&answer), mutator.fetch(&module)) {
-            (Value::Object(left), Value::Object(right)) => assert!(left.same(right)),
+    interpreter.enter(|mutator| {
+        match (
+            mutator.fetch(&answer).as_object(),
+            mutator.fetch(&module).as_object(),
+        ) {
+            (Some(left), Some(right)) => assert!(left.same(right)),
             _ => panic!("the manifest answered no class"),
-        },
-    );
+        }
+    });
 }
 
 #[test]

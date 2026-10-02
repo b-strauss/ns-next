@@ -3,7 +3,7 @@
 //! lookup via `Interpreter::send`.
 
 use indoc::{formatdoc, indoc};
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -32,31 +32,40 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 }
 
 fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
-    match value {
-        Value::Object(object) => heap
-            .str_value(*object)
+    match value.kind() {
+        ValueKind::Object(object) => heap
+            .str_value(object)
             .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
-        other => panic!("expected Value::Object, got {}", heap.describe(other)),
+        _ => panic!("expected an object, got {}", heap.describe(value)),
     }
+}
+
+/// A `Float` made inside an entry, since a float is allocated by the
+/// mutator, kept as a root for the host.
+fn stash_float(interpreter: &mut Interpreter, number: f64) -> Root {
+    interpreter.enter(|mutator| {
+        let value = mutator.new_float(number);
+        mutator.stash(value)
+    })
 }
 
 #[test]
 fn integer_addition_via_direct_send_evaluates_correctly() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let three = interpreter.stash(Value::SmallInteger(3));
+    let three = interpreter.stash(Value::small_integer(3));
     let result = interpreter.send(
         &three,
         Symbol::intern("+"),
-        &[interpreter.stash(Value::SmallInteger(4))],
+        &[interpreter.stash(Value::small_integer(4))],
     );
 
     let sum = expect_ok(result, "3 + 4");
-    interpreter.enter(|mutator| match mutator.fetch(&sum) {
-        Value::SmallInteger(7) => {}
-        other => panic!(
-            "expected Value::SmallInteger(7), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&sum).kind() {
+        ValueKind::SmallInteger(7) => {}
+        _ => panic!(
+            "expected the small integer 7, got {}",
+            mutator.heap().describe(&mutator.fetch(&sum))
         ),
     });
 }
@@ -66,12 +75,12 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
 #[test]
 fn integer_addition_overflow_answers_a_large_integer() {
     let mut interpreter = Interpreter::bootstrap();
-    let max = interpreter.stash(Value::SmallInteger(i64::MAX));
+    let max = interpreter.stash(Value::small_integer(i64::MAX));
     let sum = expect_ok(
         interpreter.send(
             &max,
             Symbol::intern("+"),
-            &[interpreter.stash(Value::SmallInteger(1))],
+            &[interpreter.stash(Value::small_integer(1))],
         ),
         "i64::MAX + 1",
     );
@@ -103,11 +112,11 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
         let result = expect_ok(result, body);
-        interpreter.enter(|mutator| match mutator.fetch(&result) {
-            Value::SmallInteger(1) => {}
-            other => panic!(
-                "{body}: expected Value::SmallInteger(1), got {}",
-                mutator.heap().describe(&other)
+        interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+            ValueKind::SmallInteger(1) => {}
+            _ => panic!(
+                "{body}: expected the small integer 1, got {}",
+                mutator.heap().describe(&mutator.fetch(&result))
             ),
         });
     }
@@ -132,11 +141,11 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
         let result = expect_ok(result, body);
-        interpreter.enter(|mutator| match mutator.fetch(&result) {
-            Value::SmallInteger(5) => {}
-            other => panic!(
-                "{body}: expected Value::SmallInteger(5), got {}",
-                mutator.heap().describe(&other)
+        interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+            ValueKind::SmallInteger(5) => {}
+            _ => panic!(
+                "{body}: expected the small integer 5, got {}",
+                mutator.heap().describe(&mutator.fetch(&result))
             ),
         });
     }
@@ -218,26 +227,25 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
 fn integer_arithmetic_widens_a_float_argument() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let one = interpreter.stash(Value::SmallInteger(1));
-    let result = interpreter.send(
-        &one,
-        Symbol::intern("+"),
-        &[interpreter.stash(Value::Float(1.5))],
-    );
+    let one_and_a_half = stash_float(&mut interpreter, 1.5);
+    let one = interpreter.stash(Value::small_integer(1));
+    let result = interpreter.send(&one, Symbol::intern("+"), &[one_and_a_half]);
 
     let answer = expect_ok(result, "1 + 1.5");
-    interpreter.enter(|mutator| match mutator.fetch(&answer) {
-        Value::Float(sum) => assert_eq!(sum, 2.5),
-        other => panic!(
+    interpreter.enter(|mutator| {
+        let sum = mutator.fetch(&answer);
+        assert_eq!(
+            mutator.heap().float_value(sum),
+            Some(2.5),
             "expected the double 2.5, got {}",
-            mutator.heap().describe(&other)
-        ),
+            mutator.heap().describe(&sum)
+        );
     });
 }
 
 /// `type_mismatch`'s message builds off `heap.describe_argument`, but the
-/// other type-mismatch tests here drive a `Value::Nil` into it, which formats
-/// harmlessly either way. A `Value::Object` there would recurse through
+/// other type-mismatch tests here drive `nil` into it, which formats
+/// harmlessly either way. An object there would recurse through
 /// `Object`'s self-referential bootstrap class until the stack gives out if
 /// the message ever `{:?}`-formatted the argument directly, so this drives
 /// one in -- the same shape as
@@ -250,9 +258,9 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
 
     let argument = interpreter.enter(|mutator| {
         let array = mutator.new_array(vec![]);
-        mutator.stash(Value::Object(array))
+        mutator.stash(Value::object(array))
     });
-    let one = interpreter.stash(Value::SmallInteger(1));
+    let one = interpreter.stash(Value::small_integer(1));
 
     let result = interpreter.send(&one, Symbol::intern("+"), &[argument]);
 
@@ -280,20 +288,24 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
 fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let one = interpreter.stash(Value::SmallInteger(1));
-    let result = interpreter.send(&one, Symbol::intern("<"), &[interpreter.stash(Value::Nil)]);
+    let one = interpreter.stash(Value::small_integer(1));
+    let result = interpreter.send(
+        &one,
+        Symbol::intern("<"),
+        &[interpreter.stash(Value::nil())],
+    );
 
     match result {
         Err(HostSignal::Error(error)) => {
             assert_eq!(error.message, "< requires a numeric argument, got nil")
         }
-        Ok(value) => interpreter.enter(|mutator| match mutator.fetch(&value) {
-            Value::Boolean(false) => {
+        Ok(value) => interpreter.enter(|mutator| match mutator.fetch(&value).kind() {
+            ValueKind::Boolean(false) => {
                 panic!("`1 < nil` silently answered false instead of reporting the type mismatch")
             }
-            other => panic!(
+            _ => panic!(
                 "expected a Newspeak error, got Ok({})",
-                mutator.heap().describe(&other)
+                mutator.heap().describe(&mutator.fetch(&value))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -307,11 +319,11 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
 fn a_float_receiver_asks_for_a_numeric_argument() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let receiver = interpreter.stash(Value::Float(1.5));
+    let receiver = stash_float(&mut interpreter, 1.5);
     let result = interpreter.send(
         &receiver,
         Symbol::intern("*"),
-        &[interpreter.stash(Value::Nil)],
+        &[interpreter.stash(Value::nil())],
     );
 
     match result {
@@ -333,19 +345,16 @@ fn a_float_receiver_asks_for_a_numeric_argument() {
 fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let one = interpreter.stash(Value::SmallInteger(1));
-    let result = interpreter.send(
-        &one,
-        Symbol::intern("="),
-        &[interpreter.stash(Value::Float(1.0))],
-    );
+    let one_point_zero = stash_float(&mut interpreter, 1.0);
+    let one = interpreter.stash(Value::small_integer(1));
+    let result = interpreter.send(&one, Symbol::intern("="), &[one_point_zero]);
 
     let result = expect_ok(result, "1 = 1.0");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::Boolean(false) => {}
-        other => panic!(
-            "expected Value::Boolean(false), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::Boolean(false) => {}
+        _ => panic!(
+            "expected false, got {}",
+            mutator.heap().describe(&mutator.fetch(&result))
         ),
     });
 }
@@ -356,23 +365,26 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
 fn float_arithmetic_still_widens_an_integer_argument() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let one_and_a_half = interpreter.stash(Value::Float(1.5));
+    let one_and_a_half = stash_float(&mut interpreter, 1.5);
     let result = interpreter.send(
         &one_and_a_half,
         Symbol::intern("+"),
-        &[interpreter.stash(Value::SmallInteger(1))],
+        &[interpreter.stash(Value::small_integer(1))],
     );
 
     let result = expect_ok(result, "1.5 + 1");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::Float(float) => assert!(
+    interpreter.enter(|mutator| {
+        let result = mutator.fetch(&result);
+        let float = mutator.heap().float_value(result).unwrap_or_else(|| {
+            panic!(
+                "expected the double 2.5, got {}",
+                mutator.heap().describe(&result)
+            )
+        });
+        assert!(
             (float - 2.5).abs() < f64::EPSILON,
             "expected 2.5, got {float}"
-        ),
-        other => panic!(
-            "expected Value::Float(2.5), got {}",
-            mutator.heap().describe(&other)
-        ),
+        );
     });
 }
 
@@ -380,12 +392,12 @@ fn float_arithmetic_still_widens_an_integer_argument() {
 #[test]
 fn integer_multiplication_overflow_answers_a_large_integer() {
     let mut interpreter = Interpreter::bootstrap();
-    let max = interpreter.stash(Value::SmallInteger(i64::MAX));
+    let max = interpreter.stash(Value::small_integer(i64::MAX));
     let product = expect_ok(
         interpreter.send(
             &max,
             Symbol::intern("*"),
-            &[interpreter.stash(Value::SmallInteger(2))],
+            &[interpreter.stash(Value::small_integer(2))],
         ),
         "i64::MAX * 2",
     );
@@ -415,11 +427,11 @@ fn a_radix_integer_literal_evaluates() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "^16r1F");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(31) => {}
-        other => panic!(
-            "expected Value::SmallInteger(31), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::SmallInteger(31) => {}
+        _ => panic!(
+            "expected the small integer 31, got {}",
+            mutator.heap().describe(&mutator.fetch(&result))
         ),
     });
 }

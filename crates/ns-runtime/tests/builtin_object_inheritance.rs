@@ -6,7 +6,9 @@
 //! (`builtins::object_class`), not the interpreter's internal
 //! "no doesNotUnderstand: found" fallback string.
 
-use ns_runtime::{BuiltinClass, Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{
+    BuiltinClass, Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind,
+};
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
@@ -19,11 +21,11 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 }
 
 fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
-    match value {
-        Value::Object(object) => heap
-            .str_value(*object)
+    match value.kind() {
+        ValueKind::Object(object) => heap
+            .str_value(object)
             .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
-        other => panic!("expected Value::Object, got {}", heap.describe(other)),
+        _ => panic!("expected an object, got {}", heap.describe(value)),
     }
 }
 
@@ -34,7 +36,7 @@ fn a_builtin_receiver_inherits_objects_native_class() {
     let mut interpreter = Interpreter::bootstrap();
 
     let result = interpreter.send(
-        &interpreter.stash(Value::SmallInteger(3)),
+        &interpreter.stash(Value::small_integer(3)),
         Symbol::intern("class"),
         &[],
     );
@@ -42,14 +44,14 @@ fn a_builtin_receiver_inherits_objects_native_class() {
     let result = expect_ok(result, "3 class");
     interpreter.enter(|mutator| {
         let expected = mutator.builtin_class(BuiltinClass::Integer);
-        match mutator.fetch(&result) {
-            Value::Object(object) => assert!(
+        match mutator.fetch(&result).kind() {
+            ValueKind::Object(object) => assert!(
                 object.same(expected),
                 "`3 class` must yield the Integer class object"
             ),
-            other => panic!(
-                "expected Value::Object(<Integer class>), got {}",
-                mutator.heap().describe(&other)
+            _ => panic!(
+                "expected the Integer class object, got {}",
+                mutator.heap().describe(&mutator.fetch(&result))
             ),
         }
     });
@@ -61,7 +63,7 @@ fn a_builtin_receiver_inherits_objects_native_class() {
 fn nil_prints_as_nil() {
     let mut interpreter = Interpreter::bootstrap();
     let nil_result = interpreter.send(
-        &interpreter.stash(Value::Nil),
+        &interpreter.stash(Value::nil()),
         Symbol::intern("printString"),
         &[],
     );
@@ -83,7 +85,7 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
 
     let array_class = interpreter.enter(|mutator| {
         let class = mutator.builtin_class(BuiltinClass::Array);
-        mutator.stash(Value::Object(class))
+        mutator.stash(Value::object(class))
     });
     let array = expect_ok(
         interpreter.send(&array_class, Symbol::intern("new"), &[]),
@@ -109,21 +111,24 @@ fn a_builtin_receiver_compares_and_hashes_by_its_value() {
     let mut interpreter = Interpreter::bootstrap();
 
     let same = interpreter.send(
-        &interpreter.stash(Value::SmallInteger(3)),
+        &interpreter.stash(Value::small_integer(3)),
         Symbol::intern("=="),
-        &[interpreter.stash(Value::SmallInteger(3))],
+        &[interpreter.stash(Value::small_integer(3))],
     );
     let same = expect_ok(same, "3 == 3");
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&same), Value::Boolean(true))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&same).as_boolean()),
+        Some(true)
+    );
 
     let hash = interpreter.send(
-        &interpreter.stash(Value::SmallInteger(3)),
+        &interpreter.stash(Value::small_integer(3)),
         Symbol::intern("hash"),
         &[],
     );
     let hash = expect_ok(hash, "3 hash");
     assert!(
-        interpreter.enter(|mutator| matches!(mutator.fetch(&hash), Value::SmallInteger(3))),
+        interpreter.enter(|mutator| mutator.fetch(&hash).as_small_integer() == Some(3)),
         "an Integer hashes by its value, not by Object's identity hash"
     );
 }
@@ -139,7 +144,7 @@ fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
     let mut interpreter = Interpreter::bootstrap();
 
     let result = interpreter.send(
-        &interpreter.stash(Value::SmallInteger(3)),
+        &interpreter.stash(Value::small_integer(3)),
         Symbol::intern("frobnicate"),
         &[],
     );
@@ -167,7 +172,7 @@ fn an_unknown_selector_on_a_string_runs_objects_real_does_not_understand() {
     let mut interpreter = Interpreter::bootstrap();
     let receiver = interpreter.enter(|mutator| {
         let object = mutator.new_string("hi".to_string());
-        mutator.stash(Value::Object(object))
+        mutator.stash(Value::object(object))
     });
 
     let result = interpreter.send(&receiver, Symbol::intern("frobnicate"), &[]);
@@ -195,7 +200,7 @@ fn a_builtins_own_implementation_still_wins_over_objects() {
     // agree on `3 = 3`, so use `printString` -- where the two genuinely
     // differ -- as the discriminating case.
     let printed = interpreter.send(
-        &interpreter.stash(Value::SmallInteger(7)),
+        &interpreter.stash(Value::small_integer(7)),
         Symbol::intern("printString"),
         &[],
     );

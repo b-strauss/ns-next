@@ -6,7 +6,7 @@
 use indoc::indoc;
 use ns_runtime::{
     CachedTarget, CachedTargetKind, CallSiteState, HostResult, HostSignal, Interpreter, Lowering,
-    MethodSide, Root, SourceOrigin, Symbol, Value,
+    MethodSide, Root, SourceOrigin, Symbol, Value, ValueKind,
 };
 
 fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
@@ -59,14 +59,14 @@ fn instantiate(interpreter: &mut Interpreter, class: &Root) -> Root {
 }
 
 fn small_integer(interpreter: &mut Interpreter, root: &Root) -> i64 {
-    interpreter.enter(|mutator| match mutator.fetch(root) {
-        Value::SmallInteger(integer) => integer,
+    interpreter.enter(|mutator| match mutator.fetch(root).kind() {
+        ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a small integer"),
     })
 }
 
 fn integer_argument(interpreter: &Interpreter, integer: i64) -> Root {
-    interpreter.stash(Value::SmallInteger(integer))
+    interpreter.stash(Value::small_integer(integer))
 }
 
 fn states(
@@ -654,7 +654,7 @@ fn a_failing_primitive_keeps_its_entry() {
     let instance = instantiate(&mut interpreter, &class);
     let answer = send(&mut interpreter, &instance, "run", &[]);
     interpreter.enter(|mutator| {
-        assert!(matches!(mutator.fetch(&answer), Value::Boolean(true)));
+        assert_eq!(mutator.fetch(&answer).as_boolean(), Some(true));
     });
     assert_eq!(
         states(&mut interpreter, &class, MethodSide::Instance, "run", "="),
