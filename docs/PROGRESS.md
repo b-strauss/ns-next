@@ -4033,6 +4033,14 @@ measured program reaches.
   program decides passes its 16- or 32-bit field, rather than aborting, and
   a factory of more than 65,535 parameters raises the too-large error from
   its `<:` clause message rather than an arity mismatch.
+- The follow-ups closed (`fca1d70`, `add5e3d`, `2703d26`, `7b61056`,
+  `ef96c14`, and this commit) — every patched target, the visit's first
+  error and the wide form past each table are pinned; an encoded body's
+  tables and sites are private to `bytecode::compact`, read through inlined
+  accessors, with `vm::run` unchanged at 8,525 instructions and 0x3A8;
+  two `CompiledCode`s are equal when they mean the same, a float literal
+  by its bits; loading decodes each body once; and a source of more than
+  `u32::MAX` bytes is refused by `ns_syntax::parse` before it is lexed.
 
 **The gate.** Before anything was built, a throwaway copy ran `vm::run` on
 the eight-byte slots and was measured against `master` by the protocol of
