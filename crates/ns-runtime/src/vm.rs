@@ -187,8 +187,9 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
 /// copied out, so the match runs on a value in registers. Each
 /// instruction's effect is one function over `u16` operands, called by the
 /// narrow arm and by `run_wide` alike. A send arm only gathers a
-/// `PendingSend`; the one path per kind after the match runs it, so each
-/// kind's cache hit path is inlined here once, not once per form.
+/// `PendingSend` and breaks out of its kind's labelled block; the one path
+/// per kind follows that block, so each kind's cache hit path is inlined
+/// here once, not once per form.
 #[inline(always)]
 fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floor: usize) -> Leave {
     let mut activation = frame.activation;
@@ -245,563 +246,99 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 jump_to!($target)
             }};
         }
-        debug_assert!(
-            program_counter < code.instruction_count(),
-            "internal: program counter ran past the end of a CompiledCode with no terminating return"
-        );
-        let transfer = 'decided: {
-            let pending = match code.slot(program_counter) {
-                CompactInstruction::LoadNil { destination } => {
-                    mutator
-                        .heap
-                        .set_register(register_base, u16::from(destination), Value::nil());
-                    next!()
-                }
-                CompactInstruction::LoadTrue { destination } => {
-                    mutator.heap.set_register(
-                        register_base,
-                        u16::from(destination),
-                        Value::boolean(true),
-                    );
-                    next!()
-                }
-                CompactInstruction::LoadFalse { destination } => {
-                    mutator.heap.set_register(
-                        register_base,
-                        u16::from(destination),
-                        Value::boolean(false),
-                    );
-                    next!()
-                }
-                CompactInstruction::LoadSmallInteger { destination, value } => {
-                    mutator.heap.set_register(
-                        register_base,
-                        u16::from(destination),
-                        Value::small_integer(i64::from(value)),
-                    );
-                    next!()
-                }
-                CompactInstruction::LoadConstant {
-                    destination,
-                    constant,
-                } => {
-                    let value = Value::from_immediate(code.body().constants[usize::from(constant)]);
-                    mutator
-                        .heap
-                        .set_register(register_base, u16::from(destination), value);
-                    next!()
-                }
-                CompactInstruction::LoadLiteral {
-                    destination,
-                    literal,
-                } => match load_literal_into(
+
+        // The one send path per kind. Each kind joins its own path, so the
+        // kind is never stored and dispatched on a second time, and no
+        // aggregate shared by all four kinds is built.
+        macro_rules! send_path {
+            ($pending:ident, Public) => {{
+                let site = &code.body().send_sites[$pending.site as usize];
+                let selector = site.selector;
+                let call_site = site.call_site;
+                let family_size = code.family_size;
+                let receiver = mutator.heap.register(register_base, $pending.receiver);
+                send(
                     mutator,
-                    activation,
-                    register_base,
-                    u16::from(destination),
-                    &code.body().literals[usize::from(literal)],
-                ) {
-                    Ok(()) => next!(),
-                    Err(signal) => break 'decided unwind(mutator, signal, floor, &mut handoff),
-                },
-                CompactInstruction::LoadSelf { destination } => {
-                    load_self_into(mutator, activation, register_base, u16::from(destination));
-                    next!()
-                }
-                CompactInstruction::LoadEnclosingObject { destination, depth } => {
-                    load_enclosing_object_into(
-                        mutator,
-                        activation,
-                        register_base,
-                        u16::from(destination),
-                        depth,
-                    );
-                    next!()
-                }
-                CompactInstruction::Move {
-                    destination,
-                    source,
-                }
-                | CompactInstruction::StoreLocal {
-                    source,
-                    slot: destination,
-                } => {
-                    copy_register(
-                        mutator,
-                        register_base,
-                        u16::from(destination),
-                        u16::from(source),
-                    );
-                    next!()
-                }
-                CompactInstruction::LoadOuterLocal {
-                    destination,
-                    index,
-                    depth,
-                } => {
-                    load_outer_local_into(
-                        mutator,
-                        activation,
-                        register_base,
-                        u16::from(destination),
-                        depth,
-                        u16::from(index),
-                    );
-                    next!()
-                }
-                CompactInstruction::StoreOuterLocal {
-                    source,
-                    index,
-                    depth,
-                } => {
-                    store_outer_local_from(
-                        mutator,
-                        activation,
-                        register_base,
-                        u16::from(source),
-                        depth,
-                        u16::from(index),
-                    );
-                    next!()
-                }
-                CompactInstruction::SendPublic0 {
-                    destination,
-                    receiver,
-                    site,
-                } => PendingSend::inline(SendKind::Public, destination, receiver, site, &[]),
-                CompactInstruction::SendPublic1 {
-                    destination,
-                    receiver,
-                    argument,
-                    site,
-                } => {
-                    PendingSend::inline(SendKind::Public, destination, receiver, site, &[argument])
-                }
-                CompactInstruction::SendPublic2 {
-                    destination,
-                    receiver,
-                    arguments,
-                    site,
-                } => PendingSend::inline(SendKind::Public, destination, receiver, site, &arguments),
-                CompactInstruction::SendPublicWide { site } => {
-                    PendingSend::wide(&code, SendKind::Public, site)
-                }
-                // Decided as `SendPublic` is, but uncached: only the
-                // reference lowering emits it. Only the depth count treats a
-                // control-flow step's block activated for it differently
-                // (`Mutator::push_step`).
-                CompactInstruction::SendInlinable0 {
-                    destination,
-                    receiver,
-                    site,
-                } => PendingSend::inline(SendKind::Inlinable, destination, receiver, site, &[]),
-                CompactInstruction::SendInlinable1 {
-                    destination,
-                    receiver,
-                    argument,
-                    site,
-                } => PendingSend::inline(
-                    SendKind::Inlinable,
-                    destination,
-                    receiver,
-                    site,
-                    &[argument],
-                ),
-                CompactInstruction::SendInlinable2 {
-                    destination,
-                    receiver,
-                    arguments,
-                    site,
-                } => PendingSend::inline(
-                    SendKind::Inlinable,
-                    destination,
-                    receiver,
-                    site,
-                    &arguments,
-                ),
-                CompactInstruction::SendInlinableWide { site } => {
-                    PendingSend::wide(&code, SendKind::Inlinable, site)
-                }
-                CompactInstruction::SendLexical0 { destination, site } => {
-                    PendingSend::inline(SendKind::Lexical, destination, 0, site, &[])
-                }
-                CompactInstruction::SendLexical1 {
-                    destination,
-                    argument,
-                    site,
-                } => PendingSend::inline(SendKind::Lexical, destination, 0, site, &[argument]),
-                CompactInstruction::SendLexical2 {
-                    destination,
-                    arguments,
-                    site,
-                } => PendingSend::inline(SendKind::Lexical, destination, 0, site, &arguments),
-                CompactInstruction::SendLexicalWide { site } => {
-                    PendingSend::wide(&code, SendKind::Lexical, site)
-                }
-                CompactInstruction::SendSuper0 { destination, site } => {
-                    PendingSend::inline(SendKind::Super, destination, 0, site, &[])
-                }
-                CompactInstruction::SendSuper1 {
-                    destination,
-                    argument,
-                    site,
-                } => PendingSend::inline(SendKind::Super, destination, 0, site, &[argument]),
-                CompactInstruction::SendSuper2 {
-                    destination,
-                    arguments,
-                    site,
-                } => PendingSend::inline(SendKind::Super, destination, 0, site, &arguments),
-                CompactInstruction::SendSuperWide { site } => {
-                    PendingSend::wide(&code, SendKind::Super, site)
-                }
-                CompactInstruction::SendMirror {
-                    destination,
-                    mirror,
-                    subject,
-                    primitive,
-                    site,
-                } => {
-                    let site = &code.body().mirror_sites[usize::from(site)];
-                    match send_mirror(
-                        mutator,
-                        activation,
-                        register_base,
-                        program_counter,
-                        primitive,
-                        u16::from(mirror),
-                        u16::from(subject),
-                        &site.arguments,
-                        u16::from(destination),
-                        floor,
-                        &mut handoff,
-                    ) {
-                        Some(transfer) => break 'decided transfer,
-                        None => jump_to!(site.failure),
-                    }
-                }
-                CompactInstruction::MakeClosure { destination, block } => {
-                    let block = &code.body().blocks[usize::from(block)];
-                    make_closure_into(
-                        mutator,
-                        activation,
-                        register_base,
-                        program_counter,
-                        feedback_base,
-                        u16::from(destination),
-                        &block.code,
-                        &block.copied,
-                    );
-                    next!()
-                }
-                CompactInstruction::MakeArray {
-                    destination,
-                    elements,
-                } => {
-                    make_array_into(
-                        mutator,
-                        register_base,
-                        u16::from(destination),
-                        &code.body().register_lists[usize::from(elements)],
-                    );
-                    next!()
-                }
-                CompactInstruction::MakeVector { destination, size } => {
-                    make_vector_into(mutator, register_base, u16::from(destination), size);
-                    next!()
-                }
-                CompactInstruction::LoadVector {
-                    destination,
-                    vector,
-                    index,
-                } => match load_vector_into(
-                    mutator,
-                    activation,
-                    register_base,
-                    u16::from(destination),
-                    u16::from(vector),
-                    index,
-                ) {
-                    Ok(()) => next!(),
-                    Err(signal) => break 'decided unwind(mutator, signal, floor, &mut handoff),
-                },
-                CompactInstruction::StoreVector {
-                    vector,
-                    source,
-                    index,
-                } => match store_vector(
-                    &mut mutator.heap,
-                    activation,
-                    u16::from(vector),
-                    index,
-                    u16::from(source),
-                ) {
-                    Ok(()) => next!(),
-                    Err(signal) => break 'decided unwind(mutator, signal, floor, &mut handoff),
-                },
-                CompactInstruction::InitializeSlot { source, own_index } => {
-                    let source = u16::from(source);
-                    match initialize_slot(mutator, activation, register_base, source, own_index) {
-                        Ok(()) => next!(),
-                        // A future can reach a value's slot from outside any
-                        // simultaneous clause's own resolution -- passed in
-                        // as an ordinary argument, since a future is
-                        // indistinguishable from its value (§6.3.2, rule 3).
-                        // What belongs in the slot is what it stands for:
-                        // forced first if it is not resolved yet
-                        // (`value_for_a_value_slot`), then checked again
-                        // with the same accepted path. A refusal that is not
-                        // about a future stands.
-                        Err(signal) => {
-                            break 'decided initialize_slot_refused(
-                                mutator,
-                                activation,
-                                program_counter,
-                                source,
-                                own_index,
-                                signal,
-                                floor,
-                                &mut handoff,
-                            )
-                        }
-                    }
-                }
-                // A lazy slot's getter answers its field once it is filled;
-                // the field's address is `InitializeSlot`'s, and reading it
-                // is a `locals` helper's.
-                CompactInstruction::ReturnSlotIfFilled { own_index } => {
-                    match filled_own_slot(&mutator.heap, activation, own_index) {
-                        Some(value) => {
-                            break 'decided finish(mutator, activation, value, floor, &mut handoff)
-                        }
-                        None => next!(),
-                    }
-                }
-                // §6.3.2's simultaneous slot clauses: one arm and one call,
-                // out of line (`simultaneous_clause_instruction`).
-                slot @ (CompactInstruction::MakeFuture { .. }
-                | CompactInstruction::ResolveFuture { .. }
-                | CompactInstruction::LoadOwnSlot { .. }
-                | CompactInstruction::InitializeSlotProvisionally { .. }) => {
-                    break 'decided simultaneous_clause_instruction(
-                        mutator,
-                        activation,
-                        program_counter,
-                        slot,
-                        floor,
-                        &mut handoff,
-                    )
-                }
-                CompactInstruction::Return { register }
-                | CompactInstruction::ImplicitReturn { register } => {
-                    break 'decided return_from(
-                        mutator,
-                        activation,
-                        register_base,
-                        u16::from(register),
-                        floor,
-                        &mut handoff,
-                    )
-                }
-                CompactInstruction::NonLocalReturn { register } => {
-                    break 'decided non_local_return(
-                        mutator,
-                        activation,
-                        register_base,
-                        program_counter,
-                        u16::from(register),
-                        floor,
-                        &mut handoff,
-                    )
-                }
-                CompactInstruction::Jump { target } => jump_to!(target),
-                CompactInstruction::JumpIfNotBoolean { register, target } => {
-                    if boolean_in(mutator, register_base, u16::from(register)).is_some() {
-                        next!()
-                    }
-                    jump_to!(target)
-                }
-                CompactInstruction::BranchIfFalse { register, target } => {
-                    if boolean_in(mutator, register_base, u16::from(register)) == Some(false) {
-                        jump_to!(target)
-                    }
-                    next!()
-                }
-                CompactInstruction::BranchIfTrue { register, target } => {
-                    if boolean_in(mutator, register_base, u16::from(register)) == Some(true) {
-                        jump_to!(target)
-                    }
-                    next!()
-                }
-                CompactInstruction::IntegerAdd {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(IntegerOperation::Add, destination, left, right, target),
-                CompactInstruction::IntegerSubtract {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(IntegerOperation::Subtract, destination, left, right, target),
-                CompactInstruction::IntegerMultiply {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(IntegerOperation::Multiply, destination, left, right, target),
-                CompactInstruction::IntegerFloorDivide {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(
-                    IntegerOperation::FloorDivide,
-                    destination,
-                    left,
-                    right,
-                    target
-                ),
-                CompactInstruction::IntegerLess {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(IntegerOperation::Less, destination, left, right, target),
-                CompactInstruction::IntegerGreater {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(IntegerOperation::Greater, destination, left, right, target),
-                CompactInstruction::IntegerLessOrEqual {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(
-                    IntegerOperation::LessOrEqual,
-                    destination,
-                    left,
-                    right,
-                    target
-                ),
-                CompactInstruction::IntegerGreaterOrEqual {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(
-                    IntegerOperation::GreaterOrEqual,
-                    destination,
-                    left,
-                    right,
-                    target
-                ),
-                CompactInstruction::IntegerEqual {
-                    destination,
-                    left,
-                    right,
-                    target,
-                } => integer!(IntegerOperation::Equal, destination, left, right, target),
-                CompactInstruction::Wide { index } => match run_wide(
-                    mutator,
-                    &code.body().wide[index as usize],
                     activation,
                     register_base,
                     program_counter,
-                    feedback_base,
+                    $pending.arguments.as_slice(),
+                    $pending.destination,
                     floor,
+                    false,
                     &mut handoff,
-                ) {
-                    WideOutcome::Next => next!(),
-                    WideOutcome::Jump(target) => jump_to!(target),
-                    WideOutcome::Transfer(transfer) => break 'decided transfer,
-                },
-            };
-            // The one send path per kind.
-            let site = &code.body().send_sites[pending.site as usize];
-            let argument_registers: &[u16] = match &pending.arguments {
-                ArgumentRegisters::Inline { count, registers } => &registers[..usize::from(*count)],
-                ArgumentRegisters::Site => &site.wide.as_ref().expect(WIDE_SEND).arguments,
-            };
-            let selector = site.selector;
-            let call_site = site.call_site;
-            let family_size = code.family_size;
-            match pending.kind {
-                SendKind::Public => {
-                    let receiver = mutator.heap.register(register_base, pending.receiver);
-                    send(
-                        mutator,
-                        activation,
-                        register_base,
-                        program_counter,
-                        argument_registers,
-                        pending.destination,
-                        floor,
-                        false,
-                        &mut handoff,
-                        |mutator, arguments| {
-                            send_public(
-                                mutator,
-                                feedback_base,
-                                family_size,
-                                call_site,
-                                receiver,
-                                selector,
-                                arguments,
-                            )
-                        },
-                    )
-                }
-                SendKind::Inlinable => {
-                    let receiver = mutator.heap.register(register_base, pending.receiver);
-                    send(
-                        mutator,
-                        activation,
-                        register_base,
-                        program_counter,
-                        argument_registers,
-                        pending.destination,
-                        floor,
-                        true,
-                        &mut handoff,
-                        |mutator, arguments| mutator.decide_send(receiver, selector, arguments),
-                    )
-                }
-                SendKind::Lexical => {
-                    let depth = site.depth;
-                    send(
-                        mutator,
-                        activation,
-                        register_base,
-                        program_counter,
-                        argument_registers,
-                        pending.destination,
-                        floor,
-                        false,
-                        &mut handoff,
-                        |mutator, arguments| {
-                            send_lexical(
-                                mutator,
-                                activation,
-                                feedback_base,
-                                family_size,
-                                call_site,
-                                depth,
-                                selector,
-                                arguments,
-                            )
-                        },
-                    )
-                }
-                SendKind::Super => send(
+                    |mutator, arguments| {
+                        send_public(
+                            mutator,
+                            feedback_base,
+                            family_size,
+                            call_site,
+                            receiver,
+                            selector,
+                            arguments,
+                        )
+                    },
+                )
+            }};
+            ($pending:ident, Inlinable) => {{
+                let site = &code.body().send_sites[$pending.site as usize];
+                let selector = site.selector;
+                let receiver = mutator.heap.register(register_base, $pending.receiver);
+                send(
                     mutator,
                     activation,
                     register_base,
                     program_counter,
-                    argument_registers,
-                    pending.destination,
+                    $pending.arguments.as_slice(),
+                    $pending.destination,
+                    floor,
+                    true,
+                    &mut handoff,
+                    |mutator, arguments| mutator.decide_send(receiver, selector, arguments),
+                )
+            }};
+            ($pending:ident, Lexical) => {{
+                let site = &code.body().send_sites[$pending.site as usize];
+                let selector = site.selector;
+                let call_site = site.call_site;
+                let depth = site.depth;
+                let family_size = code.family_size;
+                send(
+                    mutator,
+                    activation,
+                    register_base,
+                    program_counter,
+                    $pending.arguments.as_slice(),
+                    $pending.destination,
+                    floor,
+                    false,
+                    &mut handoff,
+                    |mutator, arguments| {
+                        send_lexical(
+                            mutator,
+                            activation,
+                            feedback_base,
+                            family_size,
+                            call_site,
+                            depth,
+                            selector,
+                            arguments,
+                        )
+                    },
+                )
+            }};
+            ($pending:ident, Super) => {{
+                let site = &code.body().send_sites[$pending.site as usize];
+                let selector = site.selector;
+                let call_site = site.call_site;
+                let family_size = code.family_size;
+                send(
+                    mutator,
+                    activation,
+                    register_base,
+                    program_counter,
+                    $pending.arguments.as_slice(),
+                    $pending.destination,
                     floor,
                     false,
                     &mut handoff,
@@ -816,8 +353,634 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                             arguments,
                         )
                     },
-                ),
-            }
+                )
+            }};
+        }
+        debug_assert!(
+            program_counter < code.instruction_count(),
+            "internal: program counter ran past the end of a CompiledCode with no terminating return"
+        );
+        let transfer = 'decided: {
+            let lexical = 'lexical: {
+                let public = 'public: {
+                    let super_send = 'super_send: {
+                        let inlinable = 'inlinable: {
+                            match code.slot(program_counter) {
+                                CompactInstruction::LoadNil { destination } => {
+                                    mutator.heap.set_register(
+                                        register_base,
+                                        u16::from(destination),
+                                        Value::nil(),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadTrue { destination } => {
+                                    mutator.heap.set_register(
+                                        register_base,
+                                        u16::from(destination),
+                                        Value::boolean(true),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadFalse { destination } => {
+                                    mutator.heap.set_register(
+                                        register_base,
+                                        u16::from(destination),
+                                        Value::boolean(false),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadSmallInteger { destination, value } => {
+                                    mutator.heap.set_register(
+                                        register_base,
+                                        u16::from(destination),
+                                        Value::small_integer(i64::from(value)),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadConstant {
+                                    destination,
+                                    constant,
+                                } => {
+                                    let value = Value::from_immediate(
+                                        code.body().constants[usize::from(constant)],
+                                    );
+                                    mutator.heap.set_register(
+                                        register_base,
+                                        u16::from(destination),
+                                        value,
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadLiteral {
+                                    destination,
+                                    literal,
+                                } => match load_literal_into(
+                                    mutator,
+                                    activation,
+                                    register_base,
+                                    u16::from(destination),
+                                    &code.body().literals[usize::from(literal)],
+                                ) {
+                                    Ok(()) => next!(),
+                                    Err(signal) => {
+                                        break 'decided unwind(mutator, signal, floor, &mut handoff)
+                                    }
+                                },
+                                CompactInstruction::LoadSelf { destination } => {
+                                    load_self_into(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        u16::from(destination),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadEnclosingObject { destination, depth } => {
+                                    load_enclosing_object_into(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        u16::from(destination),
+                                        depth,
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::Move {
+                                    destination,
+                                    source,
+                                }
+                                | CompactInstruction::StoreLocal {
+                                    source,
+                                    slot: destination,
+                                } => {
+                                    copy_register(
+                                        mutator,
+                                        register_base,
+                                        u16::from(destination),
+                                        u16::from(source),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadOuterLocal {
+                                    destination,
+                                    index,
+                                    depth,
+                                } => {
+                                    load_outer_local_into(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        u16::from(destination),
+                                        depth,
+                                        u16::from(index),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::StoreOuterLocal {
+                                    source,
+                                    index,
+                                    depth,
+                                } => {
+                                    store_outer_local_from(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        u16::from(source),
+                                        depth,
+                                        u16::from(index),
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::SendPublic0 {
+                                    destination,
+                                    receiver,
+                                    site,
+                                } => {
+                                    break 'public PendingSend::inline(
+                                        destination,
+                                        receiver,
+                                        site,
+                                        &[],
+                                    )
+                                }
+                                CompactInstruction::SendPublic1 {
+                                    destination,
+                                    receiver,
+                                    argument,
+                                    site,
+                                } => {
+                                    break 'public PendingSend::inline(
+                                        destination,
+                                        receiver,
+                                        site,
+                                        &[argument],
+                                    )
+                                }
+                                CompactInstruction::SendPublic2 {
+                                    destination,
+                                    receiver,
+                                    arguments,
+                                    site,
+                                } => {
+                                    break 'public PendingSend::inline(
+                                        destination,
+                                        receiver,
+                                        site,
+                                        &arguments,
+                                    )
+                                }
+                                CompactInstruction::SendPublicWide { site } => {
+                                    break 'public PendingSend::wide(&code, site)
+                                }
+                                // Decided as `SendPublic` is, but uncached: only the
+                                // reference lowering emits it. Only the depth count treats a
+                                // control-flow step's block activated for it differently
+                                // (`Mutator::push_step`).
+                                CompactInstruction::SendInlinable0 {
+                                    destination,
+                                    receiver,
+                                    site,
+                                } => {
+                                    break 'inlinable PendingSend::inline(
+                                        destination,
+                                        receiver,
+                                        site,
+                                        &[],
+                                    )
+                                }
+                                CompactInstruction::SendInlinable1 {
+                                    destination,
+                                    receiver,
+                                    argument,
+                                    site,
+                                } => {
+                                    break 'inlinable PendingSend::inline(
+                                        destination,
+                                        receiver,
+                                        site,
+                                        &[argument],
+                                    )
+                                }
+                                CompactInstruction::SendInlinable2 {
+                                    destination,
+                                    receiver,
+                                    arguments,
+                                    site,
+                                } => {
+                                    break 'inlinable PendingSend::inline(
+                                        destination,
+                                        receiver,
+                                        site,
+                                        &arguments,
+                                    )
+                                }
+                                CompactInstruction::SendInlinableWide { site } => {
+                                    break 'inlinable PendingSend::wide(&code, site)
+                                }
+                                CompactInstruction::SendLexical0 { destination, site } => {
+                                    break 'lexical PendingSend::inline(destination, 0, site, &[])
+                                }
+                                CompactInstruction::SendLexical1 {
+                                    destination,
+                                    argument,
+                                    site,
+                                } => {
+                                    break 'lexical PendingSend::inline(
+                                        destination,
+                                        0,
+                                        site,
+                                        &[argument],
+                                    )
+                                }
+                                CompactInstruction::SendLexical2 {
+                                    destination,
+                                    arguments,
+                                    site,
+                                } => {
+                                    break 'lexical PendingSend::inline(
+                                        destination,
+                                        0,
+                                        site,
+                                        &arguments,
+                                    )
+                                }
+                                CompactInstruction::SendLexicalWide { site } => {
+                                    break 'lexical PendingSend::wide(&code, site)
+                                }
+                                CompactInstruction::SendSuper0 { destination, site } => {
+                                    break 'super_send PendingSend::inline(
+                                        destination,
+                                        0,
+                                        site,
+                                        &[],
+                                    )
+                                }
+                                CompactInstruction::SendSuper1 {
+                                    destination,
+                                    argument,
+                                    site,
+                                } => {
+                                    break 'super_send PendingSend::inline(
+                                        destination,
+                                        0,
+                                        site,
+                                        &[argument],
+                                    )
+                                }
+                                CompactInstruction::SendSuper2 {
+                                    destination,
+                                    arguments,
+                                    site,
+                                } => {
+                                    break 'super_send PendingSend::inline(
+                                        destination,
+                                        0,
+                                        site,
+                                        &arguments,
+                                    )
+                                }
+                                CompactInstruction::SendSuperWide { site } => {
+                                    break 'super_send PendingSend::wide(&code, site)
+                                }
+                                CompactInstruction::SendMirror {
+                                    destination,
+                                    mirror,
+                                    subject,
+                                    primitive,
+                                    site,
+                                } => {
+                                    let site = &code.body().mirror_sites[usize::from(site)];
+                                    match send_mirror(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        program_counter,
+                                        primitive,
+                                        u16::from(mirror),
+                                        u16::from(subject),
+                                        &site.arguments,
+                                        u16::from(destination),
+                                        floor,
+                                        &mut handoff,
+                                    ) {
+                                        Some(transfer) => break 'decided transfer,
+                                        None => jump_to!(site.failure),
+                                    }
+                                }
+                                CompactInstruction::MakeClosure { destination, block } => {
+                                    let block = &code.body().blocks[usize::from(block)];
+                                    make_closure_into(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        program_counter,
+                                        feedback_base,
+                                        u16::from(destination),
+                                        &block.code,
+                                        &block.copied,
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::MakeArray {
+                                    destination,
+                                    elements,
+                                } => {
+                                    make_array_into(
+                                        mutator,
+                                        register_base,
+                                        u16::from(destination),
+                                        &code.body().register_lists[usize::from(elements)],
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::MakeVector { destination, size } => {
+                                    make_vector_into(
+                                        mutator,
+                                        register_base,
+                                        u16::from(destination),
+                                        size,
+                                    );
+                                    next!()
+                                }
+                                CompactInstruction::LoadVector {
+                                    destination,
+                                    vector,
+                                    index,
+                                } => match load_vector_into(
+                                    mutator,
+                                    activation,
+                                    register_base,
+                                    u16::from(destination),
+                                    u16::from(vector),
+                                    index,
+                                ) {
+                                    Ok(()) => next!(),
+                                    Err(signal) => {
+                                        break 'decided unwind(mutator, signal, floor, &mut handoff)
+                                    }
+                                },
+                                CompactInstruction::StoreVector {
+                                    vector,
+                                    source,
+                                    index,
+                                } => match store_vector(
+                                    &mut mutator.heap,
+                                    activation,
+                                    u16::from(vector),
+                                    index,
+                                    u16::from(source),
+                                ) {
+                                    Ok(()) => next!(),
+                                    Err(signal) => {
+                                        break 'decided unwind(mutator, signal, floor, &mut handoff)
+                                    }
+                                },
+                                CompactInstruction::InitializeSlot { source, own_index } => {
+                                    let source = u16::from(source);
+                                    match initialize_slot(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        source,
+                                        own_index,
+                                    ) {
+                                        Ok(()) => next!(),
+                                        // A future can reach a value's slot from outside any
+                                        // simultaneous clause's own resolution -- passed in
+                                        // as an ordinary argument, since a future is
+                                        // indistinguishable from its value (§6.3.2, rule 3).
+                                        // What belongs in the slot is what it stands for:
+                                        // forced first if it is not resolved yet
+                                        // (`value_for_a_value_slot`), then checked again
+                                        // with the same accepted path. A refusal that is not
+                                        // about a future stands.
+                                        Err(signal) => {
+                                            break 'decided initialize_slot_refused(
+                                                mutator,
+                                                activation,
+                                                program_counter,
+                                                source,
+                                                own_index,
+                                                signal,
+                                                floor,
+                                                &mut handoff,
+                                            )
+                                        }
+                                    }
+                                }
+                                // A lazy slot's getter answers its field once it is filled;
+                                // the field's address is `InitializeSlot`'s, and reading it
+                                // is a `locals` helper's.
+                                CompactInstruction::ReturnSlotIfFilled { own_index } => {
+                                    match filled_own_slot(&mutator.heap, activation, own_index) {
+                                        Some(value) => {
+                                            break 'decided finish(
+                                                mutator,
+                                                activation,
+                                                value,
+                                                floor,
+                                                &mut handoff,
+                                            )
+                                        }
+                                        None => next!(),
+                                    }
+                                }
+                                // §6.3.2's simultaneous slot clauses: one arm and one call,
+                                // out of line (`simultaneous_clause_instruction`).
+                                slot @ (CompactInstruction::MakeFuture { .. }
+                                | CompactInstruction::ResolveFuture { .. }
+                                | CompactInstruction::LoadOwnSlot { .. }
+                                | CompactInstruction::InitializeSlotProvisionally {
+                                    ..
+                                }) => {
+                                    break 'decided simultaneous_clause_instruction(
+                                        mutator,
+                                        activation,
+                                        program_counter,
+                                        slot,
+                                        floor,
+                                        &mut handoff,
+                                    )
+                                }
+                                CompactInstruction::Return { register }
+                                | CompactInstruction::ImplicitReturn { register } => {
+                                    break 'decided return_from(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        u16::from(register),
+                                        floor,
+                                        &mut handoff,
+                                    )
+                                }
+                                CompactInstruction::NonLocalReturn { register } => {
+                                    break 'decided non_local_return(
+                                        mutator,
+                                        activation,
+                                        register_base,
+                                        program_counter,
+                                        u16::from(register),
+                                        floor,
+                                        &mut handoff,
+                                    )
+                                }
+                                CompactInstruction::Jump { target } => jump_to!(target),
+                                CompactInstruction::JumpIfNotBoolean { register, target } => {
+                                    if boolean_in(mutator, register_base, u16::from(register))
+                                        .is_some()
+                                    {
+                                        next!()
+                                    }
+                                    jump_to!(target)
+                                }
+                                CompactInstruction::BranchIfFalse { register, target } => {
+                                    if boolean_in(mutator, register_base, u16::from(register))
+                                        == Some(false)
+                                    {
+                                        jump_to!(target)
+                                    }
+                                    next!()
+                                }
+                                CompactInstruction::BranchIfTrue { register, target } => {
+                                    if boolean_in(mutator, register_base, u16::from(register))
+                                        == Some(true)
+                                    {
+                                        jump_to!(target)
+                                    }
+                                    next!()
+                                }
+                                CompactInstruction::IntegerAdd {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::Add,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerSubtract {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::Subtract,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerMultiply {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::Multiply,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerFloorDivide {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::FloorDivide,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerLess {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::Less,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerGreater {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::Greater,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerLessOrEqual {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::LessOrEqual,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerGreaterOrEqual {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::GreaterOrEqual,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::IntegerEqual {
+                                    destination,
+                                    left,
+                                    right,
+                                    target,
+                                } => integer!(
+                                    IntegerOperation::Equal,
+                                    destination,
+                                    left,
+                                    right,
+                                    target
+                                ),
+                                CompactInstruction::Wide { index } => match run_wide(
+                                    mutator,
+                                    &code.body().wide[index as usize],
+                                    activation,
+                                    register_base,
+                                    program_counter,
+                                    feedback_base,
+                                    floor,
+                                    &mut handoff,
+                                ) {
+                                    WideOutcome::Next => next!(),
+                                    WideOutcome::Jump(target) => jump_to!(target),
+                                    WideOutcome::Transfer(transfer) => break 'decided transfer,
+                                },
+                            }
+                        };
+                        break 'decided send_path!(inlinable, Inlinable);
+                    };
+                    break 'decided send_path!(super_send, Super);
+                };
+                break 'decided send_path!(public, Public);
+            };
+            send_path!(lexical, Lexical)
         };
         match transfer {
             Transfer::Next => program_counter += 1,
@@ -859,50 +1022,48 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
 const WIDE_SEND: &str = "internal: a wide send's site holds its registers";
 
 /// A send an arm gathered: what to send and where its value goes. The arms
-/// of one kind differ only in where their argument registers are; the
-/// kind's one path, after the match, runs it, so that each kind's cache hit
-/// path is inlined into `vm::run` once.
-struct PendingSend {
-    kind: SendKind,
+/// of one kind differ only in where their argument registers are; they
+/// break out of the kind's labelled block to its one path, so that each
+/// kind's cache hit path is inlined into `vm::run` once. It carries no kind:
+/// a single join for all four would need one, and compiles to a stack
+/// aggregate and a second jump table on it.
+struct PendingSend<'code> {
     destination: u16,
     /// `SendPublic`'s and `SendInlinable`'s receiver register.
     receiver: u16,
     site: u32,
-    arguments: ArgumentRegisters,
+    arguments: ArgumentRegisters<'code>,
 }
 
+/// A send's argument registers, handed to `send` by value so that an
+/// eight-byte form's never reach memory.
 #[derive(Clone, Copy)]
-enum SendKind {
-    Public,
-    Inlinable,
-    Lexical,
-    Super,
-}
-
-#[derive(Clone, Copy)]
-enum ArgumentRegisters {
+enum ArgumentRegisters<'code> {
     /// Up to two, from the slot.
     Inline { count: u8, registers: [u16; 2] },
     /// From the site's `WideSend`.
-    Site,
+    Listed(&'code [u16]),
 }
 
-impl PendingSend {
+impl<'code> ArgumentRegisters<'code> {
+    #[inline(always)]
+    fn as_slice(&self) -> &[u16] {
+        match self {
+            ArgumentRegisters::Inline { count, registers } => &registers[..usize::from(*count)],
+            ArgumentRegisters::Listed(listed) => listed,
+        }
+    }
+}
+
+impl<'code> PendingSend<'code> {
     /// A send whose registers are all in its slot.
     #[inline(always)]
-    fn inline(
-        kind: SendKind,
-        destination: u8,
-        receiver: u8,
-        site: u16,
-        arguments: &[u8],
-    ) -> PendingSend {
+    fn inline(destination: u8, receiver: u8, site: u16, arguments: &[u8]) -> PendingSend<'code> {
         let mut registers = [0; 2];
         for (register, argument) in registers.iter_mut().zip(arguments) {
             *register = u16::from(*argument);
         }
         PendingSend {
-            kind,
             destination: u16::from(destination),
             receiver: u16::from(receiver),
             site: u32::from(site),
@@ -914,17 +1075,16 @@ impl PendingSend {
     }
 
     /// A send whose registers are in its site's `WideSend`.
-    fn wide(code: &CompiledCode, kind: SendKind, site: u32) -> PendingSend {
+    fn wide(code: &'code CompiledCode, site: u32) -> PendingSend<'code> {
         let wide = code.body().send_sites[site as usize]
             .wide
             .as_ref()
             .expect(WIDE_SEND);
         PendingSend {
-            kind,
             destination: wide.destination,
             receiver: wide.receiver,
             site,
-            arguments: ArgumentRegisters::Site,
+            arguments: ArgumentRegisters::Listed(&wide.arguments),
         }
     }
 }

@@ -6104,10 +6104,12 @@ more, or a register above 255. The two-argument `SendPublic` is
 `{ destination, receiver, arguments: [u8; 2], site: u16 }`, eight bytes.
 `SendMirror` has one form, its arguments and failure target in its
 `MirrorSite`. Every send arm only gathers its receiver, its arguments and
-its site into a pending send and leaves the match; **one send path per
-kind** after the match runs it, so each kind's cache hit path is inlined
-into `vm::run` once, as today, not once per form -- which `dumpbin` checks
-(`vm::run`'s size and stack frame against today's).
+its site into a pending send and leaves the match through its kind's
+labelled block (the pending send carries no kind, so no shared aggregate
+and no second dispatch on it); **one send path per kind** after that block
+runs it, so each kind's cache hit path is inlined into `vm::run` once, as
+today, not once per form -- which `dumpbin` checks (`vm::run`'s size and
+stack frame against today's).
 
 **`IntegerBinary` is one opcode per operation** (2026-10-02) --
 `IntegerAdd`, `IntegerSubtract`, `IntegerMultiply`, `IntegerFloorDivide`,
