@@ -772,6 +772,90 @@ and, for the `bench` figures, what each timed `main:args:` does once per
 application -- instantiating the harness and the benchmark module --
 which they include and whose share was not measured.
 
+### What the eight-byte value moved
+
+Measured on 2026-10-02 on the machine of the baseline above (Windows 11,
+Intel Core Ultra 9 285K): the tree the branch `eight-byte-value` started
+from, `2204e8f` (the same code as `1792df5`), against the branch at
+`16c6022`, in one sitting. Three pinned release builds of each tree, told
+apart by `-C metadata=alpha`, `beta` and `gamma`, each checked to import no
+`VCRUNTIME140.dll` and to print the expected output for every source.
+Three rounds, the six binaries' order rotated by one from round to round; in
+each round every binary ran `bench --iterations 10 -- <Name>` for each of
+the sixteen programs, `bench --iterations 30` for the eight microbenchmark
+sources (the four fixtures under `goldens/tool/bench/` and the four of
+"What spec-conformant lookup moved"), and the harness's `--timed` over all
+sixteen. Each figure below is the median of a tree's nine values (three
+builds times three rounds), with their range.
+
+| Source | Before, ms | Range | After, ms | Range | Change |
+|---|---|---|---|---|---|
+| Bounce | 1.49 | 1.46–2.03 | 1.09 | 1.07–1.11 | **−26.9%** |
+| CD | 4,910 | 4,879–5,024 | 4,234 | 4,192–4,356 | **−13.8%** |
+| DeltaBlue | 899 | 889–974 | 741 | 729–776 | **−17.5%** |
+| DeltaBlueTon80 | 8.30 | 8.13–8.49 | 6.92 | 6.86–7.09 | **−16.7%** |
+| Havlak | 5,293 | 5,162–5,693 | 4,251 | 4,182–4,417 | **−19.7%** |
+| Json | 14.3 | 14.1–14.7 | 10.7 | 10.4–10.9 | **−24.9%** |
+| List | 1.27 | 1.26–1.28 | 0.99 | 0.98–1.00 | **−22.1%** |
+| Mandelbrot | 4,033 | 4,005–4,085 | 3,275 | 3,210–3,360 | **−18.8%** |
+| NBody | 2,659 | 2,644–2,690 | 2,339 | 2,319–2,346 | **−12.0%** |
+| Permute | 2.98 | 2.92–3.10 | 2.42 | 2.38–2.44 | **−18.8%** |
+| Queens | 2.52 | 2.46–2.58 | 2.05 | 2.02–2.07 | **−18.9%** |
+| Richards | 91.6 | 90.4–95.1 | 77.8 | 76.5–80.2 | **−15.1%** |
+| RichardsTon80 | 6.21 | 6.06–6.68 | 4.57 | 4.46–4.71 | **−26.4%** |
+| Sieve | 1.65 | 1.64–1.69 | 1.33 | 1.30–1.39 | **−19.5%** |
+| Storage | 2.00 | 1.97–2.08 | 1.62 | 1.60–1.65 | **−18.9%** |
+| Towers | 4.44 | 4.29–4.54 | 3.76 | 3.63–3.90 | **−15.3%** |
+| `bench_block.ns` | 12.1 | 11.9–12.3 | 10.5 | 10.4–10.6 | **−13.6%** |
+| `bench_loop.ns` | 3.60 | 3.52–3.78 | 2.26 | 2.25–2.37 | **−37.1%** |
+| `bench_megamorphic.ns` | 7.66 | 7.52–9.63 | 5.32 | 5.29–5.53 | **−30.5%** |
+| `bench_send.ns` | 4.94 | 4.81–6.93 | 3.47 | 3.41–3.50 | **−29.8%** |
+| `bench_do.ns` | 4.59 | 4.48–4.79 | 3.93 | 3.84–4.02 | **−14.4%** |
+| `bench_new.ns` | 3.94 | 3.91–4.10 | 3.31 | 3.27–3.33 | **−16.0%** |
+| `bench_new2.ns` | 4.92 | 4.78–5.02 | 4.13 | 4.04–4.25 | **−16.0%** |
+| `bench_newarg.ns` | 6.71 | 6.61–6.88 | 5.92 | 5.80–6.00 | **−11.9%** |
+
+Every source got faster, and on every one the two trees' ranges are
+disjoint: the sixteen programs by 12% (NBody) to 27% (Bounce), the
+microbenchmarks by 12% (`bench_newarg.ns`) to 37% (`bench_loop.ns`). The
+largest gains are on the paths the store-forwarding stall sat on ("Where
+the 3% goes"): `bench_loop.ns`, whose loop is `IntegerBinary` and
+register traffic, and the send-heavy `bench_send.ns` and
+`bench_megamorphic.ns`. The three builds of a tree lie within 4.5% of each
+other on every source (`bench_send.ns` and `bench_loop.ns` before the
+branch the widest), far less than any change. The `--timed` scores agree, for the eleven programs
+whose score is a throughput over many runs (the other five, one run's rate
+to one fraction digit, are read from `bench` above):
+
+| Benchmark | Before, runs/s | After, runs/s | Change |
+|---|---|---|---|
+| Bounce | 696.3 | 955.4 | **+37.2%** |
+| DeltaBlueTon80 | 109.1 | 130.8 | **+19.9%** |
+| Json | 70.0 | 93.7 | **+33.9%** |
+| List | 806.7 | 1014.3 | **+25.7%** |
+| Permute | 329.3 | 407.0 | **+23.6%** |
+| Queens | 403.1 | 488.1 | **+21.1%** |
+| Richards | 11.0 | 13.0 | **+18.2%** |
+| RichardsTon80 | 161.0 | 217.7 | **+35.2%** |
+| Sieve | 615.8 | 760.2 | **+23.4%** |
+| Storage | 506.9 | 621.4 | **+22.6%** |
+| Towers | 226.1 | 270.3 | **+19.5%** |
+
+`vm::run` is one function of 6,978 instructions at `16c6022`, against the
+7,143 last recorded ("What the loop over locals moved"), with no
+`vm::run::closure` and no `run_stretch` of its own (`dumpbin /disasm` of a
+pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`). The
+tagged operations (`Value::small_integer_sum` and its siblings) also exist
+as functions of their own, because `builtins/numbers.rs` passes them to its
+shared arithmetic as function values; `vm::run` calls none of them.
+
+What the measurement does not cover: one machine and one operating system;
+data layout, which `-C metadata` does not vary; for the `bench` figures,
+what each timed `main:args:` does once per application, as for the
+baseline; and which of the branch's changes -- the word itself, the bare
+words in the heap, the tagged arithmetic, passing a value by value -- gave
+how much, since only the two ends were measured.
+
 ### What a send costs, and where it goes
 
 Milestone 4's design rests on a decomposition rather than on the aggregate. The

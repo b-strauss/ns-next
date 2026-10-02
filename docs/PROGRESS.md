@@ -3949,14 +3949,16 @@ beyond 61 bits decoding to a `LargeInteger` ([memory.md](design/memory.md),
   it stores.
 - `269c707` — `SmallInteger` arithmetic works on the tagged words, one test
   for both operands.
-- `16c6022` — a value passes by value, now that it is one word; `vm::run`
-  is 6,985 instructions.
+- `16c6022` — a value passes by value, now that it is one word.
 - This commit — the documentation describes the built state.
 
-**Measured** against the baseline over all sixteen programs, by the
-protocol of [execution.md](design/execution.md), "The Are We Fast Yet
-benchmarks": the figures are in [execution.md](design/execution.md), "What
-the eight-byte value moved".
+**Measured** by the protocol of the baseline over all sixteen programs
+([execution.md](design/execution.md), "The Are We Fast Yet benchmarks"), in
+one sitting against the tree the branch started from: every
+source got faster, the sixteen programs by 12% (NBody) to 27% (Bounce),
+the microbenchmarks by 12% to 37% (`bench_loop.ns`), the two trees' ranges
+disjoint on every one; `vm::run` is 6,978 instructions. The figures are in
+[execution.md](design/execution.md), "What the eight-byte value moved".
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): whether
 `Object>>==` should compare two `LargeInteger`s by state, as it does two
