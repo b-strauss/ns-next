@@ -819,10 +819,6 @@ Small, deliberately left, none affecting an outcome.
   three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
   message for a stray golden directory carries a run of spaces from a lost
   line continuation.
-- The run loop's `match` sits five labelled blocks deep, the price of one
-  send path per kind and of the measured 5% it bought
-  ([execution.md](design/execution.md), "What the compact instruction
-  encoding moved").
 
 ## Goldens and documentation
 
