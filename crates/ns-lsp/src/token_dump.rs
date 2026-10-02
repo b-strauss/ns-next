@@ -4,8 +4,14 @@
 use ns_syntax::TokenKind;
 
 /// `text`'s tokens with UTF-16 offsets, `EndOfInput` left out, and the
-/// number of lexer diagnostics. The caller adds the file name.
-pub fn dump(text: &str) -> serde_json::Value {
+/// number of lexer diagnostics. The caller adds the file name. A source
+/// longer than a span can address is refused with the message of the
+/// diagnostic `ns_syntax::lex` would answer, before it is lexed: its
+/// offsets would wrap. The lexer is run directly rather than through
+/// `lex`, which keeps no tokens of a file with lexer errors, and the
+/// plugin's comparison needs them.
+pub fn dump(text: &str) -> Result<serde_json::Value, String> {
+    check_length(text.len())?;
     let (tokens, diagnostics) = ns_syntax::lexer::Lexer::new(text).run();
     // UTF-16 offsets of every byte offset a token starts or ends at, by one
     // pass over the text rather than one per token.
@@ -33,10 +39,19 @@ pub fn dump(text: &str) -> serde_json::Value {
             })
         })
         .collect();
-    serde_json::json!({
+    Ok(serde_json::json!({
         "tokens": entries,
         "diagnostics": diagnostics.len(),
-    })
+    }))
+}
+
+/// `dump`'s refusal of a source of `length` bytes, apart so that it can be
+/// tested without a source of 4 GiB.
+fn check_length(length: usize) -> Result<(), String> {
+    match ns_syntax::source_too_long(length) {
+        Some(diagnostic) => Err(diagnostic.message),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -45,7 +60,7 @@ mod tests {
 
     #[test]
     fn tokens_are_dumped_with_utf16_offsets() {
-        let dumped = dump("'ä' foo:");
+        let dumped = dump("'ä' foo:").expect("a short source is dumped");
         assert_eq!(
             dumped,
             serde_json::json!({
@@ -60,6 +75,24 @@ mod tests {
 
     #[test]
     fn lexer_diagnostics_are_counted() {
-        assert_eq!(dump("'open")["diagnostics"], 1);
+        assert_eq!(
+            dump("'open").expect("a short source is dumped")["diagnostics"],
+            1
+        );
+    }
+
+    /// The longest source a span addresses is dumped; one byte more is
+    /// refused with `ns_syntax::lex`'s message, before any lexing.
+    #[test]
+    fn a_source_past_four_gibibytes_is_refused() {
+        let longest = u32::MAX as usize;
+        assert_eq!(check_length(longest), Ok(()));
+        assert_eq!(
+            check_length(longest + 1),
+            Err(
+                "source too long: 4294967296 bytes, more than the 4294967295 a source may have"
+                    .to_string()
+            )
+        );
     }
 }

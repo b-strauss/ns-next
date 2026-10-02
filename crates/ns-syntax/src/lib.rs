@@ -57,8 +57,9 @@ pub fn parse(source: &str) -> Result<Module, Vec<Diagnostic>> {
 /// wrap its offsets into spans that point at the wrong text, and every count
 /// later bounded by source -- the image format's instruction and statement
 /// counts among them -- would lose that bound. Checked on the length alone,
-/// before a byte is lexed.
-fn source_too_long(length: usize) -> Option<Diagnostic> {
+/// before a byte is lexed; public for a tool that runs the lexer itself
+/// (`ns-next-lsp dump-tokens`).
+pub fn source_too_long(length: usize) -> Option<Diagnostic> {
     match u32::try_from(length) {
         Ok(_) => None,
         Err(_) => Some(Diagnostic::error(

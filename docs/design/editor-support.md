@@ -111,7 +111,9 @@ Modules:
 - `main.rs` — with no argument it speaks LSP on stdin and stdout; with
   `dump-tokens <files…>` it prints each file's tokens as JSON, for the lexer
   comparison. `dump-tokens` prints UTF-16 offsets, the unit the plugin's
-  documents use.
+  documents use, and refuses a file longer than a span can address
+  (`ns_syntax::source_too_long`) on stderr with a failing exit status, as it
+  does an unreadable one.
 - `server.rs` — the message loop over `lsp-server`, synchronous on one thread.
   Lexing, parsing and resolving one file takes milliseconds, so neither a
   debounce nor a worker pool buys anything. Open documents are keyed by the
