@@ -854,9 +854,12 @@ pub(crate) fn send_lexical<'gc>(
         arguments,
         |mutator| dispatch::kth_lexical_class(&mutator.heap, defining_class, depth),
         |mutator, known_lexical_class| {
-            let lexical_class = known_lexical_class.unwrap_or_else(|| {
-                dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
-            });
+            let lexical_class = match known_lexical_class {
+                LexicalClass::Known(lexical_class) => lexical_class,
+                LexicalClass::NotComputed => {
+                    dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
+                }
+            };
             mutator.resolve_lexical(enclosing, lexical_class, selector)
         },
     )
@@ -1005,6 +1008,18 @@ pub(crate) fn send_super<'gc>(
     )
 }
 
+/// What a miss already knows of a lexical send's N when it falls to the
+/// lookup, so that N is computed once.
+#[derive(Clone, Copy)]
+enum LexicalClass<'gc> {
+    /// Nothing needed N yet -- every `Public` and `Super` send, and a
+    /// `Lexical` one whose guard has no id.
+    NotComputed,
+    /// N as computed: the class `depth` levels out, or `None` where the
+    /// lexical chain does not reach that far.
+    Known(Option<ClassReference<'gc>>),
+}
+
 /// A monomorphic hit, or everything else out of line. `lexical_of` answers
 /// N, for the `Lexical` rule's payload; it is never called here, only handed
 /// to `miss`, so a hit costs nothing for it.
@@ -1016,7 +1031,7 @@ fn cached<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
-    resolve: impl FnOnce(&mut Mutator<'gc>, Option<Option<ClassReference<'gc>>>) -> Resolved<'gc>,
+    resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     if let Some(entry) = mutator.caches.sites.get(index) {
         if entry.guard == key.guard {
@@ -1048,9 +1063,13 @@ fn miss<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
-    resolve: impl FnOnce(&mut Mutator<'gc>, Option<Option<ClassReference<'gc>>>) -> Resolved<'gc>,
+    resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    let mut known_lexical_class = key.private().then_some(key.lexical_class);
+    let mut known_lexical_class = if key.private() {
+        LexicalClass::Known(key.lexical_class)
+    } else {
+        LexicalClass::NotComputed
+    };
     if key.guard != DispatchId::NONE {
         if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
             if let Some((resolved, base)) = materialize(mutator, target, key) {
@@ -1060,7 +1079,7 @@ fn miss<'gc>(
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
             let lexical_class = lexical_of(mutator);
             *lexical = lexical_dispatch_id(&mutator.heap, lexical_class);
-            known_lexical_class = Some(lexical_class);
+            known_lexical_class = LexicalClass::Known(lexical_class);
         }
         let global = mutator
             .caches
