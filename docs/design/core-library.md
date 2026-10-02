@@ -1715,8 +1715,9 @@ an error is the VM's business.
 **The classes**, all under `Object`, none under `Value`:
 
 - `Exception`, with private slots for its signal activation, its handler
-  activation, whether its latest `signal` reached its default action
-  (`reachedDefault`), whether a search for its handler is running
+  activation, whether a `signal` of it has reached its default action
+  (`reachedDefault`, which then stays true, as Squeak's
+  `reachedDefaultHandler` does), whether a search for its handler is running
   (`searching`, false again once a handler or the default action runs) and the
   selector and receiver a VM error arose from (`originSelector`,
   `originReceiver`), and a public `messageText`. Instance side: `signal`,

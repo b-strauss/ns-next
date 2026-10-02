@@ -1,9 +1,10 @@
-(* `reachedDefaultHandler` answers whether the exception's latest `signal`
-   found no handler and ran `defaultAction`. `Quiet`'s default action
-   answers a value instead of ending the run, so the same exception can be
-   signalled again: unhandled first, then handled, when it no longer says
-   it reached the default handler. *)
-class ReachedDefaultHandlerAnswersForTheLatestSignal = Object new (
+(* `reachedDefaultHandler` answers whether a `signal` of the exception has
+   found no handler and run `defaultAction`, and once it has, it stays
+   true: a later `signal` that a handler catches does not clear it, as
+   Squeak's flag of that name, which Newspeak's kernel reads, is never
+   cleared. `Quiet`'s default action answers a value instead of ending the
+   run, so the same exception can be signalled again. *)
+class ReachedDefaultHandlerStaysTrueOnceReached = Object new (
     |
       private Exception ::= nil. |
 ) (
@@ -14,6 +15,8 @@ class ReachedDefaultHandlerAnswersForTheLatestSignal = Object new (
         | transcript = platform transcript. quiet |
         Exception:: platform kernel Exception.
         quiet:: Quiet new.
+        transcript show: quiet reachedDefaultHandler printString; newLine.
+        transcript show: ([quiet signal] on: Quiet do: [:e | e return: 7]) printString; newLine.
         transcript show: quiet reachedDefaultHandler printString; newLine.
         transcript show: quiet signal printString; newLine.
         transcript show: quiet reachedDefaultHandler printString; newLine.
