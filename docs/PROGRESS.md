@@ -3950,7 +3950,24 @@ beyond 61 bits decoding to a `LargeInteger` ([memory.md](design/memory.md),
 - `269c707` — `SmallInteger` arithmetic works on the tagged words, one test
   for both operands.
 - `16c6022` — a value passes by value, now that it is one word.
-- This commit — the documentation describes the built state.
+- `cc314f7`, `ef26fd7` — the documentation describes the built state; a
+  handle's index is private to the `heap` module, `heap.rs` and its
+  submodules.
+- `ba18822` — what the eight-byte value moved, measured on all sixteen
+  programs and the microbenchmarks.
+
+**The final whole-branch review** (on Fable) found nothing Critical and two
+Important findings, closed in one commit with its minors:
+
+- `5ee1b9c` — `Heap::load` and `Heap::store` are `pub(crate)`, since a stored
+  `Word` carries no brand and a public pair would carry a value from one
+  brand to another; `Value::small_integer` refuses an integer outside 61 bits
+  with an `assert!` in every build rather than wrapping it in a release
+  build; `push_activation` extends the register file in one step; a crafted
+  `LITERAL_SMALL_INTEGER` beyond 61 bits is pinned to load as a
+  `LargeInteger`; a release-build test pins `Frame` at 112 bytes and its
+  arena entry at 120; stale comments and figures corrected.
+- This commit — the milestone lists the branch's last commits.
 
 **Measured** by the protocol of the baseline over all sixteen programs
 ([execution.md](design/execution.md), "The Are We Fast Yet benchmarks"), in

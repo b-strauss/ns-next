@@ -728,6 +728,13 @@ Small, deliberately left, none affecting an outcome.
 - `builtins/block.rs`: a native `whileTrue:`/`whileFalse:` loop checks its
   body closure on every iteration.
 - `vm.rs`: `send` and `deliver` carry `#[allow(clippy::too_many_arguments)]`.
+- `heap.rs`: `Heap::allocate_returned_top_level_frame` is public only so
+  that `tests/image.rs`'s sender round trip can build a frame from values;
+  its doc says "a handle from another heap is refused here", which holds for
+  the values it stores, while `sender` and `current_class` rely on the brand.
+- Wrapping: `Interpreter::stash`'s doc has a 102-column line; memory.md's
+  "The brand" and object-model.md's paragraph on stored words are wrapped
+  unevenly (left by the eight-byte value's final review).
 - `image/inspect.rs:460` bounds the tag-named hash count with a minimum record
   of 1 byte where the decoder uses `MIN_TAG_NAMED_HASH_BYTES` (5).
 - `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by
