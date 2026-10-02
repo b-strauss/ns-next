@@ -107,7 +107,7 @@ impl std::fmt::Debug for Word {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Immediate(u64);
 
-/// What an `Immediate` is, for the decoded view of compiled code.
+/// What an `Immediate` holds, for the decoded view of compiled code.
 #[derive(Clone, Copy, Debug)]
 pub enum ImmediateKind {
     Nil,
@@ -117,8 +117,10 @@ pub enum ImmediateKind {
 }
 
 impl Immediate {
+    /// `nil`, as an immediate word.
     pub const NIL: Immediate = Immediate(NIL_WORD);
 
+    /// `true` or `false`, as an immediate word.
     pub const fn boolean(value: bool) -> Immediate {
         Immediate(if value { TRUE_WORD } else { FALSE_WORD })
     }
@@ -134,6 +136,7 @@ impl Immediate {
             .then(|| Immediate(Value::<'static>::small_float(value).word))
     }
 
+    /// What this word holds, for an exhaustive `match`.
     pub fn kind(self) -> ImmediateKind {
         match Value::<'static>::from_immediate(self).kind() {
             ValueKind::Nil => ImmediateKind::Nil,
@@ -451,7 +454,6 @@ mod tests {
 
     #[test]
     fn tagged_arithmetic_answers_what_untagged_arithmetic_answers() {
-        use super::{SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
         let small = Value::<'static>::small_integer;
         let samples = [
             0,
@@ -553,7 +555,7 @@ mod tests {
 
     #[test]
     fn a_small_integer_has_sixty_one_bits() {
-        use super::{fits_small_integer, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+        use super::fits_small_integer;
         assert_eq!(SMALL_INTEGER_MIN, -1_152_921_504_606_846_976);
         assert_eq!(SMALL_INTEGER_MAX, 1_152_921_504_606_846_975);
         assert!(fits_small_integer(SMALL_INTEGER_MIN));
@@ -566,7 +568,6 @@ mod tests {
 
     #[test]
     fn every_kind_survives_the_word() {
-        use super::{SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
         for number in [0, 1, -1, 42, SMALL_INTEGER_MIN, SMALL_INTEGER_MAX] {
             assert_eq!(
                 Value::<'static>::small_integer(number).as_small_integer(),

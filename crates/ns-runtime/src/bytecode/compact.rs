@@ -279,50 +279,133 @@ pub enum CompactInstruction {
 // The point of the encoding: a slot the loop copies into registers whole.
 const _: () = assert!(std::mem::size_of::<CompactInstruction>() == 8);
 
+// The tables below, and every field of the sites they hold, are private
+// to this module: a slot and the entry it names are written together, by
+// `CodeBuilder` alone, and only `for_each_emitted_mut` rewrites an entry
+// afterwards (a call site or a block, never a slot's shape). Code that
+// changed one without the other would leave a slot naming an entry of the
+// wrong shape, which a decoded read answers with a panic. The run loop
+// reads through the `#[inline(always)]` accessors, which compile to the
+// same index as a field access.
+
 /// A send's selector and call site, and for a `SendLexical` its depth;
 /// for a wide form also its registers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SendSite {
-    pub selector: Symbol,
-    pub call_site: CallSite,
+    selector: Symbol,
+    call_site: CallSite,
+    depth: u16,
+    wide: Option<Box<WideSend>>,
+}
+
+impl SendSite {
+    #[inline(always)]
+    pub fn selector(&self) -> Symbol {
+        self.selector
+    }
+
+    #[inline(always)]
+    pub fn call_site(&self) -> CallSite {
+        self.call_site
+    }
+
     /// `SendLexical`'s depth; 0 for every other kind.
-    pub depth: u16,
-    pub wide: Option<Box<WideSend>>,
+    #[inline(always)]
+    pub fn depth(&self) -> u16 {
+        self.depth
+    }
+
+    /// The registers of a send in a wide form; `None` for an eight-byte
+    /// one, whose registers are in its slot.
+    #[inline(always)]
+    pub fn wide(&self) -> Option<&WideSend> {
+        self.wide.as_deref()
+    }
 }
 
 /// The registers of a send that has no eight-byte form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WideSend {
-    pub destination: u16,
-    /// `SendPublic`'s and `SendInlinable`'s receiver; 0 for the others.
-    pub receiver: u16,
-    pub arguments: Box<[u16]>,
+    destination: u16,
+    receiver: u16,
+    arguments: Box<[u16]>,
 }
 
+impl WideSend {
+    #[inline(always)]
+    pub fn destination(&self) -> u16 {
+        self.destination
+    }
+
+    /// `SendPublic`'s and `SendInlinable`'s receiver; 0 for the others.
+    #[inline(always)]
+    pub fn receiver(&self) -> u16 {
+        self.receiver
+    }
+
+    #[inline(always)]
+    pub fn arguments(&self) -> &[u16] {
+        &self.arguments
+    }
+}
+
+/// What a narrow `MakeClosure` creates its closure from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockSite {
-    pub code: Rc<CompiledCode>,
-    pub parameters: Rc<Vec<Symbol>>,
-    pub copied: Box<[u16]>,
+    code: Rc<CompiledCode>,
+    parameters: Rc<Vec<Symbol>>,
+    copied: Box<[u16]>,
 }
 
+impl BlockSite {
+    #[inline(always)]
+    pub fn code(&self) -> &Rc<CompiledCode> {
+        &self.code
+    }
+
+    #[inline(always)]
+    pub fn parameters(&self) -> &Rc<Vec<Symbol>> {
+        &self.parameters
+    }
+
+    /// The registers whose values the closure is handed.
+    #[inline(always)]
+    pub fn copied(&self) -> &[u16] {
+        &self.copied
+    }
+}
+
+/// A narrow `SendMirror`'s argument registers and failure target.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirrorSite {
-    pub arguments: Box<[u16]>,
-    pub failure: u32,
+    arguments: Box<[u16]>,
+    failure: u32,
+}
+
+impl MirrorSite {
+    #[inline(always)]
+    pub fn arguments(&self) -> &[u16] {
+        &self.arguments
+    }
+
+    /// Where the inlined failure block stands.
+    #[inline(always)]
+    pub fn failure(&self) -> u32 {
+        self.failure
+    }
 }
 
 /// A compiled body as it is stored: the slots and their tables.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EncodedBody {
     slots: Box<[CompactInstruction]>,
-    pub(crate) constants: Box<[Immediate]>,
-    pub(crate) literals: Box<[Literal]>,
-    pub(crate) send_sites: Box<[SendSite]>,
-    pub(crate) blocks: Box<[BlockSite]>,
-    pub(crate) mirror_sites: Box<[MirrorSite]>,
-    pub(crate) register_lists: Box<[Box<[u16]>]>,
-    pub(crate) wide: Box<[Instruction]>,
+    constants: Box<[Immediate]>,
+    literals: Box<[Literal]>,
+    send_sites: Box<[SendSite]>,
+    blocks: Box<[BlockSite]>,
+    mirror_sites: Box<[MirrorSite]>,
+    register_lists: Box<[Box<[u16]>]>,
+    wide: Box<[Instruction]>,
 }
 
 /// A send call site or a block, as `EncodedBody::for_each_emitted_mut`
@@ -1162,6 +1245,48 @@ impl EncodedBody {
 
     pub fn slot(&self, index: usize) -> CompactInstruction {
         self.slots[index]
+    }
+
+    /// The word a `LoadConstant` names.
+    #[inline(always)]
+    pub fn constant(&self, index: usize) -> Immediate {
+        self.constants[index]
+    }
+
+    /// The literal a `LoadLiteral` slot names.
+    #[inline(always)]
+    pub fn literal(&self, index: usize) -> &Literal {
+        &self.literals[index]
+    }
+
+    /// The site a send names, in either form.
+    #[inline(always)]
+    pub fn send_site(&self, index: usize) -> &SendSite {
+        &self.send_sites[index]
+    }
+
+    /// The block a narrow `MakeClosure` names.
+    #[inline(always)]
+    pub fn block(&self, index: usize) -> &BlockSite {
+        &self.blocks[index]
+    }
+
+    /// The site a narrow `SendMirror` names.
+    #[inline(always)]
+    pub fn mirror_site(&self, index: usize) -> &MirrorSite {
+        &self.mirror_sites[index]
+    }
+
+    /// The element registers a narrow `MakeArray` names.
+    #[inline(always)]
+    pub fn register_list(&self, index: usize) -> &[u16] {
+        &self.register_lists[index]
+    }
+
+    /// The instruction a `Wide` slot names.
+    #[inline(always)]
+    pub fn wide(&self, index: usize) -> &Instruction {
+        &self.wide[index]
     }
 
     /// The instruction emitted into slot `index`, exactly as it was emitted.

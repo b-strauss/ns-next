@@ -252,9 +252,9 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
         // aggregate shared by all four kinds is built.
         macro_rules! send_path {
             ($pending:ident, Public) => {{
-                let site = &code.body().send_sites[$pending.site as usize];
-                let selector = site.selector;
-                let call_site = site.call_site;
+                let site = code.body().send_site($pending.site as usize);
+                let selector = site.selector();
+                let call_site = site.call_site();
                 let family_size = code.family_size;
                 let receiver = mutator.heap.register(register_base, $pending.receiver);
                 send(
@@ -281,8 +281,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 )
             }};
             ($pending:ident, Inlinable) => {{
-                let site = &code.body().send_sites[$pending.site as usize];
-                let selector = site.selector;
+                let site = code.body().send_site($pending.site as usize);
+                let selector = site.selector();
                 let receiver = mutator.heap.register(register_base, $pending.receiver);
                 send(
                     mutator,
@@ -298,10 +298,10 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 )
             }};
             ($pending:ident, Lexical) => {{
-                let site = &code.body().send_sites[$pending.site as usize];
-                let selector = site.selector;
-                let call_site = site.call_site;
-                let depth = site.depth;
+                let site = code.body().send_site($pending.site as usize);
+                let selector = site.selector();
+                let call_site = site.call_site();
+                let depth = site.depth();
                 let family_size = code.family_size;
                 send(
                     mutator,
@@ -328,9 +328,9 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 )
             }};
             ($pending:ident, Super) => {{
-                let site = &code.body().send_sites[$pending.site as usize];
-                let selector = site.selector;
-                let call_site = site.call_site;
+                let site = code.body().send_site($pending.site as usize);
+                let selector = site.selector();
+                let call_site = site.call_site();
                 let family_size = code.family_size;
                 send(
                     mutator,
@@ -403,7 +403,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     constant,
                                 } => {
                                     let value = Value::from_immediate(
-                                        code.body().constants[usize::from(constant)],
+                                        code.body().constant(usize::from(constant)),
                                     );
                                     mutator.heap.set_register(
                                         register_base,
@@ -420,7 +420,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     activation,
                                     register_base,
                                     u16::from(destination),
-                                    &code.body().literals[usize::from(literal)],
+                                    code.body().literal(usize::from(literal)),
                                 ) {
                                     Ok(()) => next!(),
                                     Err(signal) => {
@@ -650,7 +650,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     primitive,
                                     site,
                                 } => {
-                                    let site = &code.body().mirror_sites[usize::from(site)];
+                                    let site = code.body().mirror_site(usize::from(site));
                                     match send_mirror(
                                         mutator,
                                         activation,
@@ -659,17 +659,17 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         primitive,
                                         u16::from(mirror),
                                         u16::from(subject),
-                                        &site.arguments,
+                                        site.arguments(),
                                         u16::from(destination),
                                         floor,
                                         &mut handoff,
                                     ) {
                                         Some(transfer) => break 'decided transfer,
-                                        None => jump_to!(site.failure),
+                                        None => jump_to!(site.failure()),
                                     }
                                 }
                                 CompactInstruction::MakeClosure { destination, block } => {
-                                    let block = &code.body().blocks[usize::from(block)];
+                                    let block = code.body().block(usize::from(block));
                                     make_closure_into(
                                         mutator,
                                         activation,
@@ -677,8 +677,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         program_counter,
                                         feedback_base,
                                         u16::from(destination),
-                                        &block.code,
-                                        &block.copied,
+                                        block.code(),
+                                        block.copied(),
                                     );
                                     next!()
                                 }
@@ -690,7 +690,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         mutator,
                                         register_base,
                                         u16::from(destination),
-                                        &code.body().register_lists[usize::from(elements)],
+                                        code.body().register_list(usize::from(elements)),
                                     );
                                     next!()
                                 }
@@ -960,7 +960,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                 ),
                                 CompactInstruction::Wide { index } => match run_wide(
                                     mutator,
-                                    &code.body().wide[index as usize],
+                                    code.body().wide(index as usize),
                                     activation,
                                     register_base,
                                     program_counter,
@@ -1075,16 +1075,18 @@ impl<'code> PendingSend<'code> {
     }
 
     /// A send whose registers are in its site's `WideSend`.
+    #[inline(always)]
     fn wide(code: &'code CompiledCode, site: u32) -> PendingSend<'code> {
-        let wide = code.body().send_sites[site as usize]
-            .wide
-            .as_ref()
+        let wide = code
+            .body()
+            .send_site(site as usize)
+            .wide()
             .expect(WIDE_SEND);
         PendingSend {
-            destination: wide.destination,
-            receiver: wide.receiver,
+            destination: wide.destination(),
+            receiver: wide.receiver(),
             site,
-            arguments: ArgumentRegisters::Listed(&wide.arguments),
+            arguments: ArgumentRegisters::Listed(wide.arguments()),
         }
     }
 }
@@ -2121,13 +2123,13 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
         | CompactInstruction::SendInlinableWide { site }
         | CompactInstruction::SendLexicalWide { site }
         | CompactInstruction::SendSuperWide { site } => {
-            code.body().send_sites[site as usize]
-                .wide
-                .as_ref()
+            code.body()
+                .send_site(site as usize)
+                .wide()
                 .expect(WIDE_SEND)
-                .destination
+                .destination()
         }
-        CompactInstruction::Wide { index } => match &code.body().wide[index as usize] {
+        CompactInstruction::Wide { index } => match code.body().wide(index as usize) {
             Instruction::SendMirror { destination, .. } => *destination,
             other => unreachable!(
                 "internal: a caller resumed at an instruction that is not a send: {other:?}"

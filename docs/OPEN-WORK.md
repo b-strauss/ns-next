@@ -825,26 +825,14 @@ Small, deliberately left, none affecting an outcome.
   three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
   message for a stray golden directory carries a run of spaces from a lost
   line continuation.
-- `EncodedBody`'s tables are `pub(crate)` and `SendSite::wide` is public, so
-  crate code other than `CodeBuilder` could mutate a table of an existing
-  body until a slot and its site disagree, which a decoded read answers with
-  a panic; only `CodeBuilder` builds a body today
-  (`bytecode/compact.rs`).
 - `CompiledCode`'s derived `PartialEq` compares encodings, so a body built
   wide by `CodeBuilder::always_wide` differs from the same body built narrow;
   every comparison today is between bodies built in one process under one
   mode (`bytecode.rs`).
-- `PendingSend::wide` lacks the `#[inline(always)]` that `PendingSend::inline`
-  has; it is on the wide path only, which no measured program reaches
-  (`vm.rs`).
 - The run loop's `match` sits five labelled blocks deep, the price of one
   send path per kind and of the measured 5% it bought
   ([execution.md](design/execution.md), "What the compact instruction
   encoding moved").
-- `heap/value.rs`: `Immediate::boolean`, `Immediate::kind` and
-  `Immediate::NIL` have no doc comment, and a test there imports
-  `SMALL_INTEGER_MAX` and `SMALL_INTEGER_MIN` again inside its test module,
-  which already does.
 - Loading decodes each body about six times (`from_builder` and five
   verifiers in `image/decode.rs`); the cost is unmeasured and memory stays
   bounded by the input ([memory.md](design/memory.md), after "The image

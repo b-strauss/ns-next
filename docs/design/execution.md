@@ -6156,7 +6156,15 @@ struct after the tag, so fields are declared narrowest first. The loop copies
 the slot out (`code.slot(program_counter)`), so the match runs on a value in
 registers, with no niche to decode.
 
-**The side tables**, each a boxed slice of the body's `EncodedBody`:
+**The side tables**, each a boxed slice of the body's `EncodedBody`,
+private to `bytecode::compact` with every field of the sites they hold: a
+slot and the entry it names are written together by `CodeBuilder`, and
+only `for_each_emitted_mut` rewrites an entry afterwards (a call site or a
+block), so no other code can leave a slot naming an entry of the wrong
+shape. The loop reads them through `#[inline(always)]` accessors
+(`constant`, `literal`, `send_site`, `block`, `mirror_site`,
+`register_list`, `wide`), which left `vm::run` at the same 8,525
+instructions and 0x3A8-byte frame:
 
 - `constants`, the `Immediate` words `LoadConstant` reads -- a
   `SmallInteger` beyond 32 bits or a `SmallFloat64`, which hold no handle,
@@ -6248,7 +6256,8 @@ mode. Goldens and tests pin the forms no measured program reaches:
 `goldens/runtime/encoding/` a method of three hundred registers and sends
 of three to eight arguments, under both lowerings, and
 `crates/ns-runtime/tests/compact_encoding.rs` bodies past 65,536 constants,
-send sites and allocated literals, which answer under the optimized lowering;
+send sites and allocated literals, whose first entry it checks is narrow
+and whose 65,537th wide, and which answer under the optimized lowering;
 the reference lowering passes its register ceiling first, so there each
 raises the too-large error ([compiler.md](compiler.md), "Compilation cannot
 fail").
