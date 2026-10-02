@@ -726,7 +726,13 @@ Either way the protocol of the `measuring-performance` skill applies, as it
 does to every figure in this section: release builds only, and every binary
 compared, the current tree included, built with the same explicit
 `RUSTFLAGS` that pin function alignment, several builds per tree pooled
-("What removing the re-entries moved" below).
+("What removing the re-entries moved" below). The five programs that take
+seconds per run -- CD, Havlak, Mandelbrot, NBody and DeltaBlue -- are
+timed with `bench --iterations 3`, every other program with
+`--iterations 10` (decided with the user on 2026-10-02): a run of seconds
+varies by far less than the changes measured, and ten of them made a
+comparison of three builds a side take an hour and a half, three bring it
+to about half an hour.
 
 **The baseline**, measured on 2026-10-02 at `1792df5` on one Windows 11
 machine (Intel Core Ultra 9 285K): three pinned release builds of the tree,

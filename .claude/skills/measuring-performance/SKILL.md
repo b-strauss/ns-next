@@ -32,14 +32,19 @@ the re-entries moved", has the full measurement protocol and its history.
 3. **Several builds per tree, pooled.** With the pin in place,
    `bench_block.ns` still measured 16% apart between two builds of the same
    tree, each stable to about 1%. One build per side measures the build.
-4. **Before timing a change to a send's path, check the inlining.**
+4. **Three runs of the slow programs.** Of the Are We Fast Yet programs, CD,
+   Havlak, Mandelbrot, NBody and DeltaBlue take seconds per run: time them
+   with `bench --iterations 3`, every other program with `--iterations 10`
+   (`execution.md`, "The Are We Fast Yet benchmarks"). Ten runs of them
+   made a three-builds-a-side comparison take an hour and a half.
+5. **Before timing a change to a send's path, check the inlining.**
    `run_stretch` (the loop over the frame's locals between two safepoints)
    sits near LLVM's inlining threshold and is forced inline into `vm::run`. On
    a release build with debug information, `dumpbin /disasm` (Visual Studio
    Build Tools; not on `PATH`) must show no `vm::run::closure` and no
    `run_stretch` as a function of its own (`execution.md`, "What the inline
    caches moved", "What the loop over locals moved").
-5. **Report** the per-build numbers, the pooled result and the spread, and
+6. **Report** the per-build numbers, the pooled result and the spread, and
    name what the measurement did not cover before drawing a design
    conclusion from it.
 
