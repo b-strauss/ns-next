@@ -406,8 +406,26 @@ impl Default for CodeBuilder {
 
 impl CodeBuilder {
     /// A builder that takes a wide form only where an instruction has no
-    /// eight-byte one.
+    /// eight-byte one, or for every instruction when the `NS_NEXT_STRESS_WIDE`
+    /// stress mode asks: what the compiler builds, so that the whole suite
+    /// runs the wide forms under that mode.
     pub fn new() -> CodeBuilder {
+        CodeBuilder::with_always_wide(crate::interpreter::safepoint::stress_wide_from_env())
+    }
+
+    /// A builder that takes a wide form only where an instruction has no
+    /// eight-byte one, whatever a stress mode says: what a test of the
+    /// narrow forms builds, so that its assertions hold under every mode.
+    pub fn never_wide_by_stress() -> CodeBuilder {
+        CodeBuilder::with_always_wide(false)
+    }
+
+    /// A builder that encodes every instruction in a wide form.
+    pub fn always_wide() -> CodeBuilder {
+        CodeBuilder::with_always_wide(true)
+    }
+
+    fn with_always_wide(always_wide: bool) -> CodeBuilder {
         CodeBuilder {
             slots: Vec::new(),
             constants: Vec::new(),
@@ -417,22 +435,7 @@ impl CodeBuilder {
             mirror_sites: Vec::new(),
             register_lists: Vec::new(),
             wide: Vec::new(),
-            always_wide: false,
-        }
-    }
-
-    /// A builder that takes a wide form only where an instruction has no
-    /// eight-byte one, whatever a stress mode says: what a test of the
-    /// narrow forms builds, so that its assertions hold under every mode.
-    pub fn never_wide_by_stress() -> CodeBuilder {
-        CodeBuilder::new()
-    }
-
-    /// A builder that encodes every instruction in a wide form.
-    pub fn always_wide() -> CodeBuilder {
-        CodeBuilder {
-            always_wide: true,
-            ..CodeBuilder::new()
+            always_wide,
         }
     }
 

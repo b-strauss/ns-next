@@ -15,7 +15,7 @@ mod metaclass;
 pub(crate) mod mirror;
 pub(crate) mod nested;
 pub(crate) mod resolve;
-mod safepoint;
+pub(crate) mod safepoint;
 pub(crate) mod sends;
 mod slots;
 pub(crate) mod unwind;

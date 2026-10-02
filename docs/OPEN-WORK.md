@@ -688,6 +688,19 @@ where every reified frame will carry its full register file on the wire.
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
   branch.
+- **The reference lowering panics on a body of more than `u16::MAX`
+  values** ("internal: more than u16::MAX registers in one body",
+  `compiler/reference.rs`, `fresh`), where the optimized lowering, which
+  reuses its scratch registers from statement to statement, compiles it: the
+  reference lowering never reuses a register, so a method of about 65,536
+  expressions is past its ceiling. It is reached only by `--lowering
+  reference`, the oracle. It also means no body the reference lowering
+  compiles reaches a table index past sixteen bits -- every constant,
+  allocated literal and send site costs a register first -- so
+  `tests/compact_encoding.rs` runs its bodies past every sixteen-bit table
+  index under the optimized lowering only. Wider registers, or a ceiling the
+  compiler reports as a Newspeak error deferred to execution, would close
+  it. Noted 2026-10-02. [compiler.md](design/compiler.md), "What it emits".
 
 ## Missing tests
 

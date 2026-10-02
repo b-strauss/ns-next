@@ -94,6 +94,18 @@ pub(crate) fn stress_caches_from_env() -> bool {
     std::env::var_os("NS_NEXT_STRESS_CACHES").is_some_and(|value| !value.is_empty() && value != "0")
 }
 
+/// Whether `NS_NEXT_STRESS_WIDE` asks for every instruction in a wide
+/// form: set, and neither empty nor `0`. Debug builds only, like the other
+/// stress modes; read once per process, since every body asks.
+pub(crate) fn stress_wide_from_env() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *REQUESTED.get_or_init(|| {
+            std::env::var_os("NS_NEXT_STRESS_WIDE")
+                .is_some_and(|value| !value.is_empty() && value != "0")
+        })
+}
+
 /// A global-cache size the environment asks for, for the fixture run with
 /// a cache small enough that every insert contends for the same group
 /// (`run_goldens.rs`). Debug builds only.
