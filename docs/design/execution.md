@@ -933,15 +933,11 @@ than the 5,600 the slot dispatch saved. One join per kind, each send arm
 breaking out of its own kind's labelled block, removed it, and turned
 `bench_loop.ns` from 3.5% slower into the 1.9% faster above.
 
-`vm::run` is 8,525 instructions with a stack frame of 0x3A8 bytes at
-`65ad13a`, against 7,000 and 0x358 at `49e1fcc` (`dumpbin /disasm`, a
+`vm::run` is 8,498 instructions with a stack frame of 0x398 bytes at
+`51c4c49`, against 7,000 and 0x358 at `49e1fcc` (`dumpbin /disasm`, a
 pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`), with no
 `vm::run::closure` and no `run_stretch` of its own; `run_wide`, which runs
 every instruction that has no eight-byte form, is a function of its own.
-It is 8,498 instructions and 0x398 bytes at `a098c40`, where a `super`
-send reads its classes only for a cached site and a lexical miss computes
-N once (`interpreter/inline_cache.rs`); the benchmark figures above were
-not taken again for that.
 The loop grew by the arity forms of the sends and the side-table reads, and
 is faster for it.
 
@@ -6167,8 +6163,8 @@ only `for_each_emitted_mut` rewrites an entry afterwards (a call site or a
 block), so no other code can leave a slot naming an entry of the wrong
 shape. The loop reads them through `#[inline(always)]` accessors
 (`constant`, `literal`, `send_site`, `block`, `mirror_site`,
-`register_list`, `wide`), which left `vm::run` at the same 8,525
-instructions and 0x3A8-byte frame:
+`register_list`, `wide`), which left `vm::run`'s size and frame
+unchanged:
 
 - `constants`, the `Immediate` words `LoadConstant` reads -- a
   `SmallInteger` beyond 32 bits or a `SmallFloat64`, which hold no handle,
