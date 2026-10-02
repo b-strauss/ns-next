@@ -141,7 +141,7 @@ impl Instruction { pub(crate) fn set_target(&mut self, target: u32); }
 **Interfaces:**
 - Produces: the numbers the user decides on, and `.temp/compact-gate/vm.patch`, the throwaway loop, which Task 5 may read as a starting point (never apply it blindly: the throwaway encodes beside today's instructions, the real design does not).
 
-The experiment answers one question: does the loop on eight-byte slots run the sixteen programs and the eight microbenchmarks faster than `master`? It is built only as far as that needs. **The controller session runs the measurement itself** (it takes over an hour); a subagent may build the copy (Steps 1-4) and must then stop.
+The experiment answers one question: does the loop on eight-byte slots run the sixteen programs and the eight microbenchmarks faster than `master`? It is built only as far as that needs. **The controller session runs the measurement itself** (about half an hour: ten minutes of builds, twenty of runs); a subagent may build the copy (Steps 1-4) and must then stop.
 
 - [ ] **Step 1: Make the copy.** From the repository root, in Git Bash:
 
@@ -160,7 +160,7 @@ Expected: every golden passes under both lowerings, the same count as on `master
 
 Build a release binary with debug information and check the loop's shape with `dumpbin /disasm` (Visual Studio Build Tools; not on `PATH`): one `ns_runtime::vm::run`, no `vm::run::closure`, no `run_stretch`, and `run_wide` a function of its own. Record `vm::run`'s instruction count and stack frame size beside `master`'s (6,978 instructions at `16c6022`; "What the eight-byte value moved").
 
-- [ ] **Step 5: Measure.** The protocol is "What the eight-byte value moved"'s, with `master` as "before" and the copy as "after": three pinned release builds of each (`-C metadata=alpha`, `beta`, `gamma`), each checked to import no `VCRUNTIME140.dll` and to print the expected output for all sixteen programs and the eight microbenchmark sources (the four under `goldens/tool/bench/` and the four of `execution.md`, "What spec-conformant lookup moved", written out verbatim into `.temp/compact-gate/bench-lookup/`). Use the build commands of `docs/superpowers/plans/2026-10-02-1310-ns-next-eight-byte-value.md`, Task 11, Step 1, with `.temp\compact-gate\tree` in place of the `before` worktree and `master`'s tree as a `git worktree` at `.temp\compact-gate\master`; and its `measure.ps1` (Task 11, Step 2) with `$directory = ".temp\compact-gate"` and `target\bench-lookup` replaced by `.temp\compact-gate\bench-lookup`. Run it as one background command with a two-hour timeout; nothing else runs on the machine meanwhile.
+- [ ] **Step 5: Measure.** The protocol is "What the eight-byte value moved"'s, with `master` as "before" and the copy as "after": three pinned release builds of each (`-C metadata=alpha`, `beta`, `gamma`), each checked to import no `VCRUNTIME140.dll` and to print the expected output for all sixteen programs and the eight microbenchmark sources (the four under `goldens/tool/bench/` and the four of `execution.md`, "What spec-conformant lookup moved", written out verbatim into `.temp/compact-gate/bench-lookup/`). Use the build commands of `docs/superpowers/plans/2026-10-02-1310-ns-next-eight-byte-value.md`, Task 11, Step 1, with `.temp\compact-gate\tree` in place of the `before` worktree and `master`'s tree as a `git worktree` at `.temp\compact-gate\master`; and its `measure.ps1` (Task 11, Step 2) with `$directory = ".temp\compact-gate"` and `target\bench-lookup` replaced by `.temp\compact-gate\bench-lookup`, with one change: the five slow programs run three times, every other ten (`measuring-performance`, "Three runs of the slow programs") -- in the program loop, `$iterations = if ($name -in "CD","Havlak","Mandelbrot","NBody","DeltaBlue") { 3 } else { 10 }` and `bench $project --iterations $iterations -- $name`. Run it as one background command with a one-hour timeout; nothing else runs on the machine meanwhile.
 
 - [ ] **Step 6: Report to the user and stop.** For each source: the pooled median of the nine values per tree, the range, the change in percent, and whether the ranges are disjoint; the `--timed` scores the same way; `vm::run`'s size and frame against `master`'s; what the measurement does not cover. Then **halt the plan**: the user decides whether the slots are built (go on with Task 3), whether the 32-bit stream is measured too (Task 2), or neither. Delete nothing under `.temp/compact-gate/` yet.
 
@@ -1156,10 +1156,10 @@ git commit -m "test: every wide form runs, under NS_NEXT_STRESS_WIDE and in gold
 **Files:**
 - Modify: `docs/design/execution.md` (a new section "What the compact instruction encoding moved", after "What the eight-byte value moved")
 
-**The controller session runs this task itself**, as Task 1's measurement: one background command with a two-hour timeout, nothing else on the machine.
+**The controller session runs this task itself**, as Task 1's measurement: one background command with a one-hour timeout, nothing else on the machine.
 
 - [ ] **Step 1: Build and check** three pinned binaries of each tree exactly as Task 1, Step 5, with `git merge-base master feature/compact-instruction-encoding` as "before" (in a `git worktree` under `.temp\measure\before`) and the branch head as "after"; the same checks.
-- [ ] **Step 2: Measure** with the same `measure.ps1`, `$directory = ".temp\measure"`.
+- [ ] **Step 2: Measure** with Task 1's `measure.ps1` (three runs of the five slow programs), `$directory = ".temp\measure"`.
 - [ ] **Step 3: Write the section**: date, the two commits, the machine, the protocol in one paragraph, a table per source (before, after, change, both ranges), the `--timed` table for the eleven throughput scores, `vm::run`'s instruction count and frame from Task 5, Step 8, against `master`'s, Task 1's gate numbers beside the result, and what the measurement does not cover. A source that got slower is named, with what the measurement shows about why or that it does not show it.
 - [ ] **Step 4: Commit** (Markdown only: no gate)
 
