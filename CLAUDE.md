@@ -8,14 +8,15 @@ Rust 1.98.0, edition 2021, five crates:
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
   checked against the reference lowering in `compiler/reference.rs`), the
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
-  `bytecode/compact.rs`), the VM (`vm.rs`) and the send machinery it calls (`interpreter/`: inline caches in
-  `inline_cache.rs` in front of the lookups in `resolve.rs`, the one unwinder in
-  `unwind.rs`, the VM mirror in `mirror.rs` and its leaves in `builtins/`), the
-  core library (`core-library/Kernel.ns`, `PlatformFactory.ns`,
-  `CollectionsFactory.ns`, booted by `interpreter/kernel.rs` and
-  `interpreter/core_library.rs`), `LargeInteger` arithmetic (`arbitrary_integer/`,
-  adapted from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of
-  32-bit handles, an activation stack reified on demand, a mark-compact
+  `bytecode/compact.rs`), the VM (`vm.rs`) and the send machinery it calls
+  (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
+  in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
+  `mirror.rs` and its leaves in `builtins/`), the core library
+  (`core-library/Kernel.ns`, `PlatformFactory.ns`, `CollectionsFactory.ns`,
+  booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
+  `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
+  from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of 32-bit
+  handles, an activation stack reified on demand, a mark-compact
   collector run only at run-loop safepoints; `heap/value.rs`, a value as one
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
   step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in

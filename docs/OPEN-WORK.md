@@ -757,15 +757,23 @@ where every reified frame will carry its full register file on the wire.
   `two_modules_draw_the_same_identity_hashes_under_run_and_load`'s comment
   claims it pins module order, which a review judged its fixture probably
   cannot tell apart from a load that merely draws no new hash.
-- The compact instruction encoding (noted 2026-10-02 by the branch's task
-  reviews): no test patches the failure target of a narrow `SendMirror`, or
-  the target of a `JumpIfNotBoolean`, `BranchIfFalse` or `BranchIfTrue`,
-  through `CodeBuilder::patch_target`, or checks that
-  `EncodedBody::for_each_emitted_mut` stops at the first `Err`;
-  `tests/compact_encoding.rs` asserts each body's answer and instruction
-  count, not that its last entry took the wide form; and the round-trip
-  tests' `same` compares `Debug` text, which cannot tell two NaN payloads
-  apart (the encoding itself keeps them, a NaN going to `literals`).
+- No test patches the failure target of a narrow `SendMirror`, or the target
+  of a `JumpIfNotBoolean`, `BranchIfFalse` or `BranchIfTrue`, through
+  `CodeBuilder::patch_target`. The lowering patches them on every `ifTrue:`
+  and every kernel mirror send, so only the goldens reach them, indirectly
+  (`bytecode.rs`; [execution.md](design/execution.md), "What the compact
+  instruction encoding moved").
+- No test checks that `EncodedBody::for_each_emitted_mut` stops at the first
+  `Err`, which the image decoder relies on to refuse a body at its first bad
+  block (`bytecode/compact.rs`).
+- `tests/compact_encoding.rs` asserts each body's answer and instruction
+  count, not that the last entry of a table took the wide form, so a body
+  that silently stayed narrow would pass (the unit tests in
+  `bytecode/compact.rs` pin the form for constants, literals, blocks, mirror
+  sites and register lists).
+- The compact encoding's round-trip tests compare through `same`, which
+  compares `Debug` text and cannot tell two NaN payloads apart, although the
+  encoding keeps them (a NaN goes to `literals`).
 
 ## Code quality follow-ups
 
@@ -844,20 +852,33 @@ Small, deliberately left, none affecting an outcome.
   three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
   message for a stray golden directory carries a run of spaces from a lost
   line continuation.
-- The compact instruction encoding (noted 2026-10-02 by the branch's task
-  reviews): `EncodedBody`'s tables are `pub(crate)` and `SendSite::wide` is
-  public, so crate code other than `CodeBuilder` could build a body whose
-  slot and site disagree, which a decoded read answers with a panic; only
-  `CodeBuilder` builds one today. `CompiledCode`'s derived `PartialEq`
-  compares encodings, so a body built wide by `CodeBuilder::always_wide`
-  differs from the same body built narrow. `PendingSend::wide` lacks the
-  `#[inline(always)]` `PendingSend::inline` has. The run loop's `match` sits
-  five labelled blocks deep, the price of one send path per kind.
-  `tests/image.rs` says the VM fetches `code.instruction(program_counter)`,
-  where it reads `code.slot(program_counter)`. `heap/value.rs`:
-  `Immediate::boolean`, `Immediate::kind` and `Immediate::NIL` have no doc
-  comment, and a test there imports `SMALL_INTEGER_MAX` and
-  `SMALL_INTEGER_MIN` again inside its test module, which already does.
+- `EncodedBody`'s tables are `pub(crate)` and `SendSite::wide` is public, so
+  crate code other than `CodeBuilder` could mutate a table of an existing
+  body until a slot and its site disagree, which a decoded read answers with
+  a panic; only `CodeBuilder` builds a body today
+  (`bytecode/compact.rs`).
+- `CompiledCode`'s derived `PartialEq` compares encodings, so a body built
+  wide by `CodeBuilder::always_wide` differs from the same body built narrow;
+  every comparison today is between bodies built in one process under one
+  mode (`bytecode.rs`).
+- `PendingSend::wide` lacks the `#[inline(always)]` that `PendingSend::inline`
+  has; it is on the wide path only, which no measured program reaches
+  (`vm.rs`).
+- The run loop's `match` sits five labelled blocks deep, the price of one
+  send path per kind and of the measured 5% it bought
+  ([execution.md](design/execution.md), "What the compact instruction
+  encoding moved").
+- `tests/image.rs` says the VM fetches `code.instruction(program_counter)`,
+  where it reads `code.slot(program_counter)` (`tests/image.rs`).
+- `heap/value.rs`: `Immediate::boolean`, `Immediate::kind` and
+  `Immediate::NIL` have no doc comment, and a test there imports
+  `SMALL_INTEGER_MAX` and `SMALL_INTEGER_MIN` again inside its test module,
+  which already does.
+- Loading decodes each body about six times (`from_builder` and five
+  verifiers in `image/decode.rs`); the cost is unmeasured and memory stays
+  bounded by the input ([memory.md](design/memory.md), after "The image
+  decoder never collects"). Decoding once in `image::load` and passing the
+  `Vec<Instruction>` to the verifiers would settle it.
 
 ## Goldens and documentation
 

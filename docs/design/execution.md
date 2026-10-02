@@ -6188,8 +6188,10 @@ the image decoder alike, so the wire format is unchanged.
 more, or a register above 255. The two-argument `SendPublic` is
 `{ destination, receiver, arguments: [u8; 2], site: u16 }`, eight bytes, and
 an eight-byte form's argument registers reach `send` by value, from the
-slot, with no allocation to chase. `SendMirror` has one form, its arguments
-and failure target in its `MirrorSite`. Every send arm only gathers its
+slot, with no allocation to chase. `SendMirror` has one eight-byte form, its arguments
+and failure target in its `MirrorSite`; like every other instruction it takes
+`Wide` when its operands do not fit (a register above 255, or the mirror-site
+table full). Every send arm only gathers its
 receiver, its arguments and its site into a `PendingSend` and leaves the
 match through its kind's labelled block; **one send path per kind** follows
 that block, so each kind's cache hit path is inlined into `vm::run` once,
@@ -6207,7 +6209,8 @@ right, target: u32 }`, as Cog's `bytecodePrimAdd` and Strongtalk's
 `smi_add` are opcodes of their own: no second dispatch on the operation.
 
 **`Wide { index: u32 }`** is every other instruction that does not fit: a
-register above 255, a table index beyond 16 bits, a depth beyond 16 bits.
+register above 255, or a table index beyond 16 bits (a depth is a `u16` in
+both forms, so it never decides).
 Its `Instruction` sits in `wide`, and the loop runs it in one out-of-line
 function, `run_wide`, that answers how to go on -- the next instruction, a
 jump, or a transfer to another frame or out of the run. Each instruction's

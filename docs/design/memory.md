@@ -1244,6 +1244,18 @@ therefore stands unchanged: a rejected image's placeholders are reachable until
 validation finishes, so they are live, and the amplification figures stay
 valid.
 
+A second transient, not in those figures and not measured: a compiled body is
+stored as eight-byte instructions, and `CompiledCode::from_builder` holds the
+builder and a full decoded `Vec<Instruction>` (48 bytes an instruction, literal
+clones included) at once. At load the decoder reads each body back through that
+view five more times (`verify_body`, `block_nesting`, `lexical_parents`,
+`verify_outer_locals` and the call-site numbering), about six full decodes of
+each body. The memory stays bounded by the input, since every instruction
+consumed at least one wire byte and each copy is dropped before the next; what
+is unknown is the load-time constant factor. Decoding each body once in
+`image::load` and handing the `Vec<Instruction>` to the verifiers would remove
+it.
+
 In a release build this gives the safepoint's slow path its first real work.
 
 ### Weak references
