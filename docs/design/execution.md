@@ -5946,25 +5946,203 @@ variant's numbers above.
 
 ## Planned: the compact instruction encoding
 
-Would change: `Instruction`, today a Rust enum the run loop matches on, gets an
-encoding designed for dispatch. Not designed yet. It comes after the eight-byte
-value, which is built ([object-model.md](object-model.md), "Values and
-objects"), and before the object space ([memory.md](memory.md), "Planned: the
-object space"), so that it is designed against the value representation the loop
-actually moves -- one tagged word -- and the interpreter stays the first tier in
-front of the JIT, as Cog's does. Its inputs are the dispatch findings of "Where
-the 3% goes" above: every dispatch decodes `Instruction`'s discriminant through
-a niche before its jump, and `vm::run` is large enough that `program_counter`
-and the code pointer are spilled to its stack frame. The design starts from how
-Primordial Soup, Strongtalk and Cog encode their instructions; SOMns, an AST
-interpreter on Truffle, has no instruction encoding to compare. One more input:
-an integer literal beyond the immediate range keeps its digits in Rust-side
-literal data (`Literal::LargeInteger`) and `LoadLiteral` allocates its
-`LargeInteger` when it runs, which is every literal beyond 61 bits, and a float
-literal outside the `SmallFloat64` range allocates its boxed `Float` the same
-way ([object-model.md](object-model.md), "Values and objects", "Literals"). Wire
-tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag, and a
-removed one retires its number.
+**Status: designed with the user on 2026-10-02, not built.** Would change:
+`CompiledCode` stores its body as fixed eight-byte instructions, a
+`#[repr(u8)]` enum with no heap field, and keeps everything that does not fit
+eight bytes in side tables beside them; the run loop matches on that enum.
+`Instruction`, today's enum of 48 bytes, stays the compiler's and every
+tool's vocabulary, but nothing stores it any more: a body is encoded as it is
+emitted and read back through a decoded view. It comes after the eight-byte
+value ([object-model.md](object-model.md), "Values and objects"), and before
+the object space ([memory.md](memory.md), "Planned: the object space"), so
+that it is designed against the value the loop actually moves -- one tagged
+word -- and the interpreter stays the first tier in front of the JIT, as
+Cog's does.
+
+### What it starts from
+
+**The dispatch findings** of "Where the 3% goes" above: every dispatch
+decodes `Instruction`'s discriminant through a niche (`xor`, `cmovns`) before
+its jump, because the enum's payloads -- a `Literal` of 32 bytes holding a
+`String` or a boxed digit array, a `Vec<u16>` of argument registers, an
+`Rc<CompiledCode>` -- give it one; and `vm::run` is large enough that
+`program_counter` and the code pointer are spilled to its stack frame. A
+send's argument registers are a separate heap allocation the loop chases on
+every send, and `LoadLiteral` matches on the literal's kind every time it
+runs, a constant included.
+
+**What the code holds**, counted on 2026-10-02 over the sixteen benchmark
+programs and the harness under `benchmarks/are-we-fast-yet/`,
+`PlatformFactory.ns` and `CollectionsFactory.ns` under the optimized
+lowering (`Kernel.ns` left out, since only `resolve_kernel` compiles it):
+1,642 bodies, 23,635 instructions; the highest register index is 45, so
+every register operand fits a byte; every jump lies within 127 instructions
+of its target; of 7,400 sends, 3,366 take no argument, 3,523 one, 401 two
+and 110 three to seven; the highest call-site number is 596; of 2,214
+`LoadLiteral`s, 1,884 load `nil`, a Boolean, a `SmallInteger` or a `Float`,
+and 766 of the 782 integers fit 16 bits. `SendPublic` is 20.7% of the
+instructions, `Jump` 11.6%, `SendLexical` 10.6%, `Move` 9.5%, `LoadLiteral`
+9.4%, `IntegerBinary` 5.3%. A static count says what exists, not what runs
+or what a later program will need; it decides sizes, never whether a form
+exists.
+
+**The prior art.** All three are stack machines with a variable-length byte
+code:
+
+- **Primordial Soup** folds a small index and the arity into the opcode
+  (`push local 0-7`, sends of literal 0-7 with 0 or 1 argument), has
+  dedicated wide opcodes rather than extension prefixes, pushes -1 to 2,
+  `nil`, `true` and `false` with one-byte opcodes and any 16-bit integer as
+  an immediate, and keeps selectors and every other literal in the method's
+  literal array (`prior-art/primordialsoup/vm/interpreter.cc:1062-1577`;
+  `vm/object.h:818-826`). Its loop is a plain `switch`, with `ip`, `sp` and
+  `fp` as fields of the interpreter (`interpreter.cc:1055-1062`,
+  `interpreter.h:206-208`).
+- **Strongtalk** aligns 32-bit words inside the byte stream so that the
+  generated assembly interpreter reads them in one load, and keeps each
+  send's inline cache in those words, rewriting the opcode as the site goes
+  monomorphic, polymorphic or megamorphic
+  (`prior-art/strongtalk/vm/interpreter/bytecodes.hpp:60-81`,
+  `interpretedIC.cpp:406-516`). Its interpreter is threaded through a
+  dispatch table, the top of stack cached in a register
+  (`interpreter.cpp:686-734`).
+- **Cog** builds operands of any width from the Sista extension prefixes
+  `extA` and `extB`, keeps the bytecode in the same heap object as the
+  literal frame, dispatches by computed goto, and its baseline JIT walks the
+  bytecode through a descriptor table and maps a machine-code pc back to a
+  bytecode pc through a byte map
+  (`prior-art/opensmalltalk-vm/src/spur64.sista/gcc3x-cointerp.c:10856-10878`,
+  `cogitX64SysV.c:396-413`, `:8090-8160`).
+
+What their density answers is not ns-next's question: their code lives in
+the heap and the snapshot -- Primordial Soup even swaps every saved `ip` for
+an index around a collection (`interpreter.cc:1875-1906`) -- while ns-next's
+code lives outside the heap and the image carries it in a wire format of its
+own ([image-format.md](image-format.md)). Their stack form is Smalltalk-80's
+inheritance, and a JIT recovers registers from it with a simulated stack
+(Cog's `ssPush`), which ns-next's compiler has already assigned. Strongtalk's
+caches in the stream contradict "a cache records what the lookup decided; it
+never decides" and the code one mixin shares with every application of it.
+Computed goto and threading have no stable Rust form: `become`, which a
+tail-call-threaded loop needs, is experimental in Rust 1.98.0 (checked on
+2026-10-02; [OPEN-WORK.md](../OPEN-WORK.md) holds the experiment that would
+size its gain). What carries over is what all three share: constants with
+their own opcodes, an integer immediate, sends specialized by arity, and
+everything rare or wide kept out of the common form.
+
+**The forms compared** on the same 23,635 instructions: today's 48-byte
+enum, 1.13 MB plus a heap allocation per argument list; a fixed 16-byte
+slot with `u16` operands, 378 KB; a fixed eight-byte slot with byte
+operands, 189 KB plus small tables; a stream of 32-bit units, as Lua's and
+Dalvik's register machines encode, about 133 KB; a register byte stream,
+about 95 KB. The eight-byte slot was chosen (2026-10-02): a sixth of today's
+size and about 1.4 times the 32-bit stream's, and it keeps the program
+counter an instruction index, so that jump targets, the statement map, a
+frame's `program_counter` in an image, the wire format and a later JIT's
+pc map stay exactly what they are, and the compiler, not a hand-written
+decoder, checks every form. A variable-length stream would make the
+program counter an offset everywhere it is stored, and an encoding error in
+a decoder both lowerings share would not show as a difference between them:
+the reference lowering is no oracle for the encoding. A stack form was not
+considered further: it would undo the register assignment, the closure
+conversion and the value-register invariant the compiler is built on.
+
+### The encoding
+
+**One instruction is one eight-byte slot**, `CompactInstruction`, a `Copy`
+enum `#[repr(u8)]` whose every field is an integer: a register is a `u8`, a
+jump target an absolute `u32` instruction index, and anything else a `u16`
+or `u32` index into a side table of the body. A `const` assertion pins the
+size at eight bytes. `#[repr(u8)]` lays every variant out as a `repr(C)`
+struct after the tag, so fields are declared narrowest first. The loop copies
+the slot out (`code.slot(program_counter)`), so the match runs on a value in
+registers, with no niche to decode.
+
+**The side tables**, each a boxed slice on the `CompiledCode`:
+
+- `constants`, the `Immediate` words `LoadConstant` reads -- a
+  `SmallInteger` beyond 32 bits or a `SmallFloat64`, which hold no handle,
+  so the code stays heap-independent and needs no `Trace`;
+- `literals`, the `Literal`s `LoadLiteral` allocates afresh each time it
+  runs: a `String`, a `Symbol`, a `LargeInteger`, a `Float` outside the
+  `SmallFloat64` range, and the deferred `UnresolvedIdentifier`;
+- `send_sites`, one `SendSite` per send: its selector, its `CallSite`, the
+  lexical depth for a `SendLexical`, and, for a wide send, its destination,
+  receiver and argument registers;
+- `blocks`, one per `MakeClosure`: the block's `Rc<CompiledCode>`, its
+  parameters and its copied registers;
+- `mirror_sites`, one per `SendMirror`: its argument registers and its
+  failure target;
+- `register_lists`, the element registers of a `MakeArray`;
+- `wide`, the full `Instruction` of every instruction that has no
+  eight-byte form here.
+
+**Constants** (2026-10-02): `LoadNil`, `LoadTrue` and `LoadFalse` take only
+a destination; `LoadSmallInteger` carries an `i32` in the slot, which
+covers every integer literal counted above but 16, without a table read;
+`LoadConstant` reads the `constants` table; `LoadLiteral` reads `literals`
+and allocates. The compiler and the decoder both choose by the literal, so
+the wire format is unchanged.
+
+**Sends** (2026-10-02): `SendPublic`, `SendLexical`, `SendSuper` and
+`SendInlinable` each come in four forms, for no argument, one, two, and a
+`Wide` form that reads everything from its `SendSite` -- three arguments or
+more, or a register above 255. The two-argument `SendPublic` is
+`{ destination, receiver, arguments: [u8; 2], site: u16 }`, eight bytes.
+`SendMirror` has one form, its arguments and failure target in its
+`MirrorSite`. Every send arm only gathers its receiver, its arguments and
+its site into a pending send and leaves the match; **one send path per
+kind** after the match runs it, so each kind's cache hit path is inlined
+into `vm::run` once, as today, not once per form -- which `dumpbin` checks
+(`vm::run`'s size and stack frame against today's).
+
+**`IntegerBinary` is one opcode per operation** (2026-10-02) --
+`IntegerAdd`, `IntegerSubtract`, `IntegerMultiply`, `IntegerFloorDivide`,
+`IntegerLess`, `IntegerGreater`, `IntegerLessOrEqual`,
+`IntegerGreaterOrEqual`, `IntegerEqual` -- each `{ destination, left,
+right, target: u32 }`, as Cog's `bytecodePrimAdd` and Strongtalk's
+`smi_add` are opcodes of their own: no second dispatch on the operation.
+
+**`Wide { index: u32 }`** is every other instruction that does not fit: a
+register above 255, a table index beyond 16 bits, a depth beyond 16 bits.
+Its `Instruction` sits in `wide`, and the loop runs it in one out-of-line
+function that answers how to go on -- the next instruction, a jump, a
+pending send for the shared path, or a transfer. That a body with more than
+255 registers runs slower is a cost, not a semantic difference; every form
+runs.
+
+**One stored form** (2026-10-02). The compiler, both lowerings, and the
+image decoder emit `Instruction` values into a `CodeBuilder`, which encodes
+each at once and patches jump targets in place; `CompiledCode` stores only
+the slots and their tables. `CompiledCode::instruction(index)` and
+`instructions()` decode the view back -- for `disasm`, the image encoder,
+the decoder's verification, `outer_reach_of`, `family_size_of` and the
+tests -- and the round trip is exact. The decoder numbers a family's call
+sites in the `send_sites` and the `wide` table, in emission order, as it
+does today.
+
+**The wide forms run under a stress mode** (2026-10-02):
+`NS_NEXT_STRESS_WIDE=1`, debug builds only like the other three, makes the
+builder encode every instruction in a wide form, so that the whole golden
+suite runs through the `Wide` arm and the four wide send forms. It joins
+the end-of-batch gates. Goldens pin the forms no program measured above
+reaches: a method of more than 255 registers, sends of three to eight
+arguments under both lowerings, and tests that build a body with more than
+65,536 constants and send sites.
+
+### How it is built: measured first
+
+Like the decision sink ("A send's value delivered where it is decided"
+above), the encoding is measured before it is built (2026-10-02). A
+throwaway copy encodes every body beside today's instructions, runs
+`vm::run` on the eight-byte slots, and is measured against `master` by the
+protocol of "What the eight-byte value moved". The user decides on its
+numbers. If the slots are not faster, a second experiment measures the
+32-bit stream the same way before anything is built, and the user decides
+again. Built, it lands in stages that are each green: the `Immediate`
+word, the encoding and its round trip, `CompiledCode` storing only the
+encoding with the loop reading the decoded view, the loop on the slots, the
+wide goldens and the stress mode, the measurement.
 
 ## Planned: tail calls, skipped but kept
 

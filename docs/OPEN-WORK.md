@@ -14,10 +14,11 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 ## Next
 
 **The compact instruction encoding** ("After road step 2, the compact
-instruction encoding" below), designed against the one-word value and
-measured against the Are We Fast Yet benchmarks as
-[execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
-describes.
+instruction encoding" below), designed on 2026-10-02 and planned in
+[its plan](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md):
+fixed eight-byte instructions, measured against `master` before they are
+built ([execution.md](design/execution.md), "Planned: the compact
+instruction encoding").
 
 ## The road to a high-performance VM
 
@@ -68,7 +69,9 @@ and `prior-art/newspeak-benchmarks`.
   number a `LargeInteger` or a boxed `Float`.
   [object-model.md](design/object-model.md), "Values and objects".
 - **After road step 2, the compact instruction encoding**, designed against the
-  one-word value, from the dispatch findings of "Where the 3% goes".
+  one-word value, from the dispatch findings of "Where the 3% goes": one
+  eight-byte slot per instruction, side tables for the rest, measured before
+  it is built (designed with the user on 2026-10-02).
   [execution.md](design/execution.md), "Planned: the compact instruction
   encoding".
 - **Step 3, the object space.** One header word (the application id as the
@@ -127,6 +130,25 @@ to be decided against the code:
 
 ## Planned: performance and representation
 
+- **A threaded run loop through `become`, measured.** A loop whose every
+  instruction is a function ending in `become` (Rust's explicit tail call)
+  would keep `program_counter`, the code and the register base in machine
+  registers across instructions and give every instruction its own indirect
+  jump -- the threaded dispatch Strongtalk's and Cog's interpreters have.
+  `become` is experimental in Rust 1.98.0 (checked 2026-10-02), so the
+  question is first how much it would gain: an experiment on a throwaway
+  copy, on nightly, switching only the dispatch of the eight-byte encoding's
+  loop to `become` and measuring it against the `match` loop. Whether the
+  project then moves to nightly is a decision of its own, taken on those
+  numbers (decided with the user on 2026-10-02 to note it, not to plan it).
+  [execution.md](design/execution.md), "Planned: the compact instruction
+  encoding".
+- **`IntegerBinary` with an immediate operand.** `i + 1` loads the `1` into
+  a register before the inlined operation reads it, one more dispatch on
+  every iteration of a counting loop; a form that carries a small integer
+  operand in the slot would drop it. A compiler change after the compact
+  instruction encoding (noted with the user on 2026-10-02).
+  [compiler.md](design/compiler.md), "Arithmetic inlining".
 - **`IntegerBinary` without its `Jump`.** A successful inlined integer
   operation executes an unconditional `Jump` past its fallback send
   (`compiler/lower.rs:1747`), two dispatches on the hot path. Invert the

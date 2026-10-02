@@ -22,14 +22,13 @@ object space. Road step 2 is built: a value is one tagged word, Spur's, with
 a 61-bit `SmallInteger` over the `LargeInteger` that makes integers
 unbounded and boxed `Float`s beyond the `SmallFloat64` range ("The
 eight-byte value" below; [object-model.md](design/object-model.md), "Values
-and objects"). The encoding is not designed yet: its inputs are the dispatch
-findings of [execution.md](design/execution.md), "Where the 3% goes" -- a
-discriminant decoded through a niche before every jump, `program_counter`
-and the code pointer spilled from `vm::run`'s registers -- and the
-instruction encodings of Primordial Soup, Strongtalk and Cog, and it is
-designed against the one-word value and measured against the Are We Fast
-Yet benchmarks as [execution.md](design/execution.md), "The Are We Fast Yet
-benchmarks", describes. The whole road, decided with the user on
+and objects"). The encoding was designed with the user on 2026-10-02 --
+one eight-byte slot per instruction, side tables for everything that does
+not fit, the program counter still an instruction index -- and is planned in
+[its plan](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md),
+whose first task is a gate: a throwaway copy runs the loop on the slots and
+is measured against `master` before anything is built, and the user decides
+on its numbers. The whole road, decided with the user on
 2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a
 high-performance VM".
 
