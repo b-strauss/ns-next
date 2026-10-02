@@ -2744,7 +2744,11 @@ pub fn build_root_class<'gc>(
         .module_root(module_index)
         .cloned()
         .ok_or(DecodeError::NotAClass)?;
-    let superclass = Some(mutator.builtin_class(section.superclass));
+    let builtin = mutator.builtin_class(section.superclass);
+    let superclass = mutator
+        .heap
+        .class_application(builtin)
+        .map(|application| (builtin, application));
     let applied: Vec<(usize, Value<'gc>)> = section
         .levels
         .iter()
@@ -2753,16 +2757,14 @@ pub fn build_root_class<'gc>(
     // `decode_root_section` held every index to the root row's clauses, and a
     // builtin class is always a class object, so this cannot fail; the
     // mapping keeps a future change to either from being a panic.
-    let superclass = crate::interpreter::nested::build_applied_levels(
+    let top = crate::interpreter::nested::build_applied_levels(
         mutator,
         &root_mixin,
         superclass,
         &applied,
     )
     .map_err(|_| DecodeError::NotAClassReference)?;
-    let super_application = superclass
-        .as_ref()
-        .and_then(|superclass| mutator.heap.class_application(*superclass));
+    let (superclass, super_application) = top.unzip();
     let application = mutator.apply_mixin(&root_mixin, super_application.as_ref());
     let root_class = mutator.new_class_object(application, None, None, superclass);
     let levels = super::encode::root_levels(&mutator.heap, root_class);

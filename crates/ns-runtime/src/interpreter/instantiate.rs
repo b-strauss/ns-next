@@ -248,24 +248,25 @@ impl<'gc> Mutator<'gc> {
                 (superclass_kind, !declaration.mixin_applications.is_empty())
             }
         };
-        let superclass = Some(self.builtin_class(superclass_kind));
+        let builtin = self.builtin_class(superclass_kind);
+        let superclass = self
+            .heap
+            .class_application(builtin)
+            .map(|application| (builtin, application));
         let applied: Vec<(usize, Value<'gc>)> = if applies_value {
             vec![(0, Value::object(self.builtin_class(BuiltinClass::Value)))]
         } else {
             Vec::new()
         };
-        let superclass =
-            match super::nested::build_applied_levels(self, &mixin, superclass, &applied) {
-                Ok(top) => top,
-                Err(_) => panic!("internal: every builtin class is a class object"),
-            };
+        let top = match super::nested::build_applied_levels(self, &mixin, superclass, &applied) {
+            Ok(top) => top,
+            Err(_) => panic!("internal: every builtin class is a class object"),
+        };
         // The slot layout is the application's job, not the class object's:
         // `apply_mixin` offsets this class's own slots past every inherited
         // one (`own_slot_base`), so a class object never computes -- or can
         // disagree about -- an instance's shape.
-        let super_application = superclass
-            .as_ref()
-            .and_then(|superclass| self.heap.class_application(*superclass));
+        let (superclass, super_application) = top.unzip();
         let application = self.apply_mixin(&mixin, super_application.as_ref());
         // `enclosing`/`declaring_class` are both `None` -- the module's root
         // class is the outermost level, so no object encloses it and no

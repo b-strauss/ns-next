@@ -778,8 +778,6 @@ Small, deliberately left, none affecting an outcome.
   cost falls only on a fallback closure's run, as "Fallback blocks" in
   [execution.md](design/execution.md) intends: the common path pays nothing.
 - `mixin.rs`: `MixinApplicationClause` repeats `SuperclassClause`'s fields.
-- `interpreter/nested.rs`: `after_clause` looks the application up twice; the
-  not-a-class error names a clause by position.
 - `image/encode.rs`: `encode_class_tag` scans the root levels twice;
   `image/decode.rs`'s `build_root_class` maps every error to
   `NotAClassReference`.

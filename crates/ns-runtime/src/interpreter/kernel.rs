@@ -256,17 +256,17 @@ impl<'gc> Mutator<'gc> {
         );
         let object = self.builtin_class(BuiltinClass::Object);
         let value = self.builtin_class(BuiltinClass::Value);
-        let level = match super::nested::build_applied_levels(
+        let object_application = self.heap.class_application(object);
+        let (level, level_application) = match super::nested::build_applied_levels(
             self,
             &root_mixin,
-            Some(object),
+            object_application.map(|application| (object, application)),
             &[(0, Value::object(value))],
         ) {
             Ok(Some(level)) => level,
             Ok(None) | Err(_) => panic!("internal: the kernel's Value level is a class object"),
         };
-        let level_application = self.heap.class_application(level);
-        let application = self.apply_mixin(&root_mixin, level_application.as_ref());
+        let application = self.apply_mixin(&root_mixin, Some(&level_application));
         let kernel_class = self.new_class_object(application, None, None, Some(level));
         // `Class` is filled, so every class object built so far -- each
         // builtin, the `Value` level and the kernel's own class -- can get
