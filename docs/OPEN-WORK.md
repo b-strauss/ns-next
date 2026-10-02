@@ -749,7 +749,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `vm.rs`: `send` and `deliver` carry `#[allow(clippy::too_many_arguments)]`.
 - `heap.rs`: `Heap::allocate_returned_top_level_frame` is public only so
   that `tests/image.rs`'s sender round trip can build a frame from values;
   its doc says "a handle from another heap is refused here", which holds for

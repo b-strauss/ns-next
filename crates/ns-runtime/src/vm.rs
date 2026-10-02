@@ -259,13 +259,15 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let receiver = mutator.heap.register(register_base, $pending.receiver);
                 send(
                     mutator,
-                    activation,
-                    register_base,
+                    Sender {
+                        activation,
+                        register_base,
+                        destination: $pending.destination,
+                        inlinable: false,
+                    },
                     program_counter,
                     $pending.arguments.as_slice(),
-                    $pending.destination,
                     floor,
-                    false,
                     &mut handoff,
                     |mutator, arguments| {
                         send_public(
@@ -286,13 +288,15 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let receiver = mutator.heap.register(register_base, $pending.receiver);
                 send(
                     mutator,
-                    activation,
-                    register_base,
+                    Sender {
+                        activation,
+                        register_base,
+                        destination: $pending.destination,
+                        inlinable: true,
+                    },
                     program_counter,
                     $pending.arguments.as_slice(),
-                    $pending.destination,
                     floor,
-                    true,
                     &mut handoff,
                     |mutator, arguments| mutator.decide_send(receiver, selector, arguments),
                 )
@@ -305,13 +309,15 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let family_size = code.family_size;
                 send(
                     mutator,
-                    activation,
-                    register_base,
+                    Sender {
+                        activation,
+                        register_base,
+                        destination: $pending.destination,
+                        inlinable: false,
+                    },
                     program_counter,
                     $pending.arguments.as_slice(),
-                    $pending.destination,
                     floor,
-                    false,
                     &mut handoff,
                     |mutator, arguments| {
                         send_lexical(
@@ -334,13 +340,15 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let family_size = code.family_size;
                 send(
                     mutator,
-                    activation,
-                    register_base,
+                    Sender {
+                        activation,
+                        register_base,
+                        destination: $pending.destination,
+                        inlinable: false,
+                    },
                     program_counter,
                     $pending.arguments.as_slice(),
-                    $pending.destination,
                     floor,
-                    false,
                     &mut handoff,
                     |mutator, arguments| {
                         send_super(
@@ -1467,13 +1475,15 @@ fn send_mirror(
                 |decided| {
                     deliver(
                         mutator,
-                        activation,
-                        register_base,
+                        Sender {
+                            activation,
+                            register_base,
+                            destination,
+                            inlinable: false,
+                        },
                         decided,
                         &arguments,
-                        destination,
                         floor,
-                        false,
                         handoff,
                     )
                 },
@@ -1680,23 +1690,29 @@ fn integer_into(
     }
 }
 
-/// A send: the arguments gathered from the caller's registers into the
-/// interpreter's reusable buffer, `program_counter` stored, the decision asked
-/// for, and what was decided run -- a value written to `destination`, or an
-/// activation pushed and switched to, its window filled straight from the
-/// buffer. No vector is allocated once the buffer has grown to the widest send.
-/// `inlinable` says whether the instruction was a `SendInlinable`, which
-/// `push_step` hands to the depth count along with the sender, `activation`.
-#[allow(clippy::too_many_arguments)]
-fn send<'gc>(
-    mutator: &mut Mutator<'gc>,
+/// The sending frame, and where and how its send's decision is delivered.
+#[derive(Clone, Copy)]
+struct Sender {
     activation: ActivationReference,
     register_base: RegisterBase,
+    destination: u16,
+    /// Whether the instruction was a `SendInlinable`, which `push_step`
+    /// hands to the depth count along with the sender, `activation`.
+    inlinable: bool,
+}
+
+/// A send: the arguments gathered from the caller's registers into the
+/// interpreter's reusable buffer, `program_counter` stored, the decision asked
+/// for, and what was decided run -- a value written to the sender's
+/// `destination`, or an activation pushed and switched to, its window filled
+/// straight from the buffer. No vector is allocated once the buffer has grown
+/// to the widest send.
+fn send<'gc>(
+    mutator: &mut Mutator<'gc>,
+    sender: Sender,
     program_counter: usize,
     argument_registers: &[u16],
-    destination: u16,
     floor: usize,
-    inlinable: bool,
     handoff: &mut Handoff,
     decide: impl FnOnce(&mut Mutator<'gc>, &[Value<'gc>]) -> Result<Step<'gc>, Signal<'gc>>,
 ) -> Transfer {
@@ -1704,50 +1720,43 @@ fn send<'gc>(
     arguments.extend(
         argument_registers
             .iter()
-            .map(|register| mutator.heap.register(register_base, *register)),
+            .map(|register| mutator.heap.register(sender.register_base, *register)),
     );
     mutator
         .heap
-        .set_activation_program_counter(activation, program_counter);
+        .set_activation_program_counter(sender.activation, program_counter);
     let decided = decide(mutator, &arguments);
-    let transfer = deliver(
-        mutator,
-        activation,
-        register_base,
-        decided,
-        &arguments,
-        destination,
-        floor,
-        inlinable,
-        handoff,
-    );
+    let transfer = deliver(mutator, sender, decided, &arguments, floor, handoff);
     mutator.return_argument_buffer(arguments);
     transfer
 }
 
-/// What a send decided, run: a value written to `destination`, or an
-/// activation pushed and switched to, its window filled from
+/// What a send decided, run: a value written to the sender's `destination`,
+/// or an activation pushed and switched to, its window filled from
 /// `send_arguments`. Shared by `send` and `SendMirror`, so a mirror leaf's
 /// decision is delivered exactly as any send's is.
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn deliver<'gc>(
     mutator: &mut Mutator<'gc>,
-    activation: ActivationReference,
-    register_base: RegisterBase,
+    sender: Sender,
     decided: Result<Step<'gc>, Signal<'gc>>,
     send_arguments: &[Value<'gc>],
-    destination: u16,
     floor: usize,
-    inlinable: bool,
     handoff: &mut Handoff,
 ) -> Transfer {
     match decided {
         Ok(Step::Value(value)) => {
-            mutator.heap.set_register(register_base, destination, value);
+            mutator
+                .heap
+                .set_register(sender.register_base, sender.destination, value);
             Transfer::Next
         }
-        Ok(step) => match mutator.push_step(step, send_arguments, Some(activation), inlinable) {
+        Ok(step) => match mutator.push_step(
+            step,
+            send_arguments,
+            Some(sender.activation),
+            sender.inlinable,
+        ) {
             Ok(callee) => handoff.switch_to(mutator, callee, 0),
             Err(signal) => unwind(mutator, signal, floor, handoff),
         },
